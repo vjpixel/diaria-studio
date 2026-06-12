@@ -80,6 +80,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Pode citar implicação técnica / decisão / consequência pra quem lê.
    - URL é opcional (geralmente não inclui — main post + comment Diar.ia já cobrem).
    - 300–600 caracteres.
+   - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O comment é postado na conta pessoal do autor — sem contexto de marca. Pode mencionar que o autor *faz* uma newsletter de IA, mas como fato biográfico, não como contexto compartilhado. Errado: "esta newsletter roda com agentes". Certo: "a newsletter de IA que escrevo roda com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
    - Exemplo (estilo do que Pixel posta): "Pra quem implanta agente em produção, o frame mudou: a discussão central não é mais 'esse modelo é seguro?' e sim 'qual é o blast radius de um agente que se replica sozinho?'"
 
    ### 3d. Post pessoal standalone de D1 (`## post_pixel`) — #1690
@@ -91,6 +92,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Pode abrir com o fato, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
    - Hashtags próprias (1-3). URL da edição opcional.
    - 600–1300 caracteres (post de LinkedIn, não comentário).
+   - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da Diar.ia. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
    - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** o Make pessoal não existe (`webhook_target=pixel` só aceita `comment`, não `post`). Publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 da página (09:00 BRT). Ver `context/publishers/linkedin.md` (guard invertido: confirmar que está postando como vjpixel, abortar se cair na página).
 
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`; subseções de comment usam `### comment_diaria` e `### comment_pixel` dentro de cada destaque. O orchestrator fará o merge com o Facebook numa etapa seguinte.

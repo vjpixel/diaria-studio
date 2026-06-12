@@ -669,6 +669,230 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
   return { ok: matches.length === 0, matches };
 }
 
+// ---------------------------------------------------------------------------
+// #2148 Fix A: personal post newsletter deixis guard
+// ---------------------------------------------------------------------------
+
+/**
+ * #2148: `## post_pixel` e `### comment_pixel` são postados na conta PESSOAL
+ * do autor (vjpixel), sem contexto de marca. Usar "esta/essa/nossa newsletter"
+ * presume que o leitor sabe de qual newsletter se trata — framing inválido num
+ * post standalone no feed pessoal.
+ *
+ * Detecta as frases-âncora em `## post_pixel` e `### comment_pixel` dentro da
+ * seção LinkedIn. NÃO flaga nos posts principais `## d{N}` da Diar.ia (esses
+ * são de marca, onde a deixis é OK).
+ */
+export interface PersonalPostDeixisMatch {
+  section: string;
+  phrase: string;
+  context: string;
+  line: number;
+}
+
+export interface PersonalPostDeixisResult {
+  ok: boolean;
+  matches: PersonalPostDeixisMatch[];
+}
+
+// Âncoras de deixis que pressupõem o leitor na Diar.ia.
+// Formas femininas: "esta newsletter", "essa newsletter", "nossa newsletter",
+//                  "esta edição",     "essa edição",     "nossa edição".
+// Formas masculinas: "este boletim", "esse boletim", "nosso boletim".
+// ("boletim" é masculino — "esse/este/nosso boletim", não "essa/esta/nossa boletim".)
+const NEWSLETTER_DEIXIS_RE =
+  /\b(esta|essa|nossa|este|esse|nosso)\s+(newsletter|boletim|edi[çc][ãa]o)\b/gi;
+
+/**
+ * Extrai o texto de `## post_pixel` de uma seção LinkedIn.
+ * (bloco top-level `## post_pixel`, encerrando no próximo `## ` ou fim)
+ */
+function extractPostPixelBlock(linkedinSection: string): { text: string; lineOffset: number } | null {
+  const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
+  const m = text.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
+  if (!m) return null;
+  // Contar linhas até o match para calcular lineOffset
+  const before = text.slice(0, m.index ?? 0);
+  const lineOffset = before.split("\n").length;
+  return { text: m[1], lineOffset };
+}
+
+/**
+ * Extrai todos os blocos `### comment_pixel` de uma seção LinkedIn.
+ * Cada bloco vai do header até o próximo `### ` ou `## ` ou fim do destaque.
+ */
+function extractCommentPixelBlocks(linkedinSection: string): Array<{ destaque: string; text: string; lineOffset: number }> {
+  const normalized = "\n" + linkedinSection.replace(/\r\n/g, "\n");
+  const results: Array<{ destaque: string; text: string; lineOffset: number }> = [];
+  // Iterar cada bloco de destaque `## d{N}`
+  const destaqueRe = /\n## (d\d+)[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
+  let dm: RegExpExecArray | null;
+  while ((dm = destaqueRe.exec(normalized)) !== null) {
+    const destaque = dm[1];
+    const body = dm[2];
+    const destaqueLineOffset = normalized.slice(0, dm.index).split("\n").length;
+    // Encontrar `### comment_pixel` dentro do body
+    const cpRe = /\n### comment_pixel[^\n]*\n([\s\S]*?)(?=\n### |$)/i;
+    const cp = body.match(cpRe);
+    if (!cp) continue;
+    const cpLineOffset = destaqueLineOffset + body.slice(0, cp.index ?? 0).split("\n").length;
+    results.push({ destaque, text: cp[1], lineOffset: cpLineOffset });
+  }
+  return results;
+}
+
+export function lintPersonalPostNewsletterDeixis(md: string): PersonalPostDeixisResult {
+  const matches: PersonalPostDeixisMatch[] = [];
+
+  const linkedinSection = extractPlatformSection(md, "linkedin");
+  if (!linkedinSection) return { ok: true, matches };
+
+  // Checar ## post_pixel
+  const ppBlock = extractPostPixelBlock(linkedinSection);
+  if (ppBlock) {
+    const lines = ppBlock.text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      NEWSLETTER_DEIXIS_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = NEWSLETTER_DEIXIS_RE.exec(line)) !== null) {
+        matches.push({
+          section: "post_pixel",
+          phrase: m[0],
+          context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
+          line: ppBlock.lineOffset + i,
+        });
+      }
+    }
+  }
+
+  // Checar ### comment_pixel em cada destaque
+  for (const { destaque, text, lineOffset } of extractCommentPixelBlocks(linkedinSection)) {
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      NEWSLETTER_DEIXIS_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = NEWSLETTER_DEIXIS_RE.exec(line)) !== null) {
+        matches.push({
+          section: `comment_pixel (${destaque})`,
+          phrase: m[0],
+          context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
+          line: lineOffset + i,
+        });
+      }
+    }
+  }
+
+  return { ok: matches.length === 0, matches };
+}
+
+// ---------------------------------------------------------------------------
+// #2148 Fix B: per-section humanizer coverage check
+// ---------------------------------------------------------------------------
+
+/**
+ * #2148: o guard de no-op do humanizador é WHOLE-FILE — se o humanizador
+ * reescreve os posts principais mas deixa comments/post_pixel intactos,
+ * o arquivo MUDA → guard passa → cobertura parcial fica invisível.
+ *
+ * Esta função compara `03-social.md` pré e pós-humanizador
+ * SEÇÃO POR SEÇÃO, identificando quais seções foram alteradas e quais não.
+ *
+ * Seções verificadas: `## d1`, `## d2`, `## d3` (main), `### comment_pixel`
+ * (×3) e `## post_pixel`. `### comment_diaria` é CTA template — OK não mudar.
+ *
+ * Retorna a lista de seções não-tocadas. O orchestrator deve re-invocar o
+ * humanizador mirando essas seções se a lista não estiver vazia.
+ */
+export interface SectionCoverageResult {
+  ok: boolean;
+  /**
+   * Seções verificadas e se foram alteradas (true = touched pelo humanizador).
+   */
+  sections: Array<{ name: string; touched: boolean }>;
+  /** Seções que ficaram idênticas antes vs depois. */
+  untouched: string[];
+  /** Seções presentes no pre mas ausentes no post (corrupção estrutural). */
+  deleted: string[];
+}
+
+/** Extrai blocos nomeados de nível `##` e `###` da seção LinkedIn. */
+function extractSocialSections(md: string): Record<string, string> {
+  const section = extractPlatformSection(md, "linkedin");
+  if (!section) return {};
+
+  const result: Record<string, string> = {};
+  const normalized = "\n" + section.replace(/\r\n/g, "\n");
+
+  // Blocos `## d{N}` (main text apenas — até o 1º `### comment_`)
+  const destaqueRe = /\n## (d\d+)[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
+  let dm: RegExpExecArray | null;
+  while ((dm = destaqueRe.exec(normalized)) !== null) {
+    const destaque = dm[1];
+    const body = dm[2];
+    // Main = até primeiro `### comment_`
+    const cpIdx = body.search(/\n### comment_/);
+    result[`main_${destaque}`] = cpIdx === -1 ? body : body.slice(0, cpIdx);
+
+    // comment_pixel dentro do destaque
+    const cpRe = /\n### comment_pixel[^\n]*\n([\s\S]*?)(?=\n### |$)/i;
+    const cp = body.match(cpRe);
+    if (cp) result[`comment_pixel_${destaque}`] = cp[1];
+  }
+
+  // post_pixel
+  const pp = normalized.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
+  if (pp) result["post_pixel"] = pp[1];
+
+  return result;
+}
+
+/**
+ * Compara `03-social.md` antes e depois do humanizador seção por seção.
+ * Seções que mudaram = humanizador cobriu. Idênticas = não cobriu.
+ *
+ * `preMd`: conteúdo do arquivo ANTES do humanizador (snapshot).
+ * `postMd`: conteúdo APÓS o humanizador.
+ */
+export function checkHumanizerSectionCoverage(preMd: string, postMd: string): SectionCoverageResult {
+  const SECTIONS_TO_CHECK = [
+    "main_d1", "main_d2", "main_d3",
+    "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
+    "post_pixel",
+  ];
+
+  const preSections = extractSocialSections(preMd);
+  const postSections = extractSocialSections(postMd);
+
+  const sections: Array<{ name: string; touched: boolean }> = [];
+  const untouched: string[] = [];
+  const deleted: string[] = [];
+
+  for (const name of SECTIONS_TO_CHECK) {
+    const pre = preSections[name];
+    const post = postSections[name];
+    // Seção ausente em ambos = não existe nesta edição → skip (ok, não untouched)
+    if (pre === undefined && post === undefined) continue;
+    // Seção ausente no pre mas presente no post = algo adicionado → touched (ok)
+    if (pre === undefined) {
+      sections.push({ name, touched: true });
+      continue;
+    }
+    // Seção presente no pre mas ausente no post = corrupção estrutural (humanizador deletou)
+    if (post === undefined) {
+      sections.push({ name, touched: false });
+      deleted.push(name);
+      continue;
+    }
+    const touched = pre.trim() !== post.trim();
+    sections.push({ name, touched });
+    if (!touched) untouched.push(name);
+  }
+
+  return { ok: untouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
+}
+
 function parseArgs(argv: string[]): Record<string, string> {
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -687,7 +911,9 @@ function main(): void {
       "Uso: lint-social-md.ts --md <path>\n" +
         "  ou: lint-social-md.ts --check relative-time --md <path>\n" +
         "  ou: lint-social-md.ts --check linkedin-schema --md <path>\n" +
-        "  ou: lint-social-md.ts --check post_pixel-matches-d1 --md <path>",
+        "  ou: lint-social-md.ts --check post_pixel-matches-d1 --md <path>\n" +
+        "  ou: lint-social-md.ts --check personal-post-no-newsletter-deixis --md <path>\n" +
+        "  ou: lint-social-md.ts --check humanizer-section-coverage --pre <path-pre> --md <path-post>",
     );
     process.exit(2);
   }
@@ -754,6 +980,64 @@ function main(): void {
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) {
       console.error(`\n❌ post_pixel desalinhado com D1 (#1861):\n  ${result.detail}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check personal-post-no-newsletter-deixis (#2148) — post_pixel e
+  // comment_pixel não devem usar "esta/essa/nossa newsletter" (deixis de marca
+  // em post pessoal sem contexto compartilhado).
+  if (args.check === "personal-post-no-newsletter-deixis") {
+    const result = lintPersonalPostNewsletterDeixis(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} ocorrência(s) de deixis de newsletter em post/comment pessoal (#2148):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  [${m.section}] linha ${m.line}: '${m.phrase}' — use "a newsletter de IA que escrevo", não "esta/nossa newsletter"\n    contexto: "...${m.context}..."`,
+        );
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check humanizer-section-coverage (#2148) — verifica cobertura
+  // por-seção do humanizador social (comments/post_pixel). Requer --pre <path>.
+  if (args.check === "humanizer-section-coverage") {
+    if (!args.pre) {
+      console.error("Uso: lint-social-md.ts --check humanizer-section-coverage --pre <pré-humanizador> --md <pós-humanizador>");
+      process.exit(2);
+    }
+    const prePath = resolve(process.cwd(), args.pre);
+    if (!existsSync(prePath)) {
+      console.error(`Arquivo pré-humanizador não existe: ${prePath}`);
+      process.exit(2);
+    }
+    const preMd = readFileSync(prePath, "utf8");
+    const result = checkHumanizerSectionCoverage(preMd, md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      if (result.deleted.length > 0) {
+        console.error(
+          `\n❌ ${result.deleted.length} seção(ões) deletada(s) pelo humanizador (corrupção estrutural, #2148):`,
+        );
+        for (const s of result.deleted) {
+          console.error(`  ${s}: presente antes do humanizador, ausente depois`);
+        }
+      }
+      if (result.untouched.length > 0) {
+        console.error(
+          `\n❌ ${result.untouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,
+        );
+        for (const s of result.untouched) {
+          console.error(`  ${s}: idêntica antes/depois do humanizador`);
+        }
+        console.error(`\n  Re-invocar humanizador mirando: ${result.untouched.join(", ")}`);
+      }
       process.exit(1);
     }
     return;

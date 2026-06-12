@@ -337,6 +337,14 @@ Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto
 ```
 **Retry 3x + abort se persistir (#1072).** Se skill retornar erro OU `03-social.md` post-humanizador for byte-idêntico ao pré (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** — não publicar social com tom corporativo de agent output. Antes da invocação, fazer snapshot: `cp data/editions/{AAMMDD}/03-social.md data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md` pra diff post-skill.
 
+**Verificar cobertura por-seção do humanizador (#2148):** após cada invocação do humanizador social, checar se TODAS as seções relevantes foram tocadas — não apenas o arquivo como um todo:
+```bash
+npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
+  --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
+  --md data/editions/{AAMMDD}/03-social.md
+```
+Seções verificadas: `main_d1/d2/d3` (posts principais), `comment_pixel_d1/d2/d3` (comments pessoais) e `post_pixel`. Seção idêntica antes/depois = humanizador não tocou. **Exit 1 com lista de seções não-cobertas → re-invocar humanizador mirando explicitamente essas seções no prompt** (ex: "humanize as seções comment_pixel_d2 e post_pixel que ficaram com tom corporativo"). Contabiliza como tentativa adicional no retry 3x — se após o retry dirigido a cobertura ainda for parcial e o no-op total persistir, abortar. Fundamento: o guard whole-file (byte-idêntico pré vs pós) detecta "humanizador não rodou nada", mas NÃO detecta "humanizador rodou nos destaques mas pulou comments/post_pixel" — esse furo deixava comments com tom LLM passando silenciosamente pelo gate (#2148).
+
 **Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
 
 **Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
@@ -361,6 +369,12 @@ Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comm
 ```bash
 npx tsx scripts/lint-social-md.ts --check no-trailing-question --md data/editions/{AAMMDD}/03-social.md
 ```
+
+**Lint deixis de newsletter em post/comment pessoal (#2148):** `## post_pixel` e `### comment_pixel` são postados na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da Diar.ia; inválido num post standalone. Rodar:
+```bash
+npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --md data/editions/{AAMMDD}/03-social.md
+```
+Exit 1 = ocorrências de "esta newsletter", "essa newsletter", "nossa newsletter" (e variantes com "boletim", "edição") em `## post_pixel` ou `### comment_pixel`. **Incluir ocorrências no prompt do gate** com sugestão de substituição. Fix: reescrever como fato biográfico ("a newsletter de IA que escrevo") em vez de contexto compartilhado. Não bloqueia automaticamente — editor decide se reescreve ou aceita (casos de borda: citação direta de entrevistado).
 Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos comments) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. Exit 1 = **incluir os matches no prompt do gate** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
 
 ### 2d. Sync push + gate unificado

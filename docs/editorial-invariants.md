@@ -42,7 +42,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares (#964) | #964 |
-| `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 (#595, #1861) | #595 |
+| `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + humanizer-section-coverage (#595, #1861, #2148) | #595 |
 
 ## Stage 3 — Imagens
 

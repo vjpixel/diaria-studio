@@ -303,12 +303,20 @@ describe("Stage 2 invariants", () => {
 
   it("social-passes-lints falha com 'file-exists' quando 03-social.md ausente", () => {
     const v = checkSocialPassesLints(fixture);
-    assert.equal(v.length, 3); // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861)
+    // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861) +
+    // personal-post-no-newsletter-deixis (#2148).
+    // humanizer-section-coverage só roda quando snapshot existe → não conta aqui.
+    assert.equal(v.length, 4);
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     // #1861: a nova check está registrada (não só a contagem mudou).
     assert.ok(
       v.some((x) => x.rule === "social-post-pixel-matches-d1-file-exists"),
       "rule social-post-pixel-matches-d1 deve estar presente",
+    );
+    // #2148: deixis check registrada
+    assert.ok(
+      v.some((x) => x.rule === "social-personal-post-no-newsletter-deixis-file-exists"),
+      "rule social-personal-post-no-newsletter-deixis deve estar presente",
     );
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
@@ -338,6 +346,138 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       ruleIds.includes("social-relative-time"),
       `Esperava social-relative-time, achei ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #2148: Finding 1 fix — lints novos registrados no gate de Stage 2 ---
+
+  it("#2148: gate social detecta deixis pessoal em post_pixel (personal-post-no-newsletter-deixis é gate-blocking)", () => {
+    // Garante que o check NEW não é código morto — roda e bloqueia o gate
+    // quando 03-social.md contém "esta newsletter" em post_pixel.
+    const withDeixis = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Texto do destaque 1.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal sem problema.",
+      "",
+      "## d2",
+      "",
+      "Texto do destaque 2.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal sem problema.",
+      "",
+      "## d3",
+      "",
+      "Texto do destaque 3.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal sem problema.",
+      "",
+      "## post_pixel",
+      "",
+      "<!-- destaque: d1 -->",
+      "",
+      "Esta newsletter roda em grande parte com agentes — o que ainda me surpreende.",
+      "",
+      "#IA #Brasil",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Texto do Facebook.",
+      "",
+      "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.",
+    ].join("\n");
+    writeFileSync(join(fixture, "03-social.md"), withDeixis);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-personal-post-no-newsletter-deixis"),
+      `Gate não detectou deixis. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#2148: gate social detecta seção não coberta pelo humanizador (humanizer-section-coverage é gate-blocking quando snapshot existe)", () => {
+    // Garante que o check NEW humanizer-section-coverage é invocado pelo gate
+    // quando o snapshot pré-humanizador existe.
+    const pre = [
+      "# LinkedIn",
+      "## d1",
+      "Texto ORIGINAL d1.",
+      "### comment_diaria",
+      "link",
+      "### comment_pixel",
+      "Comentário ORIGINAL.",
+      "## post_pixel",
+      "Post pixel ORIGINAL — não tocado.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    const post = [
+      "# LinkedIn",
+      "## d1",
+      "Texto reescrito d1.",
+      "### comment_diaria",
+      "link",
+      "### comment_pixel",
+      "Comentário reescrito.",
+      "## post_pixel",
+      "Post pixel ORIGINAL — não tocado.", // idêntico ao pre
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    // Escrever o snapshot pré-humanizador em _internal/
+    writeFileSync(join(fixture, "_internal", "03-social-pre-humanizador.md"), pre);
+    writeFileSync(join(fixture, "03-social.md"), post);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-humanizer-section-coverage"),
+      `Gate não detectou cobertura incompleta do humanizador. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#2148: gate social não roda humanizer-section-coverage quando snapshot ausente (não bloqueia edições sem snapshot)", () => {
+    // Sem snapshot → check skipped. Não deve gerar violation espúria.
+    writeFileSync(join(fixture, "03-social.md"), "# Outros\n\nConteúdo neutro.\n");
+    // _internal/ existe mas sem o snapshot
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      !ruleIds.includes("social-humanizer-section-coverage"),
+      `Não devia rodar humanizer-section-coverage sem snapshot: ${JSON.stringify(ruleIds)}`,
     );
     rmSync(fixture, { recursive: true, force: true });
   });

@@ -94,8 +94,10 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * `03-social.md` deve passar lint social. Roda 2 checks granulares:
- * `linkedin-schema` (#595) e `relative-time` (qualidade editorial).
+ * `03-social.md` deve passar lint social. Roda checks granulares:
+ * `linkedin-schema` (#595), `relative-time` (qualidade editorial),
+ * `post_pixel-matches-d1` (#1861), `personal-post-no-newsletter-deixis` (#2148),
+ * e `humanizer-section-coverage` (#2148, quando snapshot pré-humanizador existe).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "03-social.md");
@@ -129,6 +131,34 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       file,
     ),
   );
+  // #2148: post_pixel e comment_pixel não devem usar deixis pessoal referindo-se
+  // à newsletter/boletim como "esta newsletter" / "nossa newsletter" etc.
+  // (framing inválido em post pessoal de perfil — o leitor não sabe qual newsletter).
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "personal-post-no-newsletter-deixis", "--md", file],
+      "social-personal-post-no-newsletter-deixis",
+      "#2148",
+      file,
+    ),
+  );
+  // #2148: humanizador deve ter coberto todas as seções de 03-social.md (main,
+  // comment_pixel, post_pixel). Snapshot pré-humanizador pode não existir em
+  // edições antigas ou quando o humanizador foi pulado — nesse caso o guard
+  // humanizer-ran (checkHumanizerRan) já captura. Aqui: só roda se o snapshot existe.
+  const preSnapshot = resolve(editionDir, "_internal", "03-social-pre-humanizador.md");
+  if (existsSync(preSnapshot)) {
+    violations.push(
+      ...runCheck(
+        "lint-social-md.ts",
+        ["--check", "humanizer-section-coverage", "--pre", preSnapshot, "--md", file],
+        "social-humanizer-section-coverage",
+        "#2148",
+        file,
+      ),
+    );
+  }
   return violations;
 }
 
@@ -192,7 +222,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "social-passes-lints",
-    description: "03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 (#595, #1861)",
+    description: "03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + humanizer-section-coverage (#595, #1861, #2148)",
     source_issue: "#595",
     stage: 2,
     run: checkSocialPassesLints,
