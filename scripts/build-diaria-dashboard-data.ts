@@ -437,9 +437,19 @@ async function pushToKV(
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
+/**
+ * #2132 fix: o parser `cli-args.ts` põe `--push` (booleano, sem valor) em `flags`,
+ * e `--push <val>` em `values`. O check antigo `!values["push"]` caía sempre em
+ * dry-run quando `--push` vinha sozinho. Aceitar as duas formas.
+ */
+export function isPushRequested(argv: string[]): boolean {
+  const { flags, values } = parseCliArgs(argv);
+  return flags.has("push") || values["push"] != null;
+}
+
 async function main() {
   const { values } = parseCliArgs(process.argv.slice(2));
-  const isDryRun = !values["push"];
+  const isDryRun = !isPushRequested(process.argv.slice(2));
   const kvNamespaceId = (values["kv-namespace-id"] as string | undefined)
     ?? process.env["DASHBOARD_KV_NAMESPACE_ID"];
 
