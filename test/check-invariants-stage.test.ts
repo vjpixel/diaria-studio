@@ -352,7 +352,7 @@ describe("Stage 3 invariants", () => {
 
   it("all-images-exist falha quando todas ausentes", () => {
     const v = checkAllImagesExist(fixture);
-    assert.equal(v.length, 6); // 6 imagens obrigatórias
+    assert.equal(v.length, 8); // 8 imagens obrigatórias (#2133/#2141: d2/d3 2x1 adicionadas)
     for (const violation of v) {
       assert.equal(violation.severity, "error");
     }
@@ -449,7 +449,9 @@ describe("Stage 4 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("public-images-populated passa com shape real (images.d{N}.url)", () => {
+  it("public-images-populated passa com shape real completo (social 1x1 + newsletter hero 2x1)", () => {
+    // #2158 finding 4: shape completo inclui cover/d2_2x1/d3_2x1 (newsletter hero)
+    // além dos d1/d2/d3 1x1 (social). Todos presentes → 0 violations.
     writeFileSync(
       join(fixture, "06-public-images.json"),
       JSON.stringify({
@@ -457,11 +459,35 @@ describe("Stage 4 invariants", () => {
           d1: { url: "https://drive.example/d1", file_id: "a" },
           d2: { url: "https://drive.example/d2", file_id: "b" },
           d3: { url: "https://drive.example/d3", file_id: "c" },
+          cover: { url: "https://cf.example/cover" },
+          d2_2x1: { url: "https://cf.example/d2_2x1" },
+          d3_2x1: { url: "https://cf.example/d3_2x1" },
         },
       }),
     );
     const v = checkPublicImagesPopulated(fixture);
     assert.equal(v.length, 0, JSON.stringify(v));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#2158 finding 4: public-images-newsletter-hero emite warning quando d2_2x1 ausente (cross-mode blind spot)", () => {
+    // Social mode só preenche d2/d3 1x1; newsletter mode optional falhou silenciosamente.
+    // O check deve emitir warning para cada chave hero 2x1 ausente.
+    writeFileSync(
+      join(fixture, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://drive.example/d1", file_id: "a" },
+          d2: { url: "https://drive.example/d2", file_id: "b" },
+          d3: { url: "https://drive.example/d3", file_id: "c" },
+          // cover, d2_2x1, d3_2x1 ausentes (newsletter mode falhou)
+        },
+      }),
+    );
+    const v = checkPublicImagesPopulated(fixture);
+    // Deve ter 3 warnings (cover, d2_2x1, d3_2x1) e 0 errors para social keys
+    assert.equal(v.filter((x) => x.rule === "public-images-newsletter-hero").length, 3, JSON.stringify(v));
+    assert.ok(v.every((x) => x.severity === "warning"), `Esperado só warnings: ${JSON.stringify(v)}`);
     rmSync(fixture, { recursive: true, force: true });
   });
 

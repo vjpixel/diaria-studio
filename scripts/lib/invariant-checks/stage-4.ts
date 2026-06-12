@@ -23,17 +23,18 @@ interface PublicImageEntry {
 }
 
 interface PublicImagesJson {
-  images?: {
-    d1?: PublicImageEntry;
-    d2?: PublicImageEntry;
-    d3?: PublicImageEntry;
-  };
+  images?: Record<string, PublicImageEntry | undefined>;
 }
 
 /**
  * `06-public-images.json` deve ter URLs Drive públicas pra d1, d2, d3
  * (1x1 cada — formato consumido por LinkedIn + Facebook). Sem isso,
  * publish-linkedin envia image_url=null e Make rejeita (DLQ incident 260508).
+ *
+ * #2133/#2141: também valida d2_2x1/d3_2x1/cover (hero 2:1 consumidos pelo email
+ * body via substitute-image-urls). Ausentes aqui = email sai com placeholders crus.
+ * Cross-mode blind spot: social mode preenche d2/d3 mas não d2_2x1/d3_2x1; se
+ * newsletter mode falhou silenciosamente, esse check pega antes do publish.
  *
  * Shape real (escrito por scripts/upload-images-public.ts):
  *   { images: { d1: { url, file_id, filename, mime_type } } }
@@ -69,7 +70,9 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   }
   const violations: InvariantViolation[] = [];
   const images = data.images ?? {};
-  for (const key of ["d1", "d2", "d3"] as const) {
+
+  // Social 1x1 keys — required for LinkedIn/Facebook (DLQ incident #999).
+  for (const key of ["d1", "d2", "d3"]) {
     const slot = images[key];
     const url = slot?.url;
     if (!url || typeof url !== "string" || url.trim().length === 0) {
@@ -90,6 +93,26 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
       });
     }
   }
+
+  // Newsletter hero 2x1 keys — required for email body substitution (#2133/#2141).
+  // Absent → substitute-image-urls.ts writes literal {{IMG:04-d{N}-2x1.jpg}} and
+  // exits 2. Warning (not error) so social-only runs are not blocked.
+  for (const key of ["cover", "d2_2x1", "d3_2x1"]) {
+    const slot = images[key];
+    const url = slot?.url;
+    if (!url || typeof url !== "string" || url.trim().length === 0) {
+      violations.push({
+        rule: "public-images-newsletter-hero",
+        message:
+          `06-public-images.json: images.${key}.url ausente ou vazio — ` +
+          `email body usa {{IMG:}} pra esta chave; ausente causa placeholder cru no HTML.`,
+        source_issue: "#2133",
+        severity: "warning",
+        file: path,
+      });
+    }
+  }
+
   return violations;
 }
 

@@ -42,7 +42,9 @@ export const CATEGORY_EMOJI: Record<string, string> = {
 // ── Interfaces ────────────────────────────────────────────────────────
 export interface RenderDestaque extends BaseDestaque {
   emoji: string;
-  imageFile: string;
+  // imageFile removed: was inconsistent (D1=2x1, D2/D3=1x1) and unused after
+  // #2133/#2141 expanded hero to all destaques. renderDestaque derives heroFile
+  // directly as `04-d${d.n}-2x1.jpg`. (#2158 finding 6)
 }
 
 export interface SectionItem {
@@ -642,11 +644,11 @@ export function extractContent(editionDir: string): NewsletterContent {
     throw new Error(`Expected 3 destaques, got ${baseDestaques.length}`);
   }
 
-  // Enrich with emoji + image file mapping
+  // Enrich with emoji (#2158: imageFile removed — renderDestaque derives heroFile
+  // directly as `04-d${d.n}-2x1.jpg` after #2133/#2141 expanded hero to all 3)
   const destaques: RenderDestaque[] = baseDestaques.map((d) => ({
     ...d,
     emoji: CATEGORY_EMOJI[d.category] || "📌",
-    imageFile: d.n === 1 ? "04-d1-2x1.jpg" : `04-d${d.n}-1x1.jpg`,
   }));
 
   // Sections: parsed here (extract-destaques doesn't handle these)

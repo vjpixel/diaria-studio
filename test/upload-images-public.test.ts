@@ -218,29 +218,33 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!keys.includes("eia_real"));
   });
 
-  it("#1701: newsletter mode inclui d1/d2/d3 1x1 (Cloudflare KV pro social preview)", () => {
-    // Renderer (render-newsletter-html.ts) só substitui placeholders pra cover
-    // D1 + È IA? A/B no EMAIL. Mas o social preview (render-social-html) resolve
-    // d1/d2/d3 via cloudflare_url — que só existe se o newsletter mode (CF, roda
-    // antes do social/drive) os subir. #1583 cobriu d1; #1701 estende a d2/d3
-    // (antes ficavam só no Drive → preview do gate quebrava).
+  it("#1701/#2133/#2141: newsletter mode inclui d1/d2/d3 1x1 + d2/d3 2x1 (hero inline + social preview)", () => {
+    // #1701: social preview resolve d1/d2/d3 via cloudflare_url — newsletter mode
+    // (CF) os sobe antes do social/drive. #2133/#2141: d2/d3 também precisam do
+    // 2x1 no email como hero inline ({{IMG:04-d2-2x1.jpg}}, {{IMG:04-d3-2x1.jpg}}).
     const specs = imageSpecsFor("newsletter");
     const keys = specs.map((s) => s.key);
     assert.ok(keys.includes("d1"), "d1 em newsletter mode");
-    assert.ok(keys.includes("d2"), "d2 em newsletter mode (#1701)");
-    assert.ok(keys.includes("d3"), "d3 em newsletter mode (#1701)");
+    assert.ok(keys.includes("d2"), "d2 1x1 em newsletter mode (#1701)");
+    assert.ok(keys.includes("d3"), "d3 1x1 em newsletter mode (#1701)");
+    assert.ok(keys.includes("d2_2x1"), "d2 2x1 em newsletter mode (#2133/#2141)");
+    assert.ok(keys.includes("d3_2x1"), "d3 2x1 em newsletter mode (#2133/#2141)");
     assert.deepEqual(
       keys.sort(),
-      ["cover", "d1", "d2", "d3", "eia_a", "eia_b", "livros_promo"].sort(),
-      "newsletter = cover + d1 + d2 + d3 + eia_a + eia_b + livros_promo",
+      ["cover", "d1", "d2", "d2_2x1", "d3", "d3_2x1", "eia_a", "eia_b", "livros_promo"].sort(),
+      "newsletter = cover + d1 + d2 + d2_2x1 + d3 + d3_2x1 + eia_a + eia_b + livros_promo",
     );
-    // filenames 1x1 (square) — não o 2x1 do cover.
+    // filenames: 1x1 (square) para social; 2x1 (wide) para hero inline.
     assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
     assert.equal(specs.find((s) => s.key === "d3")!.filename, "04-d3-1x1.jpg");
-    // #1701: d2/d3 são best-effort (optional) — não bloqueiam newsletter-mode
-    // standalone se ausentes; cover/d1/eia (usados pelo email) NÃO são optional.
+    assert.equal(specs.find((s) => s.key === "d2_2x1")!.filename, "04-d2-2x1.jpg");
+    assert.equal(specs.find((s) => s.key === "d3_2x1")!.filename, "04-d3-2x1.jpg");
+    // Todos são best-effort (optional) — não bloqueiam newsletter-mode standalone
+    // se ausentes; cover/d1/eia (usados pelo email) NÃO são optional.
     assert.equal(specs.find((s) => s.key === "d2")!.optional, true);
     assert.equal(specs.find((s) => s.key === "d3")!.optional, true);
+    assert.equal(specs.find((s) => s.key === "d2_2x1")!.optional, true, "d2_2x1 optional");
+    assert.equal(specs.find((s) => s.key === "d3_2x1")!.optional, true, "d3_2x1 optional");
     assert.ok(!specs.find((s) => s.key === "cover")!.optional);
     assert.ok(!specs.find((s) => s.key === "d1")!.optional);
   });

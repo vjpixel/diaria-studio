@@ -81,13 +81,16 @@ function main() {
     process.exit(1);
   }
 
-  // #1916: --ratio força o formato. Sem a flag, default da diária (d1 wide).
+  // #1916: --ratio força o formato. Sem a flag, default da diária (todos os
+  // destaques d1/d2/d3 usam 2x1 como hero inline no email, #2133/#2141).
   const ratio = args["ratio"];
   if (ratio !== undefined && ratio !== "2x1" && ratio !== "1x1") {
     console.error(`--ratio deve ser 2x1 ou 1x1. Recebido: ${ratio}`);
     process.exit(1);
   }
-  const wide = ratio === "2x1" || (ratio === undefined && destaque === "d1");
+  // Default wide para d1/d2/d3: hero 2:1 inline. --ratio 1x1 ainda funciona
+  // como override (ex: mensal que precisasse apenas do square).
+  const wide = ratio === "2x1" || (ratio === undefined && /^d[123]$/.test(destaque));
 
   // Ler prompt editorial
   const editorialText = readFileSync(editorialPath, "utf8");
@@ -116,15 +119,15 @@ function main() {
 
   // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar).
   // Wide: exige AMBOS 2x1 e 1x1 — se só 2x1 existe (crash antes do crop), não pula.
-  const d1Path2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
-  const d1Path1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
+  const widePath2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
+  const widePath1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const checkExistPath = wide
-    ? (existsSync(d1Path2x1) && existsSync(d1Path1x1) ? d1Path2x1 : null)
+    ? (existsSync(widePath2x1) && existsSync(widePath1x1) ? widePath2x1 : null)
     : (existsSync(outJpgPath) ? outJpgPath : null);
   if (checkExistPath && !force) {
     console.error(`Imagem ${checkExistPath} já existe — use --force pra regenerar.`);
-    process.stdout.write((wide ? d1Path2x1 : outJpgPath) + "\n");
-    if (wide) process.stdout.write(d1Path1x1 + "\n");
+    process.stdout.write((wide ? widePath2x1 : outJpgPath) + "\n");
+    if (wide) process.stdout.write(widePath1x1 + "\n");
     process.exit(0);
   }
 
@@ -163,7 +166,7 @@ function main() {
 
     // Renomear o output original (1600×800) para -2x1
     renameSync(outJpgPath, wideJpgPath);
-    console.error(`D1 wide: ${wideJpgPath} (1600×800)`);
+    console.error(`${destaque} wide: ${wideJpgPath} (1600×800)`);
 
     // Crop centro para 1:1 (800×800).
     // Usa process.execPath + --import tsx (em vez de npx + shell:true) pra
@@ -174,7 +177,7 @@ function main() {
         ["--import", "tsx", cropScript, wideJpgPath, squareJpgPath, "--width", "800", "--height", "800"],
         { stdio: "inherit", cwd: ROOT }
       );
-      console.error(`D1 square: ${squareJpgPath} (800×800)`);
+      console.error(`${destaque} square: ${squareJpgPath} (800×800)`);
     } catch (e: unknown) {
       const code = (e as { status?: number }).status ?? 1;
       console.error(`crop-resize falhou com código ${code}`);

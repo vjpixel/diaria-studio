@@ -66,9 +66,10 @@ describe("assertCacheCompleteness (#1275)", () => {
   });
 
   describe("mode=newsletter", () => {
-    it("passa com cover/d1/eia_a/eia_b (#1583; d2/d3 best-effort #1701)", () => {
-      // #1701: d2/d3 são optional no newsletter mode (best-effort pro preview) —
-      // NÃO exigidos aqui, pra não falhar o upload standalone manual/email.
+    it("passa com cover/d1/eia_a/eia_b/d2_2x1/d3_2x1 (#1583, #2158 finding 3)", () => {
+      // #2158 finding 3: d2_2x1/d3_2x1 são required no newsletter mode —
+      // email body usa {{IMG:04-d2-2x1.jpg}} / {{IMG:04-d3-2x1.jpg}};
+      // se ausentes substitute-image-urls.ts escreve placeholders crus e sai 2.
       assert.doesNotThrow(() =>
         assertCacheCompleteness(
           {
@@ -76,9 +77,47 @@ describe("assertCacheCompleteness (#1275)", () => {
             d1: makeImg("https://x/d1"),
             eia_a: makeImg("https://x/eia_a"),
             eia_b: makeImg("https://x/eia_b"),
+            d2_2x1: makeImg("https://x/d2_2x1"),
+            d3_2x1: makeImg("https://x/d3_2x1"),
           },
           "newsletter",
         ),
+      );
+    });
+
+    it("#2158 finding 3: falha quando d2_2x1 ausente (hero email vai ter placeholder cru)", () => {
+      assert.throws(
+        () =>
+          assertCacheCompleteness(
+            {
+              cover: makeImg("https://x/cover"),
+              d1: makeImg("https://x/d1"),
+              eia_a: makeImg("https://x/eia_a"),
+              eia_b: makeImg("https://x/eia_b"),
+              d3_2x1: makeImg("https://x/d3_2x1"),
+              // d2_2x1 ausente
+            },
+            "newsletter",
+          ),
+        /Missing: d2_2x1/,
+      );
+    });
+
+    it("#2158 finding 3: falha quando d3_2x1 ausente", () => {
+      assert.throws(
+        () =>
+          assertCacheCompleteness(
+            {
+              cover: makeImg("https://x/cover"),
+              d1: makeImg("https://x/d1"),
+              eia_a: makeImg("https://x/eia_a"),
+              eia_b: makeImg("https://x/eia_b"),
+              d2_2x1: makeImg("https://x/d2_2x1"),
+              // d3_2x1 ausente
+            },
+            "newsletter",
+          ),
+        /Missing: d3_2x1/,
       );
     });
 
@@ -90,6 +129,8 @@ describe("assertCacheCompleteness (#1275)", () => {
               cover: makeImg("https://x/cover"),
               d1: makeImg("https://x/d1"),
               eia_b: makeImg("https://x/eia_b"),
+              d2_2x1: makeImg("https://x/d2_2x1"),
+              d3_2x1: makeImg("https://x/d3_2x1"),
             },
             "newsletter",
           ),
@@ -105,6 +146,8 @@ describe("assertCacheCompleteness (#1275)", () => {
               cover: makeImg("https://x/cover"),
               eia_a: makeImg("https://x/eia_a"),
               eia_b: makeImg("https://x/eia_b"),
+              d2_2x1: makeImg("https://x/d2_2x1"),
+              d3_2x1: makeImg("https://x/d3_2x1"),
             },
             "newsletter",
           ),

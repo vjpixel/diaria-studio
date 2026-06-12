@@ -380,15 +380,17 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
 
 export function renderDestaque(d: RenderDestaque): string {
   // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
-  // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero (só
-  // D1, #1077) → parágrafos sans → box "Por que isso importa". Sem <hr> separador
-  // (cada seção abre com seu próprio kicker).
-  const showInlineImage = d.n === 1;
+  // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero
+  // (#1077: D1; #2133/#2141: D1/D2/D3 todos com hero 2:1) → parágrafos sans →
+  // box "Por que isso importa". Sem <hr> separador (cada seção abre com kicker).
+  // Hero usa sempre o arquivo 2:1 — D1 já era "04-d1-2x1.jpg"; D2/D3 passam a
+  // usar "04-d{N}-2x1.jpg" gerado pelo Stage 3 (#2133/#2141).
+  const heroFile = `04-d${d.n}-2x1.jpg`;
   const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
-    showInlineImage ? renderHeroImageInner(d.imageFile, d.title) : "",
+    renderHeroImageInner(heroFile, d.title),
     renderBodyParasInner(d.body),
     renderWhyBoxInner(d.why),
   ].filter(Boolean).join("\n  ");
