@@ -153,7 +153,7 @@
 ### VentureBeat (IA)
 - URL: https://venturebeat.com/category/ai/
 - Site query: `site:venturebeat.com`
-- RSS: https://venturebeat.com/feed/
+- RSS: https://venturebeat.com/category/ai/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ## Pesquisa
