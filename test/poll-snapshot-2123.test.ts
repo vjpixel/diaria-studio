@@ -199,11 +199,21 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
   });
 });
 
-// ── Fix 2: TTL curto pós-upsert ──────────────────────────────────────────────
+// ── Fix 2 (atualizado #2129): TTL 24h pós-upsert — mesmo safety net do compute path ──
 
-describe("upsertOwnEntryInSnapshot — TTL curto pós-upsert (#2123 fix 2)", () => {
-  it("grava snapshot com expirationTtl = 300 (5 min)", async () => {
-    const kv = makeTrackedKv();
+describe("upsertOwnEntryInSnapshot — TTL 24h pós-upsert (#2129 fix)", () => {
+  it("grava snapshot com expirationTtl = 86400 (24h) — mesmo do compute path", async () => {
+    // #2129: TTL 300s estava rebaixando o TTL de 24h do compute path.
+    // Snapshot expirava 5min após o último voto → recompute repetido no pico.
+    // Fix: upsert usa 86400s (same safety net). Read-your-own-write é garantido
+    // pela escrita da entry no snapshot, não pelo TTL curto.
+    const kv = makeTrackedKv({
+      // snapshot existente com dados de outro votante
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [{ email: "bob@x.com", nickname: "Bob", correct: 1, total: 1 }],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
     const env = makeEnv(kv);
     await upsertOwnEntryInSnapshot(env, "2026-06", {
       email: "alice@x.com",
@@ -215,11 +225,33 @@ describe("upsertOwnEntryInSnapshot — TTL curto pós-upsert (#2123 fix 2)", () 
     assert.ok(put, "snapshot deve ser gravado");
     assert.equal(
       put!.opts?.expirationTtl,
-      300,
-      "TTL do upsert deve ser 300s (5 min) para autocorreção rápida de races",
+      86400,
+      "TTL do upsert deve ser 86400s (24h) — igual ao compute path, não rebaixar o cache",
     );
   });
 
+  it("voto sobre snapshot ausente: TTL também é 86400s (não 300s)", async () => {
+    // #2152 + #2129: snapshot ausente → computeSnapshotEntries + upsert com 24h TTL
+    const kv = makeTrackedKv({
+      "score-by-month:2026-06:carol@x.com": JSON.stringify({
+        nickname: "Carol", correct: 3, total: 5,
+      }),
+    });
+    const env = makeEnv(kv);
+    await upsertOwnEntryInSnapshot(env, "2026-06", {
+      email: "alice@x.com",
+      nickname: "Alice",
+      correct: 2,
+      total: 2,
+    });
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.ok(put, "snapshot deve ser gravado mesmo partindo de ausente");
+    assert.equal(
+      put!.opts?.expirationTtl,
+      86400,
+      "TTL 24h mesmo quando snapshot estava ausente (não 300s)",
+    );
+  });
 });
 
 // ── Fix 3: Redirect 302 (não 301) ───────────────────────────────────────────
