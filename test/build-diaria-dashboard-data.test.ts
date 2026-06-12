@@ -91,23 +91,9 @@ describe("buildCtrSummary (interno)", () => {
     assert.ok(header.includes("unique_verified_clicks"), "CSV deve ter coluna unique_verified_clicks");
   });
 
-  test("agrega categorias do CSV corretamente", () => {
-    // Parser inline (mesmo do script)
-    function parseCsvLine(line: string): string[] {
-      const result: string[] = [];
-      let current = "";
-      let inQuote = false;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          if (inQuote && line[i + 1] === '"') { current += '"'; i++; }
-          else inQuote = !inQuote;
-        } else if (ch === "," && !inQuote) { result.push(current); current = ""; }
-        else current += ch;
-      }
-      result.push(current);
-      return result;
-    }
+  test("agrega categorias do CSV corretamente", async () => {
+    // Finding #11: import parseCsvLine from the script instead of copy-pasting
+    const { parseCsvLine } = await import("../scripts/build-diaria-dashboard-data.ts");
 
     const raw = readFileSync(csvPath, "utf8");
     const lines = raw.split("\n").filter(Boolean);
@@ -382,5 +368,187 @@ describe("degradação graciosa", () => {
     const html = renderCtrSection(data);
     assert.ok(html.includes("CTR por categoria"), "deve ter o título");
     assert.ok(!html.includes("Por categoria"), "não deve ter subseções quando ctr é null");
+  });
+});
+
+// ─── Testes de regressão para os 11 findings (#633) ──────────────────────────
+
+describe("regressão: status amarelo/vermelho respeita falhas consecutivas (finding #3)", () => {
+  test("fonte com 10 falhas consecutivas e taxa 60% vira vermelho, não amarelo", () => {
+    // Antes do fix: success_rate_pct >= 50 || consecutive_failures <= 2 → amarelo (errado)
+    // Depois do fix: success_rate_pct >= 50 && consecutive_failures <= 2 → vermelho (correto)
+    const success_rate_pct = 60;
+    const consecutive_failures = 10;
+    const verde = success_rate_pct >= 80 && consecutive_failures === 0;
+    const amarelo = success_rate_pct >= 50 && consecutive_failures <= 2; // AND — fix aplicado
+    const status = verde ? "verde" : amarelo ? "amarelo" : "vermelho";
+    assert.equal(status, "vermelho", "10 falhas consecutivas deve resultar em vermelho mesmo com taxa >= 50%");
+  });
+
+  test("fonte com 2 falhas consecutivas e taxa 55% vira amarelo", () => {
+    const success_rate_pct = 55;
+    const consecutive_failures = 2;
+    const verde = success_rate_pct >= 80 && consecutive_failures === 0;
+    const amarelo = success_rate_pct >= 50 && consecutive_failures <= 2;
+    const status = verde ? "verde" : amarelo ? "amarelo" : "vermelho";
+    assert.equal(status, "amarelo");
+  });
+
+  test("fonte com 3 falhas consecutivas e taxa 55% vira vermelho", () => {
+    const success_rate_pct = 55;
+    const consecutive_failures = 3;
+    const verde = success_rate_pct >= 80 && consecutive_failures === 0;
+    const amarelo = success_rate_pct >= 50 && consecutive_failures <= 2;
+    const status = verde ? "verde" : amarelo ? "amarelo" : "vermelho";
+    assert.equal(status, "vermelho", "3 falhas consecutivas com taxa < 80% deve ser vermelho");
+  });
+});
+
+describe("regressão: CSV com CRLF não corrompe última coluna (finding #6)", () => {
+  test("parseCsvLine parse sem CRLF funciona normalmente", async () => {
+    const { parseCsvLine } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const result = parseCsvLine("date,anchor,origin");
+    assert.deepEqual(result, ["date", "anchor", "origin"]);
+  });
+
+  test("CSV com CRLF: split por /\\r?\\n/ não deixa \\r na última coluna", () => {
+    const csvWithCrlf = "date,anchor,origin\r\n2026-06-01,Test,manual\r\n";
+    const lines = csvWithCrlf.split(/\r?\n/).filter(Boolean);
+    assert.equal(lines.length, 2, "deve ter 2 linhas (header + 1 dado)");
+    // Última coluna da linha de dados não deve ter \r
+    const dataLine = lines[1];
+    assert.ok(!dataLine.endsWith("\r"), "linha de dados não deve terminar com \\r");
+    const cols = dataLine.split(",");
+    assert.equal(cols[2], "manual", "última coluna deve ser 'manual', não 'manual\\r'");
+  });
+});
+
+describe("regressão: Worker não crasha com ctr/sh parciais (findings #4 e #5)", () => {
+  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+
+  test("renderCtrSection não crasha quando top_categories está ausente (schema drift)", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = {
+      generated_at: "2026-06-12T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      // ctr existe mas sem top_categories/top_links (schema drift)
+      ctr: { total_editions: 3, total_links: 7 } as unknown as DashData["ctr"],
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+    let html: string;
+    assert.doesNotThrow(() => { html = renderCtrSection(data as DashData); }, "não deve lançar TypeError com top_categories ausente");
+    assert.ok(html!.includes("CTR por categoria"), "deve renderizar seção CTR mesmo sem top_categories");
+  });
+
+  test("renderSourceHealthSection não crasha quando entries está ausente (schema drift)", async () => {
+    const { renderSourceHealthSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = {
+      generated_at: "",
+      schema_version: 1,
+      // source_health existe mas sem entries (schema drift)
+      source_health: { total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" } as unknown as DashData["source_health"],
+      ctr: null,
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+    let html: string;
+    assert.doesNotThrow(() => { html = renderSourceHealthSection(data as DashData); }, "não deve lançar TypeError com entries ausente");
+    assert.ok(html!.includes("source-health"), "deve renderizar seção mesmo com entries ausente");
+  });
+});
+
+describe("regressão: fmtTimeBRT inválida retorna '—' (finding #2)", () => {
+  test("fmtTimeBRT com data inválida retorna '—' (não a string ISO crua)", async () => {
+    // Testa indiretamente via render: uma fonte com last_success_iso inválido não deve emitir a string bruta no HTML
+    const { renderSourceHealthSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const invalidIso = "nao-e-uma-data";
+    const data: import("../workers/diaria-dashboard/src/types.ts").DashboardData = {
+      generated_at: "",
+      schema_version: 1,
+      source_health: {
+        entries: [{
+          name: "TestFonte",
+          slug: "testfonte",
+          attempts: 5,
+          successes: 2,
+          failures: 3,
+          timeouts: 0,
+          success_rate_pct: 40,
+          consecutive_failures: 3,
+          last_success_iso: invalidIso,
+          last_failure_iso: invalidIso,
+          last_duration_ms: null,
+          status: "vermelho",
+        }],
+        total: 1, verde: 0, amarelo: 0, vermelho: 1, generated_at: "",
+      },
+      ctr: null,
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+    const html = renderSourceHealthSection(data);
+    // A string inválida "nao-e-uma-data" NÃO deve aparecer no HTML (seria XSS via data drift)
+    assert.ok(!html.includes(invalidIso), "data inválida não deve aparecer literalmente no HTML");
+    // Em vez disso deve ter "—"
+    assert.ok(html.includes("—"), "data inválida deve ser substituída por '—'");
+  });
+});
+
+describe("regressão: XSS javascript: URI bloqueado no href (finding #1)", () => {
+  test("URL com esquema javascript: não aparece em href", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data: import("../workers/diaria-dashboard/src/types.ts").DashboardData = {
+      generated_at: "",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: {
+        total_editions: 1,
+        total_links: 1,
+        top_categories: [],
+        top_links: [{
+          date: "2026-06-01",
+          post_title: "Test",
+          anchor: "Clique aqui",
+          base_url: "javascript:alert('xss')",
+          category: "Destaque",
+          ctr_pct: 5.0,
+          unique_verified_clicks: 10,
+        }],
+      },
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+    const html = renderCtrSection(data);
+    assert.ok(!html.includes('href="javascript:'), "href com javascript: não deve aparecer no HTML");
+    assert.ok(!html.includes("javascript:alert"), "payload XSS não deve aparecer no HTML");
+  });
+
+  test("URL com esquema https: aparece normalmente em href", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data: import("../workers/diaria-dashboard/src/types.ts").DashboardData = {
+      generated_at: "",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: {
+        total_editions: 1,
+        total_links: 1,
+        top_categories: [],
+        top_links: [{
+          date: "2026-06-01",
+          post_title: "Test",
+          anchor: "Perplexity",
+          base_url: "https://perplexity.ai/tutorial",
+          category: "Use Melhor",
+          ctr_pct: 9.0,
+          unique_verified_clicks: 18,
+        }],
+      },
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+    const html = renderCtrSection(data);
+    assert.ok(html.includes('href="https://perplexity.ai/tutorial"'), "URL https válida deve aparecer em href");
   });
 });

@@ -46,15 +46,24 @@ function escHtml(s: string): string {
 function fmtTimeBRT(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Finding #2: invalid date must return "—" (not raw iso) to avoid unescaped output in <td>
+  if (isNaN(d.getTime())) return "—";
+  // Finding #8: toLocaleString with tz may throw in Workers without full ICU data
+  try {
+    return d.toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    // Fallback: manual offset -03:00
+    const brt = new Date(d.getTime() - 3 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(brt.getUTCDate())}/${pad(brt.getUTCMonth() + 1)}/${String(brt.getUTCFullYear()).slice(-2)} ${pad(brt.getUTCHours())}:${pad(brt.getUTCMinutes())}`;
+  }
 }
 
 function fmtDuration(ms: number | null): string {
@@ -76,7 +85,8 @@ function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
 
 export function renderSourceHealthSection(data: DashboardData): string {
   const sh = data.source_health;
-  if (!sh || sh.entries.length === 0) {
+  // Finding #5: sh truthy but sh.entries absent causes TypeError — guard with optional chain
+  if (!sh?.entries?.length) {
     return `<section class="dash-section" id="source-health">
   <h2 class="section-title">Saúde das fontes</h2>
   <p class="section-note muted">Nenhuma fonte encontrada. Rode <code>build-diaria-dashboard-data.ts --dry-run</code> e verifique data/source-health.json.</p>
@@ -139,7 +149,8 @@ export function renderCtrSection(data: DashboardData): string {
 </section>`;
   }
 
-  const catRows = ctr.top_categories.map((r) => `<tr>
+  // Finding #4: ctr may exist but top_categories/top_links absent (schema drift) — use nullish coalescing
+  const catRows = (ctr.top_categories ?? []).map((r) => `<tr>
     <td>${escHtml(r.category)}</td>
     <td>${r.link_count}</td>
     <td>${r.total_clicks}</td>
@@ -147,14 +158,21 @@ export function renderCtrSection(data: DashboardData): string {
     <td>${r.max_ctr_pct.toFixed(2)}%</td>
   </tr>`).join("\n");
 
-  const topRows = ctr.top_links.slice(0, 10).map((r) => `<tr>
+  // Finding #1: validate URL scheme before embedding in href to prevent javascript: XSS
+  const topRows = (ctr.top_links ?? []).slice(0, 10).map((r) => {
+    const safeHref = /^https?:\/\//i.test(r.base_url) ? escHtml(r.base_url) : "";
+    const linkCell = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
+      : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    return `<tr>
     <td>${escHtml(r.date)}</td>
     <td><small>${escHtml(r.category)}</small></td>
     <td>${escHtml(r.anchor)}</td>
     <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
     <td><small>${r.unique_verified_clicks}</small></td>
-    <td><a href="${escHtml(r.base_url)}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a></td>
-  </tr>`).join("\n");
+    <td>${linkCell}</td>
+  </tr>`;
+  }).join("\n");
 
   return `<section class="dash-section" id="ctr">
   <h2 class="section-title">CTR por categoria de link</h2>

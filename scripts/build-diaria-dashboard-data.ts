@@ -102,7 +102,9 @@ function buildSourceHealth(): DashboardData["source_health"] {
     let status: "verde" | "amarelo" | "vermelho";
     if (success_rate_pct >= 80 && consecutive_failures === 0) {
       status = "verde";
-    } else if (success_rate_pct >= 50 || consecutive_failures <= 2) {
+    // Finding #3: OR → AND — fonte com 10+ falhas consecutivas não deve ser "amarelo"
+    // apenas por ter taxa histórica >= 50%. Ambas as condições devem ser atendidas.
+    } else if (success_rate_pct >= 50 && consecutive_failures <= 2) {
       status = "amarelo";
     } else {
       status = "vermelho";
@@ -158,8 +160,9 @@ interface CsvRow {
 /**
  * Parser CSV minimalista (sem dependencia de papaparse em runtime do script).
  * Suporta aspas duplas como escape. Suficiente para o link-ctr-table.csv.
+ * Finding #11: exported so tests import this instead of copy-pasting (avoids silent drift).
  */
-function parseCsvLine(line: string): string[] {
+export function parseCsvLine(line: string): string[] {
   const result: string[] = [];
   let current = "";
   let inQuote = false;
@@ -194,7 +197,8 @@ function buildCtrSummary(): CtrSummary | null {
     return null;
   }
 
-  const lines = raw.split("\n").filter(Boolean);
+  // Finding #6: normalize CRLF (Windows line endings) so last column is clean
+  const lines = raw.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return null;
 
   const header = parseCsvLine(lines[0]);
@@ -315,11 +319,15 @@ function buildOvernightSummary(): DashboardData["overnight"] {
     let in_progress = 0;
 
     for (const issue of issues) {
-      const tl = issue.timeline ?? {};
+      const tl = issue.timeline;
+      // Finding #7: issues without timeline key had no bucket but were counted in total.
+      // Treat missing/empty timeline as in_progress (dispatch not yet recorded).
+      if (!tl || Object.keys(tl).length === 0) { in_progress++; continue; }
       if (tl.merged) merged++;
       else if (tl.draft) draft++;
       else if (tl.pulada) pulada++;
       else if (tl.dispatch) in_progress++;
+      else in_progress++; // has timeline keys but none of the known terminal ones
     }
 
     // Duraçao total: started_at → ultimo timestamp de fim
@@ -394,13 +402,14 @@ async function pushToKV(
   namespaceId: string,
 ): Promise<void> {
   const body = Buffer.from(payload, "utf8");
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/dashboard`;
+  // Finding #10: removed dead `url` variable — path is used inline in https.request below
+  const kvPath = `/client/v4/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/dashboard`;
 
   await new Promise<void>((resolve, reject) => {
     const req = https.request(
       {
         hostname: "api.cloudflare.com",
-        path: `/client/v4/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/dashboard`,
+        path: kvPath,
         method: "PUT",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -444,7 +453,8 @@ async function main() {
   mkdirSync(dirname(OUT_PATH), { recursive: true });
   writeFileSync(OUT_PATH, json, "utf8");
   console.log(`✓ JSON local: ${OUT_PATH}`);
-  console.log(`  • Fontes: ${data.source_health.total} (${data.source_health.verde}v/${data.source_health.amarelo}a/${data.source_health.vermelho}v)`);
+  // Finding #9 (typo): vermelho used 'v' same as verde — fixed to 'r'
+  console.log(`  • Fontes: ${data.source_health.total} (${data.source_health.verde}v/${data.source_health.amarelo}a/${data.source_health.vermelho}r)`);
   if (data.ctr) {
     console.log(`  • CTR: ${data.ctr.total_editions} ediçoes, ${data.ctr.total_links} links`);
   } else {
