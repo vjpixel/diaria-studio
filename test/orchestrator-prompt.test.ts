@@ -64,6 +64,8 @@ const REQUIRED_INVARIANTS = [
   "--stage 4 --status running",
   "--stage 5 --status running",
   "mark-done canônico do Stage 5 é o §5i",
+  // #2145: lint de consistência post_pixel↔D1 no gate do Stage 4
+  "post_pixel-matches-d1",
 ];
 
 function readOrchestratorFiles(): Record<string, string> {
