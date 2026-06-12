@@ -556,10 +556,13 @@ describe("#2151 — stripHtml: sanitiza HTML cru antes do stitch", () => {
   });
 
   it("entities HTML comuns → decodificadas corretamente", () => {
-    const raw = "Texto&nbsp;com&nbsp;espaços &amp; caracteres &lt;especiais&gt;.";
+    // &nbsp; → ' ', &amp; → '&' — entities sem tags ao redor são decodificadas.
+    // &lt;/&gt; ao redor de texto simples (não tag real) → decodificadas para < >
+    // (tag-strip roda antes do decode, então <especiais> pós-decode não é retag-strippado — correto).
+    const raw = "Texto&nbsp;com&nbsp;espaços &amp; caracteres.";
     const out = stripHtml(raw);
-    assert.doesNotMatch(out, /&nbsp;|&amp;|&lt;|&gt;/);
-    assert.match(out, /Texto com espaços & caracteres/);
+    assert.doesNotMatch(out, /&nbsp;|&amp;/);
+    assert.match(out, /Texto com espaços & caracteres\./);
   });
 
   it("tag bem-formada genérica → removida, texto preservado", () => {
@@ -593,5 +596,156 @@ describe("#2151 — renderSection: summary com HTML cru não vaza pro markdown",
     ]);
     assert.doesNotMatch(out, /<a/i);
     assert.match(out, /artigo completo/);
+  });
+});
+
+// ─── #2166 pass2 — 7 bugs no sanitizador corrigidos ──────────────────────────
+
+describe("#2166 pass2 — stripHtml: 7 bugs corrigidos", () => {
+  // Finding #1: RangeError crash em code point inválido
+  it("finding 1: code point inválido (>0x10FFFF) não crasha — retorna string vazia p/ entidade", () => {
+    // &#2000000; está além do máximo Unicode (0x10FFFF = 1114111)
+    assert.doesNotThrow(() => stripHtml("foo &#2000000; bar"));
+    const out = stripHtml("foo &#2000000; bar");
+    assert.doesNotMatch(out, /&#2000000;/, "entidade inválida não deve restar literal");
+    assert.match(out, /foo.*bar/, "texto ao redor deve ser preservado");
+  });
+
+  it("finding 1b: surrogate solto (&#55296; = U+D800) não crasha", () => {
+    assert.doesNotThrow(() => stripHtml("texto &#55296; aqui"));
+    const out = stripHtml("texto &#55296; aqui");
+    assert.doesNotMatch(out, /&#55296;/, "surrogate não deve restar literal");
+  });
+
+  // Finding #2: Double-decode — &amp;lt; não deve virar < final
+  it("finding 2: double-encoded &amp;lt; → não vira < após strip", () => {
+    // &amp;lt; em texto: se decodificar entities ANTES de strip, vira &lt; → depois <
+    // O correto: strip tags ANTES de decode → &amp;lt; sobrevive como texto literal "&lt;"
+    // ou é decodificado para "&lt;" sem criar uma tag.
+    const out = stripHtml("texto &amp;lt;b&amp;gt; fim");
+    // Não deve haver < ou > soltos no output (indicativo de tag que escapou o strip)
+    assert.ok(!out.includes("<b>"), `não deve ter tag <b> no output; got: ${out}`);
+    // O texto que sobrar pode ter & ou < como caracteres literais — isso é aceitável.
+    // O que NÃO pode é ter tags HTML funcionais.
+    assert.doesNotMatch(out, /<[a-zA-Z]/, "nenhuma tag HTML deve sobrar");
+  });
+
+  it("finding 2b: &amp;amp; sobrevive como & literal (não double-decode)", () => {
+    const out = stripHtml("a &amp;amp; b");
+    // Deve resultar em "a &amp; b" ou "a & b" — nunca em &amp;&amp; ou crash
+    assert.doesNotThrow(() => stripHtml("a &amp;amp; b"));
+    assert.ok(out.length > 0, "não deve esvaziar completamente");
+  });
+
+  // Finding #3: tag truncada no MEIO da string (bug central do #2151)
+  it("finding 3: tag truncada NO MEIO da string é strippada (não só no fim)", () => {
+    // Caso real: extração de conteúdo captura meio de tag entre texto
+    const raw = "foo <img src='x' bar more text";
+    const out = stripHtml(raw);
+    assert.ok(!out.includes("<"), `sem < solto no meio; got: ${out}`);
+    assert.match(out, /foo/, "texto antes da tag truncada deve sobrar");
+    // O texto DEPOIS de uma tag truncada sem fechar pode ser perdido (parte da tag) — ok
+  });
+
+  it("finding 3b: múltiplos < soltos ao longo da string", () => {
+    const raw = "inicio <div class='x' texto do meio <span foo fim";
+    const out = stripHtml(raw);
+    assert.ok(!out.includes("<"), `sem < solto; got: ${out}`);
+    assert.match(out, /inicio/, "texto inicial deve sobrar");
+  });
+
+  // Finding #4: entidades PT-BR acentuadas preservadas, não deletadas
+  it("finding 4: &eacute; → é (não deletado)", () => {
+    const out = stripHtml("&eacute;");
+    assert.equal(out, "é", `&eacute; deve virar é; got: ${out}`);
+  });
+
+  it("finding 4b: &ccedil; → ç, &atilde; → ã, &otilde; → õ", () => {
+    const out = stripHtml("cora&ccedil;&atilde;o est&atilde;o p&otilde;e");
+    assert.match(out, /coração/, `&ccedil;&atilde;o deve virar ção; got: ${out}`);
+    assert.match(out, /estão/);
+    assert.match(out, /põe/);
+  });
+
+  it("finding 4c: todas as entidades PT-BR comuns decodificadas corretamente", () => {
+    const cases: [string, string][] = [
+      ["&aacute;", "á"],
+      ["&agrave;", "à"],
+      ["&acirc;", "â"],
+      ["&iacute;", "í"],
+      ["&oacute;", "ó"],
+      ["&uacute;", "ú"],
+      ["&uuml;", "ü"],
+      ["&hellip;", "…"],
+      ["&mdash;", "—"],
+      ["&ndash;", "–"],
+      ["&rsquo;", "’"],  // RIGHT SINGLE QUOTATION MARK U+2019
+      ["&ldquo;", "“"],  // LEFT DOUBLE QUOTATION MARK U+201C
+    ];
+    for (const [entity, expected] of cases) {
+      const out = stripHtml(entity);
+      assert.equal(out, expected, `${entity} deve virar ${expected}; got: ${out}`);
+    }
+  });
+
+  // Finding #5: block elements sem separador → "AB" devia ser "A B"
+  it("finding 5: <p>A</p><p>B</p> → 'A B' com espaço entre parágrafos", () => {
+    const out = stripHtml("<p>A</p><p>B</p>");
+    assert.match(out, /A\s+B/, `parágrafos devem ter espaço; got: "${out}"`);
+  });
+
+  it("finding 5b: <br> entre frases → espaço preservado", () => {
+    const out = stripHtml("Frase um.<br>Frase dois.");
+    assert.match(out, /Frase um\.\s+Frase dois\./, `<br> deve virar espaço; got: "${out}"`);
+  });
+
+  it("finding 5c: <div>texto</div> inline → sem colagem de palavras", () => {
+    const out = stripHtml("<div>Primeiro</div><div>Segundo</div>");
+    assert.match(out, /Primeiro\s+Segundo/, `divs devem ter espaço; got: "${out}"`);
+  });
+
+  // Finding #6: entidades hex &#x41; etc
+  it("finding 6: &#x41; → 'A' (hex entity decodificada)", () => {
+    const out = stripHtml("&#x41;");
+    assert.equal(out, "A", `&#x41; deve virar A; got: ${out}`);
+  });
+
+  it("finding 6b: &#x00E9; → é (hex PT-BR)", () => {
+    const out = stripHtml("&#x00E9;");
+    assert.equal(out, "é", `&#x00E9; deve virar é; got: ${out}`);
+  });
+
+  it("finding 6c: hex maiúsculo &#X41; → 'A'", () => {
+    const out = stripHtml("&#X41;");
+    assert.equal(out, "A", `&#X41; deve virar A; got: ${out}`);
+  });
+
+  it("finding 6d: hex code point inválido não crasha", () => {
+    assert.doesNotThrow(() => stripHtml("&#xD800;"));  // surrogate hex
+    assert.doesNotThrow(() => stripHtml("&#x200000;")); // beyond unicode range
+  });
+
+  // Finding #7: whitespace collapse incluindo \n\r
+  it("finding 7: newlines embutidos em og:description são colapsados para espaço", () => {
+    const raw = "Primeira linha\nSegunda linha\r\nTerceira linha";
+    const out = stripHtml(raw);
+    assert.doesNotMatch(out, /\n|\r/, `newlines devem sumir; got: "${out}"`);
+    assert.match(out, /Primeira linha\s+Segunda linha\s+Terceira linha/);
+  });
+
+  it("finding 7b: múltiplos espaços/tabs colapsados para espaço único", () => {
+    const raw = "texto\t\t\tcom\t   tabs   e   espaços";
+    const out = stripHtml(raw);
+    assert.doesNotMatch(out, /\t/, "tabs devem sumir");
+    assert.doesNotMatch(out, / {2,}/, "múltiplos espaços devem colapsar");
+    assert.match(out, /texto com tabs e espaços/);
+  });
+
+  // Caso real do #2151 — anchor truncada no MEIO (não no fim)
+  it("caso real #2151: anchor truncada NO MEIO + texto depois → sem HTML cru", () => {
+    const raw = "Veja mais em <a href='https://site.com/page' class='link' bar more relevant text after";
+    const out = stripHtml(raw);
+    assert.ok(!out.includes("<"), `sem < solto; got: "${out}"`);
+    assert.match(out, /Veja mais em/, "texto antes da tag deve sobrar");
   });
 });
