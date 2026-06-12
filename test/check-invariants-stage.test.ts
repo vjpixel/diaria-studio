@@ -44,6 +44,7 @@ import {
   checkStage4ReviewLoop,
   checkClosePollMarker,
   checkLinkedinWorkerUrlSet,
+  checkLinkedinWorkerUrlHttps,
   checkFbPageIdSet,
   checkFbTokenSet,
   checkCloudflareTokenSet,
@@ -646,14 +647,55 @@ describe("Stage 4 invariants", () => {
     }
   });
 
-  it("linkedin-worker-url-set falha quando não-HTTPS (error)", () => {
+  it("linkedin-worker-url-set ok (0 violations) quando URL é HTTP — esquema verificado pela função separada", () => {
+    // #2172: após o split, checkLinkedinWorkerUrlSet NÃO emite mais linkedin-worker-url-https.
+    // Checar que a função de presença não polui a de esquema.
     const original = process.env.DIARIA_LINKEDIN_CRON_URL;
     process.env.DIARIA_LINKEDIN_CRON_URL = "http://insecure.example/fire";
     try {
       const v = checkLinkedinWorkerUrlSet();
-      assert.equal(v.length, 1);
+      assert.equal(v.length, 0, `checkLinkedinWorkerUrlSet não deve emitir nada quando URL presente (mesmo HTTP): ${JSON.stringify(v)}`);
+    } finally {
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
+      else delete process.env.DIARIA_LINKEDIN_CRON_URL;
+    }
+  });
+
+  // --- #2172: checkLinkedinWorkerUrlHttps — 3 casos de regressão ---
+
+  it("#2172 URL HTTP presente → exatamente 1 violation linkedin-worker-url-https (era 2, o bug)", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_URL;
+    process.env.DIARIA_LINKEDIN_CRON_URL = "http://insecure.example/fire";
+    try {
+      const v = checkLinkedinWorkerUrlHttps();
+      assert.equal(v.length, 1, `esperava 1 violation, recebeu ${JSON.stringify(v)}`);
       assert.equal(v[0].rule, "linkedin-worker-url-https");
       assert.equal(v[0].severity, "error");
+    } finally {
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
+      else delete process.env.DIARIA_LINKEDIN_CRON_URL;
+    }
+  });
+
+  it("#2172 URL ausente → 0 violations de linkedin-worker-url-https (checkLinkedinWorkerUrlHttps não duplica o ausente)", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_URL;
+    delete process.env.DIARIA_LINKEDIN_CRON_URL;
+    try {
+      const v = checkLinkedinWorkerUrlHttps();
+      assert.equal(v.length, 0, `esperava 0 violations de -https quando URL ausente: ${JSON.stringify(v)}`);
+    } finally {
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
+    }
+  });
+
+  it("#2172 URL HTTPS válida → 0 violations", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_URL;
+    process.env.DIARIA_LINKEDIN_CRON_URL = "https://worker.example.com/queue";
+    try {
+      const vSet = checkLinkedinWorkerUrlSet();
+      const vHttps = checkLinkedinWorkerUrlHttps();
+      assert.equal(vSet.length, 0, `checkLinkedinWorkerUrlSet deve ser 0 com HTTPS: ${JSON.stringify(vSet)}`);
+      assert.equal(vHttps.length, 0, `checkLinkedinWorkerUrlHttps deve ser 0 com HTTPS: ${JSON.stringify(vHttps)}`);
     } finally {
       if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
       else delete process.env.DIARIA_LINKEDIN_CRON_URL;
