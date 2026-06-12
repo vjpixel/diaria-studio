@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 47 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 49 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -42,6 +42,11 @@
 ### StartSe (IA)
 - URL: https://www.startse.com/noticias/ia/
 - Site query: `site:startse.com`
+
+### Brazil Journal (IA)
+- URL: https://braziljournal.com/
+- Site query: `site:braziljournal.com`
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ## Primária
 
@@ -144,6 +149,12 @@
 ### Evolving AI
 - URL: https://evolvingai.io/
 - Site query: `site:evolvingai.io`
+
+### VentureBeat (IA)
+- URL: https://venturebeat.com/category/ai/
+- Site query: `site:venturebeat.com`
+- RSS: https://venturebeat.com/category/ai/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ## Pesquisa
 
