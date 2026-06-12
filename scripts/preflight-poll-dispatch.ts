@@ -80,7 +80,6 @@ export function planSteps(
 
 export interface StepResult {
   exitCode: number;
-  stdout: string;
 }
 
 export interface StepOutcome {
@@ -129,11 +128,16 @@ export function decide(edition: string, outcomes: StepOutcome[]): PreflightDecis
   };
 }
 
-/** Mensagem de halt por exit code do smoke-test-vote (2 = 410, 3 = net). */
+/**
+ * Mensagem de halt por exit code do smoke-test-vote.
+ * exit 2 = Worker rejeitou (410 = edição fora de valid_editions, ou outro HTTP error)
+ * exit 3 = network/timeout
+ * exit 1 = args inválidos ou child interrompido por sinal
+ */
 function haltFor(edition: string, exitCode: number): { reason: string; action: string } {
   if (exitCode === 2) {
     return {
-      reason: `smoke-test-vote falhou (410) — edição ${edition} fora de valid_editions`,
+      reason: `smoke-test-vote falhou — Worker rejeitou o voto de teste (edição ${edition} possivelmente fora de valid_editions)`,
       action: `rode 'npx tsx scripts/add-valid-edition.ts --edition ${edition}', depois retente`,
     };
   }
@@ -143,10 +147,10 @@ function haltFor(edition: string, exitCode: number): { reason: string; action: s
       action: `verifique conectividade com o Worker de poll (poll.diaria.workers.dev) e retente`,
     };
   }
-  // exit 1 = args/env do smoke-test; null/sinal (child morto) também cai aqui.
+  // exit 1 = args inválidos ou child morto por sinal.
   return {
-    reason: `smoke-test-vote: erro inesperado (config/env ausente — POLL_SECRET? — ou child interrompido). Ver stderr acima.`,
-    action: `confira POLL_SECRET no .env e o log do smoke-test acima, depois retente`,
+    reason: `smoke-test-vote: erro inesperado (args inválidos ou child interrompido). Ver stderr acima.`,
+    action: `verifique o log do smoke-test acima e retente`,
   };
 }
 
@@ -184,7 +188,7 @@ const defaultRunner: StepRunner = (spec) => {
     // #1811: helper compartilhado (capture = pipa stdout pra parse).
     const stdout = runTsx(spec.script, spec.args, { cwd: ROOT, env: childEnv(), stdout: "capture" });
     if (stdout) process.stderr.write(stdout);
-    return { exitCode: 0, stdout: stdout ?? "" };
+    return { exitCode: 0 };
   } catch (e) {
     const err = e as { status?: number | null; stdout?: string | Buffer };
     const stdout =
@@ -195,7 +199,7 @@ const defaultRunner: StepRunner = (spec) => {
           : "";
     if (stdout) process.stderr.write(stdout);
     // status null (child morto por sinal) → trata como falha (1), conservador.
-    return { exitCode: typeof err.status === "number" ? err.status : 1, stdout };
+    return { exitCode: typeof err.status === "number" ? err.status : 1 };
   }
 };
 
@@ -249,7 +253,7 @@ function main(): void {
     console.error(
       "\n" +
         renderHaltBanner({
-          stage: "4 — Publicação (pré-dispatch poll)",
+          stage: "5 — Publicação (pré-dispatch poll)",
           reason: decision.haltReason ?? "poll preflight falhou",
           action: decision.haltAction ?? "corrija e retente",
         }),

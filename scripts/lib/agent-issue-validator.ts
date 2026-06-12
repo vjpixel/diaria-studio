@@ -13,8 +13,8 @@
  * Tipos validados:
  *   - `email:encoding_drop` — match texto "X" no HTML local; se presente
  *     com acentos corretos, é falso-positivo.
- *   - `email:poll_sig_missing` — verifica se `{{poll_sig}}` ou `sig=` está
- *     no HTML local.
+ *   - `email:poll_sig_missing` — verifica se `{{email}}` está na vote URL
+ *     do HTML local (#1186: merge-tag mode, sig= removido).
  *   - `email:vote_edition_malformed` — checa se `&edition={AAMMDD}` ou
  *     `?edition={AAMMDD}` aparecem corretamente no HTML.
  *   - `email:link_dead` (#2013) — re-verifica o link com HEAD (fallback GET)

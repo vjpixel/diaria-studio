@@ -48,7 +48,6 @@ describe("PublishedNewsletterSchema (#1132 P2.5)", () => {
       body_paste: {
         inserted: true,
         html_bytes: 29534,
-        has_poll_sig: true,
         has_imgA: true,
         has_imgB: true,
       },

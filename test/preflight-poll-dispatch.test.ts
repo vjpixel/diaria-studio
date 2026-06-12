@@ -21,17 +21,16 @@ import {
 } from "../scripts/preflight-poll-dispatch.ts";
 
 /**
- * Runner fake: registra a ordem dos passos e devolve exit codes + stdout
- * scriptados. `codes` mapeia step→exitCode; `stdouts` mapeia step→stdout JSON.
+ * Runner fake: registra a ordem dos passos e devolve exit codes scriptados.
+ * `codes` mapeia step→exitCode.
  */
 function fakeRunner(
   codes: Partial<Record<StepName, number>>,
-  stdouts: Partial<Record<StepName, string>> = {},
 ): { run: StepRunner; calls: StepName[] } {
   const calls: StepName[] = [];
   const run: StepRunner = (spec: StepSpec) => {
     calls.push(spec.name);
-    return { exitCode: codes[spec.name] ?? 0, stdout: stdouts[spec.name] ?? "" };
+    return { exitCode: codes[spec.name] ?? 0 };
   };
   return { run, calls };
 }
@@ -81,12 +80,14 @@ describe("preflight-poll-dispatch — resume direto pro Stage 5 (#1803)", () => 
     assert.equal(hasInjectStep, false, "inject-poll-sig ausente = merge-tag mode ativo");
   });
 
-  it("smoke-test 410 (exit 2) BLOQUEIA o envio — caso 260604", () => {
+  it("smoke-test exit 2 (Worker rejeitou) BLOQUEIA o envio — caso 260604", () => {
+    // Cobre 410 (edição inválida) e 403 (sig inválida — não deve ocorrer em
+    // merge-tag mode, mas smoke-test sai 2 pra qualquer HTTP error não-ok).
     const { run, calls } = fakeRunner({ "smoke-test-vote": 2 });
     const { decision } = runPreflight("260604", {}, run);
     assert.equal(decision.block, true, "deve bloquear o envio");
     assert.equal(decision.blockingStep, "smoke-test-vote");
-    assert.match(decision.haltReason ?? "", /valid_editions/);
+    assert.match(decision.haltReason ?? "", /valid_editions|rejeitou/);
     // ainda assim, o smoke-test foi executado (não foi pulado num resume)
     assert.ok(calls.includes("smoke-test-vote"));
   });
@@ -96,6 +97,23 @@ describe("preflight-poll-dispatch — resume direto pro Stage 5 (#1803)", () => 
     const { decision } = runPreflight("260604", {}, run);
     assert.equal(decision.block, true);
     assert.match(decision.haltReason ?? "", /network|timeout/i);
+  });
+
+  it("smoke-test exit 1 (args inválidos) não menciona POLL_SECRET (#1186)", () => {
+    // Regressão: antes do #1186, exit-1 sugeria "confira POLL_SECRET no .env".
+    // Pós-#1186, POLL_SECRET foi removido dos requisitos do smoke-test.
+    // A mensagem de halt não deve mais referenciar POLL_SECRET.
+    const { run } = fakeRunner({ "smoke-test-vote": 1 });
+    const { decision } = runPreflight("260604", {}, run);
+    assert.equal(decision.block, true);
+    assert.ok(
+      !(decision.haltReason ?? "").includes("POLL_SECRET"),
+      "halt reason não deve mencionar POLL_SECRET — foi removido em #1186",
+    );
+    assert.ok(
+      !(decision.haltAction ?? "").includes("POLL_SECRET"),
+      "halt action não deve mencionar POLL_SECRET — foi removido em #1186",
+    );
   });
 
   it("todos verdes → não bloqueia (ok=true)", () => {
