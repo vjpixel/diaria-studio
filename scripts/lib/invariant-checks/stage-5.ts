@@ -65,6 +65,9 @@ function checkFbTokenSet(): InvariantViolation[] {
  * (#971 com graceful degrade). Nome confirmado em
  * scripts/publish-linkedin.ts:305.
  *
+ * RESPONSABILIDADE ÚNICA (#2172): esta função checa APENAS PRESENÇA da env var.
+ * A verificação de esquema (HTTP vs HTTPS) foi extraída para checkLinkedinWorkerUrlHttps.
+ *
  * ASSIMETRIA INTENCIONAL DE SEVERIDADE (#2154 pass-2):
  * Stage-0 verifica a mesma env var com severity="error" (linkedin-cron-creds-set).
  * Aqui é "warning" porque Stage 5 é o momento de dispatch — se o var está ausente
@@ -88,21 +91,43 @@ function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
       },
     ];
   }
-  if (!/^https:\/\//.test(url)) {
-    return [
-      {
-        // #2154 pass-2: este rule id era ÓRFÃO — emitido pelo código mas não
-        // registrado em STAGE_5_RULES. Agora registrado como entry separada;
-        // o stage-5 rule "linkedin-worker-url-set" cobre o caso ausente,
-        // e "linkedin-worker-url-https" cobre o caso não-HTTPS.
-        rule: "linkedin-worker-url-https",
-        message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
-        source_issue: "#971",
-        severity: "error",
-      },
-    ];
-  }
   return [];
+}
+
+/**
+ * `DIARIA_LINKEDIN_CRON_URL`, quando presente, deve usar HTTPS.
+ * HTTP expõe o token Bearer em trânsito — erro de configuração (severity=error).
+ *
+ * RESPONSABILIDADE ÚNICA (#2172): esta função checa APENAS O ESQUEMA.
+ * Quando a URL está ausente, retorna [] sem emitir violation — checkLinkedinWorkerUrlSet
+ * cuida do caso "ausente". As duas funções cobrem subconjuntos disjuntos do espaço
+ * de estados, eliminando o double-report que ocorria quando ambas as entries de
+ * STAGE_5_RULES chamavam checkLinkedinWorkerUrlSet (que emitia linkedin-worker-url-https
+ * no ramo não-HTTPS).
+ */
+function checkLinkedinWorkerUrlHttps(): InvariantViolation[] {
+  const raw = process.env.DIARIA_LINKEDIN_CRON_URL;
+  // Ausente → não emite; checkLinkedinWorkerUrlSet cuida disso.
+  // #2172 finding 8: extrair trimmedUrl uma vez (evita dupla leitura + guard duplicado).
+  const url = raw?.trim() ?? "";
+  if (!url) return [];
+  // #2172 finding 1+2: testar o valor trimado + flag /i para case-insensitive (RFC 3986).
+  if (/^https:\/\//i.test(url)) return [];
+  // #2172 finding 3: mascarar userinfo (user:token@host) para não vazar credencial na mensagem.
+  let safeScheme: string;
+  try {
+    safeScheme = new URL(url).protocol; // ex: "http:"
+  } catch {
+    safeScheme = url.split(":")[0] + ":"; // fallback se URL malformada
+  }
+  return [
+    {
+      rule: "linkedin-worker-url-https",
+      message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, esquema recebido: "${safeScheme}"`,
+      source_issue: "#971",
+      severity: "error",
+    },
+  ];
 }
 
 /**
@@ -634,6 +659,11 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: () => checkFbTokenSet(),
   },
   {
+    // #2172: checkLinkedinWorkerUrlSet agora checa APENAS PRESENÇA (split de
+    // responsabilidade). A verificação de esquema HTTP/HTTPS foi extraída para
+    // checkLinkedinWorkerUrlHttps + entry separada abaixo. Antes do fix, ambas
+    // as entries chamavam checkLinkedinWorkerUrlSet, que emitia linkedin-worker-url-https
+    // no ramo não-HTTPS — resultando em double-report (2 violations com o mesmo id).
     id: "linkedin-worker-url-set",
     description: "DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971)",
     source_issue: "#971",
@@ -641,32 +671,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: () => checkLinkedinWorkerUrlSet(),
   },
   {
-    // #2154 pass-2: rule id linkedin-worker-url-https era ÓRFÃO — emitido por
-    // checkLinkedinWorkerUrlSet (ramo não-HTTPS) mas não registrado aqui,
-    // então list-invariants.ts e docs/editorial-invariants.md não o listavam.
-    // Registrado como entry separada: mesmo run fn (que pode emitir qualquer
-    // dos dois ids dependendo do estado), mas descrição diferente pro docs.
-    // Alternativa seria consolidar em 1 id — mas isso exigiria mudar testes
-    // existentes que assertam v[0].rule === "linkedin-worker-url-https" pelo nome.
+    // #2172: checkLinkedinWorkerUrlHttps checa APENAS O ESQUEMA (HTTPS vs HTTP).
+    // Quando URL ausente retorna [] — checkLinkedinWorkerUrlSet cuida do ausente.
+    // Cada entry agora emite exatamente 1 rule id pro seu caso (zero sobreposição).
     id: "linkedin-worker-url-https",
     description: "DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971)",
     source_issue: "#971",
     stage: 5,
-    run: () => {
-      // Só ativa quando URL está presente mas não é HTTPS.
-      // O ramo "ausente" é coberto por linkedin-worker-url-set acima.
-      const url = process.env.DIARIA_LINKEDIN_CRON_URL;
-      if (!url || url.trim().length === 0) return [];
-      if (/^https:\/\//.test(url)) return [];
-      return [
-        {
-          rule: "linkedin-worker-url-https",
-          message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
-          source_issue: "#971",
-          severity: "error",
-        },
-      ];
-    },
+    run: () => checkLinkedinWorkerUrlHttps(),
   },
   {
     id: "linkedin-worker-token-set",
@@ -700,6 +712,7 @@ export {
   checkFbPageIdSet,
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,
+  checkLinkedinWorkerUrlHttps,
   checkCloudflareTokenSet,
   // #2154 pass-2: checkConsentBinding agora vive exclusivamente aqui (stage-5).
   // A cópia órfã de stage-4 foi removida; testes redirecionados pra cá.
