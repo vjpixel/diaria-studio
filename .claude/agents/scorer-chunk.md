@@ -31,6 +31,7 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
      - `affinity 0.1–0.39` → **+0 pontos**
      - `affinity < 0.1` → **−5 pontos**
      - **SEM `audience_affinity`** → comportamento padrão inalterado (sem bônus/penalidade).
+   - **Tutorial hands-on curto (`use_melhor` — #2143)** — se o artigo está no bucket `use_melhor` E `audience_affinity.matched` contém `"hands_on:true"`, aplicar **+8 pontos** adicionais (cumulativo com o bônus de `affinity`). Critério: tutorial completável em ≤2h, com passos concretos (passo a passo / step-by-step), scope fechado e/ou ferramenta consumer sem setup cloud/IAM/API-key obrigatório. **Exemplos aprovados pelo editor (260612):** guia PT-BR de NotebookLM, vídeo OpenAI Academy para docentes, Transformers.js (navegador, sem key), Scikit-LLM (Python básico ~1h). **Exemplos reprovados:** AWS Bedrock, LangSmith, Agent-EvalKit (requerem conta cloud/IAM ou agente em produção). Se `audience_affinity` não existir ou não contiver `"hands_on:true"`, sem bônus nem penalidade.
 
    Pontue cada artigo **pelo seu mérito absoluto**, não em relação aos outros do chunk — assim os scores são comparáveis entre chunks no merge.
 
