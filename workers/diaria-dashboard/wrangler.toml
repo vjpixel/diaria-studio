@@ -7,13 +7,11 @@ workers_dev = true
 # O script build-diaria-dashboard-data.ts --push faz o push pro KV.
 
 # KV namespace para o JSON de dados agregados.
-# Setup pelo editor:
-#   wrangler kv:namespace create DASHBOARD_DATA
-# Depois substituir os ids abaixo pelo id retornado.
+# Namespace DASHBOARD_DATA criado em 2026-06-12 (overnight 260612, deploy do #2132).
 [[kv_namespaces]]
 binding = "DASHBOARD_DATA"
-id = "PLACEHOLDER_DASHBOARD_KV_ID"
-preview_id = "PLACEHOLDER_DASHBOARD_KV_ID"
+id = "4610c3016818483cab141f459a963de3"
+preview_id = "4610c3016818483cab141f459a963de3"
 
 # Build step: gera ds-tokens.generated.ts a partir da fonte canônica do DS.
 # Mesmo padrão do brevo-dashboard (#2107).
