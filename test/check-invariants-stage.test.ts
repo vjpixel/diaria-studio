@@ -116,11 +116,11 @@ describe("Stage 0 invariants", () => {
   });
 
   // #1370 — todas as keys são hard halt (severity: error) per editor decision 2026-05-19
+  // #1186 — POLL_SECRET removido do check poll-secrets-set (modo merge-tag, sem sig HMAC)
   const KEY_RULES: Array<{ rule: string; env: string; messageRe: RegExp }> = [
     { rule: "clarice-key-set", env: "CLARICE_API_KEY", messageRe: /CLARICE_API_KEY/ },
     { rule: "linkedin-cron-creds-set", env: "DIARIA_LINKEDIN_CRON_URL", messageRe: /DIARIA_LINKEDIN_CRON_URL/ },
     { rule: "linkedin-cron-creds-set", env: "DIARIA_LINKEDIN_CRON_TOKEN", messageRe: /DIARIA_LINKEDIN_CRON_TOKEN/ },
-    { rule: "poll-secrets-set", env: "POLL_SECRET", messageRe: /POLL_SECRET/ },
     { rule: "poll-secrets-set", env: "ADMIN_SECRET", messageRe: /ADMIN_SECRET/ },
   ];
 
@@ -140,6 +140,27 @@ describe("Stage 0 invariants", () => {
       }
     });
   }
+
+  it("poll-secrets-set NÃO falha quando POLL_SECRET ausente (#1186 — merge-tag mode, POLL_SECRET removido)", () => {
+    // Regressão: antes de #1186, POLL_SECRET ausente bloqueava pipeline.
+    // Em modo merge-tag, POLL_SECRET não é mais necessário.
+    const originalPoll = process.env.POLL_SECRET;
+    const originalAdmin = process.env.ADMIN_SECRET;
+    delete process.env.POLL_SECRET;
+    // Garantir que ADMIN_SECRET está presente (para não misturar causas)
+    process.env.ADMIN_SECRET = "test-secret";
+    try {
+      const rule = STAGE_0_RULES.find((r) => r.id === "poll-secrets-set")!;
+      const v = rule.run("");
+      const pollSecretViolation = v.find((x) => /POLL_SECRET/.test(x.message));
+      assert.ok(!pollSecretViolation, "#1186 — POLL_SECRET removido, ausência não deve gerar violation");
+    } finally {
+      if (originalPoll !== undefined) process.env.POLL_SECRET = originalPoll;
+      else delete process.env.POLL_SECRET;
+      if (originalAdmin !== undefined) process.env.ADMIN_SECRET = originalAdmin;
+      else delete process.env.ADMIN_SECRET;
+    }
+  });
 
   it("image-generator-key-set falha quando gemini config + GEMINI_API_KEY ausente (#1370)", () => {
     const original = process.env.GEMINI_API_KEY;

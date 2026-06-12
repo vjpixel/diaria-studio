@@ -1,15 +1,13 @@
 /**
- * prep-manual-publish.ts (#1047, refatorado em #1185)
+ * prep-manual-publish.ts (#1047, refatorado em #1185, simplificado em #1186)
  *
  * Gate técnico antes de publicação manual no Beehiiv. Valida pré-condições
  * e imprime instruções step-by-step pra paste + publish + close-poll.
  *
- * Histórico: o script original (#1044/#1047) rodava `inject-poll-urls.ts` pra
- * popular custom fields `{{poll_a_url}}` / `{{poll_b_url}}` em cada subscriber.
- * Desde #1083 o HTML usa `{{poll_sig}}` + `{{email}}` inline — `poll_sig` é
- * HMAC permanente do email, populado 1x por subscriber pelo `inject-poll-sig.ts`
- * (Stage 0 § 0d.ter, com janela 96h). Não há mais necessidade de inject
- * per-edição. Esta versão drop o passo + o check dos fields órfãos.
+ * Desde #1186, a URL de voto usa modo merge-tag (`{{email}}` sem sig HMAC) —
+ * `inject-poll-sig.ts` foi removido. As pré-condições agora são:
+ *   1. newsletter-final.html existe e tem merge tag `{{email}}`
+ *   2. Worker de poll está respondendo
  *
  * Uso:
  *   npx tsx scripts/prep-manual-publish.ts --edition 260510
@@ -36,40 +34,6 @@ interface Check {
   name: string;
   passed: boolean;
   detail: string;
-}
-
-interface BeehiivCustomField {
-  id: string;
-  display: string;
-  kind: string;
-}
-
-async function listCustomFields(opts: {
-  publicationId: string;
-  apiKey: string;
-}): Promise<string[]> {
-  // Pagina via cursor pra cobrir publications com >100 fields.
-  const baseUrl = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/custom_fields`;
-  const all: string[] = [];
-  let cursor: string | undefined;
-  while (true) {
-    const params = new URLSearchParams({ limit: "100" });
-    if (cursor) params.set("cursor", cursor);
-    const res = await fetch(`${baseUrl}?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${opts.apiKey}` },
-    });
-    if (!res.ok)
-      throw new Error(`Beehiiv API ${res.status}: ${await res.text()}`);
-    const json = (await res.json()) as {
-      data?: BeehiivCustomField[];
-      has_more?: boolean;
-      next_cursor?: string;
-    };
-    for (const f of json.data ?? []) all.push(f.display);
-    if (!json.has_more || !json.next_cursor) break;
-    cursor = json.next_cursor;
-  }
-  return all;
 }
 
 interface BeehiivPostListItem {
@@ -149,52 +113,22 @@ export function checkNewsletterHtml(editionDir: string): Check {
     };
   }
   const html = readFileSync(path, "utf8");
-  // Design atual (#1083, permanente): URL inline com merge tags
-  // `{{email}}` (reserved field) + `{{poll_sig}}` (custom field HMAC).
-  // Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
-  const hasInlineSig =
-    /\{\{email\}\}/.test(html) && /\{\{poll_sig\}\}/.test(html);
-  if (!hasInlineSig) {
+  // Design atual (#1186): URL inline com merge tag `{{email}}` (modo merge-tag,
+  // sem sig HMAC). Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
+  const hasEmailMergeTag = /\{\{email\}\}/.test(html);
+  if (!hasEmailMergeTag) {
     return {
-      name: "newsletter-final.html tem merge tags inline ({{email}} + {{poll_sig}})",
+      name: "newsletter-final.html tem merge tag {{email}}",
       passed: false,
-      detail: `Design atual requer URL inline com poll_sig (desde #1083). Re-rodar render-newsletter-html.ts.`,
+      detail: `Design atual requer URL inline com {{email}} (modo merge-tag, #1186). Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);
   return {
     name: "newsletter-final.html",
     passed: true,
-    detail: `${sizeKb}KB, inline URL + poll_sig`,
+    detail: `${sizeKb}KB, inline URL com {{email}} (merge-tag mode)`,
   };
-}
-
-async function checkCustomFields(opts: {
-  publicationId: string;
-  apiKey: string;
-}): Promise<Check> {
-  try {
-    const fields = await listCustomFields(opts);
-    const hasSig = fields.includes("poll_sig");
-    if (!hasSig) {
-      return {
-        name: "custom field poll_sig",
-        passed: false,
-        detail: `poll_sig ausente na publicação. inject-poll-sig.ts cria automaticamente — rode 'npx tsx scripts/inject-poll-sig.ts --since-hours 96' (idempotente).`,
-      };
-    }
-    return {
-      name: "custom field Beehiiv",
-      passed: true,
-      detail: `poll_sig existe (${fields.length} fields total)`,
-    };
-  } catch (e) {
-    return {
-      name: "custom field Beehiiv",
-      passed: false,
-      detail: `erro consultando API: ${(e as Error).message}`,
-    };
-  }
 }
 
 async function checkWorker(edition: string): Promise<Check> {
@@ -267,7 +201,6 @@ async function main(): Promise<void> {
   // Run all checks
   const checks: Check[] = [
     checkNewsletterHtml(editionDir),
-    await checkCustomFields(apiOpts),
     await checkWorker(edition),
   ];
   const allPassed = printChecks(checks);

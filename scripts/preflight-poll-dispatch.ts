@@ -1,31 +1,22 @@
 /**
- * preflight-poll-dispatch.ts (#1803)
+ * preflight-poll-dispatch.ts (#1803, simplificado em #1186)
  *
  * Gate determinístico de poll que roda ANTES do envio da newsletter, em
  * QUALQUER entry path (incl. resume direto pro Stage 4 pós-compactação).
  *
  * Resolve o P1 #1803: num resume que entra pelo dispatch, os passos de
- * manutenção de poll do Stage 0 (§0d.bis maintain-valid-editions, §0d.ter
- * inject-poll-sig) não rodam, e o "É IA?" quebra ao vivo (410 "não aceita
- * mais votos" / 403 "sig inválida") pra todos os subscribers — silenciosamente.
- * O smoke-test antigo (§4h-bis) só rodava DEPOIS do envio, tarde demais.
+ * manutenção de poll do Stage 0 (§0d.bis maintain-valid-editions) não rodam,
+ * e o "É IA?" quebra ao vivo (410 "não aceita mais votos") pra todos os
+ * subscribers — silenciosamente. O smoke-test antigo (§4h-bis) só rodava
+ * DEPOIS do envio, tarde demais.
  *
- * Estratégia: best-effort FIX primeiro (idempotente, warn-only), depois
- * VERIFY como gate duro:
+ * Desde #1186, a URL de voto usa modo merge-tag (sem sig) — `inject-poll-sig`
+ * foi removido. O preflight agora roda apenas 2 passos:
  *   1. maintain-valid-editions-window --current {ed}  (garante ed no set; warn)
- *   2. inject-poll-sig --since-hours 96               (garante poll_sig; warn)
- *   3. smoke-test-vote --edition {ed}                 (HARD GATE — bloqueia envio)
+ *   2. smoke-test-vote --edition {ed}                 (HARD GATE — bloqueia envio)
  *
- * Os dois primeiros são best-effort: se falharem (KV transiente, Beehiiv 5xx),
- * loga warn e segue — o smoke-test é a fonte de verdade pro caso 410.
- *
- * Cobertura do 403 (poll_sig): o smoke-test vota como o EDITOR, cujo poll_sig é
- * permanente — então ele NÃO detecta novos subscribers sem poll_sig (causa do
- * 403). Por isso o output do inject-poll-sig é parseado: se `failed > 0` na
- * janela, emitimos um warning explícito de risco-403 (sem bloquear — §0d.ter
- * aceita que uma minoria de subs muito novos fique sem sig; bloquear 482 envios
- * por isso seria pior). Bloquear o 403 inteiro exigiria verificar o custom field
- * de um subscriber real — deferido pra #1803-followup.
+ * O primeiro é best-effort: se falhar (KV transiente), loga warn e segue —
+ * o smoke-test é a fonte de verdade pro caso 410.
  *
  * Uso:
  *   npx tsx scripts/preflight-poll-dispatch.ts --edition 260604
@@ -50,7 +41,6 @@ loadProjectEnv(); // carrega .env/.env.local antes de qualquer leitura de proces
 
 export type StepName =
   | "maintain-valid-editions"
-  | "inject-poll-sig"
   | "smoke-test-vote";
 
 export interface StepSpec {
@@ -62,26 +52,21 @@ export interface StepSpec {
 }
 
 /**
- * Ordem fixa: FIX idempotente (maintain + inject, warn-only) → VERIFY (smoke,
+ * Ordem fixa: FIX idempotente (maintain, warn-only) → VERIFY (smoke,
  * gate duro). Pura — sem efeitos colaterais, testável.
+ *
+ * #1186: inject-poll-sig removido — URL de voto usa modo merge-tag (sem sig).
  */
 export function planSteps(
   edition: string,
-  opts: { windowDays?: number; sinceHours?: number } = {},
+  opts: { windowDays?: number } = {},
 ): StepSpec[] {
   const windowDays = opts.windowDays ?? 7;
-  const sinceHours = opts.sinceHours ?? 96;
   return [
     {
       name: "maintain-valid-editions",
       script: "scripts/maintain-valid-editions-window.ts",
       args: ["--current", edition, "--window-days", String(windowDays)],
-      blocking: false,
-    },
-    {
-      name: "inject-poll-sig",
-      script: "scripts/inject-poll-sig.ts",
-      args: ["--since-hours", String(sinceHours)],
       blocking: false,
     },
     {
@@ -95,8 +80,6 @@ export function planSteps(
 
 export interface StepResult {
   exitCode: number;
-  /** stdout capturado do child (pra parsear o JSON do inject-poll-sig). */
-  stdout: string;
 }
 
 export interface StepOutcome {
@@ -145,12 +128,17 @@ export function decide(edition: string, outcomes: StepOutcome[]): PreflightDecis
   };
 }
 
-/** Mensagem de halt por exit code do smoke-test-vote (2 = 410/403, 3 = net). */
+/**
+ * Mensagem de halt por exit code do smoke-test-vote.
+ * exit 2 = Worker rejeitou (410 = edição fora de valid_editions, ou outro HTTP error)
+ * exit 3 = network/timeout
+ * exit 1 = args inválidos ou child interrompido por sinal
+ */
 function haltFor(edition: string, exitCode: number): { reason: string; action: string } {
   if (exitCode === 2) {
     return {
-      reason: `smoke-test-vote falhou (410/403) — edição ${edition} fora de valid_editions OU sig HMAC inválida`,
-      action: `rode 'npx tsx scripts/add-valid-edition.ts --edition ${edition}' (e confira POLL_SECRET no .env), depois retente`,
+      reason: `smoke-test-vote falhou — Worker rejeitou o voto de teste (edição ${edition} possivelmente fora de valid_editions)`,
+      action: `rode 'npx tsx scripts/add-valid-edition.ts --edition ${edition}', depois retente`,
     };
   }
   if (exitCode === 3) {
@@ -159,36 +147,18 @@ function haltFor(edition: string, exitCode: number): { reason: string; action: s
       action: `verifique conectividade com o Worker de poll (poll.diaria.workers.dev) e retente`,
     };
   }
-  // exit 1 = args/env do smoke-test; null/sinal (child morto) também cai aqui.
+  // exit 1 = args inválidos ou child morto por sinal.
   return {
-    reason: `smoke-test-vote: erro inesperado (config/env ausente — POLL_SECRET? — ou child interrompido). Ver stderr acima.`,
-    action: `confira POLL_SECRET no .env e o log do smoke-test acima, depois retente`,
+    reason: `smoke-test-vote: erro inesperado (args inválidos ou child interrompido). Ver stderr acima.`,
+    action: `verifique o log do smoke-test acima e retente`,
   };
-}
-
-/**
- * Detecta risco de 403 pra novos subscribers a partir do JSON do inject-poll-sig.
- * O inject sai com exit 0 mesmo com `failed > 0` (patch parcial) — então o sinal
- * só aparece no output. Retorna a contagem de patches que falharam, ou null.
- */
-export function parseInjectFailed(stdout: string): { failed: number; inWindow: number } | null {
-  try {
-    const j = JSON.parse(stdout);
-    const failed = typeof j.failed === "number" ? j.failed : 0;
-    if (failed > 0) {
-      return { failed, inWindow: typeof j.in_window === "number" ? j.in_window : 0 };
-    }
-  } catch {
-    // output não-JSON (ex: child morreu antes de imprimir) → sem sinal confiável.
-  }
-  return null;
 }
 
 export type StepRunner = (spec: StepSpec) => StepResult;
 
 /**
  * Resolve BEEHIIV_PUBLICATION_ID do platform.config.json se ausente no env —
- * inject-poll-sig.ts precisa dele e ele NÃO mora no .env (§0d.ter exporta na mão).
+ * alguns scripts de preflight precisam dele e ele pode não estar no .env.
  */
 function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -218,7 +188,7 @@ const defaultRunner: StepRunner = (spec) => {
     // #1811: helper compartilhado (capture = pipa stdout pra parse).
     const stdout = runTsx(spec.script, spec.args, { cwd: ROOT, env: childEnv(), stdout: "capture" });
     if (stdout) process.stderr.write(stdout);
-    return { exitCode: 0, stdout: stdout ?? "" };
+    return { exitCode: 0 };
   } catch (e) {
     const err = e as { status?: number | null; stdout?: string | Buffer };
     const stdout =
@@ -229,37 +199,33 @@ const defaultRunner: StepRunner = (spec) => {
           : "";
     if (stdout) process.stderr.write(stdout);
     // status null (child morto por sinal) → trata como falha (1), conservador.
-    return { exitCode: typeof err.status === "number" ? err.status : 1, stdout };
+    return { exitCode: typeof err.status === "number" ? err.status : 1 };
   }
 };
 
 export interface PreflightRun {
   decision: PreflightDecision;
   outcomes: StepOutcome[];
-  /** risco de 403 detectado no inject (patch parcial) — null se ok. */
-  pollSigRisk: { failed: number; inWindow: number } | null;
 }
 
 /**
- * Roda os 3 passos em ordem (sem short-circuit nos best-effort — queremos que
+ * Roda os 2 passos em ordem (sem short-circuit no best-effort — queremos que
  * o smoke-test rode SEMPRE) e devolve a decisão. `run` é injetável pra teste.
+ *
+ * #1186: inject-poll-sig removido — URL de voto usa modo merge-tag (sem sig).
  */
 export function runPreflight(
   edition: string,
-  opts: { windowDays?: number; sinceHours?: number } = {},
+  opts: { windowDays?: number } = {},
   run: StepRunner = defaultRunner,
 ): PreflightRun {
   const specs = planSteps(edition, opts);
   const outcomes: StepOutcome[] = [];
-  let pollSigRisk: { failed: number; inWindow: number } | null = null;
   for (const spec of specs) {
-    const { exitCode, stdout } = run(spec);
+    const { exitCode } = run(spec);
     outcomes.push({ name: spec.name, exitCode, blocking: spec.blocking });
-    if (spec.name === "inject-poll-sig") {
-      pollSigRisk = parseInjectFailed(stdout);
-    }
   }
-  return { decision: decide(edition, outcomes), outcomes, pollSigRisk };
+  return { decision: decide(edition, outcomes), outcomes };
 }
 
 function main(): void {
@@ -271,10 +237,10 @@ function main(): void {
   }
 
   console.error(
-    `[preflight-poll-dispatch] ${edition}: maintain-valid-editions → inject-poll-sig → smoke-test-vote (gate duro)`,
+    `[preflight-poll-dispatch] ${edition}: maintain-valid-editions → smoke-test-vote (gate duro)`,
   );
-  const { decision, outcomes, pollSigRisk } = runPreflight(edition);
-  console.log(JSON.stringify({ edition, outcomes, decision, pollSigRisk }, null, 2));
+  const { decision, outcomes } = runPreflight(edition);
+  console.log(JSON.stringify({ edition, outcomes, decision }, null, 2));
 
   if (decision.warnings.length) {
     console.error(
@@ -282,19 +248,12 @@ function main(): void {
         `smoke-test-vote é autoritativo pro caso 410 e passou.`,
     );
   }
-  if (pollSigRisk) {
-    console.error(
-      `[preflight-poll-dispatch] ⚠️ RISCO 403: inject-poll-sig falhou em ${pollSigRisk.failed} de ${pollSigRisk.inWindow} subscribers da janela — ` +
-        `eles podem receber a newsletter com poll_sig vazio e levar 403 ao votar. ` +
-        `Considere re-rodar 'npx tsx scripts/inject-poll-sig.ts --since-hours 96' antes de enviar.`,
-    );
-  }
 
   if (decision.block) {
     console.error(
       "\n" +
         renderHaltBanner({
-          stage: "4 — Publicação (pré-dispatch poll)",
+          stage: "5 — Publicação (pré-dispatch poll)",
           reason: decision.haltReason ?? "poll preflight falhou",
           action: decision.haltAction ?? "corrija e retente",
         }),

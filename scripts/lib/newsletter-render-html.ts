@@ -51,10 +51,9 @@ const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção 
 const FONT_HEADING = FONTS.serif;
 const FONT_BODY = FONTS.sans;
 const FONT_LABEL = FONTS.sans;
-// #1083: URL montada inline com edition literal + merge tags Beehiiv
-// (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
-// HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
-// Sintaxe Beehiiv: SEM espaços, SEM prefix `subscriber.` ou `custom_fields.`
+// #1186: URL montada inline com edition literal + merge tag Beehiiv `{{email}}`
+// (reserved field). Modo merge-tag — sem sig HMAC por subscriber.
+// inject-poll-sig.ts foi removido. Sintaxe Beehiiv: SEM espaços, SEM prefix.
 // (validado contra docs oficiais 2026-05-11).
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 
@@ -484,7 +483,7 @@ export function renderEIA(eia: EIA): string {
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
-    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
+    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // DS: imagens A/B lado a lado, poll-col empilha no mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, side: "a" | "b") => {
     const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;

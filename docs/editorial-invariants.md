@@ -25,7 +25,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `linkedin-cron-creds-set` | DIARIA_LINKEDIN_CRON_URL + TOKEN presentes (#1370) | #1370 |
 | `mcp-binaries-exist` | stdio MCPs em .mcp.json apontam pra binários que existem (#1382) | #1382 |
 | `past-editions-raw-parseable` | data/past-editions-raw.json existe e parseável (#162) | #162 |
-| `poll-secrets-set` | POLL_SECRET + ADMIN_SECRET presentes (#1370) | #1370 |
+| `poll-secrets-set` | ADMIN_SECRET presente (#1370, #1186: POLL_SECRET removido — modo merge-tag) | #1370 |
 
 ## Stage 1 — Pesquisa
 

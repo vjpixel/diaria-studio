@@ -2,17 +2,21 @@
 
 **Issue tracker**: [#1082](https://github.com/vjpixel/diaria-studio/issues/1082)
 
+> **#1186 (2026-06-12):** O diário migrou para **modo merge-tag** — a URL de voto usa `{{email}}` sem `&sig=`. `inject-poll-sig.ts` foi removido.
+>
+> **Este runbook ainda é necessário para o ADMIN_SECRET** (usado por `close-poll.ts` via `/admin/correct`). A seção de `inject-poll-sig` (Steps 4 e pós-rotação) ficou histórica. `POLL_SECRET` ainda existe no Worker (o caminho assinado está dormiente), então a rotação periódica é prudente para o Worker, mas `inject-poll-sig.ts` não precisa mais ser rodado.
+
 ## Quando rodar
 
-- **Cadência sugerida:** semestral (junho + dezembro).
-- **Trigger emergencial:** se houver indício de vazamento (sig HMAC em screenshot público, log compartilhado, etc).
-- **Janela ideal:** fim de mês quando a edição é leve. Evitar primeiro dia útil — leitores podem clicar links antigos da edição anterior nas primeiras horas pós-rotação.
+- **ADMIN_SECRET:** sempre que houver suspeita de vazamento.
+- **POLL_SECRET (Worker):** semestral (prudência, path dormiente). Não precisa re-rodar `inject-poll-sig.ts` após a rotação — o diário usa merge-tag.
+- **Janela ideal:** fim de mês quando a edição é leve. Evitar primeiro dia útil.
 
 ## Por que rotar
 
-`POLL_SECRET` assina `HMAC(secret, email)` que vira o `poll_sig` permanente do subscriber (#1083). Se vazar, atacante consegue votar como o subscriber em **qualquer edição futura** até o secret ser trocado.
+`POLL_SECRET` assina `HMAC(secret, email)` no Worker (path dormiente no diário desde #1186). Se vazar, o impacto é limitado (1 voto por edição por subscriber, sem prêmio real).
 
-Mitigação imediata: server enforça 1 vote per `(email, edition)` via `vote:{edition}:{email}` em KV, então blast radius máximo é 1 voto por edição por subscriber comprometido. Aceitável pra concurso editorial sem prêmio sério, mas o risco cresce com o tempo.
+`ADMIN_SECRET` autentica `close-poll.ts` (`/admin/correct`) — mais crítico para a integridade do gabarito.
 
 ## Pré-requisitos
 
@@ -53,25 +57,17 @@ Confirmação: `wrangler` mostra `Success! Uploaded secret POLL_SECRET`.
 CLOUDFLARE_ACCOUNT_ID=5d15d8303325211d6976d73051f4b002 npx wrangler deploy
 ```
 
-A partir deste momento URLs assinadas com o secret antigo vão falhar com 403 "Link inválido ou expirado". Subscribers com `poll_sig` populado no Beehiiv (gerado pelo secret antigo) precisam ser re-patchados no Step 4.
+A partir deste momento URLs assinadas com o secret antigo vão falhar com 403 "Link inválido ou expirado". Como o diário usa modo merge-tag desde #1186, isso afeta apenas o caminho assinado do Worker (dormiente) — não há impacto em leitores atuais.
 
-### 4. Re-rodar inject-poll-sig
+### 4. ~~Re-rodar inject-poll-sig~~ (HISTÓRICO — não executar)
 
-Na raiz do repo:
-```bash
-cd ../../  # voltar pra raiz se estiver em workers/poll
-BEEHIIV_API_KEY=... \
-BEEHIIV_PUBLICATION_ID=... \
-POLL_SECRET="$POLL_SECRET_NEW" \
-  npx tsx scripts/inject-poll-sig.ts --force
-```
+> **#1186:** `inject-poll-sig.ts` foi removido. O diário usa modo merge-tag
+> (`{{email}}` sem sig HMAC) — não há `poll_sig` por subscriber no Beehiiv.
+> Este step é histórico e não deve ser executado.
 
-`--force` faz patch em todos os subscribers (não só novos das últimas 96h). Importante: o script faz uma chamada Beehiiv API por subscriber. Em produção com ~500 subscribers, leva ~1-2min.
-
-Output esperado:
-```
-[inject-poll-sig] patched 487/487 subscribers
-```
+Assinantes que votavam via URL assinada (pré-#1186) deixaram de receber
+sig nas novas edições. A rotação do POLL_SECRET afeta apenas o caminho
+assinado do Worker, que está dormiente desde #1186.
 
 ### 5. Update `.env` local
 
@@ -79,8 +75,6 @@ Output esperado:
 # Editar .env e substituir POLL_SECRET pelo novo valor
 nano .env  # ou seu editor preferido
 ```
-
-Necessário pra runs futuras de `inject-poll-sig.ts` (Stage 0 §0d.ter) usarem o secret novo.
 
 ### 6. Smoke test
 
@@ -119,15 +113,14 @@ unset POLL_SECRET_NEW POLL_SECRET_OLD
 
 ## Pós-rotação
 
-- Editores que tinham `inject-poll-sig.ts` rodando manualmente precisam pegar o secret novo do `.env`.
-- Stage 0 §0d.ter da pipeline (`/diaria-edicao`) usa env local — `.env` atualizado no Step 5 cobre isso automaticamente.
-- Subscribers que clicaram URL antiga nas primeiras horas pós-rotação verão 403 — comportamento esperado. Se quiser ser educado, abrir nota na edição da semana avisando "links de edições passadas foram desativados por manutenção de segurança".
+- Subscribers que clicaram URL assinada (pré-#1186) nas primeiras horas pós-rotação verão 403 — comportamento esperado para path dormiente. Edições atuais usam merge-tag e não são afetadas.
+- `.env` atualizado no Step 5 é suficiente — não há scripts de inject pra re-rodar.
 
 ## Rollback
 
-**Se algo der errado entre Step 3 (deploy) e Step 4 (inject):** voto novo falha pra todos, mas vote dedup ainda funciona. Não há corrupção de dados.
+**Se algo der errado no Step 3 (deploy):** o path assinado do Worker fica inconsistente, mas o diário usa merge-tag (sem sig) — leitores atuais não são afetados.
 
-**Rollback completo:** repetir Steps 2-4 com o secret antigo (precisa ter guardado em algum lugar — manter o velho em backup encriptado, NUNCA em git, durante ~24h após rotação pra emergência).
+**Rollback completo:** repetir Steps 2-3 com o secret antigo (manter o velho em backup encriptado, NUNCA em git, durante ~24h após rotação pra emergência).
 
 ## Próxima rotação
 

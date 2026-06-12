@@ -13,8 +13,8 @@
  * Tipos validados:
  *   - `email:encoding_drop` — match texto "X" no HTML local; se presente
  *     com acentos corretos, é falso-positivo.
- *   - `email:poll_sig_missing` — verifica se `{{poll_sig}}` ou `sig=` está
- *     no HTML local.
+ *   - `email:poll_sig_missing` — verifica se `{{email}}` está na vote URL
+ *     do HTML local (#1186: merge-tag mode, sig= removido).
  *   - `email:vote_edition_malformed` — checa se `&edition={AAMMDD}` ou
  *     `?edition={AAMMDD}` aparecem corretamente no HTML.
  *   - `email:link_dead` (#2013) — re-verifica o link com HEAD (fallback GET)
@@ -80,17 +80,22 @@ export function isEncodingDropFalsePositive(
 }
 
 /**
- * Pure: decide se uma issue `email:poll_sig_missing` é falso-positivo
- * verificando que `{{poll_sig}}` (merge tag) OU `sig=` (URL param) está
- * no HTML local.
+ * Pure: decide se uma issue `email:poll_sig_missing` é falso-positivo.
+ *
+ * #1186: modo merge-tag — a URL de voto NÃO tem mais `sig=`. O check agora
+ * só verifica se a URL de voto tem `{{email}}` (merge-tag suficiente).
+ * Historicamente verificava `{{poll_sig}}` — esse campo foi removido do diário.
  */
 export function isPollSigMissingFalsePositive(
   htmlLocal: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
-  if (htmlLocal.includes("{{poll_sig}}") || htmlLocal.includes("&sig=") || htmlLocal.includes("?sig=")) {
+  // #1186: sem sig= na URL — mode merge-tag. Issue poll_sig_missing é sempre
+  // falso-positivo agora (a URL sem sig é by-design). Ainda verifica {{email}}
+  // pra confirmar que a vote URL existe.
+  if (htmlLocal.includes("{{email}}")) {
     return {
       falsePositive: true,
-      reason: "poll_sig_missing falso-positivo: {{poll_sig}} ou sig= presente no HTML local",
+      reason: "poll_sig_missing falso-positivo: modo merge-tag (#1186) — sig removido, {{email}} presente na vote URL",
     };
   }
   return { falsePositive: false };
@@ -169,21 +174,23 @@ export function isItalicMissingFalsePositive(
 
 /**
  * #1949: reclamação de merge tag inline não expandida é falso-positivo — `{{email}}`
- * e `{{poll_sig}}` são inline POR DESIGN (#1083), o Beehiiv expande no ENVIO.
+ * é inline POR DESIGN (#1186), o Beehiiv expande no ENVIO.
  *
- * Code-review: SÓ o CONJUNTO FECHADO `{{email}}`/`{{poll_sig}}`, e SÓ em issues
+ * Code-review: SÓ o CONJUNTO FECHADO `{{email}}`, e SÓ em issues
  * de link/formatting. Um `{{unknown_field}}`/`{{utm_campaign}}` literal num link É
  * bug real (template var vazada) → NÃO dropar. E `email:subject_mismatch` é
  * SEMPRE blocker (#1645) — nunca dropar, mesmo se o subject contiver `{{...}}`.
+ *
+ * #1186: `{{poll_sig}}` foi removido (modo merge-tag). Mantemos `{{email}}` no set.
  */
 export function isMergeTagUnexpandedFalsePositive(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   if (!/^email:(link_|formatting:)/i.test(issue)) return { falsePositive: false };
-  if (/\{\{\s*(email|poll_sig)\s*\}\}/i.test(issue)) {
+  if (/\{\{\s*email\s*\}\}/i.test(issue)) {
     return {
       falsePositive: true,
-      reason: "merge tags inline {{email}}/{{poll_sig}} expandem no envio (#1083)",
+      reason: "merge tag inline {{email}} expande no envio (#1186)",
     };
   }
   return { falsePositive: false };
@@ -610,7 +617,8 @@ export const ISSUE_HANDLERS: readonly IssueHandler[] = [
     },
   },
   {
-    // poll_sig_missing (#1421): merge tag ou sig= presentes no HTML local → FP.
+    // poll_sig_missing (#1421, #1186): #1186 removeu sig= — modo merge-tag.
+    // Issue poll_sig_missing é sempre FP (a ausência de sig é by-design).
     prefix: "email:poll_sig_missing",
     handle(_issue, { htmlLocal }) {
       const r = isPollSigMissingFalsePositive(htmlLocal);
@@ -641,7 +649,7 @@ export const ISSUE_HANDLERS: readonly IssueHandler[] = [
     // IMPORTANTE (#2082): o guard de tipo está aqui, FORA da condição de fetchFn —
     // todo issue link_dead sai por este handler. Sem isso, um issue sem fetchFn
     // cairia nos genéricos de DS onde isMergeTagUnexpandedFalsePositive casaria
-    // o prefixo `link_` e droparia silenciosamente links com {{poll_sig}} na URL.
+    // o prefixo `link_` e droparia silenciosamente links com {{email}} na URL.
     prefix: "email:link_dead",
     handle(issue, { fetchFn, linkCheckCache }) {
       if (fetchFn) {
