@@ -199,23 +199,7 @@ Em `auto_approve = true` (ex: `/diaria-edicao --no-gates`), mesmo halt — auto-
 
 **HALT em `!=0` outro também.** Voto silencioso rejeitado é a mesma classe de bug — pipeline deve parar antes de prosseguir.
 
-### 0d.ter Patch `poll_sig` pra novos subscribers (#1175 — janela 96h)
-
-`poll_sig` (HMAC permanente do email) é o custom field Beehiiv que o HTML da newsletter usa pra construir URLs do É IA? assinadas. Subscriber sem `poll_sig` populado recebe email com `&sig=` vazio → Worker rejeita com 403 e o voto não conta.
-
-`inject-poll-sig.ts` é idempotente — só patcheaer quem está faltando. Per #1175 (e cleanup #1185 que removeu o legacy `inject-poll-urls.ts`), o fluxo correto é: listar subscribers das últimas 96h (janela cobre fim de semana com folga) e patchear apenas os faltantes.
-
-```bash
-export BEEHIIV_PUBLICATION_ID=$(node -e "console.log(require('./platform.config.json').beehiiv.publicationId)") && \
-export $(grep -E '^POLL_SECRET' .env | xargs) && \
-npx tsx scripts/inject-poll-sig.ts --since-hours 96
-```
-
-Output JSON inclui `in_window` (subs nas últimas 96h), `patched`, `skipped_already_correct`, `failed`. Logar como info; se `failed > 0`, logar warn (subscriber novo recém-cadastrado pode ficar sem `poll_sig` → email dele vai com link quebrado — não bloqueia publicação porque é minoria).
-
-**Por que 96h e não cron separado:** janela cobre 4 dias = fim de semana + folga. Editor publica diariamente, então qualquer subscriber criado pelo menos 1 dia antes da última publicação já foi patcheado. Custo: 5 páginas de listagem Beehiiv (~3-5s, 0 patches em dia normal). Quando #1175 implementar webhook real-time, esse passo vira backup defensivo.
-
-Falha (exit != 0) → logar warn mas não bloquear. `POLL_SECRET` ou `BEEHIIV_PUBLICATION_ID` ausentes no env são as causas comuns; subscriber novo sem `poll_sig` cai pro próximo run.
+> **#1186:** `inject-poll-sig` (§0d.ter) foi removido — o diário usa modo merge-tag (URL de voto sem `&sig=`). Não há mais patch de `poll_sig` por subscriber no Stage 0.
 
 ### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6)
 

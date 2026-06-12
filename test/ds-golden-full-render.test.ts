@@ -440,9 +440,11 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("#FFFFFF"), "branco PAPER ausente no output composto");
   });
 
-  it("merge tags Beehiiv preservadas no É IA? ({{email}} + {{poll_sig}})", () => {
-    assert.ok(html.includes("{{email}}"), "merge tag {{email}} ausente");
-    assert.ok(html.includes("{{poll_sig}}"), "merge tag {{poll_sig}} ausente");
+  it("merge tag {{email}} preservada no É IA? — modo merge-tag sem sig (#1186)", () => {
+    assert.ok(html.includes("{{email}}"), "merge tag {{email}} ausente na vote URL");
+    // #1186: poll_sig removido — modo merge-tag, sem HMAC por subscriber.
+    assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} presente — era esperado ser removido (#1186)");
+    assert.ok(!html.includes("&sig="), "sig= presente — era esperado ser removido (#1186)");
   });
 
   it("placeholders de imagem hero 2x1 presentes para D1, D2 e D3 (#2133/#2141)", () => {

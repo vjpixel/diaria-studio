@@ -2,17 +2,21 @@
 
 **Issue tracker**: [#1082](https://github.com/vjpixel/diaria-studio/issues/1082)
 
+> **#1186 (2026-06-12):** O diário migrou para **modo merge-tag** — a URL de voto usa `{{email}}` sem `&sig=`. `inject-poll-sig.ts` foi removido.
+>
+> **Este runbook ainda é necessário para o ADMIN_SECRET** (usado por `close-poll.ts` via `/admin/correct`). A seção de `inject-poll-sig` (Steps 4 e pós-rotação) ficou histórica. `POLL_SECRET` ainda existe no Worker (o caminho assinado está dormiente), então a rotação periódica é prudente para o Worker, mas `inject-poll-sig.ts` não precisa mais ser rodado.
+
 ## Quando rodar
 
-- **Cadência sugerida:** semestral (junho + dezembro).
-- **Trigger emergencial:** se houver indício de vazamento (sig HMAC em screenshot público, log compartilhado, etc).
-- **Janela ideal:** fim de mês quando a edição é leve. Evitar primeiro dia útil — leitores podem clicar links antigos da edição anterior nas primeiras horas pós-rotação.
+- **ADMIN_SECRET:** sempre que houver suspeita de vazamento.
+- **POLL_SECRET (Worker):** semestral (prudência, path dormiente). Não precisa re-rodar `inject-poll-sig.ts` após a rotação — o diário usa merge-tag.
+- **Janela ideal:** fim de mês quando a edição é leve. Evitar primeiro dia útil.
 
 ## Por que rotar
 
-`POLL_SECRET` assina `HMAC(secret, email)` que vira o `poll_sig` permanente do subscriber (#1083). Se vazar, atacante consegue votar como o subscriber em **qualquer edição futura** até o secret ser trocado.
+`POLL_SECRET` assina `HMAC(secret, email)` no Worker (path dormiente no diário desde #1186). Se vazar, o impacto é limitado (1 voto por edição por subscriber, sem prêmio real).
 
-Mitigação imediata: server enforça 1 vote per `(email, edition)` via `vote:{edition}:{email}` em KV, então blast radius máximo é 1 voto por edição por subscriber comprometido. Aceitável pra concurso editorial sem prêmio sério, mas o risco cresce com o tempo.
+`ADMIN_SECRET` autentica `close-poll.ts` (`/admin/correct`) — mais crítico para a integridade do gabarito.
 
 ## Pré-requisitos
 

@@ -149,53 +149,27 @@ export function checkNewsletterHtml(editionDir: string): Check {
     };
   }
   const html = readFileSync(path, "utf8");
-  // Design atual (#1083, permanente): URL inline com merge tags
-  // `{{email}}` (reserved field) + `{{poll_sig}}` (custom field HMAC).
-  // Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
-  const hasInlineSig =
-    /\{\{email\}\}/.test(html) && /\{\{poll_sig\}\}/.test(html);
-  if (!hasInlineSig) {
+  // Design atual (#1186): URL inline com merge tag `{{email}}` (modo merge-tag,
+  // sem sig HMAC). Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
+  const hasEmailMergeTag = /\{\{email\}\}/.test(html);
+  if (!hasEmailMergeTag) {
     return {
-      name: "newsletter-final.html tem merge tags inline ({{email}} + {{poll_sig}})",
+      name: "newsletter-final.html tem merge tag {{email}}",
       passed: false,
-      detail: `Design atual requer URL inline com poll_sig (desde #1083). Re-rodar render-newsletter-html.ts.`,
+      detail: `Design atual requer URL inline com {{email}} (modo merge-tag, #1186). Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);
   return {
     name: "newsletter-final.html",
     passed: true,
-    detail: `${sizeKb}KB, inline URL + poll_sig`,
+    detail: `${sizeKb}KB, inline URL com {{email}} (merge-tag mode)`,
   };
 }
 
-async function checkCustomFields(opts: {
-  publicationId: string;
-  apiKey: string;
-}): Promise<Check> {
-  try {
-    const fields = await listCustomFields(opts);
-    const hasSig = fields.includes("poll_sig");
-    if (!hasSig) {
-      return {
-        name: "custom field poll_sig",
-        passed: false,
-        detail: `poll_sig ausente na publicação. inject-poll-sig.ts cria automaticamente — rode 'npx tsx scripts/inject-poll-sig.ts --since-hours 96' (idempotente).`,
-      };
-    }
-    return {
-      name: "custom field Beehiiv",
-      passed: true,
-      detail: `poll_sig existe (${fields.length} fields total)`,
-    };
-  } catch (e) {
-    return {
-      name: "custom field Beehiiv",
-      passed: false,
-      detail: `erro consultando API: ${(e as Error).message}`,
-    };
-  }
-}
+// #1186: poll_sig custom field check removido — modo merge-tag não precisa de
+// custom field por subscriber. checkCustomFields foi removido junto com o campo.
+// A função listCustomFields é mantida apenas pra referência futura.
 
 async function checkWorker(edition: string): Promise<Check> {
   const result = await pingWorker(edition);
@@ -267,7 +241,6 @@ async function main(): Promise<void> {
   // Run all checks
   const checks: Check[] = [
     checkNewsletterHtml(editionDir),
-    await checkCustomFields(apiOpts),
     await checkWorker(edition),
   ];
   const allPassed = printChecks(checks);

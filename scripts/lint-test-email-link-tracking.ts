@@ -50,9 +50,9 @@ export interface LinkIssue {
 }
 
 export interface LinkSkip {
-  /** #1949: `merge_tag` = URL com `{{...}}` (vote URL) — Beehiiv expande no
-   * envio, não dá pra HEAD; `bot_blocked` = 401/403 (página existe pra humanos,
-   * bloqueia bot — ex: diaria.beehiiv.com/cursos, tecnoblog). */
+  /** #1949: `merge_tag` = URL com `{{email}}` (vote URL, #1186 modo merge-tag) —
+   * Beehiiv expande no envio, não dá pra HEAD; `bot_blocked` = 401/403 (página
+   * existe pra humanos, bloqueia bot — ex: diaria.beehiiv.com/cursos, tecnoblog). */
   url: string;
   reason: "auth_required" | "non_http" | "tel_mailto" | "merge_tag" | "bot_blocked";
   domain?: string;
@@ -138,9 +138,10 @@ export function decodeRedirectWrapper(url: string): string {
  * - null: deve fazer HEAD
  */
 export function categorizeUrl(url: string): "non_http" | "auth_required" | "merge_tag" | null {
-  // #1949: URL com merge tag Beehiiv (`{{email}}`, `{{poll_sig}}`) — a vote URL
-  // do É IA? é `?email={{email}}&...&sig={{poll_sig}}`. Beehiiv expande no ENVIO;
-  // um HEAD na URL literal retornaria 4xx (falso link_dead). Skip determinístico.
+  // #1949: URL com merge tag Beehiiv (`{{email}}`) — a vote URL do É IA? é
+  // `?email={{email}}&...`. Beehiiv expande no ENVIO; um HEAD na URL literal
+  // retornaria 4xx (falso link_dead). Skip determinístico.
+  // #1186: `{{poll_sig}}` removido — modo merge-tag sem sig HMAC.
   if (/\{\{[^}]+\}\}/.test(url)) return "merge_tag";
   let parsed: URL;
   try {
@@ -229,7 +230,7 @@ export async function checkLinkTracking(
       continue;
     }
     if (cat === "merge_tag") {
-      // #1949: vote URL com {{email}}/{{poll_sig}} — expande no envio.
+      // #1949: vote URL com {{email}} — expande no envio (#1186: sem poll_sig).
       skipped.push({ url: decoded, reason: "merge_tag" });
       continue;
     }

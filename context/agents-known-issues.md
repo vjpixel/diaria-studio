@@ -16,8 +16,9 @@ emails com caracteres não-ASCII:
   body.
 - Entities HTML-encoded (`&amp;edition=`) lidos como separador errado
   (`&edition&`).
-- Merge tags Beehiiv (`{{poll_sig}}`) ocasionalmente reportadas como
-  "stripped" mesmo presentes no HTML.
+- Merge tags Beehiiv (`{{email}}`) ocasionalmente reportadas como "stripped"
+  mesmo presentes no HTML. **#1186:** `{{poll_sig}}` foi removido (modo
+  merge-tag) — ausência de sig= é normal, não reportar.
 
 **Mitigation** (#1421): orchestrator-stage-5.md §5f.5 chama
 `scripts/lib/agent-issue-validator.ts::filterAgentIssues()` antes de disparar

@@ -36,7 +36,7 @@ export const BodyPasteSchema = z.object({
   inserted: z.boolean(),
   html_bytes: z.number().int().nonnegative().optional(),
   docSize: z.number().int().nonnegative().optional(),
-  has_poll_sig: z.boolean().optional(),
+  // #1186: has_poll_sig removido — modo merge-tag, sem sig HMAC por subscriber.
   has_imgA: z.boolean().optional(),
   has_imgB: z.boolean().optional(),
 }).passthrough();

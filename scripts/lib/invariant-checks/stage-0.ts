@@ -171,14 +171,8 @@ function checkLinkedinCronCredsSet(): InvariantViolation[] {
 
 function checkPollSecretsSet(): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
-  violations.push(
-    ...checkRequiredEnvVar(
-      "POLL_SECRET",
-      "poll-secret-set",
-      "#1370",
-      "Stage 0 inject-poll-sig + Stage 4 close-poll usam pra assinar URLs do É IA?.",
-    ),
-  );
+  // #1186: POLL_SECRET não é mais usado pelo diário (modo merge-tag, sem sig HMAC).
+  // Mantemos o check apenas pra ADMIN_SECRET (close-poll.ts ainda o usa).
   violations.push(
     ...checkRequiredEnvVar(
       "ADMIN_SECRET",
@@ -400,7 +394,7 @@ export const STAGE_0_RULES: InvariantRule[] = [
   },
   {
     id: "poll-secrets-set",
-    description: "POLL_SECRET + ADMIN_SECRET presentes (#1370)",
+    description: "ADMIN_SECRET presente (#1370, #1186: POLL_SECRET removido — modo merge-tag)",
     source_issue: "#1370",
     stage: 0,
     run: () => checkPollSecretsSet(),

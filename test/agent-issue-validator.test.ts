@@ -72,23 +72,28 @@ describe("isEncodingDropFalsePositive (#1421)", () => {
   });
 });
 
-describe("isPollSigMissingFalsePositive (#1421)", () => {
-  it("#1421: caso 260520 — {{poll_sig}} merge tag presente no HTML local", () => {
-    const html = '<a href="https://poll.diaria.workers.dev/vote?sig={{poll_sig}}">vote</a>';
+describe("isPollSigMissingFalsePositive (#1421, #1186)", () => {
+  it("#1186: modo merge-tag — {{email}} presente na vote URL → sempre FP", () => {
+    // #1186: sem sig= na URL. poll_sig_missing é sempre FP porque ausência de sig= é by-design.
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260519&choice=A">vote</a>';
     const r = isPollSigMissingFalsePositive(html);
     assert.equal(r.falsePositive, true);
+    if (r.falsePositive) {
+      assert.match(r.reason, /merge-tag/);
+    }
   });
 
-  it("sig= como URL param já resolvido também conta", () => {
-    const html = '<a href="https://poll.diaria.workers.dev/vote?sig=abc123">vote</a>';
-    const r = isPollSigMissingFalsePositive(html);
-    assert.equal(r.falsePositive, true);
-  });
-
-  it("HTML realmente sem merge tag nem sig → não-falso-positivo (válido)", () => {
+  it("HTML sem {{email}} na vote URL → não-falso-positivo (edição mal-renderizada)", () => {
+    // HTML genuinamente corrompido — sem {{email}}, não tem merge-tag nenhuma.
     const html = "<p>just body, no vote link</p>";
     const r = isPollSigMissingFalsePositive(html);
     assert.equal(r.falsePositive, false);
+  });
+
+  it("HTML com {{email}} em qualquer lugar → FP (merge-tag mode)", () => {
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260612&choice=B">vote</a>';
+    const r = isPollSigMissingFalsePositive(html);
+    assert.equal(r.falsePositive, true);
   });
 });
 
@@ -124,14 +129,18 @@ describe("#1949 — FPs do novo DS + merge tags", () => {
     );
   });
 
-  it("isMergeTagUnexpandedFalsePositive: SÓ conjunto fechado {{email}}/{{poll_sig}} em link/formatting", () => {
+  it("isMergeTagUnexpandedFalsePositive: SÓ {{email}} em link/formatting (#1186)", () => {
+    // #1186: conjunto fechado agora é só {{email}} (poll_sig removido).
     assert.equal(
       isMergeTagUnexpandedFalsePositive("email:link_broken: href tem {{email}} não expandido").falsePositive,
       true,
     );
+    // {{poll_sig}} foi removido — issue com poll_sig não é mais FP por este checker.
+    // (O handler poll_sig_missing cobre; genéricos não pegam mais poll_sig.)
     assert.equal(
       isMergeTagUnexpandedFalsePositive("email:formatting: {{poll_sig}} aparece literal = blocker").falsePositive,
-      true,
+      false,
+      "poll_sig não está mais no conjunto fechado de merge-tags (#1186)",
     );
     assert.equal(isMergeTagUnexpandedFalsePositive("email:link_dead: https://x.com 404").falsePositive, false);
   });
@@ -205,15 +214,16 @@ describe("filterAgentIssues — orchestrator integration (#1421)", () => {
     assert.match(r.kept[0], /unexpected_content/);
   });
 
-  it("issues 100% validáveis → kept vazio, dropped completo", async () => {
-    const html = '<p>pré-treino</p><a href="?sig={{poll_sig}}&edition=260520">x</a>';
+  it("issues 100% validáveis → kept vazio, dropped completo (#1186 merge-tag)", async () => {
+    // #1186: HTML usa {{email}} na vote URL sem sig=
+    const html = '<p>pré-treino</p><a href="?email={{email}}&edition=260520">x</a>';
     const issues = [
       "email:encoding_drop: 'pré-treino' corrompido",
       "email:poll_sig_missing: stripped",
       "email:vote_edition_malformed: &edition& errado",
     ];
     const r = await filterAgentIssues(issues, html, "260520");
-    assert.equal(r.kept.length, 0);
+    assert.equal(r.kept.length, 0, `esperado kept=0, obtido: ${JSON.stringify(r.kept)}`);
     assert.equal(r.dropped.length, 3);
   });
 
@@ -832,11 +842,12 @@ describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de ha
 
   it("tipo hipotético email:link_x NÃO coberto por handler → vai pros genéricos (pode ser dropado por DS)", async () => {
     // email:link_x não está na tabela de handlers.
-    // isMergeTagUnexpandedFalsePositive casa `email:link_` + `{{poll_sig}}` → FP → dropa.
+    // isMergeTagUnexpandedFalsePositive casa `email:link_` + `{{email}}` → FP → dropa.
     // Isso demonstra que tipos fora da tabela chegam nos genéricos.
     // NOTA: o prefixo precisa começar com `email:link_` (exigência do genérico,
     // agent-issue-validator.ts ~182) — não dá pra usar um prefixo "impossível".
-    const issue = "email:link_x: href contém {{poll_sig}} não expandido";
+    // #1186: conjunto fechado agora é só {{email}} (poll_sig removido do genérico).
+    const issue = "email:link_x: href contém {{email}} não expandido";
 
     // Guard autodiagnóstico: se um handler futuro passar a cobrir email:link_x,
     // este assert explica a falha em vez de deixar o assert de drop confundir.
@@ -848,11 +859,11 @@ describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de ha
     const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
 
     // Deve ser DROPADO pelos genéricos de DS (isMergeTagUnexpandedFalsePositive)
-    assert.equal(r.dropped.length, 1, "email:link_x com {{poll_sig}} deve ser dropado pelos genéricos de DS");
+    assert.equal(r.dropped.length, 1, "email:link_x com {{email}} deve ser dropado pelos genéricos de DS");
     assert.equal(r.kept.length, 0, "não deve ser mantido");
     assert.match(
       r.dropped[0].reason,
-      /merge tags inline|poll_sig|expandem no envio/i,
+      /merge tag inline|email|expande no envio/i,
       "motivo deve vir do genérico isMergeTagUnexpandedFalsePositive",
     );
   });

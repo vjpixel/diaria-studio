@@ -858,9 +858,10 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderHTML default: inclui È IA? quando eia.credit não-vazio", () => {
     const html = renderHTML(fixtureComEia);
     assert.match(html, /É IA\?/);
-    // #1083: merge tags Beehiiv inline (substitui {{poll_X_url}} legacy)
+    // #1186: modo merge-tag — vote URL tem {{email}}, SEM sig HMAC.
     assert.match(html, /\{\{email\}\}/);
-    assert.match(html, /\{\{poll_sig\}\}/);
+    assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
+    assert.ok(!html.includes("&sig="), "sig= presente — removido em #1186");
   });
 
   it("#1970: link persistente da leaderboard mesmo SEM pódio (edição não-1ª-do-mês)", () => {
@@ -885,7 +886,7 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     const html = renderHTML(fixtureComEia, { excludeEia: true });
     assert.ok(!html.includes("É IA?"), "body não deve mencionar È IA?");
     assert.ok(!html.includes("{{email}}"), "body não deve ter merge tags Beehiiv");
-    assert.ok(!html.includes("{{poll_sig}}"));
+    assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} não deve aparecer (removido em #1186)");
     // Mas deve ter o destaque
     assert.match(html, /Modelos se replicam/);
   });
@@ -900,12 +901,13 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.equal(renderEiaStandalone(fixtureSemEia), null);
   });
 
-  it("renderEiaStandalone retorna HTML com merge tags preservadas", () => {
+  it("renderEiaStandalone retorna HTML com merge tag {{email}} (modo merge-tag #1186)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html, "deve retornar HTML não-null pra eia configurada");
-    // #1083: merge tags Beehiiv inline (substitui {{poll_X_url}} legacy)
+    // #1186: modo merge-tag — vote URL tem {{email}}, SEM sig HMAC.
     assert.match(html!, /\{\{email\}\}/);
-    assert.match(html!, /\{\{poll_sig\}\}/);
+    assert.ok(!html!.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
+    assert.ok(!html!.includes("&sig="), "sig= presente — removido em #1186");
     assert.match(html!, /É IA\?/);
   });
 

@@ -82,10 +82,10 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 > de registrar qualquer issue, internalize:
 >
 > 1. **Leia o email RENDERIZADO/entregue (Gmail MCP `FULL_CONTENT`)**, não o HTML
->    cru do draft/worker. As **merge tags `{{email}}`, `{{poll_sig}}`, `{{...}}`
->    são inline POR DESIGN** (#1083) e o Beehiiv as expande **no envio**. Vê-las
->    no source NÃO é defeito — **nunca** reportar `{{...}}` não-expandida como
->    blocker.
+>    cru do draft/worker. A **merge tag `{{email}}` é inline POR DESIGN** (#1186,
+>    modo merge-tag) e o Beehiiv a expande **no envio**. Vê-la no source NÃO é
+>    defeito — **nunca** reportar `{{email}}` não-expandida como blocker.
+>    **#1186:** `{{poll_sig}}` foi removido da vote URL — ausência de sig= é normal.
 > 2. **Novo design system (#1936):** manchetes em **Georgia serif SEM negrito** e
 >    legenda do É IA? em **sans SEM itálico** são CORRETOS. Réguas/bordas bege
 >    (#EBE5D0) são estrutura do DS. NÃO flagar ausência de bold/itálico (itens
@@ -283,8 +283,8 @@ JSON pra debug mas **NÃO viram issue**:
 - **`bot_blocked` (401/403)**: a página existe pra humanos, só bloqueia HEAD de
   bot (diaria.beehiiv.com/cursos|livros, tecnoblog). **NÃO é link morto** — não
   reportar.
-- **`merge_tag`**: URL com `{{email}}`/`{{poll_sig}}` (vote URL do É IA?) — o
-  Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
+- **`merge_tag`**: URL com `{{email}}` (vote URL do É IA?, #1186 modo merge-tag) —
+  o Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
 
 Decoda Gmail Image Proxy (`google.com/url?q=...`) e respeita whitelist de
 domínios que retornam 4xx pra bots (linkedin/facebook). Concurrency 5

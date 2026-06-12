@@ -484,7 +484,7 @@ export function renderEIA(eia: EIA): string {
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
-    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
+    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // DS: imagens A/B lado a lado, poll-col empilha no mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, side: "a" | "b") => {
     const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;

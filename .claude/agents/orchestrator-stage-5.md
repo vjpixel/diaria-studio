@@ -86,7 +86,7 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
 
 ### 5a-poll-preflight. Gate de poll ANTES do envio — SEMPRE (#1803)
 
-**Roda em TODO entry path, antes de qualquer pre-render/dispatch.** Resolve o P1 #1803: num resume direto pro Stage 5, os passos de poll do Stage 0 (§0d.bis `maintain-valid-editions`, §0d.ter `inject-poll-sig`) nao rodam e o "E IA?" quebra ao vivo (410/403) pra todos os subscribers — silenciosamente. Como esta no inicio do Stage 5, **um resume sempre o atravessa**. O script faz FIX idempotente (maintain + inject, warn-only) → VERIFY (smoke-test, **gate duro**), bloqueando o envio antes da newsletter sair — nao depois.
+**Roda em TODO entry path, antes de qualquer pre-render/dispatch.** Resolve o P1 #1803: num resume direto pro Stage 5, o passo de poll do Stage 0 (§0d.bis `maintain-valid-editions`) nao roda e o "E IA?" quebra ao vivo (410) pra todos os subscribers — silenciosamente. Como esta no inicio do Stage 5, **um resume sempre o atravessa**. O script faz FIX idempotente (maintain, warn-only) → VERIFY (smoke-test, **gate duro**), bloqueando o envio antes da newsletter sair — nao depois. **#1186:** `inject-poll-sig` foi removido — modo merge-tag, sem sig HMAC.
 
 ```bash
 npx tsx scripts/preflight-poll-dispatch.ts --edition {AAMMDD}
@@ -94,7 +94,7 @@ npx tsx scripts/preflight-poll-dispatch.ts --edition {AAMMDD}
 
 Exit code handling:
 - `0` → poll pronto. Prosseguir pro dispatch.
-- `1` → **FATAL:** o proprio script ja renderizou o halt banner (motivo + acao). **NAO enviar a newsletter.** Editor corrige (tipicamente `add-valid-edition.ts --edition {AAMMDD}` ou conferir `POLL_SECRET`) e re-roda Etapa 5.
+- `1` → **FATAL:** o proprio script ja renderizou o halt banner (motivo + acao). **NAO enviar a newsletter.** Editor corrige (tipicamente `add-valid-edition.ts --edition {AAMMDD}`) e re-roda Etapa 5.
 
 ### 5b. Confirmar modo de publicacao por canal (#336 — invertido em #1326)
 
