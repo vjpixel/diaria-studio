@@ -40,7 +40,7 @@ O fluxo editorial é modelado como 5 etapas com gate humano em cada uma. A execu
    - **Etapa 2** (escrita): `/diaria-2-escrita [newsletter|social]` (newsletter + social em paralelo a partir de `01-approved.json`).
    - **Etapa 3** (imagens): `/diaria-3-imagens [eia|d1|d2|d3]` (É IA? + imagens de destaque).
    - **Etapa 4** (revisão editorial): `/diaria-4-revisao` (pré-render + resumo consolidado + gate humano).
-   - **Etapa 5** (publicação): `/diaria-5-publicacao [all|newsletter|social]` (ou `/diaria-4-publicar` como alias retrocompat).
+   - **Etapa 5** (publicação): `/diaria-5-publicacao [all|newsletter|social]`.
 3. Skills auxiliares (debug, raramente usadas):
    - `/diaria-refresh-dedup` — testa conexão com Beehiiv MCP.
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
@@ -165,4 +165,4 @@ platform.config.json     # { newsletter: "beehiiv", socials: [...] }
 
 ## Estado atual
 
-**Pipeline completo implementado** (5 etapas, #1694). Fluxo: Pesquisa → Escrita (newsletter + social em paralelo) → Imagens (É IA? + destaques) → Revisão (pré-render + gate humano pré-publicação) → Publicação (Beehiiv rascunho + teste + LinkedIn + Facebook). Editor revisa no gate da Revisão e dispara a publicação; ou usa `/diaria-4-publicar` como alias retrocompat para as duas etapas em sequência.
+**Pipeline completo implementado** (5 etapas, #1694). Fluxo: Pesquisa → Escrita (newsletter + social em paralelo) → Imagens (É IA? + destaques) → Revisão (pré-render + gate humano pré-publicação) → Publicação (Beehiiv rascunho + teste + LinkedIn + Facebook). Editor revisa no gate da Revisão e dispara a publicação via `/diaria-5-publicacao`.

@@ -144,7 +144,7 @@ describe("renderHaltBanner (#737 — pipeline parou)", () => {
     const banner = renderHaltBanner({
       stage: "4 — Publicação",
       reason: "Beehiiv 5xx persistente",
-      action: "aguardar e re-rodar /diaria-4-publicar",
+      action: "aguardar e re-rodar /diaria-5-publicacao",
     });
     const lines = banner.split("\n");
     const widths = lines.map((l) => visualWidth(l));

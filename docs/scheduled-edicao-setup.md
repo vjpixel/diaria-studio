@@ -2,7 +2,7 @@
 
 Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068)
 
-O Task Scheduler do Windows roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às 14:00 (horário local = BRT), produzindo a edição do dia seguinte (D+1). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` (ou `/diaria-4-publicar` como alias) na manhã seguinte.
+O Task Scheduler do Windows roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às 14:00 (horário local = BRT), produzindo a edição do dia seguinte (D+1). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
 
 ---
 
@@ -65,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 5. No Stage 4 (Revisão), executa o pré-render completo (HTML + imagens + upload Worker + close-poll) + resume consolidado. Com `--skip newsletter,linkedin,facebook`, o Stage 5 (Publicação) vai usar `build-publish-consent.ts --skip "newsletter,linkedin,facebook"` (path 1 de §5b) — sem gate interativo, sem fallback default-auto (#1326/#2068). Todos os canais ficam `pending_manual` no `_internal/05-publish-consent.json`. (#1694: Stage 4 escreve sentinel `.step-4-done.json`; Stage 5 lê isso como prereq.)
 6. A run termina naturalmente após o Stage 4 (Revisão). O Stage 5 (Publicação) não é disparado — requer input do editor. Não aguarda confirmação nem fica travada no gate.
 7. Logs gravados em `data/run-log.jsonl` e `data/overnight-schedule.log`.
-8. Editor revisa os outputs (Stage 1-4 + pré-render) e dispara `/diaria-5-publicacao {AAMMDD}` (ou `/diaria-4-publicar` como alias) quando pronto.
+8. Editor revisa os outputs (Stage 1-4 + pré-render) e dispara `/diaria-5-publicacao {AAMMDD}` quando pronto.
 
 ### Por que `--skip` em vez de deixar o pre-gate expirar?
 

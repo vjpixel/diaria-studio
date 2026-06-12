@@ -32,11 +32,11 @@ Exit code handling:
 
 ### Modos de execução (#1523 / #1571 — movidos do Stage 4 original)
 
-Stage 5 é **dispatch puro** — sem gate próprio. O gate de revisão editorial está no Stage 4. Os dois modos históricos do pre-gate continuam suportados para retrocompat com o fluxo `/diaria-4-publicar` legado:
+Stage 5 é **dispatch puro** — sem gate próprio. O gate de revisão editorial está no Stage 4. Os dois modos históricos do pre-gate (mantidos para compatibilidade com runs anteriores ao #1694):
 
 - **`pre_gate = true` (default em `/diaria-edicao`):** o gate ao editor aconteceu **no Stage 4**. Aqui apenas despachar. Prosseguir direto pra 5c (dispatch newsletter) → 5f (review test email) → 5g-bis (dispatch social).
 
-- **`pre_gate = false` ou ausente (`/diaria-4-publicar` legacy):** fluxo histórico — 5c dispatch newsletter → 5f review loop → 5f-bis verify → 5f-ter render social preview → **5g gate pós-dispatch** → 5g-bis social → fim.
+- **`pre_gate = false` ou ausente (legacy pré-#1694):** fluxo histórico — 5c dispatch newsletter → 5f review loop → 5f-bis verify → 5f-ter render social preview → **5g gate pós-dispatch** → 5g-bis social → fim.
 
 ### 5a. Pré-requisitos + sync
 
@@ -102,7 +102,7 @@ Exit code handling:
 
 ### 5a-pre-gate. Pré-render + apresentar preview ao editor (legacy `pre_gate = false`)
 
-**Executar SOMENTE quando `pre_gate = false`** (legacy `/diaria-4-publicar` sem `--pre-gate`). Quando `pre_gate = true` (default via `/diaria-edicao`), este passo já rodou no Stage 4 — pular e ir direto pra 5b.
+**Executar SOMENTE quando `pre_gate = false`** (legacy pré-#1694). Quando `pre_gate = true` (default via `/diaria-edicao`), este passo já rodou no Stage 4 — pular e ir direto pra 5b.
 
 Faz tudo que o dispatch precisa exceto enviar pros canais finais:
 
@@ -333,7 +333,7 @@ Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente.
 
 **Quando `pre_gate = true`** (default de `/diaria-edicao`), este step é PULADO. Saltar direto pra 5g-bis.
 
-**Quando `pre_gate = false`** (legacy `/diaria-4-publicar` sem `--pre-gate`), mantém o fluxo histórico.
+**Quando `pre_gate = false`** (legacy pré-#1694), mantém o fluxo histórico.
 
 - **Sync push antes do gate (#507):**
   1. Lista base: `03-social.md,_internal/05-published.json,_internal/06-social-published.json`.

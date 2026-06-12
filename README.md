@@ -29,11 +29,12 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 | Skill | O que faz |
 |---|---|
-| `/diaria-edicao AAMMDD [--no-gates]` | Pipeline completa (4 etapas). Retoma do ponto que parou se interrompido. |
+| `/diaria-edicao AAMMDD [--no-gates]` | Pipeline completa (5 etapas). Retoma do ponto que parou se interrompido. |
 | `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
 | `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
 | `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
-| `/diaria-4-publicar [all\|newsletter\|social] AAMMDD` | Etapa 4 (Beehiiv rascunho + LinkedIn + Facebook). |
+| `/diaria-4-revisao AAMMDD` | Etapa 4 (Revisão: pré-render + gate humano pré-publicação). |
+| `/diaria-5-publicacao [all\|newsletter\|social] AAMMDD` | Etapa 5 (Beehiiv rascunho + LinkedIn + Facebook). |
 | `/diaria-mensal YYMM [--no-gate]` | Digest mensal (coleta → análise → escrita → imagens). |
 | `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
 | `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |
@@ -44,7 +45,7 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 ## Arquitetura
 
-Pipeline em 4 etapas, cada uma com gate humano:
+Pipeline em 5 etapas, cada uma com gate humano:
 
 ```
 Etapa 1  Pesquisa  →  source-researcher ×N || discovery-searcher ×M || eai-composer
@@ -58,10 +59,13 @@ Etapa 2  Escrita   →  writer (newsletter) || social-linkedin || social-faceboo
 Etapa 3  Imagens   →  É IA? (Wikimedia POTD) + image-generate ×3 (Gemini/ComfyUI)
                       → 01-eai.md + 04-d{1,2,3}.jpg [gate]
 
-Etapa 4  Publicação→  publish-newsletter (Chrome → Beehiiv rascunho + email teste)
+Etapa 4  Revisão   →  pré-render técnico (HTML + imagens + upload Worker + close-poll)
+                      → resumo consolidado → gate humano pré-publicação [gate]
+
+Etapa 5  Publicação→  publish-newsletter (Chrome → Beehiiv rascunho + email teste)
                       || publish-facebook (Graph API ×3)
                       || publish-social (Chrome → LinkedIn ×3)
-                      → review-test-email (loop) → auto-reporter [gate]
+                      → review-test-email (loop) → auto-reporter
 ```
 
 Outputs em `data/editions/{AAMMDD}/`. Detalhes em [`CLAUDE.md`](./CLAUDE.md).
@@ -119,7 +123,7 @@ CLAUDE.md                    # instruções do projeto (lidas pelo Claude)
 
 ## Status
 
-Pipeline fim-a-fim funcional (4 etapas). Editor revisa cada gate e dispara publicação final manualmente do dashboard de cada plataforma. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
+Pipeline fim-a-fim funcional (5 etapas, #1694). Editor revisa cada gate e dispara publicação final manualmente do dashboard de cada plataforma. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
 
 ## Documentação
 
