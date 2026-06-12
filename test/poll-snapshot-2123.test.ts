@@ -35,6 +35,17 @@ function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
   };
 }
 
+// #2130 (pass2): makeWorkerEnv era duplicado em Fix-3 e no describe do #2130 —
+// extraído pra module scope pra eliminar duplicação (finding 3).
+function makeWorkerEnv(): Env & { POLL: ReturnType<typeof makeTrackedKv> } {
+  return {
+    POLL: makeTrackedKv() as unknown as ReturnType<typeof makeTrackedKv> & KVNamespace,
+    POLL_SECRET: "test-secret",
+    ADMIN_SECRET: "test-admin",
+    ALLOWED_ORIGINS: "*",
+  };
+}
+
 // ── Fix 1a: computeSnapshotEntries propaga last_vote_ts ──────────────────────
 
 describe("computeSnapshotEntries propaga last_vote_ts (#2123 fix 1a)", () => {
@@ -250,12 +261,7 @@ describe("upsertOwnEntryInSnapshot — TTL 24h pós-upsert (#2129 fix)", () => {
 // ── Fix 3: Redirect 302 (não 301) ───────────────────────────────────────────
 
 describe("redirect /leaderboard/{YYYY-MM} → anual usa 302, não 301 (#2123 fix 3)", () => {
-  const makeWorkerEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
-    POLL: makeTrackedKv() as unknown as ReturnType<typeof makeTrackedKv> & KVNamespace,
-    POLL_SECRET: "test-secret",
-    ADMIN_SECRET: "test-admin",
-    ALLOWED_ORIGINS: "*",
-  });
+  // makeWorkerEnv agora é module-scoped (extraído em #2130 pass2 para dedup)
 
   it("brand=clarice: /leaderboard/2026-05 retorna 302 (não 301)", async () => {
     const env = makeWorkerEnv();
@@ -273,7 +279,9 @@ describe("redirect /leaderboard/{YYYY-MM} → anual usa 302, não 301 (#2123 fix
     const req = new Request("https://poll.test/leaderboard/2026-05?brand=clarice");
     const res = await worker.fetch(req, env as unknown as Env);
     const location = res.headers.get("Location") ?? "";
-    assert.match(location, /\/leaderboard\/2026/, "deve redirecionar para /leaderboard/{ano}");
+    // #2130 (pass2): aperta regex pra não casar com /leaderboard/2026-05 (URL de entrada)
+    // — o redirect deve resolver pra /leaderboard/2026 (sem mês), não ano genérico.
+    assert.match(location, /\/leaderboard\/2026(?!-)/, "deve redirecionar para /leaderboard/{ano} sem sufixo de mês");
     assert.match(location, /brand=clarice/, "query param brand= deve ser preservado no redirect");
   });
 
@@ -339,7 +347,12 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
     );
   });
 
-  it("null em nickname não sobrescreve nickname existente", async () => {
+  it("nickname:null LIMPA nickname existente (contrato do tipo string | null)", async () => {
+    // #2130 (pass2): nickname:null é valor LEGÍTIMO — significa "limpar nickname".
+    // O filtro blanket anterior bloqueava null em TODOS os campos, impedindo a
+    // limpeza. O filtro field-aware correto filtra null só em last_vote_ts (onde
+    // null nunca é válido em produção), preservando nickname:null como intenção
+    // explícita de limpar.
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
         entries: [
@@ -349,31 +362,50 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
       }),
     });
     const env = makeEnv(kv);
-    const own = {
+    const own: SnapshotEntry = {
       email: "bob@x.com",
-      nickname: null as unknown as string, // null injetado
+      nickname: null, // null explícito → deve limpar o nickname existente
       correct: 3,
       total: 5,
     };
-    await upsertOwnEntryInSnapshot(env, "2026-06", own as SnapshotEntry);
+    await upsertOwnEntryInSnapshot(env, "2026-06", own);
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put);
     const payload = JSON.parse(put!.value);
     const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
     assert.equal(bob.correct, 3, "correct atualizado");
-    assert.equal(bob.nickname, "Bob", "nickname existente não deve ser sobrescrito por null — filtro #2130");
+    assert.equal(bob.nickname, null, "nickname:null deve limpar nickname existente — filtro field-aware #2130");
+  });
+
+  it("last_vote_ts:null NÃO sobrescreve last_vote_ts existente (fantasma filtrado)", async () => {
+    // #2130 (pass2): last_vote_ts:null é inválido em produção (computeSnapshotEntries
+    // agora guarda só se != null). Se por algum motivo null chegar no upsert,
+    // o filtro field-aware deve bloqueá-lo para não apagar um timestamp existente.
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [
+          { email: "carol@x.com", nickname: "Carol", correct: 5, total: 8, last_vote_ts: "2026-06-01T10:00:00.000Z" },
+        ],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
+    const env = makeEnv(kv);
+    // Simula entry com last_vote_ts explicitamente null (edge case defensivo)
+    const own = { email: "carol@x.com", nickname: "Carol", correct: 6, total: 9, last_vote_ts: null } as unknown as SnapshotEntry;
+    await upsertOwnEntryInSnapshot(env, "2026-06", own);
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.ok(put);
+    const payload = JSON.parse(put!.value);
+    const carol = payload.entries.find((e: SnapshotEntry) => e.email === "carol@x.com");
+    assert.equal(carol.correct, 6, "correct atualizado");
+    assert.equal(carol.last_vote_ts, "2026-06-01T10:00:00.000Z", "last_vote_ts:null não deve sobrescrever timestamp existente");
   });
 });
 
 // ── #2130: Cache-Control: no-store no redirect 302 do leaderboard ────────────
 
 describe("#2130 — redirect 302 do leaderboard emite Cache-Control: no-store", () => {
-  const makeWorkerEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
-    POLL: makeTrackedKv() as unknown as ReturnType<typeof makeTrackedKv> & KVNamespace,
-    POLL_SECRET: "test-secret",
-    ADMIN_SECRET: "test-admin",
-    ALLOWED_ORIGINS: "*",
-  });
+  // makeWorkerEnv agora é module-scoped (extraído em #2130 pass2 para dedup — finding 3)
 
   it("brand=clarice: 302 emite Cache-Control: no-store (proxies/link-preview não cacheiam)", async () => {
     const env = makeWorkerEnv();
