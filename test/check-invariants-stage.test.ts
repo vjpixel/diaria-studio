@@ -36,8 +36,6 @@ import {
   checkSocialHashFresh,
   checkImageContentFresh,
   findImageContentMismatches,
-  checkLinkedinWorkerUrlSet,
-  checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { hashHighlights } from "../scripts/lib/social-source-hash.ts";
 import {
@@ -45,6 +43,8 @@ import {
   checkSocialPublishedComplete,
   checkStage4ReviewLoop,
   checkClosePollMarker,
+  checkLinkedinWorkerUrlSet,
+  checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");

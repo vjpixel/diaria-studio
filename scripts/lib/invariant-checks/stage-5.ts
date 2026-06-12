@@ -14,14 +14,106 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
 // 06-social-published.json) que só existem no Stage 5 (Publicação).
-// #1694 finding 8: env-var checks de publicação (facebook, linkedin) importadas
-// de stage-4.ts onde as funções ainda residem (stage-4 as their origin is fine).
-import {
-  checkFbPageIdSet,
-  checkFbTokenSet,
-  checkLinkedinWorkerUrlSet,
-  checkCloudflareTokenSet,
-} from "./stage-4.ts";
+// #2154: env-var checks de publicação (facebook, linkedin) movidas para cá —
+// eliminando o import cross-stage stage-5→stage-4. As funções pertencem
+// logicamente ao Stage 5 (Publicação) onde são de fato necessárias.
+
+/**
+ * `FACEBOOK_PAGE_ID` env var deve estar setada — publish-facebook usa pra postar
+ * via Graph API. Nome confirmado em scripts/publish-facebook.ts:376.
+ */
+function checkFbPageIdSet(): InvariantViolation[] {
+  if (!process.env.FACEBOOK_PAGE_ID || process.env.FACEBOOK_PAGE_ID.trim().length === 0) {
+    return [
+      {
+        rule: "facebook-page-id-set",
+        message:
+          "FACEBOOK_PAGE_ID env var ausente — publish-facebook vai falhar. " +
+          "Configure em .env.local.",
+        source_issue: "#facebook",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `FACEBOOK_PAGE_ACCESS_TOKEN` deve estar setado. Nome confirmado em
+ * scripts/publish-facebook.ts:377.
+ */
+function checkFbTokenSet(): InvariantViolation[] {
+  if (
+    !process.env.FACEBOOK_PAGE_ACCESS_TOKEN ||
+    process.env.FACEBOOK_PAGE_ACCESS_TOKEN.trim().length === 0
+  ) {
+    return [
+      {
+        rule: "facebook-token-set",
+        message: "FACEBOOK_PAGE_ACCESS_TOKEN ausente — Facebook publishing vai falhar",
+        source_issue: "#facebook",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `DIARIA_LINKEDIN_CRON_URL` deve estar setado — publish-linkedin envia
+ * agendamento pro Cloudflare Worker. Sem ele, fallback é Make webhook
+ * (#971 com graceful degrade). Nome confirmado em
+ * scripts/publish-linkedin.ts:305.
+ */
+function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
+  const url = process.env.DIARIA_LINKEDIN_CRON_URL;
+  if (!url || url.trim().length === 0) {
+    return [
+      {
+        rule: "linkedin-worker-url-set",
+        message:
+          "DIARIA_LINKEDIN_CRON_URL env var ausente — publish-linkedin cai pra Make webhook " +
+          "(post imediato, sem agendamento). Configure em .env.local pra evitar.",
+        source_issue: "#971",
+        severity: "warning",
+      },
+    ];
+  }
+  if (!/^https:\/\//.test(url)) {
+    return [
+      {
+        rule: "linkedin-worker-url-https",
+        message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
+        source_issue: "#971",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `DIARIA_LINKEDIN_CRON_TOKEN` deve estar setado — autoriza POST pro worker.
+ * Nome confirmado em scripts/publish-linkedin.ts:308.
+ */
+function checkCloudflareTokenSet(): InvariantViolation[] {
+  if (
+    !process.env.DIARIA_LINKEDIN_CRON_TOKEN ||
+    process.env.DIARIA_LINKEDIN_CRON_TOKEN.trim().length === 0
+  ) {
+    return [
+      {
+        rule: "linkedin-worker-token-set",
+        message:
+          "DIARIA_LINKEDIN_CRON_TOKEN ausente — publish-linkedin não consegue autenticar no worker " +
+          "(cai pra Make webhook).",
+        source_issue: "#971",
+        severity: "warning",
+      },
+    ];
+  }
+  return [];
+}
 
 interface SocialPublishedJson {
   posts?: Array<{ platform?: string; status?: string }>;
@@ -560,4 +652,8 @@ export {
   checkStage4ReviewLoop,
   checkStage4ReviewCompleted,
   checkClosePollMarker,
+  checkFbPageIdSet,
+  checkFbTokenSet,
+  checkLinkedinWorkerUrlSet,
+  checkCloudflareTokenSet,
 };
