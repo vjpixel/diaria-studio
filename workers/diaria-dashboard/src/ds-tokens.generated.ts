@@ -7,6 +7,10 @@
  * Para atualizar tokens: editar scripts/lib/design-tokens.ts e rodar:
  *   npx tsx scripts/generate-worker-tokens.ts
  * (ou simplesmente: npm test / wrangler deploy — ambos disparam o build step)
+ *
+ * Este arquivo é commitado intencionalmente — ver generate-worker-tokens.ts para
+ * a justificativa. O check de sync em brevo-dashboard-ds-drift.test.ts garante
+ * que o arquivo commitado não drifta da fonte (#2125).
  */
 
 /**

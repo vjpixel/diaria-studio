@@ -18,9 +18,15 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { COLORS, FONTS } from "../scripts/lib/design-tokens.ts";
 import { DS_COLORS, DS_FONTS } from "../workers/brevo-dashboard/src/ds-tokens.generated.ts";
 import { DS_TOKENS, DS_FONTS as DS_FONTS_INDEX, renderDashboardHtml } from "../workers/brevo-dashboard/src/index.ts";
+import { generateTokensContent } from "../scripts/generate-worker-tokens.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("ds-tokens.generated.ts — paridade com design-tokens.ts (#2084, #2107)", () => {
   test("DS_COLORS.brand espelha COLORS.brand (teal)", () => {
@@ -193,4 +199,26 @@ describe("renderDashboardHtml: coluna Enviado inclui dia da semana (#2085)", () 
       "linha 'sem stats' deve exibir dia da semana + data");
     assert.match(noStatsHtml, /sem stats/, "deve ter texto 'sem stats'");
   });
+});
+
+// ─── #2125: check de sync gerado×fonte ───────────────────────────────────────
+// Garante que os arquivos commitados refletem exatamente o que o gerador
+// produziria. Falha se alguém editar o template do gerador sem regenerar,
+// ou commitar uma versão editada manualmente do arquivo gerado.
+
+describe("ds-tokens.generated.ts: sync gerado×fonte (#2125)", () => {
+  const expectedContent = generateTokensContent(COLORS, FONTS);
+
+  for (const worker of ["brevo-dashboard", "diaria-dashboard"]) {
+    test(`workers/${worker}/src/ds-tokens.generated.ts está em sync com generate-worker-tokens.ts`, () => {
+      const generatedPath = resolve(__dirname, `../workers/${worker}/src/ds-tokens.generated.ts`);
+      const actualContent = readFileSync(generatedPath, "utf8");
+      assert.equal(
+        actualContent,
+        expectedContent,
+        `workers/${worker}/src/ds-tokens.generated.ts diverge do que generate-worker-tokens.ts produziria. ` +
+        "Rode: npx tsx scripts/generate-worker-tokens.ts",
+      );
+    });
+  }
 });

@@ -21,6 +21,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { fmtTimeBrt } from "./lib/format.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
@@ -64,14 +65,12 @@ function parseISO(s: string | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** Formata HH:MM em BRT fixo (UTC-3). Não depende do TZ do processo. */
+/** Formata HH:MM em BRT fixo (UTC-3). Não depende do TZ do processo.
+ * (#2125) Delega a fmtTimeBrt de scripts/lib/format.ts (helper compartilhado).
+ */
 function fmtHHMM(d: Date | null): string {
   if (!d) return "—";
-  // BRT = UTC-3 (sem ajuste de horário de verão — Brasil aboliu em 2019)
-  const brt = new Date(d.getTime() - 3 * 3_600_000);
-  const hh = String(brt.getUTCHours()).padStart(2, "0");
-  const mm = String(brt.getUTCMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return fmtTimeBrt(d.toISOString());
 }
 
 /** Duração legível: "1h23m" ou "45m" ou "—". */

@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
+import { SENDS } from "../scripts/clarice-build-edition-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
 
 // (#2101: guard de runtime movido para assertScheduledAtFuture — scheduledAtFor
@@ -66,6 +67,27 @@ describe("scheduledAtFor (guard de range #2007/#2018)", () => {
   it("retorna data passada sem lançar (guard separado em assertScheduledAtFuture)", () => {
     // d01 (10/jun/2026) já é passado no clock real — scheduledAtFor não deve lançar
     assert.doesNotThrow(() => scheduledAtFor(1)); // sem nowOverride = clock real
+  });
+
+  // #2125: scheduledAtFor deve derivar de SENDS (fonte única do calendário), não de aritmética própria.
+  it("deriva do campo scheduledAt de SENDS[n-1] (fonte única do calendário)", () => {
+    for (const s of SENDS) {
+      assert.equal(
+        scheduledAtFor(s.n),
+        s.scheduledAt,
+        `scheduledAtFor(${s.n}) deve igualar SENDS[${s.n - 1}].scheduledAt`,
+      );
+    }
+  });
+
+  it("todos os 21 envios derivam de SENDS sem aritmética própria", () => {
+    // Verifica que a cobertura é total: 21 entradas, sem gaps.
+    assert.equal(SENDS.length, 21, "SENDS deve ter 21 entradas");
+    for (let n = 1; n <= 21; n++) {
+      const send = SENDS.find((s) => s.n === n);
+      assert.ok(send, `SENDS deve ter entrada para n=${n}`);
+      assert.equal(scheduledAtFor(n), send!.scheduledAt);
+    }
   });
 });
 

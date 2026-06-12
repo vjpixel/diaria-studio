@@ -57,35 +57,38 @@ type Row = Record<string, string>;
 // ---------------------------------------------------------------------------
 
 export interface SendDef {
-  n: number;        // 1..21
-  date: string;     // "10jun"
-  day: string;      // "qua"
+  n: number;          // 1..21
+  date: string;       // "10jun"
+  day: string;        // "qua"
   week: 1 | 2 | 3;
   volume: number;
+  /** Data de envio agendada: 06:00 BRT = 09:00 UTC em ISO 8601 Z. (#2125)
+   *  Fonte canônica das datas do ciclo — scheduledAtFor deriva daqui. */
+  scheduledAt: string;
 }
 
 export const SENDS: SendDef[] = [
-  { n: 1, date: "10jun", day: "qua", week: 1, volume: 350 },
-  { n: 2, date: "11jun", day: "qui", week: 1, volume: 550 },
-  { n: 3, date: "12jun", day: "sex", week: 1, volume: 700 },
-  { n: 4, date: "13jun", day: "sab", week: 1, volume: 850 },
-  { n: 5, date: "14jun", day: "dom", week: 1, volume: 950 },
-  { n: 6, date: "15jun", day: "seg", week: 1, volume: 1050 },
-  { n: 7, date: "16jun", day: "ter", week: 1, volume: 1150 },
-  { n: 8, date: "17jun", day: "qua", week: 2, volume: 1450 },
-  { n: 9, date: "18jun", day: "qui", week: 2, volume: 1650 },
-  { n: 10, date: "19jun", day: "sex", week: 2, volume: 1800 },
-  { n: 11, date: "20jun", day: "sab", week: 2, volume: 1900 },
-  { n: 12, date: "21jun", day: "dom", week: 2, volume: 2000 },
-  { n: 13, date: "22jun", day: "seg", week: 2, volume: 2100 },
-  { n: 14, date: "23jun", day: "ter", week: 2, volume: 2400 },
-  { n: 15, date: "24jun", day: "qua", week: 3, volume: 2600 },
-  { n: 16, date: "25jun", day: "qui", week: 3, volume: 2800 },
-  { n: 17, date: "26jun", day: "sex", week: 3, volume: 2950 },
-  { n: 18, date: "27jun", day: "sab", week: 3, volume: 3050 },
-  { n: 19, date: "28jun", day: "dom", week: 3, volume: 3150 },
-  { n: 20, date: "29jun", day: "seg", week: 3, volume: 3250 },
-  { n: 21, date: "30jun", day: "ter", week: 3, volume: 3300 },
+  { n: 1,  date: "10jun", day: "qua", week: 1, volume:  350, scheduledAt: "2026-06-10T09:00:00.000Z" },
+  { n: 2,  date: "11jun", day: "qui", week: 1, volume:  550, scheduledAt: "2026-06-11T09:00:00.000Z" },
+  { n: 3,  date: "12jun", day: "sex", week: 1, volume:  700, scheduledAt: "2026-06-12T09:00:00.000Z" },
+  { n: 4,  date: "13jun", day: "sab", week: 1, volume:  850, scheduledAt: "2026-06-13T09:00:00.000Z" },
+  { n: 5,  date: "14jun", day: "dom", week: 1, volume:  950, scheduledAt: "2026-06-14T09:00:00.000Z" },
+  { n: 6,  date: "15jun", day: "seg", week: 1, volume: 1050, scheduledAt: "2026-06-15T09:00:00.000Z" },
+  { n: 7,  date: "16jun", day: "ter", week: 1, volume: 1150, scheduledAt: "2026-06-16T09:00:00.000Z" },
+  { n: 8,  date: "17jun", day: "qua", week: 2, volume: 1450, scheduledAt: "2026-06-17T09:00:00.000Z" },
+  { n: 9,  date: "18jun", day: "qui", week: 2, volume: 1650, scheduledAt: "2026-06-18T09:00:00.000Z" },
+  { n: 10, date: "19jun", day: "sex", week: 2, volume: 1800, scheduledAt: "2026-06-19T09:00:00.000Z" },
+  { n: 11, date: "20jun", day: "sab", week: 2, volume: 1900, scheduledAt: "2026-06-20T09:00:00.000Z" },
+  { n: 12, date: "21jun", day: "dom", week: 2, volume: 2000, scheduledAt: "2026-06-21T09:00:00.000Z" },
+  { n: 13, date: "22jun", day: "seg", week: 2, volume: 2100, scheduledAt: "2026-06-22T09:00:00.000Z" },
+  { n: 14, date: "23jun", day: "ter", week: 2, volume: 2400, scheduledAt: "2026-06-23T09:00:00.000Z" },
+  { n: 15, date: "24jun", day: "qua", week: 3, volume: 2600, scheduledAt: "2026-06-24T09:00:00.000Z" },
+  { n: 16, date: "25jun", day: "qui", week: 3, volume: 2800, scheduledAt: "2026-06-25T09:00:00.000Z" },
+  { n: 17, date: "26jun", day: "sex", week: 3, volume: 2950, scheduledAt: "2026-06-26T09:00:00.000Z" },
+  { n: 18, date: "27jun", day: "sab", week: 3, volume: 3050, scheduledAt: "2026-06-27T09:00:00.000Z" },
+  { n: 19, date: "28jun", day: "dom", week: 3, volume: 3150, scheduledAt: "2026-06-28T09:00:00.000Z" },
+  { n: 20, date: "29jun", day: "seg", week: 3, volume: 3250, scheduledAt: "2026-06-29T09:00:00.000Z" },
+  { n: 21, date: "30jun", day: "ter", week: 3, volume: 3300, scheduledAt: "2026-06-30T09:00:00.000Z" },
 ];
 
 export const TIERS = ["T1-abriu", "T1-nao-abriu", "maio", "T2", "T3", "T4"] as const;

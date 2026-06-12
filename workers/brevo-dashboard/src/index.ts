@@ -591,17 +591,6 @@ export const CLARICE_PLAN_TOTAL = 40_000;
 export const CLARICE_PLAN_S1 = 5_600;
 
 /**
- * Extrai célula A/B/C do nome da campanha Clarice News.
- * Padrão: "Clarice News {cycle} d{NN}-{cell} ({weekday})"
- * ex: "Clarice News 2605 d01-A (qua)" → cell = "A"
- * Retorna null para campanhas que não seguem o padrão (ex: T1-W1..W7).
- * Delegado a parseClariceCampaignKey para evitar regex duplicada.
- */
-export function extractClariceCell(campaignName: string): "A" | "B" | "C" | null {
-  return parseClariceCampaignKey(campaignName)?.cell ?? null;
-}
-
-/**
  * Extrai o ciclo e o número do dia de uma campanha Clarice News.
  * ex: "Clarice News 2605 d02-C (qui)" → { cycle: "2605", dayNum: 2, cell: "C" }
  * Retorna null para campanhas que não seguem o padrão.
