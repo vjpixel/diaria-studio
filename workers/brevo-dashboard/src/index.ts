@@ -1074,9 +1074,9 @@ export function renderWeekdaySection(
       return `<tr>
         <td><strong>${escHtml(r.label)}</strong></td>
         <td>${r.count}</td>
-        <td>${r.sent.toLocaleString("pt-BR")}</td>
         <td>${r.delivered.toLocaleString("pt-BR")}</td>
         <td class="metric">${openRateFmt}${winnerTag}${smallSampleNote}</td>
+        <td>${r.opens.toLocaleString("pt-BR")}</td>
       </tr>`;
     })
     .join("\n");
@@ -1102,9 +1102,9 @@ export function renderWeekdaySection(
       <tr>
         <th title="Dia da semana do envio (horário de Brasília)">Dia</th>
         <th title="Número de campanhas enviadas neste dia">Campanhas</th>
-        <th title="Total enviado (todos os envios do dia)">Sent</th>
         <th title="Total entregue">Delivered</th>
         <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
+        <th title="Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia.">Opens</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

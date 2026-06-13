@@ -790,9 +790,9 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("ordena dias do melhor pro pior open rate", () => {
     const rows = [
-      { weekday: 0, label: "Seg", count: 2, sent: 100, delivered: 100, openRate: 20, smallSample: false },
-      { weekday: 2, label: "Qua", count: 2, sent: 100, delivered: 100, openRate: 40, smallSample: false },
-      { weekday: 3, label: "Qui", count: 2, sent: 100, delivered: 100, openRate: 30, smallSample: false },
+      { weekday: 0, label: "Seg", count: 2, sent: 100, delivered: 100, opens: 20, openRate: 20, smallSample: false },
+      { weekday: 2, label: "Qua", count: 2, sent: 100, delivered: 100, opens: 40, openRate: 40, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, sent: 100, delivered: 100, opens: 30, openRate: 30, smallSample: false },
     ];
     const html = renderWeekdaySection(rows, "todos os envios");
     const posQua = html.indexOf(">Qua<");
@@ -877,5 +877,53 @@ describe("renderWeekdaySection (#2134)", () => {
     const html = renderWeekdaySection(zeroRows, "ciclo 2605");
     assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate 0.0%' quando todos zero");
     assert.match(html, /[Aa]guardando dados/, "deve mostrar 'aguardando dados' quando tudo zero");
+  });
+
+  // ─── #2185: coluna Opens + remoção de Sent ────────────────────────────────
+
+  test("#2185 coluna Opens aparece no header", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /Opens/, "header deve conter 'Opens'");
+  });
+
+  test("#2185 coluna Sent NÃO aparece no header", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    // Verifica que não há <th> com texto 'Sent' (pode aparecer em dados de campanha
+    // fora desta seção, mas não deve aparecer como header nesta tabela)
+    assert.doesNotMatch(html, /<th[^>]*>Sent<\/th>/, "header não deve ter coluna Sent");
+  });
+
+  test("#2185 Opens exibe soma correta de uniqueViews por dia (qua=82, qui=104)", () => {
+    // cycle2605Campaigns:
+    //   Qua d01: A(views=20)+B(32)+C(30) = 82
+    //   Qui d02: A(35)+B(39)+C(30) = 104
+    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /82/, "deve mostrar 82 opens para Qua");
+    assert.match(html, /104/, "deve mostrar 104 opens para Qui");
+  });
+
+  test("#2185 Open rate permanece inalterado (denominador preserved = delivered)", () => {
+    // Open rate = opens / delivered, NÃO usa sent como denominador
+    // Qua: 82 opens / 347 delivered ≈ 23.6%
+    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    const expectedRate = (82 / 347) * 100;
+    assert.ok(Math.abs(qua.openRate - expectedRate) < 0.01,
+      `open rate deve ser ${expectedRate.toFixed(2)}% (opens/delivered), foi ${qua.openRate.toFixed(2)}%`);
+    // Confirma que a taxa aparece no HTML corretamente
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /23\.[0-9]%/, "deve exibir a taxa open rate (~23.6%) no HTML");
+  });
+
+  test("#2185 graceful: dia sem opens (opens=0) renderiza 0 sem crash", () => {
+    const zeroOpens = [
+      { weekday: 2, label: "Qua", count: 1, sent: 100, delivered: 98, opens: 0, openRate: 0, smallSample: true },
+    ];
+    const html = renderWeekdaySection(zeroOpens, "ciclo 2605");
+    assert.match(html, /0/, "deve renderizar 0 sem crash");
+    assert.doesNotMatch(html, /undefined/, "não deve exibir 'undefined'");
   });
 });
