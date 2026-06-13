@@ -32,7 +32,7 @@ import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/a
 import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
-import { loadUseMelhorPrefixes, matchesUseMelhorPrefix } from "./lib/use-melhor-sources.ts"; // #1899
+import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, loadAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -96,6 +96,18 @@ const USE_MELHOR_PREFIXES: string[] = (() => {
     return loadUseMelhorPrefixes();
   } catch (e) {
     console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
+    return [];
+  }
+})();
+
+// #2176: mapa COMPLETO de fontes (todas, não só use_melhor) para o desempate
+// path-mais-específico-vence quando dois sources compartilham o mesmo host.
+// Fallback: lista vazia → cai no comportamento legado (matchesUseMelhorPrefix).
+const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = (() => {
+  try {
+    return loadAllSourcePrefixMap();
+  } catch (e) {
+    console.error(`[categorize] WARN: loadAllSourcePrefixMap falhou (${(e as Error).message}) — usando fallback legado`);
     return [];
   }
 })();
@@ -1045,18 +1057,33 @@ export function categorize(article: Article): Category {
   if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return "tutorial";
   if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) return "tutorial";
 
-  // #1899 (Slice 2): fonte flagueada `use_melhor` no seed (lista-semente) →
-  // tutorial, com o MESMO guard de não-tutorial (#1712) dos domínios de tutorial.
+  // #1899 (Slice 2) / #2176 (path-mais-específico-vence):
+  //
+  // Quando múltiplas fontes cadastradas compartilham o mesmo host (ex: 'Google'
+  // Primária em `blog.google` e 'Blog do Google Brasil' Tutoriais em
+  // `blog.google/intl/pt-br/novidades/tecnologia`), a atribuição de bucket é
+  // determinística pela especificidade do path:
+  //   - A fonte com o prefixo MAIS LONGO que for prefixo da URL vence.
+  //   - Empate de comprimento: use_melhor=1 vence; depois menor índice no CSV.
+  //
+  // Quando ALL_SOURCE_PREFIX_MAP está disponível (caso normal), usamos
+  // resolveUseMelhorBySpecificity. Fallback para matchesUseMelhorPrefix (legado)
+  // se o mapa falhou ao carregar.
+  //
   // Híbrido lista+tipo: a flag cobre fontes dedicadas (kaggle.com/learn,
   // github.com/anthropics/anthropic-cookbook) que os patterns hardcoded não
   // pegavam; isTutorialByKeyword/etc seguem capturando how-to fora da lista.
-  if (
-    USE_MELHOR_PREFIXES.length > 0 &&
-    matchesUseMelhorPrefix(article.url, USE_MELHOR_PREFIXES) &&
-    !isNewsNotTutorial(article)
-  ) {
+  const _useMelhorBySpecificity = ALL_SOURCE_PREFIX_MAP.length > 0
+    ? resolveUseMelhorBySpecificity(article.url, ALL_SOURCE_PREFIX_MAP)
+    : (USE_MELHOR_PREFIXES.length > 0 && matchesUseMelhorPrefix(article.url, USE_MELHOR_PREFIXES) ? true : null);
+
+  if (_useMelhorBySpecificity === true && !isNewsNotTutorial(article)) {
     return "tutorial";
   }
+  // _useMelhorBySpecificity === false → URL pertence a uma fonte NOT use_melhor
+  // (ex: 'Google' em blog.google) com path mais específico — não rotear pra
+  // tutorial mesmo que haja prefix use_melhor de comprimento menor.
+  // _useMelhorBySpecificity === null → URL fora do seed → fallback por tipo.
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {

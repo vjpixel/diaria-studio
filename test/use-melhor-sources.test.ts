@@ -1,8 +1,9 @@
 /**
- * test/use-melhor-sources.test.ts (#1899)
+ * test/use-melhor-sources.test.ts (#1899 / #2176)
  *
  * Cobre o helper da flag `use_melhor` (lista-semente de fontes da seção
  * Use Melhor) e o loader de hosts a partir do seed real.
+ * #2176: adiciona testes do desempate path-mais-específico-vence.
  */
 
 import { describe, it } from "node:test";
@@ -13,6 +14,9 @@ import {
   sourcePrefix,
   loadUseMelhorPrefixes,
   matchesUseMelhorPrefix,
+  loadAllSourcePrefixMap,
+  resolveUseMelhorBySpecificity,
+  type SourcePrefixEntry,
 } from "../scripts/lib/use-melhor-sources.ts";
 
 describe("isUseMelhorSource (#1899)", () => {
@@ -76,5 +80,144 @@ describe("matchesUseMelhorPrefix (#1927 review)", () => {
   });
   it("não casa fonte de notícia", () => {
     assert.equal(matchesUseMelhorPrefix("https://canaltech.com.br/ia/x", prefixes), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2176 — loadAllSourcePrefixMap + resolveUseMelhorBySpecificity
+// ---------------------------------------------------------------------------
+
+describe("loadAllSourcePrefixMap (#2176)", () => {
+  const allEntries = loadAllSourcePrefixMap();
+
+  it("retorna todas as fontes, incluindo as NÃO use_melhor", () => {
+    assert.ok(allEntries.length > 0, "deve ter entries");
+    // Deve incluir entradas use_melhor=false (fontes Primária/Secundária)
+    const hasNonUseMelhor = allEntries.some((e) => !e.useMelhor);
+    assert.ok(hasNonUseMelhor, "deve incluir fontes não-use_melhor");
+  });
+
+  it("entries ordenadas: prefixo mais longo primeiro", () => {
+    for (let i = 1; i < allEntries.length; i++) {
+      assert.ok(
+        allEntries[i].prefix.length <= allEntries[i - 1].prefix.length,
+        `entry[${i}] (len=${allEntries[i].prefix.length}) deve ser <= entry[${i-1}] (len=${allEntries[i-1].prefix.length})`,
+      );
+    }
+  });
+
+  it("cenário real blog.google: existe entrada use_melhor=false (Google Primária) e use_melhor=true (Blog Brasil)", () => {
+    const googlePrimaria = allEntries.find(
+      (e) => e.prefix === "blog.google" && !e.useMelhor,
+    );
+    const blogBrasil = allEntries.find(
+      (e) => e.prefix.startsWith("blog.google/intl/pt-br") && e.useMelhor,
+    );
+    assert.ok(googlePrimaria, "Google Primária (blog.google host-only, não use_melhor) deve estar no mapa");
+    assert.ok(blogBrasil, "Blog do Google Brasil (blog.google/intl/pt-br/..., use_melhor) deve estar no mapa");
+    // Blog Brasil deve vir ANTES no array (prefixo mais longo)
+    const idxBrasil = allEntries.indexOf(blogBrasil!);
+    const idxPrimaria = allEntries.indexOf(googlePrimaria!);
+    assert.ok(idxBrasil < idxPrimaria, "Blog Brasil (mais específico) deve vir antes de Google Primária no array ordenado");
+  });
+});
+
+describe("resolveUseMelhorBySpecificity (#2176)", () => {
+  // Simula o cenário real: blog.google host-only (não use_melhor) + blog.google/intl/pt-br (use_melhor)
+  const fakeEntries: SourcePrefixEntry[] = [
+    // Ordenado por comprimento desc (como loadAllSourcePrefixMap retorna)
+    { prefix: "blog.google/intl/pt-br/novidades/tecnologia", useMelhor: true, index: 1 },
+    { prefix: "blog.google", useMelhor: false, index: 0 },
+    { prefix: "fast.ai", useMelhor: true, index: 2 },
+    { prefix: "canaltech.com.br/inteligencia-artificial", useMelhor: false, index: 3 },
+  ];
+
+  it("#2176: URL em blog.google/intl/pt-br/novidades/tecnologia → use_melhor=true (path específico vence)", () => {
+    const url = "https://blog.google/intl/pt-br/novidades/tecnologia/gemini-novo/";
+    const result = resolveUseMelhorBySpecificity(url, fakeEntries);
+    assert.equal(result, true, "path mais específico (use_melhor=true) deve vencer host-only (use_melhor=false)");
+  });
+
+  it("#2176: URL em blog.google/products/outro → use_melhor=false (Google Primária host-only vence)", () => {
+    // Esta URL NÃO está sob o path específico do Blog Brasil → apenas Google Primária casa
+    const url = "https://blog.google/products/search/ia-search-update/";
+    const result = resolveUseMelhorBySpecificity(url, fakeEntries);
+    assert.equal(result, false, "URL fora do path específico → fonte host-only (use_melhor=false) vence");
+  });
+
+  it("#2176: resultado é DETERMINÍSTICO independente de quantas vezes chamado", () => {
+    const url = "https://blog.google/intl/pt-br/novidades/tecnologia/gemini-novo/";
+    const r1 = resolveUseMelhorBySpecificity(url, fakeEntries);
+    const r2 = resolveUseMelhorBySpecificity(url, fakeEntries);
+    const r3 = resolveUseMelhorBySpecificity(url, fakeEntries);
+    assert.equal(r1, r2);
+    assert.equal(r2, r3);
+  });
+
+  it("URL em host dedicado use_melhor → true", () => {
+    const url = "https://fast.ai/posts/lesson1.html";
+    assert.equal(resolveUseMelhorBySpecificity(url, fakeEntries), true);
+  });
+
+  it("URL fora do seed → null (nenhuma fonte cadastrada casa)", () => {
+    const url = "https://some-unknown-blog.example/ai-post";
+    assert.equal(resolveUseMelhorBySpecificity(url, fakeEntries), null);
+  });
+
+  it("URL inválida → null", () => {
+    assert.equal(resolveUseMelhorBySpecificity("not-a-url", fakeEntries), null);
+  });
+
+  it("desempate por comprimento: empate de path → use_melhor=1 vence (desempate 2)", () => {
+    // Dois prefixos do MESMO comprimento: um use_melhor=false, outro true
+    const sameLenEntries: SourcePrefixEntry[] = [
+      { prefix: "example.com/path-aa", useMelhor: false, index: 0 }, // mais longo ≠ mais específico (mesmo tamanho)
+      { prefix: "example.com/path-bb", useMelhor: true, index: 1 },  // mesmo comprimento
+      { prefix: "example.com", useMelhor: false, index: 2 },
+    ];
+    // URL que casa com example.com/path-bb
+    const url = "https://example.com/path-bb/article";
+    // Apenas example.com/path-bb e example.com casam; example.com/path-aa não casa.
+    const result = resolveUseMelhorBySpecificity(url, sameLenEntries);
+    // O único match de comprimento máximo é example.com/path-bb (use_melhor=true)
+    assert.equal(result, true);
+  });
+
+  it("desempate por índice: empate de comprimento e use_melhor → menor índice CSV vence (desempate 3)", () => {
+    // Dois prefixos do MESMO comprimento e MESMO use_melhor=false: vence o de menor índice
+    const sameLenSameUmEntries: SourcePrefixEntry[] = [
+      { prefix: "example.com/sec-a", useMelhor: false, index: 0 },
+      { prefix: "example.com/sec-b", useMelhor: false, index: 1 },
+    ];
+    // URL que casa com example.com/sec-a (índice 0)
+    const urlA = "https://example.com/sec-a/post";
+    // URL que casa com example.com/sec-b (índice 1)
+    const urlB = "https://example.com/sec-b/post";
+    assert.equal(resolveUseMelhorBySpecificity(urlA, sameLenSameUmEntries), false);
+    assert.equal(resolveUseMelhorBySpecificity(urlB, sameLenSameUmEntries), false);
+    // Ambas retornam false (use_melhor=false) — determinístico
+  });
+
+  it("seed real: URL em blog.google/intl/pt-br → use_melhor=true com mapa real", () => {
+    // Usa o mapa REAL carregado do sources.csv — o cenário da issue #2176
+    const realEntries = loadAllSourcePrefixMap();
+    const ptBrUrl = "https://blog.google/intl/pt-br/novidades/tecnologia/google-ia-update/";
+    const result = resolveUseMelhorBySpecificity(ptBrUrl, realEntries);
+    assert.equal(
+      result,
+      true,
+      "URL em blog.google/intl/pt-br/novidades/tecnologia deve resolver como use_melhor=true (Blog Brasil mais específico que Google Primária)",
+    );
+  });
+
+  it("seed real: URL em blog.google/ fora do pt-br → use_melhor=false com mapa real", () => {
+    const realEntries = loadAllSourcePrefixMap();
+    const globalUrl = "https://blog.google/products/search/ia-update-2026/";
+    const result = resolveUseMelhorBySpecificity(globalUrl, realEntries);
+    assert.equal(
+      result,
+      false,
+      "URL em blog.google/ fora de /intl/pt-br/ → Google Primária (use_melhor=false) vence",
+    );
   });
 });

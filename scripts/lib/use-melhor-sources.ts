@@ -90,3 +90,115 @@ export function matchesUseMelhorPrefix(url: string, prefixes: string[]): boolean
   if (!target) return false;
   return prefixes.some((p) => target === p || target.startsWith(p + "/"));
 }
+
+// ---------------------------------------------------------------------------
+// #2176 — path-mais-específico-vence no empate de host entre fontes
+// ---------------------------------------------------------------------------
+
+/**
+ * Entrada do mapa de todas as fontes cadastradas.
+ * `prefix` é o prefixo `host/path` normalizado (ver `sourcePrefix`).
+ * `useMelhor` reflete a coluna `use_melhor` do CSV.
+ * `index` é a posição original no CSV — usado como desempate estável
+ * quando dois prefixos têm exatamente o mesmo comprimento e o mesmo
+ * valor de useMelhor.
+ */
+export interface SourcePrefixEntry {
+  prefix: string;
+  useMelhor: boolean;
+  index: number;
+}
+
+/**
+ * Lê `seed/sources.csv` e retorna **todas** as fontes como `SourcePrefixEntry[]`,
+ * ordenadas por comprimento de prefixo decrescente (mais específico primeiro),
+ * com desempate estável por índice original no CSV.
+ *
+ * Inclui fontes sem `use_melhor` — necessário para o desempate por especificidade
+ * de path entre fontes que compartilham o mesmo host (#2176).
+ */
+export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[] {
+  const csv = readFileSync(resolve(root, "seed", "sources.csv"), "utf8");
+  const { data } = Papa.parse<SourceRow>(csv, { header: true, skipEmptyLines: true });
+  const entries: SourcePrefixEntry[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if (!row.URL) continue;
+    const p = sourcePrefix(row.URL);
+    if (!p) continue;
+    entries.push({ prefix: p, useMelhor: isUseMelhorSource(row), index: i });
+  }
+  // Ordenar por especificidade (prefixo mais longo primeiro), depois por índice
+  // no CSV (posição original) pra desempate estável quando comprimentos iguais.
+  entries.sort((a, b) => b.prefix.length - a.prefix.length || a.index - b.index);
+  return entries;
+}
+
+/**
+ * #2176 — path-mais-específico-vence.
+ *
+ * Dado o mapa completo de fontes (retornado por `loadAllSourcePrefixMap`),
+ * retorna se a URL deve ser tratada como `use_melhor` conforme a fonte MAIS
+ * ESPECÍFICA que casa o host/path do artigo.
+ *
+ * Regra de desempate (determinística, documentada):
+ *   1. Prefixo MAIS LONGO que é prefixo da URL vence (path mais específico).
+ *      Ex: `blog.google/intl/pt-br/novidades/tecnologia` (len=43) vence
+ *      `blog.google` (len=11) para uma URL em `blog.google/intl/pt-br/...`.
+ *   2. Empate de comprimento → fonte `use_melhor=1` vence (favorece tutoriais).
+ *   3. Empate de comprimento e use_melhor igual → menor índice no CSV vence
+ *      (ordem de declaração — determinístico e estável independente da ordem
+ *      dos source-researchers).
+ *
+ * Boundary-safe: `github.com/anthropics` casa `.../anthropics/x` mas não
+ * `.../anthropics-other` (mesmo guard de `matchesUseMelhorPrefix`).
+ *
+ * Retorna `null` se nenhuma fonte cadastrada casa o host/path (URL fora do
+ * seed — o caller mantém o comportamento anterior: só inferência por tipo).
+ */
+export function resolveUseMelhorBySpecificity(
+  url: string,
+  allEntries: SourcePrefixEntry[],
+): boolean | null {
+  const target = sourcePrefix(url);
+  if (!target) return null;
+
+  // allEntries está ordenado por (comprimento desc, índice asc).
+  // Precisamos: dentre todos os entries cujo prefix é prefixo do target,
+  // pegar o grupo de comprimento máximo e aplicar os desempates 2 e 3.
+  let bestLength = -1;
+  let bestUseMelhor = false;
+  let foundAny = false;
+
+  for (const entry of allEntries) {
+    const matches = target === entry.prefix || target.startsWith(entry.prefix + "/");
+    if (!matches) continue;
+
+    const len = entry.prefix.length;
+
+    if (!foundAny) {
+      // Primeiro match — inicializa.
+      bestLength = len;
+      bestUseMelhor = entry.useMelhor;
+      foundAny = true;
+    } else if (len === bestLength) {
+      // Mesmo comprimento — desempate 2: use_melhor=1 vence.
+      // Desempate 3 (índice) já implícito: allEntries é estável por índice
+      // (sort com a.index - b.index), então o primeiro entry de índice menor
+      // com o mesmo comprimento já foi processado. Só sobrescrevemos se o
+      // novo entry é use_melhor=1 e o atual não — um entry use_melhor=0 de
+      // índice menor NÃO vence um use_melhor=1 de índice maior no mesmo
+      // comprimento (desempate 2 > desempate 3).
+      if (entry.useMelhor && !bestUseMelhor) {
+        bestUseMelhor = true;
+      }
+    } else {
+      // len < bestLength — entries mais curtos (menos específicos).
+      // Como a lista está ordenada desc, todos os próximos também serão
+      // menores — podemos parar.
+      break;
+    }
+  }
+
+  return foundAny ? bestUseMelhor : null;
+}
