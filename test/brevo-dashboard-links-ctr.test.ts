@@ -211,8 +211,13 @@ describe("renderLinksSection (#2177)", () => {
   test("caso vazio: linksStats {} → stub com nota de 'nenhum link rastreado'", () => {
     const html = renderLinksSection(10, {});
     assert.doesNotMatch(html, /<table/, "não deve ter tabela quando linksStats vazio");
-    assert.match(html, /nenhum link rastreado|nenhum link editorial|dados de links não disponíveis/i,
-      "deve ter nota explicativa");
+    // #2208 (item 5): pinar a mensagem exata do branch {} (não aceitar undefined branch
+    // ou editorial branch — cada branch tem mensagem distinta e discriminante).
+    // Branch null/undefined → "dados de links não disponíveis"
+    // Branch {} (vazio)    → "nenhum link rastreado"  ← este teste
+    // Branch editorial/0   → "links editoriais presentes, mas com 0 cliques registrados"
+    assert.match(html, /nenhum link rastreado/i,
+      "branch {} deve exibir exatamente 'nenhum link rastreado' (não a mensagem do branch undefined)");
   });
 
   test("caso todos sistema: linksStats só com system links → stub (sem links editoriais)", () => {

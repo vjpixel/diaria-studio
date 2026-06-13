@@ -79,21 +79,31 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     assert.equal(res.status, 200, "admin/correct deve retornar 200");
     const body = await res.json() as { ok: boolean; updated_votes: number };
     assert.equal(body.ok, true);
-    // O voto correct===false DEVE ser re-pontuado (updated_votes >= 1)
-    assert.ok(body.updated_votes >= 1, `deve ter atualizado ao menos 1 voto (got ${body.updated_votes})`);
+    // #2208 (item 2): pinar o valor exato — exatamente 1 voto neste cenário.
+    // assert.ok(>= 1) aceitaria qualquer positivo e passaria mesmo se houvesse double-count.
+    assert.equal(body.updated_votes, 1, `deve ter atualizado exatamente 1 voto (got ${body.updated_votes})`);
 
     // Verifica que o voto foi regravado com correct=true
     const voteRaw = await kv.get("vote:260613:leitor@x.com");
     const vote = JSON.parse(voteRaw!);
     assert.equal(vote.correct, true, "vote.correct deve ser true após backfill com gabarito correto");
 
-    // Verifica que o score foi atualizado (correct incrementou)
+    // Verifica que o score foi atualizado (correct incrementou para exatamente 1)
     const scoreRaw = await kv.get("score:leitor@x.com");
     const score = JSON.parse(scoreRaw!);
-    assert.ok(score.correct > 0, `score.correct deve ter incrementado (got ${score.correct})`);
+    // #2208 (item 2): pinar valor exato — era 0, deve ser exatamente 1 (não "qualquer > 0").
+    assert.equal(score.correct, 1, `score.correct deve ser exatamente 1 após false→true (got ${score.correct})`);
     // #2202 (P1): garante que total NÃO foi double-incremented pelo backfill.
     // updateScore re-incrementava total (double-count); adjustScoreCorrectOnly não toca total.
     assert.equal(score.total, 1, `score.total NÃO deve ser re-incrementado pelo backfill — deve ser 1 (got ${score.total})`);
+
+    // #2208 (item 1): score-by-month deve espelhar o global — false→true incrementa monthly.correct.
+    // Bug pré-#2206: adjustScoreByMonthCorrectOnly não decrementava no caso true→false,
+    // o que tornava bidirecionalidade invisível para testes que só verificavam o global.
+    const monthRaw = await kv.get("score-by-month:2026-06:leitor@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.correct, 1, "score-by-month.correct deve ser 1 após false→true (espelha global)");
+    assert.equal(monthly.total, 1, "score-by-month.total NÃO deve ser tocado pelo backfill");
   });
 
   it("voto já-correto (correct===true) NÃO é re-pontuado (idempotente)", async () => {
@@ -111,6 +121,13 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     const body = await res.json() as { updated_votes: number };
     // Voto correct===true não entra no loop de re-pontagem — updated_votes=0
     assert.equal(body.updated_votes, 0, "voto já-correto não deve gerar updated_votes");
+
+    // #2208 (item 1): score-by-month deve permanecer inalterado quando voto já-correto é re-confirmado.
+    // Sem esta asserção, uma re-incrementação acidental de monthly.correct passaria invisível.
+    const monthRaw = await kv.get("score-by-month:2026-06:certo@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.correct, 1, "score-by-month.correct deve permanecer 1 (idempotente — sem re-incremento)");
+    assert.equal(monthly.total, 1, "score-by-month.total não deve ser alterado");
   });
 
   it("cenário completo: admin corrige gabarito → null, false E true são todos re-avaliados bidirecionalmente", async () => {
@@ -157,6 +174,22 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     assert.equal(s3.total, 1, "L3: total NÃO deve ser re-incrementado pelo backfill (era 1, deve ser 1)");
     // score.correct de L3 deve ter sido decrementado (era 1, deve ser 0)
     assert.equal(s3.correct, 0, "L3: correct deve ter sido decrementado para 0 (true→false)");
+
+    // #2208 (item 1): score-by-month deve espelhar as mesmas transições do global.
+    // Bug pré-#2206: o decremento true→false não era aplicado ao mensal — acerto fantasma.
+    const m1 = JSON.parse((await kv.get("score-by-month:2026-06:l1@x.com"))!);
+    assert.equal(m1.correct, 1, "L1 (false→true): score-by-month.correct deve ser 1");
+    assert.equal(m1.total, 1, "L1: score-by-month.total não deve ser alterado");
+
+    const m2 = JSON.parse((await kv.get("score-by-month:2026-06:l2@x.com"))!);
+    assert.equal(m2.correct, 1, "L2 (null→true): score-by-month.correct deve ser 1");
+    assert.equal(m2.total, 1, "L2: score-by-month.total não deve ser alterado");
+
+    const m3 = JSON.parse((await kv.get("score-by-month:2026-06:l3@x.com"))!);
+    // L3 (true→false): monthly.correct era 1, deve ser decrementado para 0.
+    // Sem esta asserção, o bug pré-#2206 passaria invisível neste cenário.
+    assert.equal(m3.correct, 0, "L3 (true→false): score-by-month.correct deve ser 0 (acerto fantasma eliminado)");
+    assert.equal(m3.total, 1, "L3: score-by-month.total não deve ser alterado");
   });
 
   it("#2202 (P1): backfill NÃO re-incrementa total (double-count regression)", async () => {
@@ -167,6 +200,9 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
       // Leitor: votou A, gabarito ainda null → correct=null; total=1 gravado pelo handleVote
       "vote:260615:dbl@x.com": JSON.stringify({ choice: "A", ts: "t", correct: null }),
       "score:dbl@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260615", nickname: null }),
+      // #2208 (item 1): score-by-month stub necessário pra verificar que monthly.total
+      // não é double-incremented e monthly.correct é ajustado corretamente.
+      "score-by-month:2026-06:dbl@x.com": JSON.stringify({ total: 1, correct: 0, last_edition: "260615", nickname: null }),
     });
 
     // Admin define gabarito A
@@ -181,6 +217,13 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     assert.equal(score.correct, 1, `correct deve ser 1 após backfill null→true (got ${score.correct})`);
     // streak NÃO deve ser tocado pelo backfill
     assert.equal(score.streak, 0, `streak NÃO deve ser incrementado pelo backfill (got ${score.streak})`);
+
+    // #2208 (item 1): score-by-month também não deve ter total double-incremented.
+    // O bug pré-#2206/#2202 re-chamava updateScoreByMonth integralmente, re-somando total.
+    const monthRaw = await kv.get("score-by-month:2026-06:dbl@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.total, 1, "score-by-month.total NÃO deve ser double-incremented pelo backfill");
+    assert.equal(monthly.correct, 1, "score-by-month.correct deve ser 1 após null→true (incrementado exatamente 1x)");
   });
 });
 
@@ -405,9 +448,12 @@ describe("#2190 — score:${email} lido no máximo 1x no handleVote (caminho nov
 
     // Antes do fix: 2-3 gets (checagem nickname + updateScore + updateScoreByMonth).
     // Após o fix: 1 get (lido antes do commit, repassado).
-    assert.ok(
-      scoreGetCount <= 1,
-      `score:count@x.com deve ser lido no máximo 1x (got ${scoreGetCount}) — #2190`,
+    // #2208 (item 3): `<= 1` aceitava 0 (score nunca lido) — o teste passaria mesmo se o
+    // handleVote ignorasse completamente o score do subscriber. Pinar em === 1.
+    assert.equal(
+      scoreGetCount,
+      1,
+      `score:count@x.com deve ser lido exatamente 1x (got ${scoreGetCount}) — #2190/#2208`,
     );
   });
 });
