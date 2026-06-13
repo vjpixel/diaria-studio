@@ -310,9 +310,12 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       uniqueClicks: 10, clickers: 9, unsubscriptions: 1, complaints: 0 }] },
   };
 
-  test("KV hit de gstats imutavel evita chamada ao _fetchFn por campanha", async () => {
+  test("KV hit de gstats+lstats imutavel evita chamada ao _fetchFn por campanha", async () => {
+    // Regressão #2183: apenas quando AMBOS gstats e lstats estão em cache o fetch é pulado.
+    const fakeLinksStats = { "https://diar.ia/edicao/test": 5 };
     const { kv, getCalls } = makeKVMock({
       "gstats:42": JSON.stringify(fakeGlobalStats),
+      "lstats:42": JSON.stringify(fakeLinksStats),
       "list:7": JSON.stringify(fakeList),
     });
     let detailCalled = false;
@@ -322,9 +325,37 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       throw new Error("path inesperado: " + path);
     };
     const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
-    assert.strictEqual(detailCalled, false, "fetchFn NAO deve ser chamado com KV hit");
-    assert.ok(getCalls.includes("gstats:42"), "KV.get deve ter sido chamado");
+    assert.strictEqual(detailCalled, false, "fetchFn NAO deve ser chamado com KV hit de ambos gstats+lstats");
+    assert.ok(getCalls.includes("gstats:42"), "KV.get deve ter sido chamado para gstats");
+    assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter sido chamado para lstats");
     assert.strictEqual(result[0].statistics?.globalStats?.sent, 100, "sent deve vir do KV");
+  });
+
+  test("regressão #2183: gstats em cache mas lstats ausente → fetchFn DEVE ser chamada", async () => {
+    // Bug: `if (cachedGs) return` pulava fetch mesmo sem lstats, impedindo campanhas
+    // pré-#2177 (que só têm gstats no KV) de receber dados de links.
+    const { kv, getCalls, putCalls } = makeKVMock({
+      "gstats:42": JSON.stringify(fakeGlobalStats),
+      "list:7": JSON.stringify(fakeList),
+      // lstats:42 ausente propositalmente — simula campanha pré-#2177
+    });
+    let detailCalled = false;
+    const fakeLinksStats = { "https://diar.ia/edicao/test": 10 };
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) {
+        detailCalled = true;
+        return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats, linksStats: fakeLinksStats } } as T;
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.strictEqual(detailCalled, true,
+      "fetchFn DEVE ser chamada quando gstats está em cache mas lstats está ausente (bug #2183)");
+    assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter sido tentado para lstats");
+    assert.ok(putCalls.includes("lstats:42"), "KV.put deve persistir lstats após fetch");
+    // linksStats deve estar disponível no resultado
+    assert.ok(result[0].linksStats !== undefined, "linksStats deve estar presente no resultado");
   });
 
   test("KV miss de gstats chama _fetchFn e persiste no KV", async () => {

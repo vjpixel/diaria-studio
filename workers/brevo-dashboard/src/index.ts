@@ -305,10 +305,11 @@ export async function fetchRecentCampaigns(
           if (cachedGs) globalStatsMap.set(c.id, cachedGs as BrevoGlobalStats);
           if (cachedLs) linksStatsMap.set(c.id, cachedLs as BrevoLinksStats);
           // Se ambos estavam em cache, skip o fetch da API.
+          // Bug fix (#2183): antes o `if (cachedGs) return` pulava o fetch
+          // mesmo quando lstats não estava em cache — campanhas pré-#2177 com
+          // gstats cacheado nunca recebiam lstats. Agora só retorna se ambos
+          // estiverem em cache.
           if (cachedGs && cachedLs) return;
-          // Se só gs estava em cache (ls ausente: campanha antiga sem links capturados),
-          // ainda assim evitamos o fetch — ls permanece ausente (seção vazia/stub).
-          if (cachedGs) return;
         }
 
         // Fetch com globalStats + linksStats num único GET (sem custo extra de chamada)
@@ -392,14 +393,13 @@ function cellClass(...names: Array<string | false | null | undefined>): string {
  * remove o que é claramente sistema, não editorial.
  */
 const SYSTEM_URL_PATTERNS = [
-  /unsubscribe/i,
+  /unsubscribe/i,        // também cobre r.brevo.com/links/unsubscribe — regex específico removido (#2183)
   /optout/i,
   /opt-out/i,
   /preferences/i,
   /preferencias/i,
   /manage.*subscription/i,
   /email\.mg\./i,        // Mailgun tracking
-  /r\.brevo\.com\/links\/unsubscribe/i,
 ];
 
 /**
@@ -417,7 +417,7 @@ export interface LinkStatRow {
   /** URL truncada para exibição (max 70 chars) */
   displayUrl: string;
   clicks: number;
-  /** Participação percentual em relação ao total de clicks da campanha */
+  /** Participação percentual em relação ao total de clicks editoriais da campanha (links de sistema excluídos) */
   pctOfTotal: string;
 }
 
@@ -449,7 +449,7 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
     url,
     displayUrl: url.length > 70 ? url.slice(0, 67) + "…" : url,
     clicks,
-    pctOfTotal: totalClicks > 0 ? ((clicks / totalClicks) * 100).toFixed(1) + "%" : "0.0%",
+    pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
   }));
 }
 
@@ -470,11 +470,19 @@ export function renderLinksSection(
 
   // Stub graceful: sem linksStats ou sem links editoriais → seção oculta mas presente
   if (rows.length === 0) {
-    const reason = linksStats == null
-      ? "dados de links não disponíveis"
-      : Object.keys(linksStats).length === 0
-      ? "nenhum link rastreado"
-      : "nenhum link editorial (apenas links de sistema)";
+    let reason: string;
+    if (linksStats == null) {
+      reason = "dados de links não disponíveis";
+    } else if (Object.keys(linksStats).length === 0) {
+      reason = "nenhum link rastreado";
+    } else {
+      // Distingue "editorial com 0 clicks" de "só links de sistema" (#2183):
+      // filtra só sistema; se sobrar algo → havia links editoriais, mas todos com 0 clicks.
+      const editorialEntries = Object.entries(linksStats).filter(([url]) => !isSystemLink(url));
+      reason = editorialEntries.length > 0
+        ? "links editoriais presentes, mas com 0 cliques registrados"
+        : "nenhum link editorial (apenas links de sistema)";
+    }
     return `<details class="links-ctr" id="links-${campaignId}">
   <summary class="links-summary">Links clicados <span class="links-count-badge">—</span></summary>
   <p class="links-empty">${escHtml(reason)}</p>
@@ -482,13 +490,19 @@ export function renderLinksSection(
   }
 
   const clicksSuffix = totalClicks !== undefined ? ` de ${totalClicks} únicos` : "";
-  const tableRows = rows.map((r) =>
-    `<tr>
-      <td class="link-url"><a href="${escHtml(r.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a></td>
+  const tableRows = rows.map((r) => {
+    // Defensive XSS guard: neutralize javascript: and other dangerous schemes (#2183).
+    // Only allow http:// and https:// as href values.
+    const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    const linkContent = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a>`
+      : escHtml(r.displayUrl);
+    return `<tr>
+      <td class="link-url">${linkContent}</td>
       <td class="link-clicks metric">${r.clicks}</td>
       <td class="link-pct">${r.pctOfTotal}</td>
-    </tr>`,
-  ).join("\n");
+    </tr>`;
+  }).join("\n");
 
   return `<details class="links-ctr" id="links-${campaignId}">
   <summary class="links-summary">Links clicados <span class="links-count-badge">${rows.length}</span>${clicksSuffix}</summary>
@@ -498,7 +512,7 @@ export function renderLinksSection(
       <tr>
         <th class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
         <th title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
-        <th title="Participação deste link no total de clicks da campanha">% do total</th>
+        <th title="Participação deste link no total de clicks editoriais (links de sistema excluídos)">% do total</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

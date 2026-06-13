@@ -220,6 +220,34 @@ describe("renderLinksSection (#2177)", () => {
     assert.doesNotMatch(html, /<table/, "não deve ter tabela quando só links de sistema");
   });
 
+  test("regressão #2183: links editoriais com 0 clicks → stub NÃO deve aparecer como 'apenas links de sistema'", () => {
+    // Bug: quando linksStats tem links editoriais mas todos com 0 clicks,
+    // a mensagem exibia "nenhum link editorial (apenas links de sistema)" — incorreto.
+    const editorialZeroClicks: BrevoLinksStats = {
+      "https://openai.com/blog/gpt-5": 0,     // editorial, mas 0 clicks
+      "https://diar.ia/edicao/260613": 0,     // editorial, mas 0 clicks
+    };
+    const html = renderLinksSection(10, editorialZeroClicks);
+    assert.doesNotMatch(html, /<table/, "não deve ter tabela quando links têm 0 clicks");
+    // Deve distinguir "links com 0 clicks" de "apenas sistema"
+    assert.doesNotMatch(html, /apenas links de sistema/i,
+      "mensagem não deve dizer 'apenas links de sistema' quando links editoriais existem (com 0 clicks)");
+    assert.match(html, /0 cliques|links editoriais presentes/i,
+      "mensagem deve indicar que há links editoriais mas com 0 cliques");
+  });
+
+  test("regressão #2183: links sistema com 0 clicks → stub diz 'apenas links de sistema'", () => {
+    // Links de sistema com 0 clicks → diferente de editorial com 0 clicks
+    const systemOnly: BrevoLinksStats = {
+      "https://r.brevo.com/links/unsubscribe/abc": 0,
+    };
+    const html = renderLinksSection(10, systemOnly);
+    assert.doesNotMatch(html, /<table/, "não deve ter tabela");
+    // Pode dizer "apenas links de sistema" ou "0 cliques" — ambos aceitáveis
+    assert.doesNotMatch(html, /links editoriais presentes/i,
+      "mensagem não deve mencionar links editoriais quando só há links de sistema");
+  });
+
   test("usa <details>/<summary> para ser colapsável", () => {
     const html = renderLinksSection(42, fixtureLinksStats);
     assert.match(html, /<details/, "deve usar <details> para colapsabilidade");
