@@ -26,6 +26,7 @@ import workerDefault, {
   MAX_URL_LENGTH,
   FETCH_TIMEOUT_MS,
   DLQ_TTL_SECONDS,
+  CLAIM_TTL_MS,
   LinkedInScheduler,
   __test__,
   type Env,
@@ -53,8 +54,13 @@ class MockDOStorage {
     this.store.delete(key);
   }
   async deleteAll(): Promise<void> {
+    // (#2219 bug 7 fix) CF real NÃO cancela alarm em deleteAll — apenas limpa o
+    // storage. O alarm continua agendado e pode disparar após deleteAll.
+    // Para cancelar o alarm, o código deve chamar deleteAlarm() explicitamente.
+    // O mock anterior zerava alarmMs aqui, tornando o teste de /cancel
+    // um falso positivo: passava mesmo sem chamar deleteAlarm().
     this.store.clear();
-    this.alarmMs = null;
+    // alarmMs NÃO é zerado aqui — use deleteAlarm() pra isso.
   }
   async setAlarm(scheduledMs: number): Promise<void> {
     this.alarmMs = scheduledMs;
@@ -1830,14 +1836,110 @@ describe("#2219 Bug 2: claim atômico — exatamente 1 post quando cron+alarm co
     assert.equal(data.claimed, false, "deve perder claim quando fired=true (já disparou)");
   });
 
-  it("concorrência cron+alarm: exatamente 1 webhook disparado (MockDOState serializa)", async () => {
-    // Este teste valida que MockDOState.blockConcurrencyWhile serializa de verdade.
-    // Simulamos 2 callers disparando /claim "simultaneamente" — o mock agora usa
-    // uma fila, garantindo que apenas 1 ganhe mesmo em execução concorrente.
+  it("concorrência alarm-ganha: alarm() enviado primeiro — alarm posta, cron pula", async () => {
+    // (#2219 bug 5 fix) Testa o interleaving onde ALARM ganha o claim primeiro.
+    // Promise.all([alarm(), claim()]) → alarm() é index 0, submete /claim primeiro
+    // via blockConcurrencyWhile → alarm ganha, posta; cron perde o claim.
     const state = new MockDOState();
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
 
-    // Arm o scheduler com payload
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "exactly once post - alarm wins",
+      image_url: null,
+      scheduled_at: past,
+      destaque: "d1",
+      created_at: past,
+      retry_count: 0,
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-concurrent-alarm-wins",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let webhookCallCount = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCallCount++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // alarm() primeiro → alarm ganha o claim (via /claim interno)
+      const [, claimResult] = await Promise.all([
+        scheduler.alarm(),
+        scheduler.fetch(new Request("https://do/claim", { method: "POST" }))
+          .then(r => r.json() as Promise<{ claimed: boolean }>),
+      ]);
+
+      // Alarm ganhou → postou 1x; cron perdeu o claim (claimed=false)
+      assert.equal(webhookCallCount, 1, `webhook deve ser chamado 1x (alarm ganhou), foi ${webhookCallCount}x`);
+      assert.equal(claimResult.claimed, false, "cron deve perder o claim quando alarm foi primeiro");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("concorrência cron-ganha: cron enviado primeiro — alarm pula, cron posta", async () => {
+    // (#2219 bug 5 fix) Testa o interleaving onde CRON ganha o claim primeiro.
+    // Cron chama /claim ANTES de alarm() iniciar → cron ganha, alarm vê claimed=false e para.
+    // Para garantir que cron ganha, chamamos /claim diretamente antes de alarm().
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "exactly once post - cron wins",
+      image_url: null,
+      scheduled_at: past,
+      destaque: "d2",
+      created_at: past,
+      retry_count: 0,
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-concurrent-cron-wins",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let webhookCallCount = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCallCount++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // Cron ganha o claim primeiro (síncrono antes de alarm())
+      const cronClaimRes = await scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
+      const cronClaimData = await cronClaimRes.json() as { claimed: boolean };
+      assert.equal(cronClaimData.claimed, true, "cron deve ganhar o claim quando vai primeiro");
+
+      // Agora alarm() tenta — deve perder (cron já tem o claim)
+      await scheduler.alarm();
+
+      // Alarm não deve ter postado (cron tem o claim)
+      assert.equal(webhookCallCount, 0, `alarm não deve postar quando cron tem o claim, foi ${webhookCallCount}x`);
+
+      // Cron "posta" (simulado) e libera o claim
+      await scheduler.fetch(new Request("https://do/status-set-fired", { method: "POST" }));
+      // fired=true agora, claiming=undefined
+
+      const firedRes = await scheduler.fetch(new Request("https://do/status", { method: "GET" }));
+      const firedData = await firedRes.json() as { fired: boolean };
+      assert.equal(firedData.fired, true, "fired=true após cron sinalizar sucesso");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("concorrência cron+alarm (Promise.all): exatamente 1 webhook disparado independente da ordem", async () => {
+    // Testa que em qualquer ordem de execução, apenas 1 post ocorre.
+    // MockDOState.blockConcurrencyWhile serializa de verdade — o 1º a entrar na fila ganha.
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
     const past = new Date(Date.now() - 60_000).toISOString();
     const entry: QueueEntry = {
       text: "exactly once post",
@@ -2097,5 +2199,331 @@ describe("#2219 Bug 4: MockDOState.blockConcurrencyWhile serializa (não é no-o
     await assert.rejects(p1, /test error/);
     const r2 = await p2;
     assert.equal(r2, "ok", "fila deve continuar após exception");
+  });
+});
+
+// ── #2219 Bug 1 fix: DLQ-pixel path libera claim antes de continue ────────────
+
+describe("#2219 Bug 1 fix: DLQ-pixel path libera claim no DO antes de ir pra DLQ", () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => { savedFetch = globalThis.fetch; });
+
+  it("fireDueItems: pixel sem env var → DLQ + DO claim liberado (não fica preso)", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/diaria");
+    // MAKE_PIXEL_WEBHOOK_URL ausente
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-dlq-claim-test");
+    const entry: QueueEntry = {
+      text: "pixel comment", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+      webhook_target: "pixel", action: "comment",
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Pré-registrar DO stub pra poder inspecionar o estado após fireDueItems
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.dlq, 1, "deve ir pra DLQ");
+
+      // DO claim deve estar liberado após o DLQ path (Bug 1 fix)
+      const claiming = await doState.storage.get<boolean>("claiming");
+      assert.equal(claiming, undefined, "claiming deve ser undefined após DLQ path — não travado");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ── #2219 Bug 2 fix: Claim TTL evita lock permanente ─────────────────────────
+
+describe("#2219 Bug 2 fix: claim TTL — claim expirado pode ser re-claimado", () => {
+  it("CLAIM_TTL_MS é 5 minutos (sanity)", () => {
+    assert.equal(CLAIM_TTL_MS, 5 * 60 * 1000);
+  });
+
+  it("claim expirado (claimed_at antigo): novo caller consegue re-clamar", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    // Simula claim expirado: claiming=true mas claimed_at está no passado (> TTL)
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", Date.now() - CLAIM_TTL_MS - 1000); // 1s após TTL
+
+    const res = await scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
+    const data = await res.json() as { claimed: boolean };
+    assert.equal(data.claimed, true, "claim expirado deve poder ser re-claimado (crash recovery)");
+  });
+
+  it("claim não-expirado (claimed_at recente): segundo caller NÃO consegue clamar", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    // Claim recente — dentro do TTL
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", Date.now() - 30_000); // 30s atrás (< 5min TTL)
+
+    const res = await scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
+    const data = await res.json() as { claimed: boolean };
+    assert.equal(data.claimed, false, "claim recente NÃO deve ser re-claimado (normal competing caller)");
+  });
+
+  it("/release-claim remove claimed_at junto com claiming", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", Date.now());
+
+    await scheduler.fetch(new Request("https://do/release-claim", { method: "POST" }));
+
+    assert.equal(await state.storage.get("claiming"), undefined, "claiming deve ser undefined após release");
+    assert.equal(await state.storage.get("claimed_at"), undefined, "claimed_at deve ser undefined após release");
+  });
+});
+
+// ── #2219 Bug 3 fix: DELETE /queue cancela DO antes de deletar KV ────────────
+
+describe("#2219 Bug 3 fix: DELETE /queue cancela DO ANTES de deletar KV", () => {
+  it("DO alarm cancelado antes da KV delete (janela eliminada)", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-order-test");
+    const entry: QueueEntry = {
+      text: "post a cancelar", image_url: null, scheduled_at: future,
+      destaque: "d1", created_at: new Date().toISOString(), retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Instrumentar DO pra capturar a ordem das operações
+    const operationOrder: string[] = [];
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+
+    // Wrap do fetch do scheduler pra capturar a ordem
+    const origFetch = doScheduler.fetch.bind(doScheduler);
+    doScheduler.fetch = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/cancel") {
+        operationOrder.push("do_cancel");
+      }
+      return origFetch(req);
+    };
+
+    // Wrap do KV.delete pra capturar ordem
+    const origDelete = kv.delete.bind(kv);
+    kv.delete = async (key: string) => {
+      operationOrder.push("kv_delete");
+      return origDelete(key);
+    };
+
+    doState.storage.alarmMs = Date.now() + 3600_000;
+    await doState.storage.put("payload", { key: queueKey, entry, webhookUrl: "x" } satisfies DoStoredPayload);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    const req = authedRequest(`https://w.test/queue/${encodeURIComponent(queueKey)}`, { method: "DELETE" });
+    await workerDefault.fetch(req, env);
+
+    // Ordem correta: DO cancel ANTES de KV delete
+    assert.deepEqual(operationOrder, ["do_cancel", "kv_delete"],
+      `Ordem incorreta: esperava ["do_cancel", "kv_delete"], recebeu ${JSON.stringify(operationOrder)}`);
+  });
+});
+
+// ── #2219 Bug 4 fix: alarm() checa claimRes.ok antes de .json() ──────────────
+
+describe("#2219 Bug 4 fix: alarm() checa claimRes.ok antes de .json()", () => {
+  it("alarm() para sem postar quando /claim retorna status não-ok", async () => {
+    const state = new MockDOState();
+
+    // Substituir fetch do DO pra simular /claim retornando 404 HTML (não-JSON)
+    // Fazemos isso criando um scheduler com um fetch custom que intercepta /claim
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    // Mock interno: /claim retorna 503
+    const origFetch = scheduler.fetch.bind(scheduler);
+    scheduler.fetch = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/claim") {
+        return new Response("service unavailable", { status: 503 });
+      }
+      return origFetch(req);
+    };
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await state.storage.put("payload", {
+      key: "queue:test-claim-nonjson",
+      entry: { text: "t", image_url: null, scheduled_at: past, destaque: "d1", created_at: past, retry_count: 0 },
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let webhookCalled = false;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalled = true;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(webhookCalled, false, "webhook não deve ser chamado quando /claim retorna erro");
+  });
+});
+
+// ── #2219 Bug 6 fix: GET /status expõe campo claiming ────────────────────────
+
+describe("#2219 Bug 6 fix: GET /status expõe claiming + claimed_at (telemetria)", () => {
+  it("GET /status retorna claiming=false quando não há claim ativo", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    const res = await scheduler.fetch(new Request("https://do/status", { method: "GET" }));
+    const data = await res.json() as { fired: boolean; claiming: boolean; claimed_at: number | null };
+    assert.equal(data.fired, false);
+    assert.equal(data.claiming, false, "claiming deve ser false quando não há claim");
+    assert.equal(data.claimed_at, null, "claimed_at deve ser null quando não há claim");
+  });
+
+  it("GET /status retorna claiming=true + claimed_at em crash mid-flight", async () => {
+    const state = new MockDOState();
+    const now = Date.now();
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", now);
+
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    const res = await scheduler.fetch(new Request("https://do/status", { method: "GET" }));
+    const data = await res.json() as { fired: boolean; claiming: boolean; claimed_at: number | null };
+    assert.equal(data.claiming, true, "claiming=true indica crash mid-flight detectável");
+    assert.equal(data.claimed_at, now, "claimed_at deve ser retornado para telemetria de TTL");
+  });
+});
+
+// ── #2219 Bug 7 fix: MockDOStorage.deleteAll não zera alarmMs ────────────────
+
+describe("#2219 Bug 7 fix: MockDOStorage.deleteAll() NÃO cancela alarm (igual CF real)", () => {
+  it("deleteAll limpa store mas NÃO zera alarmMs", async () => {
+    const storage = new MockDOStorage();
+    await storage.put("key1", "value1");
+    await storage.put("key2", "value2");
+    storage.alarmMs = Date.now() + 3600_000;
+
+    await storage.deleteAll();
+
+    assert.equal(storage.store.size, 0, "store deve estar vazio após deleteAll");
+    assert.ok(storage.alarmMs !== null, "alarmMs NÃO deve ser zerado por deleteAll (CF real mantém alarm)");
+  });
+
+  it("deleteAlarm() zera alarmMs (explícito, como CF real)", async () => {
+    const storage = new MockDOStorage();
+    storage.alarmMs = Date.now() + 3600_000;
+    await storage.deleteAlarm();
+    assert.equal(storage.alarmMs, null, "deleteAlarm() deve zerar alarmMs");
+  });
+
+  it("/cancel chama deleteAlarm() + deleteAll() — ambos limpos", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    state.storage.alarmMs = Date.now() + 3600_000;
+    await state.storage.put("payload", { key: "k" } as unknown as DoStoredPayload);
+    await state.storage.put("claiming", true);
+
+    await scheduler.fetch(new Request("https://do/cancel", { method: "POST" }));
+
+    // deleteAlarm() deve ter sido chamado (alarmMs = null)
+    assert.equal(state.storage.alarmMs, null, "/cancel deve cancelar alarm via deleteAlarm()");
+    // deleteAll() deve ter limpado o store
+    assert.equal(state.storage.store.size, 0, "/cancel deve limpar storage via deleteAll()");
+  });
+});
+
+// ── #2219 Bug 8 fix: integração claim gate em fireDueItems com DO ────────────
+
+describe("#2219 Bug 8 fix: fireDueItems exercita /claim gate quando DO disponível", () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => { savedFetch = globalThis.fetch; });
+
+  it("fireDueItems: DO disponível, cron ganha claim, posta 1x e seta fired", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-claim-integration");
+    const entry: QueueEntry = {
+      text: "integration test", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Pré-registrar DO stub para inspeção pós-fire
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1, "item deve ser disparado");
+      assert.equal(fetchCalls, 1, "webhook deve ser chamado 1x");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deve ser deletada após fire");
+
+      // DO deve ter fired=true após cron disparar com sucesso (status-set-fired)
+      const fired = await doState.storage.get<boolean>("fired");
+      assert.equal(fired, true, "DO deve ter fired=true após cron disparar com sucesso");
+
+      // DO claiming deve estar limpo
+      const claiming = await doState.storage.get<boolean>("claiming");
+      assert.equal(claiming, undefined, "claiming deve ser undefined após fire bem-sucedido");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("fireDueItems: DO disponível, alarm ganhou claim antes do cron — cron pula", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-claim-alarm-won");
+    const entry: QueueEntry = {
+      text: "alarm already claimed", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Simula alarm que já ganhou o claim (claiming=true, fired=false ainda)
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    await doState.storage.put("claiming", true);
+    await doState.storage.put("claimed_at", Date.now()); // claim recente, não expirado
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      // Cron não deve postar (alarm tem o claim)
+      assert.equal(fetchCalls, 0, "cron não deve postar quando alarm tem o claim");
+      // fired=0 porque cron pulou; mas o item ainda está no KV (será limpo quando alarm setar fired=true)
+      assert.equal(result.fired, 0, "cron não conta como fired quando perdeu o claim");
+      assert.equal(kv.store.has(queueKey), true, "KV entry deve permanecer — alarm ainda vai postar");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });
