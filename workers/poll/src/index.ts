@@ -266,10 +266,14 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   const voteKey = `vote:${edition}:${email}`;
   const existingFromKv = await env.POLL.get(voteKey);
 
+  // P2-13: içar doStub para escopo compartilhado (usado em authorize + /confirm).
+  // Evita dois idFromName/get duplicados (um aqui e outro na fase /confirm abaixo).
+  let doStub: DurableObjectStub | null = null;
+
   if (env.VOTE_DEDUP) {
     // Caminho serializado via DO (#2187)
     const doId = env.VOTE_DEDUP.idFromName(`${edition}:${email}`);
-    const doStub = env.VOTE_DEDUP.get(doId);
+    doStub = env.VOTE_DEDUP.get(doId);
     const doHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (existingFromKv !== null) {
       // Sinaliza ao DO que o KV legacy já tem este voto — sem isso, um voto
@@ -293,28 +297,50 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     //     preferível ao bloqueio permanente de votante legítimo.
     //   - Em caso de erro persistente do DO, o monitoramento deve ser acionado
     //     via logs `vote_dedup_do_error` (event abaixo).
-    let doResp = await doStub.fetch("https://internal/vote-dedup", {
-      method: "POST",
-      headers: doHeaders,
-      // body: payload interno — reservado para validação futura pelo DO;
-      // atualmente o DO não lê o body (decisão baseada só no estado stored + header).
-    });
-    if (!doResp.ok) {
-      // Retry único antes de fail-open (reduz janela de double-vote em erro transiente)
+    //
+    // P1-3: envolver em try/catch — doStub.fetch() pode LANÇAR (timeout de rede,
+    // DO não disponível), não só retornar !ok. Exceção aciona o mesmo fail-open.
+    //
+    // P2-10: retry APENAS em status >= 500 (erro transitório). 4xx (ex: 405 Method
+    // Not Allowed) são erros permanentes — retry não ajuda e mascara o problema.
+    let doResp: Response | null = null;
+    let doError: unknown = null;
+    try {
       doResp = await doStub.fetch("https://internal/vote-dedup", {
         method: "POST",
         headers: doHeaders,
+        // body: payload interno — reservado para validação futura pelo DO;
+        // atualmente o DO não lê o body (decisão baseada só no estado stored + header).
       });
+      if (doResp.status >= 500) {
+        // Retry único antes de fail-open (apenas erros transitórios 5xx)
+        try {
+          doResp = await doStub.fetch("https://internal/vote-dedup", {
+            method: "POST",
+            headers: doHeaders,
+          });
+        } catch (retryErr) {
+          doError = retryErr;
+          doResp = null;
+        }
+      }
+    } catch (e) {
+      doError = e;
+      doResp = null;
     }
 
-    if (!doResp.ok) {
+    if (doResp === null || doResp.status >= 500) {
       console.error(JSON.stringify({
         event: "vote_dedup_do_error",
-        status: doResp.status,
+        status: doResp?.status ?? "exception",
+        error: doError !== null ? String(doError) : undefined,
         edition,
         email_domain: email.split("@")[1] ?? "unknown",
       }));
       // fail-open: continua como firstVote=true após retry (não bloqueia votante indevidamente).
+      // P2-6: neste caminho (DO errou), NÃO chamar /confirm — o voto NÃO foi
+      // autorizado pelo DO, então não há pending a confirmar.
+      doStub = null; // sinaliza "não chamar /confirm" abaixo
       // Trade-off explícito acima.
     } else {
     const { firstVote } = await doResp.json() as { firstVote: boolean };
@@ -341,7 +367,7 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
       return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
-    } // fim if (!doResp.ok) ... else
+    } // fim if (doResp === null || doResp.status >= 500) ... else
     } // fim if (testMode) ... else
   } else {
     // Fallback: sem VOTE_DEDUP binding (ex: testes legados) — comportamento anterior via KV.
@@ -410,11 +436,13 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // o Worker chama POST /confirm no DO → transiciona pending→voted definitivamente.
   //
   // Se qualquer escrita KV lançar, o Worker NÃO chama /confirm → o DO fica em
-  // `pending=true, voted=false`. No retry do votante, o DO vê `pending=true` e
-  // retorna firstVote:false (rejeita). NOTA: isso significa que uma falha de escrita
-  // KV bloqueará o retry com "já votou" até que o pending expire ou seja resetado
-  // via admin. O trade-off preferível é falhar para "duplicado" (reversível via admin)
-  // em vez de permitir double-vote no retry.
+  // `pending=true, voted=false`. No retry do votante:
+  //   - Se pending ainda está "fresco" (< PENDING_TTL_MS), o DO rejeita o retry
+  //     (barrar concurrent duplicate). O votante vê "já votou" temporariamente.
+  //   - Se pending expirou (>= PENDING_TTL_MS — crash confirmado), o DO re-autoriza
+  //     o votante (firstVote:true) → retry completa normalmente.
+  // INVARIANTE: falha de escrita KV NÃO bloqueia o votante para sempre — o lock
+  // expira em 5 min e permite retry.
   //
   // #2187 finding #5: gravar scores ANTES do put(voteKey).
   // Em falha entre os puts de score e put(voteKey), os scores são incrementados
@@ -447,14 +475,27 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
 
   // #2220 fase 2: confirmar para o DO que as escritas KV completaram.
   // Transiciona o estado DO de pending→voted definitivamente.
+  //
+  // P2-6: só chamar /confirm quando o DO autorizou o voto (doStub !== null).
+  //   doStub é nulificado no path fail-open — não há pending a confirmar.
+  //
+  // P2-7: retry único no /confirm (paridade com authorize). Falha transiente
+  //   não deve deixar pending órfão com KV correto.
+  //
   // Secundário: try/catch para nunca quebrar o fluxo de resposta ao votante;
-  // em caso de falha aqui, o DO ficará em `pending=true` — o estado será
-  // reconciliado na próxima tentativa ou via admin reset.
-  if (env.VOTE_DEDUP) {
+  // em caso de falha persistente, o DO ficará em `pending=true` — estado stale
+  // expirado em PENDING_TTL_MS (5 min) permitindo retry pelo votante.
+  if (doStub !== null) {
     try {
-      const confirmId = env.VOTE_DEDUP.idFromName(`${edition}:${email}`);
-      const confirmStub = env.VOTE_DEDUP.get(confirmId);
-      await confirmStub.fetch("https://internal/confirm", { method: "POST" });
+      let confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+      if (confirmResp.status >= 500) {
+        // Retry único em erro transitório
+        try {
+          confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+        } catch (retryErr) {
+          console.error(JSON.stringify({ event: "vote_dedup_confirm_retry_failed", edition, error: String(retryErr) }));
+        }
+      }
     } catch (e) {
       console.error(JSON.stringify({ event: "vote_dedup_confirm_failed", edition, error: String(e) }));
     }
