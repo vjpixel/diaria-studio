@@ -87,30 +87,32 @@ export interface BucketedArticles {
 const LANCAMENTO_DOMAINS = lancamentoDomains();
 const LANCAMENTO_PATTERNS = lancamentoPatterns();
 
-// #1899: prefixos host/path das fontes flagueadas `use_melhor` no seed (lista-
-// semente do híbrido lista+tipo). Carregado 1× no import; try/catch garante que
-// uma falha de leitura do CSV não derrube o categorizer (fallback: lista vazia,
-// só a inferência por conteúdo opera — comportamento pré-#1899).
-const USE_MELHOR_PREFIXES: string[] = (() => {
-  try {
-    return loadUseMelhorPrefixes();
-  } catch (e) {
-    console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
-    return [];
-  }
-})();
-
 // #2176: mapa COMPLETO de fontes (todas, não só use_melhor) para o desempate
 // path-mais-específico-vence quando dois sources compartilham o mesmo host.
 // Fallback: lista vazia → cai no comportamento legado (matchesUseMelhorPrefix).
+// Finding 2: console.warn explícito indica que o fix #2176 NÃO está ativo.
 const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = (() => {
   try {
     return loadAllSourcePrefixMap();
   } catch (e) {
-    console.error(`[categorize] WARN: loadAllSourcePrefixMap falhou (${(e as Error).message}) — usando fallback legado`);
+    console.warn(`[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap falhou (${(e as Error).message}) — fallback legado (matchesUseMelhorPrefix)`);
     return [];
   }
 })();
+
+// #1899 (Finding 5): USE_MELHOR_PREFIXES é derivável de ALL_SOURCE_PREFIX_MAP
+// (filter useMelhor=true) — elimina o readFileSync duplo do mesmo CSV.
+// Usado apenas no caminho de fallback (ALL_SOURCE_PREFIX_MAP vazio).
+const USE_MELHOR_PREFIXES: string[] = ALL_SOURCE_PREFIX_MAP.length > 0
+  ? ALL_SOURCE_PREFIX_MAP.filter((e) => e.useMelhor).map((e) => e.prefix)
+  : (() => {
+      try {
+        return loadUseMelhorPrefixes();
+      } catch (e) {
+        console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
+        return [];
+      }
+    })();
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam PESQUISA (papers, estudos, relatórios)
@@ -1082,8 +1084,13 @@ export function categorize(article: Article): Category {
   }
   // _useMelhorBySpecificity === false → URL pertence a uma fonte NOT use_melhor
   // (ex: 'Google' em blog.google) com path mais específico — não rotear pra
-  // tutorial mesmo que haja prefix use_melhor de comprimento menor.
-  // _useMelhorBySpecificity === null → URL fora do seed → fallback por tipo.
+  // tutorial via seed-list. Porém isTutorialByKeyword/isTutorialByDomainExtra
+  // ainda podem disparar abaixo para URLs com slug how-to explícito (ex:
+  // blog.google/technology/how-to-get-started-with-gemini): esses sinais são
+  // independentes do seed e não são "override" do path-specificity — o sinal
+  // de seed cobre *cobertura* (fontes que o agent não detectaria como tutorial),
+  // e o sinal de keyword cobre *conteúdo* (how-to no slug, independente da fonte).
+  // _useMelhorBySpecificity === null → URL fora do seed → fallback por tipo normal.
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {

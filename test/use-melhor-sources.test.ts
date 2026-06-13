@@ -168,19 +168,36 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
     assert.equal(resolveUseMelhorBySpecificity("not-a-url", fakeEntries), null);
   });
 
-  it("desempate por comprimento: empate de path → use_melhor=1 vence (desempate 2)", () => {
-    // Dois prefixos do MESMO comprimento: um use_melhor=false, outro true
+  it("desempate por comprimento: empate real de path → use_melhor=1 vence (desempate 2)", () => {
+    // Dois prefixos do MESMO comprimento E ambos casam a URL → tie real.
+    // Simula duas fontes distintas cadastradas com prefixos de MESMO comprimento
+    // (ex: dois sub-sites do mesmo host que compartilham a mesma raiz de path).
+    // Como `resolveUseMelhorBySpecificity` aceita a lista já ordenada, podemos
+    // montar entradas que AMBAS casam a URL mas têm comprimentos idênticos —
+    // isso acontece quando os prefixos são distintos mas igualmente longos E
+    // a URL satisfaz ambos (ex: prefixo = url exata sem trailing slash).
+    // Construção: URL = "example.com/section/post"; dois prefixos que casam:
+    //   - "example.com/section" (len=19, useMelhor=false)
+    //   - "example.com/section" seria igual, não dá distintos.
+    // Alternativa correcta: mesmos prefixos distintos mas com url sob
+    // o prefixo EXATO do host curto: usa um prefixo curto shared.
+    // O único jeito de ter TWO matches em comprimento máximo é ter dois
+    // prefixos do MESMO comprimento que são ambos prefixo da url-target.
+    // Isso ocorre quando a URL começa com AMBOS — impossível com prefixos distintos.
+    // Portanto o verdadeiro tie de desempate 2 são DOIS entries com prefix IGUAL.
     const sameLenEntries: SourcePrefixEntry[] = [
-      { prefix: "example.com/path-aa", useMelhor: false, index: 0 }, // mais longo ≠ mais específico (mesmo tamanho)
-      { prefix: "example.com/path-bb", useMelhor: true, index: 1 },  // mesmo comprimento
+      // Dois entries com o MESMO prefix (mesmo comprimento) — situação real de dois
+      // cadastros redundantes no seed: use_melhor=false (índice 0) e true (índice 1).
+      // A lista está ordenada por (length desc, index asc) — comprimentos iguais.
+      { prefix: "example.com/section", useMelhor: false, index: 0 },
+      { prefix: "example.com/section", useMelhor: true, index: 1 },
       { prefix: "example.com", useMelhor: false, index: 2 },
     ];
-    // URL que casa com example.com/path-bb
-    const url = "https://example.com/path-bb/article";
-    // Apenas example.com/path-bb e example.com casam; example.com/path-aa não casa.
+    // A URL casa com AMBOS os prefixos "example.com/section" (comprimento máximo=19)
+    const url = "https://example.com/section/post";
     const result = resolveUseMelhorBySpecificity(url, sameLenEntries);
-    // O único match de comprimento máximo é example.com/path-bb (use_melhor=true)
-    assert.equal(result, true);
+    // Desempate 2: comprimentos iguais → use_melhor=1 vence (use_melhor=false é sobrescrito)
+    assert.equal(result, true, "quando dois prefixos de mesmo comprimento casam, use_melhor=1 vence (desempate 2)");
   });
 
   it("desempate por índice: empate de comprimento e use_melhor → menor índice CSV vence (desempate 3)", () => {

@@ -2601,15 +2601,17 @@ describe("categorize() — #2176 path-mais-específico-vence no empate de host",
     assert.equal(r1, "tutorial", "resultado deve ser tutorial");
   });
 
-  it("#2176: URL em blog.google fora do /intl/pt-br/ → noticias (Google Primária, use_melhor=0)", () => {
+  it("#2176: URL em blog.google fora do /intl/pt-br/ → lancamento (Google Primária, use_melhor=0)", () => {
     // URL fora do path do Blog Brasil → só Google Primária (host-only) casa → use_melhor=false
-    // → não vai pra tutorial via path-specificity → cai no fluxo normal → noticias/lancamento
+    // → _useMelhorBySpecificity=false → não retorna tutorial via seed-list → cai no fluxo normal
+    // → blog.google é LANCAMENTO_DOMAIN sem filtros de path/deal → lancamento.
     const art: Article = {
       url: "https://blog.google/products/search/nova-feature-search-ai/",
       title: "Nova feature de IA no Google Search",
     };
-    // NÃO deve ser tutorial (use_melhor) — a fonte mais específica é Google Primária (use_melhor=0)
+    // NÃO deve ser tutorial (use_melhor) — a fonte mais específica é Google Primária (use_melhor=0).
+    // O bucket real esperado é "lancamento" (blog.google LANCAMENTO_DOMAIN, sem override de path).
     const cat = categorize(art);
-    assert.notEqual(cat, "tutorial", "URL fora do path pt-br NÃO deve ir pra tutorial via path-specificity");
+    assert.equal(cat, "lancamento", "URL fora do path pt-br → lancamento (Google Primária, não tutorial)");
   });
 });
