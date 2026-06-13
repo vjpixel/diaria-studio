@@ -2335,29 +2335,26 @@ describe("#2219 Bug 3 fix: DELETE /queue cancela DO ANTES de deletar KV", () => 
   });
 });
 
-// ── #2219 Bug 4 fix: alarm() checa claimRes.ok antes de .json() ──────────────
+// ── #2219 Bug 4 fix (migrado pra #2230 bug 3): alarm() usa tryClaim() direto ──
+// Antes: alarm() chamava this.fetch('/claim') e precisava checar claimRes.ok antes de .json().
+// Agora (#2230 bug 3 fix): alarm() chama tryClaim() diretamente — sem self-fetch, sem risco
+// de non-JSON response. O teste de /claim endpoint via fetch externo ainda exercita POST /claim.
 
-describe("#2219 Bug 4 fix: alarm() checa claimRes.ok antes de .json()", () => {
-  it("alarm() para sem postar quando /claim retorna status não-ok", async () => {
+describe("#2219 Bug 4 fix: alarm() para sem postar quando claim não pode ser ganho", () => {
+  it("alarm() para sem postar quando tryClaim() retorna false (cron ganhou antes)", async () => {
+    // (#2230 bug 3 fix) O cenário original era: alarm() fazia self-fetch /claim que retornava 503.
+    // Agora alarm() usa tryClaim() direto. Testamos o invariante equivalente: se o cron ganhou
+    // o claim antes, alarm() deve parar sem postar.
     const state = new MockDOState();
-
-    // Substituir fetch do DO pra simular /claim retornando 404 HTML (não-JSON)
-    // Fazemos isso criando um scheduler com um fetch custom que intercepta /claim
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
 
-    // Mock interno: /claim retorna 503
-    const origFetch = scheduler.fetch.bind(scheduler);
-    scheduler.fetch = async (req: Request) => {
-      const url = new URL(req.url);
-      if (url.pathname === "/claim") {
-        return new Response("service unavailable", { status: 503 });
-      }
-      return origFetch(req);
-    };
+    // Cron ganhou o claim — claiming=true, claimed_at recente
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", Date.now());
 
     const past = new Date(Date.now() - 60_000).toISOString();
     await state.storage.put("payload", {
-      key: "queue:test-claim-nonjson",
+      key: "queue:test-claim-lost",
       entry: { text: "t", image_url: null, scheduled_at: past, destaque: "d1", created_at: past, retry_count: 0 },
       webhookUrl: "https://make.test/webhook",
     } satisfies DoStoredPayload);
@@ -2375,7 +2372,7 @@ describe("#2219 Bug 4 fix: alarm() checa claimRes.ok antes de .json()", () => {
       globalThis.fetch = savedFetch;
     }
 
-    assert.equal(webhookCalled, false, "webhook não deve ser chamado quando /claim retorna erro");
+    assert.equal(webhookCalled, false, "webhook não deve ser chamado quando cron já tem o claim");
   });
 });
 
@@ -2522,6 +2519,335 @@ describe("#2219 Bug 8 fix: fireDueItems exercita /claim gate quando DO disponív
       // fired=0 porque cron pulou; mas o item ainda está no KV (será limpo quando alarm setar fired=true)
       assert.equal(result.fired, 0, "cron não conta como fired quando perdeu o claim");
       assert.equal(kv.store.has(queueKey), true, "KV entry deve permanecer — alarm ainda vai postar");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ── #2230 — Bug 1: fired durável + payload limpo após alarm fire bem-sucedido ──
+
+describe("#2230 Bug 1: alarm() sucesso → fired durável + payload deletado (sem double-post via TTL)", () => {
+  it("alarm() sucesso: fired=true + payload deletado do storage — alarm re-entry pula", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "should post once",
+      image_url: null,
+      scheduled_at: past,
+      destaque: "d1",
+      created_at: past,
+      retry_count: 0,
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-fired-durable",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let webhookCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // 1ª invocação — deve postar
+      await scheduler.alarm();
+      assert.equal(webhookCalls, 1, "1ª invocação deve postar");
+
+      // Verificar que fired=true E payload foi deletado
+      const fired = await state.storage.get<boolean>("fired");
+      const payload = await state.storage.get<DoStoredPayload>("payload");
+      assert.equal(fired, true, "fired deve ser true após sucesso");
+      assert.equal(payload, undefined, "payload deve ser deletado após sucesso (#2230 bug 1 fix)");
+
+      // 2ª invocação (simula alarm re-disparado via TTL expiry + claim re-claimado):
+      // tryClaim() retorna false pq fired=true — não deve re-postar
+      await scheduler.alarm();
+      assert.equal(webhookCalls, 1, "2ª invocação NÃO deve re-postar — fired=true bloqueia claim (#2230 bug 1)");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("alarm() sucesso: mesmo que tryClaim TTL-expire e re-claime, payload ausente evita post", async () => {
+    // Simula o cenário mais extremo do bug 1:
+    // alarm() postou, mas fired=true não foi salvo (storage error simulado).
+    // Se payload ainda estiver em storage E claiming tiver expirado (TTL), alarm pode re-clamar.
+    // Fix: payload deletado → alarm re-entry aborta cedo (payload missing = cancelled/OK).
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "double-post test", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+    };
+
+    // Estado pós-fix: fired=true (persistiu), payload=undefined (deletado)
+    await state.storage.put("fired", true);
+    // payload NOT stored — simula que foi deletado
+
+    let webhookCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+      assert.equal(webhookCalls, 0, "não deve postar quando fired=true (payload também não está)");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+    void entry; // suppress unused warning
+  });
+
+  it("alarm() sucesso: cron pós-fire vê fired=true + payload ausente via /status, deleta KV sem re-fire", async () => {
+    // Valida o fluxo end-to-end: alarm dispara, cron vê fired=true, limpa KV sem re-postar.
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-fired-durable-cron");
+    const entry: QueueEntry = {
+      text: "fired by alarm", image_url: null, scheduled_at: past,
+      destaque: "d3", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Simula DO após alarm() bem-sucedido: fired=true, payload=undefined
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    await doState.storage.put("fired", true);
+    // payload NÃO armazenado (deletado pelo alarm fix)
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let webhookCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(webhookCalls, 0, "cron NÃO deve re-postar — DO reporta fired=true");
+      assert.equal(result.fired, 1, "cron conta como fired para estatísticas (cleanup)");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deletada pelo cron cleanup");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ── #2230 — Bug 2: delete garantido (retry + tombstone) ──────────────────────
+
+describe("#2230 Bug 2: handleQueueDelete — delete garantido (retry + tombstone)", () => {
+  it("KV.delete falha → tombstone gravado → cron NÃO dispara item cancelado", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-kv-delete-fails");
+    const entry: QueueEntry = {
+      text: "should not post after delete",
+      image_url: null,
+      scheduled_at: future,
+      destaque: "d1",
+      created_at: new Date().toISOString(),
+      retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // DO armado
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doState.storage.alarmMs = Date.now() + 3600_000;
+    await doState.storage.put("payload", { key: queueKey, entry, webhookUrl: "x" } satisfies DoStoredPayload);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    // Mock KV.delete para sempre falhar
+    const origDelete = kv.delete.bind(kv);
+    let deleteAttempts = 0;
+    kv.delete = async (_key: string) => {
+      deleteAttempts++;
+      throw new Error("KV transitório indisponível");
+    };
+
+    const req = authedRequest(`https://w.test/queue/${encodeURIComponent(queueKey)}`, { method: "DELETE" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { deleted: boolean; kv_deleted: boolean; do_alarm_cancelled: boolean };
+    assert.equal(data.deleted, true, "response deve indicar deleted=true mesmo com kv_delete falha");
+    assert.equal(data.kv_deleted, false, "kv_deleted=false pq KV.delete falhou");
+    assert.equal(data.do_alarm_cancelled, true, "DO alarm deve ter sido cancelado");
+
+    // Tombstone deve estar no KV (item com cancelled=true)
+    const raw = kv.store.get(queueKey);
+    assert.ok(raw, "tombstone deve existir no KV após KV.delete falhar");
+    const tombstone = JSON.parse(raw as string) as QueueEntry & { cancelled?: boolean };
+    assert.equal(tombstone.cancelled, true, "tombstone deve ter cancelled=true (#2230 bug 2 fix)");
+
+    // Restaurar KV.delete normal
+    kv.delete = origDelete;
+
+    // Agora simular o cron processando: item tombstone deve ser PULADO sem postar
+    // (colocar scheduled_at no passado para que o cron o processe)
+    const pastEntry = { ...tombstone, scheduled_at: new Date(Date.now() - 60_000).toISOString(), cancelled: true };
+    const pastKey = buildQueueKey(pastEntry.scheduled_at, "uuid-kv-delete-fails");
+    kv.store.delete(queueKey);
+    kv.store.set(pastKey, JSON.stringify(pastEntry));
+
+    let webhookCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await __test__.fireDueItems(env);
+      assert.equal(webhookCalls, 0, "cron NÃO deve postar item com tombstone cancelled=true");
+      assert.equal(kv.store.has(pastKey), false, "tombstone deve ser deletado pelo cron (cleanup)");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    void deleteAttempts; // used for instrumentation
+  });
+
+  it("KV.delete sucede na 1ª tentativa: kv_deleted=true na resposta", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-kv-delete-ok");
+    const entry: QueueEntry = {
+      text: "normal delete", image_url: null, scheduled_at: future,
+      destaque: "d2", created_at: new Date().toISOString(), retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    const req = authedRequest(`https://w.test/queue/${encodeURIComponent(queueKey)}`, { method: "DELETE" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { deleted: boolean; kv_deleted: boolean };
+    assert.equal(data.deleted, true);
+    assert.equal(data.kv_deleted, true, "kv_deleted=true quando KV.delete sucede normalmente");
+    assert.equal(kv.store.has(queueKey), false, "item removido do KV");
+  });
+});
+
+// ── #2230 — Bug 3: alarm() usa tryClaim() direto (sem self-fetch) ─────────────
+
+describe("#2230 Bug 3: alarm() usa tryClaim() diretamente — sem nested blockConcurrencyWhile", () => {
+  it("tryClaim(): 1ª chamada ganha (true), 2ª perde (false) — mesma semântica do /claim", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const result1 = await scheduler.tryClaim();
+    assert.equal(result1, true, "1ª chamada a tryClaim() deve ganhar o claim");
+    assert.equal(state.storage.store.get("claiming"), true, "claiming=true após tryClaim()");
+
+    const result2 = await scheduler.tryClaim();
+    assert.equal(result2, false, "2ª chamada a tryClaim() deve perder (claiming já ativo)");
+  });
+
+  it("tryClaim(): retorna false quando fired=true (item já disparado)", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    await state.storage.put("fired", true);
+
+    const result = await scheduler.tryClaim();
+    assert.equal(result, false, "tryClaim() deve retornar false quando fired=true");
+  });
+
+  it("tryClaim(): claim expirado (TTL) pode ser re-claimado", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    await state.storage.put("claiming", true);
+    await state.storage.put("claimed_at", Date.now() - CLAIM_TTL_MS - 1000);
+
+    const result = await scheduler.tryClaim();
+    assert.equal(result, true, "tryClaim() deve re-clamar quando claim expirou (TTL)");
+  });
+
+  it("alarm() não usa self-fetch — chama tryClaim() diretamente (sem nested blockConcurrencyWhile)", async () => {
+    // Valida que alarm() chama tryClaim() e não this.fetch('/claim').
+    // Se houvesse self-fetch, o alarm seria chamado recursivamente via fetch(),
+    // mas o DO runtime de CF pode lançar nesse cenário.
+    // No mock, o self-fetch funciona (MockDOState não bloqueia recursão),
+    // mas este teste verifica o caminho correto: tryClaim() é chamado 1x por alarm().
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    // Interceptar tryClaim para verificar que é chamado
+    let tryClaimCalls = 0;
+    const origTryClaim = scheduler.tryClaim.bind(scheduler);
+    scheduler.tryClaim = async () => {
+      tryClaimCalls++;
+      return origTryClaim();
+    };
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await state.storage.put("payload", {
+      key: "queue:test-no-self-fetch",
+      entry: { text: "t", image_url: null, scheduled_at: past, destaque: "d1", created_at: past, retry_count: 0 },
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(tryClaimCalls, 1, "alarm() deve chamar tryClaim() exatamente 1x (sem self-fetch)");
+  });
+
+  it("alarm() + cron concorrentes com tryClaim direto: exatamente 1 post (#2230 bug 3 + #2219 bug 2)", async () => {
+    // Valida que a mudança de self-fetch → tryClaim() mantém exactly-once:
+    // alarm() e cron competem pelo mesmo claim, apenas 1 posta.
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await state.storage.put("payload", {
+      key: "queue:test-tryClaim-concurrent",
+      entry: { text: "exactly once", image_url: null, scheduled_at: past, destaque: "d2", created_at: past, retry_count: 0 },
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let webhookCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // alarm() e tryClaim() concorrentes (simula cron+alarm simultâneos)
+      const [, claimResult] = await Promise.all([
+        scheduler.alarm(),
+        scheduler.tryClaim().then(claimed => ({ claimed })),
+      ]);
+
+      // Total de webhooks deve ser exatamente 1 (alarm ganhou ou cron teria ganho)
+      assert.equal(
+        webhookCalls, 1,
+        `webhook deve ser chamado exatamente 1x, foi ${webhookCalls}x. claimResult=${JSON.stringify(claimResult)}`,
+      );
     } finally {
       globalThis.fetch = savedFetch;
     }
