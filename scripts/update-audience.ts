@@ -24,6 +24,15 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
+import {
+  loadCtrRowsH4,
+  loadHistoryEditions,
+  computeNewH4Entries,
+  appendHistory,
+  loadHistory,
+  computeH4Trend,
+  formatH4Trend,
+} from "./analyze-h4.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = resolve(ROOT, "context/audience-profile.md");
@@ -31,6 +40,7 @@ const HISTORY_DIR = resolve(ROOT, "docs/audience-history"); // #1846: movido de 
 const CTR_CSV = resolve(ROOT, "data/link-ctr-table.csv");
 const SURVEY_JSON = resolve(ROOT, "data/audience-raw.json");
 const PUB_JSON = resolve(ROOT, "data/beehiiv-cache/publication.json");
+const H4_HISTORY = resolve(ROOT, "data/scorer-ctr-history.jsonl");
 
 // ─── Survey helpers ────────────────────────────────────────────────────────────
 
@@ -426,6 +436,22 @@ function main() {
   if (ctr) sources.push(`CTR (${ctr.totalLinks} links)`);
   if (surveyResponses.length > 0) sources.push(`survey (${surveyResponses.length} respondentes)`);
   console.log(`Wrote audience profile [${sources.join(" + ")}] → ${OUT}`);
+
+  // ─── H4: scorer×CTR — computa edições recém-maduras + surfacing semanal (#1619) ─
+  // Defensivo: se CTR CSV ausente, pula silenciosamente (aviso já emitido por loadCtrRowsH4).
+  const h4CtrRows = loadCtrRowsH4(CTR_CSV);
+  if (h4CtrRows.length > 0) {
+    const alreadyComputed = loadHistoryEditions(H4_HISTORY);
+    const editionsDir = resolve(ROOT, "data/editions");
+    const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
+    if (newEntries.length > 0) {
+      appendHistory(H4_HISTORY, newEntries);
+      console.log(`[H4] +${newEntries.length} edição(ões) nova(s) gravada(s) em data/scorer-ctr-history.jsonl`);
+    }
+    const allH4Entries = loadHistory(H4_HISTORY);
+    const trend = computeH4Trend(allH4Entries);
+    console.log(formatH4Trend(trend));
+  }
 }
 
 // Run main() apenas quando invocado como CLI direto.

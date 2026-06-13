@@ -382,7 +382,7 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
     "- Cobertura do join (ver seção acima): só edições com approved.json e join " +
       "completo entram nas médias; cobertura desigual entre janelas enviesa o Δ.",
   );
-  L.push("- H4 (top-6 scorer vs observado) não computado aqui — requer ranking por edição; ver issue.");
+  L.push("- H4 (top-6 scorer vs observado) — implementado em `scripts/analyze-h4.ts` (#1619); histórico em `data/scorer-ctr-history.jsonl`; surfacing recorrente em `update-audience.ts`.");
   L.push("");
 
   return L.join("\n");
