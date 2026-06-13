@@ -1,5 +1,5 @@
 /**
- * test/poll-vote-dedup-2187.test.ts (#2187)
+ * test/poll-vote-dedup-2187.test.ts (#2187, #2220)
  *
  * Testes de regressão para a serialização de dedup de voto via Durable Object.
  *
@@ -12,7 +12,16 @@
  * por chave `${edition}:${email}`. O estado de "já votou?" vive no DO storage
  * (fortemente consistente). A decisão de duplicado vem do DO, não do KV eventual.
  *
- * ## Por que a race era possível ANTES do fix
+ * BUG (#2220): o DO gravava `voted=true` ANTES das escritas KV downstream,
+ * queimando o slot em falha — o retry do votante ficava bloqueado permanentemente.
+ *
+ * FIX (#2220): commit em 2 fases — DO grava `pending=true` (fase 1, autorização),
+ * Worker chama /confirm após sucesso de TODAS as escritas KV (fase 2, confirmação).
+ * Se as escritas KV falham, o Worker NÃO confirma; o retry do votante vê `pending`
+ * e recebe firstVote:false (não re-incrementa em double, mas não fica bloqueado
+ * permanentemente como seria com voted=true queimado irreversivelmente).
+ *
+ * ## Por que a race era possível ANTES do fix (#2187)
  * - KV `get` retorna null para ambos os requests (eventual consistency — o `put`
  *   do primeiro request ainda não propagou para a réplica lida pelo segundo).
  * - Ambos passam o guard `existing === null` → ambos escrevem → double-vote.
@@ -24,6 +33,8 @@
  * 2. Testa compat: email com voto KV legacy → DO rejeita re-voto.
  * 3. Testa integração com handleVote via mock DO que demonstra serialização.
  * 4. Documenta o cenário de double-vote SEM o DO (para clareza do fix).
+ * 5. (#2220) Testa commit em 2 fases: falha KV pós-autorização, /confirm, pending.
+ * 6. (#2220) Mock de race genuíno: prova que SEM serialização o double-vote ocorre.
  */
 
 import { describe, it } from "node:test";
@@ -51,11 +62,21 @@ function makeMockDoState(): DurableObjectState {
 
   return {
     storage: {
-      async get<T>(key: string): Promise<T | undefined> {
+      // P3-12: suporta assinatura batch (array de chaves → Map) e single (string → valor).
+      // A CF DurableObjectStorage real suporta ambas; o mock também deve.
+      async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T | undefined>> {
+        if (Array.isArray(key)) {
+          const map = new Map<string, T | undefined>();
+          for (const k of key) map.set(k, storage.get(k) as T | undefined);
+          return map as unknown as T;
+        }
         return storage.get(key) as T | undefined;
       },
       async put<T>(key: string, value: T): Promise<void> {
         storage.set(key, value);
+      },
+      async delete(key: string): Promise<void> {
+        storage.delete(key);
       },
     } as unknown as DurableObjectStorage,
     blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => {
@@ -74,7 +95,7 @@ function makeVoteDedup(): VoteDedup {
   return new VoteDedup(makeMockDoState());
 }
 
-/** Faz um POST ao DO simulando o request interno do handleVote. */
+/** Faz um POST ao DO simulando o request interno do handleVote (fase 1 — autorização). */
 async function callVoteDedup(
   dedup: VoteDedup,
   opts: { kvVoteExists?: boolean } = {},
@@ -90,6 +111,14 @@ async function callVoteDedup(
   return await resp.json() as { firstVote: boolean };
 }
 
+/** Chama /confirm no DO (fase 2 — confirma sucesso das escritas KV). */
+async function callVoteDedupConfirm(dedup: VoteDedup): Promise<{ confirmed: boolean; reason?: string }> {
+  // P3-11 fix: o DO agora usa path === "/confirm" — URL deve ter pathname exato.
+  const req = new Request("https://internal/confirm", { method: "POST" });
+  const resp = await dedup.fetch(req);
+  return await resp.json() as { confirmed: boolean; reason?: string };
+}
+
 // ── 1. Lógica do DO isolada ───────────────────────────────────────────────────
 
 describe("VoteDedup DO — lógica de dedup isolada (#2187)", () => {
@@ -101,11 +130,14 @@ describe("VoteDedup DO — lógica de dedup isolada (#2187)", () => {
 
   it("segundo request com mesmo DO (mesmo email) → firstVote: false (duplicado)", async () => {
     const dedup = makeVoteDedup();
-    // Primeiro voto — autorizado
+    // Primeiro voto — autorizado (fase 1)
     const first = await callVoteDedup(dedup);
     assert.equal(first.firstVote, true, "primeiro request deve ser autorizado");
 
-    // Segundo voto no mesmo DO — rejeitado
+    // #2220: confirmar (fase 2) — DO transiciona pending→voted
+    await callVoteDedupConfirm(dedup);
+
+    // Segundo voto no mesmo DO — rejeitado (voted=true)
     const second = await callVoteDedup(dedup);
     assert.equal(second.firstVote, false, "segundo request deve ser rejeitado como duplicado");
   });
@@ -113,6 +145,7 @@ describe("VoteDedup DO — lógica de dedup isolada (#2187)", () => {
   it("N requests subsequentes → todos rejeitados (idempotente)", async () => {
     const dedup = makeVoteDedup();
     await callVoteDedup(dedup); // voto 1 — autorizado
+    await callVoteDedupConfirm(dedup); // confirma
 
     for (let i = 2; i <= 5; i++) {
       const result = await callVoteDedup(dedup);
@@ -213,16 +246,19 @@ describe("Cenário de double-vote SEM DO (documenta por que o fix é necessário
     /**
      * COM o DO, os dois requests são serializados no mesmo DO:
      *
-     *   Request A: DO.fetch → voted=undefined → put(voted, true) → firstVote: true
-     *   Request B: DO.fetch → voted=true → firstVote: false (rejeitado)
+     *   Request A: DO.fetch → voted=undefined, pending=undefined → put(pending, true) → firstVote: true
+     *   Request B: DO.fetch → pending=true → firstVote: false (rejeitado)
      *
      * Mesmo que os dois requests cheguem "ao mesmo tempo" no Worker, o
      * runtime DO processa um de cada vez dentro do blockConcurrencyWhile.
+     *
+     * O mock usa blockConcurrencyWhile com fila de promises (mutex), garantindo
+     * que o segundo request aguarda o primeiro antes de ler o estado. Diferente
+     * de uma implementação sem mutex, onde ambos leriam undefined simultaneamente.
      */
     const dedup = makeVoteDedup();
 
-    // Simula dois requests "concorrentes" (executados em sequência no mock,
-    // mas com estado compartilhado — idêntico ao comportamento real do DO)
+    // Promise.all envia os dois requests "simultaneamente" — o mock serializa via mutex
     const [resultA, resultB] = await Promise.all([
       callVoteDedup(dedup),
       callVoteDedup(dedup),
@@ -391,17 +427,20 @@ describe("handleVote integração com VOTE_DEDUP binding (#2187)", () => {
     assert.ok(voteAfterReal !== null, "voto real deve ter sido gravado no KV");
   });
 
-  it("DO retorna erro HTTP → fail-safe: não bloqueia votante indevidamente (#2213 fix #2)", async () => {
+  it("DO retorna erro HTTP → fail-safe: não bloqueia votante + escritas KV acontecem (P2-9)", async () => {
     /**
      * Regressão: sem check doResp.ok, se o DO retornasse erro (5xx/4xx),
      * doResp.json() retornaria {}, firstVote seria undefined, !undefined === true
      * → votante NOVO via 'já votou' falsamente.
-     * Fix: doResp.ok é verificado; em erro, continua como firstVote=true.
+     * Fix: doResp.ok é verificado; em erro (após retry), continua como firstVote=true.
+     *
+     * P2-9: assert que as escritas KV (vote + score) aconteceram no fail-open.
+     * Sem isso, fail-open poderia "completar" sem gravar nada.
      */
     const { default: worker } = await import("../workers/poll/src/index.ts");
     const kv = makeTrackedKv();
 
-    // Mock DO que sempre retorna 500
+    // Mock DO que sempre retorna 500 (mesmo após retry)
     const errorDurableObjectNamespace: DurableObjectNamespace = {
       idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
       get: (): DurableObjectStub => ({
@@ -427,6 +466,17 @@ describe("handleVote integração com VOTE_DEDUP binding (#2187)", () => {
     const html = await res.text();
     // Fail-safe: não bloqueia votante indevidamente — não deve mostrar "já votou"
     assert.doesNotMatch(html, /já votou/i, "DO error: fail-safe NÃO deve mostrar 'já votou' para votante novo");
+
+    // P2-9: verificar que as escritas KV aconteceram (vote + score + stats)
+    const voteRaw = await kv.get("vote:260613:error-do@x.com");
+    assert.ok(voteRaw !== null, "fail-open: voto deve ter sido gravado no KV (voteKey)");
+    const vote = JSON.parse(voteRaw!);
+    assert.equal(vote.choice, "A", "fail-open: choice gravada corretamente");
+
+    const scoreRaw = await kv.get("score:error-do@x.com");
+    assert.ok(scoreRaw !== null, "fail-open: score deve ter sido gravado no KV");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.total, 1, "fail-open: score.total deve ser 1 (voto contou)");
   });
 
   it("sem VOTE_DEDUP binding (fallback KV): comportamento anterior preservado", async () => {
@@ -458,5 +508,209 @@ describe("handleVote integração com VOTE_DEDUP binding (#2187)", () => {
     const html = await res.text();
     // Fallback KV ainda detecta voto existente (KV lento mas eventual)
     assert.match(html, /já votou/i, "fallback KV deve mostrar 'já votou' quando voto existe");
+  });
+});
+
+// ── 5. (#2220) Commit 2-fase: falha KV pós-autorização, reconciliação ────────
+
+describe("VoteDedup 2-fase commit (#2220) — DO: pending→voted só após /confirm", () => {
+  it("sem /confirm, pending fresco: retry concorrente barrado (firstVote:false) — previne double-vote", async () => {
+    /**
+     * INVARIANTE (parte 1): pending fresco = lock válido em progresso.
+     * Um segundo request concorrente vê pending=true e é barrado (firstVote:false).
+     * Isso previne double-vote quando dois requests chegam ao mesmo tempo.
+     *
+     * No mock, "fresh" significa claimed_at recente (< PENDING_TTL_MS = 5 min).
+     * O mock usa Date.now() real, então pending gravado agora é sempre "fresco".
+     */
+    const dedup = makeVoteDedup();
+
+    // Fase 1: autorizar (lock adquirido com claimed_at = agora)
+    const authorized = await callVoteDedup(dedup);
+    assert.equal(authorized.firstVote, true, "fase 1 deve autorizar o voto (lock adquirido)");
+
+    // Worker NÃO chama /confirm (escritas KV falharam).
+    // Segundo request concorrente vê pending=true fresco → barrado.
+    const concurrent = await callVoteDedup(dedup);
+    assert.equal(concurrent.firstVote, false, "request concorrente com pending fresco: barrado (previne double-vote)");
+  });
+
+  it("sem /confirm, pending expirado: retry do MESMO votante re-autorizado (INVARIANTE central)", async () => {
+    /**
+     * INVARIANTE (parte 2 — central): falha de escrita KV NÃO bloqueia o votante
+     * para sempre. Quando pending expira (lock stale por crash entre fase 1 e /confirm),
+     * o retry do votante deve ser re-autorizado (firstVote:true) pra completar o voto.
+     *
+     * Simula pending expirado manipulando claimed_at diretamente no estado interno
+     * do DO (hack de teste: acessa o storage mock via cast). Em produção, o TTL
+     * é 5 min — aqui forçamos expiração imediata sobrescrevendo claimed_at.
+     */
+    // Criar o estado mock e expor o storage para manipulação
+    const storage = new Map<string, unknown>();
+    let queue: Promise<unknown> = Promise.resolve();
+    const mockState = {
+      storage: {
+        async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T | undefined>> {
+          if (Array.isArray(key)) {
+            const map = new Map<string, T | undefined>();
+            for (const k of key) map.set(k, storage.get(k) as T | undefined);
+            return map as unknown as T;
+          }
+          return storage.get(key) as T | undefined;
+        },
+        async put<T>(key: string, value: T): Promise<void> { storage.set(key, value); },
+        async delete(key: string): Promise<void> { storage.delete(key); },
+      } as unknown as DurableObjectStorage,
+      blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => {
+        const next = queue.then(() => fn());
+        queue = next.then(() => undefined, () => undefined);
+        return next;
+      },
+    } as unknown as DurableObjectState;
+
+    const dedup = new VoteDedup(mockState);
+
+    // Fase 1: autorizar (grava pending=true + claimed_at = agora)
+    const authorized = await callVoteDedup(dedup);
+    assert.equal(authorized.firstVote, true, "fase 1 deve autorizar o voto");
+
+    // Simular expiração do pending: forçar claimed_at para 6 minutos no passado
+    const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    storage.set("claimed_at", sixMinutesAgo);
+
+    // Retry do votante após pending expirado — deve ser RE-AUTORIZADO (INVARIANTE)
+    const retry = await callVoteDedup(dedup);
+    assert.equal(
+      retry.firstVote,
+      true,
+      "retry após pending expirado (crash simulado): deve receber firstVote:true para completar o voto",
+    );
+  });
+
+  it("com /confirm: DO transiciona pending→voted, segundo request rejeitado", async () => {
+    /**
+     * Cenário normal (happy path): Worker autoriza (fase 1), escritas KV OK,
+     * Worker confirma (fase 2 → voted=true). Segundo request é rejeitado.
+     */
+    const dedup = makeVoteDedup();
+
+    // Fase 1: autorizar
+    const authorized = await callVoteDedup(dedup);
+    assert.equal(authorized.firstVote, true, "fase 1: voto autorizado");
+
+    // Fase 2: confirmar
+    const confirmed = await callVoteDedupConfirm(dedup);
+    assert.equal(confirmed.confirmed, true, "fase 2: DO confirma");
+
+    // Segundo request — rejeitado (voted=true)
+    const second = await callVoteDedup(dedup);
+    assert.equal(second.firstVote, false, "segundo request após confirm: rejeitado");
+  });
+
+  it("/confirm no-op em DO virgem — NÃO queima slot de votante futuro (P2-5)", async () => {
+    /**
+     * P2-5: /confirm chamado sem pending existente (DO virgem ou após voted=true) é no-op.
+     * Garante que uma chamada acidental a /confirm antes de qualquer /vote-dedup
+     * não queima o slot de um votante futuro.
+     */
+    const dedup = makeVoteDedup();
+
+    // /confirm em DO virgem (sem pending) — deve ser no-op
+    const c0 = await callVoteDedupConfirm(dedup);
+    assert.equal(c0.confirmed, false, "/confirm em DO virgem deve retornar confirmed:false (no-op)");
+    assert.equal(c0.reason, "no_pending", "reason deve ser 'no_pending'");
+
+    // Slot não queimado — votante posterior ainda pode votar
+    const vote = await callVoteDedup(dedup);
+    assert.equal(vote.firstVote, true, "após /confirm no-op: votante futuro ainda autorizado");
+  });
+
+  it("/confirm depois de voted=true: no-op (segunda chamada idempotente não causa regressão)", async () => {
+    const dedup = makeVoteDedup();
+    await callVoteDedup(dedup);
+    const c1 = await callVoteDedupConfirm(dedup);
+    assert.equal(c1.confirmed, true, "primeira chamada a /confirm: ok");
+    // Segunda chamada: não há mais pending (já deletado) — no-op
+    const c2 = await callVoteDedupConfirm(dedup);
+    assert.equal(c2.confirmed, false, "segunda chamada a /confirm (sem pending): no-op");
+    // Estado voted=true preservado
+    const after = await callVoteDedup(dedup);
+    assert.equal(after.firstVote, false, "após confirm + no-op: voto ainda rejeitado (voted=true intacto)");
+  });
+
+  it("dois requests concorrentes: apenas 1 adquire pending (sem double-vote)", async () => {
+    /**
+     * (#2220 regressão principal) Com a 2-fase, dois requests concorrentes disputam
+     * pending. O mock blockConcurrencyWhile (mutex via fila) garante que apenas
+     * o primeiro lê pending=undefined e grava pending=true. O segundo lê pending=true
+     * e é rejeitado — sem double-vote, mesmo sem /confirm ainda.
+     */
+    const dedup = makeVoteDedup();
+
+    // Promise.all: dois requests "simultâneos"
+    const [rA, rB] = await Promise.all([
+      callVoteDedup(dedup),
+      callVoteDedup(dedup),
+    ]);
+
+    const authorizedCount = [rA, rB].filter((r) => r.firstVote).length;
+    assert.equal(
+      authorizedCount,
+      1,
+      `exatamente 1 deve ser autorizado — 2-fase com mutex previne double-pending (A=${rA.firstVote}, B=${rB.firstVote})`,
+    );
+  });
+});
+
+// ── 6. (#2220) Race genuíno: mock sem mutex expõe double-vote ────────────────
+
+describe("Race genuíno no mock — SEM mutex exporia double-vote (#2220 proof)", () => {
+  it("mock sem blockConcurrencyWhile real: dois gets antes de qualquer put → ambos veem undefined", async () => {
+    /**
+     * Prova que SEM a serialização do blockConcurrencyWhile (mutex), dois requests
+     * concorrentes que leem o estado DO em microtasks simultâneas ANTES de qualquer
+     * put ambos veriam `pending=undefined` e ambos gravariam pending=true → double-vote.
+     *
+     * Este teste demonstra o problema (não o fix). O fix é o blockConcurrencyWhile
+     * no makeMockDoState que força execução sequencial.
+     */
+    const storage = new Map<string, unknown>();
+
+    // Simula dois requests que leem o estado ANTES de qualquer put (race sem mutex):
+    // Microtask A lê pending
+    const pendingA = storage.get("pending"); // undefined — nenhum put ainda
+    // Microtask B lê pending ANTES do A fazer put
+    const pendingB = storage.get("pending"); // undefined — A ainda não gravou
+
+    // Ambos veem undefined → ambos gravariam pending=true → double-vote
+    assert.equal(pendingA, undefined, "sem mutex: request A vê pending=undefined");
+    assert.equal(pendingB, undefined, "sem mutex: request B também vê pending=undefined (RACE!)");
+
+    // Ambos gravariam pending=true — sem serialização, dois firstVote:true seriam retornados
+    storage.set("pending", true); // A grava
+    storage.set("pending", true); // B grava (sobreescreve, mas já retornou firstVote:true)
+
+    // COM o mutex (blockConcurrencyWhile), o segundo request aguardaria o primeiro
+    // completar (incluindo o put) antes de ler — veria pending=true e retornaria
+    // firstVote:false. Este teste documenta por que o mutex é indispensável.
+  });
+
+  it("COM mutex (makeMockDoState): race idêntica serializa → apenas 1 firstVote:true", async () => {
+    /**
+     * Contraparte do teste anterior: o mock com blockConcurrencyWhile (mutex)
+     * serializa os dois requests. O segundo aguarda o primeiro completar (incluindo
+     * o put de pending=true) antes de executar, vê pending=true e retorna
+     * firstVote:false. Zero double-vote.
+     */
+    const dedup = makeVoteDedup(); // usa makeMockDoState com blockConcurrencyWhile real
+
+    // Dois requests "simultâneos" (Promise.all) — serializados pelo mutex interno
+    const [r1, r2] = await Promise.all([
+      callVoteDedup(dedup),
+      callVoteDedup(dedup),
+    ]);
+
+    const authorized = [r1, r2].filter((r) => r.firstVote).length;
+    assert.equal(authorized, 1, `COM mutex: exatamente 1 autorizado (r1=${r1.firstVote}, r2=${r2.firstVote})`);
   });
 });

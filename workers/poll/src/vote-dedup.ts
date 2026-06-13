@@ -17,6 +17,40 @@
  * consistente + serializado). A decisão de duplicado vem do storage do DO,
  * não do KV eventual.
  *
+ * ## Commit em 2 fases (#2220)
+ *
+ * PROBLEMA ORIGINAL: o DO gravava `voted=true` ANTES das escritas KV downstream
+ * (updateStatsCounter / updateScore / updateScoreByMonth / put voteKey). Se qualquer
+ * dessas escritas lançasse (ex: KV overload), o slot ficava queimado — o retry do
+ * votante recebia `firstVote:false` e ficava bloqueado para sempre com stats parciais.
+ *
+ * FIX (2 fases):
+ *   Fase 1 (autorização): DO grava `pending=true` + `claimed_at` (timestamp ISO),
+ *     retorna `firstVote:true`.
+ *     Um segundo request concorrente que chega neste ponto vê `pending=true` com
+ *     `claimed_at` recente e é rejeitado como duplicado — serialização mantida.
+ *   Fase 2 (confirmação): após sucesso das escritas KV, o Worker chama POST /confirm
+ *     no DO. O DO persiste `voted=true` e limpa `pending` + `claimed_at`.
+ *
+ * RECONCILIAÇÃO em falha (INVARIANTE central):
+ *   Se as escritas KV falham e o Worker NÃO chama /confirm, o DO fica em estado
+ *   `pending=true, voted=false`. Um retry do votante:
+ *     - Se `pending` ainda está "fresco" (age < PENDING_TTL_MS), é tratado como
+ *       requisição concorrente de outro request → firstVote:false (barrado).
+ *     - Se `pending` expirou (age >= PENDING_TTL_MS — crash entre pending e /confirm),
+ *       o DO trata como voto abandonado e re-autoriza (firstVote:true), permitindo
+ *       que o votante complete o voto normalmente.
+ *   Isso garante que falha de escrita KV + crash NÃO bloqueia o votante para sempre.
+ *
+ * INVARIANTE de exatamente 1 voto:
+ *   - Apenas o primeiro request a adquirir `pending` pode retornar `firstVote:true`.
+ *   - Qualquer request concorrente que chegue enquanto `pending=true` E fresh
+ *     é rejeitado — não pode adquirir pending em paralelo.
+ *   - `pending` expirado = lock stale (crash confirmado) → re-adquirir é seguro
+ *     porque não há request ativo segurando o lock.
+ *   - Somente após /confirm (pending→voted) o slot está definitivamente queimado.
+ *   - Um voto bem-sucedido resulta em exatamente 1 incremento KV + 1 /confirm.
+ *
  * ## Migration path (KV legacy)
  * Votos gravados antes do deploy existem em KV como `vote:{edition}:{email}`.
  * O DO consulta esse KV legacy em seu primeiro acesso (estado DO ainda vazio):
@@ -32,12 +66,15 @@
  *   continua gravando no KV como espelho/compat após a decisão do DO.
  * - Idempotente: se o DO já registrou o voto (voted=true), qualquer request
  *   subsequente do mesmo email é rejeitado como duplicado.
- *
- * ## Chave do DO
- * `idFromName(`${edition}:${email}`)` — instância única por par edição+email.
- * Isso garante que dois votos do MESMO email na MESMA edição são serializados;
- * votos do mesmo email em edições diferentes usam instâncias distintas (correto).
  */
+
+/**
+ * TTL para o estado `pending` — lock adquirido na fase 1 mas ainda não confirmado.
+ * Se o DO ficar em pending por mais que este tempo, considera-se que o Worker
+ * crashou entre fase 1 e fase 2, e o lock é tratado como expirado (re-adquirir é seguro).
+ * 5 minutos cobre qualquer timeout razoável de Worker (CF limita requests a 30s CPU time).
+ */
+const PENDING_TTL_MS = 5 * 60 * 1000; // 5 minutos
 
 /** Payload enviado no body do request interno para o DO (interno — não precisa de export). */
 interface VoteDedupRequest {
@@ -56,11 +93,14 @@ interface VoteDedupResponse {
 /**
  * VoteDedup — Durable Object que serializa dedup de voto por email+edition.
  *
- * Interface de comunicação: fetch interno com body JSON `VoteDedupRequest`.
- * Retorna JSON `VoteDedupResponse`.
+ * Interface de comunicação:
+ *   POST /vote-dedup  — fase 1: solicita autorização do voto
+ *   POST /confirm     — fase 2: confirma sucesso das escritas KV
  *
- * State storage usa `voted` (boolean) como único campo — basta saber se o
- * voto desta instância (email×edition) já foi registrado.
+ * State storage:
+ *   `pending`    (boolean)   — voto autorizado mas escritas KV ainda pendentes
+ *   `claimed_at` (string)    — timestamp ISO 8601 de quando pending foi adquirido
+ *   `voted`      (boolean)   — voto confirmado (escritas KV concluídas)
  *
  * O DO também aceita um header `X-KV-Vote-Exists: 1` passado pelo caller
  * quando o KV legacy já tem `vote:{edition}:{email}` — isso permite inicializar
@@ -82,13 +122,41 @@ export class VoteDedup {
       });
     }
 
-    // Executa atomicamente dentro do DO (serializado por runtime DO)
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // P3-11: usar === em vez de endsWith pra evitar false-match em paths como
+    // /foo/confirm ou /vote-dedup/confirm/extra.
+    if (path === "/confirm") {
+      return this.handleConfirm();
+    }
+
+    // Default: /vote-dedup — fase 1 (autorização)
+    return this.handleAuthorize(request);
+  }
+
+  /**
+   * Fase 1: autoriza o voto.
+   *
+   * Transições de estado:
+   *   voted=true                         → firstVote:false (já confirmado, duplicado definitivo)
+   *   pending=true E fresh (< TTL)       → firstVote:false (request concorrente, duplicado)
+   *   pending=true E expirado (>= TTL)   → re-autoriza (firstVote:true, reset claimed_at)
+   *                                        lock stale por crash entre fase 1 e /confirm
+   *   vazio + X-KV-Vote-Exists           → gravar voted=true, firstVote:false (legado KV)
+   *   vazio                              → gravar pending=true + claimed_at, firstVote:true
+   */
+  private async handleAuthorize(request: Request): Promise<Response> {
     return await this.state.blockConcurrencyWhile(async () => {
-      // Verifica estado interno primeiro (fonte de verdade forte)
-      const voted = await this.state.storage.get<boolean>("voted");
+      // P3-12: batch das duas leituras em um único storage.get para reduzir round-trips.
+      // Retorna Map com valores (undefined se não existir).
+      const stored = await this.state.storage.get<boolean | string>(["voted", "pending", "claimed_at"]);
+      const voted = stored.get("voted") as boolean | undefined;
+      const pending = stored.get("pending") as boolean | undefined;
+      const claimedAt = stored.get("claimed_at") as string | undefined;
 
       if (voted) {
-        // DO já registrou este voto — duplicado
+        // DO já confirmou este voto — duplicado definitivo
         const resp: VoteDedupResponse = { firstVote: false };
         return new Response(JSON.stringify(resp), {
           status: 200,
@@ -96,13 +164,33 @@ export class VoteDedup {
         });
       }
 
-      // DO não tem estado — verificar se o KV legacy já tem este voto.
+      if (pending) {
+        // Lock adquirido — verificar se é fresco ou expirado.
+        // Se fresco: request concorrente → rejeitar (previne double-vote).
+        // Se expirado: lock stale (crash entre fase 1 e /confirm) → re-autorizar.
+        const claimedTs = claimedAt ? new Date(claimedAt).getTime() : 0;
+        const ageMs = Date.now() - claimedTs;
+        const isExpired = ageMs >= PENDING_TTL_MS;
+
+        if (!isExpired) {
+          // Pending fresco: outro request ainda pode estar em progresso — barrar.
+          const resp: VoteDedupResponse = { firstVote: false };
+          return new Response(JSON.stringify(resp), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Pending expirado: crash confirmado — re-adquirir o lock e re-autorizar.
+        // (cai no código de aquisição abaixo após o bloco pending)
+      }
+
+      // DO não tem estado (ou pending expirado) — verificar KV legacy.
       // O caller passa o header X-KV-Vote-Exists: "1" quando detectou o voto
       // no KV antes de chamar o DO (evita que o DO precise de acesso ao KV).
       const kvVoteExists = request.headers.get("X-KV-Vote-Exists") === "1";
       if (kvVoteExists) {
         // Voto legado existe no KV — inicializa o estado DO como "voted"
-        // para que requests futuros sejam rejeitados sem re-consultar o KV.
+        // (pula fase pending: não há escritas KV a confirmar; o voto já está no KV).
         await this.state.storage.put("voted", true);
         const resp: VoteDedupResponse = { firstVote: false };
         return new Response(JSON.stringify(resp), {
@@ -111,10 +199,47 @@ export class VoteDedup {
         });
       }
 
-      // Nenhum voto existente — registrar este como o primeiro voto
-      await this.state.storage.put("voted", true);
+      // Nenhum voto existente (ou lock expirado) — fase 1: adquirir lock (pending).
+      // claimed_at permite detectar locks stale (crash entre fase 1 e /confirm).
+      const now = new Date().toISOString();
+      await this.state.storage.put("pending", true);
+      await this.state.storage.put("claimed_at", now);
       const resp: VoteDedupResponse = { firstVote: true };
       return new Response(JSON.stringify(resp), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  /**
+   * Fase 2: confirma o voto após sucesso das escritas KV.
+   *
+   * Chamado pelo Worker após updateStatsCounter + updateScore + updateScoreByMonth
+   * + put(voteKey) completarem sem erro. Transiciona pending→voted definitivamente.
+   *
+   * Idempotente: se chamado mais de uma vez (retry de rede no Worker), não causa
+   * problemas — apenas seta voted=true novamente.
+   *
+   * P2-5: só confirma se existe `pending` (estado "em progresso"). Se chamado
+   * em um DO virgem (sem pending), é no-op — não queima o slot de um votante
+   * futuro.
+   */
+  private async handleConfirm(): Promise<Response> {
+    return await this.state.blockConcurrencyWhile(async () => {
+      const pending = await this.state.storage.get<boolean>("pending");
+      if (!pending) {
+        // DO não tem pending — /confirm chamado em DO virgem ou após voted=true.
+        // No-op: não queima slot, não causa erro.
+        return new Response(JSON.stringify({ confirmed: false, reason: "no_pending" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      await this.state.storage.put("voted", true);
+      await this.state.storage.delete("pending");
+      await this.state.storage.delete("claimed_at");
+      return new Response(JSON.stringify({ confirmed: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
