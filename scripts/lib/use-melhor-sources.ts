@@ -116,6 +116,10 @@ export interface SourcePrefixEntry {
  *
  * Inclui fontes sem `use_melhor` — necessário para o desempate por especificidade
  * de path entre fontes que compartilham o mesmo host (#2176).
+ *
+ * Nota: observabilidade de resultado vazio (warn + fallback) está em
+ * `resolveAllSourcePrefixMap`, não aqui — callers diretos desta função
+ * bypassam esse guard.
  */
 export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[] {
   const csv = readFileSync(resolve(root, "seed", "sources.csv"), "utf8");
@@ -132,6 +136,40 @@ export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[]
   // no CSV (posição original) pra desempate estável quando comprimentos iguais.
   entries.sort((a, b) => b.prefix.length - a.prefix.length || a.index - b.index);
   return entries;
+}
+
+/**
+ * #2197 — wrapper testável em torno de `loadAllSourcePrefixMap` que emite
+ * `console.warn` em DOIS cenários que silenciosamente desativam o fix #2176:
+ *   (a) `loadAllSourcePrefixMap` lança exceção (CSV inacessível / parse error).
+ *   (b) `loadAllSourcePrefixMap` retorna lista VAZIA sem lançar (CSV parseable
+ *       mas degenerado — só headers, ou todas as linhas sem coluna URL válida).
+ *
+ * Em ambos os casos retorna `[]`, fazendo o caller (IIFE em `categorize.ts`)
+ * cair no fallback legado (`matchesUseMelhorPrefix`).
+ *
+ * Exportado para facilitar testes unitários sem precisar modificar o IIFE.
+ */
+export function resolveAllSourcePrefixMap(
+  loader: () => SourcePrefixEntry[] = loadAllSourcePrefixMap,
+): SourcePrefixEntry[] {
+  let result: SourcePrefixEntry[];
+  try {
+    result = loader();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(
+      `[categorize] #2176 FIX NÃO ATIVO: falha ao carregar mapa de fontes (${msg}) — fallback legado (matchesUseMelhorPrefix)`,
+    );
+    return [];
+  }
+  if (result.length === 0) {
+    console.warn(
+      "[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap retornou vazio (CSV sem fontes válidas) — fallback legado (matchesUseMelhorPrefix)",
+    );
+    return [];
+  }
+  return result;
 }
 
 /**

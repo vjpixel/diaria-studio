@@ -1,9 +1,10 @@
 /**
- * test/use-melhor-sources.test.ts (#1899 / #2176)
+ * test/use-melhor-sources.test.ts (#1899 / #2176 / #2197)
  *
  * Cobre o helper da flag `use_melhor` (lista-semente de fontes da seção
  * Use Melhor) e o loader de hosts a partir do seed real.
  * #2176: adiciona testes do desempate path-mais-específico-vence.
+ * #2197: adiciona testes do resolveAllSourcePrefixMap (warn em throw E em retorno vazio).
  */
 
 import { describe, it } from "node:test";
@@ -15,6 +16,7 @@ import {
   loadUseMelhorPrefixes,
   matchesUseMelhorPrefix,
   loadAllSourcePrefixMap,
+  resolveAllSourcePrefixMap,
   resolveUseMelhorBySpecificity,
   type SourcePrefixEntry,
 } from "../scripts/lib/use-melhor-sources.ts";
@@ -51,8 +53,10 @@ describe("sourcePrefix (#1927 review)", () => {
 });
 
 describe("loadUseMelhorPrefixes (seed real, #1899)", () => {
-  const prefixes = loadUseMelhorPrefixes();
+  // #2203 (Finding 8): leitura lazy (dentro do it) pra que testes mock-only
+  // não dependam do FS — um worktree sem junction não derruba os 77 testes do arquivo.
   it("retorna prefixos host/path das fontes flagueadas (path-aware)", () => {
+    const prefixes = loadUseMelhorPrefixes();
     assert.ok(prefixes.length > 0, "deve haver fontes Use Melhor no seed");
     // host dedicado = só host (#1971: era fast.ai, desativada; eugeneyan.com segue no seed)
     assert.ok(prefixes.includes("eugeneyan.com"), "host dedicado = só host");
@@ -88,9 +92,10 @@ describe("matchesUseMelhorPrefix (#1927 review)", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadAllSourcePrefixMap (#2176)", () => {
-  const allEntries = loadAllSourcePrefixMap();
-
+  // #2203 (Finding 8): leitura lazy (dentro do it) pra que testes mock-only
+  // não dependam do FS — um worktree sem junction não derruba os 77 testes do arquivo.
   it("retorna todas as fontes, incluindo as NÃO use_melhor", () => {
+    const allEntries = loadAllSourcePrefixMap();
     assert.ok(allEntries.length > 0, "deve ter entries");
     // Deve incluir entradas use_melhor=false (fontes Primária/Secundária)
     const hasNonUseMelhor = allEntries.some((e) => !e.useMelhor);
@@ -98,6 +103,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
   });
 
   it("entries ordenadas: prefixo mais longo primeiro", () => {
+    const allEntries = loadAllSourcePrefixMap();
     for (let i = 1; i < allEntries.length; i++) {
       assert.ok(
         allEntries[i].prefix.length <= allEntries[i - 1].prefix.length,
@@ -107,6 +113,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
   });
 
   it("cenário real blog.google: existe entrada use_melhor=false (Google Primária) e use_melhor=true (Blog Brasil)", () => {
+    const allEntries = loadAllSourcePrefixMap();
     const googlePrimaria = allEntries.find(
       (e) => e.prefix === "blog.google" && !e.useMelhor,
     );
@@ -236,5 +243,79 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
       false,
       "URL em blog.google/ fora de /intl/pt-br/ → Google Primária (use_melhor=false) vence",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2197 — resolveAllSourcePrefixMap: warn em throw E em retorno vazio
+// ---------------------------------------------------------------------------
+
+describe("resolveAllSourcePrefixMap (#2197)", () => {
+  const fakeEntry: SourcePrefixEntry = { prefix: "fast.ai", useMelhor: true, index: 0 };
+
+  it("(a) loader lança → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      const result = resolveAllSourcePrefixMap(() => {
+        throw new Error("CSV inacessível");
+      });
+      assert.deepEqual(result, [], "deve retornar [] quando o loader lança");
+      assert.ok(warns.length > 0, "deve emitir console.warn");
+      assert.ok(
+        warns[0].includes("#2176 FIX NÃO ATIVO"),
+        `warn deve conter '#2176 FIX NÃO ATIVO', got: ${warns[0]}`,
+      );
+      assert.ok(
+        warns[0].includes("CSV inacessível"),
+        `warn deve incluir a mensagem de erro, got: ${warns[0]}`,
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("(b) loader retorna [] sem lançar → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      const result = resolveAllSourcePrefixMap(() => []);
+      assert.deepEqual(result, [], "deve retornar [] quando o loader retorna vazio");
+      assert.ok(warns.length > 0, "deve emitir console.warn (caminho vazio-sem-throw)");
+      assert.ok(
+        warns[0].includes("#2176 FIX NÃO ATIVO"),
+        `warn deve conter '#2176 FIX NÃO ATIVO', got: ${warns[0]}`,
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("(c) loader retorna lista populada → sem console.warn, retorna o array", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      const result = resolveAllSourcePrefixMap(() => [fakeEntry]);
+      assert.deepEqual(result, [fakeEntry], "deve retornar o array populado");
+      assert.equal(warns.length, 0, "não deve emitir console.warn quando o loader retorna dados");
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("seed real: loader padrão retorna array populado sem warn", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      const result = resolveAllSourcePrefixMap();
+      assert.ok(result.length > 0, "seed real deve produzir entradas");
+      assert.equal(warns.length, 0, "seed real válido não deve emitir warn");
+    } finally {
+      console.warn = origWarn;
+    }
   });
 });

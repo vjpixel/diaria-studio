@@ -32,7 +32,7 @@ import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/a
 import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
-import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, loadAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176
+import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176 / #2197
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -90,15 +90,9 @@ const LANCAMENTO_PATTERNS = lancamentoPatterns();
 // #2176: mapa COMPLETO de fontes (todas, não só use_melhor) para o desempate
 // path-mais-específico-vence quando dois sources compartilham o mesmo host.
 // Fallback: lista vazia → cai no comportamento legado (matchesUseMelhorPrefix).
-// Finding 2: console.warn explícito indica que o fix #2176 NÃO está ativo.
-const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = (() => {
-  try {
-    return loadAllSourcePrefixMap();
-  } catch (e) {
-    console.warn(`[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap falhou (${(e as Error).message}) — fallback legado (matchesUseMelhorPrefix)`);
-    return [];
-  }
-})();
+// #2197: usa resolveAllSourcePrefixMap (warn em throw E em retorno vazio);
+// o warn vive em resolveAllSourcePrefixMap (use-melhor-sources.ts), não aqui.
+const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = resolveAllSourcePrefixMap();
 
 // #1899 (Finding 5): USE_MELHOR_PREFIXES é derivável de ALL_SOURCE_PREFIX_MAP
 // (filter useMelhor=true) — elimina o readFileSync duplo do mesmo CSV.
@@ -109,7 +103,10 @@ const USE_MELHOR_PREFIXES: string[] = ALL_SOURCE_PREFIX_MAP.length > 0
       try {
         return loadUseMelhorPrefixes();
       } catch (e) {
-        console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
+        const msg = e instanceof Error ? e.message : String(e);
+        // Severidade: warn (igual ao caminho raiz em resolveAllSourcePrefixMap) —
+        // fallback aninhado não é mais crítico que o caminho raiz (#2203).
+        console.warn(`[categorize] #2176 FIX NÃO ATIVO: fallback loadUseMelhorPrefixes falhou (${msg}) — só inferência por conteúdo`);
         return [];
       }
     })();
