@@ -415,6 +415,26 @@ export function isSystemLink(url: string): boolean {
 }
 
 /**
+ * Trunca uma URL para exibição (max 70 chars).
+ * Helper compartilhado entre parseLinksStats e aggregateLinksAcrossCampaigns
+ * para evitar duplicação (#2216 cleanup, finding #2).
+ */
+export function truncateUrl(url: string): string {
+  return url.length > 70 ? url.slice(0, 67) + "…" : url;
+}
+
+/**
+ * Retorna linksStats de uma campanha — fonte canônica: statistics.linksStats,
+ * com fallback pra top-level linksStats (backward compat com fixtures/testes legados).
+ * Helper compartilhado (#2216 cleanup, finding #4 — elimina dual-source duplicado).
+ */
+export function getCampaignLinksStats(
+  c: BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats },
+): BrevoLinksStats | undefined {
+  return c.statistics?.linksStats ?? c.linksStats;
+}
+
+/**
  * Estrutura de um link processado para exibição no dashboard.
  */
 export interface LinkStatRow {
@@ -443,7 +463,10 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
 
   const entries = Object.entries(linksStats)
     .filter(([url]) => !isSystemLink(url))
-    .filter(([, clicks]) => clicks > 0)
+    // #2216 finding #3: Number.isFinite guard — `clicks > 0` is NaN-transparent
+    // (NaN > 0 is false, but NaN can still propagate if checked differently elsewhere).
+    // isFinite covers NaN, Infinity, and -Infinity. Consistent with #2207 NaN class.
+    .filter(([, clicks]) => Number.isFinite(clicks) && clicks > 0)
     .sort(([, a], [, b]) => b - a);
 
   if (entries.length === 0) return [];
@@ -452,7 +475,7 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
 
   return entries.map(([url, clicks]) => ({
     url,
-    displayUrl: url.length > 70 ? url.slice(0, 67) + "…" : url,
+    displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
     clicks,
     pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
   }));
@@ -531,6 +554,123 @@ export function renderLinksSection(
 </details>`;
 }
 
+// ─── #2212: seção de links agregados do período ──────────────────────────────
+
+/**
+ * Linha de link agregado (across campanhas).
+ */
+export interface AggregatedLinkRow {
+  url: string;
+  /** URL truncada para exibição (max 70 chars) */
+  displayUrl: string;
+  /** Soma de clicks deste link entre todas as campanhas do período */
+  totalClicks: number;
+  /** Número de campanhas onde este link apareceu */
+  campaignCount: number;
+}
+
+/**
+ * Agrega links de TODAS as campanhas do período, somando o mesmo URL entre campanhas.
+ * Filtra links de sistema usando `isSystemLink` (reutilizado — sem duplicação).
+ * Retorna array ordenado por totalClicks DESC.
+ * Graceful: sem dados de links → retorna [].
+ *
+ * @param campaigns - lista de campanhas (todas, com statistics.linksStats populado)
+ * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
+ */
+export function aggregateLinksAcrossCampaigns(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
+): AggregatedLinkRow[] {
+  const urlMap = new Map<string, { totalClicks: number; campaignCount: number }>();
+
+  for (const c of campaigns) {
+    // #2216 finding #4: getCampaignLinksStats helper elimina dual-source duplicado
+    const linksStats = getCampaignLinksStats(c);
+    if (!linksStats) continue;
+
+    for (const [url, clicks] of Object.entries(linksStats)) {
+      // Filtrar links de sistema reutilizando isSystemLink (sem duplicar lógica)
+      if (isSystemLink(url)) continue;
+      // #2216 finding #3: Number.isFinite guard — `clicks <= 0` é NaN-transparente
+      // (NaN <= 0 é false, então NaN passaria o guard e acumularia em totalClicks).
+      // Paridade com parseLinksStats. Consistente com classe NaN do #2207.
+      if (!Number.isFinite(clicks) || clicks <= 0) continue;
+
+      const existing = urlMap.get(url);
+      if (existing) {
+        existing.totalClicks += clicks;
+        existing.campaignCount += 1;
+      } else {
+        urlMap.set(url, { totalClicks: clicks, campaignCount: 1 });
+      }
+    }
+  }
+
+  if (urlMap.size === 0) return [];
+
+  return Array.from(urlMap.entries())
+    .map(([url, { totalClicks, campaignCount }]) => ({
+      url,
+      displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
+      totalClicks,
+      campaignCount,
+    }))
+    .sort((a, b) => b.totalClicks - a.totalClicks);
+}
+
+/**
+ * Renderiza a seção "Links mais clicados do período" com links agregados de TODAS as campanhas.
+ * Sempre visível (seção presente mesmo sem dados — graceful stub).
+ * Exportado pra teste unitário.
+ *
+ * @param rows - resultado de aggregateLinksAcrossCampaigns()
+ */
+export function renderAggregatedLinksSection(rows: AggregatedLinkRow[]): string {
+  if (rows.length === 0) {
+    return `
+<section class="phase2-section" id="links-agregados">
+  <h2 class="section-title">Links mais clicados do período</h2>
+  <p class="section-note">Sem dados de links disponíveis para o período.</p>
+</section>`;
+  }
+
+  const totalClicks = rows.reduce((sum, r) => sum + r.totalClicks, 0);
+
+  const tableRows = rows.map((r) => {
+    const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    const linkContent = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a>`
+      : escHtml(r.displayUrl);
+    const pctShare = pct(r.totalClicks, totalClicks);
+    return `<tr>
+      <td class="link-url">${linkContent}</td>
+      <td class="link-clicks metric">${r.totalClicks}</td>
+      <td class="link-pct">${pctShare}</td>
+      <td>${r.campaignCount}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `
+<section class="phase2-section" id="links-agregados">
+  <h2 class="section-title">Links mais clicados do período</h2>
+  <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across campanhas). Links de sistema excluídos.</p>
+  <div class="table-wrap">
+  <table class="links-table">
+    <thead>
+      <tr>
+        <th class="link-url-th" title="URL do link (links de sistema e descadastramento excluídos)">Link</th>
+        <th title="Total de cliques somados entre todas as campanhas do período">Clicks</th>
+        <th title="Participação percentual no total de clicks editoriais do período">%</th>
+        <th title="Número de campanhas onde este link apareceu">Campanhas</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+  <p class="links-note">Clicks totais por link — unique-clicks por link não disponível na API Brevo v3.</p>
+</section>`;
+}
+
 function hoursSince(iso: string | null): string {
   if (!iso) return "—";
   const elapsed = Date.now() - Date.parse(iso);
@@ -557,6 +697,10 @@ function fmtTimeBRT(iso: string | null): string {
   });
 }
 
+// NOTE (#2207): `linksStats?` no shape abaixo é mantido SOMENTE para fixtures de teste
+// (backward compat: testes que passam linksStats top-level diretamente). Em produção,
+// `fetchRecentCampaigns` nunca produz top-level `linksStats` desde #2199.3 — a propriedade
+// canônica é sempre `statistics.linksStats`. Produção não usa o campo top-level.
 export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>): string {
   const rows = campaigns
     .map((c) => {
@@ -678,6 +822,9 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   const weekdayScopeLabel = "todos os envios"; // #2134 follow-up: editor pediu histórico completo, não só o ciclo ativo
   const weekdayRows = aggregateByWeekday(campaigns, null);
   const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel) : "";
+  // #2212: seção de links agregados do período
+  const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
+  const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -782,6 +929,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </div>
 </section>
 ${trendSection}
+${aggregatedLinksSection}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
@@ -861,8 +1009,8 @@ export function aggregateAbcSummary(
     // sent=0, sent=undefined, and sent=null, preventing NaN in accumulators.
     if (!gs || !(gs.sent > 0)) continue;
 
-    cells[parsed.cell].views += gs.uniqueViews;
-    cells[parsed.cell].delivered += gs.delivered;
+    cells[parsed.cell].views += gs.uniqueViews ?? 0;
+    cells[parsed.cell].delivered += gs.delivered ?? 0;
     cells[parsed.cell].count += 1;
   }
 
@@ -1092,8 +1240,8 @@ export function renderWeekdaySection(
         <td><strong>${escHtml(r.label)}</strong></td>
         <td>${r.count}</td>
         <td>${r.delivered.toLocaleString("pt-BR")}</td>
-        <td class="metric">${openRateFmt}${winnerTag}${smallSampleNote}</td>
         <td>${r.opens.toLocaleString("pt-BR")}</td>
+        <td class="metric">${openRateFmt}${winnerTag}${smallSampleNote}</td>
       </tr>`;
     })
     .join("\n");
@@ -1120,8 +1268,8 @@ export function renderWeekdaySection(
         <th title="Dia da semana do envio (horário de Brasília)">Dia</th>
         <th title="Número de campanhas enviadas neste dia">Campanhas</th>
         <th title="Total entregue">Delivered</th>
-        <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
         <th title="Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia.">Opens</th>
+        <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
