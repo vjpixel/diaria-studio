@@ -180,45 +180,48 @@ describe("buildOvernightSummary (interno)", () => {
   });
 });
 
+// ─── Shared fixture factory (module scope, used by multiple describe blocks) ──
+
+type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+
+function makeMinimalData(): DashData {
+  return {
+    generated_at: "2026-06-12T00:00:00Z",
+    schema_version: 1,
+    source_health: {
+      entries: [
+        {
+          name: "TestSource",
+          slug: "testsource",
+          attempts: 5,
+          successes: 5,
+          failures: 0,
+          timeouts: 0,
+          success_rate_pct: 100,
+          consecutive_failures: 0,
+          last_success_iso: "2026-06-11T14:00:00Z",
+          last_failure_iso: null,
+          last_duration_ms: 1234,
+          status: "verde",
+        },
+      ],
+      total: 1,
+      verde: 1,
+      amarelo: 0,
+      vermelho: 0,
+      generated_at: "2026-06-12T00:00:00Z",
+    },
+    ctr: null,
+    overnight: { runs: [], total_runs: 0 },
+    stubs: [
+      { id: "scorer_vs_ctr", description: "Test stub", tracking_issue: "#1619" },
+    ],
+  };
+}
+
 // ─── Testes do Worker: renderização HTML ─────────────────────────────────────
 
 describe("renderDashboardHtml (Worker)", () => {
-  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
-
-  function makeMinimalData(): DashData {
-    return {
-      generated_at: "2026-06-12T00:00:00Z",
-      schema_version: 1,
-      source_health: {
-        entries: [
-          {
-            name: "TestSource",
-            slug: "testsource",
-            attempts: 5,
-            successes: 5,
-            failures: 0,
-            timeouts: 0,
-            success_rate_pct: 100,
-            consecutive_failures: 0,
-            last_success_iso: "2026-06-11T14:00:00Z",
-            last_failure_iso: null,
-            last_duration_ms: 1234,
-            status: "verde",
-          },
-        ],
-        total: 1,
-        verde: 1,
-        amarelo: 0,
-        vermelho: 0,
-        generated_at: "2026-06-12T00:00:00Z",
-      },
-      ctr: null,
-      overnight: { runs: [], total_runs: 0 },
-      stubs: [
-        { id: "scorer_vs_ctr", description: "Test stub", tracking_issue: "#1619" },
-      ],
-    };
-  }
 
   test("setup: importa renderDashboardHtml", async () => {
     const mod = await import("../workers/diaria-dashboard/src/index.ts");
@@ -556,33 +559,9 @@ describe("regressão: XSS javascript: URI bloqueado no href (finding #1)", () =>
 // ─── #2193: ordem das seções CTR > Overnight > Saúde > Em breve ──────────────
 
 describe("ordem das seções (#2193)", () => {
-  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
-
   function makeFullData(): DashData {
     return {
-      generated_at: "2026-06-12T00:00:00Z",
-      schema_version: 1,
-      source_health: {
-        entries: [{
-          name: "TestSource",
-          slug: "testsource",
-          attempts: 5,
-          successes: 5,
-          failures: 0,
-          timeouts: 0,
-          success_rate_pct: 100,
-          consecutive_failures: 0,
-          last_success_iso: "2026-06-11T14:00:00Z",
-          last_failure_iso: null,
-          last_duration_ms: 1234,
-          status: "verde",
-        }],
-        total: 1,
-        verde: 1,
-        amarelo: 0,
-        vermelho: 0,
-        generated_at: "2026-06-12T00:00:00Z",
-      },
+      ...makeMinimalData(),
       ctr: {
         total_editions: 1,
         total_links: 1,
@@ -631,8 +610,8 @@ describe("ordem das seções (#2193)", () => {
     const html = renderDashboardHtml(makeFullData());
 
     const navStart = html.indexOf('<nav class="nav">');
-    const navEnd = html.indexOf("</nav>", navStart);
     assert.ok(navStart > -1, "nav deve estar presente");
+    const navEnd = html.indexOf("</nav>", navStart);
     const navHtml = html.slice(navStart, navEnd);
 
     const idxNavCtr = navHtml.indexOf('href="#ctr"');
