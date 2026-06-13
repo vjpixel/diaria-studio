@@ -104,6 +104,16 @@ interface BrevoGlobalStats {
   estimatedViews?: number;
 }
 
+/**
+ * Shape do `statistics.linksStats` da Brevo API.
+ * Retornado via `GET /v3/emailCampaigns/{id}?statistics=linksStats`.
+ * O endpoint expõe apenas clicks totais por URL — unique-clicks por link
+ * não está disponível neste endpoint da API Brevo v3 (unique clicks só
+ * existem no nível da campanha, em `globalStats.uniqueClicks`).
+ * Referência: https://developers.brevo.com/reference/getemailcampaigns-1
+ */
+export type BrevoLinksStats = Record<string, number>; // url → clicks
+
 interface BrevoCampaign {
   id: number;
   name: string;
@@ -116,6 +126,7 @@ interface BrevoCampaign {
   statistics?: {
     campaignStats?: BrevoCampaignStats[];
     globalStats?: BrevoGlobalStats;
+    linksStats?: BrevoLinksStats;
   };
 }
 
@@ -234,7 +245,7 @@ export async function fetchRecentCampaigns(
   isFresh = false, // #2144: fresh=1 bypassa tanto edge cache quanto KV de stats imutaveis
   // _fetchFn: injetavel em testes para mockar chamadas Brevo (padrao: brevoFetch)
   _fetchFn: typeof brevoFetch = brevoFetch,
-): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
+): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>> {
   const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
     `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
     env,
@@ -246,6 +257,7 @@ export async function fetchRecentCampaigns(
 
   const listMap = new Map<number, BrevoList>();
   const globalStatsMap = new Map<number, BrevoGlobalStats>();
+  const linksStatsMap = new Map<number, BrevoLinksStats>();
 
   // Fetch listas e globalStats em paralelo -- os dois batches sao independentes.
   // mapLimit(5) por batch => concorrencia total <= 10 (bem abaixo de 100 reqs/min da Brevo).
@@ -274,26 +286,40 @@ export async function fetchRecentCampaigns(
         // Lista pode ter sido apagada -- skip
       }
     }),
-    // Batch 2: globalStats com KV cache para campanhas imutaveis (> 7d)
+    // Batch 2: globalStats + linksStats com KV cache para campanhas imutaveis (> 7d).
+    // #2177: ambas as stats vêm do mesmo GET por id (param `statistics=globalStats,linksStats`),
+    // sem custo extra de chamada. linksStats: url → clicks (unique-clicks por link não
+    // está disponível neste endpoint da API Brevo v3).
     mapLimit(campaigns, 5, async (c) => {
       try {
-        const kvKey = `gstats:${c.id}`;
+        const kvGsKey = `gstats:${c.id}`;
+        const kvLsKey = `lstats:${c.id}`;
         const immutable = isImmutableCampaign(c.sentDate);
 
         // Para campanhas imutaveis: tentar KV primeiro (exceto fresh=1)
         if (!isFresh && immutable && env.STATS_CACHE) {
-          const cached = await env.STATS_CACHE.get(kvKey, "json").catch(() => null);
-          if (cached) {
-            globalStatsMap.set(c.id, cached as BrevoGlobalStats);
-            return;
-          }
+          const [cachedGs, cachedLs] = await Promise.all([
+            env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
+            env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
+          ]);
+          if (cachedGs) globalStatsMap.set(c.id, cachedGs as BrevoGlobalStats);
+          if (cachedLs) linksStatsMap.set(c.id, cachedLs as BrevoLinksStats);
+          // Se ambos estavam em cache, skip o fetch da API.
+          // Bug fix (#2183): antes o `if (cachedGs) return` pulava o fetch
+          // mesmo quando lstats não estava em cache — campanhas pré-#2177 com
+          // gstats cacheado nunca recebiam lstats. Agora só retorna se ambos
+          // estiverem em cache.
+          if (cachedGs && cachedLs) return;
         }
 
+        // Fetch com globalStats + linksStats num único GET (sem custo extra de chamada)
         const detail = await _fetchFn<BrevoCampaign>(
-          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+          `/v3/emailCampaigns/${c.id}?statistics=globalStats,linksStats`,
           env,
         );
         const gs = detail.statistics?.globalStats;
+        const ls = detail.statistics?.linksStats;
+
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
         // zerado em certas condicoes; persistir zerado sem TTL criaria entrada
         // permanente impossivel de recuperar sem `wrangler kv:key delete`.
@@ -301,7 +327,16 @@ export async function fetchRecentCampaigns(
           globalStatsMap.set(c.id, gs);
           // Gravar no KV sem TTL se imutavel (stats nao mudam mais)
           if (immutable && env.STATS_CACHE) {
-            await env.STATS_CACHE.put(kvKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+            await env.STATS_CACHE.put(kvGsKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+          }
+        }
+
+        // linksStats: gravar se o objeto existir (mesmo que vazio — indica que a
+        // campanha não tinha links rastreados, distinguindo de "não buscado ainda").
+        if (ls !== undefined) {
+          linksStatsMap.set(c.id, ls);
+          if (immutable && env.STATS_CACHE) {
+            await env.STATS_CACHE.put(kvLsKey, JSON.stringify(ls)).catch(() => { /* nunca bloqueia */ });
           }
         }
       } catch {
@@ -314,6 +349,7 @@ export async function fetchRecentCampaigns(
     const listId = c.recipients?.lists?.[0];
     const list = listId ? listMap.get(listId) : undefined;
     const globalStats = globalStatsMap.get(c.id);
+    const linksStats = linksStatsMap.get(c.id);
     // #1141 fix: o listing retorna `globalStats: { sent: 0, ... }` (zeroed,
     // não undefined) — verificado 2026-05-12. Por isso NÃO podemos fazer
     // `...c.statistics` cego: se nosso fetch individual falhar (globalStats
@@ -324,9 +360,11 @@ export async function fetchRecentCampaigns(
       ...c,
       listName: list?.name,
       listSize: list?.totalSubscribers,
+      linksStats,
       statistics: {
         campaignStats: c.statistics?.campaignStats,
         ...(globalStats && { globalStats }),
+        ...(linksStats !== undefined && { linksStats }),
       },
     };
   });
@@ -345,6 +383,143 @@ function pct(n: number, total: number): string {
 function cellClass(...names: Array<string | false | null | undefined>): string {
   const valid = names.filter((n): n is string => Boolean(n));
   return valid.length === 0 ? "" : ` class="${valid.join(" ")}"`;
+}
+
+// ─── #2177: CTR por link ──────────────────────────────────────────────────────
+
+/**
+ * URLs de tracking/sistema a filtrar do linksStats: unsubscribe, preferências,
+ * links de tracking Brevo, UTMs de rodapé genérico. Filtro conservador — só
+ * remove o que é claramente sistema, não editorial.
+ */
+const SYSTEM_URL_PATTERNS = [
+  /unsubscribe/i,        // também cobre r.brevo.com/links/unsubscribe — regex específico removido (#2183)
+  /optout/i,
+  /opt-out/i,
+  /preferences/i,
+  /preferencias/i,
+  /manage.*subscription/i,
+  /email\.mg\./i,        // Mailgun tracking
+];
+
+/**
+ * Retorna true se a URL deve ser filtrada do report de links (sistema/rodapé).
+ */
+export function isSystemLink(url: string): boolean {
+  return SYSTEM_URL_PATTERNS.some((p) => p.test(url));
+}
+
+/**
+ * Estrutura de um link processado para exibição no dashboard.
+ */
+export interface LinkStatRow {
+  url: string;
+  /** URL truncada para exibição (max 70 chars) */
+  displayUrl: string;
+  clicks: number;
+  /** Participação percentual em relação ao total de clicks editoriais da campanha (links de sistema excluídos) */
+  pctOfTotal: string;
+}
+
+/**
+ * Parseia `linksStats` (mapa url→clicks) da Brevo, filtra links de sistema,
+ * ordena por clicks DESC e retorna array de LinkStatRow com participação %.
+ *
+ * Nota sobre unique-clicks: a API Brevo v3 (`GET /v3/emailCampaigns/{id}?statistics=linksStats`)
+ * expõe apenas clicks totais por URL — sem unique-clicks por link. Unique-clicks
+ * só existem agregados no nível da campanha (`globalStats.uniqueClicks`).
+ * Portanto, a tabela exibe apenas "Clicks" (total) e omite coluna unique graciosamente.
+ *
+ * @param linksStats - mapa url→clicks da Brevo (pode ser undefined/null)
+ * @returns array de LinkStatRow ordenado por clicks DESC, vazio se sem dados
+ */
+export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null): LinkStatRow[] {
+  if (!linksStats) return [];
+
+  const entries = Object.entries(linksStats)
+    .filter(([url]) => !isSystemLink(url))
+    .filter(([, clicks]) => clicks > 0)
+    .sort(([, a], [, b]) => b - a);
+
+  if (entries.length === 0) return [];
+
+  const totalClicks = entries.reduce((sum, [, clicks]) => sum + clicks, 0);
+
+  return entries.map(([url, clicks]) => ({
+    url,
+    displayUrl: url.length > 70 ? url.slice(0, 67) + "…" : url,
+    clicks,
+    pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
+  }));
+}
+
+/**
+ * Renderiza a tabela de CTR por link como HTML colapsável (<details>/<summary>).
+ * Graceful quando linksStats ausente ou sem links editoriais: retorna stub vazio.
+ *
+ * @param campaignId - usado no id do <details> para unicidade
+ * @param linksStats - mapa url→clicks (pode ser undefined)
+ * @param totalClicks - uniqueClicks da campanha (pra contexto no summary)
+ */
+export function renderLinksSection(
+  campaignId: number,
+  linksStats: BrevoLinksStats | undefined | null,
+  totalClicks?: number,
+): string {
+  const rows = parseLinksStats(linksStats);
+
+  // Stub graceful: sem linksStats ou sem links editoriais → seção oculta mas presente
+  if (rows.length === 0) {
+    let reason: string;
+    if (linksStats == null) {
+      reason = "dados de links não disponíveis";
+    } else if (Object.keys(linksStats).length === 0) {
+      reason = "nenhum link rastreado";
+    } else {
+      // Distingue "editorial com 0 clicks" de "só links de sistema" (#2183):
+      // filtra só sistema; se sobrar algo → havia links editoriais, mas todos com 0 clicks.
+      const editorialEntries = Object.entries(linksStats).filter(([url]) => !isSystemLink(url));
+      reason = editorialEntries.length > 0
+        ? "links editoriais presentes, mas com 0 cliques registrados"
+        : "nenhum link editorial (apenas links de sistema)";
+    }
+    return `<details class="links-ctr" id="links-${campaignId}">
+  <summary class="links-summary">Links clicados <span class="links-count-badge">—</span></summary>
+  <p class="links-empty">${escHtml(reason)}</p>
+</details>`;
+  }
+
+  const clicksSuffix = totalClicks !== undefined ? ` de ${totalClicks} únicos` : "";
+  const tableRows = rows.map((r) => {
+    // Defensive XSS guard: neutralize javascript: and other dangerous schemes (#2183).
+    // Only allow http:// and https:// as href values.
+    const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    const linkContent = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a>`
+      : escHtml(r.displayUrl);
+    return `<tr>
+      <td class="link-url">${linkContent}</td>
+      <td class="link-clicks metric">${r.clicks}</td>
+      <td class="link-pct">${r.pctOfTotal}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `<details class="links-ctr" id="links-${campaignId}">
+  <summary class="links-summary">Links clicados <span class="links-count-badge">${rows.length}</span>${clicksSuffix}</summary>
+  <div class="links-table-wrap">
+  <table class="links-table">
+    <thead>
+      <tr>
+        <th class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
+        <th title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
+        <th title="Participação deste link no total de clicks editoriais (links de sistema excluídos)">% do total</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+  <p class="links-note">Clicks totais por link — unique-clicks por link não disponível na API Brevo v3 (apenas agregado em Clicks 🖱️ acima).</p>
+</details>`;
 }
 
 function hoursSince(iso: string | null): string {
@@ -373,7 +548,7 @@ function fmtTimeBRT(iso: string | null): string {
   });
 }
 
-export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>): string {
+export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>): string {
   const rows = campaigns
     .map((c) => {
       // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
@@ -386,7 +561,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
       if (!s) {
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>`;
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
+      <tr class="links-row"><td colspan="11" class="links-cell">${renderLinksSection(c.id, undefined)}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
@@ -436,6 +612,12 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
       const cleanListName = (c.listName ?? "?").replace(/\s*\([^)]*\)\s*/g, "").trim();
+      // #2177: links section colapsável por campanha
+      const linksHtml = renderLinksSection(
+        c.id,
+        c.statistics?.linksStats ?? c.linksStats,
+        s.uniqueClicks,
+      );
       return `<tr>
         <td>${c.id}</td>
         <td><strong>${escHtml(cleanListName)}</strong></td>
@@ -448,7 +630,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
-      </tr>`;
+      </tr>
+      <tr class="links-row"><td colspan="11" class="links-cell">${linksHtml}</td></tr>`;
     })
     .join("\n");
 
@@ -525,6 +708,25 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .volume-note { font-size: 0.95rem; margin-top: 10px; } /* número no font do DS; só a spark-bar é monospace */
   .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; white-space: nowrap; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
+  /* #2177: CTR por link */
+  tr.links-row td.links-cell { padding: 0; border-bottom: 2px solid var(--rule); background: var(--paper); }
+  details.links-ctr { margin: 0; }
+  summary.links-summary { padding: 5px 8px; font-size: 0.8rem; cursor: pointer; color: var(--ink); opacity: 0.75; user-select: none; list-style: none; }
+  summary.links-summary::-webkit-details-marker { display: none; }
+  summary.links-summary::before { content: "▶ "; font-size: 0.65rem; }
+  details[open] > summary.links-summary::before { content: "▼ "; }
+  .links-count-badge { background: var(--paper-alt); border-radius: 8px; padding: 1px 6px; font-size: 0.75rem; margin-left: 4px; }
+  .links-empty { padding: 4px 12px 6px; font-size: 0.8rem; color: var(--ink); opacity: 0.5; margin: 0; }
+  .links-table-wrap { overflow-x: auto; padding: 0 8px 8px; }
+  .links-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .links-table th, .links-table td { padding: 4px 6px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+  .links-table th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.4px; background: transparent; color: var(--ink); opacity: 0.7; }
+  .links-table td.link-url { max-width: 420px; word-break: break-all; }
+  .links-table td.link-url a { color: var(--brand); text-decoration: none; }
+  .links-table td.link-url a:hover { text-decoration: underline; }
+  .links-table td.link-clicks { font-weight: 600; color: var(--brand); }
+  .links-table td.link-pct { opacity: 0.75; }
+  .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.5; padding: 2px 12px 6px; margin: 0; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
