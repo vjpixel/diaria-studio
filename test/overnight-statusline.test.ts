@@ -10,6 +10,8 @@
  *   - plan malformado (sem campo issues) → string vazia, sem throw
  *   - rodada encerrada (todas terminais) → string vazia (barra ocultada)
  *   - plan com 0 issues → string vazia
+ *   - statuses precisa-resposta e bloqueada-externa são não-terminais (#2184/Finding 6)
+ *   - pct usa Math.floor para não mostrar 100% com barra ainda visível (#2184/Finding 3)
  */
 
 import { describe, it } from "node:test";
@@ -91,8 +93,9 @@ describe("renderOvernightBar — 0 issues", () => {
 
 // ─── casos: progresso parcial ─────────────────────────────────────────────────
 
-describe("renderOvernightBar — progresso 4/6 = 67%", () => {
-  it("6 unidades, 4 terminais → barra com 67% e proporção correta", () => {
+describe("renderOvernightBar — progresso 4/6 = 66% (Math.floor)", () => {
+  it("6 unidades, 4 terminais → barra com 66% e proporção correta (Math.floor)", () => {
+    // Math.floor(4/6 * 100) = Math.floor(66.67) = 66  (não 67 que Math.round daria)
     const plan = makePlan([
       "mergeada",          // terminal
       "draft-ci-vermelho", // terminal
@@ -104,10 +107,11 @@ describe("renderOvernightBar — progresso 4/6 = 67%", () => {
     const result = renderOvernightBar(plan);
 
     // Contém %
-    assert.ok(result.includes("67%"), `deve ter 67%: ${result}`);
+    assert.ok(result.includes("66%"), `deve ter 66%: ${result}`);
     // Contém (X/Y)
     assert.ok(result.includes("(4/6)"), `deve ter (4/6): ${result}`);
     // Contém barras cheias e vazias (barra de 12 chars → 8 cheias, 4 vazias)
+    // Math.floor(4/6 * 12) = Math.floor(8) = 8 blocos cheios
     assert.ok(result.includes("████████"), `deve ter 8 blocos cheios: ${result}`);
     assert.ok(result.includes("░░░░"), `deve ter 4 blocos vazios: ${result}`);
     // Formato: [bar] %  (X/Y)
@@ -217,5 +221,80 @@ describe("renderOvernightBar — status terminais reconhecidos", () => {
     const plan = makePlan(["qualquer-status-inventado", "elegivel"]);
     const result = renderOvernightBar(plan);
     assert.ok(result.includes("(0/2)"), `status desconhecido não deve contar: ${result}`);
+  });
+});
+
+// ─── Finding 6: statuses precisa-resposta e bloqueada-externa são não-terminais ───
+
+describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqueada-externa", () => {
+  it("'precisa-resposta' não conta como terminal — barra fica visível", () => {
+    // 0 terminais de 2 → barra visível (run ativo)
+    const plan = makePlan(["precisa-resposta", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `precisa-resposta não deve encerrar a rodada: ${result}`);
+    assert.ok(result.includes("(0/2)"), `precisa-resposta não deve contar como terminal: ${result}`);
+  });
+
+  it("'bloqueada-externa' não conta como terminal — barra fica visível", () => {
+    // 0 terminais de 2 → barra visível (run ativo)
+    const plan = makePlan(["bloqueada-externa", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `bloqueada-externa não deve encerrar a rodada: ${result}`);
+    assert.ok(result.includes("(0/2)"), `bloqueada-externa não deve contar como terminal: ${result}`);
+  });
+
+  it("plan com apenas precisa-resposta mantém barra visível (run ativo, não encerrado)", () => {
+    const plan = makePlan(["precisa-resposta", "precisa-resposta"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `plan só com precisa-resposta deve manter barra visível: ${result}`);
+    assert.ok(result.includes("(0/2)"), `deve mostrar 0 terminais de 2: ${result}`);
+  });
+
+  it("plan com apenas bloqueada-externa mantém barra visível (run ativo, não encerrado)", () => {
+    const plan = makePlan(["bloqueada-externa"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `plan só com bloqueada-externa deve manter barra visível: ${result}`);
+    assert.ok(result.includes("(0/1)"), `deve mostrar 0 terminais de 1: ${result}`);
+  });
+
+  it("mix de precisa-resposta + bloqueada-externa + mergeada: só mergeada é terminal", () => {
+    // 1 terminal (mergeada) de 3
+    const plan = makePlan(["precisa-resposta", "bloqueada-externa", "mergeada"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `deve estar ativo: ${result}`);
+    assert.ok(result.includes("(1/3)"), `só mergeada conta como terminal: ${result}`);
+  });
+});
+
+// ─── Finding 3: Math.floor evita mostrar 100% com barra ainda visível ─────────
+
+describe("renderOvernightBar — pct usa Math.floor (Finding #3)", () => {
+  it("199/200: deve mostrar 99% (não 100%) para que a barra permaneça visível", () => {
+    // Math.round(199/200 * 100) = Math.round(99.5) = 100 → BUG
+    // Math.floor(199/200 * 100) = Math.floor(99.5) = 99  → CORRETO
+    const statuses = Array(199).fill("mergeada").concat(["elegivel"]);
+    const plan = makePlan(statuses);
+    const result = renderOvernightBar(plan);
+    // Barra deve estar visível (não encerrada)
+    assert.notEqual(result, "", `199/200 não deve encerrar a rodada: ${result}`);
+    // Não deve mostrar 100%
+    assert.ok(!result.includes("100%"), `199/200 não deve mostrar 100%: ${result}`);
+    // Deve mostrar 99%
+    assert.ok(result.includes("99%"), `199/200 deve mostrar 99%: ${result}`);
+  });
+
+  it("1/2: Math.floor(50%) = 50% (sem diferença de round vs floor aqui)", () => {
+    const plan = makePlan(["mergeada", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("50%"), `1/2 deve mostrar 50%: ${result}`);
+  });
+
+  it("2/3: Math.floor(66.6%) = 66%, não 67% (diferença de round vs floor)", () => {
+    const plan = makePlan(["mergeada", "mergeada", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    // Math.round(2/3 * 100) = Math.round(66.67) = 67
+    // Math.floor(2/3 * 100) = Math.floor(66.67) = 66
+    assert.ok(result.includes("66%"), `2/3 deve mostrar 66% com Math.floor: ${result}`);
+    assert.ok(!result.includes("67%"), `2/3 não deve mostrar 67% (Math.round seria errado): ${result}`);
   });
 });
