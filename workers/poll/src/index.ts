@@ -260,12 +260,33 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
       ? `Você já votou nesta edição (escolha: ${prev.choice}).`
       : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
-    return voteHtmlResponse(votePageHtml(jaVotouMsg, false, null, null, editionToMonthSlug(edition), brand), 200);
+    // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
+    // determinar se o votante ainda precisa do form de nickname — sem isso, um
+    // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
+    // inacessível para sempre.
+    const prevScoreRaw = await env.POLL.get(`score:${email}`);
+    const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+    let prevNicknameForm: { email: string; sig: string } | null = null;
+    if (!prevScoreObj?.nickname) {
+      const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+      prevNicknameForm = { email, sig: prevSig };
+    }
+    return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
   }
 
   // Gravar voto
   const correctRaw = await env.POLL.get(`correct:${edition}`);
   const correct = correctRaw ? choice === correctRaw : null;
+
+  // #2189 / #2190: ler score:${email} ANTES do put(voteKey).
+  // Razão #2189: se a leitura posterior lançasse, o voto já gravado deixava o
+  // votante no branch "já votou" com nicknameForm=null (inacessível). Lendo
+  // antes, qualquer exceção acontece ANTES do commit — retry chega no caminho
+  // normal do vote.
+  // Razão #2190: essa leitura é reutilizada abaixo para updateScore (que faria
+  // um get redundante). Ler uma vez aqui evita re-leitura no updateScore.
+  const scoreRaw = await env.POLL.get(`score:${email}`);
+  const scoreObj = scoreRaw ? JSON.parse(scoreRaw) : null;
 
   // #1236: test mode — short-circuit antes de qualquer KV write. Mantém
   // validação completa (gate, sig, dedup) acima pra que o test reflita
@@ -289,12 +310,15 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // #1080: sempre atualizar score, mesmo sem gabarito ainda. Sem isso, votos
   // antes do admin setar `correct:{edition}` ficam sem score → leaderboard
   // vazio + nickname form falha com "Vote primeiro".
-  await updateScore(env, email, edition, correct);
+  // #2190: passa scoreRaw já lido acima (evita re-leitura redundante).
+  await updateScore(env, email, edition, correct, scoreRaw);
 
   // #1345: também atualizar score-by-month, indexado pela publication date
   // da edição (não pela data do vote). Voto na edição 260531 conta em Maio
   // 2026 mesmo se chegou em 02/jun.
-  await updateScoreByMonth(env, email, edition, correct);
+  // #2190: passa scoreRaw já lido (updateScoreByMonth leria score:${email}
+  // de novo só pra copiar o nickname — evita terceira leitura da mesma chave).
+  await updateScoreByMonth(env, email, edition, correct, scoreRaw);
 
   // #1657: log de voto pra analytics. SECUNDÁRIO — try/catch pra nunca quebrar
   // o voto do leitor se a escrita do log falhar. Só roda em voto novo (dup
@@ -311,10 +335,8 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     ? "❌ Não foi dessa vez — era a foto real."
     : "Voto registrado! O resultado sai na próxima edição.";
 
-  // #1078 — primeiro voto: oferecer nickname pra leaderboard. Checa se já tem
-  // nickname salvo no score; se não, gera HMAC sig pra form de set-name.
-  const scoreRaw = await env.POLL.get(`score:${email}`);
-  const scoreObj = scoreRaw ? JSON.parse(scoreRaw) : null;
+  // #1078 — primeiro voto: oferecer nickname pra leaderboard. scoreObj já foi
+  // lido antes do put (ver #2189/#2190 acima) — reusar sem nova leitura.
   const needsNickname = !scoreObj?.nickname;
   let nicknameForm: { email: string; sig: string } | null = null;
   if (needsNickname) {
@@ -391,12 +413,17 @@ async function adjustScoreByMonthCorrect(
  *
  * Nickname é copiado de `score:{email}` (source-of-truth global). Pode ficar
  * stale se nickname mudar pós-vote — handleSetName propaga (#1345).
+ *
+ * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no handleVote
+ * (pré-commit). Quando fornecido, evita a re-leitura da mesma chave para
+ * copiar o nickname. Quando omitido, faz o get normalmente (outras calls).
  */
 async function updateScoreByMonth(
   env: Env,
   email: string,
   edition: string,
   correct: boolean | null,
+  preloadedScoreRaw?: string | null,
 ): Promise<void> {
   const monthSlug = editionToMonthSlug(edition);
   if (monthSlug === null) return; // edition malformado — não corrompe schema
@@ -416,8 +443,11 @@ async function updateScoreByMonth(
 
   // Pull nickname from global score key. handleSetName propaga em writes
   // subsequentes, mas o snapshot no momento do vote já é capturado aqui.
+  // #2190: usa o preloadedScoreRaw se disponível (já lido antes do commit do voto).
   if (entry.nickname === null) {
-    const scoreRaw = await env.POLL.get(`score:${email}`);
+    const scoreRaw = preloadedScoreRaw !== undefined
+      ? preloadedScoreRaw
+      : await env.POLL.get(`score:${email}`);
     if (scoreRaw) {
       const scoreObj = JSON.parse(scoreRaw);
       entry.nickname = scoreObj.nickname ?? null;
@@ -508,14 +538,21 @@ export async function recordVoteLog(
   );
 }
 
+/**
+ * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no caller
+ * (handleVote lê antes do commit do voto para evitar re-leitura redundante,
+ * ver #2189). Quando omitido (ex: chamadas do admin backfill) faz o get normalmente.
+ */
 async function updateScore(
   env: Env,
   email: string,
   edition: string,
   correct: boolean | null,
+  preloadedScoreRaw?: string | null,
 ): Promise<void> {
   const scoreKey = `score:${email}`;
-  const raw = await env.POLL.get(scoreKey);
+  // #2190: usa o valor pré-lido se disponível; senão faz o get (backfill do admin).
+  const raw = preloadedScoreRaw !== undefined ? preloadedScoreRaw : await env.POLL.get(scoreKey);
   const score = raw
     ? JSON.parse(raw)
     : { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
@@ -1109,7 +1146,8 @@ function renderLeaderboardHtml(
 
   const rows = ranked.map((s) => {
     const display = s.nickname || s.email.replace(/@.*/, "@***");
-    const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
+    // #2191: usa htmlEscape (de lib.ts) em vez de replace inline que omitia "'".
+    const escaped = htmlEscape(display);
     const trClass = s.rank === 1 ? ' class="leader"' : '';
     return `<tr${trClass}>
       <td>${s.medal}</td>
@@ -1192,7 +1230,11 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
     const raw = await env.POLL.get(keyName);
     if (!raw) continue;
     const vote = JSON.parse(raw);
-    if (vote.correct === null || vote.correct === undefined) {
+    // #2188: re-pontua TODAS as entradas (null, undefined E false) contra o
+    // novo gabarito. O guard anterior `=== null || === undefined` pulava entradas
+    // com correct===false (admin marcou errado, depois corrigiu) — ficavam
+    // permanentemente erradas. Ao mudar gabarito, recomputar tudo.
+    if (vote.correct === null || vote.correct === undefined || vote.correct === false) {
       const correct = vote.choice === answer;
       await env.POLL.put(keyName, JSON.stringify({ ...vote, correct }));
       const email = keyName.replace(prefix, "");
