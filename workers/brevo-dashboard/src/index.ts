@@ -356,11 +356,13 @@ export async function fetchRecentCampaigns(
     // local = undefined), o zeroed do listing persistiria e mascara o
     // fallback pra campaignStats no render. Só incluir globalStats final
     // se o fetch individual teve sucesso.
+    // #2199.3: linksStats consolidado em statistics.linksStats (fonte única).
+    // A propriedade top-level `linksStats` foi removida — era double-write
+    // desnecessário. Leitores usam c.statistics?.linksStats.
     return {
       ...c,
       listName: list?.name,
       listSize: list?.totalSubscribers,
-      linksStats,
       statistics: {
         campaignStats: c.statistics?.campaignStats,
         ...(globalStats && { globalStats }),
@@ -389,8 +391,11 @@ function cellClass(...names: Array<string | false | null | undefined>): string {
 
 /**
  * URLs de tracking/sistema a filtrar do linksStats: unsubscribe, preferências,
- * links de tracking Brevo, UTMs de rodapé genérico. Filtro conservador — só
- * remove o que é claramente sistema, não editorial.
+ * links de tracking Brevo e Mailgun. Filtro conservador — só remove o que é
+ * claramente sistema, não editorial.
+ *
+ * NOTA: UTMs (utm_source, utm_campaign, etc.) NÃO são filtrados — são parâmetros
+ * de tracking editorial legítimos que devem aparecer no relatório de links.
  */
 const SYSTEM_URL_PATTERNS = [
   /unsubscribe/i,        // também cobre r.brevo.com/links/unsubscribe — regex específico removido (#2183)
@@ -489,7 +494,11 @@ export function renderLinksSection(
 </details>`;
   }
 
-  const clicksSuffix = totalClicks !== undefined ? ` de ${totalClicks} únicos` : "";
+  // Nota: totalClicks é o uniqueClicks agregado da campanha (inclui links de sistema),
+  // enquanto a coluna "% do total" usa como denominador apenas os clicks editoriais.
+  // Os dois denominadores diferem intencionalmente — totalClicks é contexto global,
+  // % do total é participação relativa dentro dos links editoriais.
+  const clicksSuffix = totalClicks !== undefined ? ` de ${totalClicks} únicos (campanha)` : "";
   const tableRows = rows.map((r) => {
     // Defensive XSS guard: neutralize javascript: and other dangerous schemes (#2183).
     // Only allow http:// and https:// as href values.
@@ -512,7 +521,7 @@ export function renderLinksSection(
       <tr>
         <th class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
         <th title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
-        <th title="Participação deste link no total de clicks editoriais (links de sistema excluídos)">% do total</th>
+        <th title="Participação deste link no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -561,8 +570,11 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
       if (!s) {
+        // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
+        // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
+        const linksHtmlNoStats = renderLinksSection(c.id, c.statistics?.linksStats ?? c.linksStats);
         return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
-      <tr class="links-row"><td colspan="11" class="links-cell">${renderLinksSection(c.id, undefined)}</td></tr>`;
+      <tr class="links-row"><td colspan="11" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
@@ -1000,7 +1012,9 @@ export function aggregateByWeekday(
     const cs = c.statistics?.campaignStats?.[0];
     const gsIsReal = gs && gs.sent > 0;
     const s = gsIsReal ? gs : cs;
-    if (!s || s.sent === 0) continue;
+    // #2198 Bug 2: `s.sent === 0` não cobre `s.sent === undefined` → NaN em openRate.
+    // `!(s.sent > 0)` cobre 0, undefined e null corretamente.
+    if (!s || !(s.sent > 0)) continue;
 
     const wk = weekdayKeyBRT(c.sentDate);
     if (wk === null) continue;
@@ -1143,7 +1157,7 @@ export function buildTrendRows(
     const cs = c.statistics?.campaignStats?.[0];
     const gsIsReal = gs && gs.sent > 0;
     const s = gsIsReal ? gs : cs;
-    if (!s || s.sent === 0) continue;
+    if (!s || !(s.sent > 0)) continue;
 
     // Label compacto: extrair a parte mais informativa do nome
     // "Diar.ia Mensal 2604 — 2026-05-17 14:45" → "Mensal 2604 W7"

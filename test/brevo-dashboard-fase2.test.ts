@@ -778,7 +778,9 @@ describe("renderVolumeSection", () => {
 });
 
 describe("renderWeekdaySection (#2134)", () => {
-  function makeRows(overrides: Partial<Parameters<typeof aggregateByWeekday>[0]> = {}) {
+  // #2201.4: removido param `overrides` inutilizado — nunca era passado e
+  // aggregateByWeekday não aceita overrides por campanha individual.
+  function makeRows() {
     return aggregateByWeekday(cycle2605Campaigns, "2605");
   }
 
@@ -899,8 +901,9 @@ describe("renderWeekdaySection (#2134)", () => {
     //   Qui d02: A(35)+B(39)+C(30) = 104
     const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
     const html = renderWeekdaySection(rows, "ciclo 2605");
-    assert.match(html, /82/, "deve mostrar 82 opens para Qua");
-    assert.match(html, /104/, "deve mostrar 104 opens para Qui");
+    // #2201.2: regex apertada — verifica valor 82/104 em célula <td>, não substring solta.
+    assert.match(html, /<td[^>]*>82<\/td>/, "deve mostrar 82 opens para Qua em célula <td>");
+    assert.match(html, /<td[^>]*>104<\/td>/, "deve mostrar 104 opens para Qui em célula <td>");
   });
 
   test("#2185 Open rate permanece inalterado (denominador preserved = delivered)", () => {
@@ -923,5 +926,53 @@ describe("renderWeekdaySection (#2134)", () => {
     const html = renderWeekdaySection(zeroOpens, "ciclo 2605");
     assert.match(html, /<td>0<\/td>/, "deve renderizar 0 sem crash");
     assert.doesNotMatch(html, /undefined/, "não deve exibir 'undefined'");
+  });
+});
+
+// ─── Regressão #2198 Bug 2: sent undefined não deve produzir NaN em weekday ───
+
+describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent undefined", () => {
+  test("campanha com sent=undefined é excluída do agregado (sem NaN no openRate)", () => {
+    // Bug: guard `s.sent === 0` não cobria `s.sent === undefined`, então a campanha
+    // entrava no agregado e openRate = opens/delivered gerava potencial divisão por
+    // delivered=0 ou NaN propagado. Fix: `!(s.sent > 0)`.
+    const campaignWithUndefinedSent = makeCampaign(99, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:05:00Z",
+      { sent: undefined as unknown as number, delivered: 100, uniqueViews: 30 });
+    const campaigns = [campaignWithUndefinedSent, ...cycle2605Campaigns];
+
+    const rows = aggregateByWeekday(campaigns, "2605");
+
+    // Nenhuma row deve ter openRate NaN
+    for (const row of rows) {
+      assert.ok(!isNaN(row.openRate),
+        `openRate para ${row.label} não deve ser NaN (foi ${row.openRate})`);
+      assert.ok(isFinite(row.openRate),
+        `openRate para ${row.label} deve ser finito`);
+    }
+
+    // A campanha com sent=undefined deve ter sido excluída do agregado de Qua.
+    // Qua sem a campanha inválida: 3 campanhas originais (ids 38,39,40) com delivered 115+117+115=347
+    // Se a campanha inválida fosse incluída, delivered seria 347+100=447.
+    const qua = rows.find((r) => r.weekday === 2);
+    assert.ok(qua, "deve ter agregado para Qua");
+    assert.equal(qua!.delivered, 347,
+      "delivered de Qua deve ser 347 (campanha com sent=undefined excluída)");
+  });
+
+  test("campanha com sent=null é excluída do agregado (sem NaN)", () => {
+    const campaignWithNullSent = makeCampaign(98, "Clarice News 2605 d01-B (qua)", "2026-06-10T09:06:00Z",
+      { sent: null as unknown as number, delivered: 50, uniqueViews: 10 });
+    const campaigns = [campaignWithNullSent, ...cycle2605Campaigns];
+
+    const rows = aggregateByWeekday(campaigns, "2605");
+
+    for (const row of rows) {
+      assert.ok(!isNaN(row.openRate), `openRate para ${row.label} não deve ser NaN`);
+    }
+
+    // Qua sem a campanha null: delivered=347 (apenas as 3 originais)
+    const qua = rows.find((r) => r.weekday === 2);
+    assert.equal(qua!.delivered, 347,
+      "campanha com sent=null deve ser excluída do agregado de Qua");
   });
 });

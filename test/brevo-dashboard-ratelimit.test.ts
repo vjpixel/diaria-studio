@@ -354,8 +354,8 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       "fetchFn DEVE ser chamada quando gstats está em cache mas lstats está ausente (bug #2183)");
     assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter sido tentado para lstats");
     assert.ok(putCalls.includes("lstats:42"), "KV.put deve persistir lstats após fetch");
-    // linksStats deve estar disponível no resultado
-    assert.ok(result[0].linksStats !== undefined, "linksStats deve estar presente no resultado");
+    // linksStats deve estar disponível em statistics.linksStats (fonte única, #2199.3)
+    assert.ok(result[0].statistics?.linksStats !== undefined, "linksStats deve estar presente em result[0].statistics.linksStats");
   });
 
   test("KV miss de gstats chama _fetchFn e persiste no KV", async () => {

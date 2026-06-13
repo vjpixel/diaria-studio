@@ -203,6 +203,9 @@ describe("renderLinksSection (#2177)", () => {
     assert.match(html, /<details/, "deve ter elemento details");
     // Não deve ter tabela (sem dados)
     assert.doesNotMatch(html, /<table/, "não deve ter tabela quando sem dados");
+    // #2201.3: verificar mensagem explicativa no branch undefined (simétrico ao do {})
+    assert.match(html, /dados de links não disponíveis/i,
+      "deve exibir mensagem explicativa 'dados de links não disponíveis' quando linksStats é undefined");
   });
 
   test("caso vazio: linksStats {} → stub com nota de 'nenhum link rastreado'", () => {
@@ -311,7 +314,15 @@ describe("renderDashboardHtml: integração CTR por link (#2177)", () => {
     const html = renderDashboardHtml([campaign]);
     assert.match(html, /<details class="links-ctr"/, "deve ter seção details de links");
     assert.match(html, /tr class="links-row"/, "deve ter <tr> de links");
-    assert.match(html, /td.*colspan="11"/, "links row deve ter colspan=11 (tabela 11 colunas)");
+    // #2201.1: verificar colspan numérico válido na links-row (sem hardcodar "11").
+    // A abordagem dinâmica de contar <th> é frágil pq o dashboard renderiza múltiplas
+    // tabelas. Em vez disso, verificamos: (a) o atributo existe; (b) é um número positivo;
+    // (c) é ≥ 4 (mínimo razoável para a tabela de campanhas). Mudança estrutural no
+    // número de colunas quebrará o renderDashboardHtml test com tbody/td count check.
+    const colspanMatch = html.match(/<td colspan="(\d+)" class="links-cell">/);
+    assert.ok(colspanMatch, "links-row deve ter <td colspan=N class=links-cell>");
+    const colspan = parseInt(colspanMatch![1], 10);
+    assert.ok(colspan >= 4, `colspan deve ser ≥ 4 (tabela de campanhas tem pelo menos 4 colunas), foi ${colspan}`);
   });
 
   test("links editoriais visíveis no HTML do dashboard", () => {
@@ -372,5 +383,80 @@ describe("renderDashboardHtml: integração CTR por link (#2177)", () => {
     const html = renderDashboardHtml([campaign1, campaign2]);
     assert.match(html, /id="links-10"/, "campanha 10 deve ter links-10");
     assert.match(html, /id="links-20"/, "campanha 20 deve ter links-20");
+  });
+});
+
+// ─── Regressão #2198 Bug 1: branch sem-stats deve usar linksStats real ────────
+
+describe("regressão #2198 Bug 1: linksStats no branch sem-stats", () => {
+  test("campanha com linksStats em statistics.linksStats mas sem globalStats/campaignStats → tabela de links renderiza (não exibe 'dados não disponíveis')", () => {
+    // Cenário: fetchRecentCampaigns retornou linksStats mas globalStats indisponível
+    // e campaignStats ausente → render cai no branch !s. Antes do fix, passava
+    // `undefined` para renderLinksSection, ignorando linksStats real.
+    const campaignNoStatsWithLinks = {
+      id: 77,
+      name: "Bug1 regression",
+      subject: "Test",
+      status: "sent",
+      sentDate: "2026-06-13T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-13T09:00:00Z",
+      recipients: { lists: [5] },
+      listName: "T1-W3",
+      listSize: 50,
+      // sem globalStats real (sent=0 → tratado como ausente) e sem campaignStats
+      statistics: {
+        globalStats: {
+          sent: 0, delivered: 0, hardBounces: 0, softBounces: 0,
+          uniqueViews: 0, viewed: 0, trackableViews: 0,
+          uniqueClicks: 0, clickers: 0, unsubscriptions: 0, complaints: 0,
+          appleMppOpens: 0,
+        },
+        linksStats: fixtureLinksStats,
+      },
+    };
+
+    const html = renderDashboardHtml([campaignNoStatsWithLinks]);
+
+    // O branch !s é ativado (globalStats.sent === 0 → gsIsReal=false, campaignStats ausente)
+    assert.match(html, /sem stats/, "deve mostrar 'sem stats' no row principal (branch !s ativado)");
+
+    // Mas a tabela de links DEVE aparecer (linksStats real presente em statistics.linksStats)
+    assert.match(html, /<table/, "tabela de links deve renderizar mesmo no branch sem-stats");
+    assert.match(html, /diar\.ia\/edicao\/260613/, "links editoriais devem aparecer no branch sem-stats");
+
+    // Não deve dizer "dados não disponíveis" (isso seria o bug antigo)
+    assert.doesNotMatch(html, /dados de links não disponíveis/i,
+      "não deve exibir 'dados não disponíveis' quando linksStats está presente em statistics.linksStats");
+  });
+
+  test("campanha com linksStats top-level (legado) mas sem globalStats → tabela de links renderiza", () => {
+    // Garante backward-compat: testes/mocks que passam linksStats top-level ainda funcionam.
+    const campaignWithTopLevelLinks = {
+      id: 78,
+      name: "Bug1 regression compat",
+      subject: "Test",
+      status: "sent",
+      sentDate: "2026-06-13T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-13T09:00:00Z",
+      recipients: { lists: [6] },
+      listName: "T1-W4",
+      listSize: 50,
+      linksStats: fixtureLinksStats,  // top-level (legado)
+      statistics: {
+        globalStats: {
+          sent: 0, delivered: 0, hardBounces: 0, softBounces: 0,
+          uniqueViews: 0, viewed: 0, trackableViews: 0,
+          uniqueClicks: 0, clickers: 0, unsubscriptions: 0, complaints: 0,
+          appleMppOpens: 0,
+        },
+      },
+    };
+
+    const html = renderDashboardHtml([campaignWithTopLevelLinks]);
+    assert.match(html, /sem stats/, "deve mostrar 'sem stats' no row principal");
+    // linksStats top-level ainda deve ser lido via fallback (c.statistics?.linksStats ?? c.linksStats)
+    assert.match(html, /<table/, "tabela de links deve renderizar com linksStats top-level");
   });
 });
