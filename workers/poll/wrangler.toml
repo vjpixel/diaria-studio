@@ -8,6 +8,22 @@ workers_dev = true
 binding = "POLL"
 id = "72784da4ae39444481eb422ebac357c6"
 
+# #2187: Durable Object para serialização de dedup de voto por email.
+# Elimina a race read-modify-write que o KV eventual-consistent expunha.
+# Classe `VoteDedup` exportada de src/vote-dedup.ts (re-exportada por index.ts).
+[[durable_objects.bindings]]
+name = "VOTE_DEDUP"
+class_name = "VoteDedup"
+
+# Migration obrigatória para new_classes (#2187).
+# Ao deploying pela primeira vez: wrangler deploy cria o namespace DO
+# automaticamente. Não é necessário nenhuma ação manual além do deploy.
+# NÃO deployar sem esta migration — a ausência dela causaria erro 1102 do CF
+# ("No such binding" para DurableObjectNamespace) ao tentar usar o namespace.
+[[migrations]]
+tag = "v1-vote-dedup"
+new_classes = ["VoteDedup"]
+
 [vars]
 ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
 

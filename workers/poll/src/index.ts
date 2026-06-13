@@ -34,9 +34,14 @@ import {
   brandKvPrefix,
   leaderboardHref,
 } from "./lib";
+export { VoteDedup } from "./vote-dedup";
 
 export interface Env {
   POLL: KVNamespace;
+  /** #2187: Durable Object namespace para serialização de dedup de voto por email.
+   * Opcional para compat com testes que não passam o binding (falha graciosamente
+   * para KV-only dedup quando VOTE_DEDUP não está disponível). */
+  VOTE_DEDUP?: DurableObjectNamespace;
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
@@ -246,35 +251,86 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     }
   }
 
-  // Verificar se já votou
+  // #2187: Serializar o dedup via Durable Object (fortemente consistente).
+  // O DO elimina a race read-modify-write que o KV eventual-consistent expunha:
+  // dois requests concorrentes do mesmo email agora são processados em série
+  // dentro do mesmo DO — o 2º vê o estado do 1º e é rejeitado como duplicado.
+  //
+  // Compat/migration: o KV `vote:{edition}:{email}` é lido ANTES da chamada ao
+  // DO para verificar votos legados (gravados antes do deploy do DO). Se o KV
+  // tem o voto, passamos o header X-KV-Vote-Exists: "1" para o DO inicializar
+  // seu estado interno como "voted=true" (sincroniza o estado DO com o legado KV).
+  //
+  // Fallback gracioso: se VOTE_DEDUP não estiver configurado (ex: testes sem
+  // binding DO), cai no comportamento anterior (leitura direta do KV).
   const voteKey = `vote:${edition}:${email}`;
-  const existing = await env.POLL.get(voteKey);
-  if (existing) {
-    const prev = JSON.parse(existing);
-    // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
-    // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
-    // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
-    // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
-    // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
-    // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
-    const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
-      ? `Você já votou nesta edição (escolha: ${prev.choice}).`
-      : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
-    // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
-    // determinar se o votante ainda precisa do form de nickname — sem isso, um
-    // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
-    // inacessível para sempre.
-    // Fix #2189 (plausible): leitura KV condicional — só lê score:{email} quando
-    // de fato precisa servir o nickname form. Evita get incondicional pra quem
-    // já tem nickname (resultado não era usado).
-    let prevNicknameForm: { email: string; sig: string } | null = null;
-    const prevScoreRaw = await env.POLL.get(`score:${email}`);
-    const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
-    if (!prevScoreObj?.nickname) {
-      const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-      prevNicknameForm = { email, sig: prevSig };
+  const existingFromKv = await env.POLL.get(voteKey);
+
+  if (env.VOTE_DEDUP) {
+    // Caminho serializado via DO (#2187)
+    const doId = env.VOTE_DEDUP.idFromName(`${edition}:${email}`);
+    const doStub = env.VOTE_DEDUP.get(doId);
+    const doHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (existingFromKv !== null) {
+      // Sinaliza ao DO que o KV legacy já tem este voto — sem isso, um voto
+      // gravado antes do deploy do DO passaria o guard do DO na primeira consulta.
+      doHeaders["X-KV-Vote-Exists"] = "1";
     }
-    return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+    const doResp = await doStub.fetch("https://internal/vote-dedup", {
+      method: "POST",
+      headers: doHeaders,
+      body: JSON.stringify({ edition, email }),
+    });
+    const { firstVote } = await doResp.json() as { firstVote: boolean };
+
+    if (!firstVote) {
+      // Duplicado detectado pelo DO — servir página "já votou"
+      // Lê o voto do KV para mostrar a choice anterior (pode ser legacy ou recente)
+      const prev = existingFromKv ? JSON.parse(existingFromKv) : { choice: "?" };
+      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
+        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
+        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      let prevNicknameForm: { email: string; sig: string } | null = null;
+      const prevScoreRaw = await env.POLL.get(`score:${email}`);
+      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+      if (!prevScoreObj?.nickname) {
+        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+        prevNicknameForm = { email, sig: prevSig };
+      }
+      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+    }
+    // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
+  } else {
+    // Fallback: sem VOTE_DEDUP binding (ex: testes legados) — comportamento anterior via KV.
+    // ATENÇÃO: este caminho mantém a race condition original (#2187). Só usado em ambientes
+    // sem o binding DO (testes Node sem miniflare). Em produção, VOTE_DEDUP sempre presente.
+    if (existingFromKv) {
+      const prev = JSON.parse(existingFromKv);
+      // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
+      // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
+      // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
+      // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
+      // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
+      // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
+      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
+        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
+        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
+      // determinar se o votante ainda precisa do form de nickname — sem isso, um
+      // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
+      // inacessível para sempre.
+      // Fix #2189 (plausible): leitura KV condicional — só lê score:{email} quando
+      // de fato precisa servir o nickname form. Evita get incondicional pra quem
+      // já tem nickname (resultado não era usado).
+      let prevNicknameForm: { email: string; sig: string } | null = null;
+      const prevScoreRaw = await env.POLL.get(`score:${email}`);
+      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+      if (!prevScoreObj?.nickname) {
+        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+        prevNicknameForm = { email, sig: prevSig };
+      }
+      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+    }
   }
 
   // Gravar voto
