@@ -43,6 +43,25 @@ export function cellListName(n: number, cell: string, day: string, label: string
 // Alias local pra manter a chamada interna legível sem renomear os call-sites.
 const fetchExistingLists = brevoListAllLists;
 
+/**
+ * Guarda contra re-split que clobberaria uma edição cujas células foram
+ * editadas manualmente — ex: variante A dropada no meio do teste A/B/C
+ * (sessão 2026-06-12, ciclo 2605-06). O passo 1 (split local) roda sempre e
+ * incondicionalmente; sem este guard, re-rodar (mesmo dry-run) sobrescreveria
+ * os CSVs `cells/d0N-*.csv` e recriaria a A. O sentinel `cells/.a-dropped.json`
+ * sinaliza "não toque". Remova o sentinel pra forçar um re-split completo.
+ */
+export function assertCellsNotDropped(cellsDir: string): void {
+  const sentinel = resolve(cellsDir, ".a-dropped.json");
+  if (existsSync(sentinel)) {
+    throw new Error(
+      `células foram editadas manualmente neste ciclo (sentinel ${sentinel}) — ` +
+        `re-split abortado pra não clobberar os CSVs locais nem recriar a variante dropada. ` +
+        `Remova o sentinel pra forçar um re-split completo.`,
+    );
+  }
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -57,6 +76,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const sendsDir = resolve(clariceCycleDir(cycle), "sends");
   const cellsDir = ensureDir(resolve(sendsDir, "cells"));
+  assertCellsNotDropped(cellsDir); // não clobberar edição com células editadas à mão
   const week1 = SENDS.filter((s) => s.week === 1);
 
   // 1) Split estratificado de cada dia em 3 células (sempre roda; determinístico).
