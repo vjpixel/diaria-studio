@@ -315,12 +315,15 @@ describe("renderDashboardHtml: integração CTR por link (#2177)", () => {
     assert.match(html, /<details class="links-ctr"/, "deve ter seção details de links");
     assert.match(html, /tr class="links-row"/, "deve ter <tr> de links");
     // #2199.3 (Finding 3): derive colspan from the REAL number of <th> elements in
-    // the campaigns table section — if a column is added/removed, this test BREAKS.
-    // Extract only the campaigns-table section to avoid counting <th> from phase2 tables.
+    // the campaigns table header — if a column is added/removed, this test BREAKS.
+    // Scope to <thead>...</thead> within the campaigns-table section to avoid counting
+    // <th> from the nested links table (renderLinksSection adds 3 <th> inside the
+    // links-row <td>, which is within the same <section>).
     const campaignsSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
-    const thMatches = campaignsSection.match(/<th /g) ?? [];
+    const campaignsThead = campaignsSection.match(/<thead>[\s\S]*?<\/thead>/)?.[0] ?? "";
+    const thMatches = campaignsThead.match(/<th /g) ?? [];
     const expectedColspan = thMatches.length;
-    assert.ok(expectedColspan > 0, `deve encontrar <th> na seção campaigns-table (encontrou ${expectedColspan})`);
+    assert.ok(expectedColspan > 0, `deve encontrar <th> no <thead> da campaigns-table (encontrou ${expectedColspan})`);
     const colspanMatch = html.match(/<td colspan="(\d+)" class="links-cell">/);
     assert.ok(colspanMatch, "links-row deve ter <td colspan=N class=links-cell>");
     const colspan = parseInt(colspanMatch![1], 10);
