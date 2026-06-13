@@ -241,11 +241,18 @@ describe("#2206 — score-by-month decrementa em true→false e não acumula no 
     const afterFlip2Monthly = JSON.parse((await kv.get("score-by-month:2026-06:flip@x.com"))!);
     assert.equal(afterFlip2Monthly.correct, 1, "após B→A: monthly.correct deve ser 1 (não 2 — sem acúmulo)");
     assert.equal(afterFlip2Monthly.total, 1, "monthly.total NÃO deve ser tocado em nenhum flip");
+    // Global score bidirecional: false→true deve ter incrementado score.correct de 0 para 1.
+    const afterFlip2Global = JSON.parse((await kv.get("score:flip@x.com"))!);
+    assert.equal(afterFlip2Global.correct, 1, "score global: após B→A (false→true), correct deve ser 1");
+    assert.equal(afterFlip2Global.total, 1, "score global: total NÃO deve ser tocado em nenhum flip");
 
     // Flip 3: admin corrige para B novamente → true→false
     await callAdminCorrect(kv, "260617", "B");
     const afterFlip3Monthly = JSON.parse((await kv.get("score-by-month:2026-06:flip@x.com"))!);
     assert.equal(afterFlip3Monthly.correct, 0, "após A→B (2º): monthly.correct deve voltar a 0 (não negativo, não acumulado)");
+    // Global score: true→false deve ter decrementado score.correct de 1 para 0.
+    const afterFlip3Global = JSON.parse((await kv.get("score:flip@x.com"))!);
+    assert.equal(afterFlip3Global.correct, 0, "score global: após A→B (true→false), correct deve ser 0 (não negativo)");
   });
 
   it("false→true: monthly.correct é incrementado (caminho original, não regrediu)", async () => {
@@ -264,6 +271,12 @@ describe("#2206 — score-by-month decrementa em true→false e não acumula no 
     const monthly = JSON.parse(monthRaw!);
     assert.equal(monthly.correct, 1, "false→true: monthly.correct deve ser incrementado para 1");
     assert.equal(monthly.total, 1, "monthly.total NÃO deve ser tocado");
+
+    // Global score: false→true deve ter incrementado score.correct de 0 para 1.
+    const scoreRaw = await kv.get("score:inc@x.com");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.correct, 1, "false→true: score.correct global deve ser 1 após backfill");
+    assert.equal(score.total, 1, "false→true: score.total global NÃO deve ser tocado pelo backfill");
   });
 
   it("clamp: monthly.correct não vai abaixo de 0 (clamp em Math.max(0, ...))", async () => {
