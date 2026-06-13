@@ -352,6 +352,83 @@ describe("handleVote integração com VOTE_DEDUP binding (#2187)", () => {
     assert.equal(score.total, 1, `score.total deve permanecer 1 (got ${score.total}) — re-voto legado rejeitado`);
   });
 
+  it("?test=1 NÃO queima o slot do DO — voto real posterior ainda autorizado (#2213 fix #1)", async () => {
+    /**
+     * Regressão: antes do fix, ?test=1 chamava o DO mesmo em test mode,
+     * gravando voted=true no DO storage. Um voto real subsequente do mesmo email
+     * era rejeitado como duplicado — slot queimado pelo teste.
+     * Fix: testMode é verificado ANTES de chamar o DO.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv();
+    const env = makeEnvWithDo(kv);
+
+    const makeUrl = (test: boolean) => {
+      const url = new URL("https://poll.diaria.workers.dev/vote");
+      url.searchParams.set("email", "test-slot@x.com");
+      url.searchParams.set("edition", "260613");
+      url.searchParams.set("choice", "A");
+      if (test) url.searchParams.set("test", "1");
+      return url.toString();
+    };
+
+    // Primeiro: request ?test=1 — não deve queimar o slot
+    const resTest = await worker.fetch(new Request(makeUrl(true), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(resTest.status, 200, "test mode deve retornar 200");
+    const htmlTest = await resTest.text();
+    assert.match(htmlTest, /\[TEST\]/i, "test mode deve exibir label [TEST]");
+    // Voto NÃO deve ter sido gravado no KV
+    const voteAfterTest = await kv.get("vote:260613:test-slot@x.com");
+    assert.equal(voteAfterTest, null, "?test=1 NÃO deve gravar voto no KV");
+
+    // Segundo: request real do mesmo email — deve ser AUTORIZADO (slot não queimado)
+    const resReal = await worker.fetch(new Request(makeUrl(false), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(resReal.status, 200, "voto real pós-teste deve retornar 200");
+    const htmlReal = await resReal.text();
+    assert.doesNotMatch(htmlReal, /já votou/i, "voto real pós-teste NÃO deve mostrar 'já votou' — slot não foi queimado pelo teste");
+    // Voto real deve ter sido gravado
+    const voteAfterReal = await kv.get("vote:260613:test-slot@x.com");
+    assert.ok(voteAfterReal !== null, "voto real deve ter sido gravado no KV");
+  });
+
+  it("DO retorna erro HTTP → fail-safe: não bloqueia votante indevidamente (#2213 fix #2)", async () => {
+    /**
+     * Regressão: sem check doResp.ok, se o DO retornasse erro (5xx/4xx),
+     * doResp.json() retornaria {}, firstVote seria undefined, !undefined === true
+     * → votante NOVO via 'já votou' falsamente.
+     * Fix: doResp.ok é verificado; em erro, continua como firstVote=true.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv();
+
+    // Mock DO que sempre retorna 500
+    const errorDurableObjectNamespace: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (): DurableObjectStub => ({
+        fetch: async () => new Response(JSON.stringify({ error: "internal error" }), { status: 500 }),
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: errorDurableObjectNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "error-do@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "A");
+
+    const res = await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200, "DO error deve retornar 200 (fail-safe)");
+    const html = await res.text();
+    // Fail-safe: não bloqueia votante indevidamente — não deve mostrar "já votou"
+    assert.doesNotMatch(html, /já votou/i, "DO error: fail-safe NÃO deve mostrar 'já votou' para votante novo");
+  });
+
   it("sem VOTE_DEDUP binding (fallback KV): comportamento anterior preservado", async () => {
     const { default: worker } = await import("../workers/poll/src/index.ts");
     const kv = makeTrackedKv({

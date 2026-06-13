@@ -47,8 +47,8 @@ interface VoteDedupRequest {
   email: string;
 }
 
-/** Resposta do DO para o handleVote. */
-export interface VoteDedupResponse {
+/** Resposta do DO para o handleVote (interna — não exportada; usada só dentro deste módulo). */
+interface VoteDedupResponse {
   /** true = primeiro voto (deve prosseguir com gravação normal); false = duplicado */
   firstVote: boolean;
 }

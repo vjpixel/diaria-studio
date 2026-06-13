@@ -24,6 +24,14 @@ class_name = "VoteDedup"
 tag = "v1-vote-dedup"
 new_classes = ["VoteDedup"]
 
+# Nota (#2187 finding #3): não há seção [env.staging] neste wrangler.toml.
+# O projeto poll não usa um ambiente staging separado — testes de integração
+# rodam via miniflare/Node (sem binding DO real). Se um env staging for
+# adicionado no futuro, DEVE incluir o binding VOTE_DEDUP e a [[migrations]]
+# abaixo, caso contrário `wrangler deploy --env staging` omitirá o binding
+# silenciosamente e cairá no path KV racy (race condition do #2187).
+# NÃO deployar sem esse bloco em qualquer env que use VOTE_DEDUP.
+
 [vars]
 ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
 

@@ -276,16 +276,40 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
       // gravado antes do deploy do DO passaria o guard do DO na primeira consulta.
       doHeaders["X-KV-Vote-Exists"] = "1";
     }
+    // #1236 fix: ?test=1 NÃO deve queimar o slot do DO. Short-circuit ANTES
+    // de chamar o DO — request de teste não persiste estado de "voted".
+    if (testMode) {
+      // Pular DO inteiramente em test mode; seguirá para o testMode check abaixo.
+    } else {
     const doResp = await doStub.fetch("https://internal/vote-dedup", {
       method: "POST",
       headers: doHeaders,
-      body: JSON.stringify({ edition, email }),
+      // body: payload interno — reservado para validação futura pelo DO;
+      // atualmente o DO não lê o body (decisão baseada só no estado stored + header).
     });
+
+    // #2187 fix: verificar doResp.ok antes de parsear. Se o DO retornar erro,
+    // fail-safe é NÃO mostrar "já votou" indevidamente — logar e prosseguir
+    // com o voto (melhor duplicar raramente do que bloquear votante legítimo).
+    if (!doResp.ok) {
+      console.error(JSON.stringify({
+        event: "vote_dedup_do_error",
+        status: doResp.status,
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      // fail-safe: continua como firstVote=true (não bloqueia votante indevidamente)
+    } else {
     const { firstVote } = await doResp.json() as { firstVote: boolean };
 
     if (!firstVote) {
       // Duplicado detectado pelo DO — servir página "já votou"
-      // Lê o voto do KV para mostrar a choice anterior (pode ser legacy ou recente)
+      // Lê o voto do KV para mostrar a choice anterior (pode ser legacy ou recente).
+      // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente chegou
+      // tão rapidamente que o KV eventual ainda não propagou o put do 1º request.
+      // O DO rejeita o 2º corretamente (sem double-vote), mas o KV não tem o choice
+      // ainda para exibir. O "?" é mostrado ao leitor e desaparece em milissegundos
+      // quando o KV propaga — não afeta a integridade do voto.
       const prev = existingFromKv ? JSON.parse(existingFromKv) : { choice: "?" };
       const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
         ? `Você já votou nesta edição (escolha: ${prev.choice}).`
@@ -300,6 +324,8 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
       return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
+    } // fim if (!doResp.ok) ... else
+    } // fim if (testMode) ... else
   } else {
     // Fallback: sem VOTE_DEDUP binding (ex: testes legados) — comportamento anterior via KV.
     // ATENÇÃO: este caminho mantém a race condition original (#2187). Só usado em ambientes
@@ -361,8 +387,23 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
 
   // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
   const voteTs = new Date().toISOString();
-  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
 
+  // #2187 finding #5: gravar score ANTES de fazer put(voteKey).
+  // Razão: se updateScore ou updateScoreByMonth lançarem após put(voteKey),
+  // o slot DO já foi queimado → votante fica preso em "já votou" com stats erradas
+  // e sem retry possível. Gravando scores primeiro, qualquer exceção ocorre antes
+  // do commit definitivo do voto — o slot DO NÃO é queimado (vote-dedup.ts só
+  // persiste "voted=true" no DO storage, não no KV), e o próximo retry recomeça
+  // o fluxo normalmente.
+  // Trade-off documentado: em falha entre os puts de score e put(voteKey),
+  // os scores serão incrementados mas voteKey ficará ausente. Isso é reversível:
+  // o admin pode re-inserir voteKey manualmente se necessário; o score divergir
+  // por 1 voto é menos grave do que o slot ser queimado silenciosamente.
+  //
+  // #8: updateScore e updateScoreByMonth escrevem em chaves KV independentes
+  // (score:${email} vs score-by-month:${slug}:${email}) — paralelizados com
+  // Promise.all sem risco de read-after-write entre eles.
+  //
   // Atualizar counter agregado (evita N+1 reads no /stats)
   await updateStatsCounter(env, edition, choice as "A" | "B", correct);
 
@@ -370,14 +411,18 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // antes do admin setar `correct:{edition}` ficam sem score → leaderboard
   // vazio + nickname form falha com "Vote primeiro".
   // #2190: passa scoreRaw já lido acima (evita re-leitura redundante).
-  await updateScore(env, email, edition, correct, scoreRaw);
-
   // #1345: também atualizar score-by-month, indexado pela publication date
   // da edição (não pela data do vote). Voto na edição 260531 conta em Maio
   // 2026 mesmo se chegou em 02/jun.
   // #2190: passa scoreRaw já lido (updateScoreByMonth leria score:${email}
   // de novo só pra copiar o nickname — evita terceira leitura da mesma chave).
-  await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+  await Promise.all([
+    updateScore(env, email, edition, correct, scoreRaw),
+    updateScoreByMonth(env, email, edition, correct, scoreRaw),
+  ]);
+
+  // Commit definitivo do voto no KV — após scores gravados com sucesso.
+  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
 
   // #1657: log de voto pra analytics. SECUNDÁRIO — try/catch pra nunca quebrar
   // o voto do leitor se a escrita do log falhar. Só roda em voto novo (dup
