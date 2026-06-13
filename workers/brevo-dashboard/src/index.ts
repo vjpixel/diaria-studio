@@ -245,7 +245,7 @@ export async function fetchRecentCampaigns(
   isFresh = false, // #2144: fresh=1 bypassa tanto edge cache quanto KV de stats imutaveis
   // _fetchFn: injetavel em testes para mockar chamadas Brevo (padrao: brevoFetch)
   _fetchFn: typeof brevoFetch = brevoFetch,
-): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>> {
+): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
   const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
     `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
     env,
@@ -569,10 +569,14 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const cs = c.statistics?.campaignStats?.[0];
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
+      // #2199.5: hoist canonical linksStats to single variable (one source of truth).
+      // c.statistics?.linksStats is canonical (set by fetchRecentCampaigns #2199.3).
+      // c.linksStats fallback preserved for backward compat (tests/mocks that pass top-level).
+      const linksStats = c.statistics?.linksStats ?? c.linksStats;
       if (!s) {
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
         // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
-        const linksHtmlNoStats = renderLinksSection(c.id, c.statistics?.linksStats ?? c.linksStats);
+        const linksHtmlNoStats = renderLinksSection(c.id, linksStats);
         return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
       <tr class="links-row"><td colspan="11" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
@@ -627,7 +631,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       // #2177: links section colapsável por campanha
       const linksHtml = renderLinksSection(
         c.id,
-        c.statistics?.linksStats ?? c.linksStats,
+        linksStats,
         s.uniqueClicks,
       );
       return `<tr>
@@ -853,7 +857,9 @@ export function aggregateAbcSummary(
     if (parsed.dayNum > 7) continue;
 
     const gs = c.statistics?.globalStats;
-    if (!gs || gs.sent === 0) continue;
+    // #2199: same robust guard as aggregateByWeekday — `!(gs.sent > 0)` covers
+    // sent=0, sent=undefined, and sent=null, preventing NaN in accumulators.
+    if (!gs || !(gs.sent > 0)) continue;
 
     cells[parsed.cell].views += gs.uniqueViews;
     cells[parsed.cell].delivered += gs.delivered;

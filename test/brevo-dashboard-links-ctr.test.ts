@@ -314,15 +314,19 @@ describe("renderDashboardHtml: integração CTR por link (#2177)", () => {
     const html = renderDashboardHtml([campaign]);
     assert.match(html, /<details class="links-ctr"/, "deve ter seção details de links");
     assert.match(html, /tr class="links-row"/, "deve ter <tr> de links");
-    // #2201.1: verificar colspan numérico válido na links-row (sem hardcodar "11").
-    // A abordagem dinâmica de contar <th> é frágil pq o dashboard renderiza múltiplas
-    // tabelas. Em vez disso, verificamos: (a) o atributo existe; (b) é um número positivo;
-    // (c) é ≥ 4 (mínimo razoável para a tabela de campanhas). Mudança estrutural no
-    // número de colunas quebrará o renderDashboardHtml test com tbody/td count check.
+    // #2199.3 (Finding 3): derive colspan from the REAL number of <th> elements in
+    // the campaigns table section — if a column is added/removed, this test BREAKS.
+    // Extract only the campaigns-table section to avoid counting <th> from phase2 tables.
+    const campaignsSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const thMatches = campaignsSection.match(/<th /g) ?? [];
+    const expectedColspan = thMatches.length;
+    assert.ok(expectedColspan > 0, `deve encontrar <th> na seção campaigns-table (encontrou ${expectedColspan})`);
     const colspanMatch = html.match(/<td colspan="(\d+)" class="links-cell">/);
     assert.ok(colspanMatch, "links-row deve ter <td colspan=N class=links-cell>");
     const colspan = parseInt(colspanMatch![1], 10);
-    assert.ok(colspan >= 4, `colspan deve ser ≥ 4 (tabela de campanhas tem pelo menos 4 colunas), foi ${colspan}`);
+    assert.equal(colspan, expectedColspan,
+      `colspan da links-row (${colspan}) deve ser igual ao número de colunas da tabela (${expectedColspan} <th>s) — ` +
+      "se uma coluna foi adicionada/removida, atualizar o colspan hardcoded em renderDashboardHtml");
   });
 
   test("links editoriais visíveis no HTML do dashboard", () => {

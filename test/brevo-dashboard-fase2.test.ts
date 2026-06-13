@@ -975,4 +975,115 @@ describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent un
     assert.equal(qua!.delivered, 347,
       "campanha com sent=null deve ser excluída do agregado de Qua");
   });
+
+  // #2199 Finding 2: test where `s` IS DEFINED but `s.sent` is undefined.
+  // Previous tests used makeCampaign which sets globalStats.sent=undefined, making gsIsReal=false,
+  // so s falls back to cs=undefined (the old `!s` guard caught it). This test uses campaignStats
+  // with sent=undefined so that s=cs is DEFINED but s.sent is undefined — exercises the
+  // `!(s.sent > 0)` branch directly (the old `s.sent === 0` guard would let it through).
+  test("s IS defined (campaignStats) but s.sent=undefined → excluída do agregado (sem NaN) [Finding 2]", () => {
+    // globalStats ausente → gsIsReal=false → s = cs = campaignStats[0] (defined).
+    // campaignStats[0].sent = undefined → old guard (s.sent === 0) passed; new guard excludes.
+    const campaignCsUndefinedSent = {
+      id: 97,
+      name: "Clarice News 2605 d01-A (qua)",
+      subject: "Test",
+      status: "sent",
+      sentDate: "2026-06-10T09:05:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-10T09:05:00Z",
+      recipients: { lists: [197] },
+      listName: "List 97",
+      listSize: 100,
+      statistics: {
+        campaignStats: [{
+          listId: 197,
+          sent: undefined as unknown as number, // s IS defined, s.sent IS undefined
+          delivered: 120,
+          hardBounces: 0,
+          softBounces: 0,
+          deferred: 0,
+          uniqueViews: 50,
+          viewed: 55,
+          trackableViews: 35,
+          uniqueClicks: 5,
+          clickers: 5,
+          unsubscriptions: 0,
+          complaints: 0,
+        }],
+        // no globalStats → falls back to campaignStats[0]
+      },
+    };
+    const campaigns = [campaignCsUndefinedSent, ...cycle2605Campaigns];
+    const rows = aggregateByWeekday(campaigns, "2605");
+
+    for (const row of rows) {
+      assert.ok(!isNaN(row.openRate),
+        `openRate para ${row.label} não deve ser NaN (foi ${row.openRate})`);
+    }
+
+    // campanha inválida (sent=undefined) excluída → Qua delivered = 347 (só as originais)
+    const qua = rows.find((r) => r.weekday === 2);
+    assert.ok(qua, "deve ter agregado para Qua");
+    assert.equal(qua!.delivered, 347,
+      "campanha com campaignStats.sent=undefined deve ser excluída (delivered=347, não 347+120)");
+  });
+});
+
+// ─── Regressão #2199 Finding 1: aggregateAbcSummary sent undefined → sem NaN ───
+
+describe("regressão #2199 Finding 1: aggregateAbcSummary exclui campanha com gs.sent undefined", () => {
+  test("gs IS defined but gs.sent=undefined → excluída da agregação A/B/C (sem NaN) [Finding 1]", () => {
+    // Before fix: guard was `!gs || gs.sent === 0` — undefined === 0 is false, so campaign
+    // passed the guard and gs.uniqueViews/gs.delivered were accumulated (NaN risk if
+    // those fields are also undefined). Fix: `!(gs.sent > 0)` covers undefined correctly.
+    const campaignUndefinedSentGs = {
+      id: 96,
+      name: "Clarice News 2605 d03-A (sex)",
+      subject: "Test",
+      status: "sent",
+      sentDate: "2026-06-13T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-13T09:00:00Z",
+      recipients: { lists: [196] },
+      listName: "List 96",
+      listSize: 100,
+      statistics: {
+        globalStats: {
+          // gs IS defined; gs.sent IS undefined — exercises the !(gs.sent > 0) branch
+          sent: undefined as unknown as number,
+          delivered: 150,
+          hardBounces: 0,
+          softBounces: 0,
+          uniqueViews: 60,
+          viewed: 65,
+          trackableViews: 40,
+          uniqueClicks: 6,
+          clickers: 6,
+          unsubscriptions: 0,
+          complaints: 0,
+          appleMppOpens: 10,
+        },
+      },
+    };
+
+    const campaigns = [campaignUndefinedSentGs, ...cycle2605Campaigns];
+    const result = aggregateAbcSummary(campaigns, "2605");
+
+    // No NaN in any openRate
+    for (const row of result) {
+      assert.ok(!isNaN(row.openRate),
+        `openRate para célula ${row.cell} não deve ser NaN (foi ${row.openRate})`);
+      assert.ok(isFinite(row.openRate),
+        `openRate para célula ${row.cell} deve ser finito`);
+    }
+
+    // d03-A with gs.sent=undefined must be excluded → cell A count = 2 (only d01-A, d02-A)
+    const cellA = result.find((r) => r.cell === "A")!;
+    assert.equal(cellA.campaignCount, 2,
+      "campanha com gs.sent=undefined deve ser excluída — count A deve ser 2, não 3");
+    // totalViews must equal only d01-A (20) + d02-A (35) = 55 (not +60 from the invalid campaign)
+    assert.equal(cellA.totalViews, 20 + 35,
+      "totalViews de A deve ser 55 (apenas d01-A+d02-A, excluindo campanha com gs.sent=undefined)");
+  });
 });
