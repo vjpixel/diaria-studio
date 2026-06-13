@@ -327,7 +327,6 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // qual. Só aparece quando temos gabarito (correct ∈ {true, false}).
   // Sem gabarito (correct === null), pular — leitor verá só msg.
   const showImages = correct !== null;
-  const images: { choice: "A" | "B"; isAi: boolean; isClicked: boolean } | null = null;
   // correctRaw armazena qual lado é IA — usar direto.
   const aiSide: "A" | "B" | null = showImages && correctRaw
     ? (correctRaw as "A" | "B")
