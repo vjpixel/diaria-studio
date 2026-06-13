@@ -107,15 +107,27 @@ interface VoteDedupResponse {
  *   POST /vote-dedup  — fase 1: solicita autorização do voto
  *   POST /confirm     — fase 2: confirma sucesso das escritas KV
  *
- * State storage:
- *   `pending`    (boolean)   — voto autorizado mas escritas KV ainda pendentes
- *   `claimed_at` (string)    — timestamp ISO 8601 de quando pending foi adquirido
- *   `voted`      (boolean)   — voto confirmado (escritas KV concluídas)
+ * State storage (schema após #2229):
+ *   `pending`  (PendingState = { at: string })  — lock adquirido; voto autorizado mas
+ *                                                   escritas KV ainda pendentes. Gravado
+ *                                                   como objeto atômico num único put para
+ *                                                   evitar estado pending-sem-timestamp.
+ *   `voted`    (boolean)                         — voto confirmado (escritas KV concluídas)
  *
- * O DO também aceita um header `X-KV-Vote-Exists: 1` passado pelo caller
- * quando o KV legacy já tem `vote:{edition}:{email}` — isso permite inicializar
- * o estado do DO como "voted=true" sem uma leitura interna do KV (que o DO
- * não tem acesso direto; o caller já fez a leitura de forma mais eficiente).
+ * Headers reconhecidos pelo caller:
+ *   `X-KV-Vote-Exists: 1`        — KV legacy já tem `vote:{edition}:{email}`; DO inicializa
+ *                                   como voted=true sem passar por pending.
+ *   `X-KV-VoteKey-Committed: 1`  — todas as escritas KV (incluindo voteKey) foram concluídas
+ *                                   mas /confirm falhou. DO reconcilia pending→voted e retorna
+ *                                   firstVote:false sem re-incrementar contadores.
+ *
+ * Tabela de transições de estado (handleAuthorize):
+ *   voted=true                              → firstVote:false  (duplicado definitivo)
+ *   pending fresco + X-KV-VoteKey-Committed → voted=true, firstVote:false (reconciliação)
+ *   pending fresco                          → firstVote:false  (request concorrente)
+ *   pending expirado (>= TTL)              → re-autoriza (re-adquire lock, firstVote:true)
+ *   vazio + X-KV-Vote-Exists               → voted=true, firstVote:false (migração legado)
+ *   vazio                                  → pending={ at }, firstVote:true
  */
 export class VoteDedup {
   private state: DurableObjectState;
