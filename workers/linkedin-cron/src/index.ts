@@ -240,7 +240,7 @@ export interface DoStoredPayload {
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
- *   GET  /status  → retorna { fired: boolean } (consultado por fireDueItems)
+ *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null } (consultado por fireDueItems)
  *   POST /claim   → check-and-set atômico de `claiming` dentro de
  *                   blockConcurrencyWhile. Retorna { claimed: boolean }.
  *                   `true` significa "este caller ganhou o claim e pode postar".
@@ -882,13 +882,22 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
       // Se claiming=true mas fired=false → crash mid-flight detectado, logar.
       const statusRes = await doStub.fetch("https://do/status", { method: "GET" });
       if (statusRes.ok) {
-        const status = await statusRes.json() as { fired: boolean };
+        // Fix #F3 (confirmed bug): include `claiming` in the type — previously the cast
+        // `as { fired: boolean }` dropped `claiming` from the parsed object, making the
+        // crash-detection logic (claiming=true + fired=false) permanently unreachable.
+        const status = await statusRes.json() as { fired: boolean; claiming: boolean; claimed_at: number | null };
         if (status.fired) {
           // DO já disparou — apenas limpar KV entry sem re-fire
           await env.LINKEDIN_QUEUE.delete(k.name);
           console.log(`[fire] ${k.name} already fired by DO alarm — cleaning KV (idempotency)`);
           fired++; // conta como fired pra estatísticas
           continue;
+        }
+        // Telemetria de crash mid-flight: claiming=true + fired=false indica que o alarm()
+        // ganhou o claim mas crashou antes de completar o post. Logar erro pra investigação.
+        if (status.claiming && !status.fired) {
+          const claimedAgo = status.claimed_at ? Date.now() - status.claimed_at : null;
+          console.error(`[fire] ${k.name} crash-mid-flight detected: claiming=true, fired=false, claimed_at_ms_ago=${claimedAgo} — cron will attempt re-fire via /claim`);
         }
       }
 
