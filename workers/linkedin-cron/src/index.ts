@@ -5,16 +5,40 @@
  * Make.com Data Store (que não funcionou — ver
  * `feedback_make_searchrecord_mapping_unsolved.md`).
  *
- * Arquitetura:
+ * Arquitetura (#1168 — Durable Object alarms):
  *   1. publish-linkedin.ts POSTa pra /queue com {text, image_url, scheduled_at, destaque}
  *   2. KV armazena com key lex-sortable, valor JSON
- *   3. Cron a cada 30min lê KV, fira webhook Make pra items com scheduled_at <= now
+ *   3a. DO `LinkedInScheduler` cria alarm em scheduled_at via state.storage.setAlarm
+ *       — disparo exato, lag ~zero (substitui cron polling de cron-5min com lag worst-case ~5min)
+ *   3b. Cron fallback (cron-5min) ainda ativo durante transição — fira items maduros que
+ *       não têm alarm (legacy KV ou raro edge de crash pós-enqueue pré-setAlarm)
  *   4. Item é deletado após fire bem-sucedido (HTTP 2xx do webhook)
  *   5. Falhas incrementam retry_count; após MAX_RETRIES (5) movem pra dlq:{uuid}
+ *
+ * DO design (#1168): 1 DO instance por item (`idFromName(queueKey)`).
+ *   - Vantagem: isolamento total, sem collision de alarm (DO tem 1 alarm por vez).
+ *   - Alternativa (1 scheduler central) teria que re-arm pra próximo item mais
+ *     cedo — lógica mais complexa, e falha de 1 item afetaria o scheduler global.
+ *   - Desvantagem: N DO instances pra N items pendentes (low-cost, DO spins up
+ *     só no alarm; ≤3 items/dia na prática).
+ *
+ * Migration path de KV legacy (#1168):
+ *   - Items já no KV (pré-deploy) NÃO perdem alarm automático.
+ *   - Editor faz re-arm pós-deploy: POST /rearm (auth) varre KV e chama
+ *     setAlarm em cada DO de item pendente. 1 call, idempotente.
+ *   - Enquanto re-arm não for chamado (ou items que carreguem só pelo cron),
+ *     o cron fallback (cron-5min) garante que items legacy não são perdidos.
+ *
+ * Idempotência (#1168):
+ *   - DO guarda `fired: true` em storage após fire bem-sucedido.
+ *   - alarm() e fireDueItems (cron path) checam o storage flag antes de disparar.
+ *   - Com ambos paths ativos, colisão alarm+cron é possível (janela de ~ms). O
+ *     guard `fired` garante que apenas 1 disparo por item seja efetivo.
  *
  * Endpoints:
  *   POST   /queue       → adiciona item à fila. Auth: header X-Diaria-Token
  *   DELETE /queue/:key  → cleanup — remove entry específica da queue (auth, #1058)
+ *   POST   /rearm       → re-arma alarms DO pra items KV legacy (auth, #1168)
  *   GET    /health      → debug — quantos items na fila, próximo agendado
  *   GET    /list        → debug — lista completa (auth required)
  *   GET    /dlq         → debug — lista dead-letter queue (auth required)
@@ -41,6 +65,8 @@ export interface Env {
   // só faz comments na Diar.ia company page). Opcional pra backward-compat:
   // se ausente, items com webhook_target="pixel" vão pra DLQ com reason claro.
   MAKE_PIXEL_WEBHOOK_URL?: string;
+  // #1168 — Durable Object namespace pra alarms por item.
+  LINKEDIN_SCHEDULER: DurableObjectNamespace;
 }
 
 export type WebhookTarget = "diaria" | "pixel";
@@ -166,6 +192,175 @@ export function isLegacyKey(key: string): boolean {
   return !QUEUE_KEY_NEW_RE.test(key);
 }
 
+// ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
+
+/**
+ * Payload armazenado no DO storage, contendo tudo que alarm() precisa pra
+ * disparar o webhook sem acesso ao KV ou ao env do Worker.
+ */
+export interface DoStoredPayload {
+  key: string;               // KV key do item (usado em logs)
+  entry: QueueEntry;         // entry completa (texto, webhook_target, action, etc.)
+  webhookUrl: string;        // MAKE_WEBHOOK_URL resolvido no momento do enqueue
+  pixelWebhookUrl?: string;  // MAKE_PIXEL_WEBHOOK_URL (opcional)
+}
+
+/**
+ * LinkedInScheduler — Durable Object (#1168).
+ * 1 instância por item de fila: `idFromName(queueKey)`.
+ *
+ * Design (1 DO por item vs 1 scheduler central):
+ *   - 1 DO por item: alarme isolado, falha de 1 item não afeta outros, sem
+ *     lógica de "re-arm pra próximo item mais cedo". Escolha adotada.
+ *   - 1 scheduler central: 1 DO com alarm sempre no próximo item mais cedo;
+ *     após fire, re-arm pro seguinte. Mais complexo; falha de 1 item pode
+ *     bloquear o scheduler global.
+ *
+ * Fluxo:
+ *   1. `handleEnqueue` chama DO via `/arm` com `DoStoredPayload`.
+ *   2. DO persiste payload + chama `state.storage.setAlarm(scheduledAtMs)`.
+ *   3. Em `scheduledAtMs`, CF invoca `alarm()`.
+ *   4. `alarm()` lê payload do storage, dispara webhook Make.
+ *   5. Se sucesso: grava `fired:true` em storage (idempotência contra cron fallback).
+ *   6. KV delete é feito pelo Worker `handleEnqueue` via idFromName — a entry KV
+ *      permanece até o cron a processar; idempotência impede double-fire.
+ *
+ * Idempotência (alarm + cron fallback):
+ *   - DO armazena `fired:true` após fire bem-sucedido.
+ *   - `fireDueItems` (cron path) consulta DO via `/status` antes de disparar
+ *     item com `alarm_armed:true`. Se DO reporta `fired:true`, cron apenas
+ *     deleta a KV entry sem re-disparar o webhook.
+ *   - Sem acesso a DO (ex: DO destruído), cron dispara normalmente (fallback).
+ *
+ * Protocol interno (fetch ao DO):
+ *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
+ *                 → persiste payload, agenda alarm, retorna { armed: true }
+ *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
+ *   GET  /status  → retorna { fired: boolean } (consultado por fireDueItems)
+ */
+export class LinkedInScheduler {
+  private state: DurableObjectState;
+
+  constructor(state: DurableObjectState) {
+    this.state = state;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/arm" && request.method === "POST") {
+      const body = await request.json() as DoStoredPayload & { scheduledAtMs: number };
+      // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
+      const { scheduledAtMs, ...payload } = body;
+      await this.state.storage.put("payload", payload satisfies DoStoredPayload);
+      // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
+      await this.state.storage.setAlarm(scheduledAtMs);
+
+      return new Response(JSON.stringify({ armed: true, scheduledAtMs }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.pathname === "/cancel" && request.method === "POST") {
+      await this.state.storage.deleteAll();
+      await this.state.storage.deleteAlarm();
+      return new Response(JSON.stringify({ cancelled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.pathname === "/status" && request.method === "GET") {
+      const fired = (await this.state.storage.get<boolean>("fired")) ?? false;
+      return new Response(JSON.stringify({ fired }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  }
+
+  async alarm(): Promise<void> {
+    // Guard de idempotência (#1168): se o cron fallback já disparou este item,
+    // não re-disparar. O cron seta `fired:true` via DO /arm (re-arm no mesmo DO
+    // não é possível sem setAlarm — mas o cron pode ter disparado via KV direto).
+    // Guard primário: `fired` setado pelo próprio alarm() antes do fetch.
+    const alreadyFired = await this.state.storage.get<boolean>("fired");
+    if (alreadyFired) {
+      console.log("[DO alarm] idempotency guard — item already fired, skipping");
+      return;
+    }
+
+    const payload = await this.state.storage.get<DoStoredPayload>("payload");
+    if (!payload) {
+      console.error("[DO alarm] payload missing — alarm orphaned, cannot fire");
+      return;
+    }
+
+    const { key, entry, webhookUrl: defaultWebhookUrl, pixelWebhookUrl } = payload;
+    const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
+    const action: QueueAction = entry.action ?? "post";
+
+    let webhookUrl: string;
+    if (webhookTarget === "pixel") {
+      if (!pixelWebhookUrl) {
+        // Configuração incompleta — não pode disparar. Não setamos `fired:true` pra
+        // deixar o cron fallback tentar (ele vai direto pra DLQ por mesma razão).
+        console.error(`[DO alarm] pixel entry ${key} but pixelWebhookUrl not stored — cannot fire`);
+        return;
+      }
+      webhookUrl = pixelWebhookUrl;
+    } else {
+      webhookUrl = defaultWebhookUrl;
+    }
+
+    // Seta `fired:true` ANTES do fetch pra ser atômico com o alarm:
+    // se o alarm() for re-invocado (CF retry raro), o guard acima protege.
+    // Se o fetch falhar, o cron fallback ainda pode processar via KV (a KV entry
+    // ainda existe — DO não deleta KV; apenas cron path deleta KV pós-fire).
+    await this.state.storage.put("fired", true);
+
+    try {
+      const res = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: entry.text,
+          image_url: entry.image_url,
+          scheduled_at: entry.scheduled_at,
+          destaque: entry.destaque,
+          action,
+          ...(entry.parent_destaque !== undefined && { parent_destaque: entry.parent_destaque }),
+        }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+
+      if (res.ok) {
+        console.log(
+          `[DO alarm] fired ok key=${key} target=${webhookTarget} action=${action} destaque=${entry.destaque}`,
+        );
+        // KV entry permanece até o cron path a encontrar e deletar (com idempotência:
+        // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
+        // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.
+      } else {
+        // Fire falhou — libera o flag pra cron fallback tentar via retry normal
+        await this.state.storage.delete("fired");
+        const body = await res.text();
+        console.error(
+          `[DO alarm] fire failed key=${key} status=${res.status}: ${body.slice(0, 200)}`,
+        );
+      }
+    } catch (e) {
+      // Timeout ou exception — libera o flag pra cron fallback
+      await this.state.storage.delete("fired");
+      const err = e as Error;
+      console.error(`[DO alarm] fire exception key=${key}: ${err.message}`);
+    }
+  }
+}
+
 // ── POST /queue — enfileira ─────────────────────────────────────────────────
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
@@ -286,12 +481,42 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     );
   }
 
+  // #1168 — Armar DO alarm pra disparo preciso em scheduledAtMs.
+  // DO failure é non-fatal: cron fallback (*/5) garante que o item é disparado.
+  // Isso é importante pra compat: se LINKEDIN_SCHEDULER não estiver configurado
+  // (deploy antigo / env sem binding), cron continua funcionando normalmente.
+  let alarmArmed = false;
+  try {
+    const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
+    const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+    const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
+      scheduledAtMs: scheduledMs,
+      key,
+      entry,
+      webhookUrl: env.MAKE_WEBHOOK_URL,
+      ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+    };
+    const armRes = await doStub.fetch("https://do/arm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(armPayload),
+    });
+    alarmArmed = armRes.ok;
+    if (!armRes.ok) {
+      console.warn(`[enqueue] DO arm failed for key=${key} status=${armRes.status} — cron fallback active`);
+    }
+  } catch (e) {
+    // DO indisponível / binding ausente — não bloquear o enqueue
+    console.warn(`[enqueue] DO arm exception for key=${key}: ${(e as Error).message} — cron fallback active`);
+  }
+
   return json(
     {
       queued: true,
       key,
       scheduled_at: entry.scheduled_at,
       destaque: entry.destaque,
+      alarm_armed: alarmArmed,
     },
     202,
   );
@@ -500,6 +725,29 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
 
     if (scheduledMs > now) continue; // ainda não chegou a hora
 
+    // #1168 — Idempotência com DO alarms: antes de disparar webhook, consulta
+    // o DO associado ao item. Se o DO já disparou (fired:true), apenas deleta
+    // a KV entry sem re-disparar o webhook (cleanup do fallback cron).
+    // Se o DO não estiver disponível (binding ausente, exception), cron dispara
+    // normalmente (fallback pra compat com deploys sem DO ou itens legacy sem arm).
+    try {
+      const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+      const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+      const statusRes = await doStub.fetch("https://do/status", { method: "GET" });
+      if (statusRes.ok) {
+        const status = await statusRes.json() as { fired: boolean };
+        if (status.fired) {
+          // DO já disparou — apenas limpar KV entry sem re-fire
+          await env.LINKEDIN_QUEUE.delete(k.name);
+          console.log(`[fire] ${k.name} already fired by DO alarm — cleaning KV (idempotency)`);
+          fired++; // conta como fired pra estatísticas
+          continue;
+        }
+      }
+    } catch {
+      // DO indisponível ou binding ausente — cron dispara normalmente (fallback)
+    }
+
     // #595 — Resolver webhook URL por target. Default "diaria" pra backward-compat.
     // Pixel target sem MAKE_PIXEL_WEBHOOK_URL configurado → DLQ direto, evita loop.
     const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
@@ -610,6 +858,83 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
   return { fired, errors, dlq };
 }
 
+// ── POST /rearm — re-arm DO alarms pra items KV legacy (#1168) ────────────
+
+/**
+ * Varre todos os items pendentes no KV e arma (ou re-arma) o DO alarm de cada
+ * um. Idempotente: pode ser chamado múltiplas vezes sem efeito colateral
+ * (setAlarm sobrescreve alarm anterior).
+ *
+ * Uso: editor chama 1x após deploy do #1168 pra garantir que items KV legacy
+ * (enfileirados antes do deploy) tenham alarms DO agendados.
+ *
+ * Só processa items com scheduledMs no FUTURO — items já vencidos são deixados
+ * pro cron fallback (que roda a cada cron-5min e vai disparar na próxima rodada).
+ *
+ * Resposta: { rearmed: number, skipped_past: number, failed: number }
+ */
+async function handleRearm(request: Request, env: Env): Promise<Response> {
+  if (!isAuthorized(request, env)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+
+  const now = Date.now();
+  const list = await env.LINKEDIN_QUEUE.list({ prefix: "queue:" });
+  let rearmed = 0;
+  let skippedPast = 0;
+  let failed = 0;
+
+  for (const k of list.keys) {
+    const raw = await env.LINKEDIN_QUEUE.get(k.name);
+    if (!raw) continue;
+
+    let entry: QueueEntry;
+    try {
+      entry = JSON.parse(raw) as QueueEntry;
+    } catch {
+      failed++;
+      continue;
+    }
+
+    const scheduledMs = Date.parse(entry.scheduled_at);
+    if (isNaN(scheduledMs) || scheduledMs <= now) {
+      // Passado ou inválido — deixar pro cron fallback
+      skippedPast++;
+      continue;
+    }
+
+    // Armar DO alarm pra este item
+    try {
+      const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+      const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+      const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
+        scheduledAtMs: scheduledMs,
+        key: k.name,
+        entry,
+        webhookUrl: env.MAKE_WEBHOOK_URL,
+        ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+      };
+      const armRes = await doStub.fetch("https://do/arm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(armPayload),
+      });
+      if (armRes.ok) {
+        rearmed++;
+        console.log(`[rearm] armed DO alarm for key=${k.name} at=${entry.scheduled_at}`);
+      } else {
+        failed++;
+        console.error(`[rearm] DO arm failed for key=${k.name} status=${armRes.status}`);
+      }
+    } catch (e) {
+      failed++;
+      console.error(`[rearm] DO arm exception for key=${k.name}: ${(e as Error).message}`);
+    }
+  }
+
+  return json({ rearmed, skipped_past: skippedPast, failed });
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────
 
 export default {
@@ -649,6 +974,11 @@ export default {
       const result = await fireDueItems(env);
       return json({ ok: true, ...result });
     }
+    // #1168 — POST /rearm re-arma DO alarms pra items KV legacy pós-deploy.
+    // Editor chama 1x após deploy pra garantir que items pré-deploy tenham alarms.
+    if (path === "/rearm" && request.method === "POST") {
+      return handleRearm(request, env);
+    }
 
     return json(
       {
@@ -656,6 +986,8 @@ export default {
         endpoints: [
           "POST /queue (auth: X-Diaria-Token)",
           "DELETE /queue/:key (auth: X-Diaria-Token)",
+          "POST /rearm (auth: X-Diaria-Token) — re-arm DO alarms para items KV legacy",
+          "POST /fire-now (auth: X-Diaria-Token)",
           "GET /health",
           "GET /list (auth: X-Diaria-Token)",
           "GET /dlq (auth: X-Diaria-Token)",
@@ -676,7 +1008,7 @@ export default {
   },
 };
 
-// Internal exports pra testes (#879 #880 #881 #882 #883 #894)
+// Internal exports pra testes (#879 #880 #881 #882 #883 #894 #1168)
 export const __test__ = {
   handleEnqueue,
   handleHealth,
@@ -684,5 +1016,6 @@ export const __test__ = {
   handleDlq,
   handleDlqDelete,
   handleQueueDelete,
+  handleRearm,
   fireDueItems,
 };
