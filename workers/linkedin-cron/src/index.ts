@@ -84,6 +84,10 @@ export interface QueueEntry {
   webhook_target?: WebhookTarget;
   action?: QueueAction;
   parent_destaque?: string; // qual destaque o comment pertence (auditoria)
+  // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
+  // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
+  // postar, e o deleta do KV (cleanup do tombstone).
+  cancelled?: boolean;
 }
 
 // ── Constantes ─────────────────────────────────────────────────────────────
@@ -224,13 +228,16 @@ export interface DoStoredPayload {
  *   1. `handleEnqueue` chama DO via `/arm` com `DoStoredPayload`.
  *   2. DO persiste payload + chama `state.storage.setAlarm(scheduledAtMs)`.
  *   3. Em `scheduledAtMs`, CF invoca `alarm()`.
- *   4. `alarm()` lê payload do storage, dispara webhook Make.
- *   5. Se sucesso: grava `fired:true` em storage (idempotência contra cron fallback).
- *   6. KV delete é feito pelo Worker `handleEnqueue` via idFromName — a entry KV
- *      permanece até o cron a processar; idempotência impede double-fire.
+ *   4. `alarm()` chama `tryClaim()` DIRETAMENTE (sem self-fetch — #2230 bug 3).
+ *   5. Se claim ganho: lê payload, dispara webhook Make.
+ *   6. Se sucesso: grava `fired:true` + deleta `payload` do storage (#2230 bug 1).
+ *      Com payload ausente E fired=true, qualquer alarm posterior via TTL expiry
+ *      (claim re-claimado) não tem o quê postar.
+ *   7. KV delete é feito pelo Worker cron path após confirmar `fired:true`;
+ *      idempotência impede double-fire mesmo se alarm disparar mais de 1x.
  *
  * Idempotência (alarm + cron fallback):
- *   - DO armazena `fired:true` após fire bem-sucedido.
+ *   - DO armazena `fired:true` + deleta `payload` após fire bem-sucedido.
  *   - `fireDueItems` (cron path) consulta DO via `/status` antes de disparar
  *     item com `alarm_armed:true`. Se DO reporta `fired:true`, cron apenas
  *     deleta a KV entry sem re-disparar o webhook.
@@ -246,12 +253,42 @@ export interface DoStoredPayload {
  *                   `true` significa "este caller ganhou o claim e pode postar".
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
+ *                   (#2230 bug 3) alarm() usa tryClaim() DIRETAMENTE — não via self-fetch.
  */
 export class LinkedInScheduler {
   private state: DurableObjectState;
 
   constructor(state: DurableObjectState) {
     this.state = state;
+  }
+
+  /**
+   * tryClaim — lógica de claim atômico chamada DIRETAMENTE pelo alarm() (#2230 bug 3).
+   *
+   * Evita nested `blockConcurrencyWhile` que ocorria quando alarm() chamava
+   * `this.fetch('/claim')`, que internamente entrava em blockConcurrencyWhile.
+   * Agora alarm() chama este método diretamente dentro de UM blockConcurrencyWhile.
+   *
+   * Reutiliza a mesma lógica do endpoint POST /claim (com TTL de claim expirado).
+   * O endpoint POST /claim ainda existe para o cron path (fetch externo ao DO).
+   */
+  async tryClaim(): Promise<boolean> {
+    return this.state.blockConcurrencyWhile(async () => {
+      const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
+      const alreadyFired = await this.state.storage.get<boolean>("fired");
+      if (alreadyFired) return false;
+      if (alreadyClaiming) {
+        // Verificar se o claim expirou (crash mid-flight sem release)
+        const claimedAt = await this.state.storage.get<number>("claimed_at");
+        const claimExpired = claimedAt !== undefined && (Date.now() - claimedAt) > CLAIM_TTL_MS;
+        if (!claimExpired) return false;
+        // Claim expirado — logar e re-clamar
+        console.warn(`[DO tryClaim] claim expired after ${Date.now() - (claimedAt ?? 0)}ms — re-claiming (crash recovery)`);
+      }
+      await this.state.storage.put("claiming", true);
+      await this.state.storage.put("claimed_at", Date.now());
+      return true;
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -329,11 +366,15 @@ export class LinkedInScheduler {
       });
     }
 
-    // POST /status-set-fired — cron path seta fired=true + limpa claiming após
+    // POST /status-set-fired — cron path seta fired=true + limpa claiming + payload após
     // fire bem-sucedido. Permite que o DO saiba que o cron disparou, evitando
     // que o alarm() tente re-disparar em CF retry.
+    // (#2230 bug 1 fix) Deleta também o `payload` para consistência com o alarm path:
+    // mesmo que o alarm() seja re-invocado (TTL+claim expirado), sem payload não há o
+    // quê postar — segunda linha de defesa contra double-post.
     if (url.pathname === "/status-set-fired" && request.method === "POST") {
       await this.state.storage.put("fired", true);
+      await this.state.storage.delete("payload");  // (#2230 bug 1 fix) payload limpo
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
       return new Response(JSON.stringify({ ok: true }), {
@@ -357,22 +398,17 @@ export class LinkedInScheduler {
   }
 
   async alarm(): Promise<void> {
-    // (#2219 bug 2) Claim atômico via /claim — exactly-once com cron fallback.
-    // blockConcurrencyWhile garante que alarm() e cron não podem ganhar o claim
-    // simultaneamente mesmo em corrida. Se o cron ganhou antes, `claimed` = false.
-    const claimRes = await this.fetch(new Request("https://do/claim", { method: "POST" }));
-    // (#2219 bug 4 fix) Checar claimRes.ok antes de chamar .json().
-    // Se /claim retornar não-JSON (ex: 404 fallback), claimData.claimed seria
-    // undefined → falsy → alarm pularia silenciosamente sem logar erro.
-    // Tratamento: erro do /claim é loggado como erro, não como "claim lost" normal;
-    // o alarm para sem postar (fail-safe: preferimos perder do que postar duplicado).
-    if (!claimRes.ok) {
-      console.error(`[DO alarm] /claim returned non-ok status=${claimRes.status} — aborting to avoid dup (fail-safe)`);
-      return;
-    }
-    const claimData = await claimRes.json() as { claimed: boolean };
-    if (!claimData.claimed) {
-      console.log("[DO alarm] claim lost — cron already claimed, skipping to avoid dup");
+    // (#2230 bug 3 fix) Claim atômico via tryClaim() DIRETAMENTE — sem self-fetch.
+    // O self-fetch anterior (`this.fetch('/claim')`) criava nested blockConcurrencyWhile:
+    // alarm() rodava em isolamento DO, depois `fetch('/claim')` entrava em outro
+    // blockConcurrencyWhile interno, o que pode lançar em algumas runtimes CF.
+    // Fix: tryClaim() contém o blockConcurrencyWhile diretamente — 1 nível apenas.
+    //
+    // (#2219 bug 2) Claim atômico garante exactly-once com cron fallback:
+    // blockConcurrencyWhile serializa alarm() e cron — apenas 1 ganha o claim.
+    const claimed = await this.tryClaim();
+    if (!claimed) {
+      console.log("[DO alarm] claim lost — cron already claimed or fired, skipping to avoid dup");
       return;
     }
 
@@ -439,13 +475,38 @@ export class LinkedInScheduler {
       });
 
       if (res.ok) {
-        // Sucesso: transicionar claiming → fired (2ª fase).
-        // fired=true é o sinal pro cron de que não precisa re-disparar.
-        await this.state.storage.put("fired", true);
-        await this.state.storage.delete("claiming");
-        await this.state.storage.delete("claimed_at");
+        // (#2230 bug 1 fix) Sucesso: gravar fired=true DURÁVEL + limpar payload ANTES
+        // de liberar o claim. Dupla proteção contra double-post via alarm re-disparado:
+        //   1. fired=true: tryClaim() retorna false imediatamente (caminho rápido).
+        //   2. payload deletado: mesmo que o claim TTL expire e alarm() re-entre,
+        //      a leitura de payload retorna null → abort sem postar.
+        // O comentário anterior "alarm não poderá re-disparar sem KV entry" estava ERRADO
+        // (#2230 bug 1): alarm lê DO storage, não KV. Fix: payload limpo no DO storage.
+        //
+        // Retry de 3x pra garantir que fired=true persiste (transitório CF storage error).
+        // Sem retry, uma falha aqui deixa o DO em claiming=true,fired=false → o cron
+        // pode re-clamar via TTL e re-postar (double-post).
+        let firedPersisted = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await this.state.storage.put("fired", true);
+            await this.state.storage.delete("payload");   // payload limpo — alarm re-entry posta nada
+            await this.state.storage.delete("claiming");
+            await this.state.storage.delete("claimed_at");
+            firedPersisted = true;
+            break;
+          } catch (storageErr) {
+            console.warn(`[DO alarm] storage put fired attempt ${attempt + 1} failed: ${(storageErr as Error).message}`);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+          }
+        }
+        if (!firedPersisted) {
+          // Storage persistentemente indisponível — logar crítico mas não lançar
+          // (CF alarm não re-tenta se alarm() não lança; deixamos cron detectar via claiming=true).
+          console.error(`[DO alarm] CRITICAL: failed to persist fired=true after 3 attempts — key=${key}; double-post risk if alarm re-fires via TTL`);
+        }
         console.log(
-          `[DO alarm] fired ok key=${key} target=${webhookTarget} action=${action} destaque=${entry.destaque}`,
+          `[DO alarm] fired ok key=${key} target=${webhookTarget} action=${action} destaque=${entry.destaque} fired_persisted=${firedPersisted}`,
         );
         // KV entry permanece até o cron path a encontrar e deletar (com idempotência:
         // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
@@ -791,10 +852,44 @@ async function handleQueueDelete(request: Request, env: Env, key: string): Promi
     console.warn(`[queue-delete] DO cancel exception for key=${key}: ${(e as Error).message} — alarm may still fire`);
   }
 
-  // KV delete APÓS DO cancel: janela de alarme eliminada.
-  await env.LINKEDIN_QUEUE.delete(key);
+  // (#2230 bug 2 fix) KV delete APÓS DO cancel com retry: garantir que o item
+  // não dispara depois mesmo se o KV delete falha transitoriamente.
+  //
+  // Cenário anterior (bug): DO cancel OK mas KV.delete lança → item permanece no KV
+  // → próximo cron: DO está limpo (deleteAll), /claim retorna claimed=true (virgem),
+  // cron lê KV entry e posta — post-após-delete.
+  //
+  // Fix: retry de 3x no KV.delete. Se ainda falhar, gravar um tombstone
+  // ("cancelled:true") na KV entry pra que o cron detect e pule o item.
+  // O cron é responsável por limpar tombstones na próxima rodada (scheduled_at no passado
+  // + entry.cancelled=true → pula + deleta sem postar).
+  let kvDeleted = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await env.LINKEDIN_QUEUE.delete(key);
+      kvDeleted = true;
+      break;
+    } catch (kvErr) {
+      console.warn(`[queue-delete] KV.delete attempt ${attempt + 1} failed for key=${key}: ${(kvErr as Error).message}`);
+      if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
+  if (!kvDeleted) {
+    // KV delete persistentemente falhou — gravar tombstone pra que o cron pule este item.
+    // O tombstone é uma QueueEntry válida com campo `cancelled:true` (lido pelo cron).
+    // O DO já foi cancelado (deleteAll), então alarm não disparará; o risco é apenas o cron.
+    try {
+      const tombstoneEntry = JSON.parse(existing) as QueueEntry & { cancelled?: boolean };
+      tombstoneEntry.cancelled = true;
+      await env.LINKEDIN_QUEUE.put(key, JSON.stringify(tombstoneEntry));
+      console.warn(`[queue-delete] KV.delete failed after 3 retries for key=${key} — wrote tombstone (cancelled=true); cron will skip`);
+    } catch (tombstoneErr) {
+      // Tombstone também falhou — situação de storage muito degradada; logar crítico.
+      console.error(`[queue-delete] CRITICAL: KV.delete AND tombstone failed for key=${key}: ${(tombstoneErr as Error).message} — alarm may fire if DO cancel also failed`);
+    }
+  }
 
-  return json({ deleted: true, key, do_alarm_cancelled: doAlarmCancelled });
+  return json({ deleted: true, key, do_alarm_cancelled: doAlarmCancelled, kv_deleted: kvDeleted });
 }
 
 // ── DELETE /dlq/:key — cleanup manual de DLQ (#894 P2-B) ───────────────────
@@ -858,6 +953,15 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
     }
 
     if (scheduledMs > now) continue; // ainda não chegou a hora
+
+    // (#2230 bug 2 fix) Verificar tombstone de cancelamento.
+    // Se handleQueueDelete gravou um tombstone (cancelled=true) porque o KV.delete
+    // falhou após o DO cancel, o cron deve pular e limpar esta entry sem postar.
+    if ((entry as QueueEntry & { cancelled?: boolean }).cancelled) {
+      await env.LINKEDIN_QUEUE.delete(k.name);
+      console.log(`[fire] ${k.name} is a cancellation tombstone — deleted without firing`);
+      continue;
+    }
 
     // (#2219 bug 2) Exactly-once via /claim atômico no DO.
     // O cron usa POST /claim em vez de GET /status-then-fire: o DO testa-e-seta
