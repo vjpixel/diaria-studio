@@ -24,6 +24,11 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
+// isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
+// analyze-h4.ts. Importado para uso interno + re-exportado para manter
+// compatibilidade com testes e importadores externos.
+import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+export { isAprofundeAnchor };
 import {
   loadCtrRowsH4,
   loadHistoryEditions,
@@ -76,18 +81,6 @@ interface CtrAgg {
 
 function ctrPct(a: CtrAgg): string {
   return a.opens > 0 ? ((a.clicks / a.opens) * 100).toFixed(2) : "0.00";
-}
-
-/**
- * Strip Aprofunde rows (#1564): destaques pré-mar/2026 usavam anchor "Aprofunde"
- * (link secundário com CTR estruturalmente mais alto ~1.5×). Pós-mar/2026 todos
- * usam título como anchor. Misturar os 2 regimes infla CTR de categorias com
- * muitos rows antigos.
- *
- * Pure: retorna true se anchor começa com "Aprofunde" (case-insensitive).
- */
-export function isAprofundeAnchor(anchor: string): boolean {
-  return /^aprofunde\b/i.test((anchor || "").trim());
 }
 
 /**

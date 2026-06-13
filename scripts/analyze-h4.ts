@@ -27,12 +27,12 @@
  * Importável pra re-análise #1567 e surfacing em update-audience.ts.
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
-import { dateToEdition, inWindow, type CtrRow, recordToCtrRow } from "./analyze-scorer-impact.ts";
-import { isAprofundeAnchor } from "./update-audience.ts";
+import { dateToEdition, type CtrRow, recordToCtrRow } from "./analyze-scorer-impact.ts";
+import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -195,15 +195,21 @@ export function computeEditionH4(
   const editionCtrRows = ctrRows.filter((r) => r.date === editionDate);
   if (editionCtrRows.length === 0) return null;
 
-  // Monta mapa url_canônica → CTR observado (unique_clicks / unique_opens)
-  const ctrByUrl = new Map<string, number>();
+  // Monta mapa url_canônica → clicks e opens acumulados (soma quando URL aparece
+  // em múltiplas linhas do CTR — ex: seções diferentes da mesma edição).
+  const clicksByUrl = new Map<string, { clicks: number; opens: number }>();
   for (const r of editionCtrRows) {
     const key = canonicalize(r.base_url);
-    const ctr = r.unique_opens > 0 ? (r.unique_verified_clicks / r.unique_opens) * 100 : 0;
-    // Se duplicata, soma os clicks/opens (não sobrescreve com o primeiro)
-    if (!ctrByUrl.has(key)) {
-      ctrByUrl.set(key, ctr);
-    }
+    const prev = clicksByUrl.get(key) ?? { clicks: 0, opens: 0 };
+    clicksByUrl.set(key, {
+      clicks: prev.clicks + r.unique_verified_clicks,
+      opens: prev.opens + r.unique_opens,
+    });
+  }
+  // Converte para CTR percentual
+  const ctrByUrl = new Map<string, number>();
+  for (const [url, { clicks, opens }] of clicksByUrl) {
+    ctrByUrl.set(url, opens > 0 ? (clicks / opens) * 100 : 0);
   }
 
   // Join scorer ↔ CTR pela URL canônica
@@ -223,13 +229,19 @@ export function computeEditionH4(
 
   const rho = spearmanRho(scorerValues, ctrValues) ?? 0;
 
-  // Top-1: o destaque com maior score do scorer foi o mais clicado?
-  // Índice 0 = maior score (já ordenado por score desc no loadScorerHighlights)
-  const topScorerUrl = scorerHighlights[0]?.url;
+  // Top-1: o destaque com maior score do scorer (dentre os CASADOS) foi o mais clicado?
+  // Ambas as pontas são derivadas do subset casado — evita false-negative quando o
+  // top-1 global do scorer não tem match no CTR (sem essa restrição, ele seria
+  // contado como "miss" indevidamente, enviesando a métrica pra baixo).
+  // Decisão documentada: top-1 scorer = destaque com maior score entre os que casaram
+  // (matchedUrls[0], pois scorerHighlights está ordenado por score desc);
+  // top-1 CTR = URL com maior CTR entre os casados.
+  const matchedUrls = scorerHighlights.filter((h) => ctrByUrl.has(h.url));
+  const topMatchedScorerUrl = matchedUrls[0]?.url; // maior score entre casados
   const topCtrUrl = [...ctrByUrl.entries()]
-    .filter(([url]) => scorerHighlights.some((h) => h.url === url))
+    .filter(([url]) => matchedUrls.some((h) => h.url === url))
     .sort((a, b) => b[1] - a[1])[0]?.[0];
-  const top1Hit = !!(topScorerUrl && topCtrUrl && topScorerUrl === topCtrUrl);
+  const top1Hit = !!(topMatchedScorerUrl && topCtrUrl && topMatchedScorerUrl === topCtrUrl);
 
   // Overlap top-3: interseção dos top-3 do scorer vs top-3 por CTR observado
   const scorerTop3 = new Set(scorerHighlights.slice(0, 3).map((h) => h.url));
@@ -374,8 +386,12 @@ export function computeH4Trend(entries: H4HistoryEntry[], windowSize = 4): H4Tre
       ? recent.filter((e) => e.top1_hit).length / recent.length
       : null;
 
-  // Alerta: rho < threshold por 2 semanas consecutivas (janela das últimas 2)
-  const last2 = sorted.slice(-2);
+  // Alerta: rho < threshold por 2 semanas consecutivas dentro da janela (recent).
+  // Usa recent.slice(-2) — não sorted.slice(-2) — para respeitar o parâmetro
+  // windowSize: se recent já é um subconjunto da janela, comparar contra o histórico
+  // completo (sorted) ignoraria o windowSize e poderia acionar (ou suprimir) o alerta
+  // com dados fora da janela de trend configurada.
+  const last2 = recent.slice(-2);
   const alertLowRho =
     last2.length === 2 &&
     last2.every((e) => e.rho < H4_RHO_ALERT_THRESHOLD);
