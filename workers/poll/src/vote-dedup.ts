@@ -76,6 +76,16 @@
  */
 const PENDING_TTL_MS = 5 * 60 * 1000; // 5 minutos
 
+/**
+ * #2229 — Estado do pending: gravado atomicamente como unico objeto
+ * (um unico storage.put) para nunca existir pending sem at.
+ * Antes: dois puts separados podiam resultar em pending=true sem claimed_at
+ * -> claimedTs=0 -> isExpired=true -> re-auth imediata de concurrent request.
+ */
+interface PendingState {
+  at: string; // ISO 8601 timestamp de quando o lock foi adquirido
+}
+
 /** Payload enviado no body do request interno para o DO (interno — não precisa de export). */
 interface VoteDedupRequest {
   /** edition AAMMDD */
@@ -97,15 +107,28 @@ interface VoteDedupResponse {
  *   POST /vote-dedup  — fase 1: solicita autorização do voto
  *   POST /confirm     — fase 2: confirma sucesso das escritas KV
  *
- * State storage:
- *   `pending`    (boolean)   — voto autorizado mas escritas KV ainda pendentes
- *   `claimed_at` (string)    — timestamp ISO 8601 de quando pending foi adquirido
- *   `voted`      (boolean)   — voto confirmado (escritas KV concluídas)
+ * State storage (schema após #2229):
+ *   `pending`  (PendingState = { at: string })  — lock adquirido; voto autorizado mas
+ *                                                   escritas KV ainda pendentes. Gravado
+ *                                                   como objeto atômico num único put para
+ *                                                   evitar estado pending-sem-timestamp.
+ *   `voted`    (boolean)                         — voto confirmado (escritas KV concluídas)
  *
- * O DO também aceita um header `X-KV-Vote-Exists: 1` passado pelo caller
- * quando o KV legacy já tem `vote:{edition}:{email}` — isso permite inicializar
- * o estado do DO como "voted=true" sem uma leitura interna do KV (que o DO
- * não tem acesso direto; o caller já fez a leitura de forma mais eficiente).
+ * Headers reconhecidos pelo caller:
+ *   `X-KV-Vote-Exists: 1`        — KV legacy já tem `vote:{edition}:{email}`; DO inicializa
+ *                                   como voted=true sem passar por pending.
+ *   `X-KV-VoteKey-Committed: 1`  — todas as escritas KV (incluindo voteKey) foram concluídas
+ *                                   mas /confirm falhou. DO reconcilia pending→voted e retorna
+ *                                   firstVote:false sem re-incrementar contadores.
+ *
+ * Tabela de transições de estado (handleAuthorize):
+ *   voted=true                              → firstVote:false  (duplicado definitivo)
+ *   pending fresco + X-KV-VoteKey-Committed → voted=true, firstVote:false (reconciliação via voteKey:
+ *                                             KV escrito mas /confirm falhou; DO sincroniza pending→voted)
+ *   pending fresco                          → firstVote:false  (request concorrente)
+ *   pending expirado (>= TTL)              → re-autoriza (re-adquire lock, firstVote:true)
+ *   vazio + X-KV-Vote-Exists               → voted=true, firstVote:false (migração legado)
+ *   vazio                                  → pending={ at }, firstVote:true
  */
 export class VoteDedup {
   private state: DurableObjectState;
@@ -150,10 +173,9 @@ export class VoteDedup {
     return await this.state.blockConcurrencyWhile(async () => {
       // P3-12: batch das duas leituras em um único storage.get para reduzir round-trips.
       // Retorna Map com valores (undefined se não existir).
-      const stored = await this.state.storage.get<boolean | string>(["voted", "pending", "claimed_at"]);
+      const stored = await this.state.storage.get<boolean | PendingState>(["voted", "pending"]);
       const voted = stored.get("voted") as boolean | undefined;
-      const pending = stored.get("pending") as boolean | undefined;
-      const claimedAt = stored.get("claimed_at") as string | undefined;
+      const pendingRaw = stored.get("pending") as PendingState | undefined;
 
       if (voted) {
         // DO já confirmou este voto — duplicado definitivo
@@ -164,16 +186,30 @@ export class VoteDedup {
         });
       }
 
-      if (pending) {
+      if (pendingRaw) {
         // Lock adquirido — verificar se é fresco ou expirado.
-        // Se fresco: request concorrente → rejeitar (previne double-vote).
-        // Se expirado: lock stale (crash entre fase 1 e /confirm) → re-autorizar.
-        const claimedTs = claimedAt ? new Date(claimedAt).getTime() : 0;
+        // #2229 item 1: pendingRaw.at sempre presente (objeto atomico gravado em put unico).
+        const claimedTs = pendingRaw.at ? new Date(pendingRaw.at).getTime() : 0;
         const ageMs = Date.now() - claimedTs;
         const isExpired = ageMs >= PENDING_TTL_MS;
 
         if (!isExpired) {
-          // Pending fresco: outro request ainda pode estar em progresso — barrar.
+          // #2229 item 3: reconciliacao via voteKey.
+          // Se o Worker passou X-KV-VoteKey-Committed: 1, significa que todas as
+          // escritas KV (incluindo voteKey) foram bem-sucedidas mas /confirm falhou.
+          // O DO reconcilia pending->voted para que o proximo request nao re-incremente.
+          const voteKeyCommitted = request.headers.get("X-KV-VoteKey-Committed") === "1";
+          if (voteKeyCommitted) {
+            await this.state.storage.put("voted", true);
+            await this.state.storage.delete("pending");
+            const resp: VoteDedupResponse = { firstVote: false };
+            return new Response(JSON.stringify(resp), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
+          // Pending fresco sem voteKey confirmado: barrar.
           const resp: VoteDedupResponse = { firstVote: false };
           return new Response(JSON.stringify(resp), {
             status: 200,
@@ -200,10 +236,11 @@ export class VoteDedup {
       }
 
       // Nenhum voto existente (ou lock expirado) — fase 1: adquirir lock (pending).
-      // claimed_at permite detectar locks stale (crash entre fase 1 e /confirm).
-      const now = new Date().toISOString();
-      await this.state.storage.put("pending", true);
-      await this.state.storage.put("claimed_at", now);
+      // #2229 item 1: pending gravado como objeto atomico { at: ISO } (um unico put).
+      // Antes: dois puts separados podiam resultar em pending=true sem claimed_at
+      // -> claimedTs=0 -> isExpired=true -> re-auth imediata -> double-vote.
+      const pendingState: PendingState = { at: new Date().toISOString() };
+      await this.state.storage.put("pending", pendingState);
       const resp: VoteDedupResponse = { firstVote: true };
       return new Response(JSON.stringify(resp), {
         status: 200,
@@ -227,7 +264,7 @@ export class VoteDedup {
    */
   private async handleConfirm(): Promise<Response> {
     return await this.state.blockConcurrencyWhile(async () => {
-      const pending = await this.state.storage.get<boolean>("pending");
+      const pending = await this.state.storage.get<PendingState>("pending");
       if (!pending) {
         // DO não tem pending — /confirm chamado em DO virgem ou após voted=true.
         // No-op: não queima slot, não causa erro.
@@ -236,9 +273,13 @@ export class VoteDedup {
           headers: { "Content-Type": "application/json" },
         });
       }
-      await this.state.storage.put("voted", true);
-      await this.state.storage.delete("pending");
-      await this.state.storage.delete("claimed_at");
+      // Efficiency: put(voted) + delete(pending) são independentes — sem
+      // dependência de read-after-write entre si. Promise.all paralleliza os
+      // dois round-trips de storage dentro do blockConcurrencyWhile.
+      await Promise.all([
+        this.state.storage.put("voted", true),
+        this.state.storage.delete("pending"),
+      ]);
       return new Response(JSON.stringify({ confirmed: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },

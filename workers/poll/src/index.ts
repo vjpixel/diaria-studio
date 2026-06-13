@@ -272,13 +272,20 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
 
   if (env.VOTE_DEDUP) {
     // Caminho serializado via DO (#2187)
-    const doId = env.VOTE_DEDUP.idFromName(`${edition}:${email}`);
+    // Brand prefixado no nome do DO para isolar por brand: dois votos do mesmo
+    // edition:email em brands distintos (diaria vs clarice) não colidiriam no
+    // mesmo DO (que resultaria em silêncio do 2º brand quando o 1º já votou).
+    // Formato: `{brand}:{edition}:{email}` — brand sempre presente (default "diaria").
+    const doId = env.VOTE_DEDUP.idFromName(`${brand}:${edition}:${email}`);
     doStub = env.VOTE_DEDUP.get(doId);
     const doHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (existingFromKv !== null) {
-      // Sinaliza ao DO que o KV legacy já tem este voto — sem isso, um voto
-      // gravado antes do deploy do DO passaria o guard do DO na primeira consulta.
+      // Sinaliza ao DO que o KV legacy ja tem este voto.
       doHeaders["X-KV-Vote-Exists"] = "1";
+      // #2229 item 3: voteKey existe = ou legado ou todas escritas KV desta sessao
+      // sucederam (incluindo voteKey) mas /confirm falhou. O DO reconcilia
+      // pending->voted dentro do bloco pending-fresco (sem re-auth/re-incremento).
+      doHeaders["X-KV-VoteKey-Committed"] = "1";
     }
     // #1236 fix: ?test=1 NÃO deve queimar o slot do DO. Short-circuit ANTES
     // de chamar o DO — request de teste não persiste estado de "voted".
@@ -431,46 +438,78 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
   const voteTs = new Date().toISOString();
 
-  // #2220 commit em 2 fases: o DO autorizou o voto com `pending=true` (fase 1).
-  // As escritas KV abaixo são a fase 2. Após sucesso de TODAS as escritas KV,
-  // o Worker chama POST /confirm no DO → transiciona pending→voted definitivamente.
+  // #2229: Incrementos IDEMPOTENTES por (edition,email).
   //
-  // Se qualquer escrita KV lançar, o Worker NÃO chama /confirm → o DO fica em
-  // `pending=true, voted=false`. No retry do votante:
-  //   - Se pending ainda está "fresco" (< PENDING_TTL_MS), o DO rejeita o retry
-  //     (barrar concurrent duplicate). O votante vê "já votou" temporariamente.
-  //   - Se pending expirou (>= PENDING_TTL_MS — crash confirmado), o DO re-autoriza
-  //     o votante (firstVote:true) → retry completa normalmente.
-  // INVARIANTE: falha de escrita KV NÃO bloqueia o votante para sempre — o lock
-  // expira em 5 min e permite retry.
+  // INVARIANTE CENTRAL: cada um dos 3 incrementos (stats, score, score-by-month)
+  // roda AT MOST 1x por (edition,email), mesmo em retries apos falha parcial.
   //
-  // #2187 finding #5: gravar scores ANTES do put(voteKey).
-  // Em falha entre os puts de score e put(voteKey), os scores são incrementados
-  // mas voteKey ficará ausente. O admin pode re-inserir voteKey manualmente;
-  // score divergir por 1 é menos grave do que double-vote no leaderboard.
+  // Mecanismo: guard-keys KV `counted:{edition}:{email}:stats|score|month`.
+  // Antes de cada incremento, checa o guard. Se presente = ja executado (skip).
+  // Apos incremento bem-sucedido, escreve o guard imediatamente.
+  // Em retry apos pending expirar: DO re-autoriza (firstVote:true), worker ve
+  // guards presentes e pula os ja executados — zero double-count.
   //
-  // #8: updateScore e updateScoreByMonth escrevem em chaves KV independentes
-  // (score:${email} vs score-by-month:${slug}:${email}) — paralelizados com
-  // Promise.all sem risco de read-after-write entre eles.
+  // Por que nao usar so o voteKey como guard?
+  // O voteKey e gravado por ULTIMO (commit definitivo). Se um incremento falha
+  // antes do voteKey ser escrito, o retry nao ve o voteKey e re-executaria TUDO.
+  // Os guard-keys por incremento permitem completar apenas os incrementos faltantes.
   //
-  // Atualizar counter agregado (evita N+1 reads no /stats)
-  await updateStatsCounter(env, edition, choice as "A" | "B", correct);
+  // #2220 commit em 2 fases:
+  //   Fase 1: DO autoriza (pending). Fase 2: Worker escreve KV, chama /confirm.
+  //   Se escrita KV falha, /confirm nao e chamado. Pending expira em 5min, retry re-autoriza.
+  //   Com guard-keys: retry completa so os incrementos faltantes. Sem double-count.
+  //
+  // #8: score e score-by-month sao chaves KV independentes — paralelizaveis sem
+  // read-after-write entre eles (mantido nesta implementacao via Promise.all).
 
-  // #1080: sempre atualizar score, mesmo sem gabarito ainda. Sem isso, votos
-  // antes do admin setar `correct:{edition}` ficam sem score → leaderboard
-  // vazio + nickname form falha com "Vote primeiro".
-  // #2190: passa scoreRaw já lido acima (evita re-leitura redundante).
-  // #1345: também atualizar score-by-month, indexado pela publication date
-  // da edição (não pela data do vote). Voto na edição 260531 conta em Maio
-  // 2026 mesmo se chegou em 02/jun.
-  // #2190: passa scoreRaw já lido (updateScoreByMonth leria score:${email}
-  // de novo só pra copiar o nickname — evita terceira leitura da mesma chave).
+  const statsGuardKey = `counted:${edition}:${email}:stats`;
+  const scoreGuardKey = `counted:${edition}:${email}:score`;
+  const monthGuardKey = `counted:${edition}:${email}:month`;
+
+  // Stats — idempotente via guard-key
+  //
+  // JANELA RESIDUAL ESTREITA (#2229): há uma janela entre o incremento e a
+  // escrita do guard-key — um crash ENTRE os dois deixaria o guard não-gravado,
+  // e um retry posterior re-incrementaria. Esta janela é MUITO menor do que o
+  // bug original (que re-incrementava em TODO retry sem qualquer guard). KV não
+  // é transacional; mover o guard para ANTES não funcionaria (bloquearia um
+  // incremento que ainda não aconteceu). A ordem correta é incremento→guard;
+  // o risco é crash no exato μs entre os dois, que é raríssimo em produção.
+  // Documentado como residual conhecido e aceitável.
+  if (!(await env.POLL.get(statsGuardKey))) {
+    await updateStatsCounter(env, edition, choice as "A" | "B", correct);
+    await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+  }
+
+  // Score e score-by-month — idempotentes via guard-keys individuais.
+  // #1080: sempre atualizar score, mesmo sem gabarito ainda.
+  // #2190: passa scoreRaw ja lido acima (evita re-leitura redundante).
+  // #1345: score-by-month indexado pela publication date da edicao.
+  // #8 / Efficiency: score + month + stats (já guarded acima) são independentes
+  // entre si — score e month não têm read-after-write um sobre o outro, e ambos
+  // usam scoreRaw já lido. Promise.all paralleliza as 2 IIFE sem risco de
+  // dependência. (Stats já foi processado acima, antes deste bloco, por precisar
+  // de sua própria janela de documentação residual — separação deliberada.)
   await Promise.all([
-    updateScore(env, email, edition, correct, scoreRaw),
-    updateScoreByMonth(env, email, edition, correct, scoreRaw),
+    (async () => {
+      if (!(await env.POLL.get(scoreGuardKey))) {
+        await updateScore(env, email, edition, correct, scoreRaw);
+        await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
+    (async () => {
+      if (!(await env.POLL.get(monthGuardKey))) {
+        await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+        await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
   ]);
 
-  // Commit definitivo do voto no KV — após scores gravados com sucesso.
+  // Commit definitivo do voto no KV — marca o voto como totalmente processado.
+  // Gravado por ULTIMO para que retries intermediarios (pendente expirado) possam
+  // completar os incrementos faltantes via guard-keys.
+  // Quando voteKey ja existe (retry apos /confirm falho), o worker passa
+  // X-KV-VoteKey-Committed:1 ao DO, que reconcilia pending->voted (#2229 item 3).
   await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
 
   // #2220 fase 2: confirmar para o DO que as escritas KV completaram.
