@@ -24,6 +24,20 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
+// isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
+// analyze-h4.ts. Importado para uso interno + re-exportado para manter
+// compatibilidade com testes e importadores externos.
+import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+export { isAprofundeAnchor };
+import {
+  loadCtrRowsH4,
+  loadHistoryEditions,
+  computeNewH4Entries,
+  appendHistory,
+  loadHistory,
+  computeH4Trend,
+  formatH4Trend,
+} from "./analyze-h4.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = resolve(ROOT, "context/audience-profile.md");
@@ -31,6 +45,7 @@ const HISTORY_DIR = resolve(ROOT, "docs/audience-history"); // #1846: movido de 
 const CTR_CSV = resolve(ROOT, "data/link-ctr-table.csv");
 const SURVEY_JSON = resolve(ROOT, "data/audience-raw.json");
 const PUB_JSON = resolve(ROOT, "data/beehiiv-cache/publication.json");
+const H4_HISTORY = resolve(ROOT, "data/scorer-ctr-history.jsonl");
 
 // ─── Survey helpers ────────────────────────────────────────────────────────────
 
@@ -66,18 +81,6 @@ interface CtrAgg {
 
 function ctrPct(a: CtrAgg): string {
   return a.opens > 0 ? ((a.clicks / a.opens) * 100).toFixed(2) : "0.00";
-}
-
-/**
- * Strip Aprofunde rows (#1564): destaques pré-mar/2026 usavam anchor "Aprofunde"
- * (link secundário com CTR estruturalmente mais alto ~1.5×). Pós-mar/2026 todos
- * usam título como anchor. Misturar os 2 regimes infla CTR de categorias com
- * muitos rows antigos.
- *
- * Pure: retorna true se anchor começa com "Aprofunde" (case-insensitive).
- */
-export function isAprofundeAnchor(anchor: string): boolean {
-  return /^aprofunde\b/i.test((anchor || "").trim());
 }
 
 /**
@@ -426,6 +429,22 @@ function main() {
   if (ctr) sources.push(`CTR (${ctr.totalLinks} links)`);
   if (surveyResponses.length > 0) sources.push(`survey (${surveyResponses.length} respondentes)`);
   console.log(`Wrote audience profile [${sources.join(" + ")}] → ${OUT}`);
+
+  // ─── H4: scorer×CTR — computa edições recém-maduras + surfacing semanal (#1619) ─
+  // Defensivo: se CTR CSV ausente, pula silenciosamente (aviso já emitido por loadCtrRowsH4).
+  const h4CtrRows = loadCtrRowsH4(CTR_CSV);
+  if (h4CtrRows.length > 0) {
+    const alreadyComputed = loadHistoryEditions(H4_HISTORY);
+    const editionsDir = resolve(ROOT, "data/editions");
+    const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
+    if (newEntries.length > 0) {
+      appendHistory(H4_HISTORY, newEntries);
+      console.log(`[H4] +${newEntries.length} edição(ões) nova(s) gravada(s) em data/scorer-ctr-history.jsonl`);
+    }
+    const allH4Entries = loadHistory(H4_HISTORY);
+    const trend = computeH4Trend(allH4Entries);
+    console.log(formatH4Trend(trend));
+  }
 }
 
 // Run main() apenas quando invocado como CLI direto.
