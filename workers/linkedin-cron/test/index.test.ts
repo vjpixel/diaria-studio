@@ -26,10 +26,107 @@ import workerDefault, {
   MAX_URL_LENGTH,
   FETCH_TIMEOUT_MS,
   DLQ_TTL_SECONDS,
+  LinkedInScheduler,
   __test__,
   type Env,
   type QueueEntry,
+  type DoStoredPayload,
 } from "../src/index.ts";
+
+// ── In-memory DO storage mock ──────────────────────────────────────────────
+
+/**
+ * Mock DurableObjectStorage para testar LinkedInScheduler.
+ * Simula get/put/delete/deleteAll/setAlarm/deleteAlarm/blockConcurrencyWhile.
+ */
+class MockDOStorage {
+  store = new Map<string, unknown>();
+  alarmMs: number | null = null;
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.store.has(key) ? (this.store.get(key) as T) : undefined;
+  }
+  async put<T>(key: string, value: T): Promise<void> {
+    this.store.set(key, value);
+  }
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+  async deleteAll(): Promise<void> {
+    this.store.clear();
+    this.alarmMs = null;
+  }
+  async setAlarm(scheduledMs: number): Promise<void> {
+    this.alarmMs = scheduledMs;
+  }
+  async deleteAlarm(): Promise<void> {
+    this.alarmMs = null;
+  }
+}
+
+class MockDOState {
+  storage: MockDOStorage;
+
+  constructor() {
+    this.storage = new MockDOStorage();
+  }
+
+  async blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+}
+
+/** Cria um mock DurableObjectNamespace onde cada stub é um LinkedInScheduler com MockDOState. */
+function mkMockDONamespace(): {
+  namespace: DurableObjectNamespace;
+  stubs: Map<string, { scheduler: LinkedInScheduler; state: MockDOState }>;
+} {
+  const stubs = new Map<string, { scheduler: LinkedInScheduler; state: MockDOState }>();
+
+  function getOrCreate(name: string) {
+    if (!stubs.has(name)) {
+      const state = new MockDOState();
+      const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+      stubs.set(name, { scheduler, state });
+    }
+    return stubs.get(name)!;
+  }
+
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name, equals: () => false }),
+    get: (id: { name: string }) => {
+      const { scheduler } = getOrCreate(id.name);
+      return {
+        fetch: async (url: string | Request, init?: RequestInit) => {
+          const req = typeof url === "string" ? new Request(url, init) : url;
+          return scheduler.fetch(req);
+        },
+      };
+    },
+    idFromString: (id: string) => ({ toString: () => id, name: id, equals: () => false }),
+    newUniqueId: () => ({ toString: () => "unique", name: "unique", equals: () => false }),
+    jurisdiction: () => namespace,
+  } as unknown as DurableObjectNamespace;
+
+  return { namespace, stubs };
+}
+
+/** Cria env com LINKEDIN_SCHEDULER mock. */
+function mkEnvWithDO(token = "secret-token", webhook = "https://make.test/webhook"): {
+  env: Env;
+  kv: MockKV;
+  doNamespace: ReturnType<typeof mkMockDONamespace>;
+} {
+  const kv = new MockKV();
+  const doNamespace = mkMockDONamespace();
+  const env: Env = {
+    LINKEDIN_QUEUE: kv as unknown as KVNamespace,
+    DIARIA_TOKEN: token,
+    MAKE_WEBHOOK_URL: webhook,
+    LINKEDIN_SCHEDULER: doNamespace.namespace,
+  };
+  return { env, kv, doNamespace };
+}
 
 // ── In-memory KV mock ──────────────────────────────────────────────────────
 
@@ -1084,5 +1181,512 @@ describe("#1058 DELETE /queue/:key endpoint (cleanup pós-/diaria-test)", () => 
     );
     const res = await workerDefault.fetch(req, env);
     assert.equal(res.status, 400);
+  });
+});
+
+// ── #1168 — LinkedInScheduler Durable Object ───────────────────────────────
+
+describe("#1168 LinkedInScheduler DO: /arm cria alarm no scheduledAtMs", () => {
+  it("POST /arm persiste payload e agenda alarm", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const futureMs = Date.now() + 60_000;
+    const entry: QueueEntry = {
+      text: "test post",
+      image_url: null,
+      scheduled_at: new Date(futureMs).toISOString(),
+      destaque: "d1",
+      created_at: new Date().toISOString(),
+      retry_count: 0,
+    };
+    const payload: DoStoredPayload & { scheduledAtMs: number } = {
+      scheduledAtMs: futureMs,
+      key: "queue:2026-12-01T17:00:00.000Z:test-uuid",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    };
+
+    const req = new Request("https://do/arm", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await scheduler.fetch(req);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { armed: boolean; scheduledAtMs: number };
+    assert.equal(data.armed, true);
+    assert.equal(data.scheduledAtMs, futureMs);
+
+    // Verifica que o alarm foi agendado e o payload persistido
+    assert.equal(state.storage.alarmMs, futureMs, "alarm deve estar no scheduledAtMs");
+    const stored = await state.storage.get<DoStoredPayload>("payload");
+    assert.ok(stored, "payload deve estar em storage");
+    assert.equal(stored.key, payload.key);
+    assert.equal(stored.entry.text, "test post");
+    assert.equal(stored.webhookUrl, "https://make.test/webhook");
+  });
+
+  it("POST /cancel limpa storage e cancela alarm", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    // Arm first
+    state.storage.alarmMs = Date.now() + 60_000;
+    state.storage.store.set("payload", { key: "k", entry: {}, webhookUrl: "x" });
+
+    const req = new Request("https://do/cancel", { method: "POST" });
+    const res = await scheduler.fetch(req);
+    assert.equal(res.status, 200);
+    assert.equal(state.storage.alarmMs, null, "alarm deve estar cancelado");
+    assert.equal(state.storage.store.size, 0, "storage deve estar vazio");
+  });
+
+  it("GET /status retorna fired=false antes de alarm()", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    const req = new Request("https://do/status", { method: "GET" });
+    const res = await scheduler.fetch(req);
+    assert.equal(res.status, 200);
+    const data = await res.json() as { fired: boolean };
+    assert.equal(data.fired, false);
+  });
+
+  it("GET /status retorna fired=true após alarm() bem-sucedido", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "test", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    // Pré-popula storage como se /arm tivesse sido chamado
+    await state.storage.put("payload", {
+      key: "queue:past-key",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    // Mock fetch pra simular sucesso
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    const req = new Request("https://do/status", { method: "GET" });
+    const res = await scheduler.fetch(req);
+    const data = await res.json() as { fired: boolean };
+    assert.equal(data.fired, true, "fired deve ser true após alarm() bem-sucedido");
+  });
+});
+
+describe("#1168 LinkedInScheduler DO: alarm() dispara webhook e é idempotente", () => {
+  it("alarm() dispara webhook Make com payload correto", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "LinkedIn post",
+      image_url: "https://img.example.com/x.jpg",
+      scheduled_at: past,
+      destaque: "d2",
+      created_at: past,
+      retry_count: 0,
+      webhook_target: "diaria",
+      action: "post",
+    };
+    await state.storage.put("payload", {
+      key: "queue:2026-12-01T17:00:00.000Z:uuid-alarm",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    let capturedBody: unknown;
+    let capturedUrl: string = "";
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : url.url;
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(capturedUrl, "https://make.test/webhook");
+    const body = capturedBody as Record<string, unknown>;
+    assert.equal(body.text, "LinkedIn post");
+    assert.equal(body.destaque, "d2");
+    assert.equal(body.action, "post");
+    assert.equal(body.image_url, "https://img.example.com/x.jpg");
+  });
+
+  it("alarm() idempotência: 2ª invocação com fired=true não re-dispara webhook", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "post", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-key",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+    // Pré-seta fired=true (simula que o alarm já rodou 1x)
+    await state.storage.put("fired", true);
+
+    let fetchCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(fetchCalls, 0, "não deve disparar webhook quando fired=true (idempotência)");
+  });
+
+  it("alarm() sem payload em storage: não lança exception", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    // Nenhum payload em storage
+    await assert.doesNotReject(() => scheduler.alarm());
+  });
+
+  it("alarm() com webhook_target=pixel usa pixelWebhookUrl", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "Pixel comment", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+      webhook_target: "pixel", action: "comment", parent_destaque: "d1",
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-pixel",
+      entry,
+      webhookUrl: "https://make.test/diaria",
+      pixelWebhookUrl: "https://make.test/pixel",
+    } satisfies DoStoredPayload);
+
+    let capturedUrl = "";
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | Request) => {
+      capturedUrl = typeof url === "string" ? url : url.url;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(capturedUrl, "https://make.test/pixel", "deve usar pixelWebhookUrl pra target=pixel");
+  });
+
+  it("alarm() falha de webhook: libera fired flag, cron pode tentar novamente", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "post", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-fail",
+      entry,
+      webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("err", { status: 500 });
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    const fired = await state.storage.get<boolean>("fired");
+    assert.equal(fired, undefined, "fired deve ser undefined (liberado) após falha do webhook");
+  });
+});
+
+describe("#1168 handleEnqueue: arma DO alarm após KV put", () => {
+  it("enqueue com DO disponível: arm é chamado e alarm_armed=true na resposta", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+    const future = new Date(Date.now() + 3600_000).toISOString();
+
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify({ text: "post", scheduled_at: future, destaque: "d1" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+
+    const data = await res.json() as { queued: boolean; key: string; alarm_armed: boolean };
+    assert.equal(data.queued, true);
+    assert.equal(data.alarm_armed, true, "alarm_armed deve ser true quando DO está disponível");
+    assert.equal(kv.store.size, 1);
+
+    // Verificar que o DO stub foi chamado e tem o alarm agendado
+    const doKey = data.key;
+    const doEntry = doNamespace.stubs.get(doKey);
+    assert.ok(doEntry, `DO stub deve existir para key=${doKey}`);
+    assert.ok(doEntry.state.storage.alarmMs !== null, "alarm deve estar agendado no DO");
+    // alarm deve estar no futuro (dentro de 1 hora + margem)
+    assert.ok(
+      doEntry.state.storage.alarmMs! > Date.now(),
+      "alarm deve estar no futuro",
+    );
+  });
+
+  it("enqueue sem DO disponível (binding ausente): retorna 202 com alarm_armed=false", async () => {
+    // Simula env sem LINKEDIN_SCHEDULER (binding ausente pré-deploy)
+    const kv = new MockKV();
+    const env: Env = {
+      LINKEDIN_QUEUE: kv as unknown as KVNamespace,
+      DIARIA_TOKEN: "secret-token",
+      MAKE_WEBHOOK_URL: "https://make.test/webhook",
+      // LINKEDIN_SCHEDULER ausente — TS permitido via cast
+      LINKEDIN_SCHEDULER: null as unknown as DurableObjectNamespace,
+    };
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify({ text: "post", scheduled_at: future, destaque: "d2" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    // Deve ainda retornar 202 — DO failure é non-fatal
+    assert.equal(res.status, 202);
+    const data = await res.json() as { queued: boolean; alarm_armed: boolean };
+    assert.equal(data.queued, true);
+    assert.equal(data.alarm_armed, false, "alarm_armed=false quando DO não disponível");
+    assert.equal(kv.store.size, 1, "item deve estar no KV mesmo sem DO");
+  });
+});
+
+describe("#1168 fireDueItems: idempotência com DO alarm (não re-dispara se fired)", () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => { savedFetch = globalThis.fetch; });
+
+  it("item com DO fired=true: cron deleta KV sem re-disparar webhook", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    // Pré-popula KV com item maduro
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-do-fired");
+    const entry: QueueEntry = {
+      text: "t", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // Simula DO que já disparou: seta fired=true no storage do DO stub
+    const doStub = doNamespace.stubs.get(queueKey) ?? (() => {
+      const state = new MockDOState();
+      const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+      doNamespace.stubs.set(queueKey, { scheduler, state });
+      return { scheduler, state };
+    })();
+    await doStub.state.storage.put("fired", true);
+
+    // Adiciona o stub ao namespace mock — necessário pro fireDueItems consultar
+    // O mkMockDONamespace.get() já usa getOrCreate(name) onde name = id.name
+    // Para este teste, precisamos que o DO namespace retorne o stub correto.
+    // Visto que o namespace mock usa Map, pré-registramos o stub acima.
+    doNamespace.stubs.set(queueKey, doStub);
+
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(fetchCalls, 0, "webhook não deve ser chamado pois DO já disparou");
+      assert.equal(result.fired, 1, "fired++ mesmo quando é cleanup de DO");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deve ser deletada pelo cron cleanup");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("item com DO fired=false: cron dispara webhook normalmente (fallback)", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-do-not-fired");
+    const entry: QueueEntry = {
+      text: "t", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // DO existe mas fired=false (não disparou ainda)
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler, state });
+    // fired=false (default — não precisa setar)
+
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(fetchCalls, 1, "webhook deve ser chamado pelo cron fallback");
+      assert.equal(result.fired, 1);
+      assert.equal(kv.store.has(queueKey), false, "KV entry deletada após fire");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+describe("#1168 POST /rearm: re-arma DO alarms pra items KV legacy", () => {
+  it("arma DO pra item futuro existente no KV", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-legacy");
+    const entry: QueueEntry = {
+      text: "t", image_url: null, scheduled_at: future,
+      destaque: "d1", created_at: new Date().toISOString(), retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { rearmed: number; skipped_past: number; failed: number };
+    assert.equal(data.rearmed, 1);
+    assert.equal(data.skipped_past, 0);
+    assert.equal(data.failed, 0);
+
+    // DO deve ter alarm agendado
+    const doEntry = doNamespace.stubs.get(queueKey);
+    assert.ok(doEntry, "DO stub deve existir para o item re-armado");
+    assert.ok(doEntry.state.storage.alarmMs !== null, "alarm deve estar agendado");
+    assert.ok(doEntry.state.storage.alarmMs! > Date.now(), "alarm deve estar no futuro");
+  });
+
+  it("pula item já vencido (passado) — deixa pro cron fallback", async () => {
+    const { env, kv } = mkEnvWithDO();
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-past");
+    const entry: QueueEntry = {
+      text: "t", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { rearmed: number; skipped_past: number };
+    assert.equal(data.rearmed, 0);
+    assert.equal(data.skipped_past, 1, "item passado deve ser skipped_past");
+  });
+
+  it("requer auth: sem token retorna 401", async () => {
+    const { env } = mkEnvWithDO("real-token");
+    const req = new Request("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 401);
+  });
+
+  it("idempotente: re-arm de item já armado sobrescreve alarm (sem erro)", async () => {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-rearm-twice");
+    const entry: QueueEntry = {
+      text: "t", image_url: null, scheduled_at: future,
+      destaque: "d2", created_at: new Date().toISOString(), retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    const req1 = authedRequest("https://w.test/rearm", { method: "POST" });
+    const req2 = authedRequest("https://w.test/rearm", { method: "POST" });
+
+    const res1 = await workerDefault.fetch(req1, env);
+    const res2 = await workerDefault.fetch(req2, env);
+
+    assert.equal(res1.status, 200);
+    assert.equal(res2.status, 200);
+
+    const data1 = await res1.json() as { rearmed: number };
+    const data2 = await res2.json() as { rearmed: number };
+    assert.equal(data1.rearmed, 1);
+    assert.equal(data2.rearmed, 1, "re-arm idempotente — conta como rearmed mesmo na 2ª chamada");
+
+    // DO stub deve ter alarm (setAlarm foi chamado 2x — ok, sobrescreve)
+    const doEntry = doNamespace.stubs.get(queueKey);
+    assert.ok(doEntry?.state.storage.alarmMs !== null, "alarm deve estar agendado após 2 rearms");
+  });
+});
+
+describe("#1168 compat: item KV legacy ainda processado pelo cron fallback", () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => { savedFetch = globalThis.fetch; });
+
+  it("item KV sem DO alarm: cron dispara normalmente (idempotência não bloqueia)", async () => {
+    // Simula env sem LINKEDIN_SCHEDULER (ou DO que não encontra o item)
+    const kv = new MockKV();
+    // Usa DO namespace que sempre retorna status.fired=false (DO vazio pra chave nova)
+    const doNamespace = mkMockDONamespace();
+    const env: Env = {
+      LINKEDIN_QUEUE: kv as unknown as KVNamespace,
+      DIARIA_TOKEN: "secret-token",
+      MAKE_WEBHOOK_URL: "https://make.test/webhook",
+      LINKEDIN_SCHEDULER: doNamespace.namespace,
+    };
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-legacy-cron");
+    const entry: QueueEntry = {
+      text: "legacy", image_url: null, scheduled_at: past,
+      destaque: "d3", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1, "cron deve disparar item legacy KV");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deletada após fire");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });
