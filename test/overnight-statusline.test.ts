@@ -16,7 +16,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderOvernightBar, type Plan } from "../scripts/overnight-statusline.ts";
+import { renderOvernightBar, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -267,30 +267,30 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
 });
 
 // ─── #2200: filtro AAMMDD em readTodayPlan ────────────────────────────────────
-// readTodayPlan filtra dirs por /^\d{6}$/ antes de ler plan.json.
-// Testamos o padrão diretamente para garantir que a regex não exclui dirs válidos
-// nem inclui dirs como "archive", "tmp" ou ".keep".
+// readTodayPlan filtra dirs por OVERNIGHT_DIR_RE (/^\d{6}$/) antes de ler plan.json.
+// Testamos OVERNIGHT_DIR_RE diretamente (importado de overnight-statusline.ts) para
+// garantir que o teste exercita o MESMO filtro que readTodayPlan usa, não uma cópia.
 
-describe("filtro AAMMDD — regex /^\\d{6}$/", () => {
-  const AAMMDD = /^\d{6}$/;
-
+describe("filtro AAMMDD — OVERNIGHT_DIR_RE de overnight-statusline.ts", () => {
   it("aceita dirs válidos no formato AAMMDD", () => {
-    assert.ok(AAMMDD.test("260613"), "260613 deve ser aceito");
-    assert.ok(AAMMDD.test("260101"), "260101 deve ser aceito");
-    assert.ok(AAMMDD.test("000000"), "000000 (degenerate) deve ser aceito");
+    assert.ok(OVERNIGHT_DIR_RE.test("260613"), "260613 deve ser aceito");
+    assert.ok(OVERNIGHT_DIR_RE.test("260101"), "260101 deve ser aceito");
+    // "000000" é sintaticamente válido (6 dígitos) — OVERNIGHT_DIR_RE filtra apenas
+    // pela forma, não pela validade calendárica do AAMMDD.
+    assert.ok(OVERNIGHT_DIR_RE.test("000000"), "000000 (6 dígitos válidos, AAMMDD degenerate) deve ser aceito");
   });
 
   it("rejeita dirs não-numéricos", () => {
-    assert.ok(!AAMMDD.test("archive"), "archive deve ser rejeitado");
-    assert.ok(!AAMMDD.test("tmp"), "tmp deve ser rejeitado");
-    assert.ok(!AAMMDD.test(".keep"), ".keep deve ser rejeitado");
-    assert.ok(!AAMMDD.test("26061a"), "26061a (letra) deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("archive"), "archive deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("tmp"), "tmp deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test(".keep"), ".keep deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("26061a"), "26061a (letra) deve ser rejeitado");
   });
 
   it("rejeita dirs com comprimento diferente de 6 dígitos", () => {
-    assert.ok(!AAMMDD.test("2606"), "4 dígitos deve ser rejeitado");
-    assert.ok(!AAMMDD.test("2606130"), "7 dígitos deve ser rejeitado");
-    assert.ok(!AAMMDD.test(""), "string vazia deve ser rejeitada");
+    assert.ok(!OVERNIGHT_DIR_RE.test("2606"), "4 dígitos deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("2606130"), "7 dígitos deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test(""), "string vazia deve ser rejeitada");
   });
 });
 
