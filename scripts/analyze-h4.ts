@@ -70,32 +70,38 @@ export interface H4Trend {
 /**
  * Spearman rho para dois rankings numéricos de mesmo comprimento n≥2.
  * Inputs: arrays de valores (maiores = melhor). A função converte para ranks
- * (rank 1 = maior valor) e aplica a fórmula ρ = 1 − 6Σd²/n(n²-1).
+ * com média de empates (rank 1 = maior), depois aplica a **correlação de
+ * Pearson sobre os vetores de rank** — a definição geral correta do Spearman,
+ * válida com ou sem ties.
  *
- * Retorna null se n < 2 (rho indefinido).
+ * A fórmula simplificada ρ = 1 − 6Σd²/n(n²−1) é apenas uma simplificação
+ * algébrica da Pearson-on-ranks que vale exclusivamente quando NÃO há empates
+ * (variância dos ranks inteiros 1..n = n(n²−1)/6n). Com ranks médios
+ * fracionários, a variância difere e a fórmula simplificada superestima rho em
+ * até 0.375 — podendo suprimir `alert_low_rho` incorretamente.
  *
- * Implementa ranks médios para empates (standard Spearman):
+ * Retorna null se n < 2 (rho indefinido) ou se o desvio padrão for zero
+ * (todos os valores empatados em pelo menos um vetor).
+ *
+ * Implementa ranks médios para empates:
  *   ex: [70, 70, 80] → sorted desc [80, 70, 70] → posições 1, 2, 3
  *   → empate nas posições 2 e 3 → rank médio = (2+3)/2 = 2.5
  *   → ranks finais: [2.5, 2.5, 1]
  *
- * Exemplo verificável à mão (n=3, concordância perfeita):
- *   scorer  = [80, 60, 40] → ranks [1, 2, 3]
- *   ctr     = [5,  3,  1]  → ranks [1, 2, 3]
- *   d²      = [0, 0, 0], Σd² = 0
- *   rho     = 1 − 0 / (3×8) = 1.000
+ * Exemplos verificáveis à mão — sem ties (Pearson == fórmula simplificada):
+ *   scorer  = [80, 60, 40] → ranks [1, 2, 3]; ctr [5,3,1] → ranks [1,2,3]
+ *   mean=2; cov=((-1)(-1)+(0)(0)+(1)(1))/3=2/3; var=2/3; rho=1.000
  *
- * Exemplo (inversão total, n=3):
- *   scorer  = [80, 60, 40] → ranks [1, 2, 3]
- *   ctr     = [1,  3,  5]  → ranks [3, 2, 1]
- *   d²      = [4, 0, 4], Σd² = 8
- *   rho     = 1 − 6×8 / (3×8) = 1 − 2 = -1.000
+ *   scorer  = [80, 60, 40] → ranks [1,2,3]; ctr [1,3,5] → ranks [3,2,1]
+ *   cov=((-1)(1)+(0)(0)+(1)(-1))/3=-2/3; rho=-1.000
  *
- * Exemplo com empate (n=3):
- *   scorer  = [70, 70, 80] → ranks [2.5, 2.5, 1]
- *   ctr     = [3,  3,  5]  → ranks [2.5, 2.5, 1]
- *   d²      = [0, 0, 0], Σd² = 0
- *   rho     = 1 − 0 / (3×8) = 1.000 (concordância perfeita mesmo com ties)
+ * Exemplo com ties — Pearson ≠ fórmula simplificada:
+ *   scorer = [70, 70, 80] → ranks [2.5, 2.5, 1]; ctr [5,3,1] → ranks [1,2,3]
+ *   mean_rS=2, mean_rC=2
+ *   cov=((0.5)(-1)+(0.5)(0)+(-1)(1))/3=(-0.5+0-1)/3=-0.500
+ *   var_rS=(0.25+0.25+1)/3=0.5; var_rC=(1+0+1)/3=0.667
+ *   rho=-0.5/sqrt(0.5×0.667)=-0.5/0.5774≈-0.866
+ *   (fórmula simplificada daria 1-6×6.5/24=-0.625 — incorreto com ties)
  */
 export function spearmanRho(scorerValues: number[], ctrValues: number[]): number | null {
   const n = scorerValues.length;
@@ -128,22 +134,41 @@ export function spearmanRho(scorerValues: number[], ctrValues: number[]): number
   const rS = toRanks(scorerValues);
   const rC = toRanks(ctrValues);
 
-  let sumD2 = 0;
+  // Pearson sobre os vetores de rank — definição geral do Spearman.
+  // Correta com ou sem empates (ao contrário de 1−6Σd²/n(n²−1)).
+  const meanS = rS.reduce((s, v) => s + v, 0) / n;
+  const meanC = rC.reduce((s, v) => s + v, 0) / n;
+
+  let cov = 0, varS = 0, varC = 0;
   for (let i = 0; i < n; i++) {
-    const d = rS[i] - rC[i];
-    sumD2 += d * d;
+    const ds = rS[i] - meanS;
+    const dc = rC[i] - meanC;
+    cov += ds * dc;
+    varS += ds * ds;
+    varC += dc * dc;
   }
 
-  return 1 - (6 * sumD2) / (n * (n * n - 1));
+  const denom = Math.sqrt(varS * varC);
+  if (denom === 0) return null; // desvio padrão zero (todos empatados)
+  return cov / denom;
 }
 
 // ─── Carrega highlights do scorer por edição ─────────────────────────────────
 
 /**
- * Lê `_internal/01-approved.json` e extrai os highlights com url+score.
- * Usa `highlights[]` (sempre presente) — ignora runners_up (vazio em edições
- * recentes conforme nota #1619).
- * Retorna null se o arquivo não existe ou é inválido.
+ * Lê `_internal/01-approved.json` e extrai os candidatos pontuados com url+score.
+ *
+ * Inclui `highlights[]` (top-3 selecionados) + `runners_up[]` (próximos na fila)
+ * para garantir que o join scorer×CTR possa atingir n ≥ MIN_MATCHES_FOR_AGGREGATE=4.
+ * Com apenas 3 highlights, o guard de n≥4 seria sempre impossível (métrica morta).
+ * runners_up têm scores válidos do scorer-select — semanticamente homogêneos.
+ *
+ * `all_scored` é ignorado: disponível só em edições chunked-parallel antigas (#1611)
+ * e semanticamente distinto (pool não-filtrado com scores de scorer-chunk, não
+ * scorer-select). Manter highlights+runners_up cobre o caso real observado
+ * (260423: 3+2=5; 260424: 3+3=6; 260427: 6+2=8 — suficiente para n≥4).
+ *
+ * Retorna null se o arquivo não existe, é inválido, ou o conjunto é vazio.
  */
 export function loadScorerHighlights(
   editionsDir: string,
@@ -153,17 +178,19 @@ export function loadScorerHighlights(
   if (!existsSync(p)) return null;
   try {
     const data = JSON.parse(readFileSync(p, "utf8"));
-    const highlights: ScoredHighlight[] = [];
-    for (const h of data.highlights ?? []) {
+    const candidates: ScoredHighlight[] = [];
+    // Inclui highlights[] + runners_up[] para que n_matches possa atingir >=4.
+    const sources = [...(data.highlights ?? []), ...(data.runners_up ?? [])];
+    for (const h of sources) {
       const url = h.article?.url ?? h.url;
       const score = typeof h.score === "number" ? h.score : null;
       if (typeof url === "string" && url && score !== null) {
-        highlights.push({ url: canonicalize(url), score });
+        candidates.push({ url: canonicalize(url), score });
       }
     }
     // Ordena por score desc (maior = mais bem ranqueado pelo scorer)
-    highlights.sort((a, b) => b.score - a.score);
-    return highlights.length > 0 ? highlights : null;
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates.length > 0 ? candidates : null;
   } catch {
     return null;
   }
@@ -233,12 +260,13 @@ export function computeEditionH4(
     ctrByUrl.set(url, opens > 0 ? (clicks / opens) * 100 : 0);
   }
 
-  // Join scorer ↔ CTR pela URL canônica
-  const matched: Array<{ scorerScore: number; ctr: number }> = [];
+  // Join scorer ↔ CTR pela URL canônica — inclui url para top-1/top-3
+  // (unificado: evita 2 loops independentes que podem divergir com canonicalização).
+  const matched: Array<{ url: string; scorerScore: number; ctr: number }> = [];
   for (const h of scorerHighlights) {
     const ctr = ctrByUrl.get(h.url);
     if (ctr !== undefined) {
-      matched.push({ scorerScore: h.score, ctr });
+      matched.push({ url: h.url, scorerScore: h.score, ctr });
     }
   }
 
@@ -250,32 +278,25 @@ export function computeEditionH4(
 
   const rho = spearmanRho(scorerValues, ctrValues) ?? 0;
 
-  // Top-1: o destaque com maior score do scorer (dentre os CASADOS) foi o mais clicado?
-  // Ambas as pontas são derivadas do subset casado — evita false-negative quando o
-  // top-1 global do scorer não tem match no CTR (sem essa restrição, ele seria
-  // contado como "miss" indevidamente, enviesando a métrica pra baixo).
-  // Decisão documentada: top-1 scorer = destaque com maior score entre os que casaram
-  // (matchedUrls[0], pois scorerHighlights está ordenado por score desc);
-  // top-1 CTR = URL com maior CTR entre os casados.
-  const matchedUrls = scorerHighlights.filter((h) => ctrByUrl.has(h.url));
-  const topMatchedScorerUrl = matchedUrls[0]?.url; // maior score entre casados
-  const topCtrUrl = [...ctrByUrl.entries()]
-    .filter(([url]) => matchedUrls.some((h) => h.url === url))
-    .sort((a, b) => b[1] - a[1])[0]?.[0];
+  // Top-1 e Top-3: derivados de `matched[]` (loop unificado, O(1) por lookup).
+  // matched[] já contém só os pares casados, ordenados por score desc (herda a
+  // ordem de scorerHighlights que é sorted by score desc antes do join).
+
+  // Top-1 scorer (maior score entre casados) = matched[0].url (já em ordem desc).
+  const topMatchedScorerUrl = matched[0]?.url;
+  const topCtrUrl = matched
+    .slice() // cópia para não mutuar
+    .sort((a, b) => b.ctr - a.ctr)[0]?.url;
   const top1Hit = !!(topMatchedScorerUrl && topCtrUrl && topMatchedScorerUrl === topCtrUrl);
 
-  // Overlap top-3: interseção dos top-3 do scorer vs top-3 por CTR observado.
-  // Ambas as pontas derivadas do SUBSET CASADO (matchedUrls) — paridade com top-1.
-  // Antes: scorerTop3 usava scorerHighlights.slice(0, 3) (inclui não-casados),
-  // enquanto ctrTop3 filtrava só casados → assimétrico → enviesa overlap pra baixo
-  // em edições com highlights sem cobertura CTR.
-  const scorerTop3 = new Set(matchedUrls.slice(0, 3).map((h) => h.url));
+  // Overlap top-3: interseção dos top-3 do scorer vs top-3 por CTR — ambos do subset casado.
+  const scorerTop3 = new Set(matched.slice(0, 3).map((m) => m.url));
   const ctrTop3 = new Set(
-    [...ctrByUrl.entries()]
-      .filter(([url]) => matchedUrls.some((h) => h.url === url))
-      .sort((a, b) => b[1] - a[1])
+    matched
+      .slice()
+      .sort((a, b) => b.ctr - a.ctr)
       .slice(0, 3)
-      .map(([url]) => url),
+      .map((m) => m.url),
   );
   const top3Overlap = [...scorerTop3].filter((u) => ctrTop3.has(u)).length;
 
@@ -307,20 +328,26 @@ export function loadHistoryEditions(historyPath: string): Set<string> {
 /**
  * Carrega todas as entradas do histórico JSONL.
  * Retorna array de H4HistoryEntry. Defensivo: arquivo ausente → [].
+ *
+ * Deduplica por edition: em caso de race (dois processos escrevem a mesma
+ * edição antes que qualquer um releia), a ÚLTIMA linha ganha — preserva o
+ * comportamento mais recente. Complementa a idempotência de appendHistory.
  */
 export function loadHistory(historyPath: string): H4HistoryEntry[] {
   const abs = resolve(ROOT, historyPath);
   if (!existsSync(abs)) return [];
   const lines = readFileSync(abs, "utf8").split("\n").filter(Boolean);
-  const entries: H4HistoryEntry[] = [];
+  // Map<edition, entry>: dedup por edição — última linha vence.
+  const byEdition = new Map<string, H4HistoryEntry>();
   for (const line of lines) {
     try {
-      entries.push(JSON.parse(line) as H4HistoryEntry);
+      const entry = JSON.parse(line) as H4HistoryEntry;
+      if (entry.edition) byEdition.set(entry.edition, entry);
     } catch {
       /* linha malformada — ignora */
     }
   }
-  return entries;
+  return [...byEdition.values()];
 }
 
 /**
@@ -374,10 +401,12 @@ export function computeNewH4Entries(
   const editionDates = new Map<string, string>(); // edition → date YYYY-MM-DD
   for (const r of ctrRows) {
     const ed = dateToEdition(r.date);
-    if (ed === null) {
-      // Data malformada na linha do CTR — loga e ignora a linha
+    if (!ed) {
+      // Data malformada no CTR (dateToEdition retorna "" para input invalido)
+      // — loga e ignora a linha.
       process.stderr.write(
-        `[analyze-h4] AVISO: dateToEdition retornou null para data "${r.date}" — linha ignorada.\n`,
+        `[analyze-h4] AVISO: dateToEdition vazio para data "${r.date}" — linha ignorada.
+`,
       );
       continue;
     }
