@@ -184,6 +184,121 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
   });
 });
 
+// ── #2206: score-by-month bidirecional em handleAdminCorrect ─────────────────
+
+describe("#2206 — score-by-month decrementa em true→false e não acumula no flip-flop", () => {
+  it("true→false: score-by-month.correct é decrementado (acerto fantasma corrigido)", async () => {
+    // Cenário: admin define gabarito A, leitor vota A → monthly.correct=1.
+    // Admin corrige para B: leitor votou A ≠ B → deve virar false.
+    // monthly.correct deve ser decrementado de 1 para 0.
+    const kv = makeTrackedKv({
+      "correct:260616": "A",
+      // Leitor votou A (correto com gabarito A) → correct=true
+      "vote:260616:mbm@x.com": JSON.stringify({ choice: "A", ts: "t", correct: true }),
+      "score:mbm@x.com": JSON.stringify({ total: 1, correct: 1, streak: 1, last_edition: "260616", nickname: "MBM" }),
+      // monthly.correct=1 (reflete o acerto inicial)
+      "score-by-month:2026-06:mbm@x.com": JSON.stringify({ total: 1, correct: 1, last_edition: "260616", nickname: "MBM" }),
+    });
+
+    // Admin corrige: gabarito é B (não A)
+    const res = await callAdminCorrect(kv, "260616", "B");
+    assert.equal(res.status, 200);
+    const body = await res.json() as { updated_votes: number };
+    assert.equal(body.updated_votes, 1, "o voto que mudou de true→false deve ser contado");
+
+    // score global deve ter decrementado correct
+    const scoreRaw = await kv.get("score:mbm@x.com");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.correct, 0, "score.correct global deve ser 0 (true→false)");
+    assert.equal(score.total, 1, "score.total NÃO deve ser tocado pelo backfill");
+
+    // score-by-month DEVE ter decrementado correct (bug pré-#2206: ficava em 1)
+    const monthRaw = await kv.get("score-by-month:2026-06:mbm@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.correct, 0, "score-by-month.correct deve ser 0 após true→false (acerto fantasma eliminado)");
+    assert.equal(monthly.total, 1, "score-by-month.total NÃO deve ser tocado");
+  });
+
+  it("flip-flop A→B→A: monthly.correct não acumula (permanece em {0,1})", async () => {
+    // Cenário de flip-flop: admin seta A, corrige pra B, corrige pra A de volta.
+    // monthly.correct deve espelhar o estado real: 0 após A→B, 1 após B→A.
+    // Bug pré-#2206: cada re-marcação como correto chamava +1 sem decrementar → acúmulo.
+    const kv = makeTrackedKv({
+      "correct:260617": "A",
+      // Leitor votou A → correct=true (gabarito A estava certo)
+      "vote:260617:flip@x.com": JSON.stringify({ choice: "A", ts: "t", correct: true }),
+      "score:flip@x.com": JSON.stringify({ total: 1, correct: 1, streak: 1, last_edition: "260617", nickname: "Flip" }),
+      "score-by-month:2026-06:flip@x.com": JSON.stringify({ total: 1, correct: 1, last_edition: "260617", nickname: "Flip" }),
+    });
+
+    // Flip 1: admin corrige para B → voto A ≠ B → true→false
+    await callAdminCorrect(kv, "260617", "B");
+    const afterFlip1Monthly = JSON.parse((await kv.get("score-by-month:2026-06:flip@x.com"))!);
+    assert.equal(afterFlip1Monthly.correct, 0, "após A→B: monthly.correct deve ser 0");
+
+    // Flip 2: admin corrige de volta para A → voto A = A → false→true
+    await callAdminCorrect(kv, "260617", "A");
+    const afterFlip2Monthly = JSON.parse((await kv.get("score-by-month:2026-06:flip@x.com"))!);
+    assert.equal(afterFlip2Monthly.correct, 1, "após B→A: monthly.correct deve ser 1 (não 2 — sem acúmulo)");
+    assert.equal(afterFlip2Monthly.total, 1, "monthly.total NÃO deve ser tocado em nenhum flip");
+    // Global score bidirecional: false→true deve ter incrementado score.correct de 0 para 1.
+    const afterFlip2Global = JSON.parse((await kv.get("score:flip@x.com"))!);
+    assert.equal(afterFlip2Global.correct, 1, "score global: após B→A (false→true), correct deve ser 1");
+    assert.equal(afterFlip2Global.total, 1, "score global: total NÃO deve ser tocado em nenhum flip");
+
+    // Flip 3: admin corrige para B novamente → true→false
+    await callAdminCorrect(kv, "260617", "B");
+    const afterFlip3Monthly = JSON.parse((await kv.get("score-by-month:2026-06:flip@x.com"))!);
+    assert.equal(afterFlip3Monthly.correct, 0, "após A→B (2º): monthly.correct deve voltar a 0 (não negativo, não acumulado)");
+    // Global score: true→false deve ter decrementado score.correct de 1 para 0.
+    const afterFlip3Global = JSON.parse((await kv.get("score:flip@x.com"))!);
+    assert.equal(afterFlip3Global.correct, 0, "score global: após A→B (true→false), correct deve ser 0 (não negativo)");
+  });
+
+  it("false→true: monthly.correct é incrementado (caminho original, não regrediu)", async () => {
+    // Garante que o fix não quebrou o caminho false→true (incremento).
+    const kv = makeTrackedKv({
+      "correct:260618": "A",
+      "vote:260618:inc@x.com": JSON.stringify({ choice: "B", ts: "t", correct: false }),
+      "score:inc@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260618", nickname: "Inc" }),
+      "score-by-month:2026-06:inc@x.com": JSON.stringify({ total: 1, correct: 0, last_edition: "260618", nickname: "Inc" }),
+    });
+
+    // Admin corrige para B (leitor votou B = correto)
+    await callAdminCorrect(kv, "260618", "B");
+
+    const monthRaw = await kv.get("score-by-month:2026-06:inc@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.correct, 1, "false→true: monthly.correct deve ser incrementado para 1");
+    assert.equal(monthly.total, 1, "monthly.total NÃO deve ser tocado");
+
+    // Global score: false→true deve ter incrementado score.correct de 0 para 1.
+    const scoreRaw = await kv.get("score:inc@x.com");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.correct, 1, "false→true: score.correct global deve ser 1 após backfill");
+    assert.equal(score.total, 1, "false→true: score.total global NÃO deve ser tocado pelo backfill");
+  });
+
+  it("clamp: monthly.correct não vai abaixo de 0 (clamp em Math.max(0, ...))", async () => {
+    // Edge case defensivo: se por algum motivo correct já estava em 0 e vem true→false.
+    const kv = makeTrackedKv({
+      "correct:260619": "A",
+      "vote:260619:clamp@x.com": JSON.stringify({ choice: "A", ts: "t", correct: true }),
+      "score:clamp@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260619", nickname: "Clamp" }),
+      // monthly.correct já estava em 0 (inconsistência defensiva — não deve ir negativo)
+      "score-by-month:2026-06:clamp@x.com": JSON.stringify({ total: 1, correct: 0, last_edition: "260619", nickname: "Clamp" }),
+    });
+
+    // Admin corrige para B → true→false
+    await callAdminCorrect(kv, "260619", "B");
+
+    const monthRaw = await kv.get("score-by-month:2026-06:clamp@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.ok(monthly.correct >= 0, `monthly.correct não deve ser negativo (got ${monthly.correct})`);
+    assert.equal(monthly.correct, 0, "clamp: monthly.correct fica em 0, não −1");
+  });
+});
+
 // ── #2189: nickname form acessível no retry após "já votou" ──────────────────
 
 describe("#2189 — branch 'já votou' serve nicknameForm quando subscriber não tem nickname", () => {
