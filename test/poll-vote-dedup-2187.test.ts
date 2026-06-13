@@ -574,9 +574,10 @@ describe("VoteDedup 2-fase commit (#2220) — DO: pending→voted só após /con
     const authorized = await callVoteDedup(dedup);
     assert.equal(authorized.firstVote, true, "fase 1 deve autorizar o voto");
 
-    // Simular expiração do pending: forçar claimed_at para 6 minutos no passado
+    // Simular expiração do pending: forçar o timestamp interno do PendingState para 6 minutos no passado
+    // (#2229) pending e agora um objeto atomico { at: ISO } — sobrescrever o objeto com at antigo
     const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-    storage.set("claimed_at", sixMinutesAgo);
+    storage.set("pending", { at: sixMinutesAgo });
 
     // Retry do votante após pending expirado — deve ser RE-AUTORIZADO (INVARIANTE)
     const retry = await callVoteDedup(dedup);
@@ -712,5 +713,139 @@ describe("Race genuíno no mock — SEM mutex exporia double-vote (#2220 proof)"
 
     const authorized = [r1, r2].filter((r) => r.firstVote).length;
     assert.equal(authorized, 1, `COM mutex: exatamente 1 autorizado (r1=${r1.firstVote}, r2=${r2.firstVote})`);
+  });
+});
+
+// ── 7. (#2229) Idempotent increments + atomic pending + reconciliation ────
+
+describe("#2229 — Incrementos idempotentes via guard-keys (partial write + retry)", () => {
+  function makeMockDoNs(): DurableObjectNamespace {
+    const doInstances = new Map<string, VoteDedup>();
+    return {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (id: DurableObjectId): DurableObjectStub => {
+        const name = id.toString();
+        if (!doInstances.has(name)) doInstances.set(name, makeVoteDedup());
+        const inst = doInstances.get(name)!;
+        return { fetch: (url: RequestInfo, init?: RequestInit) => inst.fetch(new Request(url as string, init)) } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+  }
+
+  it("guard-key :stats presente + retry -> stats.total permanece 1 (#2229 AT MOST 1x per vote)", async () => {
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      "counted:260613:partial@x.com:stats": "1",
+      "stats:260613": JSON.stringify({ total: 1, voted_a: 1, voted_b: 0, correct_count: 0 }),
+    });
+    const env: Env = { POLL: kv as unknown as KVNamespace, VOTE_DEDUP: makeMockDoNs(), POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "partial@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "A");
+    await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    const stats = JSON.parse((await kv.get("stats:260613"))!);
+    assert.equal(stats.total, 1, "stats.total deve ser 1 (guard impediu re-incremento) got: " + String(stats.total));
+  });
+
+  it("guard-key :score presente + retry -> score.total permanece 1", async () => {
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      "counted:260613:partial2@x.com:stats": "1",
+      "counted:260613:partial2@x.com:score": "1",
+      "stats:260613": JSON.stringify({ total: 1, voted_a: 1, voted_b: 0, correct_count: 0 }),
+      "score:partial2@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260613", nickname: null }),
+    });
+    const env: Env = { POLL: kv as unknown as KVNamespace, VOTE_DEDUP: makeMockDoNs(), POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "partial2@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "A");
+    await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    const score = JSON.parse((await kv.get("score:partial2@x.com"))!);
+    assert.equal(score.total, 1, "score.total deve permanecer 1 got: " + String(score.total));
+  });
+});
+
+describe("#2229 — pending atomico (PendingState): nunca pending-sem-at", () => {
+  it("pending gravado como objeto { at } (nao 2 puts separados)", async () => {
+    const putsLog: Array<{ key: string; value: unknown }> = [];
+    const storage = new Map<string, unknown>();
+    let queue: Promise<unknown> = Promise.resolve();
+    const mockState = {
+      storage: {
+        async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T | undefined>> {
+          if (Array.isArray(key)) { const map = new Map<string, T | undefined>(); for (const k of key) map.set(k, storage.get(k) as T | undefined); return map as unknown as T; }
+          return storage.get(key) as T | undefined;
+        },
+        async put<T>(key: string, value: T): Promise<void> { putsLog.push({ key, value }); storage.set(key, value); },
+        async delete(key: string): Promise<void> { storage.delete(key); },
+      } as unknown as DurableObjectStorage,
+      blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => { const next = queue.then(() => fn()); queue = next.then(() => undefined, () => undefined); return next; },
+    } as unknown as DurableObjectState;
+    const dedup = new VoteDedup(mockState);
+    const result = await callVoteDedup(dedup);
+    assert.equal(result.firstVote, true, "fase 1 deve autorizar");
+    const pendingPuts = putsLog.filter(p => p.key === "pending");
+    assert.equal(pendingPuts.length, 1, "deve haver 1 put de pending (atomico)");
+    const pv = pendingPuts[0].value as { at?: string };
+    assert.ok(pv !== null && typeof pv === "object", "pending deve ser objeto (nao boolean)");
+    assert.ok("at" in pv, "pending deve ter campo at");
+    assert.equal(typeof pv.at, "string", "pending.at deve ser string ISO");
+    assert.equal(putsLog.filter(p => p.key === "claimed_at").length, 0, "sem put separado de claimed_at (#2229)");
+  });
+
+  it("pending fresco como objeto -> concorrente barrado (claimedTs de .at valido)", async () => {
+    const dedup = makeVoteDedup();
+    const auth = await callVoteDedup(dedup);
+    assert.equal(auth.firstVote, true, "fase 1: autorizado");
+    const concurrent = await callVoteDedup(dedup);
+    assert.equal(concurrent.firstVote, false, "concorrente com pending fresco (objeto atomico) deve ser barrado");
+  });
+});
+
+describe("#2229 — reconciliacao via X-KV-VoteKey-Committed", () => {
+  it("pending fresco + X-KV-VoteKey-Committed:1 -> DO reconcilia, firstVote:false", async () => {
+    const dedup = makeVoteDedup();
+    const auth = await callVoteDedup(dedup);
+    assert.equal(auth.firstVote, true, "fase 1: autorizado");
+    const req = new Request("https://internal/vote-dedup", { method: "POST", headers: { "Content-Type": "application/json", "X-KV-VoteKey-Committed": "1" } });
+    const result = await (await dedup.fetch(req)).json() as { firstVote: boolean };
+    assert.equal(result.firstVote, false, "reconciliacao: firstVote deve ser false (voto ja contado)");
+    const subsequent = await callVoteDedup(dedup);
+    assert.equal(subsequent.firstVote, false, "subsequente apos reconciliacao: voted=true, barrado");
+  });
+
+  it("pending fresco SEM Committed -> barrado (nao reconcilia prematuramente)", async () => {
+    const dedup = makeVoteDedup();
+    await callVoteDedup(dedup);
+    const concurrent = await callVoteDedup(dedup);
+    assert.equal(concurrent.firstVote, false, "sem Committed: pending fresco barra (lock ativo)");
+  });
+
+  it("integracao: voteKey existente -> handleVote mostra ja-votou, score permanece 1 (Closes #2229)", async () => {
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      "vote:260613:committed@x.com": JSON.stringify({ choice: "A", ts: "2026-06-13T10:00:00Z", correct: null }),
+      "score:committed@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260613", nickname: null }),
+    });
+    const dedupInst = makeVoteDedup();
+    await callVoteDedup(dedupInst);
+    const doInstances = new Map<string, VoteDedup>([["260613:committed@x.com", dedupInst]]);
+    const mockDO: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (id: DurableObjectId): DurableObjectStub => { const name = id.toString(); if (!doInstances.has(name)) doInstances.set(name, makeVoteDedup()); const inst = doInstances.get(name)!; return { fetch: (url: RequestInfo, init?: RequestInit) => inst.fetch(new Request(url as string, init)) } as unknown as DurableObjectStub; },
+    } as unknown as DurableObjectNamespace;
+    const env: Env = { POLL: kv as unknown as KVNamespace, VOTE_DEDUP: mockDO, POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "committed@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "B");
+    const res = await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /j[áa] votou/i, "deve mostrar ja-votou");
+    const score = JSON.parse((await kv.get("score:committed@x.com"))!);
+    assert.equal(score.total, 1, "score.total deve permanecer 1 got: " + String(score.total));
   });
 });
