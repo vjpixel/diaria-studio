@@ -2550,3 +2550,68 @@ describe("#1984: vocabulário type_hint dos agentes alinhado com categorize.ts",
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// #2176 — path-mais-específico-vence: blog.google colisão host
+// ---------------------------------------------------------------------------
+
+describe("categorize() — #2176 path-mais-específico-vence no empate de host", () => {
+  /**
+   * Cenário REAL da issue:
+   *   - 'Google' (Primária, use_melhor=0): URL base = blog.google → source-query: site:blog.google
+   *   - 'Blog do Google Brasil (IA)' (Tutoriais, use_melhor=1): URL base = blog.google/intl/pt-br/novidades/tecnologia
+   *
+   * Um artigo em blog.google/intl/pt-br/novidades/tecnologia/X pode ser encontrado pelo
+   * source-researcher da 'Google' (site:blog.google cobre TODA a árvore, incluindo /intl/pt-br/).
+   * A atribuição correta é: Blog do Google Brasil (path mais específico) → use_melhor → tutorial.
+   */
+  it("#2176: URL em blog.google/intl/pt-br/novidades/tecnologia → tutorial (não noticias/radar)", () => {
+    const art: Article = {
+      url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
+      title: "Como usar o Gemini 2.0 no Google Workspace — guia passo a passo",
+    };
+    // DEVE ir para tutorial → use_melhor bucket (via path-specificity: Blog do Google Brasil vence Google Primária)
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "URL em blog.google/intl/pt-br/novidades/tecnologia → path mais específico (Blog Brasil use_melhor=1) vence host-only (Google use_melhor=0)",
+    );
+  });
+
+  it("#2176: categorizeArticles coloca o artigo em use_melhor, não radar", () => {
+    const art: Article = {
+      url: "https://blog.google/intl/pt-br/novidades/tecnologia/ia-ferramentas-2026/",
+      title: "5 ferramentas de IA do Google pra usar hoje",
+    };
+    const { use_melhor, radar, lancamento } = categorizeArticles([art]);
+    assert.equal(use_melhor.length, 1, "artigo deve estar em use_melhor");
+    assert.equal(radar.length, 0, "artigo NÃO deve estar em radar");
+    assert.equal(lancamento.length, 0, "artigo NÃO deve estar em lancamento");
+  });
+
+  it("#2176: atribuição é DETERMINÍSTICA — mesmo resultado independente da ordem de chamada", () => {
+    const art: Article = {
+      url: "https://blog.google/intl/pt-br/novidades/tecnologia/google-gemini-atualizado/",
+    };
+    const r1 = categorize(art);
+    const r2 = categorize(art);
+    const r3 = categorize(art);
+    assert.equal(r1, r2, "categorize deve ser determinístico (r1 == r2)");
+    assert.equal(r2, r3, "categorize deve ser determinístico (r2 == r3)");
+    assert.equal(r1, "tutorial", "resultado deve ser tutorial");
+  });
+
+  it("#2176: URL em blog.google fora do /intl/pt-br/ → lancamento (Google Primária, use_melhor=0)", () => {
+    // URL fora do path do Blog Brasil → só Google Primária (host-only) casa → use_melhor=false
+    // → _useMelhorBySpecificity=false → não retorna tutorial via seed-list → cai no fluxo normal
+    // → blog.google é LANCAMENTO_DOMAIN sem filtros de path/deal → lancamento.
+    const art: Article = {
+      url: "https://blog.google/products/search/nova-feature-search-ai/",
+      title: "Nova feature de IA no Google Search",
+    };
+    // NÃO deve ser tutorial (use_melhor) — a fonte mais específica é Google Primária (use_melhor=0).
+    // O bucket real esperado é "lancamento" (blog.google LANCAMENTO_DOMAIN, sem override de path).
+    const cat = categorize(art);
+    assert.equal(cat, "lancamento", "URL fora do path pt-br → lancamento (Google Primária, não tutorial)");
+  });
+});
