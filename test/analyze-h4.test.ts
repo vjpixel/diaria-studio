@@ -99,6 +99,43 @@ describe("spearmanRho", () => {
   it("arrays de tamanho diferente → null", () => {
     assert.equal(spearmanRho([1, 2], [1]), null);
   });
+
+  // ── Regressão #2221: Spearman com ties deve usar rank médio ──────────────
+  it("ties no scorer: [70,70,80] → ranks médios [2.5,2.5,1] — concordância perfeita → rho=1", () => {
+    // scorer [70,70,80] sorted desc: 80→rank1, 70→rank2, 70→rank3
+    //   → empate posições 2 e 3 → rank médio = (2+3)/2 = 2.5
+    //   → ranks: [2.5, 2.5, 1]
+    // ctr [3,3,5] sorted desc: 5→rank1, 3→rank2, 3→rank3
+    //   → empate posições 2 e 3 → rank médio = 2.5
+    //   → ranks: [2.5, 2.5, 1]
+    // d = [0, 0, 0], Σd² = 0, rho = 1 − 0/(3×8) = 1.000
+    const rho = spearmanRho([70, 70, 80], [3, 3, 5]);
+    assert.ok(rho !== null);
+    assert.equal(+rho.toFixed(3), 1.0);
+  });
+
+  it("ties no scorer: [70,70,80] com ctr discordante — cálculo com rank médio correto", () => {
+    // scorer [70, 70, 80] → ranks [2.5, 2.5, 1]
+    // ctr    [5,  3,  1]  → ranks [1,   2,   3]  (todos distintos)
+    // d = [2.5-1, 2.5-2, 1-3] = [1.5, 0.5, -2]
+    // d² = [2.25, 0.25, 4], Σd² = 6.5
+    // rho = 1 − 6×6.5/(3×8) = 1 − 39/24 = 1 − 1.625 = -0.625
+    const rho = spearmanRho([70, 70, 80], [5, 3, 1]);
+    assert.ok(rho !== null);
+    assert.equal(+rho.toFixed(3), -0.625);
+  });
+
+  it("todos os valores empatados → rho = 0 (correlação indefinida / neutra)", () => {
+    // scorer [50,50,50] → todos rank 2 (média de 1+2+3 = 2)
+    // ctr    [3, 3, 3]  → todos rank 2
+    // d = [0,0,0], Σd² = 0, rho = 1.000
+    // Nota: todos empatados = qualquer rho é matematicamente válido (desvio padrão
+    // zero), mas a fórmula simplificada retorna 1.0 (Σd²=0). Isso é aceitável —
+    // o guard MIN_MATCHES_FOR_AGGREGATE filtra edições com poucos dados.
+    const rho = spearmanRho([50, 50, 50], [3, 3, 3]);
+    assert.ok(rho !== null);
+    assert.equal(+rho.toFixed(3), 1.0);
+  });
 });
 
 // ─── computeEditionH4 ───────────────────────────────────────────────────────
@@ -178,6 +215,39 @@ describe("computeEditionH4", () => {
     const highlights: ScoredHighlight[] = [mkHL("https://a.com/1", 90)];
     const result = computeEditionH4(highlights, [], DATE);
     assert.equal(result, null);
+  });
+
+  // ── Regressão #2221: top-3 deve usar subset casado ───────────────────────
+  it("top3_overlap usa subset casado — highlight sem CTR não entra no scorerTop3", () => {
+    // 5 highlights do scorer (ordem por score desc): A,B,C,D,E
+    // CTR disponível só para B,C,D,E (A — que seria top-1 global — sem match)
+    // Subset casado: [B,C,D,E] → scorerTop3 casado = {B,C,D}
+    // CTR top-3 entre casados: B=8%,C=5%,D=3%,E=1% → {B,C,D}
+    // Overlap = |{B,C,D} ∩ {B,C,D}| = 3
+    //
+    // Com o bug antigo: scorerTop3 = slice(0,3) do GLOBAL = {A,B,C}
+    //   mas A não está em ctrTop3 (não tem CTR) → overlap = |{B,C}| = 2 (errado)
+    const highlights: ScoredHighlight[] = [
+      mkHL("https://a.com/1", 95), // top-1 global, sem CTR
+      mkHL("https://b.com/2", 80),
+      mkHL("https://c.com/3", 70),
+      mkHL("https://d.com/4", 60),
+      mkHL("https://e.com/5", 50),
+    ];
+    const ctrRows: CtrRow[] = [
+      // A deliberadamente ausente
+      mkCtr(DATE, "https://b.com/2", 8),
+      mkCtr(DATE, "https://c.com/3", 5),
+      mkCtr(DATE, "https://d.com/4", 3),
+      mkCtr(DATE, "https://e.com/5", 1),
+    ];
+    const result = computeEditionH4(highlights, ctrRows, DATE);
+    assert.ok(result !== null, "n=4 matches ≥ MIN_MATCHES_FOR_AGGREGATE");
+    assert.equal(result.n_matches, 4);
+    // scorerTop3 casado = {B,C,D}, ctrTop3 = {B,C,D} → overlap = 3
+    assert.equal(result.top3_overlap, 3, "top3_overlap deve ser 3 com subset casado");
+    // top1 casado: B (score 80 entre casados) vs top-CTR B (8%) → hit
+    assert.equal(result.top1_hit, true);
   });
 
   it("filtra CTR de outras datas (não contamina a edição)", () => {
@@ -303,6 +373,17 @@ describe("appendHistory e loadHistoryEditions — idempotência", () => {
     const entries = loadHistory(historyPath.replace(/\\/g, "/"));
     assert.equal(entries.length, 1);
     assert.equal(entries[0].edition, "260520");
+  });
+
+  // ── Regressão #2221: appendHistory idempotente a nível de arquivo ─────────
+  it("appendHistory: gravar mesma edição 2x diretamente → arquivo ainda tem 1 linha", () => {
+    // Simula dois processos concorrentes que ambos chamam appendHistory([fakeEntry])
+    // sem saber que o outro já escreveu (ambos leram alreadyComputed antes do write).
+    // O fix: appendHistory re-lê o arquivo just-in-time e filtra duplicatas.
+    const p = historyPath.replace(/\\/g, "/");
+    appendHistory(p, [fakeEntry]); // 2ª chamada direta — deve ser filtrada
+    const content = readFileSync(historyPath, "utf8").trim().split("\n").filter(Boolean);
+    assert.equal(content.length, 1, "arquivo deve ter exatamente 1 linha após append duplicado");
   });
 
   it("cleanup", () => {

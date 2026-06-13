@@ -74,6 +74,11 @@ export interface H4Trend {
  *
  * Retorna null se n < 2 (rho indefinido).
  *
+ * Implementa ranks médios para empates (standard Spearman):
+ *   ex: [70, 70, 80] → sorted desc [80, 70, 70] → posições 1, 2, 3
+ *   → empate nas posições 2 e 3 → rank médio = (2+3)/2 = 2.5
+ *   → ranks finais: [2.5, 2.5, 1]
+ *
  * Exemplo verificável à mão (n=3, concordância perfeita):
  *   scorer  = [80, 60, 40] → ranks [1, 2, 3]
  *   ctr     = [5,  3,  1]  → ranks [1, 2, 3]
@@ -85,21 +90,37 @@ export interface H4Trend {
  *   ctr     = [1,  3,  5]  → ranks [3, 2, 1]
  *   d²      = [4, 0, 4], Σd² = 8
  *   rho     = 1 − 6×8 / (3×8) = 1 − 2 = -1.000
+ *
+ * Exemplo com empate (n=3):
+ *   scorer  = [70, 70, 80] → ranks [2.5, 2.5, 1]
+ *   ctr     = [3,  3,  5]  → ranks [2.5, 2.5, 1]
+ *   d²      = [0, 0, 0], Σd² = 0
+ *   rho     = 1 − 0 / (3×8) = 1.000 (concordância perfeita mesmo com ties)
  */
 export function spearmanRho(scorerValues: number[], ctrValues: number[]): number | null {
   const n = scorerValues.length;
   if (n !== ctrValues.length || n < 2) return null;
 
-  // Converte valores para ranks (rank 1 = maior)
+  // Converte valores para ranks com média de empates (rank 1 = maior).
+  // Algoritmo: ordena por valor desc, agrupa empates, atribui rank médio do grupo.
   const toRanks = (vals: number[]): number[] => {
-    // índices ordenados do maior pro menor
+    // índices ordenados do maior pro menor (sort estável via índice como tiebreak)
     const sorted = vals
       .map((v, i) => ({ v, i }))
-      .sort((a, b) => b.v - a.v)
-      .map((x) => x.i);
+      .sort((a, b) => b.v - a.v || a.i - b.i);
+
     const ranks = new Array<number>(n);
-    for (let r = 0; r < n; r++) {
-      ranks[sorted[r]] = r + 1;
+    let pos = 0;
+    while (pos < n) {
+      // Encontra o fim do grupo de valores empatados
+      let end = pos;
+      while (end + 1 < n && sorted[end + 1].v === sorted[pos].v) end++;
+      // Rank médio: média das posições 1-based de pos..end
+      const avgRank = (pos + 1 + end + 1) / 2; // = (pos + end + 2) / 2
+      for (let k = pos; k <= end; k++) {
+        ranks[sorted[k].i] = avgRank;
+      }
+      pos = end + 1;
     }
     return ranks;
   };
@@ -243,11 +264,15 @@ export function computeEditionH4(
     .sort((a, b) => b[1] - a[1])[0]?.[0];
   const top1Hit = !!(topMatchedScorerUrl && topCtrUrl && topMatchedScorerUrl === topCtrUrl);
 
-  // Overlap top-3: interseção dos top-3 do scorer vs top-3 por CTR observado
-  const scorerTop3 = new Set(scorerHighlights.slice(0, 3).map((h) => h.url));
+  // Overlap top-3: interseção dos top-3 do scorer vs top-3 por CTR observado.
+  // Ambas as pontas derivadas do SUBSET CASADO (matchedUrls) — paridade com top-1.
+  // Antes: scorerTop3 usava scorerHighlights.slice(0, 3) (inclui não-casados),
+  // enquanto ctrTop3 filtrava só casados → assimétrico → enviesa overlap pra baixo
+  // em edições com highlights sem cobertura CTR.
+  const scorerTop3 = new Set(matchedUrls.slice(0, 3).map((h) => h.url));
   const ctrTop3 = new Set(
     [...ctrByUrl.entries()]
-      .filter(([url]) => scorerHighlights.some((h) => h.url === url))
+      .filter(([url]) => matchedUrls.some((h) => h.url === url))
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([url]) => url),
@@ -299,13 +324,28 @@ export function loadHistory(historyPath: string): H4HistoryEntry[] {
 }
 
 /**
- * Append idempotente: só grava entradas de edições ainda não presentes no jsonl.
- * Não recomputa edições já gravadas.
+ * Append idempotente a nível de arquivo: re-lê as edições já gravadas antes de
+ * escrever qualquer nova linha, ignorando entradas de edições já presentes.
+ *
+ * O guard no caller (computeNewH4Entries) protege o caso normal, mas dois
+ * processos concorrentes podem derivar o mesmo `alreadyComputed` e ambos chamar
+ * appendHistory para a mesma edição. Ao re-ler o arquivo aqui (just-in-time),
+ * o processo mais lento detecta que a edição já foi escrita pelo processo mais
+ * rápido e pula — evitando linhas duplicadas no JSONL.
+ *
+ * Nota: não usa lock de arquivo (Node não tem flock portável) mas a re-leitura
+ * elimina duplicatas para o padrão de concorrência do cron (processos separados,
+ * não threads compartilhando memória). Race window residual (leitura simultânea
+ * antes de qualquer write) é improvável e sem consequência grave — a linha extra
+ * seria detectada na próxima leitura por loadHistory.
  */
 export function appendHistory(historyPath: string, entries: H4HistoryEntry[]): void {
   if (entries.length === 0) return;
   const abs = resolve(ROOT, historyPath);
-  for (const e of entries) {
+  // Re-lê as edições já no arquivo (just-in-time) para filtrar duplicatas
+  const alreadyInFile = loadHistoryEditions(historyPath);
+  const toWrite = entries.filter((e) => !alreadyInFile.has(e.edition));
+  for (const e of toWrite) {
     appendFileSync(abs, JSON.stringify(e) + "\n", "utf8");
   }
 }
@@ -334,7 +374,14 @@ export function computeNewH4Entries(
   const editionDates = new Map<string, string>(); // edition → date YYYY-MM-DD
   for (const r of ctrRows) {
     const ed = dateToEdition(r.date);
-    if (ed && !editionDates.has(ed)) {
+    if (ed === null) {
+      // Data malformada na linha do CTR — loga e ignora a linha
+      process.stderr.write(
+        `[analyze-h4] AVISO: dateToEdition retornou null para data "${r.date}" — linha ignorada.\n`,
+      );
+      continue;
+    }
+    if (!editionDates.has(ed)) {
       editionDates.set(ed, r.date);
     }
   }
