@@ -374,13 +374,8 @@ describe("#2211: renderWeekdaySection — Opens antes de Open rate no header e n
 // ─── #2212: aggregateLinksAcrossCampaigns ─────────────────────────────────────
 
 describe("#2212: aggregateLinksAcrossCampaigns", () => {
-  const campaignWithLinks = {
-    ...baseCampaign,
-    statistics: {
-      ...baseCampaign.statistics,
-      linksStats: fixtureLinksStats,
-    },
-  };
+  // #2216 finding #5: variável morta removida do describe-scope.
+  // Os testes que precisam de campaign com linksStats constroem inline.
 
   test("agrega clicks de mesmo URL entre campanhas", () => {
     // Duas campanhas com o mesmo link — deve somar clicks
@@ -591,9 +586,9 @@ describe("#2212: renderAggregatedLinksSection", () => {
     assert.doesNotMatch(html, /<table/, "não deve ter tabela quando sem dados");
   });
 
-  test("exibe título 'Links mais clicados do mês'", () => {
+  test("exibe título 'Links mais clicados do período'", () => {
     const html = renderAggregatedLinksSection(makeRows());
-    assert.match(html, /Links mais clicados do mês/, "deve ter título correto");
+    assert.match(html, /Links mais clicados do período/, "deve ter título correto");
   });
 
   test("click count e número de campanhas aparecem nas células", () => {
@@ -632,7 +627,7 @@ describe("#2212: renderDashboardHtml — integração seção links-agregados", 
     };
     const html = renderDashboardHtml([campaignWithLinks]);
     assert.match(html, /id="links-agregados"/, "seção deve aparecer");
-    assert.match(html, /Links mais clicados do mês/, "título deve aparecer");
+    assert.match(html, /Links mais clicados do período/, "título deve aparecer");
     assert.match(html, /diar\.ia\/edicao\/260613/, "link editorial deve aparecer na seção agregada");
   });
 

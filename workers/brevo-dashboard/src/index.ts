@@ -415,6 +415,26 @@ export function isSystemLink(url: string): boolean {
 }
 
 /**
+ * Trunca uma URL para exibição (max 70 chars).
+ * Helper compartilhado entre parseLinksStats e aggregateLinksAcrossCampaigns
+ * para evitar duplicação (#2216 cleanup, finding #2).
+ */
+export function truncateUrl(url: string): string {
+  return url.length > 70 ? url.slice(0, 67) + "…" : url;
+}
+
+/**
+ * Retorna linksStats de uma campanha — fonte canônica: statistics.linksStats,
+ * com fallback pra top-level linksStats (backward compat com fixtures/testes legados).
+ * Helper compartilhado (#2216 cleanup, finding #4 — elimina dual-source duplicado).
+ */
+export function getCampaignLinksStats(
+  c: BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats },
+): BrevoLinksStats | undefined {
+  return c.statistics?.linksStats ?? c.linksStats;
+}
+
+/**
  * Estrutura de um link processado para exibição no dashboard.
  */
 export interface LinkStatRow {
@@ -443,7 +463,10 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
 
   const entries = Object.entries(linksStats)
     .filter(([url]) => !isSystemLink(url))
-    .filter(([, clicks]) => clicks > 0)
+    // #2216 finding #3: Number.isFinite guard — `clicks > 0` is NaN-transparent
+    // (NaN > 0 is false, but NaN can still propagate if checked differently elsewhere).
+    // isFinite covers NaN, Infinity, and -Infinity. Consistent with #2207 NaN class.
+    .filter(([, clicks]) => Number.isFinite(clicks) && clicks > 0)
     .sort(([, a], [, b]) => b - a);
 
   if (entries.length === 0) return [];
@@ -452,7 +475,7 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
 
   return entries.map(([url, clicks]) => ({
     url,
-    displayUrl: url.length > 70 ? url.slice(0, 67) + "…" : url,
+    displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
     clicks,
     pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
   }));
@@ -561,14 +584,17 @@ export function aggregateLinksAcrossCampaigns(
   const urlMap = new Map<string, { totalClicks: number; campaignCount: number }>();
 
   for (const c of campaigns) {
-    // Mesma ordem de prioridade do render: statistics.linksStats canônico, top-level como fallback
-    const linksStats = c.statistics?.linksStats ?? c.linksStats;
+    // #2216 finding #4: getCampaignLinksStats helper elimina dual-source duplicado
+    const linksStats = getCampaignLinksStats(c);
     if (!linksStats) continue;
 
     for (const [url, clicks] of Object.entries(linksStats)) {
       // Filtrar links de sistema reutilizando isSystemLink (sem duplicar lógica)
       if (isSystemLink(url)) continue;
-      if (clicks <= 0) continue;
+      // #2216 finding #3: Number.isFinite guard — `clicks <= 0` é NaN-transparente
+      // (NaN <= 0 é false, então NaN passaria o guard e acumularia em totalClicks).
+      // Paridade com parseLinksStats. Consistente com classe NaN do #2207.
+      if (!Number.isFinite(clicks) || clicks <= 0) continue;
 
       const existing = urlMap.get(url);
       if (existing) {
@@ -585,7 +611,7 @@ export function aggregateLinksAcrossCampaigns(
   return Array.from(urlMap.entries())
     .map(([url, { totalClicks, campaignCount }]) => ({
       url,
-      displayUrl: url.length > 70 ? url.slice(0, 67) + "…" : url,
+      displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
       totalClicks,
       campaignCount,
     }))
@@ -593,7 +619,7 @@ export function aggregateLinksAcrossCampaigns(
 }
 
 /**
- * Renderiza a seção "Links mais clicados do mês" com links agregados de TODAS as campanhas.
+ * Renderiza a seção "Links mais clicados do período" com links agregados de TODAS as campanhas.
  * Sempre visível (seção presente mesmo sem dados — graceful stub).
  * Exportado pra teste unitário.
  *
@@ -603,7 +629,7 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[]): string 
   if (rows.length === 0) {
     return `
 <section class="phase2-section" id="links-agregados">
-  <h2 class="section-title">Links mais clicados do mês</h2>
+  <h2 class="section-title">Links mais clicados do período</h2>
   <p class="section-note">Sem dados de links disponíveis para o período.</p>
 </section>`;
   }
@@ -626,7 +652,7 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[]): string 
 
   return `
 <section class="phase2-section" id="links-agregados">
-  <h2 class="section-title">Links mais clicados do mês</h2>
+  <h2 class="section-title">Links mais clicados do período</h2>
   <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across campanhas). Links de sistema excluídos.</p>
   <div class="table-wrap">
   <table class="links-table">
