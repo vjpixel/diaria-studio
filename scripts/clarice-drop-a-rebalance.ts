@@ -3,13 +3,25 @@
  *
  * Remove a variante A do teste A/B/C de assunto (d04–d07) SEM orfanar a
  * audiência: redistribui cada terço-A 50/50 nas células B e C, estratificado
- * por TIER, atualizando os CSVs locais E o estado da Brevo (add nas listas
- * B/C + delete das campanhas A).
+ * por TIER, mutando o estado da Brevo (add nas listas B/C + suspende as
+ * campanhas A + esvazia as listas A) E atualizando os CSVs locais.
  *
- * Por que assim (e não recriar campanhas): campanha clássica list-based da
- * Brevo resolve destinatários no momento do envio pela membership da lista,
+ * DELETE de campanha agendada é proibido pela Brevo ("once scheduled can not
+ * be deleted") — por isso PUT status=suspended.
+ *
+ * Por que mutar listas (e não recriar campanhas): campanha clássica list-based
+ * da Brevo resolve destinatários no momento do envio pela membership da lista,
  * então basta mutar a lista — as campanhas B/C ficam intactas (subject/HTML/
  * horário/guard É IA?). Ver discussão em sessão 2026-06-12.
+ *
+ * Ordem por dia: Brevo PRIMEIRO (add/suspend/remove — todas idempotentes),
+ * local POR ÚLTIMO. Se crashar antes do passo local, o re-run reprocessa o dia
+ * (A ainda populada localmente) sem orfanar ninguém na Brevo. Janela residual:
+ * crash no meio do bloco local pode duplicar o append local — Brevo é a fonte
+ * de verdade; confira os CSVs à mão nesse caso raro.
+ *
+ * Após --apply, escreve o sentinel cells/.a-dropped.json que faz o
+ * clarice-split-cells abortar um re-split (não recria a A nem clobbera os CSVs).
  *
  * Split determinístico: dentro de cada TIER, round-robin (par→B, ímpar→C),
  * preservando a estratificação por tier que o clarice-split-cells criou.
@@ -20,45 +32,43 @@
  *   npx tsx scripts/clarice-drop-a-rebalance.ts --apply --only d04
  */
 import "dotenv/config";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
-
-const API_KEY = process.env.BREVO_CLARICE_API_KEY;
-if (!API_KEY) { console.error("BREVO_CLARICE_API_KEY missing (.env)"); process.exit(2); }
-
-const APPLY = process.argv.includes("--apply");
-const onlyIdx = process.argv.indexOf("--only");
-const ONLY = onlyIdx >= 0 ? process.argv[onlyIdx + 1] : null;
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CELLS_DIR = resolve(ROOT, "data/clarice-subscribers/2605-06/sends/cells");
 
 // campanha A → { lista A (origem), listas B/C (destino), campanhas B/C (intactas) }
-const DAYS = [
+const ALL_DAYS = [
   { day: "d04", aCamp: 47, aList: 46, bList: 47, cList: 48 },
   { day: "d05", aCamp: 50, aList: 49, bList: 50, cList: 51 },
   { day: "d06", aCamp: 53, aList: 52, bList: 53, cList: 54 },
   { day: "d07", aCamp: 56, aList: 55, bList: 56, cList: 57 },
-].filter((d) => !ONLY || d.day === ONLY);
+];
 
-type Row = { email: string; NOME: string; TIER: string };
+export type Row = { email: string; NOME: string; TIER: string };
 
-function readCells(path: string): Row[] {
+export function readCells(path: string): Row[] {
   const txt = readFileSync(path, "utf8");
   const out = Papa.parse<Row>(txt, { header: true, skipEmptyLines: true, delimiter: "," });
-  if (out.errors.length) throw new Error(`CSV parse ${path}: ${JSON.stringify(out.errors[0])}`);
+  // FieldMismatch/etc. são não-fatais no papaparse; só abortamos em erro de delimitador.
+  const fatal = out.errors.find((e) => e.type === "Delimiter");
+  if (fatal) throw new Error(`CSV parse ${path}: ${JSON.stringify(fatal)}`);
   return out.data;
 }
 
-function writeCells(path: string, rows: Row[]): void {
-  const csv = Papa.unparse(rows, { columns: ["email", "NOME", "TIER"] });
-  writeFileSync(path, csv + "\n", "utf8");
+export function writeCells(path: string, rows: Row[]): void {
+  // newline:"\n" + trailing "\n": evita CRLF/LF misturado, que faria o
+  // papaparse ler o TIER da última linha como "T2\n" (corrupção de bucket).
+  const csv = Papa.unparse(rows, { columns: ["email", "NOME", "TIER"], newline: "\n" });
+  writeFileAtomic(path, csv + "\n");
 }
 
 /** Split estratificado por TIER: round-robin dentro de cada tier (par→B, ímpar→C). */
-function stratSplit(rows: Row[]): { toB: Row[]; toC: Row[] } {
+export function stratSplit(rows: Row[]): { toB: Row[]; toC: Row[] } {
   const byTier = new Map<string, Row[]>();
   for (const r of rows) {
     const t = r.TIER ?? "";
@@ -72,38 +82,69 @@ function stratSplit(rows: Row[]): { toB: Row[]; toC: Row[] } {
   return { toB, toC };
 }
 
-async function bf(path: string, opts: RequestInit = {}): Promise<any> {
+async function bf(apiKey: string, path: string, opts: RequestInit = {}): Promise<any> {
   const res = await fetch(`https://api.brevo.com/v3${path}`, {
     ...opts,
-    headers: { "api-key": API_KEY!, "Content-Type": "application/json", Accept: "application/json", ...(opts.headers ?? {}) },
+    headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json", ...(opts.headers ?? {}) },
   });
   const text = await res.text();
-  if (res.status === 404 && (opts.method === "DELETE")) return { _notFound: true };
   if (!res.ok) throw new Error(`Brevo ${opts.method ?? "GET"} ${path} → ${res.status}: ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : {};
 }
 
-async function addToList(listId: number, rows: Row[]): Promise<void> {
+async function addToList(apiKey: string, listId: number, rows: Row[]): Promise<void> {
   const emails = rows.map((r) => r.email.toLowerCase());
   for (let i = 0; i < emails.length; i += 150) {
     const batch = emails.slice(i, i + 150);
-    const r = await bf(`/contacts/lists/${listId}/contacts/add`, { method: "POST", body: JSON.stringify({ emails: batch }) });
+    const r = await bf(apiKey, `/contacts/lists/${listId}/contacts/add`, { method: "POST", body: JSON.stringify({ emails: batch }) });
     const ok = r?.contacts?.success?.length ?? 0;
-    const already = batch.length - ok;
-    console.log(`      + lista ${listId}: ${ok} novos${already ? `, ${already} já presentes` : ""} (lote ${batch.length})`);
+    const failed = r?.contacts?.failure?.length ?? 0;
+    const already = batch.length - ok - failed;
+    console.log(`      + lista ${listId}: ${ok} novos, ${already} já presentes${failed ? `, ${failed} FALHAS` : ""} (lote ${batch.length})`);
+    if (failed) throw new Error(`Brevo add lista ${listId}: ${failed} contato(s) falharam: ${JSON.stringify(r.contacts.failure).slice(0, 300)}`);
   }
 }
 
-async function main() {
-  console.log(`\n=== clarice-drop-a-rebalance — MODO: ${APPLY ? "APPLY" : "DRY-RUN"}${ONLY ? ` (só ${ONLY})` : ""} ===\n`);
+async function removeFromList(apiKey: string, listId: number, rows: Row[]): Promise<void> {
+  const emails = rows.map((r) => r.email.toLowerCase());
+  for (let i = 0; i < emails.length; i += 150) {
+    const batch = emails.slice(i, i + 150);
+    await bf(apiKey, `/contacts/lists/${listId}/contacts/remove`, { method: "POST", body: JSON.stringify({ emails: batch }) });
+  }
+  console.log(`      − lista ${listId}: ${emails.length} removidos`);
+}
 
-  // cells-summary.json (atualizado no fim se APPLY)
+async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const apply = argv.includes("--apply");
+  const onlyIdx = argv.indexOf("--only");
+  const only = onlyIdx >= 0 ? argv[onlyIdx + 1] : null;
+  if (onlyIdx >= 0 && (!only || only.startsWith("--"))) {
+    console.error("--only requer um dia (ex: --only d04).");
+    process.exit(2);
+  }
+  const days = ALL_DAYS.filter((d) => !only || d.day === only);
+  if (only && days.length === 0) {
+    console.error(`--only ${only} não corresponde a nenhum dia conhecido (${ALL_DAYS.map((d) => d.day).join(", ")}).`);
+    process.exit(2);
+  }
+
+  const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  if (!apiKey) { console.error("BREVO_CLARICE_API_KEY missing (.env)"); process.exit(2); }
+
+  console.log(`\n=== clarice-drop-a-rebalance — MODO: ${apply ? "APPLY" : "DRY-RUN"}${only ? ` (só ${only})` : ""} ===\n`);
+
   const summaryPath = resolve(CELLS_DIR, "cells-summary.json");
   const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
   const byList: Record<number, { count: number }> = {};
   for (const r of summary.results) byList[r.listId] = r;
 
-  for (const d of DAYS) {
+  const tierTally = (rows: Row[]) => {
+    const m: Record<string, number> = {};
+    for (const r of rows) m[r.TIER] = (m[r.TIER] ?? 0) + 1;
+    return Object.entries(m).map(([t, n]) => `${t}:${n}`).join(" ");
+  };
+
+  for (const d of days) {
     const aPath = resolve(CELLS_DIR, `${d.day}-A.csv`);
     const bPath = resolve(CELLS_DIR, `${d.day}-B.csv`);
     const cPath = resolve(CELLS_DIR, `${d.day}-C.csv`);
@@ -112,47 +153,54 @@ async function main() {
     if (aRows.length === 0) { console.log(`${d.day}: A já vazia — pulando`); continue; }
     const { toB, toC } = stratSplit(aRows);
 
-    // guard: campanha A ainda em fila?
-    const camp = await bf(`/emailCampaigns/${d.aCamp}`);
-    const tierTally = (rows: Row[]) => {
-      const m: Record<string, number> = {};
-      for (const r of rows) m[r.TIER] = (m[r.TIER] ?? 0) + 1;
-      return Object.entries(m).map(([t, n]) => `${t}:${n}`).join(" ");
-    };
-
+    const camp = await bf(apiKey, `/emailCampaigns/${d.aCamp}`);
+    const bBase = byList[d.bList]?.count ?? "?";
+    const cBase = byList[d.cList]?.count ?? "?";
     console.log(`${d.day}: campA #${d.aCamp} status=${camp.status}`);
     console.log(`   A=${aRows.length} → B(+${toB.length}) C(+${toC.length})`);
     console.log(`   split B por tier: ${tierTally(toB)}`);
     console.log(`   split C por tier: ${tierTally(toC)}`);
-    console.log(`   destino: lista ${d.bList} ${byList[d.bList].count}→${byList[d.bList].count + toB.length}, lista ${d.cList} ${byList[d.cList].count}→${byList[d.cList].count + toC.length}`);
+    console.log(`   destino: lista ${d.bList} ${bBase}→${typeof bBase === "number" ? bBase + toB.length : "?"}, lista ${d.cList} ${cBase}→${typeof cBase === "number" ? cBase + toC.length : "?"}`);
 
     if (camp.status !== "queued") { console.log(`   ⚠ campA não está 'queued' (${camp.status}) — PULANDO ${d.day}`); continue; }
+    if (!apply) { console.log(`   [dry-run] sem escrita\n`); continue; }
 
-    if (!APPLY) { console.log(`   [dry-run] sem escrita\n`); continue; }
+    // Brevo PRIMEIRO (idempotente): add B/C, suspende A, esvazia lista A.
+    await addToList(apiKey, d.bList, toB);
+    await addToList(apiKey, d.cList, toC);
+    await bf(apiKey, `/emailCampaigns/${d.aCamp}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
+    await removeFromList(apiKey, d.aList, aRows);
+    console.log(`   ✓ camp A #${d.aCamp} suspensa + lista A esvaziada`);
 
-    // 1. local: append em B/C, esvazia A
+    // local POR ÚLTIMO: append em B/C, esvazia A.
     writeCells(bPath, [...readCells(bPath), ...toB]);
     writeCells(cPath, [...readCells(cPath), ...toC]);
     writeCells(aPath, []);
-    // 2. Brevo: add nas listas B/C
-    await addToList(d.bList, toB);
-    await addToList(d.cList, toC);
-    // 3. Brevo: suspende campanha A (DELETE é proibido p/ campanha já agendada)
-    await bf(`/emailCampaigns/${d.aCamp}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
-    console.log(`   ✓ camp A #${d.aCamp} suspensa\n`);
+    console.log(`   ✓ ${d.day} local atualizado\n`);
   }
 
-  // recomputa cells-summary.json a partir dos CSVs reais (robusto a runs parciais)
-  if (APPLY) {
-    for (const d of DAYS) {
+  if (apply) {
+    // recomputa cells-summary.json a partir dos CSVs reais (robusto a runs parciais)
+    for (const d of days) {
       for (const [cell, listId] of [["A", d.aList], ["B", d.bList], ["C", d.cList]] as const) {
         const n = readCells(resolve(CELLS_DIR, `${d.day}-${cell}.csv`)).length;
         if (byList[listId]) byList[listId].count = n;
       }
     }
-    writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
-    console.log("cells-summary.json recomputado dos CSVs.");
+    writeFileAtomic(summaryPath, JSON.stringify(summary, null, 2) + "\n");
+    // sentinel: faz clarice-split-cells abortar um re-split (assertCellsNotDropped).
+    writeFileAtomic(resolve(CELLS_DIR, ".a-dropped.json"), JSON.stringify({
+      reason: "Variante A do teste A/B/C dropada — terços-A redistribuídos 50/50 em B/C.",
+      cycle: "2605-06",
+      days: days.map((d) => d.day),
+      script: "scripts/clarice-drop-a-rebalance.ts",
+      note: "Remova este arquivo só pra forçar um re-split completo (recria a A).",
+    }, null, 2) + "\n");
+    console.log("cells-summary.json recomputado + sentinel .a-dropped.json escrito.");
   }
 }
 
-main().catch((e) => { console.error("ERRO:", e.message); process.exit(1); });
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+  main().catch((e) => { console.error("ERRO:", e.message); process.exit(1); });
+}
