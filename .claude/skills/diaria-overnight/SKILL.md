@@ -122,17 +122,55 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
      ```
    - Esperar CI com `gh pr checks {N} --watch` em background (`run_in_background: true`) — um acordar por PR, sem poll. Interpretar com cuidado: **exit 8 / checks pendentes / lista vazia = PENDENTE, nunca verde nem vermelho** (logo após o push os jobs podem nem estar registrados). Verde = os checks do CI **presentes E concluídos com sucesso**. **O gate é um passo SEPARADO do merge (#2031 — incidente 260610: merge encadeado com `&&` após o output dos buckets passou com check vermelho):** NUNCA encadear `gh pr merge` na mesma chamada Bash que imprime os checks.
 
-   **Resolução das review threads** (passo obrigatório entre "fixer concluiu" e "gate determinístico"): após o fixer aplicar/decidir sobre os findings do self-review (#2038), o coordenador resolve as threads via GraphQL — (a) listar IDs não-resolvidas: `gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage } } } } }' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | .id][]'`. **Nota de paginação**: `first:100` cobre a esmagadora maioria dos PRs; se `pageInfo.hasNextPage == true` (>100 threads), paginar com `after: "{endCursor}"` antes de prosseguir — ignorar threads de páginas subsequentes causaria gate falso-verde. (b) Para cada ID retornado, resolver em loop — o coordenador substitui o ID real, nunca envia a string literal `{threadId}`:
+   **Resolução das review threads** (passo obrigatório entre "fixer concluiu" e "gate determinístico"): após o fixer aplicar/decidir sobre os findings do self-review (#2038), o coordenador resolve as threads via GraphQL. **Guard de paginação (>100 threads — #2222)**: antes de iniciar o loop de resolução, a query já inclui `pageInfo { hasNextPage endCursor }`. Se `hasNextPage == true`, **abortar o gate automático imediatamente** (converter PR pra draft + comentar na issue explicando que >100 threads exigem resolução manual pelo editor) — não tentar paginar durante a resolução autônoma; o risco de false-green em páginas não percorridas supera qualquer conveniência. (a) Coletar resposta com guard de erro e de paginação, e extrair IDs não-resolvidas:
      ```bash
-     TIDS=$(gh api graphql -f query='...' --jq '[...] | @sh')
+     QUERY='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }'
+     RESP=$(gh api graphql -f query="$QUERY")
+     # Guard de erro: se a query falhou (rede/auth/campo ausente), abortar — nunca tratar erro como 0 threads
+     if ! echo "$RESP" | jq -e '.data.repository.pullRequest.reviewThreads' > /dev/null 2>&1; then
+       echo "ABORT: gh api graphql falhou ou retornou erro — tratar como CI vermelho/pendente, não como 0 threads."
+       exit 1
+     fi
+     HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+     if [ "$HAS_NEXT" = "true" ]; then
+       echo "ABORT: PR #{N} tem >100 review threads — gate automático desativado. Converter pra draft e comentar na issue."
+       exit 1
+     fi
+     TIDS=$(echo "$RESP" | jq -r '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | .id] | @sh')
+     ```
+   (b) Resolver cada ID em loop, rastreando separadamente as threads que retornarem FORBIDDEN — o coordenador substitui o ID real, nunca envia a string literal `{threadId}`:
+     ```bash
+     FORBIDDEN_TIDS=""
      for tid in $TIDS; do
        tid=$(echo $tid | tr -d "'")
-       gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\"$tid\"}){ thread{ id isResolved } } }"
+       RESULT=$(gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\"$tid\"}){ thread{ id isResolved } } }")
+       # Detectar FORBIDDEN pelo campo estruturado .errors[].type — nunca por grep no body inteiro
+       if echo "$RESULT" | jq -e '[.errors[]? | select(.type == "FORBIDDEN")] | length > 0' > /dev/null 2>&1; then
+         FORBIDDEN_TIDS="$FORBIDDEN_TIDS $tid"
+         echo "INFO: thread $tid FORBIDDEN (criada por terceiro) — anotada no PR body para o editor; não bloqueia o gate."
+       fi
      done
+     # Se houver threads FORBIDDEN, adicionar seção "Pendências para o editor" no PR body listando cada ID
      ```
-   Resolver as threads cujos findings foram endereçados pelo fixer (aplicados no código) ou conscientemente aceitos (finding válido mas não-bloqueante — anotar no PR body antes de resolver). No caso mais comum (fixer tratou todos os findings), resolver todas as threads de uma vez é correto — não há necessidade de selecionar um subconjunto. **Fallback FORBIDDEN**: se `resolveReviewThread` retornar erro `FORBIDDEN` (thread criada por outro usuário, ex: review humano externo), **não travar** — anotar na seção de pendências do PR body e deixar para o editor resolver; jamais tentar auto-resolver thread de terceiro. Estas threads FORBIDDEN não bloqueiam o gate se o ruleset as aceitar como "comentadas pelo autor do PR"; se o GitHub rejeitar o merge mesmo assim, converter pra draft e comentar na issue.
+   Resolver as threads cujos findings foram endereçados pelo fixer (aplicados no código) ou conscientemente aceitos (finding válido mas não-bloqueante — anotar no PR body antes de resolver). No caso mais comum (fixer tratou todos os findings e não há reviewer externo), resolver todas as threads de uma vez é correto. **Carve-out FORBIDDEN (#2222)**: threads que retornaram FORBIDDEN são de revisores humanos externos — o overnight não pode resolvê-las e **elas não contam na condição (2) do gate**; porém são anotadas no PR body para que o editor as resolva manualmente. Jamais tentar forçar a resolução de thread de terceiro.
 
-   **Gate determinístico** — **2 condições independentes, ambas obrigatórias** (#2210): (1) `gh pr checks {N} --json bucket --jq '[.[] | select(.bucket != "pass")] | length'` deve retornar `0` (cobre fail/pending/skipping de uma vez); (2) número de review threads não-resolvidas deve ser `0` — checar com: `gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ isResolved } pageInfo{ hasNextPage } } } } }' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length'` (paginar se `hasNextPage == true`). O **ruleset "Protect main branch"** (id 16308778) tem `required_review_thread_resolution: true` — um PR com thread aberta **não mergeia mesmo com CI 100% verde**. Só após ambas as condições retornarem `0`, em chamada própria, o merge. Bônus do incidente #2031: subagente que tocar `.claude/agents/orchestrator-*.md` deve rodar `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts` (snapshot + budget de linhas, #634) antes do push.
+   **Gate determinístico** — **2 condições independentes, ambas obrigatórias** (#2210, #2222): (1) `gh pr checks {N} --json bucket --jq '[.[] | select(.bucket != "pass")] | length'` deve retornar `0` (cobre fail/pending/skipping de uma vez); (2) número de review threads não-resolvidas **excluindo as FORBIDDEN** deve ser `0` — fazer uma **nova query GraphQL pós-loop** para capturar o estado real após a etapa de resolução (não reutilizar `$RESP` do pré-loop, que seria stale e contaria threads já resolvidas):
+     ```bash
+     # Query fresca após o loop de resolução — $RESP do pré-loop está stale
+     RESP2=$(gh api graphql -f query="$QUERY")
+     if ! echo "$RESP2" | jq -e '.data.repository.pullRequest.reviewThreads' > /dev/null 2>&1; then
+       echo "ABORT: query pós-loop falhou — tratar como CI vermelho/pendente."
+       exit 1
+     fi
+     UNRESOLVED_TOTAL=$(echo "$RESP2" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length')
+     FORBIDDEN_COUNT=$(echo "$FORBIDDEN_TIDS" | wc -w)
+     UNRESOLVED_BLOQUEANTES=$((UNRESOLVED_TOTAL - FORBIDDEN_COUNT))
+     # Gate da condição (2): passa se $UNRESOLVED_BLOQUEANTES == 0
+     # Threads FORBIDDEN já anotadas no PR body — não bloqueiam o gate overnight,
+     # mas o ruleset do GitHub (required_review_thread_resolution) pode ainda bloquear o merge:
+     # se o merge falhar por thread FORBIDDEN pendente, converter pra draft e comentar na issue.
+     ```
+   O gate da condição (2) usa `$UNRESOLVED_BLOQUEANTES` (não `$UNRESOLVED_TOTAL`). Se `$UNRESOLVED_BLOQUEANTES > 0`, há threads não-FORBIDDEN não-resolvidas — tratar como CI vermelho (tentativa de fix ou draft). **Nota de ruleset**: o GitHub ruleset `required_review_thread_resolution: true` exige que TODAS as threads estejam resolvidas para merge, incluindo as FORBIDDEN; se o ruleset bloquear o merge mesmo com `$UNRESOLVED_BLOQUEANTES == 0`, registrar `timeline.draft = now()` em `plan.json`, emitir o log-event `draft` (mesmo bloco do caminho CI-vermelho abaixo), converter o PR pra draft (`gh pr ready --undo`) e comentar na issue com os IDs FORBIDDEN para resolução manual pelo editor. Só após ambas as condições satisfeitas, em chamada própria separada, o merge. Bônus do incidente #2031: subagente que tocar `.claude/agents/orchestrator-*.md` deve rodar `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts` (snapshot + budget de linhas, #634) antes do push.
    - Verde (CI verde **e** threads_não_resolvidas == 0) → registrar `timeline.ci_green = now()` em `plan.json`, depois `gh pr merge {N} --squash --subject "{título} (#NNNN)" --body "...\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"` — **sem `--delete-branch`** (a branch está checked out no worktree do subagente; a deleção local falharia e o exit non-zero seria lido como merge falho). **Confirmar o estado real via `gh pr view {N} --json state,mergedAt` SEMPRE — inclusive (principalmente) quando `gh pr merge` retornar erro** (#573): merge remoto pode ter sucedido com falha local. Após confirmar merge: registrar `timeline.merged = now()` em `plan.json` e emitir:
      ```bash
      npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
