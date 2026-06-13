@@ -266,6 +266,34 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
   });
 });
 
+// ─── #2200: filtro AAMMDD em readTodayPlan ────────────────────────────────────
+// readTodayPlan filtra dirs por /^\d{6}$/ antes de ler plan.json.
+// Testamos o padrão diretamente para garantir que a regex não exclui dirs válidos
+// nem inclui dirs como "archive", "tmp" ou ".keep".
+
+describe("filtro AAMMDD — regex /^\\d{6}$/", () => {
+  const AAMMDD = /^\d{6}$/;
+
+  it("aceita dirs válidos no formato AAMMDD", () => {
+    assert.ok(AAMMDD.test("260613"), "260613 deve ser aceito");
+    assert.ok(AAMMDD.test("260101"), "260101 deve ser aceito");
+    assert.ok(AAMMDD.test("000000"), "000000 (degenerate) deve ser aceito");
+  });
+
+  it("rejeita dirs não-numéricos", () => {
+    assert.ok(!AAMMDD.test("archive"), "archive deve ser rejeitado");
+    assert.ok(!AAMMDD.test("tmp"), "tmp deve ser rejeitado");
+    assert.ok(!AAMMDD.test(".keep"), ".keep deve ser rejeitado");
+    assert.ok(!AAMMDD.test("26061a"), "26061a (letra) deve ser rejeitado");
+  });
+
+  it("rejeita dirs com comprimento diferente de 6 dígitos", () => {
+    assert.ok(!AAMMDD.test("2606"), "4 dígitos deve ser rejeitado");
+    assert.ok(!AAMMDD.test("2606130"), "7 dígitos deve ser rejeitado");
+    assert.ok(!AAMMDD.test(""), "string vazia deve ser rejeitada");
+  });
+});
+
 // ─── Finding 3: Math.floor evita mostrar 100% com barra ainda visível ─────────
 
 describe("renderOvernightBar — pct usa Math.floor (Finding #3)", () => {

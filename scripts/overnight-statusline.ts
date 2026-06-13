@@ -43,8 +43,8 @@ export interface Plan {
 
 // ─── constantes ───────────────────────────────────────────────────────────────
 
+// Qualquer status fora deste Set é considerado não-terminal por exclusão.
 const TERMINAL_STATUSES = new Set(["mergeada", "draft-ci-vermelho", "pulada"]);
-const NON_TERMINAL_STATUSES = new Set(["elegivel", "precisa-resposta", "bloqueada-externa"]);
 const BAR_WIDTH = 12;
 
 // ─── função pura testável ─────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ function readTodayPlan(cwd: string): Plan | null {
     if (!existsSync(overnightDir)) return null;
 
     const entries = readdirSync(overnightDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter((e) => e.isDirectory() && /^\d{6}$/.test(e.name))
       .map((e) => e.name)
       .sort()
       .reverse(); // most recent first
@@ -152,25 +152,17 @@ function readTodayPlan(cwd: string): Plan | null {
 /** Retorna o branch git atual (ex: "master"), ou "" em caso de erro ou detached HEAD. */
 function currentBranch(cwd: string): string {
   try {
-    // Fix #5: detect detached HEAD — git symbolic-ref fails in detached HEAD state
-    execSync("git symbolic-ref -q HEAD", {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3000, // Fix #2: add timeout to prevent hangs
-    });
-    // If the above succeeded, we have a real branch
+    // git rev-parse retorna "HEAD" em detached HEAD, nome do branch em caso normal.
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3000, // Fix #2: add timeout to prevent hangs
+      timeout: 3000,
     }).trim();
-    // Fix #5: never emit literal "HEAD" as prefix
+    // "HEAD" → detached; "" → sem git; ambos → sem prefixo na barra.
     if (branch === "HEAD" || branch === "") return "";
     return branch;
   } catch {
-    // Fix #5: detached HEAD or any error → omit branch prefix
     return "";
   }
 }
