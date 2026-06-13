@@ -75,7 +75,7 @@ function getChangedFiles(baseSha: string, headSha: string): string[] {
 export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
   return changedFiles.some(
     (f) =>
-      (f.startsWith("test/") || f.startsWith("tests/")) &&
+      (f.startsWith("test/") || f.startsWith("tests/") || f.includes("/test/") || f.includes("/tests/")) &&
       (f.endsWith(".test.ts") || f.endsWith(".test.js")),
   );
 }
@@ -178,9 +178,10 @@ async function main(): Promise<void> {
     // Tem teste novo no diff: passa sem precisar da API em nenhum cenário.
     // (Se não é bugfix, também não precisaria — mas pode ser bugfix não-identificável
     // sem label, então a presença de teste é suficiente.)
-    const testFiles = changedFiles.filter(
-      (f) => (f.startsWith("test/") || f.startsWith("tests/")) && (f.endsWith(".test.ts") || f.endsWith(".test.js")),
-    );
+    // Fix #F8: reuse hasNewOrModifiedTest predicate via filter to avoid divergence
+    // between this list and the outer check — previously had an inline copy that
+    // could drift if hasNewOrModifiedTest was updated (e.g., to add /test/ support).
+    const testFiles = changedFiles.filter((f) => hasNewOrModifiedTest([f]));
     console.log(`[#970] Diff contém teste(s) novo(s)/modificado(s): ${testFiles.join(", ")}. Pass.`);
     process.exit(0);
   }
