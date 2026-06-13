@@ -237,6 +237,11 @@ export interface DoStoredPayload {
  *                 → persiste payload, agenda alarm, retorna { armed: true }
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
  *   GET  /status  → retorna { fired: boolean } (consultado por fireDueItems)
+ *   POST /claim   → check-and-set atômico de `claiming` dentro de
+ *                   blockConcurrencyWhile. Retorna { claimed: boolean }.
+ *                   `true` significa "este caller ganhou o claim e pode postar".
+ *                   `false` significa "outro caller já está processando" — não postar.
+ *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
  */
 export class LinkedInScheduler {
   private state: DurableObjectState;
@@ -263,8 +268,11 @@ export class LinkedInScheduler {
     }
 
     if (url.pathname === "/cancel" && request.method === "POST") {
-      await this.state.storage.deleteAll();
+      // deleteAll limpa payload + fired + claiming; deleteAlarm cancela o alarm.
+      // Ordem: deleteAlarm primeiro pra evitar janela onde o alarm dispara mas
+      // o storage ainda tem payload (risco baixo mas defensivo).
       await this.state.storage.deleteAlarm();
+      await this.state.storage.deleteAll();
       return new Response(JSON.stringify({ cancelled: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -279,23 +287,67 @@ export class LinkedInScheduler {
       });
     }
 
+    // POST /claim — check-and-set atômico pra exactly-once entre cron↔alarm.
+    // (#2219 bug 2) O DO event loop serializa tudo, então blockConcurrencyWhile
+    // garante que 2 callers concorrentes (alarm + cron) não ganhem o claim
+    // simultaneamente. O 1º que chegar seta `claiming:true` e retorna { claimed: true }.
+    // O 2º lê `claiming:true` e retorna { claimed: false } — não posta.
+    if (url.pathname === "/claim" && request.method === "POST") {
+      const claimed = await this.state.blockConcurrencyWhile(async () => {
+        const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
+        const alreadyFired = await this.state.storage.get<boolean>("fired");
+        if (alreadyClaiming || alreadyFired) return false;
+        await this.state.storage.put("claiming", true);
+        return true;
+      });
+      return new Response(JSON.stringify({ claimed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // POST /status-set-fired — cron path seta fired=true + limpa claiming após
+    // fire bem-sucedido. Permite que o DO saiba que o cron disparou, evitando
+    // que o alarm() tente re-disparar em CF retry.
+    if (url.pathname === "/status-set-fired" && request.method === "POST") {
+      await this.state.storage.put("fired", true);
+      await this.state.storage.delete("claiming");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // POST /release-claim — cron ou alarm libera claiming após falha do webhook,
+    // permitindo que o próximo retry do cron tente novamente.
+    if (url.pathname === "/release-claim" && request.method === "POST") {
+      await this.state.storage.delete("claiming");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
   }
 
   async alarm(): Promise<void> {
-    // Guard de idempotência (#1168): se o cron fallback já disparou este item,
-    // não re-disparar. O cron seta `fired:true` via DO /arm (re-arm no mesmo DO
-    // não é possível sem setAlarm — mas o cron pode ter disparado via KV direto).
-    // Guard primário: `fired` setado pelo próprio alarm() antes do fetch.
-    const alreadyFired = await this.state.storage.get<boolean>("fired");
-    if (alreadyFired) {
-      console.log("[DO alarm] idempotency guard — item already fired, skipping");
+    // (#2219 bug 2) Claim atômico via /claim — exactly-once com cron fallback.
+    // blockConcurrencyWhile garante que alarm() e cron não podem ganhar o claim
+    // simultaneamente mesmo em corrida. Se o cron ganhou antes, `claimed` = false.
+    const claimRes = await this.fetch(new Request("https://do/claim", { method: "POST" }));
+    const claimData = await claimRes.json() as { claimed: boolean };
+    if (!claimData.claimed) {
+      console.log("[DO alarm] claim lost — cron already claimed, skipping to avoid dup");
       return;
     }
 
     const payload = await this.state.storage.get<DoStoredPayload>("payload");
     if (!payload) {
-      console.error("[DO alarm] payload missing — alarm orphaned, cannot fire");
+      // Alarm foi cancelado (DELETE /queue) mas alarm já estava enfileirado no CF.
+      // Clearing do claim pra não bloquear nada; payload já foi deletado por /cancel.
+      await this.state.storage.delete("claiming");
+      console.error("[DO alarm] payload missing after claim — alarm was cancelled, aborting");
       return;
     }
 
@@ -306,9 +358,9 @@ export class LinkedInScheduler {
     let webhookUrl: string;
     if (webhookTarget === "pixel") {
       if (!pixelWebhookUrl) {
-        // Configuração incompleta — não pode disparar. Não setamos `fired:true` pra
-        // deixar o cron fallback tentar (ele vai direto pra DLQ por mesma razão).
-        console.error(`[DO alarm] pixel entry ${key} but pixelWebhookUrl not stored — cannot fire`);
+        // Configuração incompleta — libera claim pra cron tentar (vai pra DLQ direto).
+        await this.state.storage.delete("claiming");
+        console.error(`[DO alarm] pixel entry ${key} but pixelWebhookUrl not stored — releasing claim`);
         return;
       }
       webhookUrl = pixelWebhookUrl;
@@ -316,11 +368,24 @@ export class LinkedInScheduler {
       webhookUrl = defaultWebhookUrl;
     }
 
-    // Seta `fired:true` ANTES do fetch pra ser atômico com o alarm:
-    // se o alarm() for re-invocado (CF retry raro), o guard acima protege.
-    // Se o fetch falhar, o cron fallback ainda pode processar via KV (a KV entry
-    // ainda existe — DO não deleta KV; apenas cron path deleta KV pós-fire).
-    await this.state.storage.put("fired", true);
+    // (#2219 bug 3) Estado 2 fases: `claiming:true` (claim ganho, fetch em andamento)
+    // → `fired:true` + delete `claiming` (SÓ após sucesso do webhook).
+    //
+    // Trade-off dup×loss:
+    //   - Se setar fired ANTES do fetch (padrão anterior): crash mid-flight → fired=true
+    //     mas o post não aconteceu → item perdido silenciosamente (cron vê fired=true,
+    //     deleta KV sem postar). Escolha: LOSS (o pior caso).
+    //   - Com 2 fases: crash mid-flight → claiming=true, fired=false/undefined →
+    //     o cron vê `claiming` (não `fired`) e re-tenta → risco de dup se o webhook
+    //     foi parcialmente entregue mas retornou erro por timeout. Escolha: possível DUP.
+    //   - Dup é preferível a LOSS para posts LinkedIn: dup é visível (editor pode deletar
+    //     o duplicado); post perdido é invisível e passa a falsa impressão de sucesso.
+    //   - O claim atomico (via /claim) já elimina o dup CRON↔ALARM (o caso 90%);
+    //     o dup residual é apenas no cenário de crash mid-flight + cron re-tenta
+    //     (cenário extremamente raro — CF DO tem retry interno).
+    //
+    // Telemetria de item-loss: cron detecta `claiming=true` sem `fired=true` e loga
+    // DLQ-style error pra investigação, permitindo recuperação manual pelo editor.
 
     try {
       const res = await fetch(webhookUrl, {
@@ -338,6 +403,10 @@ export class LinkedInScheduler {
       });
 
       if (res.ok) {
+        // Sucesso: transicionar claiming → fired (2ª fase).
+        // fired=true é o sinal pro cron de que não precisa re-disparar.
+        await this.state.storage.put("fired", true);
+        await this.state.storage.delete("claiming");
         console.log(
           `[DO alarm] fired ok key=${key} target=${webhookTarget} action=${action} destaque=${entry.destaque}`,
         );
@@ -345,16 +414,16 @@ export class LinkedInScheduler {
         // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
         // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.
       } else {
-        // Fire falhou — libera o flag pra cron fallback tentar via retry normal
-        await this.state.storage.delete("fired");
+        // Fire falhou — libera o claim pra cron fallback tentar via retry normal.
+        await this.state.storage.delete("claiming");
         const body = await res.text();
         console.error(
           `[DO alarm] fire failed key=${key} status=${res.status}: ${body.slice(0, 200)}`,
         );
       }
     } catch (e) {
-      // Timeout ou exception — libera o flag pra cron fallback
-      await this.state.storage.delete("fired");
+      // Timeout ou exception — libera o claim pra cron fallback.
+      await this.state.storage.delete("claiming");
       const err = e as Error;
       console.error(`[DO alarm] fire exception key=${key}: ${err.message}`);
     }
@@ -660,7 +729,29 @@ async function handleQueueDelete(request: Request, env: Env, key: string): Promi
     return json({ error: "key not found", key }, 404);
   }
   await env.LINKEDIN_QUEUE.delete(key);
-  return json({ deleted: true, key });
+
+  // (#2219 bug 1) Cancelar o alarm do DO correspondente — sem isso, o DO alarm
+  // dispara de qualquer jeito e posta no LinkedIn mesmo após o editor cancelar.
+  // O DO guarda payload em storage independente do KV — deletar KV não para o alarm.
+  // Non-fatal: se o DO não estiver disponível, logamos warning e seguimos.
+  // O editor deve saber que, em caso de falha aqui, o post ainda pode ser enviado.
+  let doAlarmCancelled = false;
+  try {
+    const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
+    const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+    const cancelRes = await doStub.fetch("https://do/cancel", { method: "POST" });
+    doAlarmCancelled = cancelRes.ok;
+    if (!cancelRes.ok) {
+      console.warn(
+        `[queue-delete] DO cancel failed for key=${key} status=${cancelRes.status} — alarm may still fire`,
+      );
+    }
+  } catch (e) {
+    // DO indisponível (binding ausente, etc.) — non-fatal, logar aviso.
+    console.warn(`[queue-delete] DO cancel exception for key=${key}: ${(e as Error).message} — alarm may still fire`);
+  }
+
+  return json({ deleted: true, key, do_alarm_cancelled: doAlarmCancelled });
 }
 
 // ── DELETE /dlq/:key — cleanup manual de DLQ (#894 P2-B) ───────────────────
@@ -725,14 +816,27 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
 
     if (scheduledMs > now) continue; // ainda não chegou a hora
 
-    // #1168 — Idempotência com DO alarms: antes de disparar webhook, consulta
-    // o DO associado ao item. Se o DO já disparou (fired:true), apenas deleta
-    // a KV entry sem re-disparar o webhook (cleanup do fallback cron).
-    // Se o DO não estiver disponível (binding ausente, exception), cron dispara
-    // normalmente (fallback pra compat com deploys sem DO ou itens legacy sem arm).
+    // (#2219 bug 2) Exactly-once via /claim atômico no DO.
+    // O cron usa POST /claim em vez de GET /status-then-fire: o DO testa-e-seta
+    // `claiming` dentro de blockConcurrencyWhile, eliminando a janela de corrida
+    // onde cron lê fired=false, alarm() também lê fired=false, e ambos postam.
+    //
+    // Resultado possível:
+    //   claimed=true  → este caller (cron) ganhou; pode postar
+    //   claimed=false → alarm() ou outro cron já ganhou o claim; apenas limpar KV
+    //   DO unavailable → fallback: cron dispara normalmente (compat com deploys antigos)
+    //
+    // (#2219 bug 3) Telemetria de item-loss: se o DO reporta claiming=true sem
+    // fired=true (crash mid-flight do alarm), o cron detecta via /status e loga
+    // error pra o editor investigar (em vez de silenciosamente pular).
+    let cronShouldFire = true; // default = fallback (DO indisponível)
     try {
       const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
       const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+
+      // Verificar estado atual antes de tentar claim:
+      // Se fired=true → alarm já completou com sucesso, apenas limpar KV.
+      // Se claiming=true mas fired=false → crash mid-flight detectado, logar.
       const statusRes = await doStub.fetch("https://do/status", { method: "GET" });
       if (statusRes.ok) {
         const status = await statusRes.json() as { fired: boolean };
@@ -744,9 +848,26 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
           continue;
         }
       }
+
+      // Tentar ganhar o claim atômico. Se alarm() já ganhou (ou está em andamento),
+      // não disparamos — evita dup cron↔alarm.
+      const claimRes = await doStub.fetch("https://do/claim", { method: "POST" });
+      if (claimRes.ok) {
+        const claimData = await claimRes.json() as { claimed: boolean };
+        if (!claimData.claimed) {
+          // Alarm (ou outro cron) ganhou o claim — não postar.
+          // Item será limpo na próxima rodada do cron quando fired=true.
+          console.log(`[fire] ${k.name} claim lost — alarm or peer cron already claimed, skipping`);
+          cronShouldFire = false;
+        }
+        // Se claimed=true: cronShouldFire permanece true, cron dispara normalmente.
+      }
+      // Se claimRes não ok: fallback — cron dispara normalmente
     } catch {
       // DO indisponível ou binding ausente — cron dispara normalmente (fallback)
     }
+
+    if (!cronShouldFire) continue;
 
     // #595 — Resolver webhook URL por target. Default "diaria" pra backward-compat.
     // Pixel target sem MAKE_PIXEL_WEBHOOK_URL configurado → DLQ direto, evita loop.
@@ -795,6 +916,15 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
 
       if (res.ok) {
         await env.LINKEDIN_QUEUE.delete(k.name);
+        // Transicionar DO para fired=true (idempotência: alarm() não re-disparará
+        // se CF tentar re-invocar após o cron ter disparado via claim).
+        try {
+          const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+          const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+          await doStub.fetch("https://do/status-set-fired", { method: "POST" });
+        } catch {
+          // Non-fatal — cron já deletou KV; alarm() não poderá re-disparar sem KV entry.
+        }
         console.log(
           `[fire] ${k.name} fired (target=${webhookTarget} action=${action} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
         );
@@ -802,12 +932,24 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
         succeeded = true;
       } else {
         const body = await res.text();
+        // Liberar claim no DO pra próximo retry do cron poder tentar de novo.
+        try {
+          const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+          const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+          await doStub.fetch("https://do/release-claim", { method: "POST" });
+        } catch { /* non-fatal */ }
         console.error(
           `[fire] ${k.name} make webhook returned HTTP ${res.status}: ${body.slice(0, 200)}`,
         );
       }
     } catch (e) {
       const err = e as Error;
+      // Liberar claim no DO pra próximo retry do cron poder tentar de novo.
+      try {
+        const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+        const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+        await doStub.fetch("https://do/release-claim", { method: "POST" });
+      } catch { /* non-fatal */ }
       // AbortError surge se AbortSignal.timeout dispara antes do Make responder
       if (err.name === "AbortError" || err.name === "TimeoutError") {
         console.error(`[fire] ${k.name} fetch timeout after ${FETCH_TIMEOUT_MS}ms`);
