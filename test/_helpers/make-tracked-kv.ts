@@ -27,3 +27,22 @@ export function makeTrackedKv(initial: Record<string, string> = {}) {
   };
   return kv;
 }
+
+/**
+ * Helper de teste que lê uma chave do KV e falha com AssertionError descritivo
+ * quando a chave não existe, em vez de retornar null silenciosamente (o que
+ * causaria TypeError em JSON.parse(null!) — difícil de debugar).
+ *
+ * Uso: `const score = JSON.parse(await readKv(kv, "score:x@y.com"));`
+ */
+export async function readKv(
+  kv: ReturnType<typeof makeTrackedKv>,
+  key: string,
+): Promise<string> {
+  const value = await kv.get(key);
+  if (value === null) {
+    const { strict: assert } = await import("node:assert");
+    assert.fail(`KV key "${key}" não encontrada — verifique o fixture inicial do makeTrackedKv`);
+  }
+  return value;
+}

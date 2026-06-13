@@ -218,6 +218,10 @@ describe("renderLinksSection (#2177)", () => {
     // Branch editorial/0   → "links editoriais presentes, mas com 0 cliques registrados"
     assert.match(html, /nenhum link rastreado/i,
       "branch {} deve exibir exatamente 'nenhum link rastreado' (não a mensagem do branch undefined)");
+    // #2217 (Finding 6): guard contra roteamento acidental para o path undefined.
+    // Se um bug levasse {} ao mesmo branch que undefined, esta asserção quebraria.
+    assert.doesNotMatch(html, /dados de links não disponíveis/i,
+      "branch {} NÃO deve exibir a mensagem do branch undefined/null — seriam caminhos distintos");
   });
 
   test("caso todos sistema: linksStats só com system links → stub (sem links editoriais)", () => {
