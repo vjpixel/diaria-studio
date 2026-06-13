@@ -9,10 +9,13 @@
  * DELETE de campanha agendada é proibido pela Brevo ("once scheduled can not
  * be deleted") — por isso PUT status=suspended.
  *
- * Por que mutar listas (e não recriar campanhas): campanha clássica list-based
- * da Brevo resolve destinatários no momento do envio pela membership da lista,
- * então basta mutar a lista — as campanhas B/C ficam intactas (subject/HTML/
- * horário/guard É IA?). Ver discussão em sessão 2026-06-12.
+ * IMPORTANTE (corrigido 2026-06-12, verificado no UI): a Brevo CONGELA os
+ * destinatários no momento do AGENDAMENTO, não no envio. Adicionar contatos à
+ * lista depois de a campanha já estar agendada NÃO os inclui no envio. Por isso
+ * não basta mutar a lista — é preciso RE-AGENDAR cada campanha B/C (suspend →
+ * re-set scheduledAt = re-queue) DEPOIS de aumentar a lista, pra forçar um novo
+ * snapshot. É o que o passo `resnapshot()` faz. (As campanhas ficam intactas em
+ * subject/HTML/guard É IA?; só o snapshot de destinatários é refeito.)
  *
  * Ordem por dia: Brevo PRIMEIRO (add/suspend/remove — todas idempotentes),
  * local POR ÚLTIMO. Se crashar antes do passo local, o re-run reprocessa o dia
@@ -41,12 +44,12 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CELLS_DIR = resolve(ROOT, "data/clarice-subscribers/2605-06/sends/cells");
 
-// campanha A → { lista A (origem), listas B/C (destino), campanhas B/C (intactas) }
+// campanha A (suspensa) + listas/campanhas B/C (destino, re-snapshotadas)
 const ALL_DAYS = [
-  { day: "d04", aCamp: 47, aList: 46, bList: 47, cList: 48 },
-  { day: "d05", aCamp: 50, aList: 49, bList: 50, cList: 51 },
-  { day: "d06", aCamp: 53, aList: 52, bList: 53, cList: 54 },
-  { day: "d07", aCamp: 56, aList: 55, bList: 56, cList: 57 },
+  { day: "d04", aCamp: 47, aList: 46, bCamp: 48, bList: 47, cCamp: 49, cList: 48 },
+  { day: "d05", aCamp: 50, aList: 49, bCamp: 51, bList: 50, cCamp: 52, cList: 51 },
+  { day: "d06", aCamp: 53, aList: 52, bCamp: 54, bList: 53, cCamp: 55, cList: 54 },
+  { day: "d07", aCamp: 56, aList: 55, bCamp: 57, bList: 56, cCamp: 58, cList: 57 },
 ];
 
 export type Row = { email: string; NOME: string; TIER: string };
@@ -114,6 +117,21 @@ async function removeFromList(apiKey: string, listId: number, rows: Row[]): Prom
   console.log(`      − lista ${listId}: ${emails.length} removidos`);
 }
 
+/**
+ * Re-snapshot de uma campanha agendada: suspende e re-agenda para o MESMO
+ * horário. A transição suspended→queued faz a Brevo recomputar os
+ * destinatários a partir da membership atual da lista — sem isso, os contatos
+ * adicionados após o agendamento original não recebem. (Validado 2026-06-12; o
+ * re-snapshot vem da re-fila, não da mudança de horário.)
+ */
+async function resnapshot(apiKey: string, campId: number): Promise<void> {
+  const c = await bf(apiKey, `/emailCampaigns/${campId}`);
+  if (c.status !== "queued") { console.log(`      ↻ camp #${campId} status=${c.status} — pulando re-snapshot`); return; }
+  await bf(apiKey, `/emailCampaigns/${campId}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
+  await bf(apiKey, `/emailCampaigns/${campId}`, { method: "PUT", body: JSON.stringify({ scheduledAt: c.scheduledAt }) });
+  console.log(`      ↻ camp #${campId} re-snapshot (re-agendada @ ${c.scheduledAt})`);
+}
+
 async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const apply = argv.includes("--apply");
   const onlyIdx = argv.indexOf("--only");
@@ -171,6 +189,12 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
     await bf(apiKey, `/emailCampaigns/${d.aCamp}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
     await removeFromList(apiKey, d.aList, aRows);
     console.log(`   ✓ camp A #${d.aCamp} suspensa + lista A esvaziada`);
+
+    // re-snapshot OBRIGATÓRIO das B/C: a Brevo congelou os destinatários no
+    // agendamento original; sem re-agendar, os contatos recém-adicionados não
+    // recebem. Ver docstring + sessão 2026-06-12.
+    await resnapshot(apiKey, d.bCamp);
+    await resnapshot(apiKey, d.cCamp);
 
     // local POR ÚLTIMO: append em B/C, esvazia A.
     writeCells(bPath, [...readCells(bPath), ...toB]);
