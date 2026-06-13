@@ -264,9 +264,12 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     // determinar se o votante ainda precisa do form de nickname — sem isso, um
     // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
     // inacessível para sempre.
+    // Fix #2189 (plausible): leitura KV condicional — só lê score:{email} quando
+    // de fato precisa servir o nickname form. Evita get incondicional pra quem
+    // já tem nickname (resultado não era usado).
+    let prevNicknameForm: { email: string; sig: string } | null = null;
     const prevScoreRaw = await env.POLL.get(`score:${email}`);
     const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
-    let prevNicknameForm: { email: string; sig: string } | null = null;
     if (!prevScoreObj?.nickname) {
       const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
       prevNicknameForm = { email, sig: prevSig };
@@ -404,6 +407,45 @@ async function adjustScoreByMonthCorrect(
   await env.POLL.put(key, JSON.stringify(entry));
   // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
   await invalidateSnapshot(env, monthSlug);
+}
+
+/**
+ * Ajuste correto-only para backfill do admin (#2202):
+ * corrige APENAS o campo `correct` (e `streak` quando newCorrect=true) sem
+ * re-incrementar `total`. Chamado de handleAdminCorrect em vez de updateScore.
+ *
+ * Invariante: handleVote incrementa `total` uma vez (voto original).
+ *             handleAdminCorrect usa este helper — NUNCA mexe em total/streak
+ *             (streak é mantido como estava: não tem como recalcular streak
+ *             de sequência multi-edição de forma correta aqui; mantemos o
+ *             invariante de não regredir — só ajusta o campo `correct`).
+ *
+ * @param prevCorrect  valor anterior de `vote.correct` (antes do backfill)
+ * @param newCorrect   novo valor calculado contra o gabarito correto
+ */
+async function adjustScoreCorrectOnly(
+  env: Env,
+  email: string,
+  prevCorrect: boolean | null,
+  newCorrect: boolean,
+): Promise<void> {
+  const scoreKey = `score:${email}`;
+  const raw = await env.POLL.get(scoreKey);
+  if (!raw) return; // sem score — handleVote não rodou ainda; skip
+
+  const score = JSON.parse(raw);
+
+  // Ajusta apenas o campo `correct`:
+  //  - false/null → true: incrementa correct
+  //  - true → false: decrementa correct (gabarito mudou; este voto era antes correto)
+  if (prevCorrect !== true && newCorrect === true) {
+    score.correct = (score.correct ?? 0) + 1;
+  } else if (prevCorrect === true && newCorrect === false) {
+    score.correct = Math.max(0, (score.correct ?? 0) - 1);
+  }
+  // total e streak NÃO são tocados (invariante do backfill)
+
+  await env.POLL.put(scoreKey, JSON.stringify(score));
 }
 
 /**
@@ -1222,6 +1264,11 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
   // Retroativamente atualizar scores dos votos já gravados.
   // #1345 followup: paginado via listAllKeys — em edição com >1000 votos,
   // sem cursor entries silenciosamente ficavam fora do backfill.
+  // #2202: re-avalia TODAS as entradas (null, undefined, false E true) contra
+  // o novo gabarito. O guard anterior `else if (vote.correct === true)` só
+  // contava, nunca re-pontuava — quando gabarito muda A→B, quem escolheu A
+  // (antes correct=true) ficava com score errado permanentemente.
+  // Usa adjustScoreCorrectOnly (não updateScore) para NÃO re-incrementar total/streak.
   const prefix = `vote:${edition}:`;
   let updated = 0;
   let correctCount = 0;
@@ -1230,24 +1277,24 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
     const raw = await env.POLL.get(keyName);
     if (!raw) continue;
     const vote = JSON.parse(raw);
-    // #2188: re-pontua TODAS as entradas (null, undefined E false) contra o
-    // novo gabarito. O guard anterior `=== null || === undefined` pulava entradas
-    // com correct===false (admin marcou errado, depois corrigiu) — ficavam
-    // permanentemente erradas. Ao mudar gabarito, recomputar tudo.
-    if (vote.correct === null || vote.correct === undefined || vote.correct === false) {
-      const correct = vote.choice === answer;
-      await env.POLL.put(keyName, JSON.stringify({ ...vote, correct }));
+    const prevCorrect = vote.correct ?? null;
+    const newCorrect = vote.choice === answer;
+
+    // Re-avalia sempre: cobre null→true, false→true, true→false, true→true.
+    // Só escreve e conta updated_votes quando o valor realmente muda.
+    const changed = prevCorrect !== newCorrect;
+    if (changed) {
+      await env.POLL.put(keyName, JSON.stringify({ ...vote, correct: newCorrect }));
       const email = keyName.replace(prefix, "");
-      await updateScore(env, email, edition, correct);
-      // #1345: adjust correct count em score-by-month sem re-incrementar total
-      // (total já foi contado quando handleVote chamou updateScoreByMonth com
-      // correct=null). Só incrementa correct quando vote virou correct.
-      if (correct) await adjustScoreByMonthCorrect(env, email, edition);
-      if (correct) correctCount++;
+      // #2202: adjustScoreCorrectOnly — ajusta apenas `correct`, NUNCA total/streak.
+      await adjustScoreCorrectOnly(env, email, prevCorrect, newCorrect);
+      // #1345: adjust correct count em score-by-month sem re-incrementar total.
+      // Só incrementa quando vote virou correct (não decrementa — adjustScoreByMonthCorrect
+      // é increment-only; false/null→true é o único caso relevante aqui).
+      if (newCorrect) await adjustScoreByMonthCorrect(env, email, edition);
       updated++;
-    } else if (vote.correct === true) {
-      correctCount++;
     }
+    if (newCorrect) correctCount++;
   }
 
   // Actualizar counter agregado com correct_count real

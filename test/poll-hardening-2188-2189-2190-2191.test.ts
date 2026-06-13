@@ -9,6 +9,8 @@
  *     nicknameForm=null inacessível no retry (branch "já votou" hardcodava null).
  *   #2190 (P2, perf): score:${email} lido 2-3x por request — consolidado em 1 leitura.
  *   #2191 (P3, cleanup): renderLeaderboardHtml escapava inline omitindo apóstrofe (').
+ *   #2202 (P1, BUG): double-increment de total no backfill (updateScore re-incrementava);
+ *     streak inflado; true→false não re-avaliado; teste fraco (correct>0 sem total===1).
  */
 
 import { describe, it } from "node:test";
@@ -89,6 +91,9 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     const scoreRaw = await kv.get("score:leitor@x.com");
     const score = JSON.parse(scoreRaw!);
     assert.ok(score.correct > 0, `score.correct deve ter incrementado (got ${score.correct})`);
+    // #2202 (P1): garante que total NÃO foi double-incremented pelo backfill.
+    // updateScore re-incrementava total (double-count); adjustScoreCorrectOnly não toca total.
+    assert.equal(score.total, 1, `score.total NÃO deve ser re-incrementado pelo backfill — deve ser 1 (got ${score.total})`);
   });
 
   it("voto já-correto (correct===true) NÃO é re-pontuado (idempotente)", async () => {
@@ -108,9 +113,10 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     assert.equal(body.updated_votes, 0, "voto já-correto não deve gerar updated_votes");
   });
 
-  it("cenário completo: admin marca errado, corrige → ambos null e false são re-pontuados", async () => {
-    // 3 votos: 1 sem gabarito (null), 1 errado (false), 1 correto (true, pelo gabarito errado)
+  it("cenário completo: admin corrige gabarito → null, false E true são todos re-avaliados bidirecionalmente", async () => {
+    // 3 votos: 1 sem gabarito (null), 1 errado (false), 1 correto (true, pelo gabarito errado).
     // Gabarito correto é B. Admin setou A primeiro, depois corrige pra B.
+    // #2202 (P2): re-avaliação bidirecional — true→false TAMBÉM deve ser corrigido.
     const kv = makeTrackedKv({
       "correct:260614": "A",
       // Leitor 1: votou B, gabarito era A → correct=false (errado)
@@ -121,7 +127,8 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
       "vote:260614:l2@x.com": JSON.stringify({ choice: "B", ts: "t", correct: null }),
       "score:l2@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260614", nickname: "L2" }),
       "score-by-month:2026-06:l2@x.com": JSON.stringify({ total: 1, correct: 0, last_edition: "260614", nickname: "L2" }),
-      // Leitor 3: votou A, gabarito era A → correct=true (certo pelo gabarito errado)
+      // Leitor 3: votou A, gabarito era A → correct=true (certo pelo gabarito errado A)
+      // Após correção para B: votou A ≠ B → deve virar false (true→false bidirecional)
       "vote:260614:l3@x.com": JSON.stringify({ choice: "A", ts: "t", correct: true }),
       "score:l3@x.com": JSON.stringify({ total: 1, correct: 1, streak: 1, last_edition: "260614", nickname: "L3" }),
       "score-by-month:2026-06:l3@x.com": JSON.stringify({ total: 1, correct: 1, last_edition: "260614", nickname: "L3" }),
@@ -131,22 +138,49 @@ describe("#2188 — handleAdminCorrect re-pontua entradas correct===false", () =
     const res = await callAdminCorrect(kv, "260614", "B");
     assert.equal(res.status, 200);
     const body = await res.json() as { updated_votes: number };
-    // L1 (false→true) e L2 (null→true) devem ser re-pontuados; L3 (true) NÃO.
-    // updated_votes conta L1 + L2 = 2
-    assert.equal(body.updated_votes, 2, "L1 (false) e L2 (null) devem ser updated; L3 (true) não");
+    // L1 (false→true), L2 (null→true) e L3 (true→false) são re-avaliados.
+    // updated_votes conta todos os que MUDARAM = L1 + L2 + L3 = 3
+    assert.equal(body.updated_votes, 3, "L1 (false→true), L2 (null→true) e L3 (true→false) devem ser updated");
 
-    // L1 agora deve ser correct=true
+    // L1 votou B = gabarito correto B → true
     const v1 = JSON.parse(await kv.get("vote:260614:l1@x.com") as string);
-    assert.equal(v1.correct, true, "L1 (votou B = gabarito correto) deve ser true");
-    // L2 agora deve ser correct=true
+    assert.equal(v1.correct, true, "L1 (votou B = gabarito correto B) deve ser true");
+    // L2 votou B = gabarito correto B → true
     const v2 = JSON.parse(await kv.get("vote:260614:l2@x.com") as string);
-    assert.equal(v2.correct, true, "L2 (votou B = gabarito correto) deve ser true");
-    // L3 votou A (errado para gabarito B) — deve ser false após re-pontagem... mas L3 tem correct=true
-    // e o guard `else if (vote.correct === true)` só conta, não re-pontua.
-    // NOTE: L3 continua com correct=true no vote (o backfill não tocou L3 — guard `true` pula).
-    // Isso é o comportamento esperado: correct===true fica intacto na iteração.
+    assert.equal(v2.correct, true, "L2 (votou B = gabarito correto B) deve ser true");
+    // L3 votou A ≠ gabarito correto B → false (bidirecional: true→false)
     const v3 = JSON.parse(await kv.get("vote:260614:l3@x.com") as string);
-    assert.equal(v3.correct, true, "L3 não foi tocado pelo backfill (guard correct===true pula)");
+    assert.equal(v3.correct, false, "L3 (votou A ≠ gabarito B) deve ser false após re-avaliação bidirecional");
+
+    // #2202 (P1): nenhum total deve ter sido re-incrementado pelo backfill
+    const s3 = JSON.parse(await kv.get("score:l3@x.com") as string);
+    assert.equal(s3.total, 1, "L3: total NÃO deve ser re-incrementado pelo backfill (era 1, deve ser 1)");
+    // score.correct de L3 deve ter sido decrementado (era 1, deve ser 0)
+    assert.equal(s3.correct, 0, "L3: correct deve ter sido decrementado para 0 (true→false)");
+  });
+
+  it("#2202 (P1): backfill NÃO re-incrementa total (double-count regression)", async () => {
+    // Regressão específica do double-increment: updateScore fazia score.total += 1 de novo.
+    // adjustScoreCorrectOnly NÃO deve tocar total.
+    const kv = makeTrackedKv({
+      "correct:260615": "A",
+      // Leitor: votou A, gabarito ainda null → correct=null; total=1 gravado pelo handleVote
+      "vote:260615:dbl@x.com": JSON.stringify({ choice: "A", ts: "t", correct: null }),
+      "score:dbl@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260615", nickname: null }),
+    });
+
+    // Admin define gabarito A
+    const res = await callAdminCorrect(kv, "260615", "A");
+    assert.equal(res.status, 200);
+
+    const scoreRaw = await kv.get("score:dbl@x.com");
+    const score = JSON.parse(scoreRaw!);
+    // total DEVE continuar 1 (não 2) — invariante do backfill
+    assert.equal(score.total, 1, `total NÃO deve ser double-incremented — deve ser 1 (got ${score.total})`);
+    // correct deve ter sido incrementado para 1 (null→true)
+    assert.equal(score.correct, 1, `correct deve ser 1 após backfill null→true (got ${score.correct})`);
+    // streak NÃO deve ser tocado pelo backfill
+    assert.equal(score.streak, 0, `streak NÃO deve ser incrementado pelo backfill (got ${score.streak})`);
   });
 });
 
