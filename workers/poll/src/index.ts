@@ -391,6 +391,10 @@ async function updateStatsCounter(
  * #1345: corrige score-by-month quando admin define gabarito retroativamente.
  * Apenas incrementa `correct` — `total` já foi contado em updateScoreByMonth
  * quando o vote chegou. Chamado de handleAdminCorrect.
+ *
+ * @deprecated Substituído por adjustScoreByMonthCorrectOnly (#2206) que é
+ *   bidirecional (decrementa em true→false também). Mantido pra referência
+ *   histórica mas não deve ser chamado — ver handleAdminCorrect.
  */
 async function adjustScoreByMonthCorrect(
   env: Env,
@@ -404,6 +408,57 @@ async function adjustScoreByMonthCorrect(
   if (!raw) return; // sem entry, vote era pré-#1345 — ignore
   const entry = JSON.parse(raw);
   entry.correct = (entry.correct ?? 0) + 1;
+  await env.POLL.put(key, JSON.stringify(entry));
+  // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
+  await invalidateSnapshot(env, monthSlug);
+}
+
+/**
+ * #2206: espelha a bidirecionalidade do adjustScoreCorrectOnly no lado MENSAL.
+ *
+ * Ajusta APENAS o campo `correct` de `score-by-month:{mês}:{email}` em ±1
+ * conforme a direção da mudança:
+ *   - false/null → true: incrementa correct (+1)
+ *   - true → false:      decrementa correct (−1, clampado em 0)
+ *
+ * Invariantes (idênticos ao adjustScoreCorrectOnly):
+ *   - NUNCA toca total/streak/nickname — apenas correct.
+ *   - Idempotente: quando prevCorrect === newCorrect, não escreve nada.
+ *   - Clamp: correct nunca negativo (Math.max(0, ...)).
+ *   - Mês derivado de editionToMonthSlug (mesma derivação do resto do código
+ *     — NÃO usa relógio vivo).
+ *   - Sem entry existente (vote pré-#1345): skip silencioso.
+ *
+ * Deve ser chamado de handleAdminCorrect em lugar do adjustScoreByMonthCorrect
+ * increment-only anterior.
+ */
+async function adjustScoreByMonthCorrectOnly(
+  env: Env,
+  email: string,
+  edition: string,
+  prevCorrect: boolean | null,
+  newCorrect: boolean,
+): Promise<void> {
+  // Idempotente: sem mudança, sem escrita.
+  if (prevCorrect === newCorrect) return;
+
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return;
+  const key = `score-by-month:${monthSlug}:${email}`;
+  const raw = await env.POLL.get(key);
+  if (!raw) return; // sem entry, vote era pré-#1345 — ignore
+
+  const entry = JSON.parse(raw);
+
+  if (prevCorrect !== true && newCorrect === true) {
+    // false/null → true: incrementa
+    entry.correct = (entry.correct ?? 0) + 1;
+  } else if (prevCorrect === true && newCorrect === false) {
+    // true → false: decrementa, clampado em 0
+    entry.correct = Math.max(0, (entry.correct ?? 0) - 1);
+  }
+  // total, streak, nickname NÃO são tocados (invariante do backfill)
+
   await env.POLL.put(key, JSON.stringify(entry));
   // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
   await invalidateSnapshot(env, monthSlug);
@@ -1288,10 +1343,9 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
       const email = keyName.replace(prefix, "");
       // #2202: adjustScoreCorrectOnly — ajusta apenas `correct`, NUNCA total/streak.
       await adjustScoreCorrectOnly(env, email, prevCorrect, newCorrect);
-      // #1345: adjust correct count em score-by-month sem re-incrementar total.
-      // Só incrementa quando vote virou correct (não decrementa — adjustScoreByMonthCorrect
-      // é increment-only; false/null→true é o único caso relevante aqui).
-      if (newCorrect) await adjustScoreByMonthCorrect(env, email, edition);
+      // #2206: adjustScoreByMonthCorrectOnly — espelha a bidirecionalidade no mensal.
+      // Decrementa em true→false (antes era increment-only, causando acerto fantasma).
+      await adjustScoreByMonthCorrectOnly(env, email, edition, prevCorrect, newCorrect);
       updated++;
     }
     if (newCorrect) correctCount++;
