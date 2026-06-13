@@ -1,9 +1,10 @@
 /**
- * test/use-melhor-sources.test.ts (#1899 / #2176)
+ * test/use-melhor-sources.test.ts (#1899 / #2176 / #2197)
  *
  * Cobre o helper da flag `use_melhor` (lista-semente de fontes da seção
  * Use Melhor) e o loader de hosts a partir do seed real.
  * #2176: adiciona testes do desempate path-mais-específico-vence.
+ * #2197: adiciona testes do resolveAllSourcePrefixMap (warn em throw E em retorno vazio).
  */
 
 import { describe, it } from "node:test";
@@ -15,6 +16,7 @@ import {
   loadUseMelhorPrefixes,
   matchesUseMelhorPrefix,
   loadAllSourcePrefixMap,
+  resolveAllSourcePrefixMap,
   resolveUseMelhorBySpecificity,
   type SourcePrefixEntry,
 } from "../scripts/lib/use-melhor-sources.ts";
@@ -236,5 +238,79 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
       false,
       "URL em blog.google/ fora de /intl/pt-br/ → Google Primária (use_melhor=false) vence",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2197 — resolveAllSourcePrefixMap: warn em throw E em retorno vazio
+// ---------------------------------------------------------------------------
+
+describe("resolveAllSourcePrefixMap (#2197)", () => {
+  const fakeEntry: SourcePrefixEntry = { prefix: "fast.ai", useMelhor: true, index: 0 };
+
+  it("(a) loader lança → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      const result = resolveAllSourcePrefixMap(() => {
+        throw new Error("CSV inacessível");
+      });
+      assert.deepEqual(result, [], "deve retornar [] quando o loader lança");
+      assert.ok(warns.length > 0, "deve emitir console.warn");
+      assert.ok(
+        warns[0].includes("#2176 FIX NÃO ATIVO"),
+        `warn deve conter '#2176 FIX NÃO ATIVO', got: ${warns[0]}`,
+      );
+      assert.ok(
+        warns[0].includes("CSV inacessível"),
+        `warn deve incluir a mensagem de erro, got: ${warns[0]}`,
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("(b) loader retorna [] sem lançar → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      const result = resolveAllSourcePrefixMap(() => []);
+      assert.deepEqual(result, [], "deve retornar [] quando o loader retorna vazio");
+      assert.ok(warns.length > 0, "deve emitir console.warn (caminho vazio-sem-throw)");
+      assert.ok(
+        warns[0].includes("#2176 FIX NÃO ATIVO"),
+        `warn deve conter '#2176 FIX NÃO ATIVO', got: ${warns[0]}`,
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("(c) loader retorna lista populada → sem console.warn, retorna o array", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      const result = resolveAllSourcePrefixMap(() => [fakeEntry]);
+      assert.deepEqual(result, [fakeEntry], "deve retornar o array populado");
+      assert.equal(warns.length, 0, "não deve emitir console.warn quando o loader retorna dados");
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("seed real: loader padrão retorna array populado sem warn", () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      const result = resolveAllSourcePrefixMap();
+      assert.ok(result.length > 0, "seed real deve produzir entradas");
+      assert.equal(warns.length, 0, "seed real válido não deve emitir warn");
+    } finally {
+      console.warn = origWarn;
+    }
   });
 });

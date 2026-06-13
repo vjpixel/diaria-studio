@@ -135,6 +135,39 @@ export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[]
 }
 
 /**
+ * #2197 — wrapper testável em torno de `loadAllSourcePrefixMap` que emite
+ * `console.warn` em DOIS cenários que silenciosamente desativam o fix #2176:
+ *   (a) `loadAllSourcePrefixMap` lança exceção (CSV inacessível / parse error).
+ *   (b) `loadAllSourcePrefixMap` retorna lista VAZIA sem lançar (CSV parseable
+ *       mas degenerado — só headers, ou todas as linhas sem coluna URL válida).
+ *
+ * Em ambos os casos retorna `[]`, fazendo o caller (IIFE em `categorize.ts`)
+ * cair no fallback legado (`matchesUseMelhorPrefix`).
+ *
+ * Exportado para facilitar testes unitários sem precisar modificar o IIFE.
+ */
+export function resolveAllSourcePrefixMap(
+  loader: () => SourcePrefixEntry[] = loadAllSourcePrefixMap,
+): SourcePrefixEntry[] {
+  let result: SourcePrefixEntry[];
+  try {
+    result = loader();
+  } catch (e) {
+    console.warn(
+      `[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap falhou (${(e as Error).message}) — fallback legado (matchesUseMelhorPrefix)`,
+    );
+    return [];
+  }
+  if (result.length === 0) {
+    console.warn(
+      "[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap retornou vazio (CSV sem fontes válidas) — fallback legado (matchesUseMelhorPrefix)",
+    );
+    return [];
+  }
+  return result;
+}
+
+/**
  * #2176 — path-mais-específico-vence.
  *
  * Dado o mapa completo de fontes (retornado por `loadAllSourcePrefixMap`),
