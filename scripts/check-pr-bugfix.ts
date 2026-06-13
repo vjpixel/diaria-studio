@@ -75,7 +75,7 @@ function getChangedFiles(baseSha: string, headSha: string): string[] {
 export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
   return changedFiles.some(
     (f) =>
-      (f.startsWith("test/") || f.startsWith("tests/")) &&
+      (f.startsWith("test/") || f.startsWith("tests/") || f.includes("/test/") || f.includes("/tests/")) &&
       (f.endsWith(".test.ts") || f.endsWith(".test.js")),
   );
 }
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
     // (Se não é bugfix, também não precisaria — mas pode ser bugfix não-identificável
     // sem label, então a presença de teste é suficiente.)
     const testFiles = changedFiles.filter(
-      (f) => (f.startsWith("test/") || f.startsWith("tests/")) && (f.endsWith(".test.ts") || f.endsWith(".test.js")),
+      (f) => (f.startsWith("test/") || f.startsWith("tests/") || f.includes("/test/") || f.includes("/tests/")) && (f.endsWith(".test.ts") || f.endsWith(".test.js")),
     );
     console.log(`[#970] Diff contém teste(s) novo(s)/modificado(s): ${testFiles.join(", ")}. Pass.`);
     process.exit(0);

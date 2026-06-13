@@ -60,6 +60,17 @@ describe("hasNewOrModifiedTest (#970)", () => {
     assert.equal(hasNewOrModifiedTest(["tests/integration.test.ts"]), true);
   });
 
+  it("detecta arquivo em subdiretório workers/**/test/ (#2225)", () => {
+    assert.equal(hasNewOrModifiedTest(["workers/linkedin-cron/test/index.test.ts"]), true);
+    assert.equal(hasNewOrModifiedTest(["workers/foo/test/bar.test.ts"]), true);
+    assert.equal(hasNewOrModifiedTest(["workers/foo/tests/bar.test.ts"]), true);
+  });
+
+  it("não detecta falso-positivo: worker src com 'test' no nome do arquivo (#2225)", () => {
+    assert.equal(hasNewOrModifiedTest(["workers/foo/src/test-helper.ts"]), false);
+    assert.equal(hasNewOrModifiedTest(["workers/foo/src/testing-utils.ts"]), false);
+  });
+
   it("ignora arquivos fora de test/", () => {
     assert.equal(hasNewOrModifiedTest(["scripts/foo.ts"]), false);
     assert.equal(hasNewOrModifiedTest(["docs/test.md"]), false);
