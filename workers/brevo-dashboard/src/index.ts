@@ -927,7 +927,6 @@ export interface WeekdaySummary {
   label: string;
   /** Número de campanhas enviadas neste dia */
   count: number;
-  sent: number;
   delivered: number;
   opens: number;
   /** open rate agregado = opens / delivered (0 quando delivered=0) */
@@ -984,7 +983,7 @@ export function aggregateByWeekday(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string | null,
 ): WeekdaySummary[] {
-  type Acc = { count: number; sent: number; delivered: number; opens: number };
+  type Acc = { count: number; delivered: number; opens: number };
   const acc: Record<number, Acc> = {};
 
   for (const c of campaigns) {
@@ -1006,9 +1005,8 @@ export function aggregateByWeekday(
     const wk = weekdayKeyBRT(c.sentDate);
     if (wk === null) continue;
 
-    if (!acc[wk]) acc[wk] = { count: 0, sent: 0, delivered: 0, opens: 0 };
+    if (!acc[wk]) acc[wk] = { count: 0, delivered: 0, opens: 0 };
     acc[wk].count += 1;
-    acc[wk].sent += s.sent ?? 0;
     acc[wk].delivered += s.delivered ?? 0;
     acc[wk].opens += s.uniqueViews ?? 0;
   }
@@ -1023,7 +1021,6 @@ export function aggregateByWeekday(
         weekday: wk,
         label: WEEKDAY_LABELS[wk] ?? `Dia ${wk}`,
         count: d.count,
-        sent: d.sent,
         delivered: d.delivered,
         opens: d.opens,
         openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
