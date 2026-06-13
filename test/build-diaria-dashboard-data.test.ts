@@ -553,6 +553,104 @@ describe("regressão: XSS javascript: URI bloqueado no href (finding #1)", () =>
   });
 });
 
+// ─── #2193: ordem das seções CTR > Overnight > Saúde > Em breve ──────────────
+
+describe("ordem das seções (#2193)", () => {
+  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+
+  function makeFullData(): DashData {
+    return {
+      generated_at: "2026-06-12T00:00:00Z",
+      schema_version: 1,
+      source_health: {
+        entries: [{
+          name: "TestSource",
+          slug: "testsource",
+          attempts: 5,
+          successes: 5,
+          failures: 0,
+          timeouts: 0,
+          success_rate_pct: 100,
+          consecutive_failures: 0,
+          last_success_iso: "2026-06-11T14:00:00Z",
+          last_failure_iso: null,
+          last_duration_ms: 1234,
+          status: "verde",
+        }],
+        total: 1,
+        verde: 1,
+        amarelo: 0,
+        vermelho: 0,
+        generated_at: "2026-06-12T00:00:00Z",
+      },
+      ctr: {
+        total_editions: 1,
+        total_links: 1,
+        top_categories: [{ category: "Destaque", link_count: 1, total_clicks: 5, avg_ctr_pct: 3.0, max_ctr_pct: 3.0 }],
+        top_links: [],
+      },
+      overnight: {
+        runs: [{
+          edition: "260611",
+          started_at: "2026-06-11T01:00:00Z",
+          total_issues: 2,
+          merged: 2,
+          draft: 0,
+          pulada: 0,
+          in_progress: 0,
+          duration_ms: 1200000,
+          slowest_unit: null,
+        }],
+        total_runs: 1,
+      },
+      stubs: [{ id: "scorer_vs_ctr", description: "Planejado", tracking_issue: "#1619" }],
+    };
+  }
+
+  test("seções aparecem na ordem: CTR < Overnight < Saúde < Em breve", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeFullData());
+
+    const idxCtr = html.indexOf('id="ctr"');
+    const idxOvernight = html.indexOf('id="overnight"');
+    const idxSourceHealth = html.indexOf('id="source-health"');
+    const idxStubs = html.indexOf('id="stubs"');
+
+    assert.ok(idxCtr > -1, "secao #ctr deve estar presente");
+    assert.ok(idxOvernight > -1, "secao #overnight deve estar presente");
+    assert.ok(idxSourceHealth > -1, "secao #source-health deve estar presente");
+    assert.ok(idxStubs > -1, "secao #stubs deve estar presente");
+
+    assert.ok(idxCtr < idxOvernight, `CTR (${idxCtr}) deve aparecer antes de Overnight (${idxOvernight})`);
+    assert.ok(idxOvernight < idxSourceHealth, `Overnight (${idxOvernight}) deve aparecer antes de Saúde (${idxSourceHealth})`);
+    assert.ok(idxSourceHealth < idxStubs, `Saúde (${idxSourceHealth}) deve aparecer antes de Em breve (${idxStubs})`);
+  });
+
+  test("nav reflete a mesma ordem: CTR < Overnight < Saúde < Em breve", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeFullData());
+
+    const navStart = html.indexOf('<nav class="nav">');
+    const navEnd = html.indexOf("</nav>", navStart);
+    assert.ok(navStart > -1, "nav deve estar presente");
+    const navHtml = html.slice(navStart, navEnd);
+
+    const idxNavCtr = navHtml.indexOf('href="#ctr"');
+    const idxNavOvernight = navHtml.indexOf('href="#overnight"');
+    const idxNavSourceHealth = navHtml.indexOf('href="#source-health"');
+    const idxNavStubs = navHtml.indexOf('href="#stubs"');
+
+    assert.ok(idxNavCtr > -1, "link #ctr deve estar no nav");
+    assert.ok(idxNavOvernight > -1, "link #overnight deve estar no nav");
+    assert.ok(idxNavSourceHealth > -1, "link #source-health deve estar no nav");
+    assert.ok(idxNavStubs > -1, "link #stubs deve estar no nav");
+
+    assert.ok(idxNavCtr < idxNavOvernight, `nav: CTR (${idxNavCtr}) deve aparecer antes de Overnight (${idxNavOvernight})`);
+    assert.ok(idxNavOvernight < idxNavSourceHealth, `nav: Overnight (${idxNavOvernight}) deve aparecer antes de Saúde (${idxNavSourceHealth})`);
+    assert.ok(idxNavSourceHealth < idxNavStubs, `nav: Saúde (${idxNavSourceHealth}) deve aparecer antes de Em breve (${idxNavStubs})`);
+  });
+});
+
 // ─── #2132 fix: detecção de --push (bug: --push sozinho caía em dry-run) ──────
 
 describe("isPushRequested (#2132 fix)", () => {

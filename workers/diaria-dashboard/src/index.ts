@@ -348,15 +348,15 @@ export function renderDashboardHtml(data: DashboardData): string {
 <p class="sub">Dados locais (last push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
 
 <nav class="nav">
-  <a href="#source-health">Saúde das fontes</a>
   <a href="#ctr">CTR por categoria</a>
   <a href="#overnight">Overnight</a>
+  <a href="#source-health">Saúde das fontes</a>
   ${data.stubs?.length ? '<a href="#stubs">Em breve</a>' : ""}
 </nav>
 
-${sourceSection}
 ${ctrSection}
 ${overnightSection}
+${sourceSection}
 ${stubsSection}
 
 <p class="footer">
