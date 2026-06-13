@@ -849,3 +849,70 @@ describe("#2229 — reconciliacao via X-KV-VoteKey-Committed", () => {
     assert.equal(score.total, 1, "score.total deve permanecer 1 got: " + String(score.total));
   });
 });
+
+// ── 8. Brand-prefix no DO id (#2233) ─────────────────────────────────────────
+
+describe("Brand-prefix no DO id (#2233) — votos do mesmo email em brands distintos não colidem", () => {
+  /**
+   * Bug: `idFromName(`${edition}:${email}`)` sem brand → dois brands distintos
+   * (diaria + clarice) com o mesmo edition:email geravam o MESMO DO id.
+   * O 2º brand recebia firstVote:false mesmo sendo o primeiro voto naquele brand.
+   *
+   * Fix: `idFromName(`${brand}:${edition}:${email}`)` — DO id único por brand.
+   */
+  it("mesmo email em brands distintos → DOs distintos → ambos firstVote:true", async () => {
+    const doInstances = new Map<string, VoteDedup>();
+    const seenNames: string[] = [];
+    const mockDO: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => {
+        seenNames.push(name);
+        return { name, toString: () => name } as unknown as DurableObjectId;
+      },
+      get: (id: DurableObjectId): DurableObjectStub => {
+        const name = id.toString();
+        if (!doInstances.has(name)) doInstances.set(name, makeVoteDedup());
+        const inst = doInstances.get(name)!;
+        return { fetch: (url: RequestInfo, init?: RequestInit) => inst.fetch(new Request(url as string, init)) } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+
+    const makeVoteReq = (brand: string) => {
+      const url = new URL("https://poll.diaria.workers.dev/vote");
+      url.searchParams.set("email", "shared@x.com");
+      url.searchParams.set("edition", "260613");
+      url.searchParams.set("choice", "A");
+      url.searchParams.set("brand", brand);
+      return new Request(url.toString(), { method: "GET" });
+    };
+
+    const makeKv = () => makeTrackedKv();
+    // Brands distintos têm namespaces KV distintos — simular com KVs separados
+    // (na prática brandedEnv prefixaria as chaves, mas o DO id é o ponto crítico).
+    const kvDiaria = makeKv();
+    const kvClarice = makeKv();
+
+    const envDiaria: Env = { POLL: kvDiaria as unknown as KVNamespace, VOTE_DEDUP: mockDO, POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
+    const envClarice: Env = { POLL: kvClarice as unknown as KVNamespace, VOTE_DEDUP: mockDO, POLL_SECRET: "test-secret", ADMIN_SECRET: "test-admin-secret", ALLOWED_ORIGINS: "*" };
+
+    const resDiaria = await worker.fetch(makeVoteReq("diaria"), envDiaria, {} as ExecutionContext);
+    const resClarice = await worker.fetch(makeVoteReq("clarice"), envClarice, {} as ExecutionContext);
+
+    assert.equal(resDiaria.status, 200, "diaria: voto deve retornar 200");
+    assert.equal(resClarice.status, 200, "clarice: voto deve retornar 200");
+
+    const htmlDiaria = await resDiaria.text();
+    const htmlClarice = await resClarice.text();
+
+    assert.doesNotMatch(htmlDiaria, /já votou/i, "diaria: não deve mostrar 'já votou' (primeiro voto no brand)");
+    assert.doesNotMatch(htmlClarice, /já votou/i, "clarice: não deve mostrar 'já votou' (primeiro voto no brand — DO distinto)");
+
+    // Verificar que os nomes dos DOs são distintos (brand prefixado)
+    const diariaDo = seenNames.find(n => n.startsWith("diaria:"));
+    const clariceDo = seenNames.find(n => n.startsWith("clarice:"));
+    assert.ok(diariaDo, "DO id para diaria deve ter prefixo 'diaria:'");
+    assert.ok(clariceDo, "DO id para clarice deve ter prefixo 'clarice:'");
+    assert.notEqual(diariaDo, clariceDo, "DOs de brands distintos devem ser instâncias distintas");
+  });
+});

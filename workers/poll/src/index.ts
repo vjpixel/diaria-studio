@@ -272,7 +272,11 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
 
   if (env.VOTE_DEDUP) {
     // Caminho serializado via DO (#2187)
-    const doId = env.VOTE_DEDUP.idFromName(`${edition}:${email}`);
+    // Brand prefixado no nome do DO para isolar por brand: dois votos do mesmo
+    // edition:email em brands distintos (diaria vs clarice) não colidiriam no
+    // mesmo DO (que resultaria em silêncio do 2º brand quando o 1º já votou).
+    // Formato: `{brand}:{edition}:{email}` — brand sempre presente (default "diaria").
+    const doId = env.VOTE_DEDUP.idFromName(`${brand}:${edition}:${email}`);
     doStub = env.VOTE_DEDUP.get(doId);
     const doHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (existingFromKv !== null) {
@@ -463,26 +467,40 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   const monthGuardKey = `counted:${edition}:${email}:month`;
 
   // Stats — idempotente via guard-key
+  //
+  // JANELA RESIDUAL ESTREITA (#2229): há uma janela entre o incremento e a
+  // escrita do guard-key — um crash ENTRE os dois deixaria o guard não-gravado,
+  // e um retry posterior re-incrementaria. Esta janela é MUITO menor do que o
+  // bug original (que re-incrementava em TODO retry sem qualquer guard). KV não
+  // é transacional; mover o guard para ANTES não funcionaria (bloquearia um
+  // incremento que ainda não aconteceu). A ordem correta é incremento→guard;
+  // o risco é crash no exato μs entre os dois, que é raríssimo em produção.
+  // Documentado como residual conhecido e aceitável.
   if (!(await env.POLL.get(statsGuardKey))) {
     await updateStatsCounter(env, edition, choice as "A" | "B", correct);
-    await env.POLL.put(statsGuardKey, "1");
+    await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
   }
 
   // Score e score-by-month — idempotentes via guard-keys individuais.
   // #1080: sempre atualizar score, mesmo sem gabarito ainda.
   // #2190: passa scoreRaw ja lido acima (evita re-leitura redundante).
   // #1345: score-by-month indexado pela publication date da edicao.
+  // #8 / Efficiency: score + month + stats (já guarded acima) são independentes
+  // entre si — score e month não têm read-after-write um sobre o outro, e ambos
+  // usam scoreRaw já lido. Promise.all paralleliza as 2 IIFE sem risco de
+  // dependência. (Stats já foi processado acima, antes deste bloco, por precisar
+  // de sua própria janela de documentação residual — separação deliberada.)
   await Promise.all([
     (async () => {
       if (!(await env.POLL.get(scoreGuardKey))) {
         await updateScore(env, email, edition, correct, scoreRaw);
-        await env.POLL.put(scoreGuardKey, "1");
+        await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
     (async () => {
       if (!(await env.POLL.get(monthGuardKey))) {
         await updateScoreByMonth(env, email, edition, correct, scoreRaw);
-        await env.POLL.put(monthGuardKey, "1");
+        await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
   ]);

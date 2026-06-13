@@ -123,7 +123,8 @@ interface VoteDedupResponse {
  *
  * Tabela de transições de estado (handleAuthorize):
  *   voted=true                              → firstVote:false  (duplicado definitivo)
- *   pending fresco + X-KV-VoteKey-Committed → voted=true, firstVote:false (reconciliação)
+ *   pending fresco + X-KV-VoteKey-Committed → voted=true, firstVote:false (reconciliação via voteKey:
+ *                                             KV escrito mas /confirm falhou; DO sincroniza pending→voted)
  *   pending fresco                          → firstVote:false  (request concorrente)
  *   pending expirado (>= TTL)              → re-autoriza (re-adquire lock, firstVote:true)
  *   vazio + X-KV-Vote-Exists               → voted=true, firstVote:false (migração legado)
@@ -272,8 +273,13 @@ export class VoteDedup {
           headers: { "Content-Type": "application/json" },
         });
       }
-      await this.state.storage.put("voted", true);
-      await this.state.storage.delete("pending");
+      // Efficiency: put(voted) + delete(pending) são independentes — sem
+      // dependência de read-after-write entre si. Promise.all paralleliza os
+      // dois round-trips de storage dentro do blockConcurrencyWhile.
+      await Promise.all([
+        this.state.storage.put("voted", true),
+        this.state.storage.delete("pending"),
+      ]);
       return new Response(JSON.stringify({ confirmed: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
