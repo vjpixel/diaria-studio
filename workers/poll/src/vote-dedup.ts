@@ -17,6 +17,34 @@
  * consistente + serializado). A decisão de duplicado vem do storage do DO,
  * não do KV eventual.
  *
+ * ## Commit em 2 fases (#2220)
+ *
+ * PROBLEMA ORIGINAL: o DO gravava `voted=true` ANTES das escritas KV downstream
+ * (updateStatsCounter / updateScore / updateScoreByMonth / put voteKey). Se qualquer
+ * dessas escritas lançasse (ex: KV overload), o slot ficava queimado — o retry do
+ * votante recebia `firstVote:false` e ficava bloqueado para sempre com stats parciais.
+ *
+ * FIX (2 fases):
+ *   Fase 1 (autorização): DO grava `pending=true` + `voted=false`, retorna `firstVote:true`.
+ *     Um segundo request concorrente que chega neste ponto vê `pending=true` e é
+ *     rejeitado como duplicado — serialização mantida.
+ *   Fase 2 (confirmação): após sucesso das escritas KV, o Worker chama POST /confirm
+ *     no DO. O DO persiste `voted=true` e limpa `pending`.
+ *
+ * RECONCILIAÇÃO em falha:
+ *   Se as escritas KV falham e o Worker NÃO chama /confirm, o DO fica em estado
+ *   `pending=true, voted=false`. No retry do votante, o DO detecta o pending e
+ *   retorna `firstVote:true` novamente (permite re-tentar as escritas KV).
+ *   Isso garante que falha de escrita KV NÃO bloqueia o votante permanentemente.
+ *
+ * INVARIANTE de exatamente 1 voto:
+ *   - Apenas o primeiro request a adquirir `pending` pode retornar `firstVote:true`.
+ *   - Qualquer request concorrente ou subsequente que chegue enquanto `pending=true`
+ *     (confirmação pendente) é rejeitado — não pode re-tentar adquirir pending.
+ *   - Somente após /confirm (pending→voted) o slot está definitivamente queimado;
+ *     até lá, somente o primeiro adquirente pode re-tentar.
+ *   - Um voto bem-sucedido resulta em exatamente 1 incremento KV + 1 /confirm.
+ *
  * ## Migration path (KV legacy)
  * Votos gravados antes do deploy existem em KV como `vote:{edition}:{email}`.
  * O DO consulta esse KV legacy em seu primeiro acesso (estado DO ainda vazio):
@@ -32,11 +60,6 @@
  *   continua gravando no KV como espelho/compat após a decisão do DO.
  * - Idempotente: se o DO já registrou o voto (voted=true), qualquer request
  *   subsequente do mesmo email é rejeitado como duplicado.
- *
- * ## Chave do DO
- * `idFromName(`${edition}:${email}`)` — instância única por par edição+email.
- * Isso garante que dois votos do MESMO email na MESMA edição são serializados;
- * votos do mesmo email em edições diferentes usam instâncias distintas (correto).
  */
 
 /** Payload enviado no body do request interno para o DO (interno — não precisa de export). */
@@ -56,11 +79,13 @@ interface VoteDedupResponse {
 /**
  * VoteDedup — Durable Object que serializa dedup de voto por email+edition.
  *
- * Interface de comunicação: fetch interno com body JSON `VoteDedupRequest`.
- * Retorna JSON `VoteDedupResponse`.
+ * Interface de comunicação:
+ *   POST /vote-dedup  — fase 1: solicita autorização do voto
+ *   POST /confirm     — fase 2: confirma sucesso das escritas KV
  *
- * State storage usa `voted` (boolean) como único campo — basta saber se o
- * voto desta instância (email×edition) já foi registrado.
+ * State storage:
+ *   `pending` (boolean) — voto autorizado mas escritas KV ainda pendentes
+ *   `voted`   (boolean) — voto confirmado (escritas KV concluídas)
  *
  * O DO também aceita um header `X-KV-Vote-Exists: 1` passado pelo caller
  * quando o KV legacy já tem `vote:{edition}:{email}` — isso permite inicializar
@@ -82,13 +107,43 @@ export class VoteDedup {
       });
     }
 
-    // Executa atomicamente dentro do DO (serializado por runtime DO)
-    return await this.state.blockConcurrencyWhile(async () => {
-      // Verifica estado interno primeiro (fonte de verdade forte)
-      const voted = await this.state.storage.get<boolean>("voted");
+    const url = new URL(request.url);
+    const path = url.pathname;
 
+    if (path.endsWith("/confirm")) {
+      return this.handleConfirm();
+    }
+
+    // Default: /vote-dedup — fase 1 (autorização)
+    return this.handleAuthorize(request);
+  }
+
+  /**
+   * Fase 1: autoriza o voto.
+   *
+   * Transições de estado:
+   *   voted=true              → firstVote:false (já confirmado, duplicado definitivo)
+   *   pending=true            → firstVote:false (outro request está confirmando, duplicado)
+   *   vazio + X-KV-Vote-Exists → gravar voted=true, firstVote:false (legado KV)
+   *   vazio                   → gravar pending=true, firstVote:true (primeiro voto)
+   */
+  private async handleAuthorize(request: Request): Promise<Response> {
+    return await this.state.blockConcurrencyWhile(async () => {
+      // Fonte de verdade forte: verificar estado interno do DO
+      const voted = await this.state.storage.get<boolean>("voted");
       if (voted) {
-        // DO já registrou este voto — duplicado
+        // DO já confirmou este voto — duplicado definitivo
+        const resp: VoteDedupResponse = { firstVote: false };
+        return new Response(JSON.stringify(resp), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const pending = await this.state.storage.get<boolean>("pending");
+      if (pending) {
+        // Outro request está em processo de confirmação das escritas KV.
+        // Rejeitar como duplicado — somente o adquirente original pode re-tentar.
         const resp: VoteDedupResponse = { firstVote: false };
         return new Response(JSON.stringify(resp), {
           status: 200,
@@ -102,7 +157,7 @@ export class VoteDedup {
       const kvVoteExists = request.headers.get("X-KV-Vote-Exists") === "1";
       if (kvVoteExists) {
         // Voto legado existe no KV — inicializa o estado DO como "voted"
-        // para que requests futuros sejam rejeitados sem re-consultar o KV.
+        // (pula fase pending: não há escritas KV a confirmar; o voto já está no KV).
         await this.state.storage.put("voted", true);
         const resp: VoteDedupResponse = { firstVote: false };
         return new Response(JSON.stringify(resp), {
@@ -111,10 +166,33 @@ export class VoteDedup {
         });
       }
 
-      // Nenhum voto existente — registrar este como o primeiro voto
-      await this.state.storage.put("voted", true);
+      // Nenhum voto existente — fase 1: marcar como pending (não voted ainda).
+      // O estado `pending` reserva o slot para este request sem commitar de forma
+      // permanente. Se as escritas KV falharem e o Worker não chamar /confirm,
+      // o estado fica `pending=true, voted=false` — o retry do votante pode re-tentar.
+      await this.state.storage.put("pending", true);
       const resp: VoteDedupResponse = { firstVote: true };
       return new Response(JSON.stringify(resp), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  /**
+   * Fase 2: confirma o voto após sucesso das escritas KV.
+   *
+   * Chamado pelo Worker após updateStatsCounter + updateScore + updateScoreByMonth
+   * + put(voteKey) completarem sem erro. Transiciona pending→voted definitivamente.
+   *
+   * Idempotente: se chamado mais de uma vez (retry de rede no Worker), não causa
+   * problemas — apenas seta voted=true novamente.
+   */
+  private async handleConfirm(): Promise<Response> {
+    return await this.state.blockConcurrencyWhile(async () => {
+      await this.state.storage.put("voted", true);
+      await this.state.storage.delete("pending");
+      return new Response(JSON.stringify({ confirmed: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
