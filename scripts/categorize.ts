@@ -90,9 +90,9 @@ const LANCAMENTO_PATTERNS = lancamentoPatterns();
 // #2176: mapa COMPLETO de fontes (todas, não só use_melhor) para o desempate
 // path-mais-específico-vence quando dois sources compartilham o mesmo host.
 // Fallback: lista vazia → cai no comportamento legado (matchesUseMelhorPrefix).
-// Finding 2: console.warn explícito indica que o fix #2176 NÃO está ativo.
-// #2197: usa resolveAllSourcePrefixMap (warn em throw E em retorno vazio).
-const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = (() => resolveAllSourcePrefixMap())();
+// #2197: usa resolveAllSourcePrefixMap (warn em throw E em retorno vazio);
+// o warn vive em resolveAllSourcePrefixMap (use-melhor-sources.ts), não aqui.
+const ALL_SOURCE_PREFIX_MAP: SourcePrefixEntry[] = resolveAllSourcePrefixMap();
 
 // #1899 (Finding 5): USE_MELHOR_PREFIXES é derivável de ALL_SOURCE_PREFIX_MAP
 // (filter useMelhor=true) — elimina o readFileSync duplo do mesmo CSV.
@@ -103,7 +103,10 @@ const USE_MELHOR_PREFIXES: string[] = ALL_SOURCE_PREFIX_MAP.length > 0
       try {
         return loadUseMelhorPrefixes();
       } catch (e) {
-        console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
+        const msg = e instanceof Error ? e.message : String(e);
+        // Severidade: warn (igual ao caminho raiz em resolveAllSourcePrefixMap) —
+        // fallback aninhado não é mais crítico que o caminho raiz (#2203).
+        console.warn(`[categorize] #2176 FIX NÃO ATIVO: fallback loadUseMelhorPrefixes falhou (${msg}) — só inferência por conteúdo`);
         return [];
       }
     })();

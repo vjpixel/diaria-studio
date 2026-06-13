@@ -116,6 +116,10 @@ export interface SourcePrefixEntry {
  *
  * Inclui fontes sem `use_melhor` — necessário para o desempate por especificidade
  * de path entre fontes que compartilham o mesmo host (#2176).
+ *
+ * Nota: observabilidade de resultado vazio (warn + fallback) está em
+ * `resolveAllSourcePrefixMap`, não aqui — callers diretos desta função
+ * bypassam esse guard.
  */
 export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[] {
   const csv = readFileSync(resolve(root, "seed", "sources.csv"), "utf8");
@@ -153,8 +157,9 @@ export function resolveAllSourcePrefixMap(
   try {
     result = loader();
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     console.warn(
-      `[categorize] #2176 FIX NÃO ATIVO: loadAllSourcePrefixMap falhou (${(e as Error).message}) — fallback legado (matchesUseMelhorPrefix)`,
+      `[categorize] #2176 FIX NÃO ATIVO: falha ao carregar mapa de fontes (${msg}) — fallback legado (matchesUseMelhorPrefix)`,
     );
     return [];
   }

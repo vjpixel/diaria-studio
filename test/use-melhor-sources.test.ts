@@ -53,8 +53,10 @@ describe("sourcePrefix (#1927 review)", () => {
 });
 
 describe("loadUseMelhorPrefixes (seed real, #1899)", () => {
-  const prefixes = loadUseMelhorPrefixes();
+  // #2203 (Finding 8): leitura lazy (dentro do it) pra que testes mock-only
+  // não dependam do FS — um worktree sem junction não derruba os 77 testes do arquivo.
   it("retorna prefixos host/path das fontes flagueadas (path-aware)", () => {
+    const prefixes = loadUseMelhorPrefixes();
     assert.ok(prefixes.length > 0, "deve haver fontes Use Melhor no seed");
     // host dedicado = só host (#1971: era fast.ai, desativada; eugeneyan.com segue no seed)
     assert.ok(prefixes.includes("eugeneyan.com"), "host dedicado = só host");
@@ -90,9 +92,10 @@ describe("matchesUseMelhorPrefix (#1927 review)", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadAllSourcePrefixMap (#2176)", () => {
-  const allEntries = loadAllSourcePrefixMap();
-
+  // #2203 (Finding 8): leitura lazy (dentro do it) pra que testes mock-only
+  // não dependam do FS — um worktree sem junction não derruba os 77 testes do arquivo.
   it("retorna todas as fontes, incluindo as NÃO use_melhor", () => {
+    const allEntries = loadAllSourcePrefixMap();
     assert.ok(allEntries.length > 0, "deve ter entries");
     // Deve incluir entradas use_melhor=false (fontes Primária/Secundária)
     const hasNonUseMelhor = allEntries.some((e) => !e.useMelhor);
@@ -100,6 +103,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
   });
 
   it("entries ordenadas: prefixo mais longo primeiro", () => {
+    const allEntries = loadAllSourcePrefixMap();
     for (let i = 1; i < allEntries.length; i++) {
       assert.ok(
         allEntries[i].prefix.length <= allEntries[i - 1].prefix.length,
@@ -109,6 +113,7 @@ describe("loadAllSourcePrefixMap (#2176)", () => {
   });
 
   it("cenário real blog.google: existe entrada use_melhor=false (Google Primária) e use_melhor=true (Blog Brasil)", () => {
+    const allEntries = loadAllSourcePrefixMap();
     const googlePrimaria = allEntries.find(
       (e) => e.prefix === "blog.google" && !e.useMelhor,
     );
@@ -251,7 +256,7 @@ describe("resolveAllSourcePrefixMap (#2197)", () => {
   it("(a) loader lança → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
     const warns: string[] = [];
     const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
     try {
       const result = resolveAllSourcePrefixMap(() => {
         throw new Error("CSV inacessível");
@@ -274,7 +279,7 @@ describe("resolveAllSourcePrefixMap (#2197)", () => {
   it("(b) loader retorna [] sem lançar → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
     const warns: string[] = [];
     const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
     try {
       const result = resolveAllSourcePrefixMap(() => []);
       assert.deepEqual(result, [], "deve retornar [] quando o loader retorna vazio");
@@ -291,7 +296,7 @@ describe("resolveAllSourcePrefixMap (#2197)", () => {
   it("(c) loader retorna lista populada → sem console.warn, retorna o array", () => {
     const warns: string[] = [];
     const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
     try {
       const result = resolveAllSourcePrefixMap(() => [fakeEntry]);
       assert.deepEqual(result, [fakeEntry], "deve retornar o array populado");
@@ -304,7 +309,7 @@ describe("resolveAllSourcePrefixMap (#2197)", () => {
   it("seed real: loader padrão retorna array populado sem warn", () => {
     const warns: string[] = [];
     const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
     try {
       const result = resolveAllSourcePrefixMap();
       assert.ok(result.length > 0, "seed real deve produzir entradas");
