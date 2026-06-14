@@ -532,9 +532,11 @@ describe("appendHistory e loadHistoryEditions — idempotência", () => {
     // Simula dois processos concorrentes que ambos chamam appendHistory([fakeEntry])
     // sem saber que o outro já escreveu (ambos leram alreadyComputed antes do write).
     // O fix: appendHistory re-lê o arquivo just-in-time e filtra duplicatas.
-    const p = historyPath.replace(/\\/g, "/");
-    appendHistory(p, [fakeEntry]); // 2ª chamada direta — deve ser filtrada
-    const content = readFileSync(historyPath, "utf8").trim().split("\n").filter(Boolean);
+    // Usa arquivo PRÓPRIO para não depender da ordem/estado do teste anterior (#2232).
+    const freshPath = join(dir, "idempotence-direct.jsonl").replace(/\\/g, "/");
+    appendHistory(freshPath, [fakeEntry]); // 1ª escrita
+    appendHistory(freshPath, [fakeEntry]); // 2ª chamada — deve ser filtrada
+    const content = readFileSync(freshPath, "utf8").trim().split("\n").filter(Boolean);
     assert.equal(content.length, 1, "arquivo deve ter exatamente 1 linha após append duplicado");
   });
 

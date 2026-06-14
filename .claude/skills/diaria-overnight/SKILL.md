@@ -177,7 +177,8 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
      # max(0, ...) evita UNRESOLVED_BLOQUEANTES negativo quando uma FORBIDDEN é resolvida
      # externamente entre o loop e RESP2 (#2232): a thread some de UNRESOLVED_TOTAL mas
      # FORBIDDEN_COUNT ainda a conta → subtração negativa → false-RED.
-     UNRESOLVED_BLOQUEANTES=$(( UNRESOLVED_TOTAL - FORBIDDEN_COUNT < 0 ? 0 : UNRESOLVED_TOTAL - FORBIDDEN_COUNT ))
+     _DIFF=$(( UNRESOLVED_TOTAL - FORBIDDEN_COUNT ))
+     UNRESOLVED_BLOQUEANTES=$(( _DIFF < 0 ? 0 : _DIFF ))
      # Gate da condição (2): passa se $UNRESOLVED_BLOQUEANTES == 0
      # Threads FORBIDDEN já anotadas no PR body — não bloqueiam o gate overnight,
      # mas o ruleset do GitHub (required_review_thread_resolution) pode ainda bloquear o merge:
