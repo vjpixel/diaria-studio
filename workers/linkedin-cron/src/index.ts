@@ -1088,14 +1088,38 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
 
       if (res.ok) {
         await env.LINKEDIN_QUEUE.delete(k.name);
-        // Transicionar DO para fired=true (idempotência: alarm() não re-disparará
-        // se CF tentar re-invocar após o cron ter disparado via claim).
-        try {
-          const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-          const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-          await doStub.fetch("https://do/status-set-fired", { method: "POST" });
-        } catch {
-          // Non-fatal — cron já deletou KV; alarm() não poderá re-disparar sem KV entry.
+        // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
+        // CRÍTICO: alarm() lê o PAYLOAD do DO storage, NÃO do KV. Sem fired=true E sem
+        // payload no DO, o alarm não tem o quê postar mesmo se re-disparar via TTL expiry.
+        // Dupla proteção (espelhando o alarm path em alarm()):
+        //   1. fired=true: tryClaim() retorna false imediatamente.
+        //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
+        // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
+        // presente → cron pode re-clamar via TTL e re-postar (double-post).
+        // O comentário anterior "alarm não poderá re-disparar sem KV entry" estava ERRADO
+        // (#2235): alarm lê DO storage, não KV. Fix: /status-set-fired agora inclui
+        // payload delete (já no endpoint) e o cron usa retry de 3x para garantir persistência.
+        let firedSetOk = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+            const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+            const sfRes = await doStub.fetch("https://do/status-set-fired", { method: "POST" });
+            if (sfRes.ok) {
+              firedSetOk = true;
+              break;
+            }
+            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${k.name}`);
+          } catch (sfErr) {
+            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${(sfErr as Error).message}`);
+          }
+          if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+        }
+        if (!firedSetOk) {
+          // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
+          // Risco: se claim expirar (TTL 5min) e alarm re-disparar, ele vai re-clamar e
+          // tentar postar (payload ainda presente). Logar crítico pra investigação do editor.
+          console.error(`[fire] CRITICAL: /status-set-fired failed after 3 attempts for key=${k.name} — DO payload still present, double-post risk if alarm re-fires via TTL`);
         }
         console.log(
           `[fire] ${k.name} fired (target=${webhookTarget} action=${action} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
@@ -1213,6 +1237,14 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
     const scheduledMs = Date.parse(entry.scheduled_at);
     if (isNaN(scheduledMs) || scheduledMs <= now) {
       // Passado ou inválido — deixar pro cron fallback
+      skippedPast++;
+      continue;
+    }
+
+    // (#2235 fix) Pular entries com tombstone (item cancelado via handleQueueDelete quando
+    // KV.delete falhou). Armar o alarm de um item cancelado causaria post-após-delete.
+    if ((entry as QueueEntry & { cancelled?: boolean }).cancelled) {
+      console.log(`[rearm] ${k.name} has tombstone (cancelled=true) — skipping re-arm`);
       skippedPast++;
       continue;
     }
