@@ -148,8 +148,9 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
     const cellA = result.find((r) => r.cell === "A")!;
     assert.equal(cellA.campaignCount, 3, "d03-A deve ser contabilizada (sent>0)");
     assert.ok(!isNaN(cellA.totalViews), "totalViews de A não deve ser NaN");
-    // d01-A (20) + d02-A (35) + d03-A (0 por undefined→0) = 55
-    assert.equal(cellA.totalViews, 55, "totalViews deve ser 55 (d03-A contribui 0, não NaN)");
+    // Opens orgânicos (#2253): d01-A (20−8=12) + d02-A (35−7=28) + d03-A (0 por
+    // uniqueViews undefined→0) = 40
+    assert.equal(cellA.totalViews, (20 - 8) + (35 - 7), "totalViews orgânico = 40 (d03-A contribui 0, não NaN)");
   });
 
   test("gs.delivered=undefined com gs.sent>0 → não produz NaN em openRate", () => {
