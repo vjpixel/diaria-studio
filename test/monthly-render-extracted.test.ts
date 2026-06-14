@@ -87,6 +87,14 @@ describe("normalizeKnownUrl — links de curadoria migrados (#2261)", () => {
     assert.equal(normalizeKnownUrl("https://exame.com/ia/x"), "https://exame.com/ia/x");
     assert.equal(normalizeKnownUrl("https://cursos.diaria.workers.dev"), "https://cursos.diaria.workers.dev");
   });
+  it("não faz over-match em sufixo com hífen (ex: -de-ia-2024)", () => {
+    const other = "https://diaria.beehiiv.com/cursos-gratuitos-de-ia-2024";
+    assert.equal(normalizeKnownUrl(other), other, "página diferente não deve ser reescrita");
+  });
+  it("aceita fim de segmento: trailing slash, ?query, #hash", () => {
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia/"), "https://cursos.diaria.workers.dev");
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia#x"), "https://cursos.diaria.workers.dev");
+  });
   it("renderInline aplica a normalização no href do link de curadoria", () => {
     const html = renderInline("[Cursos gratuitos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)");
     assert.match(html, /href="https:\/\/cursos\.diaria\.workers\.dev"/);

@@ -60,6 +60,28 @@ function renderTextInline(s: string): string {
 }
 
 /**
+ * #2261: normaliza URLs de curadoria que migraram de domínio. As páginas de
+ * cursos/livros saíram do Beehiiv (`diaria.beehiiv.com/cursos-gratuitos-de-ia`,
+ * `/livros-sobre-ia`) — que agora dão **404** — pros Workers atuais
+ * (`cursos.diaria.workers.dev`, `livros.diaria.workers.dev`, iguais ao diário).
+ * Aplicado em TODO href do render mensal (defensivo): mesmo que o draft do
+ * `writer-monthly` nasça com o link velho, o email sai com o correto — e o ciclo
+ * 2605-06 (cujo S2/S3 reusa este conteúdo) é corrigido sem reescrever o draft.
+ * O lookahead `(?=$|[/?#])` casa só o FIM do segmento (fim da string, `/`, `?`
+ * ou `#`) — NÃO um hífen de continuação (evita over-match em `...-de-ia-2024`).
+ * Adicionar aqui se outra página migrar.
+ */
+const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
+  [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia(?=$|[/?#])/i, "https://cursos.diaria.workers.dev"],
+  [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia(?=$|[/?#])/i, "https://livros.diaria.workers.dev"],
+];
+
+export function normalizeKnownUrl(url: string): string {
+  for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
+  return url;
+}
+
+/**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
  * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
  * só escapado, sem bold/italic, igual à diária.)
@@ -70,26 +92,6 @@ function renderTextInline(s: string): string {
  * `.../arquivo%20(1).pdf` — truncava o href e vazava `.pdf)` como texto puro.
  * Mesmo bug que o #1634 corrigiu na diária; a mensal nunca tinha recebido o fix.
  */
-/**
- * #2261: normaliza URLs de curadoria que migraram de domínio. As páginas de
- * cursos/livros saíram do Beehiiv (`diaria.beehiiv.com/cursos-gratuitos-de-ia`,
- * `/livros-sobre-ia`) — que agora dão **404** — pros Workers atuais
- * (`cursos.diaria.workers.dev`, `livros.diaria.workers.dev`, iguais ao diário).
- * Aplicado em TODO href do render mensal (defensivo): mesmo que o draft do
- * `writer-monthly` nasça com o link velho, o email sai com o correto — e o ciclo
- * 2605-06 (cujo S2/S3 reusa este conteúdo) é corrigido sem reescrever o draft.
- * Match por prefixo (ignora `?utm`/path). Adicionar aqui se outra página migrar.
- */
-const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
-  [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia\b.*/i, "https://cursos.diaria.workers.dev"],
-  [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia\b.*/i, "https://livros.diaria.workers.dev"],
-];
-
-export function normalizeKnownUrl(url: string): string {
-  for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
-  return url;
-}
-
 export function renderInline(text: string): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
