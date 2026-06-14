@@ -440,4 +440,25 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     assert.deepEqual(result[0].statistics?.linksStats, realLinks,
       "linksStats deve conter os clicks reais do GET single, não os zeros do combinado");
   });
+
+  test("#2249: 429 no GET de linksStats NÃO descarta o globalStats já obtido", async () => {
+    // Regressão da divisão em 2 GETs: se o 2º GET (linksStats) lança, o
+    // globalStats do 1º GET tem que persistir mesmo assim (try/catch próprio).
+    const { kv } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/42\?statistics=globalStats$/.test(path)) {
+        return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+      }
+      if (/emailCampaigns\/42\?statistics=linksStats/.test(path)) {
+        throw new Error("429"); // linksStats indisponível
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, true, mockFetch as any);
+    assert.strictEqual(result[0].statistics?.globalStats?.sent, 100,
+      "globalStats deve persistir mesmo com 429 no GET de linksStats");
+    assert.strictEqual(result[0].statistics?.linksStats, undefined,
+      "linksStats fica undefined quando seu GET falha (degrada graceful)");
+  });
 });

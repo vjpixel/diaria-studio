@@ -325,11 +325,21 @@ export async function fetchRecentCampaigns(
           env,
         );
         const gs = detail.statistics?.globalStats;
-        const linksDetail = await _fetchFn<BrevoCampaign>(
-          `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
-          env,
-        );
-        const ls = linksDetail.statistics?.linksStats;
+        // #2249: o GET de linksStats fica num try/catch PRÓPRIO — uma falha (429)
+        // aqui NÃO pode descartar o globalStats já obtido acima. Sem esse
+        // isolamento, um 429 no 2º GET cairia no catch externo e pularia o
+        // `globalStatsMap.set` lá embaixo, perdendo o gs que veio OK no 1º GET
+        // (regressão da divisão em 2 chamadas). ls fica undefined → fallback normal.
+        let ls: BrevoLinksStats | undefined;
+        try {
+          const linksDetail = await _fetchFn<BrevoCampaign>(
+            `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
+            env,
+          );
+          ls = linksDetail.statistics?.linksStats;
+        } catch {
+          // linksStats indisponível (429/erro) — gs segue válido; seção de links degrada
+        }
 
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
         // zerado em certas condicoes; persistir zerado sem TTL criaria entrada
