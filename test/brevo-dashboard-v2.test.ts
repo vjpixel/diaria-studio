@@ -248,24 +248,27 @@ describe("#2207-2: colspan no-stats — contagem de <th> só no <thead> da tabel
     const html = renderDashboardHtml([campaignWithLinks]);
 
     const campaignsSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.ok(campaignsSection.length > 0, "deve encontrar a seção campaigns-table no HTML");
+
     const thead = campaignsSection.match(/<thead>[\s\S]*?<\/thead>/)?.[0] ?? "";
+    assert.ok(thead.length > 0, "deve encontrar o <thead> dentro de campaigns-table");
 
     // O <thead> da tabela principal não deve conter class="link-url-th" (header da links-table)
     assert.doesNotMatch(thead, /link-url-th/,
       "<thead> da tabela de campanhas não deve conter <th> da links-table interna");
 
-    // Contar <th> no <thead> da tabela de campanhas (escopo restrito).
-    // Não usar magic number: em vez disso, provar que o <thead> viu MENOS <th>
-    // do que o HTML total — ou seja, os <th> das links-tables internas ficaram de fora.
-    // Se uma coluna for adicionada à campaigns table, o assertion continua válido
-    // (a links-table ainda tem seus próprios <th> no HTML completo).
+    // Contar <th> SOMENTE no <thead> escopado a campaigns-table — exclui links-tables aninhadas.
+    // Usar count exato (não `< totalThInHtml`) para pegar adição/remoção de coluna nesta tabela.
+    // Colunas actuais (11): ID | Lista | Enviado | Sent | Delivered | Opens | Trackable | Clicks | Bounces | Unsub | Spam
+    // Se uma coluna for adicionada ou removida, este teste QUEBRA — atualizar o número e esta lista.
+    const EXPECTED_CAMPAIGNS_TABLE_TH = 11;
     const thCount = (thead.match(/<th /g) ?? []).length;
-    assert.ok(thCount > 0, `<thead> deve ter pelo menos 1 <th>, encontrou ${thCount}`);
-    const totalThInHtml = (html.match(/<th /g) ?? []).length;
-    assert.ok(
-      thCount < totalThInHtml,
-      `<thead> da tabela de campanhas (${thCount} <th>) deve ter MENOS que o total do HTML ` +
-      `(${totalThInHtml} <th>) — links-table interna não deve ser contabilizada no <thead>`,
+    assert.equal(
+      thCount,
+      EXPECTED_CAMPAIGNS_TABLE_TH,
+      `<thead> da tabela de campanhas deve ter exatamente ${EXPECTED_CAMPAIGNS_TABLE_TH} <th> ` +
+      `(ID | Lista | Enviado | Sent | Delivered | Opens | Trackable | Clicks | Bounces | Unsub | Spam). ` +
+      `Encontrou ${thCount} — se adicionou/removeu coluna, atualizar EXPECTED_CAMPAIGNS_TABLE_TH e esta lista`,
     );
   });
 });

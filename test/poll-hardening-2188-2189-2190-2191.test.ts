@@ -274,14 +274,16 @@ describe("#2206 — score-by-month decrementa em true→false e não acumula no 
     assert.equal(body.updated_votes, 1, "o voto que mudou de true→false deve ser contado");
 
     // score global deve ter decrementado correct
-    const scoreRaw = await kv.get("score:mbm@x.com");
-    const score = JSON.parse(scoreRaw!);
+    const scoreRaw = await readKv(kv, "score:mbm@x.com");
+    const score = JSON.parse(scoreRaw);
     assert.equal(score.correct, 0, "score.correct global deve ser 0 (true→false)");
     assert.equal(score.total, 1, "score.total NÃO deve ser tocado pelo backfill");
+    // #2224 (#420): streak NÃO deve ser tocado pelo backfill (total e streak são invariantes)
+    assert.equal(score.streak, 1, "score.streak NÃO deve ser alterado pelo backfill true→false (era 1, deve permanecer 1)");
 
     // score-by-month DEVE ter decrementado correct (bug pré-#2206: ficava em 1)
-    const monthRaw = await kv.get("score-by-month:2026-06:mbm@x.com");
-    const monthly = JSON.parse(monthRaw!);
+    const monthRaw = await readKv(kv, "score-by-month:2026-06:mbm@x.com");
+    const monthly = JSON.parse(monthRaw);
     assert.equal(monthly.correct, 0, "score-by-month.correct deve ser 0 após true→false (acerto fantasma eliminado)");
     assert.equal(monthly.total, 1, "score-by-month.total NÃO deve ser tocado");
   });
