@@ -199,6 +199,52 @@ describe("aggregateAbcSummary", () => {
     // d03-A com sent=0 não deve entrar
     assert.equal(a.campaignCount, 2); // só d01-A e d02-A
   });
+
+  // Regressão #2252: a seção A/B/C inteira sumia quando o GET individual de
+  // globalStats falhava (429 transiente) pras campanhas S1 — aggregateAbcSummary
+  // era o único agregador de ciclo SEM fallback pra campaignStats[0]. Volume
+  // continuava (tem fallback), A/B/C sumia → sintoma assimétrico.
+  test("usa campaignStats[0] quando globalStats fetch falhou (fallback #2252)", () => {
+    const csOnlyCampaign = {
+      ...makeCampaign(60, "Clarice News 2605 d03-B (sex)", "2026-06-13T09:00:00Z"),
+      statistics: {
+        campaignStats: [{
+          listId: 160, sent: 200, delivered: 198,
+          hardBounces: 1, softBounces: 1, deferred: 0,
+          uniqueViews: 50, viewed: 60, trackableViews: 30,
+          uniqueClicks: 5, clickers: 5, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: undefined,
+      },
+    };
+    const result = aggregateAbcSummary([csOnlyCampaign], "2605");
+    const b = result.find((r) => r.cell === "B")!;
+    assert.equal(b.campaignCount, 1, "campanha com só campaignStats deve entrar no agregado");
+    assert.equal(b.totalViews, 50, "deve usar campaignStats.uniqueViews");
+    assert.equal(b.totalDelivered, 198, "deve usar campaignStats.delivered");
+    assert.ok(Math.abs(b.openRate - (50 / 198) * 100) < 0.01, `openRate esperado ~25.3% mas foi ${b.openRate}`);
+  });
+
+  // Sanidade do fallback: globalStats real (sent>0) tem precedência sobre campaignStats.
+  test("globalStats real tem precedência sobre campaignStats (#2252)", () => {
+    const bothCampaign = {
+      ...makeCampaign(61, "Clarice News 2605 d03-C (sex)", "2026-06-13T09:00:00Z", {
+        sent: 100, delivered: 99, uniqueViews: 40,
+      }),
+      statistics: {
+        campaignStats: [{
+          listId: 161, sent: 100, delivered: 99,
+          hardBounces: 0, softBounces: 0, deferred: 0,
+          uniqueViews: 10, viewed: 12, trackableViews: 8, // ← valor "errado" do campaignStats
+          uniqueClicks: 1, clickers: 1, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40 }),
+      },
+    };
+    const result = aggregateAbcSummary([bothCampaign], "2605");
+    const c = result.find((r) => r.cell === "C")!;
+    assert.equal(c.totalViews, 40, "deve preferir globalStats.uniqueViews (40), não campaignStats (10)");
+  });
 });
 
 // ─── calcCumulativeSent ───────────────────────────────────────────────────────

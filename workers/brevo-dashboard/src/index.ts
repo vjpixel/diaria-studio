@@ -1004,13 +1004,22 @@ export function aggregateAbcSummary(
     // S1 = d01–d07
     if (parsed.dayNum > 7) continue;
 
+    // #2252: mesmo fallback dos demais agregadores de ciclo (aggregateByWeekday,
+    // buildTrendRows, calcCumulativeSent): globalStats é o primário (inclui Apple
+    // MPP, bate com a UI da Brevo), mas cai pra campaignStats[0] quando o GET
+    // individual de globalStats falhou (429 transiente capturado em
+    // fetchRecentCampaigns) ou veio zerado. Sem esse fallback, a seção A/B/C
+    // INTEIRA sumia (renderAbcSection retorna "" quando todas as células zeram)
+    // enquanto Volume/Weekday/Tendência continuavam renderizando — sintoma
+    // assimétrico relatado. campaignStats também tem uniqueViews/delivered.
+    // #2199: `!(s.sent > 0)` cobre sent=0, undefined e null sem NaN nos acumuladores.
     const gs = c.statistics?.globalStats;
-    // #2199: same robust guard as aggregateByWeekday — `!(gs.sent > 0)` covers
-    // sent=0, sent=undefined, and sent=null, preventing NaN in accumulators.
-    if (!gs || !(gs.sent > 0)) continue;
+    const cs = c.statistics?.campaignStats?.[0];
+    const s = gs && gs.sent > 0 ? gs : cs;
+    if (!s || !(s.sent > 0)) continue;
 
-    cells[parsed.cell].views += gs.uniqueViews ?? 0;
-    cells[parsed.cell].delivered += gs.delivered ?? 0;
+    cells[parsed.cell].views += s.uniqueViews ?? 0;
+    cells[parsed.cell].delivered += s.delivered ?? 0;
     cells[parsed.cell].count += 1;
   }
 
