@@ -1544,9 +1544,13 @@ export function renderScheduledSection(
   const withDate = scheduled.filter((c) => c.scheduledAt);
   if (withDate.length === 0) return "";
 
-  const ordered = [...withDate].sort(
-    (a, b) => Date.parse(a.scheduledAt!) - Date.parse(b.scheduledAt!),
-  );
+  // Date.parse de string malformada → NaN; comparador com NaN dá ordem
+  // indeterminada. Tratamos NaN como 0 (vai pro início) — ordem determinística.
+  const ts = (s: string | null): number => {
+    const t = Date.parse(s ?? "");
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const ordered = [...withDate].sort((a, b) => ts(a.scheduledAt) - ts(b.scheduledAt));
 
   const rows = ordered
     .map((c) => {

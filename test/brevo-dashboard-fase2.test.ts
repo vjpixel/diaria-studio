@@ -1246,7 +1246,7 @@ describe("pickStats (#2254)", () => {
 
 describe("aggregateLinksAcrossCampaigns (#2249)", () => {
   const withLinks = (id: number, day: number, links: Record<string, number>) => ({
-    ...makeCampaign(id, `Clarice News 2605 d0${day}-A (x)`, "2026-06-1${day}T09:00:00Z"),
+    ...makeCampaign(id, `Clarice News 2605 d0${day}-A (x)`, `2026-06-1${day}T09:00:00Z`),
     statistics: { globalStats: makeGlobalStats({ sent: 100 }), linksStats: links },
   });
 
