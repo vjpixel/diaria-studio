@@ -13,9 +13,9 @@
  *   - appendHistory / loadHistoryEditions: idempotência do jsonl.
  */
 
-import { describe, it, before } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, appendFileSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, appendFileSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,6 +24,7 @@ import {
   computeNewH4Entries,
   computeH4Trend,
   loadCtrRowsH4,
+  loadScorerHighlights,
   loadHistoryEditions,
   appendHistory,
   loadHistory,
@@ -107,8 +108,8 @@ describe("spearmanRho", () => {
   it("ties concordantes: [70,70,80] vs [3,3,5] → rho = 1.000 (Pearson-on-ranks)", () => {
     // scorer [70,70,80] → ranks [2.5, 2.5, 1] (rank médio para empate)
     // ctr    [3, 3, 5]  → ranks [2.5, 2.5, 1] (mesmo padrão de empate)
-    // mean_rS = mean_rC = 2; cov = 0.25 + 0.25 + 1 / 3 = 0.5
-    // var_rS = var_rC = 0.5; rho = 0.5 / 0.5 = 1.000
+    // mean_rS = mean_rC = 2; cov = (0.25 + 0.25 + 1) / 3 = 0.5
+    // var_rS = var_rC = (0.25 + 0.25 + 1) / 3 = 0.5; rho = 0.5 / 0.5 = 1.000
     const rho = spearmanRho([70, 70, 80], [3, 3, 5]);
     assert.ok(rho !== null);
     assert.equal(+rho.toFixed(3), 1.0);
@@ -274,6 +275,65 @@ describe("computeEditionH4", () => {
   });
 });
 
+// ─── loadScorerHighlights — dedup de URLs (#2232) ───────────────────────────
+
+describe("loadScorerHighlights — dedup URL entre highlights[] e runners_up[]", () => {
+  let tmpDir: string;
+
+  before(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "h4-hl-"));
+  });
+
+  after(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("mesma URL em highlights e runners_up → conta 1x (dedup, highlights ganham prioridade)", () => {
+    // Cenário: scorer-select colocou a mesma URL em highlights[0] (score 90) e
+    // runners_up[0] (score 50 — valor distinto para detectar priority-inversion).
+    // Sem dedup, entraria 2x em candidates/matched → infla n_matches e duplica
+    // pontos no rho (#2232). Com dedup, o score do highlight (90) deve prevalecer.
+    const editionId = "990101";
+    const editionDir = join(tmpDir, editionId, "_internal");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      join(editionDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { url: "https://example.com/article", score: 90 },
+          { url: "https://b.com/news", score: 80 },
+          { url: "https://c.com/post", score: 70 },
+        ],
+        runners_up: [
+          // mesma URL do 1º highlight, mas score DIFERENTE (50) para detectar priority-inversion:
+          // se o runner_up sobrescrever o highlight, o score vira 50 em vez de 90.
+          { url: "https://example.com/article", score: 50 },
+          { url: "https://d.com/page", score: 60 },
+        ],
+      }),
+    );
+
+    const highlights = loadScorerHighlights(tmpDir, editionId);
+
+    assert.ok(highlights !== null, "deve retornar highlights");
+    const urls = highlights!.map((h) => h.url);
+    const uniqueUrls = new Set(urls);
+    assert.equal(
+      urls.length,
+      uniqueUrls.size,
+      `URLs duplicadas detectadas: ${JSON.stringify(urls)}`,
+    );
+    // URL da sobreposição deve aparecer exatamente 1x
+    const count = urls.filter((u) => u.includes("example.com")).length;
+    assert.equal(count, 1, "URL duplicada deve aparecer apenas 1x");
+    // Total = 4 URLs únicas (3 highlights + 1 runner_up novo "d.com", excluindo o duplicado)
+    assert.equal(urls.length, 4);
+    // Prioridade: o entry preservado deve ter o score do highlights[] (90), não do runners_up[] (50)
+    const preserved = highlights!.find((h) => h.url.includes("example.com"));
+    assert.equal(preserved?.score, 90, "highlights[] deve ter prioridade sobre runners_up[] no dedup");
+  });
+});
+
 // ─── computeNewH4Entries — idempotência ─────────────────────────────────────
 
 describe("computeNewH4Entries — idempotência", () => {
@@ -310,8 +370,81 @@ describe("computeNewH4Entries — idempotência", () => {
       7,
       new Date("2026-06-13"),
     );
-    // Pode retornar [], sem crash — o script é defensivo a data/ ausente
+    // Deve retornar [] sem crash — o script é defensivo a data/ ausente.
+    // Array.isArray + length=0 provam que não lançou e não computou nada espúrio.
     assert.ok(Array.isArray(entries));
+    assert.equal(entries.length, 0, "sem approved.json → nenhuma entry computada");
+  });
+});
+
+// ─── computeNewH4Entries — idempotência real (com fixture de approved.json) ──
+
+describe("computeNewH4Entries — guard alreadyComputed com fixture real (#2232)", () => {
+  // Testa que o guard alreadyComputed rejeita uma edição MESMO QUANDO approved.json
+  // existe e teria n_matches>=4 suficiente para computar. Sem esse teste, a idempotência
+  // passava trivialmente porque loadScorerHighlights retornava null (arquivo ausente) —
+  // o skip acontecia por "sem highlights", não pelo guard alreadyComputed (#2232).
+  let tmpDir: string;
+  const DATE = "2026-05-01";
+  const EDITION = "260501";
+
+  before(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "h4-idemp-"));
+    // Cria fixture com approved.json suficiente (4 highlights → n_matches=4 se CTR casar)
+    const editionDir = join(tmpDir, EDITION, "_internal");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      join(editionDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { url: "https://a.com/1", score: 90 },
+          { url: "https://b.com/2", score: 80 },
+          { url: "https://c.com/3", score: 70 },
+          { url: "https://d.com/4", score: 60 },
+        ],
+        runners_up: [],
+      }),
+    );
+  });
+
+  after(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const ctrRows: CtrRow[] = [
+    mkCtr(DATE, "https://a.com/1", 10),
+    mkCtr(DATE, "https://b.com/2", 8),
+    mkCtr(DATE, "https://c.com/3", 5),
+    mkCtr(DATE, "https://d.com/4", 2),
+  ];
+
+  it("edição em alreadyComputed → pulada mesmo com approved.json presente e CTR suficiente", () => {
+    // Com alreadyComputed contendo o EDITION, o guard deve pular ANTES de computar.
+    // Isso prova o guard alreadyComputed, não só "arquivo ausente → null".
+    const alreadyComputed = new Set([EDITION]);
+    const entries = computeNewH4Entries(
+      ctrRows,
+      tmpDir,
+      alreadyComputed,
+      0, // maturityDays=0 pra garantir que não é o filtro de maturidade que pula
+      new Date("2026-06-13"),
+    );
+    assert.equal(entries.length, 0, "edição em alreadyComputed NÃO deve ser recomputada");
+  });
+
+  it("edição fora de alreadyComputed → computada com approved.json real", () => {
+    // Com alreadyComputed vazio, deve computar e retornar entry para o EDITION.
+    const alreadyComputed = new Set<string>();
+    const entries = computeNewH4Entries(
+      ctrRows,
+      tmpDir,
+      alreadyComputed,
+      0, // maturityDays=0
+      new Date("2026-06-13"),
+    );
+    assert.equal(entries.length, 1, "deve computar 1 entry para o EDITION");
+    assert.equal(entries[0].edition, EDITION);
+    assert.equal(entries[0].n_matches, 4, "4 highlights × 4 CTR rows = n_matches=4");
   });
 });
 
@@ -399,14 +532,16 @@ describe("appendHistory e loadHistoryEditions — idempotência", () => {
     // Simula dois processos concorrentes que ambos chamam appendHistory([fakeEntry])
     // sem saber que o outro já escreveu (ambos leram alreadyComputed antes do write).
     // O fix: appendHistory re-lê o arquivo just-in-time e filtra duplicatas.
-    const p = historyPath.replace(/\\/g, "/");
-    appendHistory(p, [fakeEntry]); // 2ª chamada direta — deve ser filtrada
-    const content = readFileSync(historyPath, "utf8").trim().split("\n").filter(Boolean);
+    // Usa arquivo PRÓPRIO para não depender da ordem/estado do teste anterior (#2232).
+    const freshPath = join(dir, "idempotence-direct.jsonl").replace(/\\/g, "/");
+    appendHistory(freshPath, [fakeEntry]); // 1ª escrita
+    appendHistory(freshPath, [fakeEntry]); // 2ª chamada — deve ser filtrada
+    const content = readFileSync(freshPath, "utf8").trim().split("\n").filter(Boolean);
     assert.equal(content.length, 1, "arquivo deve ter exatamente 1 linha após append duplicado");
   });
 
-  it("cleanup", () => {
-    rmSync(dir, { recursive: true, force: true });
+  after(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
   });
 });
 

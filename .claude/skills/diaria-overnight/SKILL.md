@@ -162,9 +162,23 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
        echo "ABORT: query pós-loop falhou — tratar como CI vermelho/pendente."
        exit 1
      fi
+     # Guard de paginação em RESP2 (#2232): se uma thread foi adicionada DURANTE o loop de
+     # resolução (total passa de 100), RESP2 retorna só 100 e hasNextPage==true — thread #101
+     # não contada → false-green. Aplicar o mesmo abort da query pré-loop.
+     HAS_NEXT2=$(echo "$RESP2" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+     # Guard triplo: "true" = há próxima página; "null" = pageInfo ausente (resposta malformada);
+     # qualquer outro valor != "false" é conservador tratar como erro (#2232).
+     if [ "$HAS_NEXT2" != "false" ]; then
+       echo "ABORT: RESP2 hasNextPage=$HAS_NEXT2 — não é possível garantir gate seguro. Converter pra draft."
+       exit 1
+     fi
      UNRESOLVED_TOTAL=$(echo "$RESP2" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length')
      FORBIDDEN_COUNT=$(echo "$FORBIDDEN_TIDS" | wc -w)
-     UNRESOLVED_BLOQUEANTES=$((UNRESOLVED_TOTAL - FORBIDDEN_COUNT))
+     # max(0, ...) evita UNRESOLVED_BLOQUEANTES negativo quando uma FORBIDDEN é resolvida
+     # externamente entre o loop e RESP2 (#2232): a thread some de UNRESOLVED_TOTAL mas
+     # FORBIDDEN_COUNT ainda a conta → subtração negativa → false-RED.
+     _DIFF=$(( UNRESOLVED_TOTAL - FORBIDDEN_COUNT ))
+     UNRESOLVED_BLOQUEANTES=$(( _DIFF < 0 ? 0 : _DIFF ))
      # Gate da condição (2): passa se $UNRESOLVED_BLOQUEANTES == 0
      # Threads FORBIDDEN já anotadas no PR body — não bloqueiam o gate overnight,
      # mas o ruleset do GitHub (required_review_thread_resolution) pode ainda bloquear o merge:
