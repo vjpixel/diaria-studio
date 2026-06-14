@@ -15,8 +15,17 @@ id = "72784da4ae39444481eb422ebac357c6"
 name = "VOTE_DEDUP"
 class_name = "VoteDedup"
 
-# Migration obrigatória para new_classes (#2187).
-# Ao deploying pela primeira vez: wrangler deploy cria o namespace DO
+# #2223: Durable Object para serialização do contador stats edition-wide.
+# Elimina a race read-modify-write em stats:{edition} — sob burst, requests
+# concorrentes perdiam incrementos ao ler o mesmo valor stale no KV.
+# Instanciado por {brand}:{edition} — brand incluído para isolamento diaria×clarice.
+# Classe `StatsCounter` exportada de src/stats-counter.ts (re-exportada por index.ts).
+[[durable_objects.bindings]]
+name = "STATS_COUNTER"
+class_name = "StatsCounter"
+
+# Migration obrigatória para new_sqlite_classes (#2187, #2236).
+# Ao deploying pela primeira vez: wrangler deploy cria os namespaces DO
 # automaticamente. Não é necessário nenhuma ação manual além do deploy.
 # NÃO deployar sem esta migration — a ausência dela causaria erro 1102 do CF
 # ("No such binding" para DurableObjectNamespace) ao tentar usar o namespace.
@@ -26,6 +35,12 @@ tag = "v1-vote-dedup"
 # não new_classes (KV-backed, só plano pago) — erro 10097 no deploy. O
 # state.storage API é idêntico; nenhuma mudança de código no DO (#2236).
 new_sqlite_classes = ["VoteDedup"]
+
+# Migration para StatsCounter (#2223). Tag separada de v1 — migration tags são
+# cumulativas no CF; nova tag cobre apenas a classe nova. NÃO deployar sem isto.
+[[migrations]]
+tag = "v2-stats-counter"
+new_sqlite_classes = ["StatsCounter"]
 
 # Nota (#2187 finding #3): não há seção [env.staging] neste wrangler.toml.
 # O projeto poll não usa um ambiente staging separado — testes de integração
