@@ -277,14 +277,15 @@
 ### Saúde Digital News
 - URL: https://saudedigitalnews.com.br/
 - Site query: `site:saudedigitalnews.com.br`
-- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,saúde,healthtech,diagnóstico,hospitalar,digital health,gestão hospitalar,saude digital
+- RSS: https://saudedigitalnews.com.br/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,RAG,agente,agentic,chatbot,deep learning,transformer,generativa,multimodal,reasoning,fine-tuning,saúde,healthtech,diagnóstico,diagnostico,hospitalar,digital health,gestão hospitalar,gestao hospitalar,saude digital
 
 ### Finsiders Brasil
 - URL: https://finsidersbrasil.com.br/
 - Site query: `site:finsidersbrasil.com.br`
-- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,fintech,crédito,fraude,Open Finance,finanças,financial technology,fintechs
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,RAG,agente,agentic,chatbot,deep learning,transformer,generativa,multimodal,reasoning,fine-tuning,fintech,crédito,credito,fraude,Open Finance,finanças,financas,financial technology,fintechs
 
 ### Healthcare IT Today
 - URL: https://healthcareittoday.com/
 - Site query: `site:healthcareittoday.com`
-- Topic filter: AI,IA,artificial intelligence,machine learning,LLM,health IT,healthcare,EHR,clinical AI,hospital,digital health,health information technology
+- Topic filter: AI,IA,artificial intelligence,machine learning,LLM,GPT,Claude,Gemini,Llama,RAG,agent,agentic,chatbot,deep learning,transformer,generative,multimodal,reasoning,fine-tuning,healthcare IT,healthcare,health IT,EHR,clinical AI,hospital,digital health,health information technology
