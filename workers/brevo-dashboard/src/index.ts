@@ -397,7 +397,14 @@ export async function fetchRecentCampaigns(
  * #2268: retry com backoff em chamada que pode 429. O fetch de enviadas tolera
  * 429 por-campanha (fallback campaignStats), mas a listagem de agendadas não tem
  * fallback — sem retry, um 429 some com a seção inteira. Retenta respeitando o
- * `Retry-After` (clamp 1–5s), até `attempts`. `_sleep` injetável p/ teste.
+ * `Retry-After`, até `attempts`. `_sleep` injetável p/ teste.
+ *
+ * Clamp 1–5s NO ESPERA por chamada: cobre o caso comum (429 de BURST no início do
+ * fetch pesado de enviadas). NÃO sobrevive a um throttle SUSTENTADO (a Brevo já
+ * mandou Retry-After de 256s — clampamos pra não pendurar o request da dashboard
+ * 4min); nesse caso esgota as tentativas → o chamador cai no `.catch` (seção
+ * oculta + log). A mitigação primária do caso comum é o REORDER (buscar agendadas
+ * ANTES das enviadas, com a janela de rate-limit fresca) — ver a rota `/`.
  */
 export async function withRateLimitRetry<T>(
   fn: () => Promise<T>,
