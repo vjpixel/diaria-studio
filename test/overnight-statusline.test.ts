@@ -12,13 +12,16 @@
  *   - plan com 0 issues → string vazia
  *   - statuses precisa-resposta e bloqueada-externa são não-terminais (#2184/Finding 6)
  *   - pct usa Math.floor para não mostrar 100% com barra ainda visível (#2184/Finding 3)
- *   - OVERNIGHT_DIR_RE casa sufixo [a-z]* (260613b/c) (#2246 pt1)
+ *   - OVERNIGHT_DIR_RE casa sufixo [a-z]? (exatamente 1 letra — 260613b/c) (#2246 pt1)
  *   - readTodayPlan usa dir MAIS RECENTE, não sequestra por plan antigo (#2246 pt2)
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { renderOvernightBar, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { renderOvernightBar, readTodayPlan, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -178,8 +181,9 @@ describe("renderOvernightBar — rodada encerrada → 100% visível (#2246)", ()
   it("rodada encerrada: formato canônico [████████████] 100%  (N/N)", () => {
     const plan = makePlan(["mergeada", "mergeada"]);
     const result = renderOvernightBar(plan);
-    // Formato completo: [bar] 100%  (N/N)
-    assert.match(result, /^\[█+\] 100%  \(\d+\/\d+\)$/);
+    // Formato completo: [bar cheia de 12 █] 100%  (N/N)
+    // Nota: /[█+]/ seria char class (casa █ OU +) — usar {12} para exigir exatamente 12 blocos.
+    assert.match(result, /^\[█{12}\] 100%  \(\d+\/\d+\)$/);
   });
 });
 
@@ -285,9 +289,10 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
   });
 });
 
-// ─── #2200 + #2246 pt1: filtro AAMMDD[a-z]* em readTodayPlan ─────────────────
+// ─── #2200 + #2246 pt1: filtro AAMMDD[a-z]? em readTodayPlan ─────────────────
 // readTodayPlan filtra dirs por OVERNIGHT_DIR_RE antes de ler plan.json.
-// Fix #2246 pt1: regex atualizada para /^\d{6}[a-z]*$/ — casa sufixo de mesmo-dia.
+// Fix #2246 pt1: regex atualizada para /^\d{6}[a-z]?$/ — casa sufixo de 1 letra de mesmo-dia.
+// Dois sufixos (260613aa) não são aceitos — mis-ordenariam lexicograficamente.
 // Testamos OVERNIGHT_DIR_RE diretamente (importado de overnight-statusline.ts) para
 // garantir que o teste exercita o MESMO filtro que readTodayPlan usa, não uma cópia.
 
@@ -300,11 +305,14 @@ describe("filtro AAMMDD — OVERNIGHT_DIR_RE de overnight-statusline.ts", () => 
     assert.ok(OVERNIGHT_DIR_RE.test("000000"), "000000 (6 dígitos válidos, AAMMDD degenerate) deve ser aceito");
   });
 
-  // Fix #2246 pt1: sufixos de rodadas suplementares devem ser aceitos
-  it("aceita dirs com sufixo de rodada suplementar (AAMMDD[a-z]+)", () => {
+  // Fix #2246 pt1: sufixos de rodadas suplementares devem ser aceitos (exatamente 1 letra)
+  it("aceita dirs com sufixo de rodada suplementar (AAMMDD[a-z]? — 1 letra)", () => {
     assert.ok(OVERNIGHT_DIR_RE.test("260613b"), "260613b (rodada B) deve ser aceito");
     assert.ok(OVERNIGHT_DIR_RE.test("260613c"), "260613c (rodada C) deve ser aceito");
     assert.ok(OVERNIGHT_DIR_RE.test("260613z"), "260613z (rodada Z) deve ser aceito");
+    // Dois sufixos NÃO são aceitos — mis-ordenariam lexicograficamente
+    assert.ok(!OVERNIGHT_DIR_RE.test("260613aa"), "260613aa (2 letras) deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("260613bc"), "260613bc (2 letras) deve ser rejeitado");
   });
 
   it("rejeita dirs não-numéricos", () => {
@@ -351,11 +359,11 @@ describe("renderOvernightBar — #2246: plan da rodada mais recente (encerrada) 
     assert.ok(result.includes("(5/5)"), `deve mostrar (5/5): ${result}`);
   });
 
-  it("plan antigo com não-terminal NÃO sequestra quando plan mais-recente está terminal", () => {
-    // Este teste documenta a lógica correta: readTodayPlan deve retornar o plan
-    // mais-recente (260613c, terminal), não o antigo (260611, 45/47 não-terminal).
-    // Se readTodayPlan funcionar corretamente, renderOvernightBar recebe o plan
-    // mais-recente (encerrado) e mostra 100%. O plan antigo (não-terminal) é ignorado.
+  it("renderOvernightBar: plan recente (encerrado) mostra 100%, plan antigo (não-terminal) mostraria %parcial", () => {
+    // Este teste documenta a lógica correta de renderOvernightBar para os dois casos
+    // extremos: plan mais-recente (encerrado, todos terminais) e plan antigo (com não-terminal).
+    // A garantia de que readTodayPlan seleciona o mais-recente está no teste de integração
+    // "readTodayPlan: retorna plan do dir MAIS RECENTE" (seção abaixo).
     //
     // Simulação: comparamos o que acontece quando passamos o plan correto vs errado:
     const planAntigo = makePlan(Array(45).fill("mergeada").concat(["concluida-sem-pr", "elegivel"]));
@@ -404,5 +412,114 @@ describe("renderOvernightBar — pct usa Math.floor (Finding #3)", () => {
     // Math.floor(2/3 * 100) = Math.floor(66.67) = 66
     assert.ok(result.includes("66%"), `2/3 deve mostrar 66% com Math.floor: ${result}`);
     assert.ok(!result.includes("67%"), `2/3 não deve mostrar 67% (Math.round seria errado): ${result}`);
+  });
+});
+
+// ─── #2246 pt2: integração real — readTodayPlan lê dir mais recente ──────────
+// Reproduz o bug raiz: plan antigo (260611) com não-terminal sequestrava a barra
+// durante rodadas suplementares (260613b, 260613c) quando a regex era /[a-z]*/.
+// Sem o fix, readTodayPlan pegaria 260611 (primeiro com não-terminal) em vez de
+// 260613c (mais recente). Com o fix (sort desc + retorna o mais recente), pega 260613c.
+
+describe("readTodayPlan — integração com dirs reais (#2246 pt2)", () => {
+  // Cria um tmpdir exclusivo para este describe (limpo no after)
+  const tmpRoot = join(tmpdir(), `overnight-statusline-test-${Date.now()}`);
+
+  // Fixture: plan com issues terminais (rodada encerrada)
+  function makeTerminalPlan(n: number): string {
+    const issues = Array.from({ length: n }, (_, i) => ({
+      number: 1000 + i,
+      status: "mergeada",
+    }));
+    return JSON.stringify({ started_at: "2026-06-13T22:00:00.000Z", issues });
+  }
+
+  // Fixture: plan com pelo menos 1 issue não-terminal (rodada ativa ou antiga)
+  function makeActivePlan(done: number, total: number): string {
+    const issues = [
+      ...Array.from({ length: done }, (_, i) => ({ number: 1000 + i, status: "mergeada" })),
+      ...Array.from({ length: total - done }, (_, i) => ({ number: 2000 + i, status: "elegivel" })),
+    ];
+    return JSON.stringify({ started_at: "2026-06-11T22:00:00.000Z", issues });
+  }
+
+  // Cria estrutura:
+  //   {tmpRoot}/data/overnight/260611/plan.json   ← antigo, 45/47 não-terminal
+  //   {tmpRoot}/data/overnight/260613/plan.json   ← rodada base (encerrada)
+  //   {tmpRoot}/data/overnight/260613b/plan.json  ← rodada B (encerrada)
+  //   {tmpRoot}/data/overnight/260613c/plan.json  ← rodada C (mais recente, encerrada)
+  function createFixtureDirs(): void {
+    const overnightDir = join(tmpRoot, "data", "overnight");
+
+    // 260611: antigo, 45 terminais + 2 não-terminais → bug: sequestrava sem o fix
+    mkdirSync(join(overnightDir, "260611"), { recursive: true });
+    writeFileSync(join(overnightDir, "260611", "plan.json"), makeActivePlan(45, 47));
+
+    // 260613: rodada base, encerrada (3/3 terminais)
+    mkdirSync(join(overnightDir, "260613"), { recursive: true });
+    writeFileSync(join(overnightDir, "260613", "plan.json"), makeTerminalPlan(3));
+
+    // 260613b: rodada suplementar B, encerrada (5/5 terminais)
+    mkdirSync(join(overnightDir, "260613b"), { recursive: true });
+    writeFileSync(join(overnightDir, "260613b", "plan.json"), makeTerminalPlan(5));
+
+    // 260613c: rodada suplementar C (mais recente), encerrada (4/4 terminais)
+    mkdirSync(join(overnightDir, "260613c"), { recursive: true });
+    writeFileSync(join(overnightDir, "260613c", "plan.json"), makeTerminalPlan(4));
+  }
+
+  // Cria os dirs antes do primeiro it
+  createFixtureDirs();
+
+  after(() => {
+    // Limpa os tmp dirs no teardown — não em afterEach (os tests compartilham a estrutura)
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("retorna plan do dir MAIS RECENTE (260613c), NÃO do antigo com não-terminal (260611)", () => {
+    const plan = readTodayPlan(tmpRoot);
+
+    // Deve ter retornado o plan de 260613c: 4 issues, todas terminais
+    assert.ok(plan !== null, "plan não deve ser null");
+    assert.ok(Array.isArray(plan!.issues), "plan.issues deve ser array");
+    assert.equal(plan!.issues.length, 4, `260613c tem 4 issues, got ${plan!.issues.length}`);
+
+    // Todas as issues de 260613c são terminais → renderOvernightBar mostra 100%
+    const bar = renderOvernightBar(plan!);
+    assert.ok(bar.includes("100%"), `barra deve mostrar 100% (260613c encerrada): ${bar}`);
+    assert.ok(bar.includes("(4/4)"), `barra deve mostrar (4/4): ${bar}`);
+
+    // Bug de antes: plan antigo (260611, 45/47) NUNCA deve ser retornado quando há mais-recente
+    assert.ok(!bar.includes("(45/47)"), `plan antigo NÃO deve ser selecionado: ${bar}`);
+    assert.ok(!bar.includes("45/47"), `plan antigo NÃO deve aparecer na barra: ${bar}`);
+  });
+
+  it("ignora plan vazio (issues:[]) e avança para o próximo dir mais recente com issues", () => {
+    // Cria um dir mais recente que 260613c com plan vazio (sem issues)
+    const overnightDir = join(tmpRoot, "data", "overnight");
+    mkdirSync(join(overnightDir, "260613d"), { recursive: true });
+    writeFileSync(
+      join(overnightDir, "260613d", "plan.json"),
+      JSON.stringify({ started_at: "2026-06-13T23:00:00.000Z", issues: [] }),
+    );
+
+    const plan = readTodayPlan(tmpRoot);
+
+    // Plan vazio (260613d) é ignorado → retorna 260613c (4 issues)
+    assert.ok(plan !== null, "plan não deve ser null");
+    assert.equal(plan!.issues.length, 4, `deve pular o plan vazio e retornar 260613c (4 issues), got ${plan!.issues.length}`);
+  });
+
+  it("retorna null quando não há nenhum dir overnight com plan válido", () => {
+    // Cria um tmpdir isolado (sem nenhum plan)
+    const emptyRoot = join(tmpdir(), `overnight-empty-${Date.now()}`);
+    mkdirSync(join(emptyRoot, "data", "overnight"), { recursive: true });
+
+    try {
+      const plan = readTodayPlan(emptyRoot);
+      assert.equal(plan, null, "sem plans válidos deve retornar null");
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   });
 });

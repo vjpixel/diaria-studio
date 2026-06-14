@@ -59,9 +59,10 @@ export interface Plan {
 // ─── constantes ───────────────────────────────────────────────────────────────
 
 // Qualquer status fora deste Set é considerado não-terminal por exclusão (open-world contract).
-// Fix #2246 pt1: sufixo [a-z]* para casar rodadas suplementares (260613b, 260613c, …).
-// Ordenação lexicográfica garante 260613c > 260613b > 260613 > 260611 (sort desc = mais recente primeiro).
-export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]*$/;
+// Fix #2246 pt1: sufixo [a-z]? (zero ou UMA letra) para casar rodadas suplementares (260613b, 260613c, …).
+// Single-letter suffix garante ordenação lexicográfica correta: 260613c > 260613b > 260613 > 260611.
+// Dois sufixos (260613aa) mis-ordenariam lexicograficamente — não são gerados pelo pipeline.
+export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
 
@@ -109,17 +110,6 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
 // ─── helpers internos ─────────────────────────────────────────────────────────
 
 /**
- * Verifica se um plan tem pelo menos uma issue com status não-terminal.
- * Contrato open-world: qualquer status que NÃO esteja em TERMINAL_STATUSES
- * é considerado não-terminal — a lista de terminais é fechada (mergeada,
- * draft-ci-vermelho, pulada), todos os demais são não-terminais por exclusão.
- */
-function hasNonTerminalIssue(plan: Plan): boolean {
-  if (!Array.isArray(plan.issues)) return false;
-  return plan.issues.some((i) => !TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus));
-}
-
-/**
  * Lê e parseia o plan.json de um diretório de rodada. Retorna null em qualquer erro.
  */
 function readPlanFromDir(planPath: string): Plan | null {
@@ -150,7 +140,7 @@ function readPlanFromDir(planPath: string): Plan | null {
  * Isso é determinístico e não depende do relógio — corrige #2184/Finding 1 e
  * o bug de sequestro por plan antigo (#2246).
  */
-function readTodayPlan(cwd: string): Plan | null {
+export function readTodayPlan(cwd: string): Plan | null {
   try {
     const overnightDir = join(cwd, "data", "overnight");
     if (!existsSync(overnightDir)) return null;
