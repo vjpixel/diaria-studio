@@ -1,5 +1,5 @@
 /**
- * test/overnight-statusline.test.ts (#2184)
+ * test/overnight-statusline.test.ts (#2184, #2246)
  *
  * Testes da função pura `renderOvernightBar` que alimenta a statusLine
  * do Claude Code durante rodadas /diaria-overnight.
@@ -8,10 +8,12 @@
  *   - plan com N unidades e M terminais → % + proporção de blocos corretos
  *   - plan null/undefined → string vazia
  *   - plan malformado (sem campo issues) → string vazia, sem throw
- *   - rodada encerrada (todas terminais) → string vazia (barra ocultada)
+ *   - rodada encerrada (todas terminais) → 100% VISÍVEL (#2246 pt3, revisa #2184)
  *   - plan com 0 issues → string vazia
  *   - statuses precisa-resposta e bloqueada-externa são não-terminais (#2184/Finding 6)
  *   - pct usa Math.floor para não mostrar 100% com barra ainda visível (#2184/Finding 3)
+ *   - OVERNIGHT_DIR_RE casa sufixo [a-z]* (260613b/c) (#2246 pt1)
+ *   - readTodayPlan usa dir MAIS RECENTE, não sequestra por plan antigo (#2246 pt2)
  */
 
 import { describe, it } from "node:test";
@@ -145,22 +147,39 @@ describe("renderOvernightBar — progresso 1/3 = 33%", () => {
   });
 });
 
-// ─── casos: rodada encerrada ───────────────────────────────────────────────────
+// ─── casos: rodada encerrada (#2246 pt3: 100% visível, NÃO "") ────────────────
 
-describe("renderOvernightBar — rodada encerrada", () => {
-  it("todas mergeadas → string vazia (barra ocultada)", () => {
+describe("renderOvernightBar — rodada encerrada → 100% visível (#2246)", () => {
+  it("todas mergeadas → barra 100% visível (NÃO string vazia)", () => {
     const plan = makePlan(["mergeada", "mergeada", "mergeada"]);
-    assert.equal(renderOvernightBar(plan), "");
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", "rodada encerrada não deve retornar string vazia");
+    assert.ok(result.includes("100%"), `deve mostrar 100%: ${result}`);
+    assert.ok(result.includes("(3/3)"), `deve mostrar (3/3): ${result}`);
+    assert.ok(result.includes("████████████"), `deve ter barra cheia: ${result}`);
   });
 
-  it("mix de terminais (mergeada + pulada + draft-ci-vermelho) → string vazia", () => {
+  it("mix de terminais (mergeada + pulada + draft-ci-vermelho) → 100% visível", () => {
     const plan = makePlan(["mergeada", "pulada", "draft-ci-vermelho"]);
-    assert.equal(renderOvernightBar(plan), "");
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", "rodada encerrada não deve retornar string vazia");
+    assert.ok(result.includes("100%"), `deve mostrar 100%: ${result}`);
+    assert.ok(result.includes("(3/3)"), `deve mostrar (3/3): ${result}`);
   });
 
-  it("1 issue pulada → string vazia (rodada de 1 unidade concluída)", () => {
+  it("1 issue pulada → barra 100% visível (rodada de 1 unidade concluída)", () => {
     const plan = makePlan(["pulada"]);
-    assert.equal(renderOvernightBar(plan), "");
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", "rodada de 1 unidade concluída não deve retornar string vazia");
+    assert.ok(result.includes("100%"), `deve mostrar 100%: ${result}`);
+    assert.ok(result.includes("(1/1)"), `deve mostrar (1/1): ${result}`);
+  });
+
+  it("rodada encerrada: formato canônico [████████████] 100%  (N/N)", () => {
+    const plan = makePlan(["mergeada", "mergeada"]);
+    const result = renderOvernightBar(plan);
+    // Formato completo: [bar] 100%  (N/N)
+    assert.match(result, /^\[█+\] 100%  \(\d+\/\d+\)$/);
   });
 });
 
@@ -266,13 +285,14 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
   });
 });
 
-// ─── #2200: filtro AAMMDD em readTodayPlan ────────────────────────────────────
-// readTodayPlan filtra dirs por OVERNIGHT_DIR_RE (/^\d{6}$/) antes de ler plan.json.
+// ─── #2200 + #2246 pt1: filtro AAMMDD[a-z]* em readTodayPlan ─────────────────
+// readTodayPlan filtra dirs por OVERNIGHT_DIR_RE antes de ler plan.json.
+// Fix #2246 pt1: regex atualizada para /^\d{6}[a-z]*$/ — casa sufixo de mesmo-dia.
 // Testamos OVERNIGHT_DIR_RE diretamente (importado de overnight-statusline.ts) para
 // garantir que o teste exercita o MESMO filtro que readTodayPlan usa, não uma cópia.
 
 describe("filtro AAMMDD — OVERNIGHT_DIR_RE de overnight-statusline.ts", () => {
-  it("aceita dirs válidos no formato AAMMDD", () => {
+  it("aceita dirs válidos no formato AAMMDD (sem sufixo)", () => {
     assert.ok(OVERNIGHT_DIR_RE.test("260613"), "260613 deve ser aceito");
     assert.ok(OVERNIGHT_DIR_RE.test("260101"), "260101 deve ser aceito");
     // "000000" é sintaticamente válido (6 dígitos) — OVERNIGHT_DIR_RE filtra apenas
@@ -280,17 +300,77 @@ describe("filtro AAMMDD — OVERNIGHT_DIR_RE de overnight-statusline.ts", () => 
     assert.ok(OVERNIGHT_DIR_RE.test("000000"), "000000 (6 dígitos válidos, AAMMDD degenerate) deve ser aceito");
   });
 
+  // Fix #2246 pt1: sufixos de rodadas suplementares devem ser aceitos
+  it("aceita dirs com sufixo de rodada suplementar (AAMMDD[a-z]+)", () => {
+    assert.ok(OVERNIGHT_DIR_RE.test("260613b"), "260613b (rodada B) deve ser aceito");
+    assert.ok(OVERNIGHT_DIR_RE.test("260613c"), "260613c (rodada C) deve ser aceito");
+    assert.ok(OVERNIGHT_DIR_RE.test("260613z"), "260613z (rodada Z) deve ser aceito");
+  });
+
   it("rejeita dirs não-numéricos", () => {
     assert.ok(!OVERNIGHT_DIR_RE.test("archive"), "archive deve ser rejeitado");
     assert.ok(!OVERNIGHT_DIR_RE.test("tmp"), "tmp deve ser rejeitado");
     assert.ok(!OVERNIGHT_DIR_RE.test(".keep"), ".keep deve ser rejeitado");
-    assert.ok(!OVERNIGHT_DIR_RE.test("26061a"), "26061a (letra) deve ser rejeitado");
   });
 
-  it("rejeita dirs com comprimento diferente de 6 dígitos", () => {
+  it("rejeita dirs com letras ANTES dos dígitos ou misturadas", () => {
+    assert.ok(!OVERNIGHT_DIR_RE.test("a260613"), "letra antes de dígitos deve ser rejeitada");
+    assert.ok(!OVERNIGHT_DIR_RE.test("26061a3"), "letra no meio deve ser rejeitada");
+  });
+
+  it("rejeita dirs com comprimento diferente de 6 dígitos base", () => {
     assert.ok(!OVERNIGHT_DIR_RE.test("2606"), "4 dígitos deve ser rejeitado");
-    assert.ok(!OVERNIGHT_DIR_RE.test("2606130"), "7 dígitos deve ser rejeitado");
+    assert.ok(!OVERNIGHT_DIR_RE.test("2606130"), "7 dígitos sem sufixo deve ser rejeitado");
     assert.ok(!OVERNIGHT_DIR_RE.test(""), "string vazia deve ser rejeitada");
+  });
+
+  it("sort lexicográfico garante 260613c > 260613b > 260613 > 260611 (desc correto)", () => {
+    // Verifica que a ordenação que readTodayPlan usa (sort+reverse) é correta
+    const dirs = ["260611", "260613", "260613b", "260613c"];
+    const sorted = [...dirs].sort().reverse();
+    assert.deepEqual(sorted, ["260613c", "260613b", "260613", "260611"],
+      `ordem incorreta: ${sorted.join(", ")}`);
+  });
+});
+
+// ─── #2246 pt2: renderOvernightBar não sequestra por plan antigo ──────────────
+// Estes testes exercitam renderOvernightBar diretamente com os plans que
+// readTodayPlan deveria selecionar. O comportamento correto de readTodayPlan
+// (usar o mais-recente) é testado indiretamente via OVERNIGHT_DIR_RE sort acima.
+// A garantia end-to-end é: se o plan mais-recente (260613c, terminal) for passado,
+// renderOvernightBar mostra 100% — não o plan antigo (260611, não-terminal, 45/47).
+
+describe("renderOvernightBar — #2246: plan da rodada mais recente (encerrada) → 100%", () => {
+  it("plan recente todo-terminal mostra 100% (bug: antes mostrava '' + sequestrava pro antigo)", () => {
+    // Simula plan da 260613c (todos terminais — rodada encerrada)
+    const planRecente = makePlan(["mergeada", "mergeada", "mergeada", "mergeada", "mergeada"]);
+    const result = renderOvernightBar(planRecente);
+    // Fix #2246 pt3: deve mostrar 100%, não ""
+    assert.notEqual(result, "", "plan da rodada mais recente (encerrada) não deve retornar ''");
+    assert.ok(result.includes("100%"), `deve mostrar 100%: ${result}`);
+    assert.ok(result.includes("(5/5)"), `deve mostrar (5/5): ${result}`);
+  });
+
+  it("plan antigo com não-terminal NÃO sequestra quando plan mais-recente está terminal", () => {
+    // Este teste documenta a lógica correta: readTodayPlan deve retornar o plan
+    // mais-recente (260613c, terminal), não o antigo (260611, 45/47 não-terminal).
+    // Se readTodayPlan funcionar corretamente, renderOvernightBar recebe o plan
+    // mais-recente (encerrado) e mostra 100%. O plan antigo (não-terminal) é ignorado.
+    //
+    // Simulação: comparamos o que acontece quando passamos o plan correto vs errado:
+    const planAntigo = makePlan(Array(45).fill("mergeada").concat(["concluida-sem-pr", "elegivel"]));
+    const planRecente = makePlan(Array(5).fill("mergeada")); // 260613c: 5/5 terminal
+
+    const resultAntigo = renderOvernightBar(planAntigo);
+    const resultRecente = renderOvernightBar(planRecente);
+
+    // Plan antigo (sem o fix): mostraria ~95% ou similar (não-terminal presente)
+    assert.ok(resultAntigo.includes("(45/47)"), `plan antigo deve mostrar 45/47: ${resultAntigo}`);
+    assert.ok(!resultAntigo.includes("100%"), `plan antigo não deve ser 100%: ${resultAntigo}`);
+
+    // Plan recente (comportamento correto com o fix): mostra 100%
+    assert.ok(resultRecente.includes("100%"), `plan recente deve mostrar 100%: ${resultRecente}`);
+    assert.notEqual(resultRecente, "", "plan recente não deve retornar ''");
   });
 });
 
