@@ -136,26 +136,27 @@ describe("parseClariceCampaignKey", () => {
 // ─── aggregateAbcSummary ──────────────────────────────────────────────────────
 
 describe("aggregateAbcSummary", () => {
-  test("agrega open rate por célula corretamente (fixtures reais d01+d02)", () => {
+  test("agrega open rate ORGÂNICO (sem Apple MPP) por célula (fixtures reais d01+d02) (#2253)", () => {
     const result = aggregateAbcSummary(allCampaigns, "2605");
     const a = result.find((r) => r.cell === "A")!;
     const b = result.find((r) => r.cell === "B")!;
     const c = result.find((r) => r.cell === "C")!;
 
-    // A: d01-A (20 views / 115 del) + d02-A (35 views / 182 del) = 55/297
-    assert.equal(a.totalViews, 20 + 35);
+    // Opens orgânicos = uniqueViews − appleMppOpens (base homogênea pro comparativo).
+    // A: d01-A (20−8=12 / 115 del) + d02-A (35−7=28 / 182 del) = 40/297
+    assert.equal(a.totalViews, (20 - 8) + (35 - 7));
     assert.equal(a.totalDelivered, 115 + 182);
-    assert.ok(Math.abs(a.openRate - (55 / 297) * 100) < 0.01, `A openRate deve ser ~18.5% mas foi ${a.openRate}`);
+    assert.ok(Math.abs(a.openRate - (40 / 297) * 100) < 0.01, `A openRate deve ser ~13.5% mas foi ${a.openRate}`);
     assert.equal(a.campaignCount, 2);
 
-    // B: d01-B (32 views / 117 del) + d02-B (39 views / 182 del) = 71/299
-    assert.equal(b.totalViews, 32 + 39);
+    // B: d01-B (32−11=21 / 117 del) + d02-B (39−6=33 / 182 del) = 54/299
+    assert.equal(b.totalViews, (32 - 11) + (39 - 6));
     assert.equal(b.totalDelivered, 117 + 182);
-    assert.ok(Math.abs(b.openRate - (71 / 299) * 100) < 0.01);
+    assert.ok(Math.abs(b.openRate - (54 / 299) * 100) < 0.01);
     assert.equal(b.campaignCount, 2);
 
-    // C: d01-C (30 views / 115 del) + d02-C (30 views / 183 del) = 60/298
-    assert.equal(c.totalViews, 30 + 30);
+    // C: d01-C (30−10=20 / 115 del) + d02-C (30−7=23 / 183 del) = 43/298
+    assert.equal(c.totalViews, (30 - 10) + (30 - 7));
     assert.equal(c.totalDelivered, 115 + 183);
     assert.equal(c.campaignCount, 2);
   });
@@ -178,7 +179,7 @@ describe("aggregateAbcSummary", () => {
     const a = result.find((r) => r.cell === "A")!;
     // d08-A NÃO deve entrar: só d01-A e d02-A (count=2, não 3)
     assert.equal(a.campaignCount, 2);
-    assert.equal(a.totalViews, 20 + 35); // apenas d01-A + d02-A
+    assert.equal(a.totalViews, (20 - 8) + (35 - 7)); // apenas d01-A + d02-A, opens orgânicos
   });
 
   test("exclui campanhas T1 (não Clarice News) da agregação", () => {
@@ -229,7 +230,7 @@ describe("aggregateAbcSummary", () => {
   test("globalStats real tem precedência sobre campaignStats (#2252)", () => {
     const bothCampaign = {
       ...makeCampaign(61, "Clarice News 2605 d03-C (sex)", "2026-06-13T09:00:00Z", {
-        sent: 100, delivered: 99, uniqueViews: 40,
+        sent: 100, delivered: 99, uniqueViews: 40, appleMppOpens: 0,
       }),
       statistics: {
         campaignStats: [{
@@ -238,12 +239,43 @@ describe("aggregateAbcSummary", () => {
           uniqueViews: 10, viewed: 12, trackableViews: 8, // ← valor "errado" do campaignStats
           uniqueClicks: 1, clickers: 1, unsubscriptions: 0, complaints: 0,
         }],
-        globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40 }),
+        globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40, appleMppOpens: 0 }),
       },
     };
     const result = aggregateAbcSummary([bothCampaign], "2605");
     const c = result.find((r) => r.cell === "C")!;
-    assert.equal(c.totalViews, 40, "deve preferir globalStats.uniqueViews (40), não campaignStats (10)");
+    assert.equal(c.totalViews, 40, "deve preferir globalStats (40, MPP=0), não campaignStats (10)");
+  });
+
+  // #2253 (review): A/B/C usa opens ORGÂNICOS — globalStats.uniqueViews menos
+  // appleMppOpens — pra ter base homogênea entre células (campaignStats já é
+  // sem-MPP). Sem isso um 429 assimétrico misturaria MPP-inclusivo (uma célula)
+  // com MPP-exclusivo (outra) e enviesaria o LÍDER.
+  test("subtrai Apple MPP opens do globalStats (base orgânica) (#2253)", () => {
+    const mppCampaign = {
+      ...makeCampaign(62, "Clarice News 2605 d04-A (sab)", "2026-06-13T09:00:00Z"),
+      statistics: {
+        globalStats: makeGlobalStats({ sent: 100, delivered: 100, uniqueViews: 100, appleMppOpens: 30 }),
+      },
+    };
+    const result = aggregateAbcSummary([mppCampaign], "2605");
+    const a = result.find((r) => r.cell === "A")!;
+    assert.equal(a.totalViews, 70, "100 uniqueViews − 30 MPP = 70 opens orgânicos");
+    assert.ok(Math.abs(a.openRate - 70) < 0.01, `openRate orgânico = 70/100 = 70% mas foi ${a.openRate}`);
+  });
+
+  // Guarda contra views negativos: se appleMppOpens > uniqueViews (dado inconsistente
+  // da Brevo), clampa em 0 — nunca subtrai abaixo de zero.
+  test("clampa em 0 quando appleMppOpens > uniqueViews (#2253)", () => {
+    const weird = {
+      ...makeCampaign(63, "Clarice News 2605 d05-B (dom)", "2026-06-13T09:00:00Z"),
+      statistics: {
+        globalStats: makeGlobalStats({ sent: 100, delivered: 100, uniqueViews: 5, appleMppOpens: 20 }),
+      },
+    };
+    const result = aggregateAbcSummary([weird], "2605");
+    const b = result.find((r) => r.cell === "B")!;
+    assert.equal(b.totalViews, 0, "max(0, 5−20) = 0, nunca negativo");
   });
 });
 
@@ -1137,8 +1169,9 @@ describe("regressão #2199 Finding 1: aggregateAbcSummary exclui campanha com gs
     const cellA = result.find((r) => r.cell === "A")!;
     assert.equal(cellA.campaignCount, 2,
       "campanha com gs.sent=undefined deve ser excluída — count A deve ser 2, não 3");
-    // totalViews must equal only d01-A (20) + d02-A (35) = 55 (not +60 from the invalid campaign)
-    assert.equal(cellA.totalViews, 20 + 35,
-      "totalViews de A deve ser 55 (apenas d01-A+d02-A, excluindo campanha com gs.sent=undefined)");
+    // totalViews orgânico (#2253): d01-A (20−8=12) + d02-A (35−7=28) = 40
+    // (a campanha inválida com gs.sent=undefined não entra)
+    assert.equal(cellA.totalViews, (20 - 8) + (35 - 7),
+      "totalViews orgânico de A deve ser 40 (d01-A+d02-A sem MPP, excluindo gs.sent=undefined)");
   });
 });

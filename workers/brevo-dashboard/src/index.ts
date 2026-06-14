@@ -1004,21 +1004,32 @@ export function aggregateAbcSummary(
     // S1 = d01–d07
     if (parsed.dayNum > 7) continue;
 
-    // #2252: mesmo fallback dos demais agregadores de ciclo (aggregateByWeekday,
-    // buildTrendRows, calcCumulativeSent): globalStats é o primário (inclui Apple
-    // MPP, bate com a UI da Brevo), mas cai pra campaignStats[0] quando o GET
-    // individual de globalStats falhou (429 transiente capturado em
-    // fetchRecentCampaigns) ou veio zerado. Sem esse fallback, a seção A/B/C
-    // INTEIRA sumia (renderAbcSection retorna "" quando todas as células zeram)
-    // enquanto Volume/Weekday/Tendência continuavam renderizando — sintoma
-    // assimétrico relatado. campaignStats também tem uniqueViews/delivered.
-    // #2199: `!(s.sent > 0)` cobre sent=0, undefined e null sem NaN nos acumuladores.
+    // #2252: fallback globalStats → campaignStats[0] (como aggregateByWeekday,
+    // buildTrendRows, calcCumulativeSent) quando o GET individual de globalStats
+    // falhou (429 transiente capturado em fetchRecentCampaigns) ou veio zerado.
+    // Sem ele a seção A/B/C INTEIRA sumia (renderAbcSection retorna "" quando
+    // todas as células zeram) enquanto Volume/Weekday/Tendência continuavam.
+    // #2199: `!(s.sent > 0)` cobre sent=0, undefined e null sem NaN.
     const gs = c.statistics?.globalStats;
     const cs = c.statistics?.campaignStats?.[0];
-    const s = gs && gs.sent > 0 ? gs : cs;
+    const useGs = !!(gs && gs.sent > 0);
+    const s = useGs ? gs! : cs;
     if (!s || !(s.sent > 0)) continue;
 
-    cells[parsed.cell].views += s.uniqueViews ?? 0;
+    // #2252 (review de #2253): A/B/C é um comparativo head-to-head que elege o
+    // LÍDER, então a base de opens TEM que ser homogênea entre as células. O
+    // problema: globalStats.uniqueViews INCLUI Apple MPP opens (auto-opens do
+    // proxy de privacidade), campaignStats.uniqueViews NÃO. Misturar as fontes
+    // (ex: 429 assimétrico — célula A em globalStats, B em campaignStats)
+    // enviesaria o vencedor. Normalizamos TUDO pra base orgânica (sem MPP):
+    // subtraímos appleMppOpens do globalStats; campaignStats já é orgânico.
+    // Bônus: MPP opens são ruído num teste de SUBJECT LINE (não dependem do
+    // assunto) — removê-los torna a comparação mais significativa, não só justa.
+    const opens = useGs
+      ? Math.max(0, (gs!.uniqueViews ?? 0) - (gs!.appleMppOpens ?? 0))
+      : (cs!.uniqueViews ?? 0);
+
+    cells[parsed.cell].views += opens;
     cells[parsed.cell].delivered += s.delivered ?? 0;
     cells[parsed.cell].count += 1;
   }
@@ -1411,14 +1422,15 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
 <section class="phase2-section" id="abc-summary">
   <h2 class="section-title">Resumo A/B/C — S1 (d01–d07)</h2>
   <p class="section-note">${statusNote}</p>
+  <p class="section-note"><small>Opens orgânicos — <strong>sem Apple MPP</strong> (auto-opens não dependem do assunto). Por isso são menores que os da tabela de campanhas, que segue a UI da Brevo.</small></p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Célula do teste A/B/C">Célula</th>
-        <th title="Soma de aberturas únicas dos dias enviados">Opens (total)</th>
+        <th title="Soma de aberturas únicas ORGÂNICAS (sem Apple MPP) dos dias enviados — base homogênea pra comparar as células de forma justa">Opens (orgânico)</th>
         <th title="Soma de entregues dos dias enviados">Delivered (total)</th>
-        <th title="Open rate agregado: opens ÷ delivered">Open rate agr.</th>
+        <th title="Open rate orgânico agregado: opens sem Apple MPP ÷ delivered">Open rate agr.</th>
         <th title="Dias enviados contabilizados">Dias</th>
       </tr>
     </thead>
