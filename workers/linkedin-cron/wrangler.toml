@@ -30,7 +30,10 @@ class_name = "LinkedInScheduler"
 # ("No such binding" para DurableObjectNamespace).
 [[migrations]]
 tag = "v1-linkedin-scheduler"
-new_classes = ["LinkedInScheduler"]
+# Free plan do Cloudflare exige DO com storage SQLite (new_sqlite_classes),
+# não new_classes (KV-backed, só plano pago) — erro 10097 (#2236). state.storage
+# API idêntico. NOTA: este worker está em DEPLOY-HOLD (#2235) — não deployar ainda.
+new_sqlite_classes = ["LinkedInScheduler"]
 
 # Cron trigger — a cada 5 minutos (FALLBACK após #1168).
 # Histórico: PR #1167 mudou pra */3 como mitigação de lag observado no #1146
