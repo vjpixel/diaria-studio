@@ -1250,19 +1250,22 @@ describe("aggregateLinksAcrossCampaigns (#2249)", () => {
     statistics: { globalStats: makeGlobalStats({ sent: 100 }), linksStats: links },
   });
 
-  test("soma clicks por URL com statistics.linksStats populado (NÃO retorna vazio)", () => {
-    // Regressão #2249: a função estava sob suspeita, mas o repro prova que ela
-    // funciona com linksStats populado. A seção vazia em produção era o GET de
-    // linksStats falhando (429), não bug de agregação.
+  test("agrega por ORIGIN, soma paths/UTM do mesmo domínio (#2263) + filtra sistema (#2249)", () => {
+    // #2263: paths/query diferentes do MESMO domínio colapsam num origin só.
+    // #2249: a função funciona com linksStats populado (a seção vazia em produção
+    // era o GET de linksStats no param combinado retornando zerado — corrigido #2260).
     const rows = aggregateLinksAcrossCampaigns([
-      withLinks(90, 1, { "https://diaria.com.br/a": 12, "https://diaria.com.br/b": 5 }),
+      withLinks(90, 1, { "https://diaria.com.br/a?utm=x": 12, "https://diaria.com.br/b": 5 }),
       withLinks(91, 2, { "https://diaria.com.br/a": 8, "https://unsubscribe.brevo.com/x": 99 }),
     ]);
     assert.ok(rows.length > 0, "deve retornar links agregados, não vazio");
-    const a = rows.find((r) => r.url === "https://diaria.com.br/a")!;
-    assert.equal(a.totalClicks, 20, "12 + 8 somados");
-    assert.equal(a.campaignCount, 2);
+    const d = rows.find((r) => r.url === "https://diaria.com.br")!;
+    assert.ok(d, "agrupa por origin https://diaria.com.br");
+    assert.equal(d.totalClicks, 12 + 5 + 8, "soma a(12)+b(5)+a(8) do mesmo origin = 25");
+    assert.equal(d.campaignCount, 2, "2 campanhas (cada conta 1× por origin)");
+    assert.equal(d.displayUrl, "https://diaria.com.br", "exibe só o origin");
     assert.ok(!rows.some((r) => /unsubscribe/.test(r.url)), "links de sistema filtrados");
+    assert.ok(!rows.some((r) => r.url.includes("/a") || r.url.includes("/b") || r.url.includes("utm")), "sem path/query no resultado");
   });
 
   test("seção de links agregados é a 1ª seção do body (#2249)", () => {

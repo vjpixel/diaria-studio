@@ -650,40 +650,63 @@ export interface AggregatedLinkRow {
  * @param campaigns - lista de campanhas (todas, com statistics.linksStats populado)
  * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
  */
+/**
+ * #2263: extrai o ORIGIN (`scheme://host`, i.e. domínio+subdomínio) de uma URL,
+ * descartando path/query/UTM. Ex: `https://clarice.ai/?via=diaria&utm_...` →
+ * `https://clarice.ai`; `poll.diaria.workers.dev/vote?email={{ contact.EMAIL }}`
+ * → `https://poll.diaria.workers.dev`. Fallback (URL não-parseável) → a string
+ * original, pra não perder o link nem quebrar o render.
+ */
+export function urlOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
 export function aggregateLinksAcrossCampaigns(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
 ): AggregatedLinkRow[] {
-  const urlMap = new Map<string, { totalClicks: number; campaignCount: number }>();
+  // #2263: agrupado por ORIGIN (domínio+subdomínio), não URL completa. Detalhe
+  // por página fica no drill-down por campanha (#2177).
+  const originMap = new Map<string, { totalClicks: number; campaignCount: number }>();
 
   for (const c of campaigns) {
     // #2216 finding #4: getCampaignLinksStats helper elimina dual-source duplicado
     const linksStats = getCampaignLinksStats(c);
     if (!linksStats) continue;
 
+    // Soma por origin DENTRO desta campanha primeiro, pra contar a campanha UMA
+    // vez por origin (mesmo que ela tenha vários links do mesmo domínio).
+    const perOrigin = new Map<string, number>();
     for (const [url, clicks] of Object.entries(linksStats)) {
-      // Filtrar links de sistema reutilizando isSystemLink (sem duplicar lógica)
+      // Filtro de sistema sobre a URL COMPLETA (antes de reduzir a origin).
       if (isSystemLink(url)) continue;
       // #2216 finding #3: Number.isFinite guard — `clicks <= 0` é NaN-transparente
       // (NaN <= 0 é false, então NaN passaria o guard e acumularia em totalClicks).
-      // Paridade com parseLinksStats. Consistente com classe NaN do #2207.
       if (!Number.isFinite(clicks) || clicks <= 0) continue;
+      const origin = urlOrigin(url);
+      perOrigin.set(origin, (perOrigin.get(origin) ?? 0) + clicks);
+    }
 
-      const existing = urlMap.get(url);
+    for (const [origin, clicks] of perOrigin) {
+      const existing = originMap.get(origin);
       if (existing) {
         existing.totalClicks += clicks;
         existing.campaignCount += 1;
       } else {
-        urlMap.set(url, { totalClicks: clicks, campaignCount: 1 });
+        originMap.set(origin, { totalClicks: clicks, campaignCount: 1 });
       }
     }
   }
 
-  if (urlMap.size === 0) return [];
+  if (originMap.size === 0) return [];
 
-  return Array.from(urlMap.entries())
-    .map(([url, { totalClicks, campaignCount }]) => ({
-      url,
-      displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
+  return Array.from(originMap.entries())
+    .map(([origin, { totalClicks, campaignCount }]) => ({
+      url: origin,
+      displayUrl: origin, // #2263: origin já é curto — sem truncateUrl
       totalClicks,
       campaignCount,
     }))

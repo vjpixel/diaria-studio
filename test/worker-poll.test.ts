@@ -31,6 +31,7 @@ import {
   isBlacklistedNickname,
   nicknameHasContent,
   validateNickname,
+  isUnsubstitutedMergeTag,
 } from "../workers/poll/src/lib.ts";
 import {
   computeTop1,
@@ -1143,5 +1144,24 @@ describe("validação de apelidos (#1758)", () => {
       const res = await handleSetName(u, env);
       assert.equal(res.status, 403);
     });
+  });
+});
+
+describe("isUnsubstitutedMergeTag (#2262)", () => {
+  it("detecta Brevo mangled {{+contact.email+}} (o lixo do leaderboard)", () => {
+    assert.equal(isUnsubstitutedMergeTag("{{+contact.email+}}"), true);
+  });
+  it("detecta Brevo {{ contact.EMAIL }} e Beehiiv {{ subscriber.email }} / {{email}}", () => {
+    assert.equal(isUnsubstitutedMergeTag("{{ contact.email }}"), true);
+    assert.equal(isUnsubstitutedMergeTag("{{ subscriber.email }}"), true);
+    assert.equal(isUnsubstitutedMergeTag("{{email}}"), true);
+  });
+  it("detecta abertura OU fechamento parcial (defensivo)", () => {
+    assert.equal(isUnsubstitutedMergeTag("foo{{bar"), true);
+    assert.equal(isUnsubstitutedMergeTag("bar}}baz"), true);
+  });
+  it("email real NÃO é flagado", () => {
+    assert.equal(isUnsubstitutedMergeTag("rejane.emilio@gmail.com"), false);
+    assert.equal(isUnsubstitutedMergeTag("a+tag@dominio.com.br"), false);
   });
 });

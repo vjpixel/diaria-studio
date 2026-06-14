@@ -173,10 +173,11 @@ import {
   htmlEscape,
   parseValidEditions,
   isValidEdition,
+  isUnsubstitutedMergeTag,
   redirectTargetForTrailingSlash,
   classify403Reason,
 } from "./lib";
-export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, redirectTargetForTrailingSlash, classify403Reason } from "./lib";
+export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, isUnsubstitutedMergeTag, redirectTargetForTrailingSlash, classify403Reason } from "./lib";
 
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
@@ -214,6 +215,12 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
 
   if (!email || !edition || !choice) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #2262: rejeita merge tag NÃO-substituída como email (vira voto-lixo no
+  // leaderboard público). Helper testável `isUnsubstitutedMergeTag` em ./lib.
+  if (isUnsubstitutedMergeTag(email)) {
+    return voteHtmlResponse(votePageHtml("Link inválido — abra o voto pelo botão no email.", false, null, null, null, brand), 400);
   }
 
   if (!["A", "B"].includes(choice)) {
