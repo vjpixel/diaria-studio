@@ -957,9 +957,17 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
     // (#2230 bug 2 fix) Verificar tombstone de cancelamento.
     // Se handleQueueDelete gravou um tombstone (cancelled=true) porque o KV.delete
     // falhou após o DO cancel, o cron deve pular e limpar esta entry sem postar.
-    if ((entry as QueueEntry & { cancelled?: boolean }).cancelled) {
+    if (entry.cancelled) {
+      // (#2235 fix F5) Garantir DO /cancel best-effort ao limpar tombstone: mesmo que o DO
+      // cancel já tenha sido feito no handleQueueDelete, o DO pode ter re-armado (rearm).
+      // Limpar o payload do DO ao remover o tombstone é a defesa final contra post-após-delete.
+      try {
+        const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+        const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+        await doStub.fetch("https://do/cancel", { method: "POST" });
+      } catch { /* non-fatal — DO pode não estar disponível */ }
       await env.LINKEDIN_QUEUE.delete(k.name);
-      console.log(`[fire] ${k.name} is a cancellation tombstone — deleted without firing`);
+      console.log(`[fire] ${k.name} is a cancellation tombstone — DO cancelled + deleted without firing`);
       continue;
     }
 
@@ -1096,30 +1104,52 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
         //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
         // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
         // presente → cron pode re-clamar via TTL e re-postar (double-post).
-        // O comentário anterior "alarm não poderá re-disparar sem KV entry" estava ERRADO
-        // (#2235): alarm lê DO storage, não KV. Fix: /status-set-fired agora inclui
-        // payload delete (já no endpoint) e o cron usa retry de 3x para garantir persistência.
+        //
+        // (#2235 fix F8) DO stub içado pra fora do loop: idFromName()+get() é O(1) mas
+        // chamado 3× no loop original sem necessidade — içar evita redundância e simplifica.
         let firedSetOk = false;
+        let sfDoStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> } | null = null;
+        try {
+          const sfDoId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+          sfDoStub = env.LINKEDIN_SCHEDULER.get(sfDoId);
+        } catch { /* binding ausente — sfDoStub permanece null */ }
         for (let attempt = 0; attempt < 3; attempt++) {
+          if (!sfDoStub) break;
           try {
-            const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-            const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-            const sfRes = await doStub.fetch("https://do/status-set-fired", { method: "POST" });
+            const sfRes = await sfDoStub.fetch("https://do/status-set-fired", { method: "POST" });
             if (sfRes.ok) {
               firedSetOk = true;
               break;
             }
             console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${k.name}`);
           } catch (sfErr) {
-            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${(sfErr as Error).message}`);
+            // (#2235 fix F9) String(sfErr) em vez de (sfErr as Error).message — undefined pra não-Error
+            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${String(sfErr)}`);
           }
           if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
         }
         if (!firedSetOk) {
           // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
-          // Risco: se claim expirar (TTL 5min) e alarm re-disparar, ele vai re-clamar e
-          // tentar postar (payload ainda presente). Logar crítico pra investigação do editor.
-          console.error(`[fire] CRITICAL: /status-set-fired failed after 3 attempts for key=${k.name} — DO payload still present, double-post risk if alarm re-fires via TTL`);
+          // (#2235 fix F1) Chamar /cancel best-effort: sem payload, alarm re-entry não tem o quê
+          // postar mesmo que re-claime via TTL. Invariante: payload limpo ⇒ sem re-post.
+          // Se /cancel também falhar, NÃO há mais o que fazer (KV já deletado) — logar crítico.
+          let cancelledViaCancel = false;
+          if (sfDoStub) {
+            try {
+              const cancelRes = await sfDoStub.fetch("https://do/cancel", { method: "POST" });
+              cancelledViaCancel = cancelRes.ok;
+              if (cancelRes.ok) {
+                console.warn(`[fire] /status-set-fired failed after 3 attempts for key=${k.name} — called /cancel to clear payload (double-post prevention)`);
+              } else {
+                console.error(`[fire] CRITICAL: /status-set-fired AND /cancel failed for key=${k.name} status=${cancelRes.status} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+              }
+            } catch (cancelErr) {
+              console.error(`[fire] CRITICAL: /status-set-fired AND /cancel threw for key=${k.name}: ${String(cancelErr)} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+            }
+          } else {
+            console.error(`[fire] CRITICAL: /status-set-fired skipped (DO binding absent) for key=${k.name} — double-post risk if alarm re-fires via TTL`);
+          }
+          void cancelledViaCancel; // loggado acima
         }
         console.log(
           `[fire] ${k.name} fired (target=${webhookTarget} action=${action} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
@@ -1209,7 +1239,7 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
  * Só processa items com scheduledMs no FUTURO — items já vencidos são deixados
  * pro cron fallback (que roda a cada cron-5min e vai disparar na próxima rodada).
  *
- * Resposta: { rearmed: number, skipped_past: number, failed: number }
+ * Resposta: { rearmed: number, skipped_past: number, skipped_tombstone: number, failed: number }
  */
 async function handleRearm(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
@@ -1220,6 +1250,9 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
   const list = await env.LINKEDIN_QUEUE.list({ prefix: "queue:" });
   let rearmed = 0;
   let skippedPast = 0;
+  // (#2235 fix F10) Separar tombstones de items passados pra observabilidade.
+  // skippedPast = item passado (scheduled_at <= now); skipped_tombstone = cancelled=true.
+  let skippedTombstone = 0;
   let failed = 0;
 
   for (const k of list.keys) {
@@ -1241,11 +1274,20 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
       continue;
     }
 
-    // (#2235 fix) Pular entries com tombstone (item cancelado via handleQueueDelete quando
-    // KV.delete falhou). Armar o alarm de um item cancelado causaria post-após-delete.
-    if ((entry as QueueEntry & { cancelled?: boolean }).cancelled) {
-      console.log(`[rearm] ${k.name} has tombstone (cancelled=true) — skipping re-arm`);
-      skippedPast++;
+    // (#2235 fix F4) Tombstones com scheduled_at futuro acumulam no KV porque nem
+    // o cron (não são processados — cancelamento impediu post), nem o rearm anterior
+    // (só pulava sem deletar) os limpavam. Fix: ao encontrar tombstone com scheduled_at
+    // futuro, deletar (item já cancelado — não tem porquê re-armar).
+    // Redundante com o cron cleanup (que cobre tombstones passados), mas essencial
+    // pra limpar tombstones que ainda estão no futuro (cron não os toca até a hora).
+    if (entry.cancelled) {
+      console.log(`[rearm] ${k.name} has tombstone (cancelled=true) — deleting to prevent accumulation`);
+      try {
+        await env.LINKEDIN_QUEUE.delete(k.name);
+      } catch (delErr) {
+        console.warn(`[rearm] failed to delete tombstone ${k.name}: ${String(delErr)}`);
+      }
+      skippedTombstone++;
       continue;
     }
 
@@ -1278,7 +1320,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  return json({ rearmed, skipped_past: skippedPast, failed });
+  return json({ rearmed, skipped_past: skippedPast, skipped_tombstone: skippedTombstone, failed });
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────
