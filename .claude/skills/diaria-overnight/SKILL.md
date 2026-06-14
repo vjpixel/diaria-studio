@@ -166,8 +166,10 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
      # resolução (total passa de 100), RESP2 retorna só 100 e hasNextPage==true — thread #101
      # não contada → false-green. Aplicar o mesmo abort da query pré-loop.
      HAS_NEXT2=$(echo "$RESP2" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
-     if [ "$HAS_NEXT2" = "true" ]; then
-       echo "ABORT: RESP2 tem >100 threads — não é possível garantir gate seguro. Converter pra draft."
+     # Guard triplo: "true" = há próxima página; "null" = pageInfo ausente (resposta malformada);
+     # qualquer outro valor != "false" é conservador tratar como erro (#2232).
+     if [ "$HAS_NEXT2" != "false" ]; then
+       echo "ABORT: RESP2 hasNextPage=$HAS_NEXT2 — não é possível garantir gate seguro. Converter pra draft."
        exit 1
      fi
      UNRESOLVED_TOTAL=$(echo "$RESP2" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length')

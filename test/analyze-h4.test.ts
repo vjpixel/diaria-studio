@@ -290,8 +290,9 @@ describe("loadScorerHighlights — dedup URL entre highlights[] e runners_up[]",
 
   it("mesma URL em highlights e runners_up → conta 1x (dedup, highlights ganham prioridade)", () => {
     // Cenário: scorer-select colocou a mesma URL em highlights[0] (score 90) e
-    // runners_up[0] (score 90 — edge de cópia acidental). Sem dedup, entraria 2x em
-    // candidates/matched → infla n_matches e duplica pontos no rho (#2232).
+    // runners_up[0] (score 50 — valor distinto para detectar priority-inversion).
+    // Sem dedup, entraria 2x em candidates/matched → infla n_matches e duplica
+    // pontos no rho (#2232). Com dedup, o score do highlight (90) deve prevalecer.
     const editionId = "990101";
     const editionDir = join(tmpDir, editionId, "_internal");
     mkdirSync(editionDir, { recursive: true });
@@ -304,8 +305,9 @@ describe("loadScorerHighlights — dedup URL entre highlights[] e runners_up[]",
           { url: "https://c.com/post", score: 70 },
         ],
         runners_up: [
-          // mesma URL do 1º highlight — deve ser deduplicada
-          { url: "https://example.com/article", score: 90 },
+          // mesma URL do 1º highlight, mas score DIFERENTE (50) para detectar priority-inversion:
+          // se o runner_up sobrescrever o highlight, o score vira 50 em vez de 90.
+          { url: "https://example.com/article", score: 50 },
           { url: "https://d.com/page", score: 60 },
         ],
       }),
@@ -326,6 +328,9 @@ describe("loadScorerHighlights — dedup URL entre highlights[] e runners_up[]",
     assert.equal(count, 1, "URL duplicada deve aparecer apenas 1x");
     // Total = 4 URLs únicas (3 highlights + 1 runner_up novo "d.com", excluindo o duplicado)
     assert.equal(urls.length, 4);
+    // Prioridade: o entry preservado deve ter o score do highlights[] (90), não do runners_up[] (50)
+    const preserved = highlights!.find((h) => h.url.includes("example.com"));
+    assert.equal(preserved?.score, 90, "highlights[] deve ter prioridade sobre runners_up[] no dedup");
   });
 });
 
@@ -365,8 +370,10 @@ describe("computeNewH4Entries — idempotência", () => {
       7,
       new Date("2026-06-13"),
     );
-    // Pode retornar [], sem crash — o script é defensivo a data/ ausente
+    // Deve retornar [] sem crash — o script é defensivo a data/ ausente.
+    // Array.isArray + length=0 provam que não lançou e não computou nada espúrio.
     assert.ok(Array.isArray(entries));
+    assert.equal(entries.length, 0, "sem approved.json → nenhuma entry computada");
   });
 });
 
