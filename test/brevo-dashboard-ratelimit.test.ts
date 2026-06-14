@@ -17,6 +17,8 @@ import {
   isImmutableCampaign,
   BrevoRateLimitError,
   fetchRecentCampaigns,
+  fetchScheduledCampaigns,
+  withRateLimitRetry,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── mapLimit ────────────────────────────────────────────────────────────────
@@ -460,5 +462,64 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       "globalStats deve persistir mesmo com 429 no GET de linksStats");
     assert.strictEqual(result[0].statistics?.linksStats, undefined,
       "linksStats fica undefined quando seu GET falha (degrada graceful)");
+  });
+});
+
+// ─── #2268: resiliência da seção de campanhas agendadas ──────────────────────
+
+describe("withRateLimitRetry (#2268)", () => {
+  const noSleep = async () => {};
+
+  test("retenta em BrevoRateLimitError e sucede na 2ª tentativa", async () => {
+    let calls = 0;
+    const out = await withRateLimitRetry(async () => {
+      calls++;
+      if (calls === 1) throw new BrevoRateLimitError(1);
+      return "ok";
+    }, 3, noSleep);
+    assert.strictEqual(out, "ok");
+    assert.strictEqual(calls, 2, "1 falha + 1 sucesso");
+  });
+
+  test("propaga após esgotar as tentativas (sempre 429)", async () => {
+    let calls = 0;
+    await assert.rejects(
+      () => withRateLimitRetry(async () => { calls++; throw new BrevoRateLimitError(1); }, 3, noSleep),
+      (e: unknown) => e instanceof BrevoRateLimitError,
+    );
+    assert.strictEqual(calls, 3, "tenta `attempts` vezes");
+  });
+
+  test("NÃO retenta erro que não é rate-limit (propaga na hora)", async () => {
+    let calls = 0;
+    await assert.rejects(
+      () => withRateLimitRetry(async () => { calls++; throw new Error("boom"); }, 3, noSleep),
+      /boom/,
+    );
+    assert.strictEqual(calls, 1, "erro não-429 não retenta");
+  });
+});
+
+describe("fetchScheduledCampaigns retenta a listagem em 429 (#2268)", () => {
+  test("429 na 1ª chamada da listagem queued → retry → retorna as campanhas", async () => {
+    let listCalls = 0;
+    const queued = {
+      id: 57, name: "Clarice News 2605 d07-B (ter)", subject: "s", status: "queued",
+      sentDate: null, scheduledAt: "2026-06-16T09:05:00Z", createdAt: "x", recipients: { lists: [56] },
+    };
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=queued")) {
+        listCalls++;
+        if (listCalls === 1) throw new BrevoRateLimitError(1); // 1º 429
+        return { campaigns: [queued] } as T;
+      }
+      if (path.includes("contacts/lists/")) throw new Error("404"); // sem nome de lista — tolerado
+      throw new Error("path inesperado: " + path);
+    };
+    // sem KV (env mínimo) — força fetch da lista (que 404a, tolerado no try/catch interno)
+    const result = await fetchScheduledCampaigns({ BREVO_API_KEY: "t" } as any, 50, true, mockFetch as any);
+    assert.strictEqual(listCalls, 2, "listagem retentada após 429");
+    assert.strictEqual(result.length, 1, "retorna a campanha agendada após o retry");
+    assert.strictEqual(result[0].id, 57);
   });
 });

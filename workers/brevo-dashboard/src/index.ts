@@ -394,12 +394,35 @@ export async function fetchRecentCampaigns(
 }
 
 /**
+ * #2268: retry com backoff em chamada que pode 429. O fetch de enviadas tolera
+ * 429 por-campanha (fallback campaignStats), mas a listagem de agendadas não tem
+ * fallback — sem retry, um 429 some com a seção inteira. Retenta respeitando o
+ * `Retry-After` (clamp 1–5s), até `attempts`. `_sleep` injetável p/ teste.
+ */
+export async function withRateLimitRetry<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  _sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= attempts - 1 || !(e instanceof BrevoRateLimitError)) throw e;
+      const waitS = Math.min(Math.max(e.retryAfterSecs ?? 2, 1), 5);
+      await _sleep(waitS * 1000);
+    }
+  }
+}
+
+/**
  * #2251: busca campanhas AGENDADAS (status=queued) + enriquece com nome/tamanho
  * da lista. Função separada de fetchRecentCampaigns de propósito: campanhas
  * agendadas não têm stats (globalStats/linksStats), então pulamos todo o batch
  * de enrich de stats — e mantemos `status=sent` intocado pra não poluir os
- * agregadores de enviadas. `sort=asc`: próximo envio primeiro. Falha de fetch
- * é responsabilidade do chamador tratar (degrada pra [] → seção oculta).
+ * agregadores de enviadas. `sort=asc`: próximo envio primeiro.
+ * #2268: a listagem `queued` retenta em 429 (withRateLimitRetry) — sem isso a
+ * seção sumia silenciosamente sob pressão de rate-limit.
  */
 export async function fetchScheduledCampaigns(
   env: Env,
@@ -407,9 +430,11 @@ export async function fetchScheduledCampaigns(
   isFresh = false,
   _fetchFn: typeof brevoFetch = brevoFetch,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
-  const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
-    `/v3/emailCampaigns?status=queued&limit=${limit}&sort=asc`,
-    env,
+  const data = await withRateLimitRetry(() =>
+    _fetchFn<{ campaigns: BrevoCampaign[] }>(
+      `/v3/emailCampaigns?status=queued&limit=${limit}&sort=asc`,
+      env,
+    ),
   );
   const campaigns = data.campaigns ?? [];
   const listIds = [...new Set(campaigns.flatMap((c) => c.recipients?.lists ?? []))];
@@ -1774,9 +1799,16 @@ export default {
 
     if (path === "/" || path === "/index.html") {
       try {
+        // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
+        // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
+        // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
+        // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
+        // já retenta a listagem em 429 internamente (#2268).
+        const scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+          console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
+          return [];
+        });
         const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
-        // #2251: agendadas em paralelo; falha degrada pra [] → seção oculta, nunca quebra a dashboard.
-        const scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch(() => []);
         const html = renderDashboardHtml(campaigns, scheduled);
         const response = new Response(html, {
           headers: {
