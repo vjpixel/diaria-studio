@@ -372,6 +372,57 @@ export async function fetchRecentCampaigns(
   });
 }
 
+/**
+ * #2251: busca campanhas AGENDADAS (status=queued) + enriquece com nome/tamanho
+ * da lista. Função separada de fetchRecentCampaigns de propósito: campanhas
+ * agendadas não têm stats (globalStats/linksStats), então pulamos todo o batch
+ * de enrich de stats — e mantemos `status=sent` intocado pra não poluir os
+ * agregadores de enviadas. `sort=asc`: próximo envio primeiro. Falha de fetch
+ * é responsabilidade do chamador tratar (degrada pra [] → seção oculta).
+ */
+export async function fetchScheduledCampaigns(
+  env: Env,
+  limit = 50,
+  isFresh = false,
+  _fetchFn: typeof brevoFetch = brevoFetch,
+): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
+  const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
+    `/v3/emailCampaigns?status=queued&limit=${limit}&sort=asc`,
+    env,
+  );
+  const campaigns = data.campaigns ?? [];
+  const listIds = [...new Set(campaigns.flatMap((c) => c.recipients?.lists ?? []))];
+  const listMap = new Map<number, BrevoList>();
+  // Reusa o MESMO KV cache de nomes de lista (`list:{id}`, TTL 7d) que
+  // fetchRecentCampaigns popula — agendadas e enviadas compartilham listas.
+  await mapLimit(listIds, 5, async (id) => {
+    try {
+      const kvKey = `list:${id}`;
+      const cached = (!isFresh && env.STATS_CACHE)
+        ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null)
+        : null;
+      if (cached) {
+        listMap.set(id, cached as BrevoList);
+        return;
+      }
+      const list = await _fetchFn<BrevoList>(`/v3/contacts/lists/${id}`, env);
+      listMap.set(id, list);
+      if (env.STATS_CACHE) {
+        await env.STATS_CACHE.put(kvKey, JSON.stringify(list), {
+          expirationTtl: 7 * 24 * 3600,
+        }).catch(() => { /* erro de KV nunca bloqueia */ });
+      }
+    } catch {
+      // lista apagada / fetch falhou — segue sem nome
+    }
+  });
+  return campaigns.map((c) => {
+    const listId = c.recipients?.lists?.[0];
+    const list = listId ? listMap.get(listId) : undefined;
+    return { ...c, listName: list?.name, listSize: list?.totalSubscribers };
+  });
+}
+
 function pct(n: number, total: number): string {
   if (!total) return "0.0%";
   return ((n / total) * 100).toFixed(1) + "%";
@@ -701,7 +752,10 @@ function fmtTimeBRT(iso: string | null): string {
 // (backward compat: testes que passam linksStats top-level diretamente). Em produção,
 // `fetchRecentCampaigns` nunca produz top-level `linksStats` desde #2199.3 — a propriedade
 // canônica é sempre `statistics.linksStats`. Produção não usa o campo top-level.
-export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>): string {
+export function renderDashboardHtml(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
+  scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
+): string {
   const rows = campaigns
     .map((c) => {
       // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
@@ -825,6 +879,9 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   // #2212: seção de links agregados do período
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
   const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks);
+  // #2251: seção de campanhas agendadas (status queued) — só sobre `scheduled`,
+  // nunca polui os agregadores de enviadas (A/B/C, volume, weekday, tendência).
+  const scheduledSection = renderScheduledSection(scheduled);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -900,6 +957,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+${aggregatedLinksSection}
+${scheduledSection}
 ${volumeSection}
 ${abcSection}
 ${weekdaySection}
@@ -929,7 +988,6 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </div>
 </section>
 ${trendSection}
-${aggregatedLinksSection}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
@@ -971,16 +1029,49 @@ export function parseClariceCampaignKey(campaignName: string): {
   return { cycle: m[1], dayNum: parseInt(m[2], 10), cell: m[3].toUpperCase() as "A" | "B" | "C" };
 }
 
+/**
+ * #2254: fonte única da escolha de stats reais de uma campanha — globalStats
+ * (primário, bate com a UI da Brevo) quando `sent > 0`, senão campaignStats[0].
+ * Centraliza o padrão `gsIsReal ? gs : cs` que estava duplicado em 5 lugares
+ * (renderDashboardHtml, aggregateByWeekday, buildTrendRows, calcCumulativeSent,
+ * aggregateAbcSummary). Retorna `null` quando não há stats reais (sent>0).
+ * `!(... .sent > 0)` cobre sent=0, undefined e null sem NaN.
+ *
+ * #2258 (semântica de MPP, verificada empiricamente 2026-06-14 contra a API
+ * Brevo): TANTO `globalStats.uniqueViews` QUANTO `campaignStats.uniqueViews`
+ * INCLUEM Apple MPP opens (cs.uv ≈ gs.uv, ~levemente menor por lag de snapshot;
+ * NÃO é gs.uv − appleMppOpens). Logo `uniqueViews` é uma base homogênea
+ * (MPP-inclusiva) entre as duas fontes — usar direto é consistente. O orgânico
+ * (sem MPP) só é computável de globalStats, que expõe `appleMppOpens`; por isso
+ * `isGlobal` é retornado: quem quiser orgânico subtrai SÓ quando isGlobal.
+ */
+export function pickStats(
+  c: BrevoCampaign,
+): { stats: BrevoGlobalStats | BrevoCampaignStats; isGlobal: boolean } | null {
+  const gs = c.statistics?.globalStats;
+  if (gs && gs.sent > 0) return { stats: gs, isGlobal: true };
+  const cs = c.statistics?.campaignStats?.[0];
+  if (cs && cs.sent > 0) return { stats: cs, isGlobal: false };
+  return null;
+}
+
 export interface CellSummary {
   cell: "A" | "B" | "C";
-  /** Soma de uniqueViews das campanhas da célula */
+  /** Soma de uniqueViews (MPP-inclusivo) das campanhas da célula */
   totalViews: number;
   /** Soma de delivered das campanhas da célula */
   totalDelivered: number;
-  /** Open rate agregado (totalViews / totalDelivered) */
+  /** Open rate agregado MPP-inclusivo (totalViews / totalDelivered) — base do LÍDER */
   openRate: number;
   /** Número de campanhas contabilizadas (dias enviados) */
   campaignCount: number;
+  /**
+   * #2257: open rate ORGÂNICO (sem Apple MPP), secundário. `null` quando algum
+   * dia da célula caiu no fallback campaignStats (sem `appleMppOpens` → orgânico
+   * não computável e não-comparável). Só preenchido quando TODOS os dias têm
+   * globalStats (mesma base entre as células).
+   */
+  organicOpenRate: number | null;
 }
 
 /**
@@ -992,10 +1083,13 @@ export function aggregateAbcSummary(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string,
 ): CellSummary[] {
-  const cells: Record<"A" | "B" | "C", { views: number; delivered: number; count: number }> = {
-    A: { views: 0, delivered: 0, count: 0 },
-    B: { views: 0, delivered: 0, count: 0 },
-    C: { views: 0, delivered: 0, count: 0 },
+  const cells: Record<
+    "A" | "B" | "C",
+    { views: number; delivered: number; count: number; organicViews: number; organicDays: number }
+  > = {
+    A: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
+    B: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
+    C: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
   };
 
   for (const c of campaigns) {
@@ -1004,44 +1098,42 @@ export function aggregateAbcSummary(
     // S1 = d01–d07
     if (parsed.dayNum > 7) continue;
 
-    // #2252: fallback globalStats → campaignStats[0] (como aggregateByWeekday,
-    // buildTrendRows, calcCumulativeSent) quando o GET individual de globalStats
-    // falhou (429 transiente capturado em fetchRecentCampaigns) ou veio zerado.
-    // Sem ele a seção A/B/C INTEIRA sumia (renderAbcSection retorna "" quando
-    // todas as células zeram) enquanto Volume/Weekday/Tendência continuavam.
-    // #2199: `!(s.sent > 0)` cobre sent=0, undefined e null sem NaN.
-    const gs = c.statistics?.globalStats;
-    const cs = c.statistics?.campaignStats?.[0];
-    const useGs = !!(gs && gs.sent > 0);
-    const s = useGs ? gs! : cs;
-    if (!s || !(s.sent > 0)) continue;
+    // #2254: escolha de fonte centralizada. #2252: fallback p/ campaignStats
+    // quando globalStats 429/zerado — sem ele a seção A/B/C INTEIRA sumia.
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const { stats: s, isGlobal } = picked;
 
-    // #2252 (review de #2253): A/B/C é um comparativo head-to-head que elege o
-    // LÍDER, então a base de opens TEM que ser homogênea entre as células. O
-    // problema: globalStats.uniqueViews INCLUI Apple MPP opens (auto-opens do
-    // proxy de privacidade), campaignStats.uniqueViews NÃO. Misturar as fontes
-    // (ex: 429 assimétrico — célula A em globalStats, B em campaignStats)
-    // enviesaria o vencedor. Normalizamos TUDO pra base orgânica (sem MPP):
-    // subtraímos appleMppOpens do globalStats; campaignStats já é orgânico.
-    // Bônus: MPP opens são ruído num teste de SUBJECT LINE (não dependem do
-    // assunto) — removê-los torna a comparação mais significativa, não só justa.
-    const opens = useGs
-      ? Math.max(0, (gs!.uniqueViews ?? 0) - (gs!.appleMppOpens ?? 0))
-      : (cs!.uniqueViews ?? 0);
-
-    cells[parsed.cell].views += opens;
+    // #2258: base canônica = uniqueViews (MPP-INCLUSIVO). campaignStats.uniqueViews
+    // TAMBÉM inclui MPP (verificado 2026-06-14) → usar direto é homogêneo entre as
+    // fontes e bate com a UI da Brevo (#2257). O bug do #2253 era subtrair MPP só
+    // do globalStats e não do campaignStats (que não expõe appleMppOpens) → no
+    // fallback gerava número "orgânico" que na verdade era MPP-incl → impossível.
+    cells[parsed.cell].views += s.uniqueViews ?? 0;
     cells[parsed.cell].delivered += s.delivered ?? 0;
     cells[parsed.cell].count += 1;
+
+    // #2257: orgânico (sem MPP) só de globalStats (tem appleMppOpens). Contamos
+    // organicDays p/ saber se TODOS os dias da célula têm orgânico — só então é
+    // comparável entre as células (mesma base); senão organicOpenRate = null.
+    if (isGlobal) {
+      const gs = s as BrevoGlobalStats;
+      cells[parsed.cell].organicViews += Math.max(0, (gs.uniqueViews ?? 0) - (gs.appleMppOpens ?? 0));
+      cells[parsed.cell].organicDays += 1;
+    }
   }
 
   return (["A", "B", "C"] as const).map((cell) => {
     const d = cells[cell];
+    // organicOpenRate só quando TODOS os dias contados têm orgânico (base homogênea).
+    const organicComplete = d.count > 0 && d.organicDays === d.count;
     return {
       cell,
       totalViews: d.views,
       totalDelivered: d.delivered,
       openRate: d.delivered > 0 ? (d.views / d.delivered) * 100 : 0,
       campaignCount: d.count,
+      organicOpenRate: organicComplete && d.delivered > 0 ? (d.organicViews / d.delivered) * 100 : null,
     };
   });
 }
@@ -1062,12 +1154,9 @@ export function calcCumulativeSent(
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || parsed.cycle !== cycle) continue;
-    const gs = c.statistics?.globalStats;
-    const cs = c.statistics?.campaignStats?.[0];
-    const gsIsReal = gs && gs.sent > 0;
-    const sent = gsIsReal ? gs.sent : (cs?.sent ?? 0);
-    if (!sent) continue;
-    total += sent;
+    const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
+    if (!picked) continue;
+    total += picked.stats.sent ?? 0;
   }
   return total;
 }
@@ -1181,14 +1270,12 @@ export function aggregateByWeekday(
 
     if (!c.sentDate) continue;
 
-    // Mesmo fallback defensivo do render principal (#2124 defensivo)
-    const gs = c.statistics?.globalStats;
-    const cs = c.statistics?.campaignStats?.[0];
-    const gsIsReal = gs && gs.sent > 0;
-    const s = gsIsReal ? gs : cs;
-    // #2198 Bug 2: `s.sent === 0` não cobre `s.sent === undefined` → NaN em openRate.
-    // `!(s.sent > 0)` cobre 0, undefined e null corretamente.
-    if (!s || !(s.sent > 0)) continue;
+    // #2254: fonte única (globalStats → campaignStats). #2256: uniqueViews é
+    // MPP-inclusivo nas DUAS fontes (verificado 2026-06-14) → não há mistura de
+    // base; opens aqui são MPP-inclusivos, consistente com a tabela de campanhas.
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const s = picked.stats;
 
     const wk = weekdayKeyBRT(c.sentDate);
     if (wk === null) continue;
@@ -1327,11 +1414,9 @@ export function buildTrendRows(
 
   for (const c of sorted) {
     if (!c.sentDate) continue;
-    const gs = c.statistics?.globalStats;
-    const cs = c.statistics?.campaignStats?.[0];
-    const gsIsReal = gs && gs.sent > 0;
-    const s = gsIsReal ? gs : cs;
-    if (!s || !(s.sent > 0)) continue;
+    const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
+    if (!picked) continue;
+    const s = picked.stats;
 
     // Label compacto: extrair a parte mais informativa do nome
     // "Diar.ia Mensal 2604 — 2026-05-17 14:45" → "Mensal 2604 W7"
@@ -1396,12 +1481,18 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
     .map((r) => {
       const isWinner = r.cell === winnerCell && r.campaignCount > 0;
       const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
+      // #2257: taxa MPP-inclusiva (primária, bate com a Brevo UI) + orgânica em
+      // parênteses quando disponível — mesmo padrão da tabela de campanhas (#1153).
+      const organicInline =
+        r.campaignCount > 0 && r.organicOpenRate != null
+          ? ` <span class="rate-inline">(${r.organicOpenRate.toFixed(1)}% s/ MPP)</span>`
+          : "";
       const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
       return `<tr>
         <td><strong>Célula ${r.cell}</strong></td>
         <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
         <td>${r.campaignCount > 0 ? r.totalDelivered : "—"}</td>
-        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${winnerTag}</td>
+        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${organicInline}${winnerTag}</td>
         <td>${r.campaignCount}</td>
       </tr>`;
     })
@@ -1422,19 +1513,77 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
 <section class="phase2-section" id="abc-summary">
   <h2 class="section-title">Resumo A/B/C — S1 (d01–d07)</h2>
   <p class="section-note">${statusNote}</p>
-  <p class="section-note"><small>Opens orgânicos — <strong>sem Apple MPP</strong> (auto-opens não dependem do assunto). Por isso são menores que os da tabela de campanhas, que segue a UI da Brevo.</small></p>
+  <p class="section-note"><small>Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo) — base do vencedor. Entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os dias da célula têm esse dado.</small></p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Célula do teste A/B/C">Célula</th>
-        <th title="Soma de aberturas únicas ORGÂNICAS (sem Apple MPP) dos dias enviados — base homogênea pra comparar as células de forma justa">Opens (orgânico)</th>
+        <th title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
         <th title="Soma de entregues dos dias enviados">Delivered (total)</th>
-        <th title="Open rate orgânico agregado: opens sem Apple MPP ÷ delivered">Open rate agr.</th>
+        <th title="Open rate agregado com Apple MPP (opens ÷ delivered) — base do vencedor; entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
         <th title="Dias enviados contabilizados">Dias</th>
       </tr>
     </thead>
     <tbody>${cellRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
+ * #2251: renderiza a seção "Campanhas agendadas" (status queued), ordenada por
+ * horário (próximo envio primeiro). Mostra dia/célula (quando Clarice News),
+ * horário BRT, lista e tamanho esperado do envio (snapshot). Oculta (`""`)
+ * quando não há agendadas — mesmo contrato graceful das demais seções.
+ * Exportado pra teste unitário.
+ */
+export function renderScheduledSection(
+  scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): string {
+  const withDate = scheduled.filter((c) => c.scheduledAt);
+  if (withDate.length === 0) return "";
+
+  // Date.parse de string malformada → NaN; comparador com NaN dá ordem
+  // indeterminada. Tratamos NaN como 0 (vai pro início) — ordem determinística.
+  const ts = (s: string | null): number => {
+    const t = Date.parse(s ?? "");
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const ordered = [...withDate].sort((a, b) => ts(a.scheduledAt) - ts(b.scheduledAt));
+
+  const rows = ordered
+    .map((c) => {
+      const parsed = parseClariceCampaignKey(c.name);
+      const dia = parsed
+        ? `d${String(parsed.dayNum).padStart(2, "0")}-${parsed.cell}`
+        : "—";
+      return `<tr>
+        <td>${escHtml(c.name)}</td>
+        <td>${dia}</td>
+        <td>${fmtTimeBRT(c.scheduledAt)}</td>
+        <td>${escHtml(c.listName ?? "?")}</td>
+        <td>${c.listSize != null ? c.listSize.toLocaleString("pt-BR") : "—"}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return `
+<section class="phase2-section" id="scheduled-campaigns">
+  <h2 class="section-title">Campanhas agendadas</h2>
+  <p class="section-note">${ordered.length} agendada(s) — próximo envio primeiro. Tamanho = snapshot esperado da lista no envio.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Nome da campanha no Brevo">Campanha</th>
+        <th title="Dia/célula do ciclo (quando Clarice News)">Dia</th>
+        <th title="Horário agendado (horário de Brasília)">Agendado (BRT)</th>
+        <th title="Lista de destino">Lista</th>
+        <th title="Tamanho atual da lista (destinatários esperados)">Tamanho</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
   </table>
   </div>
 </section>`;
@@ -1589,7 +1738,9 @@ export default {
     if (path === "/" || path === "/index.html") {
       try {
         const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
-        const html = renderDashboardHtml(campaigns);
+        // #2251: agendadas em paralelo; falha degrada pra [] → seção oculta, nunca quebra a dashboard.
+        const scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch(() => []);
+        const html = renderDashboardHtml(campaigns, scheduled);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",

@@ -26,6 +26,9 @@ import {
   renderVolumeSection,
   renderTrendSection,
   renderDashboardHtml,
+  renderScheduledSection,
+  pickStats,
+  aggregateLinksAcrossCampaigns,
   CLARICE_PLAN_TOTAL,
   CLARICE_PLAN_S1,
   weekdayKeyBRT,
@@ -136,29 +139,35 @@ describe("parseClariceCampaignKey", () => {
 // ─── aggregateAbcSummary ──────────────────────────────────────────────────────
 
 describe("aggregateAbcSummary", () => {
-  test("agrega open rate ORGÂNICO (sem Apple MPP) por célula (fixtures reais d01+d02) (#2253)", () => {
+  test("agrega open rate MPP-inclusivo por célula (fixtures reais d01+d02) (#2258)", () => {
     const result = aggregateAbcSummary(allCampaigns, "2605");
     const a = result.find((r) => r.cell === "A")!;
     const b = result.find((r) => r.cell === "B")!;
     const c = result.find((r) => r.cell === "C")!;
 
-    // Opens orgânicos = uniqueViews − appleMppOpens (base homogênea pro comparativo).
-    // A: d01-A (20−8=12 / 115 del) + d02-A (35−7=28 / 182 del) = 40/297
-    assert.equal(a.totalViews, (20 - 8) + (35 - 7));
+    // #2258: base canônica = uniqueViews (MPP-INCLUSIVO, igual à UI da Brevo).
+    // A: d01-A (20 / 115 del) + d02-A (35 / 182 del) = 55/297
+    assert.equal(a.totalViews, 20 + 35);
     assert.equal(a.totalDelivered, 115 + 182);
-    assert.ok(Math.abs(a.openRate - (40 / 297) * 100) < 0.01, `A openRate deve ser ~13.5% mas foi ${a.openRate}`);
+    assert.ok(Math.abs(a.openRate - (55 / 297) * 100) < 0.01, `A openRate deve ser ~18.5% mas foi ${a.openRate}`);
     assert.equal(a.campaignCount, 2);
 
-    // B: d01-B (32−11=21 / 117 del) + d02-B (39−6=33 / 182 del) = 54/299
-    assert.equal(b.totalViews, (32 - 11) + (39 - 6));
+    // B: d01-B (32 / 117 del) + d02-B (39 / 182 del) = 71/299
+    assert.equal(b.totalViews, 32 + 39);
     assert.equal(b.totalDelivered, 117 + 182);
-    assert.ok(Math.abs(b.openRate - (54 / 299) * 100) < 0.01);
+    assert.ok(Math.abs(b.openRate - (71 / 299) * 100) < 0.01);
     assert.equal(b.campaignCount, 2);
 
-    // C: d01-C (30−10=20 / 115 del) + d02-C (30−7=23 / 183 del) = 43/298
-    assert.equal(c.totalViews, (30 - 10) + (30 - 7));
+    // C: d01-C (30 / 115 del) + d02-C (30 / 183 del) = 60/298
+    assert.equal(c.totalViews, 30 + 30);
     assert.equal(c.totalDelivered, 115 + 183);
     assert.equal(c.campaignCount, 2);
+
+    // #2257: organicOpenRate (secundário) computado quando TODOS os dias têm
+    // globalStats (todos os fixtures têm) = (uniqueViews − appleMppOpens) ÷ delivered.
+    // A orgânico = (20−8)+(35−7) = 40 / 297
+    assert.ok(a.organicOpenRate !== null && Math.abs(a.organicOpenRate - (40 / 297) * 100) < 0.01,
+      `A organicOpenRate deve ser ~13.5% mas foi ${a.organicOpenRate}`);
   });
 
   test("retorna sempre as 3 células mesmo com ciclo sem dados", () => {
@@ -179,7 +188,7 @@ describe("aggregateAbcSummary", () => {
     const a = result.find((r) => r.cell === "A")!;
     // d08-A NÃO deve entrar: só d01-A e d02-A (count=2, não 3)
     assert.equal(a.campaignCount, 2);
-    assert.equal(a.totalViews, (20 - 8) + (35 - 7)); // apenas d01-A + d02-A, opens orgânicos
+    assert.equal(a.totalViews, 20 + 35); // apenas d01-A + d02-A (uniqueViews MPP-incl)
   });
 
   test("exclui campanhas T1 (não Clarice News) da agregação", () => {
@@ -221,16 +230,18 @@ describe("aggregateAbcSummary", () => {
     const result = aggregateAbcSummary([csOnlyCampaign], "2605");
     const b = result.find((r) => r.cell === "B")!;
     assert.equal(b.campaignCount, 1, "campanha com só campaignStats deve entrar no agregado");
-    assert.equal(b.totalViews, 50, "deve usar campaignStats.uniqueViews");
+    assert.equal(b.totalViews, 50, "deve usar campaignStats.uniqueViews (MPP-incl)");
     assert.equal(b.totalDelivered, 198, "deve usar campaignStats.delivered");
     assert.ok(Math.abs(b.openRate - (50 / 198) * 100) < 0.01, `openRate esperado ~25.3% mas foi ${b.openRate}`);
+    // #2257/#2258: campaignStats não expõe appleMppOpens → orgânico não computável → null.
+    assert.equal(b.organicOpenRate, null, "fallback campaignStats não tem organicOpenRate (null)");
   });
 
   // Sanidade do fallback: globalStats real (sent>0) tem precedência sobre campaignStats.
   test("globalStats real tem precedência sobre campaignStats (#2252)", () => {
     const bothCampaign = {
       ...makeCampaign(61, "Clarice News 2605 d03-C (sex)", "2026-06-13T09:00:00Z", {
-        sent: 100, delivered: 99, uniqueViews: 40, appleMppOpens: 0,
+        sent: 100, delivered: 99, uniqueViews: 40,
       }),
       statistics: {
         campaignStats: [{
@@ -239,19 +250,19 @@ describe("aggregateAbcSummary", () => {
           uniqueViews: 10, viewed: 12, trackableViews: 8, // ← valor "errado" do campaignStats
           uniqueClicks: 1, clickers: 1, unsubscriptions: 0, complaints: 0,
         }],
-        globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40, appleMppOpens: 0 }),
+        globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40 }),
       },
     };
     const result = aggregateAbcSummary([bothCampaign], "2605");
     const c = result.find((r) => r.cell === "C")!;
-    assert.equal(c.totalViews, 40, "deve preferir globalStats (40, MPP=0), não campaignStats (10)");
+    assert.equal(c.totalViews, 40, "deve preferir globalStats.uniqueViews (40), não campaignStats (10)");
   });
 
-  // #2253 (review): A/B/C usa opens ORGÂNICOS — globalStats.uniqueViews menos
-  // appleMppOpens — pra ter base homogênea entre células (campaignStats já é
-  // sem-MPP). Sem isso um 429 assimétrico misturaria MPP-inclusivo (uma célula)
-  // com MPP-exclusivo (outra) e enviesaria o LÍDER.
-  test("subtrai Apple MPP opens do globalStats (base orgânica) (#2253)", () => {
+  // #2258: base canônica é uniqueViews MPP-INCLUSIVO (NÃO subtrai MPP). Documenta
+  // a correção do bug do #2253: subtrair MPP só do globalStats (e não do
+  // campaignStats, que não expõe o campo) gerava número "orgânico" impossível no
+  // fallback. uniqueViews é a base homogênea entre as duas fontes (ambas incl).
+  test("totalViews = uniqueViews MPP-inclusivo, sem subtrair appleMppOpens (#2258)", () => {
     const mppCampaign = {
       ...makeCampaign(62, "Clarice News 2605 d04-A (sab)", "2026-06-13T09:00:00Z"),
       statistics: {
@@ -260,22 +271,38 @@ describe("aggregateAbcSummary", () => {
     };
     const result = aggregateAbcSummary([mppCampaign], "2605");
     const a = result.find((r) => r.cell === "A")!;
-    assert.equal(a.totalViews, 70, "100 uniqueViews − 30 MPP = 70 opens orgânicos");
-    assert.ok(Math.abs(a.openRate - 70) < 0.01, `openRate orgânico = 70/100 = 70% mas foi ${a.openRate}`);
+    assert.equal(a.totalViews, 100, "totalViews = uniqueViews (100), NÃO 100−30");
+    assert.ok(Math.abs(a.openRate - 100) < 0.01, `openRate incl = 100/100 = 100% mas foi ${a.openRate}`);
+    // orgânico secundário = 100−30 = 70 / 100 = 70%
+    assert.ok(a.organicOpenRate !== null && Math.abs(a.organicOpenRate - 70) < 0.01,
+      `organicOpenRate = 70% mas foi ${a.organicOpenRate}`);
   });
 
-  // Guarda contra views negativos: se appleMppOpens > uniqueViews (dado inconsistente
-  // da Brevo), clampa em 0 — nunca subtrai abaixo de zero.
-  test("clampa em 0 quando appleMppOpens > uniqueViews (#2253)", () => {
-    const weird = {
-      ...makeCampaign(63, "Clarice News 2605 d05-B (dom)", "2026-06-13T09:00:00Z"),
+  // #2257: organicOpenRate = null quando a célula MISTURA dias com globalStats e
+  // dias em fallback (orgânico não-comparável entre as células). Evita o viés do
+  // #2253 (uns dias com MPP, outros sem) — só mostra orgânico quando homogêneo.
+  test("organicOpenRate é null quando a célula mistura globalStats e fallback (#2257)", () => {
+    const dayGlobal = {
+      ...makeCampaign(70, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+        { sent: 100, delivered: 100, uniqueViews: 40, appleMppOpens: 10 }),
+    };
+    const dayFallback = {
+      ...makeCampaign(71, "Clarice News 2605 d02-A (qui)", "2026-06-11T09:00:00Z"),
       statistics: {
-        globalStats: makeGlobalStats({ sent: 100, delivered: 100, uniqueViews: 5, appleMppOpens: 20 }),
+        campaignStats: [{
+          listId: 171, sent: 100, delivered: 100,
+          hardBounces: 0, softBounces: 0, deferred: 0,
+          uniqueViews: 30, viewed: 35, trackableViews: 20,
+          uniqueClicks: 2, clickers: 2, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: undefined,
       },
     };
-    const result = aggregateAbcSummary([weird], "2605");
-    const b = result.find((r) => r.cell === "B")!;
-    assert.equal(b.totalViews, 0, "max(0, 5−20) = 0, nunca negativo");
+    const result = aggregateAbcSummary([dayGlobal, dayFallback], "2605");
+    const a = result.find((r) => r.cell === "A")!;
+    assert.equal(a.campaignCount, 2, "ambos os dias contam (incl)");
+    assert.equal(a.totalViews, 70, "uniqueViews incl: 40 + 30");
+    assert.equal(a.organicOpenRate, null, "1 dia em fallback → orgânico não-comparável → null");
   });
 });
 
@@ -1169,9 +1196,128 @@ describe("regressão #2199 Finding 1: aggregateAbcSummary exclui campanha com gs
     const cellA = result.find((r) => r.cell === "A")!;
     assert.equal(cellA.campaignCount, 2,
       "campanha com gs.sent=undefined deve ser excluída — count A deve ser 2, não 3");
-    // totalViews orgânico (#2253): d01-A (20−8=12) + d02-A (35−7=28) = 40
+    // totalViews MPP-incl (#2258): d01-A (20) + d02-A (35) = 55
     // (a campanha inválida com gs.sent=undefined não entra)
-    assert.equal(cellA.totalViews, (20 - 8) + (35 - 7),
-      "totalViews orgânico de A deve ser 40 (d01-A+d02-A sem MPP, excluindo gs.sent=undefined)");
+    assert.equal(cellA.totalViews, 20 + 35,
+      "totalViews de A deve ser 55 (d01-A+d02-A, excluindo gs.sent=undefined)");
+  });
+});
+
+// ─── #2254 pickStats ──────────────────────────────────────────────────────────
+
+describe("pickStats (#2254)", () => {
+  test("escolhe globalStats quando sent>0 (isGlobal=true)", () => {
+    const c = makeCampaign(80, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z", { sent: 100, uniqueViews: 30 });
+    const r = pickStats(c)!;
+    assert.equal(r.isGlobal, true);
+    assert.equal(r.stats.uniqueViews, 30);
+  });
+
+  test("cai pra campaignStats quando globalStats ausente (isGlobal=false)", () => {
+    const c = {
+      ...makeCampaign(81, "Clarice News 2605 d01-B (qua)", "2026-06-10T09:00:00Z"),
+      statistics: { campaignStats: [{ listId: 1, sent: 100, delivered: 99, hardBounces: 0, softBounces: 0, deferred: 0, uniqueViews: 25, viewed: 30, trackableViews: 18, uniqueClicks: 2, clickers: 2, unsubscriptions: 0, complaints: 0 }], globalStats: undefined },
+    };
+    const r = pickStats(c)!;
+    assert.equal(r.isGlobal, false);
+    assert.equal(r.stats.uniqueViews, 25);
+  });
+
+  test("cai pra campaignStats quando globalStats.sent=0 (zeroed)", () => {
+    const c = {
+      ...makeCampaign(82, "Clarice News 2605 d01-C (qua)", "2026-06-10T09:00:00Z"),
+      statistics: {
+        globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0 }),
+        campaignStats: [{ listId: 1, sent: 100, delivered: 99, hardBounces: 0, softBounces: 0, deferred: 0, uniqueViews: 22, viewed: 26, trackableViews: 15, uniqueClicks: 1, clickers: 1, unsubscriptions: 0, complaints: 0 }],
+      },
+    };
+    const r = pickStats(c)!;
+    assert.equal(r.isGlobal, false);
+    assert.equal(r.stats.uniqueViews, 22);
+  });
+
+  test("retorna null quando nenhuma fonte tem sent>0", () => {
+    assert.equal(pickStats({ ...makeCampaign(83, "x", "2026-06-10T09:00:00Z"), statistics: {} }), null);
+    assert.equal(pickStats({ ...makeCampaign(84, "x", "2026-06-10T09:00:00Z"), statistics: { globalStats: makeGlobalStats({ sent: 0 }) } }), null);
+  });
+});
+
+// ─── #2249 aggregateLinksAcrossCampaigns (repro: função está correta) ──────────
+
+describe("aggregateLinksAcrossCampaigns (#2249)", () => {
+  const withLinks = (id: number, day: number, links: Record<string, number>) => ({
+    ...makeCampaign(id, `Clarice News 2605 d0${day}-A (x)`, `2026-06-1${day}T09:00:00Z`),
+    statistics: { globalStats: makeGlobalStats({ sent: 100 }), linksStats: links },
+  });
+
+  test("soma clicks por URL com statistics.linksStats populado (NÃO retorna vazio)", () => {
+    // Regressão #2249: a função estava sob suspeita, mas o repro prova que ela
+    // funciona com linksStats populado. A seção vazia em produção era o GET de
+    // linksStats falhando (429), não bug de agregação.
+    const rows = aggregateLinksAcrossCampaigns([
+      withLinks(90, 1, { "https://diaria.com.br/a": 12, "https://diaria.com.br/b": 5 }),
+      withLinks(91, 2, { "https://diaria.com.br/a": 8, "https://unsubscribe.brevo.com/x": 99 }),
+    ]);
+    assert.ok(rows.length > 0, "deve retornar links agregados, não vazio");
+    const a = rows.find((r) => r.url === "https://diaria.com.br/a")!;
+    assert.equal(a.totalClicks, 20, "12 + 8 somados");
+    assert.equal(a.campaignCount, 2);
+    assert.ok(!rows.some((r) => /unsubscribe/.test(r.url)), "links de sistema filtrados");
+  });
+
+  test("seção de links agregados é a 1ª seção do body (#2249)", () => {
+    const campaigns = [withLinks(92, 1, { "https://diaria.com.br/a": 7 })];
+    const html = renderDashboardHtml(campaigns);
+    const posLinks = html.indexOf('id="links-agregados"');
+    const posVolume = html.indexOf('id="volume-ciclo"');
+    const posCampaigns = html.indexOf('id="campaigns-table"');
+    assert.ok(posLinks > 0, "seção de links agregados deve existir");
+    assert.ok(posLinks < posCampaigns, "links agregados antes da tabela de campanhas");
+    if (posVolume > 0) assert.ok(posLinks < posVolume, "links agregados antes do volume");
+  });
+});
+
+// ─── #2251 renderScheduledSection ─────────────────────────────────────────────
+
+describe("renderScheduledSection (#2251)", () => {
+  const queued = (id: number, name: string, scheduledAt: string, listName: string, listSize: number) => ({
+    id, name, subject: "s", status: "queued", sentDate: null, scheduledAt,
+    createdAt: "2026-06-12T00:00:00Z", recipients: { lists: [id] }, listName, listSize,
+  });
+
+  test("lista agendadas ordenadas por horário (próximo primeiro) com lista/tamanho", () => {
+    const html = renderScheduledSection([
+      queued(57, "Clarice News 2605 d07-B (ter)", "2026-06-16T09:05:00Z", "lista-B", 575),
+      queued(48, "Clarice News 2605 d04-B (sab)", "2026-06-13T09:05:00Z", "lista-B", 426),
+    ]);
+    assert.match(html, /id="scheduled-campaigns"/);
+    assert.match(html, /Campanhas agendadas/);
+    assert.match(html, /d04-B/);
+    assert.match(html, /d07-B/);
+    assert.match(html, /575/);
+    // ordem cronológica: d04 (13/jun) antes de d07 (16/jun)
+    assert.ok(html.indexOf("d04-B") < html.indexOf("d07-B"), "próximo envio primeiro");
+  });
+
+  test("oculta (string vazia) quando não há agendadas", () => {
+    assert.equal(renderScheduledSection([]), "");
+  });
+
+  test("ignora agendadas sem scheduledAt (oculta se todas sem data)", () => {
+    const noDate = { id: 1, name: "x", subject: "s", status: "queued", sentDate: null, scheduledAt: null, createdAt: "x", recipients: { lists: [1] } };
+    assert.equal(renderScheduledSection([noDate as any]), "");
+  });
+
+  test("renderDashboardHtml inclui a seção de agendadas quando passada", () => {
+    const sent = [{ ...makeCampaign(40, "Clarice News 2605 d01-C (qua)", "2026-06-10T09:00:00Z"), statistics: { globalStats: makeGlobalStats({ sent: 100 }) } }];
+    const html = renderDashboardHtml(sent, [queued(48, "Clarice News 2605 d04-B (sab)", "2026-06-13T09:05:00Z", "lista-B", 426)]);
+    assert.match(html, /id="scheduled-campaigns"/);
+    assert.match(html, /d04-B/);
+  });
+
+  test("renderDashboardHtml sem agendadas (default []) não mostra a seção", () => {
+    const sent = [{ ...makeCampaign(40, "Clarice News 2605 d01-C (qua)", "2026-06-10T09:00:00Z"), statistics: { globalStats: makeGlobalStats({ sent: 100 }) } }];
+    const html = renderDashboardHtml(sent);
+    assert.ok(!/id="scheduled-campaigns"/.test(html), "sem agendadas → seção ausente");
   });
 });
