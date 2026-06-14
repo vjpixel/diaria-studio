@@ -180,12 +180,20 @@ export function loadScorerHighlights(
     const data = JSON.parse(readFileSync(p, "utf8"));
     const candidates: ScoredHighlight[] = [];
     // Inclui highlights[] + runners_up[] para que n_matches possa atingir >=4.
+    // highlights têm prioridade: runners_up só adiciona URLs ainda não vistas.
+    // Dedup por URL canônica evita que mesma URL em ambos os arrays infle n_matches
+    // e duplique pontos no Spearman rho (#2232).
+    const seenUrls = new Set<string>();
     const sources = [...(data.highlights ?? []), ...(data.runners_up ?? [])];
     for (const h of sources) {
       const url = h.article?.url ?? h.url;
       const score = typeof h.score === "number" ? h.score : null;
       if (typeof url === "string" && url && score !== null) {
-        candidates.push({ url: canonicalize(url), score });
+        const canonical = canonicalize(url);
+        if (!seenUrls.has(canonical)) {
+          seenUrls.add(canonical);
+          candidates.push({ url: canonical, score });
+        }
       }
     }
     // Ordena por score desc (maior = mais bem ranqueado pelo scorer)

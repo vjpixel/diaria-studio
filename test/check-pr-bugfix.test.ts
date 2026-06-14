@@ -71,6 +71,13 @@ describe("hasNewOrModifiedTest (#970)", () => {
     assert.equal(hasNewOrModifiedTest(["workers/foo/src/testing-utils.ts"]), false);
   });
 
+  it("não detecta falso-positivo: segmento /mytest/ não é /test/ (#2232)", () => {
+    // 'mytest/' contém 'test' mas NOT '/test/' como segmento exato — sem false-positive.
+    assert.equal(hasNewOrModifiedTest(["workers/foo/src/mytest/bar.test.ts"]), false);
+    // 'contest/' análogo — contém 'test' mas /contest/ ≠ /test/
+    assert.equal(hasNewOrModifiedTest(["workers/foo/src/contest/x.test.ts"]), false);
+  });
+
   it("ignora arquivos fora de test/", () => {
     assert.equal(hasNewOrModifiedTest(["scripts/foo.ts"]), false);
     assert.equal(hasNewOrModifiedTest(["docs/test.md"]), false);
