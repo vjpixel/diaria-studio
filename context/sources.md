@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 49 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 52 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -271,3 +271,20 @@
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 - Use Melhor: sim
 - Low cadence: sim
+
+## Aplicação
+
+### Saúde Digital News
+- URL: https://saudedigitalnews.com.br/
+- Site query: `site:saudedigitalnews.com.br`
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,saúde,healthtech,diagnóstico,hospitalar,digital health,gestão hospitalar,saude digital
+
+### Finsiders Brasil
+- URL: https://finsidersbrasil.com.br/
+- Site query: `site:finsidersbrasil.com.br`
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,fintech,crédito,fraude,Open Finance,finanças,financial technology,fintechs
+
+### Healthcare IT Today
+- URL: https://healthcareittoday.com/
+- Site query: `site:healthcareittoday.com`
+- Topic filter: AI,IA,artificial intelligence,machine learning,LLM,health IT,healthcare,EHR,clinical AI,hospital,digital health,health information technology
