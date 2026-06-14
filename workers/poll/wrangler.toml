@@ -22,7 +22,10 @@ class_name = "VoteDedup"
 # ("No such binding" para DurableObjectNamespace) ao tentar usar o namespace.
 [[migrations]]
 tag = "v1-vote-dedup"
-new_classes = ["VoteDedup"]
+# Free plan do Cloudflare exige DO com storage SQLite (new_sqlite_classes),
+# não new_classes (KV-backed, só plano pago) — erro 10097 no deploy. O
+# state.storage API é idêntico; nenhuma mudança de código no DO (#2236).
+new_sqlite_classes = ["VoteDedup"]
 
 # Nota (#2187 finding #3): não há seção [env.staging] neste wrangler.toml.
 # O projeto poll não usa um ambiente staging separado — testes de integração
