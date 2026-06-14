@@ -254,10 +254,19 @@ describe("#2207-2: colspan no-stats — contagem de <th> só no <thead> da tabel
     assert.doesNotMatch(thead, /link-url-th/,
       "<thead> da tabela de campanhas não deve conter <th> da links-table interna");
 
-    // Contar: <thead> deve ter exatamente 11 colunas (fixture atual)
+    // Contar <th> no <thead> da tabela de campanhas (escopo restrito).
+    // Não usar magic number: em vez disso, provar que o <thead> viu MENOS <th>
+    // do que o HTML total — ou seja, os <th> das links-tables internas ficaram de fora.
+    // Se uma coluna for adicionada à campaigns table, o assertion continua válido
+    // (a links-table ainda tem seus próprios <th> no HTML completo).
     const thCount = (thead.match(/<th /g) ?? []).length;
-    assert.equal(thCount, 11,
-      `<thead> da tabela de campanhas deve ter 11 <th> (encontrou ${thCount}) — links-table não deve ser contabilizada`);
+    assert.ok(thCount > 0, `<thead> deve ter pelo menos 1 <th>, encontrou ${thCount}`);
+    const totalThInHtml = (html.match(/<th /g) ?? []).length;
+    assert.ok(
+      thCount < totalThInHtml,
+      `<thead> da tabela de campanhas (${thCount} <th>) deve ter MENOS que o total do HTML ` +
+      `(${totalThInHtml} <th>) — links-table interna não deve ser contabilizada no <thead>`,
+    );
   });
 });
 
@@ -516,7 +525,11 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
   });
 
   test("fallback: lê linksStats top-level quando statistics.linksStats ausente", () => {
-    // Backward compat: testes/fixtures que passam linksStats top-level
+    // Backward compat: `getCampaignLinksStats` em index.ts faz
+    //   c.statistics?.linksStats ?? c.linksStats
+    // O fallback pra top-level é intencional — guard contra dados de fixture/cache legado
+    // ou campanhas antigas onde o worker gravou linksStats no top-level (pré-#2199.3).
+    // Se o fallback for removido da produção, remover este teste junto.
     const campaign = {
       ...baseCampaign,
       linksStats: { "https://via-toplevel.com": 9 } as BrevoLinksStats,

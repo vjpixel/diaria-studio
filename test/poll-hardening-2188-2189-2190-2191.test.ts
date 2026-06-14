@@ -408,6 +408,32 @@ describe("#2206 — score-by-month decrementa em true→false e não acumula no 
     assert.ok(global_.correct >= 0, `score:clamp@x.com.correct não deve ser negativo (got ${global_.correct})`);
     assert.equal(global_.correct, 0, "clamp global: score.correct fica em 0, não −1 (Math.max(0,...) em adjustScoreCorrectOnly)");
   });
+
+  it("decremento normal: correct=1 → true→false decrementa para 0 (caso coerente)", async () => {
+    // Caso COERENTE: leitor votou corretamente (vote.correct=true), score reflete isso
+    // (correct=1). Admin muda o gabarito → true→false → decremento normal para 0.
+    // Distingue o comportamento normal do decremento da proteção do clamp acima
+    // (que testava o edge defensivo com fixture incoerente correct=0+vote.correct=true).
+    const kv = makeTrackedKv({
+      "correct:260621": "A",
+      "vote:260621:dec@x.com": JSON.stringify({ choice: "A", ts: "t", correct: true }),
+      "score:dec@x.com": JSON.stringify({ total: 1, correct: 1, streak: 1, last_edition: "260621", nickname: "Dec" }),
+      "score-by-month:2026-06:dec@x.com": JSON.stringify({ total: 1, correct: 1, last_edition: "260621", nickname: "Dec" }),
+    });
+
+    // Admin muda gabarito para B → true→false: acerto anterior deve ser decrementado
+    await callAdminCorrect(kv, "260621", "B");
+
+    const monthRaw = await kv.get("score-by-month:2026-06:dec@x.com");
+    const monthly = JSON.parse(monthRaw!);
+    assert.equal(monthly.correct, 0, "decremento normal: correct=1 → 0 após true→false");
+    assert.equal(monthly.total, 1, "total não muda no decremento");
+
+    const globalRaw = await readKv(kv, "score:dec@x.com");
+    const global_ = JSON.parse(globalRaw);
+    assert.equal(global_.correct, 0, "decremento normal global: correct=1 → 0 após true→false");
+    assert.equal(global_.total, 1, "total global não muda no decremento");
+  });
 });
 
 // ── #2189: nickname form acessível no retry após "já votou" ──────────────────
