@@ -56,10 +56,13 @@ const POLL_DIR = resolve(ROOT, "workers", "poll");
 const WRANGLER_BIN = resolve(POLL_DIR, "node_modules", "wrangler", "bin", "wrangler.js");
 
 function wrangler(wargs: string[]): string {
-  // Defesa extra: tira CLOUDFLARE_API_TOKEN do env do filho (caso esteja no
-  // shell real, não só no .env) — força o wrangler a usar a auth OAuth do CLI.
+  // Tira CLOUDFLARE_API_TOKEN (auth) E CLOUDFLARE_ACCOUNT_ID (seleção de conta)
+  // do env do filho — força o wrangler a resolver tudo pela auth OAuth do CLI.
+  // Sem isso: o TOKEN avulso do .env dava 401; um ACCOUNT_ID errado no shell
+  // daria 404. Conta única na auth OAuth → resolvida automaticamente (#2265).
   const childEnv = { ...process.env };
   delete childEnv.CLOUDFLARE_API_TOKEN;
+  delete childEnv.CLOUDFLARE_ACCOUNT_ID;
   return execFileSync(process.execPath, [WRANGLER_BIN, ...wargs], {
     cwd: POLL_DIR,
     encoding: "utf8",
@@ -107,9 +110,11 @@ async function kvList(prefix: string): Promise<string[]> {
 
 async function kvGet(key: string): Promise<string | null> {
   try {
-    // `--text` evita warning de binário; trim do \n final que o wrangler adiciona.
+    // wrangler imprime o valor cru no stdout (banners vão p/ stderr); trim do \n final.
     return wrangler(["kv", "key", "get", "--namespace-id", NAMESPACE_ID, "--remote", key]).replace(/\n$/, "");
   } catch (e) {
+    // chave inexistente → wrangler sai !=0 com "404: Not Found" no stderr (verificado).
+    // Auth/rede (401/500) NÃO casam → re-lança (não engole como "vazio").
     if (/not found|404|could not find/i.test(wranglerErrText(e))) return null;
     throw e;
   }
