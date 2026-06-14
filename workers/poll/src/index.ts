@@ -35,6 +35,7 @@ import {
   leaderboardHref,
 } from "./lib";
 export { VoteDedup } from "./vote-dedup";
+export { StatsCounter } from "./stats-counter";
 
 export interface Env {
   POLL: KVNamespace;
@@ -42,6 +43,13 @@ export interface Env {
    * Opcional para compat com testes que não passam o binding (falha graciosamente
    * para KV-only dedup quando VOTE_DEDUP não está disponível). */
   VOTE_DEDUP?: DurableObjectNamespace;
+  /** #2223: Durable Object namespace para serialização do contador stats edition-wide.
+   * Opcional para compat com testes sem binding (fallback para KV read-modify-write
+   * quando STATS_COUNTER não está disponível — mantém comportamento anterior).
+   *
+   * Instanciado por `{brand}:{edition}` — brand incluído para isolamento entre
+   * diaria×clarice (mesmo padrão do VOTE_DEDUP). */
+  STATS_COUNTER?: DurableObjectNamespace;
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
@@ -305,6 +313,12 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     //   - Em caso de erro persistente do DO, o monitoramento deve ser acionado
     //     via logs `vote_dedup_do_error` (event abaixo).
     //
+    // #2231 (decisão do editor, briefing 260613c): MANTER fail-open.
+    // Sob erro do DO, o voto PASSA (não bloqueia votante legítimo). Raro double-count
+    // sob falha simultânea do DO (ambos os requests pegam 5xx após retry) é o trade-off
+    // aceito: prioriza não perder voto legítimo. Sem mudança de comportamento — apenas
+    // documentado aqui para rastreabilidade da decisão de design.
+    //
     // P1-3: envolver em try/catch — doStub.fetch() pode LANÇAR (timeout de rede,
     // DO não disponível), não só retornar !ok. Exceção aciona o mesmo fail-open.
     //
@@ -344,11 +358,13 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
         edition,
         email_domain: email.split("@")[1] ?? "unknown",
       }));
-      // fail-open: continua como firstVote=true após retry (não bloqueia votante indevidamente).
+      // fail-open (#2231): continua como firstVote=true após retry.
+      // Decisão de design documentada no bloco #2220/#2231 acima — voto não é
+      // bloqueado mesmo com DO indisponível. Raro double-count sob falha simultânea
+      // do DO é o trade-off aceito (ver issue #2231 para rastreabilidade).
       // P2-6: neste caminho (DO errou), NÃO chamar /confirm — o voto NÃO foi
       // autorizado pelo DO, então não há pending a confirmar.
       doStub = null; // sinaliza "não chamar /confirm" abaixo
-      // Trade-off explícito acima.
     } else {
     const { firstVote } = await doResp.json() as { firstVote: boolean };
 
@@ -477,7 +493,7 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // o risco é crash no exato μs entre os dois, que é raríssimo em produção.
   // Documentado como residual conhecido e aceitável.
   if (!(await env.POLL.get(statsGuardKey))) {
-    await updateStatsCounter(env, edition, choice as "A" | "B", correct);
+    await updateStatsCounter(env, edition, choice as "A" | "B", correct, brand);
     await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
   }
 
@@ -587,14 +603,60 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs), 200);
 }
 
-/** Mantém counter agregado stats:{edition} — evita N+1 reads no /stats. */
+/**
+ * Mantém counter agregado stats:{edition} — evita N+1 reads no /stats.
+ *
+ * #2223: usa StatsCounter DO (se disponível) para serializar o increment edition-wide.
+ * Antes: read-modify-write não-serializado em KV eventual — sob burst, vários requests
+ * concorrentes liam o mesmo valor stale e escreviam +1, perdendo incrementos.
+ * Com o DO: `blockConcurrencyWhile` serializa os increments — zero perda sob burst.
+ *
+ * Routing:
+ *   Se STATS_COUNTER binding presente → roteia pelo DO (serializado, sem perda).
+ *   Fallback (sem binding) → comportamento anterior (KV RMW, aceito em testes/dev).
+ *
+ * Após o incremento via DO, espelha o valor no KV `stats:{edition}` para compat
+ * com scripts externos que leem diretamente o KV (ex: rebuild-stats.ts).
+ * Falha do espelho KV é logada mas não propaga — o DO tem o valor autoritativo.
+ *
+ * `brand` é necessário para o DO id (`{brand}:{edition}`) — isola diaria×clarice.
+ */
 async function updateStatsCounter(
   env: Env,
   edition: string,
   choice: "A" | "B",
   correct: boolean | null,
+  brand: Brand = "diaria",
 ): Promise<void> {
   const statsKey = `stats:${edition}`;
+
+  if (env.STATS_COUNTER) {
+    // Caminho serializado via DO (#2223)
+    const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+    const doStub = env.STATS_COUNTER.get(doId);
+    const doResp = await doStub.fetch("https://internal/increment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice, correct }),
+    });
+    if (doResp.ok) {
+      const { stats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+      // Espelha no KV para compat com leitores externos (não-autoritativo).
+      // Falha do espelho não propaga — o DO é a fonte de verdade.
+      try {
+        await env.POLL.put(statsKey, JSON.stringify(stats));
+      } catch (e) {
+        console.error(JSON.stringify({ event: "stats_kv_mirror_failed", edition, error: String(e) }));
+      }
+      return;
+    }
+    // DO retornou erro — fallback para KV RMW (aceita perda residual, loga).
+    console.error(JSON.stringify({ event: "stats_counter_do_error", status: doResp.status, edition }));
+  }
+
+  // Fallback: KV read-modify-write (sem binding DO, ou em erro do DO).
+  // ATENÇÃO: mantém a race original (#2223) — usado apenas em testes/dev ou em
+  // caso de falha do DO. Em produção, STATS_COUNTER binding deve estar presente.
   const raw = await env.POLL.get(statsKey);
   const stats = raw ? JSON.parse(raw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
   stats.total += 1;
@@ -866,18 +928,40 @@ async function updateScore(
 
 // ── /stats ────────────────────────────────────────────────────────────────────
 
-async function handleStats(url: URL, env: Env): Promise<Response> {
+/**
+ * #2223: se STATS_COUNTER binding disponível, lê do DO (fonte autoritativa).
+ * Fallback para KV `stats:{edition}` se o DO não estiver disponível ou retornar erro.
+ * `brand` é necessário para derivar o DO id correto (`{brand}:{edition}`).
+ */
+async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
 
-  // Lê counter agregado (2 reads em vez de N+1)
-  const [statsRaw, correctRaw] = await Promise.all([
-    env.POLL.get(`stats:${edition}`),
-    env.POLL.get(`correct:${edition}`),
-  ]);
+  let stats: { total: number; voted_a: number; voted_b: number; correct_count: number } | null = null;
 
-  const stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
-  const total = stats.total as number;
+  // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
+  if (env.STATS_COUNTER) {
+    try {
+      const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+      const doStub = env.STATS_COUNTER.get(doId);
+      const doResp = await doStub.fetch("https://internal/stats", { method: "GET" });
+      if (doResp.ok) {
+        const { stats: doStats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+        stats = doStats;
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "stats_counter_do_read_error", edition, error: String(e) }));
+    }
+  }
+
+  // Fallback: KV counter (pode estar ligeiramente stale sob burst, mas é melhor que erro)
+  if (stats === null) {
+    const statsRaw = await env.POLL.get(`stats:${edition}`);
+    stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  }
+
+  const correctRaw = await env.POLL.get(`correct:${edition}`);
+  const total = stats.total;
 
   return json({
     edition,
@@ -1911,7 +1995,7 @@ export default {
     const bEnv = brandedEnv(env, brand);
 
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
-    if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv);
+    if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     if (path === "/leaderboard" && request.method === "GET") {
       // #2006/#2018: período canônico do leaderboard vem de BRAND_INFO.leaderboardPeriod.
       // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
