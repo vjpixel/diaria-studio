@@ -23,26 +23,58 @@
  *                                   pra refletir os votes apagados)
  *   - `leaderboard-snapshot:{slug}` (invalida snapshots dos meses afetados)
  *
+ * Auth (#2265): usa o WRANGLER (auth global do CLI — a mesma do `wrangler deploy`),
+ * NÃO mais CLOUDFLARE_API_TOKEN/ACCOUNT_ID (o token avulso dava 401 sem perm de KV).
+ * Pré-requisito: `wrangler` logado (`npx wrangler whoami` deve funcionar).
+ *
  * Uso:
- *   CLOUDFLARE_API_TOKEN=... \
- *   CLOUDFLARE_ACCOUNT_ID=5d15d8303325211d6976d73051f4b002 \
- *     npx tsx scripts/purge-leaderboard.ts --nickname Teste
- *     npx tsx scripts/purge-leaderboard.ts --email test@example.com
+ *   npx tsx scripts/purge-leaderboard.ts --nickname Teste --brand clarice
+ *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --brand clarice
  *
  *   # Dry-run é o default — só mostra o que seria apagado.
  *   # Pra executar de fato, passar --execute:
- *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --execute
+ *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --brand clarice --execute
  */
 
-import "dotenv/config";
+// #2265: NÃO carregamos dotenv. O .env tem um CLOUDFLARE_API_TOKEN sem permissão
+// de KV; se ele entrar no process.env, o wrangler filho o herda e usa ESSE token
+// (401) em vez da auth OAuth global do CLI. Sem env de auth = wrangler usa OAuth.
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
-const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
-const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
-const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace
+// #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
+// global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
+// avulso vivia dando 401 (sem permissão de KV) e quebrava purge + /diaria-remover-votos-pixel.
+const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace (KV)
 
-if (!ACCOUNT_ID || !API_TOKEN) {
-  console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
-  process.exit(1);
+// Roda o wrangler instalado em workers/poll via `node <bin>` (sem npx/shell) —
+// args como array, então chaves com chars especiais (ex: `{{+contact.email+}}`)
+// passam literais, sem inferno de quoting. cwd=workers/poll p/ achar a config/auth.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const POLL_DIR = resolve(ROOT, "workers", "poll");
+const WRANGLER_BIN = resolve(POLL_DIR, "node_modules", "wrangler", "bin", "wrangler.js");
+
+function wrangler(wargs: string[]): string {
+  // Tira CLOUDFLARE_API_TOKEN (auth) E CLOUDFLARE_ACCOUNT_ID (seleção de conta)
+  // do env do filho — força o wrangler a resolver tudo pela auth OAuth do CLI.
+  // Sem isso: o TOKEN avulso do .env dava 401; um ACCOUNT_ID errado no shell
+  // daria 404. Conta única na auth OAuth → resolvida automaticamente (#2265).
+  const childEnv = { ...process.env };
+  delete childEnv.CLOUDFLARE_API_TOKEN;
+  delete childEnv.CLOUDFLARE_ACCOUNT_ID;
+  return execFileSync(process.execPath, [WRANGLER_BIN, ...wargs], {
+    cwd: POLL_DIR,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: childEnv,
+  });
+}
+
+function wranglerErrText(e: unknown): string {
+  const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  return [err.stderr, err.stdout, err.message].map((x) => x?.toString() ?? "").join(" ");
 }
 
 const args = process.argv.slice(2);
@@ -68,32 +100,24 @@ if ((targetNickname === null) === (targetEmail === null)) {
 const BRAND = flagValue("--brand") === "clarice" ? "clarice" : "diaria";
 const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 
-const KV_BASE = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/storage/kv/namespaces/${NAMESPACE_ID}`;
-
+// #2265: helpers via wrangler. `kv key list` já pagina internamente (retorna
+// todas as chaves do prefixo). get/put/delete recebem a chave como arg literal.
 async function kvList(prefix: string): Promise<string[]> {
-  const all: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const params = new URLSearchParams({ prefix, limit: "1000" });
-    if (cursor) params.set("cursor", cursor);
-    const res = await fetch(`${KV_BASE}/keys?${params}`, {
-      headers: { "Authorization": `Bearer ${API_TOKEN}` },
-    });
-    if (!res.ok) throw new Error(`KV list failed: ${res.status} ${await res.text()}`);
-    const json = await res.json() as { result: Array<{ name: string }>; result_info: { cursor?: string; count: number } };
-    all.push(...json.result.map((k) => k.name));
-    cursor = json.result_info.cursor || undefined;
-  } while (cursor);
-  return all;
+  const out = wrangler(["kv", "key", "list", "--namespace-id", NAMESPACE_ID, "--remote", "--prefix", prefix]);
+  const arr = JSON.parse(out) as Array<{ name: string }>;
+  return arr.map((k) => k.name);
 }
 
 async function kvGet(key: string): Promise<string | null> {
-  const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, {
-    headers: { "Authorization": `Bearer ${API_TOKEN}` },
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`KV get ${key} failed: ${res.status}`);
-  return await res.text();
+  try {
+    // wrangler imprime o valor cru no stdout (banners vão p/ stderr); trim do \n final.
+    return wrangler(["kv", "key", "get", "--namespace-id", NAMESPACE_ID, "--remote", key]).replace(/\n$/, "");
+  } catch (e) {
+    // chave inexistente → wrangler sai !=0 com "404: Not Found" no stderr (verificado).
+    // Auth/rede (401/500) NÃO casam → re-lança (não engole como "vazio").
+    if (/not found|404|could not find/i.test(wranglerErrText(e))) return null;
+    throw e;
+  }
 }
 
 async function kvPut(key: string, value: string): Promise<void> {
@@ -101,12 +125,7 @@ async function kvPut(key: string, value: string): Promise<void> {
     console.log(`[dry-run] PUT ${key} (${value.length} bytes)`);
     return;
   }
-  const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, {
-    method: "PUT",
-    headers: { "Authorization": `Bearer ${API_TOKEN}` },
-    body: value,
-  });
-  if (!res.ok) throw new Error(`KV put ${key} failed: ${res.status} ${await res.text()}`);
+  wrangler(["kv", "key", "put", "--namespace-id", NAMESPACE_ID, "--remote", key, value]);
 }
 
 async function kvDelete(key: string): Promise<void> {
@@ -114,12 +133,11 @@ async function kvDelete(key: string): Promise<void> {
     console.log(`[dry-run] DELETE ${key}`);
     return;
   }
-  const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, {
-    method: "DELETE",
-    headers: { "Authorization": `Bearer ${API_TOKEN}` },
-  });
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`KV delete ${key} failed: ${res.status} ${await res.text()}`);
+  try {
+    wrangler(["kv", "key", "delete", "--namespace-id", NAMESPACE_ID, "--remote", key]);
+  } catch (e) {
+    // 404 = já apagada; idempotente. Outros erros propagam.
+    if (!/not found|404|could not find/i.test(wranglerErrText(e))) throw e;
   }
 }
 
