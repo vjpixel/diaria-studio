@@ -312,13 +312,24 @@ export async function fetchRecentCampaigns(
           if (cachedGs && cachedLs) return;
         }
 
-        // Fetch com globalStats + linksStats num único GET (sem custo extra de chamada)
+        // #2249 (verificado 2026-06-14 contra a API Brevo): o param COMBINADO
+        // `?statistics=globalStats,linksStats` retorna `linksStats` ZERADO (todos
+        // os links com 0 clicks), enquanto `?statistics=linksStats` sozinho
+        // retorna os cliques reais. Ex #41: combined links>0=0; single links>0=4
+        // (8 clicks). Por isso buscamos em DOIS GETs (custa 1 chamada extra por
+        // campanha — reverte a otimização #2177, que era a causa da seção de
+        // links agregados vir sempre vazia). globalStats no combinado está OK,
+        // mas pedimos só globalStats pra deixar a intenção explícita.
         const detail = await _fetchFn<BrevoCampaign>(
-          `/v3/emailCampaigns/${c.id}?statistics=globalStats,linksStats`,
+          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
           env,
         );
         const gs = detail.statistics?.globalStats;
-        const ls = detail.statistics?.linksStats;
+        const linksDetail = await _fetchFn<BrevoCampaign>(
+          `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
+          env,
+        );
+        const ls = linksDetail.statistics?.linksStats;
 
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
         // zerado em certas condicoes; persistir zerado sem TTL criaria entrada
@@ -1554,15 +1565,10 @@ export function renderScheduledSection(
 
   const rows = ordered
     .map((c) => {
-      const parsed = parseClariceCampaignKey(c.name);
-      const dia = parsed
-        ? `d${String(parsed.dayNum).padStart(2, "0")}-${parsed.cell}`
-        : "—";
+      // #2249 follow-up (editor 2026-06-14): colunas Dia e Lista removidas.
       return `<tr>
         <td>${escHtml(c.name)}</td>
-        <td>${dia}</td>
         <td>${fmtTimeBRT(c.scheduledAt)}</td>
-        <td>${escHtml(c.listName ?? "?")}</td>
         <td>${c.listSize != null ? c.listSize.toLocaleString("pt-BR") : "—"}</td>
       </tr>`;
     })
@@ -1577,9 +1583,7 @@ export function renderScheduledSection(
     <thead>
       <tr>
         <th title="Nome da campanha no Brevo">Campanha</th>
-        <th title="Dia/célula do ciclo (quando Clarice News)">Dia</th>
         <th title="Horário agendado (horário de Brasília)">Agendado (BRT)</th>
-        <th title="Lista de destino">Lista</th>
         <th title="Tamanho atual da lista (destinatários esperados)">Tamanho</th>
       </tr>
     </thead>
