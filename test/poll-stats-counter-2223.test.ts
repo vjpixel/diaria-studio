@@ -30,38 +30,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { StatsCounter, type IncrementPayload, type StatsCounterData } from "../workers/poll/src/stats-counter.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
+import { makeMockDoState } from "./_helpers/make-mock-do-state.ts";
 import type { Env } from "../workers/poll/src/index.ts";
-
-// ── Mock de DurableObjectState (reutiliza padrão do poll-vote-dedup-2187.test.ts) ──
-
-function makeMockDoState(): DurableObjectState {
-  const storage = new Map<string, unknown>();
-  let queue: Promise<unknown> = Promise.resolve();
-
-  return {
-    storage: {
-      async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T | undefined>> {
-        if (Array.isArray(key)) {
-          const map = new Map<string, T | undefined>();
-          for (const k of key) map.set(k, storage.get(k) as T | undefined);
-          return map as unknown as T;
-        }
-        return storage.get(key) as T | undefined;
-      },
-      async put<T>(key: string, value: T): Promise<void> {
-        storage.set(key, value);
-      },
-      async delete(key: string): Promise<void> {
-        storage.delete(key);
-      },
-    } as unknown as DurableObjectStorage,
-    blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => {
-      const next = queue.then(() => fn());
-      queue = next.then(() => undefined, () => undefined);
-      return next;
-    },
-  } as unknown as DurableObjectState;
-}
 
 function makeStatsCounter(): StatsCounter {
   return new StatsCounter(makeMockDoState());
@@ -474,5 +444,135 @@ describe("Fallback KV: sem binding STATS_COUNTER (#2223 compat)", () => {
     assert.equal(body.total, 7, "fallback KV: /stats total deve ser 7 — got: " + String(body.total));
     assert.equal(body.voted_a, 4, "fallback KV: voted_a deve ser 4 — got: " + String(body.voted_a));
     assert.equal(body.voted_b, 3, "fallback KV: voted_b deve ser 3 — got: " + String(body.voted_b));
+  });
+});
+
+// ── 6. Test Gap: DO 5xx → KV fallback no /stats ──────────────────────────────
+
+describe("Fix #5 — /stats: DO 5xx → fallback KV (não retorna erro ao leitor)", () => {
+  it("/stats cai no KV quando DO retorna 5xx", async () => {
+    /**
+     * Regressão: se o DO retornar 5xx em /stats, o handler deve cair no KV
+     * fallback em vez de propagar o erro. O leitor não deve receber 5xx.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      "stats:260613": JSON.stringify({ total: 42, voted_a: 20, voted_b: 22, correct_count: 15 }),
+    });
+
+    // DO que sempre retorna 5xx
+    const failingStatsNs: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (): DurableObjectStub => ({
+        fetch: async () => new Response(JSON.stringify({ error: "internal" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }),
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      STATS_COUNTER: failingStatsNs,
+      // VOTE_DEDUP ausente — /stats não precisa dele
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const statsUrl = new URL("https://poll.diaria.workers.dev/stats");
+    statsUrl.searchParams.set("edition", "260613");
+
+    const res = await worker.fetch(new Request(statsUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200, "/stats deve retornar 200 mesmo com DO 5xx — got: " + String(res.status));
+    const body = await res.json() as { total: number; voted_a: number; voted_b: number; correct_count: number };
+    // Deve ter caído no KV fallback
+    assert.equal(body.total, 42, "/stats fallback KV: total deve ser 42 — got: " + String(body.total));
+    assert.equal(body.voted_a, 20, "/stats fallback KV: voted_a deve ser 20 — got: " + String(body.voted_a));
+    assert.equal(body.correct_count, 15, "/stats fallback KV: correct_count deve ser 15 — got: " + String(body.correct_count));
+  });
+});
+
+// ── 7. Test Gap: admin-correct atualiza DO → /stats retorna correct_pct correto ──
+
+describe("Fix #6 — admin-correct atualiza DO StatsCounter; /stats reflete correct_pct (#2239)", () => {
+  it("após POST /admin/correct, /stats correct_pct calculado sobre correct_count do DO", async () => {
+    /**
+     * Regressão central: handleAdminCorrect atualizava correct_count só no KV.
+     * O /stats lê do DO (fonte autoritativa). Resultado: correct_pct stale no /stats
+     * após admin definir gabarito — fix #2 garante que o DO é atualizado também.
+     *
+     * Fluxo do teste:
+     *   1. 3 votos (A, B, A) — sem gabarito ainda (correct=null).
+     *   2. Admin define gabarito = "A" via POST /admin/correct.
+     *   3. /stats deve retornar correct_count=2 (os que votaram A) e correct_pct=67.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const { hmacSign } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv();
+    const { ns: statsNs } = makeStatsCounterNs();
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: makeVoteDedupNs(),
+      STATS_COUNTER: statsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    // 3 votos: emailA (A), emailB (B), emailC (A) — sem gabarito
+    const voters = [
+      { email: "voter-a@x.com", choice: "A" },
+      { email: "voter-b@x.com", choice: "B" },
+      { email: "voter-c@x.com", choice: "A" },
+    ];
+    for (const v of voters) {
+      const voteUrl = new URL("https://poll.diaria.workers.dev/vote");
+      voteUrl.searchParams.set("email", v.email);
+      voteUrl.searchParams.set("edition", "260613");
+      voteUrl.searchParams.set("choice", v.choice);
+      const res = await worker.fetch(new Request(voteUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+      assert.equal(res.status, 200, `voto de ${v.email} deve retornar 200`);
+    }
+
+    // Admin define gabarito = "A"
+    const sig = await hmacSign("test-admin-secret", "260613:A");
+    const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrl.searchParams.set("edition", "260613");
+    adminUrl.searchParams.set("answer", "A");
+    adminUrl.searchParams.set("sig", sig);
+
+    const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    assert.equal(adminRes.status, 200, "admin/correct deve retornar 200 — got: " + String(adminRes.status));
+    const adminBody = await adminRes.json() as { ok: boolean; updated_votes: number };
+    assert.ok(adminBody.ok, "admin/correct deve retornar ok:true");
+    assert.equal(adminBody.updated_votes, 3, "admin/correct: 3 votos atualizados — got: " + String(adminBody.updated_votes));
+
+    // /stats deve refletir correct_count=2 (A, A) e correct_pct=67
+    const statsUrl = new URL("https://poll.diaria.workers.dev/stats");
+    statsUrl.searchParams.set("edition", "260613");
+
+    const statsRes = await worker.fetch(new Request(statsUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(statsRes.status, 200, "/stats deve retornar 200");
+    const statsBody = await statsRes.json() as {
+      total: number;
+      correct_count: number;
+      correct_pct: number | null;
+      correct_answer: string | null;
+    };
+
+    assert.equal(statsBody.total, 3, "/stats: total deve ser 3 — got: " + String(statsBody.total));
+    assert.equal(statsBody.correct_answer, "A", "/stats: correct_answer deve ser A — got: " + String(statsBody.correct_answer));
+    assert.equal(
+      statsBody.correct_count,
+      2,
+      "/stats: correct_count deve ser 2 (DO atualizado pelo admin-correct) — got: " + String(statsBody.correct_count),
+    );
+    assert.equal(
+      statsBody.correct_pct,
+      67,
+      "/stats: correct_pct deve ser 67 (2/3) — got: " + String(statsBody.correct_pct),
+    );
   });
 });

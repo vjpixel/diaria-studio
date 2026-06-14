@@ -366,7 +366,25 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
       // autorizado pelo DO, então não há pending a confirmar.
       doStub = null; // sinaliza "não chamar /confirm" abaixo
     } else {
-    const { firstVote } = await doResp.json() as { firstVote: boolean };
+    // Fix #1: doResp.json() envolto em try/catch — resposta malformada do DO
+    // (ex: truncada por timeout) não crasha handleVote. Falha de parse é tratada
+    // como erro do DO (fail-open documentado, igual ao caminho 5xx acima).
+    let firstVote: boolean;
+    try {
+      const parsed = await doResp.json() as { firstVote: boolean };
+      firstVote = parsed.firstVote;
+    } catch (parseErr) {
+      console.error(JSON.stringify({
+        event: "vote_dedup_do_parse_error",
+        error: String(parseErr),
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      // fail-open: resposta malformada do DO é tratada como erro transitório.
+      // NÃO chama /confirm (doStub nulificado) — não há pending a confirmar.
+      doStub = null; // sinaliza "não chamar /confirm" abaixo
+      firstVote = true; // autoriza o voto (fail-open)
+    }
 
     if (!firstVote) {
       // Duplicado detectado pelo DO — servir página "já votou"
@@ -937,30 +955,39 @@ async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
 
-  let stats: { total: number; voted_a: number; voted_b: number; correct_count: number } | null = null;
-
-  // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
-  if (env.STATS_COUNTER) {
-    try {
-      const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
-      const doStub = env.STATS_COUNTER.get(doId);
-      const doResp = await doStub.fetch("https://internal/stats", { method: "GET" });
-      if (doResp.ok) {
-        const { stats: doStats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
-        stats = doStats;
+  // Fix #4: correctRaw é independente dos stats — paralela as duas leituras.
+  // Antes: correctRaw era lido APÓS a lógica de DO/fallback (sequencial).
+  // Agora: a leitura do DO/KV e a leitura de correct:${edition} correm em paralelo.
+  const [doStatsResult, correctRaw] = await Promise.all([
+    // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
+    (async () => {
+      if (env.STATS_COUNTER) {
+        try {
+          const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+          const doStub = env.STATS_COUNTER.get(doId);
+          const doResp = await doStub.fetch("https://internal/stats", { method: "GET" });
+          if (doResp.ok) {
+            const { stats: doStats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+            return doStats;
+          }
+        } catch (e) {
+          console.error(JSON.stringify({ event: "stats_counter_do_read_error", edition, error: String(e) }));
+        }
       }
-    } catch (e) {
-      console.error(JSON.stringify({ event: "stats_counter_do_read_error", edition, error: String(e) }));
-    }
-  }
+      return null;
+    })(),
+    env.POLL.get(`correct:${edition}`),
+  ]);
 
   // Fallback: KV counter (pode estar ligeiramente stale sob burst, mas é melhor que erro)
-  if (stats === null) {
+  let stats: { total: number; voted_a: number; voted_b: number; correct_count: number };
+  if (doStatsResult !== null) {
+    stats = doStatsResult;
+  } else {
     const statsRaw = await env.POLL.get(`stats:${edition}`);
     stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
   }
 
-  const correctRaw = await env.POLL.get(`correct:${edition}`);
   const total = stats.total;
 
   return json({
@@ -1581,7 +1608,7 @@ async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Promise<Res
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
 
-async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
+async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   const edition = url.searchParams.get("edition");
   const answer = url.searchParams.get("answer")?.toUpperCase();
   const sig = url.searchParams.get("sig");
@@ -1638,7 +1665,30 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
     await invalidateSnapshot(env, monthSlugForEdition);
   }
 
-  // Actualizar counter agregado com correct_count real
+  // Fix #2: atualizar correct_count no DO StatsCounter (fonte autoritativa do /stats)
+  // ANTES de atualizar o KV espelho. Sem isso, /stats lê do DO e retorna o valor
+  // stale pré-correção, mesmo após o admin definir o gabarito correto.
+  //
+  // Consistência DO×KV: DO é atualizado primeiro; falha do DO é logada mas não
+  // bloqueia o update do KV espelho (melhor ter KV correto e DO stale do que nenhum).
+  if (env.STATS_COUNTER) {
+    try {
+      const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+      const doStub = env.STATS_COUNTER.get(doId);
+      const doResp = await doStub.fetch("https://internal/adjust-correct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ correct_count: correctCount }),
+      });
+      if (!doResp.ok) {
+        console.error(JSON.stringify({ event: "stats_counter_adjust_correct_error", status: doResp.status, edition }));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "stats_counter_adjust_correct_error", edition, error: String(e) }));
+    }
+  }
+
+  // Actualizar counter agregado KV com correct_count real (espelho para compat)
   const statsRaw = await env.POLL.get(`stats:${edition}`);
   if (statsRaw) {
     const stats = JSON.parse(statsRaw);
@@ -2037,7 +2087,7 @@ export default {
       if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
-    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv);
+    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv, brand);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 

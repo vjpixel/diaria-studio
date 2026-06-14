@@ -41,54 +41,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { VoteDedup } from "../workers/poll/src/vote-dedup.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
+import { makeMockDoState } from "./_helpers/make-mock-do-state.ts";
 import type { Env } from "../workers/poll/src/index.ts";
-
-// ── Mock de DurableObjectState ────────────────────────────────────────────────
-
-/**
- * Mock mínimo de DurableObjectState para testar VoteDedup isoladamente.
- * Usa Map em memória com interface idêntica ao DO storage real.
- *
- * `blockConcurrencyWhile` usa uma fila de promises (mutex) para serializar
- * chamadas concorrentes — espelha o comportamento do runtime CF que processa
- * um request por vez dentro do mesmo DO.
- */
-function makeMockDoState(): DurableObjectState {
-  const storage = new Map<string, unknown>();
-
-  // Mutex via fila de promises: cada blockConcurrencyWhile encadeia na fila,
-  // garantindo que fn() só executa quando a invocação anterior terminar.
-  let queue: Promise<unknown> = Promise.resolve();
-
-  return {
-    storage: {
-      // P3-12: suporta assinatura batch (array de chaves → Map) e single (string → valor).
-      // A CF DurableObjectStorage real suporta ambas; o mock também deve.
-      async get<T>(key: string | string[]): Promise<T | undefined | Map<string, T | undefined>> {
-        if (Array.isArray(key)) {
-          const map = new Map<string, T | undefined>();
-          for (const k of key) map.set(k, storage.get(k) as T | undefined);
-          return map as unknown as T;
-        }
-        return storage.get(key) as T | undefined;
-      },
-      async put<T>(key: string, value: T): Promise<void> {
-        storage.set(key, value);
-      },
-      async delete(key: string): Promise<void> {
-        storage.delete(key);
-      },
-    } as unknown as DurableObjectStorage,
-    blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => {
-      // Encadeia na fila: aguarda a invocação anterior antes de executar fn().
-      // Isso serializa requests concorrentes ao mesmo DO, exatamente como o CF runtime.
-      const next = queue.then(() => fn());
-      // Atualiza a fila para o próximo blockConcurrencyWhile esperar nesta invocação.
-      queue = next.then(() => undefined, () => undefined);
-      return next;
-    },
-  } as unknown as DurableObjectState;
-}
 
 /** Cria uma instância de VoteDedup com estado isolado. */
 function makeVoteDedup(): VoteDedup {
