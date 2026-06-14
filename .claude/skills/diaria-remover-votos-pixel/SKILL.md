@@ -12,16 +12,17 @@ Remove do leaderboard do "É IA?" os votos das contas do **editor**, que vota du
 
 Reusa `scripts/purge-leaderboard.ts` (#1802), que apaga tudo relacionado a um email no KV do Worker `poll`: `score:{email}`, `score-by-month:*:{email}`, `vote:{edition}:{email}`, decrementa os `stats:{edition}` afetados e invalida os `leaderboard-snapshot:{slug}`.
 
-## Pré-requisito (env)
+## Pré-requisito (auth)
 
-O script precisa do token Cloudflare no ambiente:
+O script usa o **wrangler** (auth global do CLI) pra acessar o KV — **não** precisa mais de `CLOUDFLARE_API_TOKEN`/`ACCOUNT_ID` no env (#2265: o token avulso dava 401 sem permissão de KV). Basta o `wrangler` estar logado:
 
 ```
-CLOUDFLARE_API_TOKEN=...        # mesmo token do wrangler
-CLOUDFLARE_ACCOUNT_ID=5d15d8303325211d6976d73051f4b002
+npx wrangler whoami   # deve listar a conta, sem erro
 ```
 
-Se ausentes, o script aborta com erro — exporte antes (ou rode na máquina com o `.wrangler` logado).
+> ⚠️ Se houver um `CLOUDFLARE_API_TOKEN` no `.env`/shell, o script o **ignora** de propósito (removido do env do wrangler filho) pra forçar a auth OAuth.
+
+Votos da Clarice News (mensal) exigem `--brand clarice` (votos diaria são o default).
 
 ## Execução
 
