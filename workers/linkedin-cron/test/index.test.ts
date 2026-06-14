@@ -2703,6 +2703,15 @@ describe("#2230 Bug 2: handleQueueDelete — delete garantido (retry + tombstone
     kv.store.delete(queueKey);
     kv.store.set(pastKey, JSON.stringify(pastEntry));
 
+    // (#2235 fix F5) DO para o pastKey deve começar sem payload (novo DO stub criado automaticamente).
+    // Pré-registrar um DO stub para o pastKey pra verificar que /cancel foi chamado.
+    const doStatePast = new MockDOState();
+    const doSchedulerPast = new LinkedInScheduler(doStatePast as unknown as DurableObjectState);
+    // Simula um DO que pode ter sido re-armado (com payload presente) — cron deve chamá-lo com /cancel
+    await doStatePast.storage.put("payload", { key: pastKey, entry, webhookUrl: "x" } satisfies DoStoredPayload);
+    doStatePast.storage.alarmMs = Date.now() + 3600_000;
+    doNamespace.stubs.set(pastKey, { scheduler: doSchedulerPast, state: doStatePast });
+
     let webhookCalls = 0;
     const savedFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
@@ -2714,6 +2723,9 @@ describe("#2230 Bug 2: handleQueueDelete — delete garantido (retry + tombstone
       await __test__.fireDueItems(env);
       assert.equal(webhookCalls, 0, "cron NÃO deve postar item com tombstone cancelled=true");
       assert.equal(kv.store.has(pastKey), false, "tombstone deve ser deletado pelo cron (cleanup)");
+      // (#2235 fix F5) DO /cancel deve ter sido chamado — payload + alarm limpos
+      assert.equal(doStatePast.storage.alarmMs, null, "DO alarm deve ser cancelado ao limpar tombstone (#2235 fix F5)");
+      assert.equal(await doStatePast.storage.get("payload"), undefined, "DO payload deve ser limpo ao limpar tombstone (#2235 fix F5)");
     } finally {
       globalThis.fetch = savedFetch;
     }
@@ -2850,6 +2862,279 @@ describe("#2230 Bug 3: alarm() usa tryClaim() diretamente — sem nested blockCo
       );
     } finally {
       globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ── #2235 — cron path: /status-set-fired robusto + handleRearm skip tombstone ──
+
+describe("#2235 cron path: /status-set-fired com retry (sem double-post via alarm TTL)", () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => { savedFetch = globalThis.fetch; });
+
+  it("cron posta + /status-set-fired falha transitória → retry → DO tem fired=true+payload limpo ao final", async () => {
+    // Testa que o retry de /status-set-fired funciona: 1ª tentativa falha, 2ª sucede.
+    // Garante que o DO fica com fired=true + payload limpo, impedindo re-post via alarm.
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-status-set-fired-retry");
+    const entry: QueueEntry = {
+      text: "post com status-set-fired retry", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // DO pré-registrado pra inspecionar o estado pós-cron
+    const doState = new MockDOState();
+    // Pré-popula payload como se o alarm tivesse sido armado
+    await doState.storage.put("payload", {
+      key: queueKey, entry, webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+
+    // Simula /status-set-fired falhando na 1ª tentativa mas sucedendo na 2ª
+    let statusSetFiredCalls = 0;
+    const origFetch = doScheduler.fetch.bind(doScheduler);
+    doScheduler.fetch = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/status-set-fired") {
+        statusSetFiredCalls++;
+        if (statusSetFiredCalls === 1) {
+          return new Response(JSON.stringify({ error: "transient" }), { status: 503 });
+        }
+      }
+      return origFetch(req);
+    };
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let webhookCalls = 0;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1, "item deve ser disparado pelo cron");
+      assert.equal(webhookCalls, 1, "webhook chamado 1x");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deletada após fire");
+
+      // /status-set-fired foi chamado pelo menos 2x (1ª falhou, 2ª sucedeu)
+      assert.ok(statusSetFiredCalls >= 2, `status-set-fired deve ter sido retentado (calls=${statusSetFiredCalls})`);
+
+      // DO deve ter fired=true + payload deletado após retry bem-sucedido
+      const fired = await doState.storage.get<boolean>("fired");
+      const payload = await doState.storage.get<DoStoredPayload>("payload");
+      assert.equal(fired, true, "DO deve ter fired=true após retry bem-sucedido");
+      assert.equal(payload, undefined, "DO payload deve ser deletado pelo /status-set-fired (#2235 fix)");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("cron posta + /status-set-fired falha persistente → /cancel chamado → alarm re-entry (TTL re-claim) NÃO posta", async () => {
+    // (#2235 fix F1 + F2 + F6) Exercita o path do bug confirmado:
+    //   1. cron posta (webhook ok), deleta KV
+    //   2. /status-set-fired falha 3x → firedSetOk=false
+    //   3. Fix: cron chama /cancel best-effort → payload limpo do DO
+    //   4. Alarm re-dispara via TTL expiry + claim expirado (claiming=true, claimed_at antigo)
+    //   5. alarm() faz tryClaim() → claim expirado → re-clama → lê payload → payload AUSENTE → aborta
+    //   6. webhook NÃO é chamado (double-post prevenido)
+    //
+    // O teste anterior usava `const s = globalThis.fetch` em vez de `savedFetch` do beforeEach
+    // (#2235 fix F3 — teardown frágil que podia poluir o fetch da suíte se Test 1 lançasse).
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-firedSetOk-false-cancel");
+    const entry: QueueEntry = {
+      text: "double post guard via cancel", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    // DO com payload presente e claim EXPIRADO (claiming=true + claimed_at antigo > CLAIM_TTL_MS)
+    // — simula o estado onde alarm disparou parcialmente e travou
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    await doState.storage.put("payload", {
+      key: queueKey, entry, webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+    // claiming=true com claimed_at expirado → alarm pode re-clamar via TTL
+    await doState.storage.put("claiming", true);
+    await doState.storage.put("claimed_at", Date.now() - CLAIM_TTL_MS - 5_000); // 5s além do TTL
+
+    // Simula /status-set-fired falhando SEMPRE (storage persistentemente degradado)
+    const origFetch = doScheduler.fetch.bind(doScheduler);
+    doScheduler.fetch = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/status-set-fired") {
+        return new Response(JSON.stringify({ error: "storage unavailable" }), { status: 503 });
+      }
+      return origFetch(req);
+    };
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let webhookCalls = 0;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // Step 1: cron dispara (cron ganha claim, posta, KV deletado, /status-set-fired falha → /cancel chamado)
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1, "cron deve disparar o item");
+      assert.equal(webhookCalls, 1, "webhook chamado 1x pelo cron");
+      assert.equal(kv.store.has(queueKey), false, "KV entry deletada após fire");
+
+      // Verificar que /cancel foi chamado (payload deve estar limpo no DO)
+      const payloadAfterCron = await doState.storage.get<DoStoredPayload>("payload");
+      assert.equal(payloadAfterCron, undefined, "payload deve estar limpo (via /cancel) após /status-set-fired falhar (#2235 fix F1)");
+
+      // Step 2: alarm re-dispara via TTL expiry (claiming=true mas claimed_at antigo → re-claim)
+      // Como payload foi limpo, alarm deve abortar sem postar (mesmo que re-claime)
+      await doScheduler.alarm();
+      assert.equal(webhookCalls, 1, "alarm re-entry NÃO deve re-postar — payload ausente bloqueia (#2235 fix F1)");
+    } finally {
+      globalThis.fetch = savedFetch; // (#2235 fix F3) usar savedFetch do beforeEach, não `const s` local
+    }
+  });
+
+  it("cron posta + /status-set-fired sucede → alarm posterior (fired=true) NÃO re-posta", async () => {
+    // Fluxo normal do fix: cron posta, /status-set-fired sucede, alarm re-entry pula.
+    const { env, kv, doNamespace } = mkEnvWithDO("tok", "https://make.test/webhook");
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-cron-then-alarm-noop");
+    const entry: QueueEntry = {
+      text: "cron fires, alarm skips", image_url: null, scheduled_at: past,
+      destaque: "d3", created_at: past, retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+
+    const doState = new MockDOState();
+    await doState.storage.put("payload", {
+      key: queueKey, entry, webhookUrl: "https://make.test/webhook",
+    } satisfies DoStoredPayload);
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+
+    let webhookCalls = 0;
+    globalThis.fetch = (async () => {
+      webhookCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // Step 1: cron dispara
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1, "cron deve disparar o item");
+      assert.equal(webhookCalls, 1, "1 webhook pra cron");
+
+      // Verificar que DO tem fired=true + payload deletado
+      const fired = await doState.storage.get<boolean>("fired");
+      const payload = await doState.storage.get<DoStoredPayload>("payload");
+      assert.equal(fired, true, "fired=true após cron");
+      assert.equal(payload, undefined, "payload deletado pelo /status-set-fired (#2235)");
+
+      // Step 2: alarm re-dispara (simula CF retry ou TTL expiry)
+      await doScheduler.alarm();
+      assert.equal(webhookCalls, 1, "alarm re-entry NÃO deve re-postar (fired=true) (#2235 double-post guard)");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+describe("#2235 handleRearm: pula + DELETA entries com tombstone (item cancelado)", () => {
+  it("rearm deleta tombstone com cancelled=true — não arma alarm + limpa KV (anti-acúmulo)", async () => {
+    // (#2235 fix F4) handleRearm agora DELETA tombstones em vez de só pular.
+    // Tombstones com scheduled_at futuro acumulavam no KV porque:
+    //   - cron não os processa (ainda não chegou a hora + cancelled=true os pularia ao chegar)
+    //   - rearm anterior só pulava sem deletar
+    // Fix: rearm detecta cancelled=true + scheduled_at futuro → deleta + conta skipped_tombstone.
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    // Gravar tombstone: entry com scheduled_at no futuro + cancelled=true
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-tombstone-rearm");
+    const tombstoneEntry: QueueEntry & { cancelled: boolean } = {
+      text: "item cancelado", image_url: null, scheduled_at: future,
+      destaque: "d1", created_at: new Date().toISOString(), retry_count: 0,
+      cancelled: true,
+    };
+    kv.store.set(queueKey, JSON.stringify(tombstoneEntry));
+
+    // /rearm deve deletar o tombstone + retornar skipped_tombstone=1
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const data = await res.json() as { rearmed: number; skipped_past: number; skipped_tombstone: number; failed: number };
+    assert.equal(data.rearmed, 0, "tombstone NÃO deve ser re-armado (#2235 fix)");
+    assert.equal(data.skipped_tombstone, 1, "tombstone deve ser contado em skipped_tombstone (F10 observabilidade)");
+    assert.equal(data.skipped_past, 0, "tombstone NÃO deve ser contado em skipped_past (separado por F10)");
+    assert.equal(data.failed, 0);
+
+    // Tombstone deve ter sido DELETADO do KV (anti-acúmulo fix F4)
+    assert.equal(kv.store.has(queueKey), false, "tombstone deve ser deletado pelo rearm (#2235 fix F4)");
+
+    // DO NÃO deve ter alarm agendado pra o tombstone
+    const doEntry = doNamespace.stubs.get(queueKey);
+    if (doEntry) {
+      assert.equal(doEntry.state.storage.alarmMs, null, "alarm NÃO deve ser agendado pra item com tombstone");
+    }
+    // Se doEntry é undefined (DO nunca foi acessado), também está correto — significa
+    // que handleRearm nem tentou armar o DO pra este item.
+  });
+
+  it("rearm arma item futuro normal, deleta tombstone no mesmo KV, retorna counters separados", async () => {
+    // (#2235 fix F4+F10) Garante que o fix não quebra o caso normal: 1 item válido + 1 tombstone.
+    // Espera: rearmed=1, skipped_tombstone=1, tombstone deletado do KV.
+    const { env, kv, doNamespace } = mkEnvWithDO();
+
+    // Item válido
+    const future1 = new Date(Date.now() + 3600_000).toISOString();
+    const key1 = buildQueueKey(future1, "uuid-valid-rearm");
+    const validEntry: QueueEntry = {
+      text: "post válido", image_url: null, scheduled_at: future1,
+      destaque: "d1", created_at: new Date().toISOString(), retry_count: 0,
+    };
+    kv.store.set(key1, JSON.stringify(validEntry));
+
+    // Tombstone (item cancelado com cancelled=true, também no futuro)
+    const future2 = new Date(Date.now() + 7200_000).toISOString();
+    const key2 = buildQueueKey(future2, "uuid-tombstone-rearm-2");
+    const tombstoneEntry: QueueEntry & { cancelled: boolean } = {
+      text: "item cancelado", image_url: null, scheduled_at: future2,
+      destaque: "d2", created_at: new Date().toISOString(), retry_count: 0,
+      cancelled: true,
+    };
+    kv.store.set(key2, JSON.stringify(tombstoneEntry));
+
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    const data = await res.json() as { rearmed: number; skipped_past: number; skipped_tombstone: number };
+
+    // Apenas item válido re-armado; tombstone deletado
+    assert.equal(data.rearmed, 1, "apenas 1 item (válido) deve ser re-armado");
+    assert.equal(data.skipped_tombstone, 1, "tombstone deve ser contado em skipped_tombstone (não skipped_past)");
+    assert.equal(data.skipped_past, 0, "nenhum item passado — só o tombstone (que vai pra skipped_tombstone)");
+
+    // Tombstone deve ter sido DELETADO do KV (anti-acúmulo fix F4)
+    assert.equal(kv.store.has(key2), false, "tombstone deve ser deletado pelo rearm (#2235 fix F4)");
+
+    // DO do item válido deve ter alarm
+    const doEntry1 = doNamespace.stubs.get(key1);
+    assert.ok(doEntry1, "DO do item válido deve existir");
+    assert.ok(doEntry1.state.storage.alarmMs !== null, "alarm do item válido deve estar agendado");
+
+    // DO do tombstone NÃO deve ter alarm (ou não foi acessado)
+    const doEntry2 = doNamespace.stubs.get(key2);
+    if (doEntry2) {
+      assert.equal(doEntry2.state.storage.alarmMs, null, "tombstone NÃO deve ter alarm agendado");
     }
   });
 });
