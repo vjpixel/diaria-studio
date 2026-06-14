@@ -60,6 +60,28 @@ function renderTextInline(s: string): string {
 }
 
 /**
+ * #2261: normaliza URLs de curadoria que migraram de domínio. As páginas de
+ * cursos/livros saíram do Beehiiv (`diaria.beehiiv.com/cursos-gratuitos-de-ia`,
+ * `/livros-sobre-ia`) — que agora dão **404** — pros Workers atuais
+ * (`cursos.diaria.workers.dev`, `livros.diaria.workers.dev`, iguais ao diário).
+ * Aplicado em TODO href do render mensal (defensivo): mesmo que o draft do
+ * `writer-monthly` nasça com o link velho, o email sai com o correto — e o ciclo
+ * 2605-06 (cujo S2/S3 reusa este conteúdo) é corrigido sem reescrever o draft.
+ * O lookahead `(?=$|[/?#])` casa só o FIM do segmento (fim da string, `/`, `?`
+ * ou `#`) — NÃO um hífen de continuação (evita over-match em `...-de-ia-2024`).
+ * Adicionar aqui se outra página migrar.
+ */
+const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
+  [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia(?=$|[/?#])/i, "https://cursos.diaria.workers.dev"],
+  [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia(?=$|[/?#])/i, "https://livros.diaria.workers.dev"],
+];
+
+export function normalizeKnownUrl(url: string): string {
+  for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
+  return url;
+}
+
+/**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
  * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
  * só escapado, sem bold/italic, igual à diária.)
@@ -100,7 +122,7 @@ export function renderInline(text: string): string {
     }
     if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`,
+      `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`,
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
@@ -441,7 +463,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     .map(({ title, desc }) => {
       const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
       const titleHtml = tm
-        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(tm[2])}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
+        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2]))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
         : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
       return titleHtml + (desc
         ? `<p style="margin:0 0 20px 0;color:${INK};">${renderInline(desc)}</p>`
@@ -474,7 +496,7 @@ export function renderEncerramento(body: string): string {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
         pills.push(
-          `<a href="${escHtml(m[2])}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;padding:12px 22px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
+          `<a href="${escHtml(normalizeKnownUrl(m[2]))}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;padding:12px 22px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
         );
         hadPill = true;
       } else {

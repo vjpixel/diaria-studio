@@ -75,6 +75,18 @@ export function parseValidEditions(raw: string | null): string[] | null {
   }
 }
 
+/**
+ * #2262: detecta merge tag NÃO-substituída no campo email. Quando a plataforma
+ * de envio não substitui o token (test send, preview, contato sem atributo), o
+ * literal entra no `?email=` — ex: Brevo `{{ contact.EMAIL }}` (→ mangled p/
+ * `{{+contact.email+}}` pelo replace ` `→`+`), Beehiiv `{{ subscriber.email }}`
+ * ou `{{email}}`. `{{`/`}}` é assinatura inequívoca. Usado pra rejeitar o voto
+ * (400) antes de escrever no KV, evitando voto-lixo no leaderboard público.
+ */
+export function isUnsubstitutedMergeTag(email: string): boolean {
+  return email.includes("{{") || email.includes("}}");
+}
+
 /** True se edition está autorizada a receber votos. null/empty = aceita qualquer (compat). */
 export function isValidEdition(set: string[] | null, edition: string): boolean {
   if (!set || set.length === 0) return true;

@@ -14,6 +14,8 @@ import {
   draftToEmail as d2eDirect,
   splitByLabels as sblDirect,
   renderDestaque,
+  normalizeKnownUrl,
+  renderInline,
 } from "../scripts/lib/monthly-render.ts";
 import {
   escHtml as escReexport,
@@ -65,5 +67,37 @@ describe("monthly-render extraído (#1844)", () => {
     const imageUrls = { 1: "https://example.com/d1.jpg" };
     const out = d2eDirect(draft, "Assunto", "2606", undefined, undefined, undefined, imageUrls, "Criada com ComfyUI");
     assert.ok(out.html.includes("Criada com ComfyUI"), `caption customizado deve aparecer no HTML: ${out.html.slice(0, 400)}`);
+  });
+});
+
+describe("normalizeKnownUrl — links de curadoria migrados (#2261)", () => {
+  it("reescreve cursos-gratuitos-de-ia (Beehiiv 404) → cursos.diaria.workers.dev", () => {
+    assert.equal(
+      normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia"),
+      "https://cursos.diaria.workers.dev",
+    );
+  });
+  it("reescreve livros-sobre-ia (Beehiiv 404) → livros.diaria.workers.dev, ignorando ?utm", () => {
+    assert.equal(
+      normalizeKnownUrl("https://diaria.beehiiv.com/livros-sobre-ia?utm_source=x"),
+      "https://livros.diaria.workers.dev",
+    );
+  });
+  it("não toca URLs não-migradas", () => {
+    assert.equal(normalizeKnownUrl("https://exame.com/ia/x"), "https://exame.com/ia/x");
+    assert.equal(normalizeKnownUrl("https://cursos.diaria.workers.dev"), "https://cursos.diaria.workers.dev");
+  });
+  it("não faz over-match em sufixo com hífen (ex: -de-ia-2024)", () => {
+    const other = "https://diaria.beehiiv.com/cursos-gratuitos-de-ia-2024";
+    assert.equal(normalizeKnownUrl(other), other, "página diferente não deve ser reescrita");
+  });
+  it("aceita fim de segmento: trailing slash, ?query, #hash", () => {
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia/"), "https://cursos.diaria.workers.dev");
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia#x"), "https://cursos.diaria.workers.dev");
+  });
+  it("renderInline aplica a normalização no href do link de curadoria", () => {
+    const html = renderInline("[Cursos gratuitos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)");
+    assert.match(html, /href="https:\/\/cursos\.diaria\.workers\.dev"/);
+    assert.doesNotMatch(html, /beehiiv\.com\/cursos/);
   });
 });

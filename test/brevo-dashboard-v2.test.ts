@@ -409,10 +409,11 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
     };
     const rows = aggregateLinksAcrossCampaigns([campaign1, campaign2]);
 
-    const diaria = rows.find((r) => r.url === "https://diar.ia/edicao/260613");
-    assert.ok(diaria, "link diar.ia deve aparecer no resultado");
-    assert.equal(diaria!.totalClicks, 35, "deve somar 20+15=35 clicks do mesmo link");
-    assert.equal(diaria!.campaignCount, 2, "deve contar 2 campanhas para o mesmo link");
+    // #2263: agrupado por origin — diar.ia/edicao/260613 → https://diar.ia
+    const diaria = rows.find((r) => r.url === "https://diar.ia");
+    assert.ok(diaria, "origin diar.ia deve aparecer no resultado");
+    assert.equal(diaria!.totalClicks, 35, "deve somar 20+15=35 clicks do mesmo origin");
+    assert.equal(diaria!.campaignCount, 2, "deve contar 2 campanhas para o mesmo origin");
   });
 
   test("filtra links de sistema reutilizando isSystemLink (sem duplicar lógica)", () => {
@@ -431,9 +432,9 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       "unsubscribe deve ser filtrado por isSystemLink");
     assert.ok(!urls.includes("https://example.com/email/preferences?token=xyz"),
       "preferences deve ser filtrado por isSystemLink");
-    // Links editoriais SIM
-    assert.ok(urls.includes("https://diar.ia/edicao/260613"), "link editorial deve aparecer");
-    assert.ok(urls.includes("https://openai.com/blog/gpt-5"), "link editorial deve aparecer");
+    // Links editoriais SIM (por origin — #2263)
+    assert.ok(urls.includes("https://diar.ia"), "origin editorial deve aparecer");
+    assert.ok(urls.includes("https://openai.com"), "origin editorial deve aparecer");
   });
 
   test("ordena por totalClicks DESC", () => {
@@ -443,9 +444,9 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       assert.ok(rows[i - 1].totalClicks >= rows[i].totalClicks,
         `row ${i - 1} (${rows[i - 1].totalClicks}) deve ter totalClicks ≥ row ${i} (${rows[i].totalClicks})`);
     }
-    // O link com mais clicks (42) deve ser primeiro
-    assert.equal(rows[0].url, "https://diar.ia/edicao/260613",
-      "link com mais clicks (42) deve ser primeiro");
+    // O origin com mais clicks (42) deve ser primeiro (#2263)
+    assert.equal(rows[0].url, "https://diar.ia",
+      "origin com mais clicks (42) deve ser primeiro");
   });
 
   test("graceful: sem dados → retorna []", () => {
@@ -467,12 +468,14 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       },
     };
     const rows = aggregateLinksAcrossCampaigns([campaign]);
+    // #2263: /ok e /zero colapsam em https://diar.ia; /zero (0 clicks) é excluído
     assert.equal(rows.length, 1, "link com 0 clicks deve ser excluído");
-    assert.equal(rows[0].url, "https://diar.ia/ok");
+    assert.equal(rows[0].url, "https://diar.ia");
+    assert.equal(rows[0].totalClicks, 5, "só o /ok (5) conta");
   });
 
-  test("trunca displayUrl para URLs longas (max 70 chars)", () => {
-    const longUrl = "https://example.com/" + "a".repeat(80);
+  test("displayUrl é o origin (sem path/query, sem truncamento) (#2263)", () => {
+    const longUrl = "https://example.com/" + "a".repeat(80) + "?utm_source=x";
     const campaign = {
       ...baseCampaign,
       statistics: {
@@ -482,9 +485,8 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
     };
     const rows = aggregateLinksAcrossCampaigns([campaign]);
     assert.equal(rows.length, 1);
-    assert.ok(rows[0].displayUrl.length <= 70, `displayUrl deve ter ≤ 70 chars`);
-    assert.ok(rows[0].displayUrl.endsWith("…"), "URL truncada deve terminar com …");
-    assert.equal(rows[0].url, longUrl, "url completa preservada");
+    assert.equal(rows[0].url, "https://example.com", "url reduzida ao origin");
+    assert.equal(rows[0].displayUrl, "https://example.com", "displayUrl = origin (sem path/truncamento)");
   });
 
   test("campaignCount correto: link em 1 campanha vs 2 campanhas", () => {
@@ -571,8 +573,9 @@ describe("#2212: renderAggregatedLinksSection", () => {
   test("links editoriais aparecem na tabela", () => {
     const rows = makeRows();
     const html = renderAggregatedLinksSection(rows);
-    assert.match(html, /diar\.ia\/edicao\/260613/, "link editorial deve aparecer");
-    assert.match(html, /openai\.com\/blog\/gpt-5/, "link editorial deve aparecer");
+    assert.match(html, /https:\/\/diar\.ia\b/, "origin editorial deve aparecer");
+    assert.match(html, /https:\/\/openai\.com\b/, "origin editorial deve aparecer");
+    assert.doesNotMatch(html, /edicao\/260613/, "path NÃO deve aparecer (só origin)");
   });
 
   test("links de sistema NÃO aparecem na tabela", () => {
@@ -587,7 +590,7 @@ describe("#2212: renderAggregatedLinksSection", () => {
   test("links ordenados por clicks DESC (maior primeiro)", () => {
     const rows = makeRows();
     const html = renderAggregatedLinksSection(rows);
-    const pos42 = html.indexOf("diar.ia/edicao/260613"); // 42 clicks
+    const pos42 = html.indexOf("https://diar.ia"); // 42 clicks (origin #2263)
     const pos8 = html.indexOf("techcrunch.com");          // 8 clicks
     assert.ok(pos42 > -1, "diar.ia (42 clicks) deve aparecer");
     assert.ok(pos8 > -1, "techcrunch (8 clicks) deve aparecer");
