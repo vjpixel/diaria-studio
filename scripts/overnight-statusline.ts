@@ -8,17 +8,16 @@
  * Saída:
  *   Fora de rodada:   "{branch}"
  *   Durante rodada:   "{branch}  [████████░░░░] 67%  (4/6)"
- *   Rodada encerrada: "{branch}"  (barra escondida — silent)
+ *   Rodada encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
  *
  * Critério de "rodada encerrada": TODAS as entradas de `issues` têm status
- * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando 0 issues
- * elegíveis restam, a barra desaparece para não poluir uma session já concluída.
+ * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando encerrada,
+ * mostra 100% e permanece visível — NÃO oculta (#2246, requisito do editor).
  *
  * Degrada graciosamente:
- *   - plan.json ausente   → string vazia (fora de rodada)
+ *   - plan.json ausente    → string vazia (fora de rodada)
  *   - plan.json malformado → string vazia (sem throw)
- *   - rodada encerrada    → string vazia (100% = barra ocultada)
- *   - total de issues = 0 → string vazia
+ *   - total de issues = 0  → string vazia
  *
  * Uso (Claude Code statusLine):
  *   npx tsx scripts/overnight-statusline.ts
@@ -60,7 +59,10 @@ export interface Plan {
 // ─── constantes ───────────────────────────────────────────────────────────────
 
 // Qualquer status fora deste Set é considerado não-terminal por exclusão (open-world contract).
-export const OVERNIGHT_DIR_RE = /^\d{6}$/;
+// Fix #2246 pt1: sufixo [a-z]? (zero ou UMA letra) para casar rodadas suplementares (260613b, 260613c, …).
+// Single-letter suffix garante ordenação lexicográfica correta: 260613c > 260613b > 260613 > 260611.
+// Dois sufixos (260613aa) mis-ordenariam lexicograficamente — não são gerados pelo pipeline.
+export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
 
@@ -76,7 +78,9 @@ const BAR_WIDTH = 12;
  *   - plan é null/undefined
  *   - plan.issues é ausente ou não-array
  *   - issues.length === 0
- *   - todas as issues têm status terminal (rodada encerrada)
+ *
+ * Fix #2246 pt3: quando done >= total (rodada encerrada), mostra 100% e permanece
+ * visível — NÃO retorna "" (requisito do editor: barra fica em 100% ao encerrar).
  */
 export function renderOvernightBar(plan: Plan | null | undefined): string {
   // Degrada graciosamente: plan ausente ou malformado
@@ -88,8 +92,11 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
   const total = issues.length;
   const done = issues.filter((i) => TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)).length;
 
-  // Rodada encerrada: todas terminais → barra oculta
-  if (done >= total) return "";
+  // Rodada encerrada: todas terminais → barra cheia 100% visível (#2246 pt3)
+  if (done >= total) {
+    const bar = "█".repeat(BAR_WIDTH);
+    return `[${bar}] 100%  (${done}/${total})`;
+  }
 
   // Fix #3: use Math.floor instead of Math.round to avoid showing 100% when not all done
   const pct = Math.floor((done / total) * 100);
@@ -101,17 +108,6 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
 }
 
 // ─── helpers internos ─────────────────────────────────────────────────────────
-
-/**
- * Verifica se um plan tem pelo menos uma issue com status não-terminal.
- * Contrato open-world: qualquer status que NÃO esteja em TERMINAL_STATUSES
- * é considerado não-terminal — a lista de terminais é fechada (mergeada,
- * draft-ci-vermelho, pulada), todos os demais são não-terminais por exclusão.
- */
-function hasNonTerminalIssue(plan: Plan): boolean {
-  if (!Array.isArray(plan.issues)) return false;
-  return plan.issues.some((i) => !TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus));
-}
 
 /**
  * Lê e parseia o plan.json de um diretório de rodada. Retorna null em qualquer erro.
@@ -127,13 +123,24 @@ function readPlanFromDir(planPath: string): Plan | null {
 }
 
 /**
- * Encontra a rodada ativa escaneando data/overnight/{AAMMDD}/plan.json.
- * A rodada ativa é a que tem ao menos uma issue com status não-terminal.
- * - Se múltiplas tiverem unidades não-terminais → retorna a mais recente por nome do dir.
- * - Se nenhuma tiver unidades não-terminais → retorna a mais recente por nome do dir (ou null).
- * Isso é determinístico e não depende do relógio — corrige o bug do live clock (#2184/Finding 1).
+ * Encontra a rodada corrente escaneando data/overnight/{AAMMDD[a-z]*}/plan.json.
+ *
+ * Fix #2246 pt2: retorna o plan do dir MAIS RECENTE que casa OVERNIGHT_DIR_RE e
+ * tem issues.length > 0 — independentemente de a rodada estar em progresso ou
+ * encerrada. O conceito anterior de "primeiro com não-terminal" causava o bug:
+ * um plan antigo (260611) com status legado não-terminal sequestrava o bar
+ * durante/após rodadas suplementares (260613b, 260613c) que a regex não casava.
+ *
+ * Novo contrato:
+ *   - Mais-recente por nome de dir (sort lexicográfico desc, cobre sufixos a–z)
+ *   - Deve ter issues.length > 0 (plan vazio é ignorado — não é rodada real)
+ *   - Não importa se a rodada está em progresso ou encerrada; renderOvernightBar
+ *     decide como exibir (100% quando encerrada, % parcial quando em progresso)
+ *
+ * Isso é determinístico e não depende do relógio — corrige #2184/Finding 1 e
+ * o bug de sequestro por plan antigo (#2246).
  */
-function readTodayPlan(cwd: string): Plan | null {
+export function readTodayPlan(cwd: string): Plan | null {
   try {
     const overnightDir = join(cwd, "data", "overnight");
     if (!existsSync(overnightDir)) return null;
@@ -142,33 +149,22 @@ function readTodayPlan(cwd: string): Plan | null {
       .filter((e) => e.isDirectory() && OVERNIGHT_DIR_RE.test(e.name))
       .map((e) => e.name)
       .sort()
-      .reverse(); // most recent first
+      .reverse(); // most recent first (lexicographic: 260613c > 260613b > 260613 > 260611)
 
     if (entries.length === 0) return null;
 
-    // Single-pass scan: track (a) first active run (non-terminal issue) and
-    // (b) most-recent parseable plan as fallback — each plan.json is read ONCE.
-    let activePlan: Plan | null = null;
-    let fallbackPlan: Plan | null = null;
-
+    // Fix #2246 pt2: return the most-recent dir with a parseable plan that has issues.
+    // Do NOT skip to older dirs just because the most-recent run is already terminal.
     for (const dirName of entries) {
       const planPath = join(overnightDir, dirName, "plan.json");
       const plan = readPlanFromDir(planPath);
       if (!plan) continue;
-
-      // Track most-recent parseable plan as fallback (entries sorted desc)
-      if (fallbackPlan === null) fallbackPlan = plan;
-
-      // Track first active run (has at least one non-terminal issue)
-      if (activePlan === null && Array.isArray(plan.issues) && plan.issues.length > 0 && hasNonTerminalIssue(plan)) {
-        activePlan = plan;
-      }
-
-      // Early exit: already found both — no need to continue
-      if (activePlan !== null && fallbackPlan !== null) break;
+      if (!Array.isArray(plan.issues) || plan.issues.length === 0) continue;
+      // First entry that passes → this is the current/latest run
+      return plan;
     }
 
-    return activePlan ?? fallbackPlan;
+    return null;
   } catch {
     return null;
   }
