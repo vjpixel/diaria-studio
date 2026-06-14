@@ -1297,6 +1297,13 @@ describe("renderScheduledSection (#2251)", () => {
     assert.match(html, /575/);
     // ordem cronológica: d04 (13/jun) antes de d07 (16/jun)
     assert.ok(html.indexOf("d04-B") < html.indexOf("d07-B"), "próximo envio primeiro");
+    // #2249 follow-up: colunas Dia e Lista removidas (editor 2026-06-14)
+    assert.ok(!/>Dia<\/th>/.test(html), "coluna Dia removida");
+    assert.ok(!/Lista de destino/.test(html), "coluna Lista removida");
+    // header tem 3 colunas: Campanha, Agendado (BRT), Tamanho
+    // (`<th[ >]` evita casar `<thead>`)
+    const ths = (html.match(/<th[ >]/g) ?? []).length;
+    assert.equal(ths, 3, "tabela de agendadas tem 3 colunas");
   });
 
   test("oculta (string vazia) quando não há agendadas", () => {

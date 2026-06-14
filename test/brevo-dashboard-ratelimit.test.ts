@@ -404,4 +404,61 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     assert.strictEqual(putCalls.includes("gstats:42"), false,
       "KV.put NAO deve ser chamado para gstats zerado (evita envenenamento permanente)");
   });
+
+  test("#2249: linksStats é buscado via param ÚNICO (?statistics=linksStats), não combinado", async () => {
+    // Bug Brevo (verificado 2026-06-14): `?statistics=globalStats,linksStats`
+    // retorna linksStats ZERADO; `?statistics=linksStats` retorna clicks reais.
+    // O mock emula isso: combinado → todos 0; single → reais. Se o worker pedisse
+    // o combinado, linksStats viria zerado e a seção de links agregados ficaria vazia.
+    const { kv } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const realLinks = { "https://diar.ia.br/post-x": 8, "https://exame.com/y": 3 };
+    const requested: string[] = [];
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      requested.push(path);
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) {
+        if (/statistics=globalStats,linksStats/.test(path)) {
+          // combinado: Brevo zera os links
+          return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats, linksStats: { "https://diar.ia.br/post-x": 0, "https://exame.com/y": 0 } } } as T;
+        }
+        if (/statistics=linksStats/.test(path)) {
+          return { ...fakeCampaign, statistics: { linksStats: realLinks } } as T;
+        }
+        if (/statistics=globalStats/.test(path)) {
+          return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+        }
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, true, mockFetch as any);
+    // Nunca deve pedir o combinado (que zeraria os links)
+    assert.ok(!requested.some((p) => /statistics=globalStats,linksStats/.test(p)),
+      "NÃO deve usar o param combinado globalStats,linksStats");
+    assert.ok(requested.some((p) => /emailCampaigns\/42\?statistics=linksStats/.test(p)),
+      "DEVE buscar linksStats via param único");
+    // linksStats no resultado deve ter os clicks REAIS (não zerados)
+    assert.deepEqual(result[0].statistics?.linksStats, realLinks,
+      "linksStats deve conter os clicks reais do GET single, não os zeros do combinado");
+  });
+
+  test("#2249: 429 no GET de linksStats NÃO descarta o globalStats já obtido", async () => {
+    // Regressão da divisão em 2 GETs: se o 2º GET (linksStats) lança, o
+    // globalStats do 1º GET tem que persistir mesmo assim (try/catch próprio).
+    const { kv } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/42\?statistics=globalStats$/.test(path)) {
+        return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+      }
+      if (/emailCampaigns\/42\?statistics=linksStats/.test(path)) {
+        throw new Error("429"); // linksStats indisponível
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, true, mockFetch as any);
+    assert.strictEqual(result[0].statistics?.globalStats?.sent, 100,
+      "globalStats deve persistir mesmo com 429 no GET de linksStats");
+    assert.strictEqual(result[0].statistics?.linksStats, undefined,
+      "linksStats fica undefined quando seu GET falha (degrada graceful)");
+  });
 });
