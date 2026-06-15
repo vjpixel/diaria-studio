@@ -95,6 +95,30 @@ const NON_PRODUCT_RE =
   /\b(policy|policies|governance|manifesto|principles|white\s?paper|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes)\b/i;
 
 /**
+ * #2277: sinais de PROGRAMA / PARCERIA / BOLSA no slug ou título.
+ * Programas filantrópicos, redes de parceiros e bolsas de pesquisa NÃO são
+ * lançamentos de produto — passavam no #1968 quando o slug tinha "introducing"
+ * (ex: openai.com/index/introducing-openai-partner-network → "partner network"
+ * vence "introducing") ou nome de empresa de IA (ex: anthropic.com/news/
+ * claude-corps → "claude" casava PRODUCT_SIGNAL_RE).
+ *
+ * Termos de ALTA PRECISÃO apenas:
+ *   - "partner network" / "partner-network" (programa de parceiros, não "partner API")
+ *   - "corps" (programa filantrópico — sem ambiguidade com produto)
+ *   - "fellowship" / "fellowship program" (bolsa — alta precisão)
+ *   - "grant" / "grants" (bolsa de pesquisa — alta precisão)
+ *   - "partnership" (acordo bilateral — distinto de "partner" em produto)
+ *
+ * Excluídos de propósito (ambíguos):
+ *   - "partner" standalone: aparece em "partner API", "partner integrations"
+ *   - "program" standalone: aparece em "program synthesis", "AI program"
+ *   - "initiative" standalone: muito genérico
+ *   - "academy": já coberto por `isCoursePage` em categorize.ts
+ */
+const PROGRAM_SIGNAL_RE =
+  /\bpartner.?network\b|\bcorps\b|\bfellowship\b|\bgrant(?:s)?\b|\bpartnership\b/i;
+
+/**
  * #1852: defesa-em-profundidade pra LANÇAMENTOS que escaparam o categorize via
  * `type_hint=lancamento` (agent vence as heurísticas). Sinais no SLUG de que a
  * URL é pesquisa/case-study, não a página oficial do produto:
@@ -134,7 +158,8 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
   return (
     NON_PRODUCT_RE.test(slug) ||
     NON_PRODUCT_SLUG_RE.test(slug) ||
-    (!!title && NON_PRODUCT_RE.test(title))
+    PROGRAM_SIGNAL_RE.test(slug) ||
+    (!!title && (NON_PRODUCT_RE.test(title) || PROGRAM_SIGNAL_RE.test(title)))
   );
 }
 

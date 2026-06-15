@@ -11,6 +11,7 @@ import {
   hasProductSignal,
   isVerifiedTool,
 } from "../scripts/validate-lancamentos.ts";
+import { isOfficialLancamentoUrl } from "../scripts/categorize.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("extractLancamentoUrls", () => {
@@ -537,5 +538,181 @@ describe("não-produto (governança/política) — #1799", () => {
     ].join("\n");
     const r = validateLancamentos(md);
     assert.equal(r.non_product.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2277 — programas/parcerias não são produto + HF model-card como domínio oficial
+// ---------------------------------------------------------------------------
+
+describe("#2277 — programa/parceria/bolsa detectados como not_a_tool", () => {
+  it("isNonProductLancamento: claude-corps (bolsa filantrópica) → não-produto", () => {
+    // Caso real 260615: anthropic.com/news/claude-corps passou como lançamento
+    // porque "claude" casava PRODUCT_SIGNAL_RE. "corps" deve anular isso.
+    assert.ok(
+      isNonProductLancamento(
+        "https://www.anthropic.com/news/claude-corps",
+        "Introducing the Claude Corps",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: introducing-openai-partner-network → não-produto", () => {
+    // Caso real 260615: "introducing" casava PRODUCT_SIGNAL_RE, mas
+    // "partner-network" é programa de parceiros, não produto.
+    assert.ok(
+      isNonProductLancamento(
+        "https://openai.com/index/introducing-openai-partner-network",
+        "Introducing the OpenAI Partner Network",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: fellowship program → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://deepmind.google/discover/blog/announcing-deepmind-fellowship",
+        "Announcing the DeepMind Fellowship",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: research grant → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://openai.com/blog/openai-research-grants-2026",
+        "OpenAI Research Grants 2026",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: partnership → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://blogs.nvidia.com/blog/nvidia-microsoft-partnership-ai",
+        "NVIDIA and Microsoft Partnership",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: NÃO flaga lançamento real de produto", () => {
+    // "partner API" (produto) não deve ser rejeitado
+    assert.ok(!isNonProductLancamento("https://openai.com/index/introducing-gpt-5", "GPT-5"));
+    assert.ok(!isNonProductLancamento("https://blog.google/technology/gemini-2-5-flash", "Gemini 2.5 Flash"));
+    assert.ok(!isNonProductLancamento("https://mistral.ai/news/mistral-large-2", "Mistral Large 2"));
+  });
+
+  it("isVerifiedTool: claude-corps → não-ferramenta (programa vence 'claude' no PRODUCT_SIGNAL)", () => {
+    assert.ok(
+      !isVerifiedTool(
+        "https://www.anthropic.com/news/claude-corps",
+        "Introducing the Claude Corps",
+      ),
+    );
+  });
+
+  it("isVerifiedTool: introducing-openai-partner-network → não-ferramenta", () => {
+    assert.ok(
+      !isVerifiedTool(
+        "https://openai.com/index/introducing-openai-partner-network",
+        "Introducing the OpenAI Partner Network",
+      ),
+    );
+  });
+
+  it("validateLancamentos: claude-corps → not_a_tool + status error", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "**[Introducing the Claude Corps](https://www.anthropic.com/news/claude-corps)**",
+      "Bolsa filantrópica.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1, "deve ser not_a_tool");
+    assert.equal(r.status, "error");
+  });
+
+  it("validateLancamentos: lançamento real ainda passa (não regrediu)", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "**[Claude Opus 4.5](https://www.anthropic.com/news/claude-opus-4-5)**",
+      "Novo modelo.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1);
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+});
+
+describe("#2277 — HF model-card como domínio oficial", () => {
+  it("isOfficialLancamentoUrl: model card HF → oficial (caso real Kimi K2.7-Code)", () => {
+    // Caso real 260615: huggingface.co/moonshotai/Kimi-K2.7-Code não era reconhecido
+    // como domínio oficial, forçando o editor a usar seed/lancamentos-tool-allowlist.txt.
+    assert.ok(
+      isOfficialLancamentoUrl("https://huggingface.co/moonshotai/Kimi-K2.7-Code"),
+      "model card da Moonshot AI deve ser oficial",
+    );
+  });
+
+  it("isOfficialLancamentoUrl: outros model cards HF → oficiais", () => {
+    assert.ok(isOfficialLancamentoUrl("https://huggingface.co/meta-llama/Llama-3-70B"));
+    assert.ok(isOfficialLancamentoUrl("https://huggingface.co/Qwen/Qwen2-72B-Instruct"));
+    assert.ok(isOfficialLancamentoUrl("https://huggingface.co/microsoft/phi-3-mini-4k-instruct"));
+  });
+
+  it("isOfficialLancamentoUrl: /blog/ HF ainda reconhecido (não regrediu)", () => {
+    assert.ok(isOfficialLancamentoUrl("https://huggingface.co/blog/smollm3"));
+    assert.ok(isOfficialLancamentoUrl("https://huggingface.co/blog/new-vision-model"));
+  });
+
+  it("isOfficialLancamentoUrl: /papers/ HF NÃO é domínio oficial de lançamento (pesquisa)", () => {
+    // /papers/ vai pra PESQUISA_PATTERNS em categorize.ts, não pra lancamento
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/papers/2501.12345"));
+  });
+
+  it("isOfficialLancamentoUrl: /datasets/ HF NÃO é domínio oficial de lançamento", () => {
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/datasets/allenai/WildChat"));
+  });
+
+  it("isOfficialLancamentoUrl: /spaces/ HF NÃO é domínio oficial de lançamento", () => {
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard"));
+  });
+
+  it("isOfficialLancamentoUrl: bare /{org} (1 segmento) NÃO é modelo — é página de org", () => {
+    // Org profile page — não é model card
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/moonshotai"));
+  });
+
+  it("isOfficialLancamentoUrl: URL de coverage de terceiros NÃO é oficial", () => {
+    // Cobertura de imprensa sobre um modelo → NOTÍCIAS, não LANÇAMENTOS
+    assert.ok(!isOfficialLancamentoUrl("https://marktechpost.com/2026/06/12/kimi-k2-7-code/"));
+    assert.ok(!isOfficialLancamentoUrl("https://techcrunch.com/2026/06/12/kimi-model/"));
+  });
+
+  it("hasProductSignal: model card HF com versão explícita no título → sinal de produto", () => {
+    // Llama-3 tem padrão [a-z]{2,}-\d{1,2} → VERSION_SIGNAL_RE
+    assert.ok(hasProductSignal("https://huggingface.co/meta-llama/Llama-3-70B", "Llama 3 70B"));
+    // Título com "model" → PRODUCT_SIGNAL_RE
+    assert.ok(hasProductSignal("https://huggingface.co/moonshotai/Kimi-K2.7-Code", "Kimi K2.7-Code model"));
+  });
+
+  it("validateLancamentos: model card HF oficial com sinal de produto no título → verified + ok", () => {
+    // isOfficialLancamentoUrl deve reconhecer o model card;
+    // hasProductSignal pega via título (nome de modelo/model keyword)
+    const md = [
+      "LANÇAMENTOS",
+      "**[Kimi K2.7-Code model](https://huggingface.co/moonshotai/Kimi-K2.7-Code)**",
+      "Modelo open-source da Moonshot AI.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.invalid_urls.length, 0, "URL oficial → não inválida");
+    assert.equal(r.verified_product.length, 1, "título com 'model' → produto verificado");
+    assert.equal(r.status, "ok");
   });
 });

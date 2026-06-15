@@ -62,8 +62,16 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   },
   {
     company: "Hugging Face",
-    // /papers/ fica em pesquisa; só /blog/ conta como lancamento
-    path_patterns: [/^huggingface\.co\/blog\//],
+    // /papers/ fica em pesquisa; /blog/ = anúncios/posts HF; /{org}/{model} =
+    // model cards de modelos open-weight (ponto oficial de release, ex:
+    // huggingface.co/moonshotai/Kimi-K2.7-Code) — #2277.
+    // Pattern model-card: exatamente 2 segmentos de path, excluindo prefixos
+    // conhecidos de não-modelo (blog, papers, datasets, spaces, docs, learn,
+    // models-lista, inference-providers). Bare /{org} (1 segmento) NÃO casa.
+    path_patterns: [
+      /^huggingface\.co\/blog\//,
+      /^huggingface\.co\/(?!blog\/|papers\/|datasets\/|spaces\/|docs\/|learn\/|models\/|inference-providers\/)[^/]+\/[^/]+\/?$/,
+    ],
     detection_keywords: /\b(hugging ?face|hf)\b/i,
     primary_domain: "huggingface.co",
   },
