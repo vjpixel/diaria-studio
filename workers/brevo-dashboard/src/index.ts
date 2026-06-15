@@ -1753,10 +1753,6 @@ export function renderTrendSection(rows: WaveTrendRow[]): string {
 }
 
 /**
- * Renderiza resposta de rate limit amigável (#2144).
- * Retorna 503 + Retry-After quando o listing Brevo responde 429.
- */
-/**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
  * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
  * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
@@ -1774,6 +1770,27 @@ export function injectStaleBanner(html: string, retryAfterSecs: number | null): 
   return banner + html;
 }
 
+/**
+ * #2280: monta a resposta de fallback "último render bom" (200 + banner stale).
+ * `X-Dashboard-Stale: rate-limit` permite que monitoria distinga render bom de
+ * render stale (o HTTP é 200, então alertas de 5xx não pegam mais o rate-limit).
+ * Exportada pra teste de regressão da rota.
+ */
+export function buildStaleResponse(lastGoodHtml: string, retryAfterSecs: number | null): Response {
+  return new Response(injectStaleBanner(lastGoodHtml, retryAfterSecs), {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store", // não cachear a versão stale-banner
+      "X-Dashboard-Stale": "rate-limit",
+      ...(retryAfterSecs != null ? { "Retry-After": String(retryAfterSecs) } : {}),
+    },
+  });
+}
+
+/**
+ * Renderiza resposta de rate limit amigável (#2144).
+ * Retorna 503 + Retry-After quando o listing Brevo responde 429.
+ */
 function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean): Response {
   const retryMsg = retryAfterSecs != null ? `${retryAfterSecs}s` : "alguns minutos";
   const headers: Record<string, string> = {
@@ -1856,7 +1873,9 @@ export default {
         // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
         // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
         // já retenta a listagem em 429 internamente (#2268).
+        let scheduledOk = true;
         const scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+          scheduledOk = false; // #2280: render degradado não vira "último render bom"
           console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
           return [];
         });
@@ -1873,7 +1892,11 @@ export default {
           await cache.put(request, response.clone());
         }
         // #2280: persiste o último render bom pra fallback em 429 (nunca bloqueia).
-        if (env.STATS_CACHE) {
+        // Só persiste render SAUDÁVEL: pula em isFresh (operador pode pegar janela
+        // parcial) e quando as agendadas falharam (render degradado não deve virar
+        // o "bom" servido depois). Per-campaign stats zeradas por 429 interno são
+        // pré-existentes (#2275) e não cobertas por este guard.
+        if (!isFresh && scheduledOk && env.STATS_CACHE) {
           await env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL })
             .catch(() => { /* erro de KV nunca bloqueia o render */ });
         }
@@ -1886,13 +1909,7 @@ export default {
             ? await env.STATS_CACHE.get(LASTGOOD_KEY).catch(() => null)
             : null;
           if (lastGood) {
-            return new Response(injectStaleBanner(lastGood, e.retryAfterSecs), {
-              headers: {
-                "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store", // não cachear a versão stale-banner
-                ...(e.retryAfterSecs != null ? { "Retry-After": String(e.retryAfterSecs) } : {}),
-              },
-            });
+            return buildStaleResponse(lastGood, e.retryAfterSecs);
           }
           return rateLimitResponse(e.retryAfterSecs, true);
         }
