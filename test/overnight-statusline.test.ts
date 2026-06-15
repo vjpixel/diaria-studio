@@ -1,5 +1,5 @@
 /**
- * test/overnight-statusline.test.ts (#2184, #2246)
+ * test/overnight-statusline.test.ts (#2184, #2246, #2298)
  *
  * Testes da função pura `renderOvernightBar` que alimenta a statusLine
  * do Claude Code durante rodadas /diaria-overnight.
@@ -14,6 +14,7 @@
  *   - pct usa Math.floor para não mostrar 100% com barra ainda visível (#2184/Finding 3)
  *   - OVERNIGHT_DIR_RE casa sufixo [a-z]? (exatamente 1 letra — 260613b/c) (#2246 pt1)
  *   - readTodayPlan usa dir MAIS RECENTE, não sequestra por plan antigo (#2246 pt2)
+ *   - cycleLabel (#2298): fila principal / mini-rodada N / review 1.5x determinístico
  */
 
 import { describe, it, after } from "node:test";
@@ -21,7 +22,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { renderOvernightBar, readTodayPlan, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
+import { renderOvernightBar, readTodayPlan, cycleLabel, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -178,12 +179,12 @@ describe("renderOvernightBar — rodada encerrada → 100% visível (#2246)", ()
     assert.ok(result.includes("(1/1)"), `deve mostrar (1/1): ${result}`);
   });
 
-  it("rodada encerrada: formato canônico [████████████] 100%  (N/N)", () => {
+  it("rodada encerrada: formato canônico [████████████] 100%  (N/N)  · <ciclo>", () => {
     const plan = makePlan(["mergeada", "mergeada"]);
     const result = renderOvernightBar(plan);
-    // Formato completo: [bar cheia de 12 █] 100%  (N/N)
+    // Formato completo: [bar cheia de 12 █] 100%  (N/N)  · <ciclo> (#2298)
     // Nota: /[█+]/ seria char class (casa █ OU +) — usar {12} para exigir exatamente 12 blocos.
-    assert.match(result, /^\[█{12}\] 100%  \(\d+\/\d+\)$/);
+    assert.match(result, /^\[█{12}\] 100%  \(\d+\/\d+\)  · .+$/);
   });
 });
 
@@ -204,12 +205,12 @@ describe("renderOvernightBar — formato da barra", () => {
     );
   });
 
-  it("formato canônico: [bar] NN%  (X/Y)", () => {
+  it("formato canônico: [bar] NN%  (X/Y)  · <ciclo>", () => {
     const plan = makePlan(["mergeada", "elegivel"]);
     const result = renderOvernightBar(plan);
 
-    // Deve ter [bar] + % + (X/Y)
-    assert.match(result, /^\[[█░]+\] \d+%  \(\d+\/\d+\)$/);
+    // Deve ter [bar] + % + (X/Y) + rótulo de ciclo (#2298)
+    assert.match(result, /^\[[█░]+\] \d+%  \(\d+\/\d+\)  · .+$/);
   });
 });
 
@@ -521,5 +522,241 @@ describe("readTodayPlan — integração com dirs reais (#2246 pt2)", () => {
     } finally {
       rmSync(emptyRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── #2298: cycleLabel — rótulo de ciclo/fase da rodada overnight ─────────────
+
+/**
+ * Helper: cria plan.json com issues do depth 0 (fila principal).
+ * O source "initial" é omitido (campo ausente) para testar robustez de legado.
+ */
+function makeDepth0Plan(
+  statuses: string[],
+  review?: string | null,
+  findings_depth?: number,
+): Plan {
+  return {
+    started_at: "2026-06-15T22:00:00.000Z",
+    findings_depth: findings_depth ?? 0,
+    review: review ?? null,
+    issues: statuses.map((status, idx) => ({
+      number: 3000 + idx,
+      status,
+      // sem `source` → legado, conta como "initial" (profundidade 0)
+    })),
+  };
+}
+
+/** Helper: cria plan.json com issues de uma mini-rodada (finding-depth-N). */
+function makeMiniRodadaPlan(
+  depth: number,
+  mainStatuses: string[],
+  findingStatuses: string[],
+  review?: string | null,
+): Plan {
+  const mainIssues = mainStatuses.map((status, idx) => ({
+    number: 3000 + idx,
+    status,
+    source: "initial",
+  }));
+  const findingIssues = findingStatuses.map((status, idx) => ({
+    number: 4000 + idx,
+    status,
+    source: `finding-depth-${depth}`,
+  }));
+  return {
+    started_at: "2026-06-15T22:00:00.000Z",
+    findings_depth: depth,
+    review: review ?? null,
+    issues: [...mainIssues, ...findingIssues],
+  };
+}
+
+describe("cycleLabel — fila principal (depth 0, queue ativa)", () => {
+  it("depth 0, issues não todas terminais → 'fila principal'", () => {
+    const plan = makeDepth0Plan(["elegivel", "mergeada", "elegivel"]);
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("depth 0, nenhuma issue terminal → 'fila principal'", () => {
+    const plan = makeDepth0Plan(["elegivel", "elegivel"]);
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("depth 0, queue esgotada MAS review já concluído (done depth 0) → 'fila principal'", () => {
+    // Após review 1.5 concluído e findings_depth ainda 0 → Fase 2 (não há mais o que mostrar
+    // como mini-rodada, mas também não estamos EM review). Retorna 'fila principal' para
+    // indicar que a cadeia está encerrada no depth corrente.
+    const plan = makeDepth0Plan(["mergeada", "mergeada"], "done (depth 0)", 0);
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("depth 0, queue esgotada, review skipped → 'fila principal'", () => {
+    const plan = makeDepth0Plan(["mergeada", "pulada"], "skipped: diff trivial (depth 0)", 0);
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("depth 0, legado: findings_depth ausente, review ausente, issues ativas → 'fila principal'", () => {
+    // Plan legado sem findings_depth nem review
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      issues: [
+        { number: 1001, status: "elegivel" },
+        { number: 1002, status: "mergeada" },
+      ],
+    };
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+});
+
+describe("cycleLabel — review 1.5 (depth 0, queue esgotada, review null)", () => {
+  it("depth 0, todas terminais, review null → 'review 1.5'", () => {
+    const plan = makeDepth0Plan(["mergeada", "pulada", "draft-ci-vermelho"], null, 0);
+    assert.equal(cycleLabel(plan), "review 1.5");
+  });
+
+  it("depth 0, 1 issue terminal, review null → NÃO é review 1.5 (ainda tem pendentes)", () => {
+    const plan = makeDepth0Plan(["mergeada", "elegivel"], null, 0);
+    assert.notEqual(cycleLabel(plan), "review 1.5");
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("review 1.5: barra exibe rótulo '· review 1.5' ao encerrar rodada", () => {
+    const plan = makeDepth0Plan(["mergeada", "mergeada", "pulada"], null, 0);
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("· review 1.5"), `barra deve conter '· review 1.5': ${bar}`);
+    assert.ok(bar.includes("100%"), `barra deve mostrar 100% (encerrada): ${bar}`);
+  });
+
+  it("review 1.5: barra em progresso parcial também exibe rótulo", () => {
+    // 2 terminais de 4 → fila ainda ativa → 'fila principal' (não review 1.5)
+    const plan = makeDepth0Plan(["mergeada", "mergeada", "elegivel", "elegivel"], null, 0);
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("· fila principal"), `barra deve conter '· fila principal': ${bar}`);
+  });
+});
+
+describe("cycleLabel — mini-rodada 1 (depth 1, finding-depth-1 ativas)", () => {
+  it("depth 1, finding-depth-1 não todas terminais → 'mini-rodada 1'", () => {
+    // 1 finding pendente → mini-rodada em progresso
+    const plan = makeMiniRodadaPlan(1, ["mergeada", "mergeada"], ["elegivel", "mergeada"], "done (depth 0)");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("depth 1, nenhuma finding-depth-1 terminal → 'mini-rodada 1'", () => {
+    const plan = makeMiniRodadaPlan(1, ["mergeada"], ["elegivel"], "done (depth 0)");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("mini-rodada 1: barra exibe '· mini-rodada 1'", () => {
+    const plan = makeMiniRodadaPlan(1, ["mergeada", "pulada"], ["elegivel", "elegivel"], "done (depth 0)");
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("· mini-rodada 1"), `barra deve conter '· mini-rodada 1': ${bar}`);
+  });
+});
+
+describe("cycleLabel — review 1.5b (depth 1, finding-depth-1 esgotadas, review null para depth 1)", () => {
+  it("depth 1, todas finding-depth-1 terminais, review 'done (depth 0)' → 'review 1.5b'", () => {
+    // issues principais: mergeadas; finding-depth-1: todas mergeadas; review depth 0 OK, depth 1 pendente
+    const plan = makeMiniRodadaPlan(1, ["mergeada", "mergeada"], ["mergeada", "pulada"], "done (depth 0)");
+    assert.equal(cycleLabel(plan), "review 1.5b");
+  });
+
+  it("depth 1, finding-depth-1 esgotadas, review null → 'review 1.5b'", () => {
+    // review pode ser null se plan.json não foi gravado com review de depth 0 (legado parcial)
+    const plan = makeMiniRodadaPlan(1, ["mergeada"], ["mergeada"], null);
+    assert.equal(cycleLabel(plan), "review 1.5b");
+  });
+
+  it("depth 1, review 'done (depth 1)' → NÃO é review 1.5b (já concluído)", () => {
+    // Review 1.5b já concluído → cadeia encerra ou avança para depth 2
+    const plan = makeMiniRodadaPlan(1, ["mergeada"], ["mergeada"], "done (depth 1)");
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("review 1.5b: barra exibe '· review 1.5b'", () => {
+    const plan = makeMiniRodadaPlan(1, ["mergeada", "pulada"], ["mergeada", "draft-ci-vermelho"], "done (depth 0)");
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("· review 1.5b"), `barra deve conter '· review 1.5b': ${bar}`);
+  });
+});
+
+describe("cycleLabel — legado: plan.json sem findings_depth nem review", () => {
+  it("plan legado sem findings_depth → treat como 0, issues ativas → 'fila principal'", () => {
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      issues: [
+        { number: 1001, status: "elegivel" },
+        { number: 1002, status: "elegivel" },
+      ],
+    };
+    // findings_depth ausente → 0, review ausente → null, issues não terminais → fila principal
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("plan legado sem findings_depth, todas terminais → 'review 1.5' (review null implícito)", () => {
+    // Plan legado sem findings_depth/review — todas terminais → review 1.5
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      issues: [
+        { number: 1001, status: "mergeada" },
+        { number: 1002, status: "pulada" },
+      ],
+    };
+    assert.equal(cycleLabel(plan), "review 1.5");
+  });
+
+  it("plan legado com review: 'done' (sem depth) → trata como concluído no nível corrente → 'fila principal'", () => {
+    // Legado: review "done" sem depth indicator → review concluído → não em review
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      review: "done",
+      issues: [
+        { number: 1001, status: "mergeada" },
+        { number: 1002, status: "mergeada" },
+      ],
+    };
+    assert.equal(cycleLabel(plan), "fila principal");
+  });
+
+  it("plan null → 'fila principal' (sem throw)", () => {
+    assert.doesNotThrow(() => cycleLabel(null));
+    assert.equal(cycleLabel(null), "fila principal");
+  });
+
+  it("plan undefined → 'fila principal' (sem throw)", () => {
+    assert.doesNotThrow(() => cycleLabel(undefined));
+    assert.equal(cycleLabel(undefined), "fila principal");
+  });
+});
+
+describe("cycleLabel — formato do rótulo na barra renderOvernightBar (#2298)", () => {
+  it("barra em progresso parcial inclui '· <ciclo>' no final", () => {
+    const plan = makeDepth0Plan(["mergeada", "elegivel", "elegivel"]);
+    const bar = renderOvernightBar(plan);
+    // Formato: [bar] NN%  (X/Y)  · <ciclo>
+    assert.match(bar, /^\[[█░]+\] \d+%  \(\d+\/\d+\)  · .+$/);
+  });
+
+  it("barra encerrada (100%) inclui '· <ciclo>' no final", () => {
+    const plan = makeDepth0Plan(["mergeada", "mergeada"]);
+    const bar = renderOvernightBar(plan);
+    // Formato: [████████████] 100%  (N/N)  · <ciclo>
+    assert.match(bar, /^\[█{12}\] 100%  \(\d+\/\d+\)  · .+$/);
+  });
+
+  it("barra null-plan → string vazia (sem rótulo, sem throw)", () => {
+    assert.equal(renderOvernightBar(null), "");
+    assert.equal(renderOvernightBar(undefined), "");
+  });
+
+  it("a adição do rótulo não altera a contagem nem o % (só appenda)", () => {
+    const plan = makeDepth0Plan(["mergeada", "elegivel", "elegivel", "elegivel"]);
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("25%"), `deve ter 25%: ${bar}`);
+    assert.ok(bar.includes("(1/4)"), `deve ter (1/4): ${bar}`);
+    assert.ok(bar.includes("· fila principal"), `deve ter rótulo: ${bar}`);
   });
 });
