@@ -62,8 +62,21 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   },
   {
     company: "Hugging Face",
-    // /papers/ fica em pesquisa; só /blog/ conta como lancamento
-    path_patterns: [/^huggingface\.co\/blog\//],
+    // /papers/ fica em pesquisa; /blog/ = anúncios/posts HF; /{org}/{model} =
+    // model cards de modelos open-weight (ponto oficial de release, ex:
+    // huggingface.co/moonshotai/Kimi-K2.7-Code) — #2277.
+    // Pattern model-card: exatamente 2 segmentos de path, excluindo prefixos
+    // conhecidos de não-modelo (blog, papers, datasets, spaces, docs, learn,
+    // models-lista, inference-providers). Bare /{org} (1 segmento) NÃO casa.
+    path_patterns: [
+      /^huggingface\.co\/blog\//,
+      // Model-card: exactly 2 path segments, neither being a HF reserved namespace.
+      // Allowlist shape (positive): /{org}/{model} where neither segment is a
+      // reserved HF first-level path. Excludes profile tabs that appear as the
+      // second segment (e.g. allenai/spaces, someorg/collections) by blocking
+      // reserved words in EITHER segment position.
+      /^huggingface\.co\/(?!blog\/|papers\/|datasets\/|spaces\/|collections\/|tasks\/|leaderboards\/|enterprise\/|models\/|organizations\/|settings\/|docs\/|pricing\/|join\/|login\/|learn\/|inference-providers\/)[^/]+\/(?!spaces$|collections$|datasets$|tasks$|leaderboards$|enterprise$|models$|organizations$|settings$|docs$|pricing$|join$|login$|papers$|blog$)[^/]+\/?$/,
+    ],
     detection_keywords: /\b(hugging ?face|hf)\b/i,
     primary_domain: "huggingface.co",
   },

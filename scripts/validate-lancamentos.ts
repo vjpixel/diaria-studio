@@ -95,6 +95,46 @@ const NON_PRODUCT_RE =
   /\b(policy|policies|governance|manifesto|principles|white\s?paper|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes)\b/i;
 
 /**
+ * #2277: sinais de PROGRAMA / PARCERIA / BOLSA no slug ou título.
+ * Programas filantrópicos, redes de parceiros e bolsas de pesquisa NÃO são
+ * lançamentos de produto — passavam no #1968 quando o slug tinha "introducing"
+ * (ex: openai.com/index/introducing-openai-partner-network → "partner network"
+ * vence "introducing") ou nome de empresa de IA (ex: anthropic.com/news/
+ * claude-corps → "claude" casava PRODUCT_SIGNAL_RE).
+ *
+ * HARD-BLOCK (alta precisão — via isNonProductLancamento → isVerifiedTool):
+ *   - "partner[ -]network" (programa de parceiros, não "partner API")
+ *   - "corps" (programa filantrópico — sem ambiguidade com produto)
+ *   - "fellowships?" (bolsa — alta precisão, cobre plural)
+ *
+ * Excluídos do hard-block (movidos para PROGRAM_WARN_RE abaixo):
+ *   - "grants?" — aparece em "compute-grants" que pode ser produto/acesso;
+ *     "Army Corps" → coberto por \bcorps\b se for programa, mas "compute grant"
+ *     slug é warn-only para evitar over-block.
+ *   - "partnership" — aparece em API/product slugs ("openai-google-partnership-api");
+ *     warn-only até haver co-ocorrência de contexto mais forte.
+ *
+ * Excluídos de propósito (ambíguos):
+ *   - "partner" standalone: aparece em "partner API", "partner integrations"
+ *   - "program" standalone: aparece em "program synthesis", "AI program"
+ *   - "initiative" standalone: muito genérico
+ *   - "academy": já coberto por `isCoursePage` em categorize.ts
+ */
+const PROGRAM_SIGNAL_RE =
+  /\bpartner[\s-]?network\b|\bcorps\b|\bfellowships?\b/i;
+
+/**
+ * #2277 (warn-only): termos de programa de MÉDIA precisão que NÃO hard-blockam
+ * mas surfaçam como aviso no gate. Aplicados ao slug E título, mas NÃO entram
+ * em isNonProductLancamento (não afetam isVerifiedTool → sem hard-block).
+ *   - "grants?" — bolsa/grant de pesquisa; também aparece em "compute grants"
+ *     legítimos → warn para o editor decidir.
+ *   - "partnership" — acordo bilateral; comum em slugs de produto de parceria
+ *     ("openai-google-partnership-api") → warn, não hard-block.
+ */
+const PROGRAM_WARN_RE = /\bgrants?\b|\bpartnership\b/i;
+
+/**
  * #1852: defesa-em-profundidade pra LANÇAMENTOS que escaparam o categorize via
  * `type_hint=lancamento` (agent vence as heurísticas). Sinais no SLUG de que a
  * URL é pesquisa/case-study, não a página oficial do produto:
@@ -134,7 +174,24 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
   return (
     NON_PRODUCT_RE.test(slug) ||
     NON_PRODUCT_SLUG_RE.test(slug) ||
-    (!!title && NON_PRODUCT_RE.test(title))
+    PROGRAM_SIGNAL_RE.test(slug) ||
+    // #2277: para o título, só os termos de ALTA precisão (PROGRAM_SIGNAL_RE);
+    // grants?/partnership ficam em PROGRAM_WARN_RE (warn-only) e NÃO hard-blockam
+    // via título — evita over-block de títulos editoriais com essas palavras.
+    (!!title && (NON_PRODUCT_RE.test(title) || PROGRAM_SIGNAL_RE.test(title)))
+  );
+}
+
+/**
+ * #2277: verifica se a URL/título tem sinal de programa de MÉDIA precisão
+ * (grants?/partnership). Warn-only — NÃO alimenta isNonProductLancamento nem
+ * isVerifiedTool; surfaça no gate para decisão editorial.
+ */
+export function isProgramWarn(url: string, title?: string): boolean {
+  const slug = normalizedSlug(url);
+  return (
+    PROGRAM_WARN_RE.test(slug) ||
+    (!!title && PROGRAM_WARN_RE.test(title))
   );
 }
 
@@ -190,8 +247,13 @@ export function hasProductSignal(url: string, title?: string): boolean {
 
 /**
  * #1968: `true` se o item é uma ferramenta verificada. Allowlist (override pro
- * editor, slug atípico legítimo) vence tudo. Senão: governança/pesquisa → não é
- * ferramenta (alta precisão, reforço #1799); senão exige sinal positivo.
+ * editor, slug atípico legítimo) vence tudo. Senão: governança/pesquisa/programa
+ * (termos de alta precisão) → não é ferramenta (reforço #1799/#2277);
+ * senão exige sinal positivo.
+ *
+ * Nota: grants?/partnership ficam em PROGRAM_WARN_RE (warn-only) e NÃO entram
+ * em isNonProductLancamento — portanto não afetam isVerifiedTool. Isso evita
+ * hard-block de lançamentos de produto que mencionem parceria no slug/título.
  */
 export function isVerifiedTool(url: string, title?: string, allowlist: string[] = []): boolean {
   if (allowlist.some((a) => a && url.includes(a))) return true;
@@ -281,15 +343,23 @@ export function validateLancamentos(text: string, allowlist: string[] = []): Val
   });
 
   const invalid = unique.filter((u) => !isOfficialLancamentoUrl(u.url));
-  // #1799: itens de governança/política/análise — warn (não muda o status, que
-  // segue regido pela regra de domínio oficial #160).
-  const non_product = unique.filter((u) => isNonProductLancamento(u.url, u.title));
   // #1968: verificação POSITIVA — só URLs oficiais entram na conta (não-oficial
   // já é error por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
   // #1978: passa o título (capturado de `[Título](url)`) — simetria com approved-mode.
   const official = unique.filter((u) => isOfficialLancamentoUrl(u.url));
   const verified_product = official.filter((u) => isVerifiedTool(u.url, u.title, allowlist));
   const not_a_tool = official.filter((u) => !isVerifiedTool(u.url, u.title, allowlist));
+  // #1799/#2277: itens de governança/política/análise — warn (não muda o status,
+  // que segue regido pela regra de domínio oficial #160 + not_a_tool #1968).
+  // Inclui: (a) isNonProductLancamento (hard-block terms) e (b) isProgramWarn
+  // (warn-only terms: grants?/partnership). Exclui itens já em not_a_tool para
+  // evitar double-reporting do mesmo item com mensagens conflitantes (#2277).
+  const not_a_tool_urls = new Set(not_a_tool.map((u) => u.url));
+  const non_product = unique.filter(
+    (u) =>
+      !not_a_tool_urls.has(u.url) &&
+      (isNonProductLancamento(u.url, u.title) || isProgramWarn(u.url, u.title)),
+  );
   return {
     lancamento_count: unique.length,
     invalid_urls: invalid,
@@ -356,15 +426,18 @@ export function validateLancamentosFromApproved(
     } else {
       removed.push({ url, title, reason: "non_official_domain" });
     }
-    // #1799: classificação produto-vs-governança é independente do domínio —
-    // openai.com/index/public-policy-agenda é oficial mas NÃO é produto.
-    if (isNonProductLancamento(url, title)) {
-      flagged_non_product.push({ url, title });
-    }
     // #1968: verificação positiva só nos itens oficiais (não-oficial já é
     // removido por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
-    if (official && !isVerifiedTool(url, title, allowlist)) {
+    const isNatool = official && !isVerifiedTool(url, title, allowlist);
+    if (isNatool) {
       not_a_tool.push({ url, title });
+    }
+    // #1799/#2277: classificação produto-vs-governança é independente do domínio —
+    // openai.com/index/public-policy-agenda é oficial mas NÃO é produto. Inclui
+    // também isProgramWarn (grants?/partnership — warn-only). Exclui itens já em
+    // not_a_tool para evitar double-reporting (#2277).
+    if (!isNatool && (isNonProductLancamento(url, title) || isProgramWarn(url, title))) {
+      flagged_non_product.push({ url, title });
     }
   }
 
@@ -394,11 +467,12 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     writeFileSync(outPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
   }
 
-  // #1799: warn de não-produto (governança/política) — surfaça no gate, não
-  // bloqueia (decisão editorial; pode ser oficial mas não-produto).
+  // #1799/#2277: warn de não-produto (governança/política/programa/parceria) —
+  // surfaça no gate, não bloqueia (decisão editorial; pode ser oficial mas
+  // não-produto, ou parceria ambígua com grants?/partnership).
   if (summary.flagged_non_product.length > 0) {
     console.error(
-      `\n⚠️ ${summary.flagged_non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/case-study, não página oficial de produto (#1799/#1852):`,
+      `\n⚠️ ${summary.flagged_non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/programa/parceria, não página oficial de produto (#1799/#1852/#2277):`,
     );
     for (const f of summary.flagged_non_product) {
       const titleHint = f.title ? ` ("${f.title.slice(0, 60)}")` : "";
@@ -473,11 +547,12 @@ function main(): void {
   const allowlist = loadToolAllowlist(ROOT);
   const result = validateLancamentos(text, allowlist);
   console.log(JSON.stringify(result, null, 2));
-  // #1799: warn de não-produto (governança/política) — informativo (o gate forte
-  // do #1968 é via not_a_tool, que SUBSUME estes via verificação positiva).
+  // #1799/#2277: warn de não-produto (governança/política/programa/parceria) —
+  // informativo (o gate forte do #1968 é via not_a_tool; not_a_tool já excluído
+  // de non_product para evitar double-reporting).
   if (result.non_product.length > 0) {
     console.error(
-      `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/case-study, não página oficial de produto (#1799/#1852):`,
+      `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/programa/parceria, não página oficial de produto (#1799/#1852/#2277):`,
     );
     for (const u of result.non_product) {
       console.error(`  linha ${u.line}: ${u.url}`);
