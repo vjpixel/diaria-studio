@@ -29,7 +29,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mtimeMs } from "./mtime.ts";
 import { parseCtrFromCsv } from "../update-audience.ts";
-import { isTutorialAcademy, hasHowToBrSignal } from "./use-melhor-curation.ts"; // #2276 #2278
+import { isTutorialAcademy, hasHowToBrSignal, isHowtoBrAllowlisted } from "./use-melhor-curation.ts"; // #2276 #2278
 
 export const AUDIENCE_AFFINITY_FRESHNESS_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
@@ -522,10 +522,15 @@ export function annotateAudienceAffinity(
   }
 
   // ─── 5. How-to PT-BR (#2278) ───────────────────────────────────────────────
-  // Sinal: título ou slug tem padrão how-to aplicado PT-BR.
+  // Sinal: título/slug tem padrão how-to PT-BR OU fonte é allowlist BR confiável.
   // "howto_br:true" no matched → scorer LLM aplica bônus.
+  // "howto_br_source:true" indica origem de fonte BR de qualidade (sem reqr. de
+  // sinal no título — ex: Canaltech artigo genérico de produtividade).
   if (hasHowToBrSignal(article.url ?? "", article.title ?? "")) {
     matched.push("howto_br:true");
+  }
+  if (isHowtoBrAllowlisted(article.url ?? "")) {
+    matched.push("howto_br_source:true");
   }
 
   // ─── Composite ─────────────────────────────────────────────────────────────

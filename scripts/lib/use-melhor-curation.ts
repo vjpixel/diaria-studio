@@ -266,7 +266,7 @@ export function isHowtoBrAllowlisted(url: string): boolean {
  * Boost: adiciona "howto_br:true" ao matched em audience-affinity.
  */
 export const HOWTO_BR_SIGNAL_RE =
-  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como\s+fazer\s+.{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)\s+.{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|financ|email|produtividade|freelanc|aut[oô]nom)\b)\b/i;
+  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como\s+fazer\s+.{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)\s+.{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|financ\w*|email|produtividade|freelanc\w*|aut[oô]nom\w*)(?!\w))\b/i;
 
 /**
  * #2278: retorna true se o título/slug tem sinal forte de how-to PT-BR.

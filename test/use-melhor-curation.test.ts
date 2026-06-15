@@ -479,3 +479,44 @@ describe("TUTORIAL_ACADEMY_DOMAINS sanity (#2276)", () => {
     assert.ok(TUTORIAL_ACADEMY_DOMAINS.has("learn.deeplearning.ai"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// hasHowToBrSignal — regressão de stems truncados (#2276 fix)
+// ---------------------------------------------------------------------------
+
+describe("hasHowToBrSignal — regressão stems (bugfix self-review finding #2)", () => {
+  it("detecta 'IA para freelancer' (stem 'freelanc' + sufixo)", () => {
+    assert.ok(hasHowToBrSignal(
+      "https://exame.com/post",
+      "IA para freelancer: como ganhar mais com inteligência artificial",
+    ));
+  });
+
+  it("detecta 'IA para autônomo' (stem 'autônom' + sufixo)", () => {
+    assert.ok(hasHowToBrSignal(
+      "https://canaltech.com.br/post",
+      "Inteligência artificial para autônomo que quer mais clientes",
+    ));
+  });
+
+  it("detecta 'IA para finanças' (stem 'financ' + sufixo)", () => {
+    assert.ok(hasHowToBrSignal(
+      "https://infomoney.com.br/post",
+      "Como usar IA para finanças pessoais e investimentos",
+    ));
+  });
+
+  it("detecta 'IA para autonomo' (sem acento)", () => {
+    assert.ok(hasHowToBrSignal(
+      "https://canaltech.com.br/post",
+      "Inteligência artificial para autonomo que quer crescer",
+    ));
+  });
+
+  it("detecta 'IA para financas pessoais' (sem cedilha)", () => {
+    assert.ok(hasHowToBrSignal(
+      "https://blog.com/post",
+      "Inteligência artificial para financas pessoais",
+    ));
+  });
+});
