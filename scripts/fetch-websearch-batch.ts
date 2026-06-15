@@ -41,6 +41,7 @@ import { containsAITerms } from "./lib/ai-relevance.ts";
 import { isNonEditorialPath } from "./lib/non-editorial-paths.ts"; // #1559 A
 import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
 import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
+import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts"; // #2278
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -346,6 +347,20 @@ async function main(): Promise<void> {
       );
     }
   }
+
+
+  // #2278: how-to PT-BR discovery queries — rotaciona por edição
+  const _editionNum = parseInt(args.edition ?? "0", 10);
+  // #7: warn when --edition is missing so callers know which rotation was used.
+  // The orchestrator always passes --edition; this catches manual/test invocations.
+  if (!args.edition || _editionNum === 0) {
+    console.error("[fetch-websearch-batch] WARN: --edition not set or is 0; how-to queries will use rotation slot 0 (first 3 topics). Pass --edition AAMMDD to rotate.");
+  }
+  const howtoQueries = getHowToDiscoveryQueries(_editionNum);
+  for (const q of howtoQueries) {
+    discoveryTopics.push({ query: q });
+  }
+  console.error(`[fetch-websearch-batch] +${howtoQueries.length} how-to PT-BR queries adicionadas (#2278)`);
 
   const totalQueries = sources.length + discoveryTopics.length;
   console.error(

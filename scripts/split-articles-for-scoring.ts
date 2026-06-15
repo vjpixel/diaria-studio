@@ -31,6 +31,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
+import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -168,6 +169,21 @@ export function main(): void {
     }
   } catch (e) {
     console.error(`[split-articles-for-scoring] WARN: audience_affinity falhou (${(e as Error).message}) — seguindo sem anotação`);
+  }
+
+  // #2276: de-dup temático + cap por domínio antes de distribuir nos chunks.
+  // Evita que o scorer receba 3/5 itens do mesmo vendor (ex: 260615: 3× AWS Bedrock).
+  // Default: maxPerDomain=2 (mais conservador que 1 — preserva variedade dentro do scorer
+  // sem perder pool para o gate humano. O editor ainda pode remover duplicatas no gate).
+  if ((categorized["use_melhor"] ?? []).length > 0) {
+    const before = (categorized["use_melhor"] ?? []).length;
+    const deduped = dedupeUseMelhorBucket(categorized["use_melhor"] ?? [], { maxPerDomain: 2 });
+    if (deduped.length < before) {
+      console.error(
+        `[split-articles-for-scoring] use_melhor: ${before} → ${deduped.length} após dedup/cap (#2276)`,
+      );
+    }
+    categorized["use_melhor"] = deduped;
   }
 
   const chunks = buildChunks(categorized, chunkSize);
