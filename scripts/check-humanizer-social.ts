@@ -86,15 +86,21 @@ export function checkSentinel(editionDir: string): CheckResult {
     return { ok: false, reason: "sentinel_missing" };
   }
 
-  // Se 03-social.md não existe ainda (estágio antes do Stage 2), não bloquear.
+  // Se 03-social.md não existe mas o sentinel existe, isso é erro: Stage 2 já
+  // rodou (sentinel prova isso) mas o arquivo sumiu (Drive pull falhou, etc.).
   if (!existsSync(socialPath)) {
-    return { ok: true };
+    return { ok: false, reason: "sentinel_missing" };
   }
 
   let stored: HumanizerSocialSentinel;
   try {
     stored = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
   } catch {
+    return { ok: false, reason: "sentinel_missing" };
+  }
+
+  // Guard contra sentinel malformado: JSON parseou mas falta social_sha256.
+  if (!stored?.social_sha256) {
     return { ok: false, reason: "sentinel_missing" };
   }
 
@@ -107,7 +113,7 @@ export function checkSentinel(editionDir: string): CheckResult {
 }
 
 function main(): void {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
 
   if (!editionDirArg) {
@@ -117,7 +123,7 @@ function main(): void {
 
   const editionDir = resolve(ROOT, editionDirArg);
 
-  if (values["write"]) {
+  if (flags.has("write")) {
     try {
       const path = writeSentinel(editionDir);
       console.log(JSON.stringify({ ok: true, sentinel_path: path }));
@@ -126,27 +132,35 @@ function main(): void {
       console.error(`[check-humanizer-social] ERRO ao gravar sentinel: ${(e as Error).message}`);
       process.exit(1);
     }
-  } else if (values["check"]) {
-    const result = checkSentinel(editionDir);
-    if (result.ok) {
-      console.log(JSON.stringify({ ok: true }));
-      process.exit(0);
-    }
-    if (result.reason === "sentinel_missing") {
-      console.error(
-        "[check-humanizer-social] FAIL — sentinel ausente: humanizador não rodou no social " +
-        "ou 03-social.md foi editado e sentinel não foi atualizado. " +
-        "Re-rodar humanizador e gravar sentinel com --write.",
-      );
+  } else if (flags.has("check")) {
+    try {
+      const result = checkSentinel(editionDir);
+      if (result.ok) {
+        console.log(JSON.stringify({ ok: true }));
+        process.exit(0);
+      }
+      if (result.reason === "sentinel_missing") {
+        console.error(
+          "[check-humanizer-social] FAIL — sentinel ausente: humanizador não rodou no social " +
+          "ou 03-social.md foi editado e sentinel não foi atualizado. " +
+          "Re-rodar humanizador e gravar sentinel com --write.",
+        );
+        process.exit(1);
+      }
+      if (result.reason === "hash_mismatch") {
+        console.error(
+          "[check-humanizer-social] FAIL — 03-social.md mudou após humanização (hash diverge). " +
+          `stored=${result.stored.slice(0, 12)}… current=${result.current.slice(0, 12)}… ` +
+          "Re-humanizar 03-social.md e gravar sentinel com --write.",
+        );
+        process.exit(2);
+      }
+      // Exhaustiveness guard — should never reach here
+      console.error("[check-humanizer-social] INTERNAL ERROR: unhandled CheckResult");
       process.exit(1);
-    }
-    if (result.reason === "hash_mismatch") {
-      console.error(
-        "[check-humanizer-social] FAIL — 03-social.md mudou após humanização (hash diverge). " +
-        `stored=${result.stored.slice(0, 12)}… current=${result.current.slice(0, 12)}… ` +
-        "Re-humanizar 03-social.md e gravar sentinel com --write.",
-      );
-      process.exit(2);
+    } catch (e) {
+      console.error(`[check-humanizer-social] ERRO no check: ${(e as Error).message}`);
+      process.exit(1);
     }
   } else {
     console.error("Especifique --write ou --check.");

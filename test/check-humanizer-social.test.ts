@@ -5,6 +5,7 @@
  * - hash-match → exit 0
  * - sentinel ausente → exit 1
  * - hash diverge (social editado pós-humanização) → exit 2
+ * - CLI subprocess tests covering --write / --check modes
  *
  * Simula o cenário real da edição 260615: social editado/reordenado após
  * humanização sem re-humanizar. Garante que o guard bloqueia nesse caso.
@@ -14,12 +15,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
   checkSentinel,
   computeSocialHash,
   writeSentinel,
 } from "../scripts/check-humanizer-social.ts";
+
+const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/check-humanizer-social.ts");
 
 const SOCIAL_CONTENT_A = `# LinkedIn
 ## d1
@@ -164,15 +169,16 @@ describe("checkSentinel (#2279) — cenários de regressão", () => {
     }
   });
 
-  it("OK: 03-social.md ausente (stage 2 ainda não rodou) — não bloquear", () => {
-    // Sentinel pode existir de run anterior mas social sumiu — não é caso normal,
-    // mas não deve gerar false-positive.
+  it("FAIL sentinel_missing: sentinel existe mas 03-social.md sumiu (Drive pull falhou)", () => {
+    // Sentiel existe (Stage 2 rodou) mas 03-social.md sumiu — isso é erro de pipeline,
+    // não estado pré-Stage-2. Deve bloquear (false-negative corrigido via #2290).
     const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
     try {
       writeSentinel(dir);
-      rmSync(join(dir, "03-social.md")); // simula social ausente
+      rmSync(join(dir, "03-social.md")); // simula Drive pull falhou + arquivo sumiu
       const result = checkSentinel(dir);
-      assert.equal(result.ok, true, "sem 03-social.md não deve bloquear");
+      assert.equal(result.ok, false, "sentinel presente + 03-social.md ausente deve bloquear");
+      assert.ok("reason" in result && result.reason === "sentinel_missing");
     } finally {
       cleanup();
     }
@@ -186,6 +192,91 @@ describe("checkSentinel (#2279) — cenários de regressão", () => {
       const result = checkSentinel(dir);
       assert.equal(result.ok, false);
       assert.ok("reason" in result && result.reason === "sentinel_missing");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL sentinel_missing: sentinel JSON sem social_sha256 (malformado)", () => {
+    // Guard contra TypeError: undefined.slice(0,12) quando campo ausente.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      const sentinelPath = join(dir, "_internal", ".humanizer-social-done.json");
+      writeFileSync(sentinelPath, JSON.stringify({ written_at: new Date().toISOString() }), "utf8");
+      const result = checkSentinel(dir);
+      assert.equal(result.ok, false);
+      assert.ok("reason" in result && result.reason === "sentinel_missing");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("CLI — check-humanizer-social.ts (#2279 #2290)", () => {
+  function runScript(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", SCRIPT_PATH, ...args],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  it("--write exits 0 and writes sentinel", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      const result = runScript(["--write", "--edition-dir", dir]);
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr: ${result.stderr}`);
+      const sentinelPath = join(dir, "_internal", ".humanizer-social-done.json");
+      assert.ok(existsSync(sentinelPath), "sentinel deve existir após --write");
+      const data = JSON.parse(readFileSync(sentinelPath, "utf8"));
+      assert.ok(typeof data.social_sha256 === "string" && data.social_sha256.length === 64);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exits 0 when sentinel matches (hash match)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // write via library
+      const result = runScript(["--check", "--edition-dir", dir]);
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr: ${result.stderr}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exits 1 when sentinel absent", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      // no writeSentinel call → sentinel absent
+      const result = runScript(["--check", "--edition-dir", dir]);
+      assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exits 2 when hash diverges (social edited after humanization)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simulate post-humanization edit
+      const result = runScript(["--check", "--edition-dir", dir]);
+      assert.equal(result.status, 2, `expected exit 2, got ${result.status}\nstderr: ${result.stderr}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("no flags → exits 1 with usage message", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      const result = runScript(["--edition-dir", dir]);
+      assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
+      assert.ok(result.stderr.includes("--write") || result.stderr.includes("--check"),
+        "stderr should mention --write or --check");
     } finally {
       cleanup();
     }

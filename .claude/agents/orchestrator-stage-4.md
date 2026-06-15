@@ -134,7 +134,16 @@ Exit code handling:
   ```
   Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
   ```
-  Depois: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/`. Re-rodar o check; só prosseguir quando exit 0.
+  Após humanização: (a) re-rodar lints do §2c que cobrem qualidade social:
+  ```bash
+  npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
+    --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
+    --md data/editions/{AAMMDD}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+  ```
+  (b) gravar sentinel: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/`
+  (c) re-rodar o check; só prosseguir quando exit 0.
 
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).
@@ -256,7 +265,13 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
      --message "gate revisao: ajustar inline aplicado ({descrição curta})"
    ```
 
-6. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
+6. **Re-verificar sentinel humanizador se `03-social.md` foi tocado (#2279/#2290):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) deve re-rodar o guard antes de voltar ao gate:
+   ```bash
+   npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
+   ```
+   Se exit 2 (hash diverge por causa do ajuste): re-humanizar + re-rodar lints + `--write` + re-check (mesmo fluxo do exit-2 em §4c.2b acima). Só então voltar ao §4d.
+
+7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
 **Distinção `editar` vs `ajustar`:**
 - `editar`: round-trip via Drive — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.

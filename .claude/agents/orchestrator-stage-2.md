@@ -345,15 +345,19 @@ npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
 ```
 Seções verificadas: `main_d1/d2/d3` (posts principais), `comment_pixel_d1/d2/d3` (comments pessoais) e `post_pixel`. Seção idêntica antes/depois = humanizador não tocou. **Exit 1 com lista de seções não-cobertas → re-invocar humanizador mirando explicitamente essas seções no prompt** (ex: "humanize as seções comment_pixel_d2 e post_pixel que ficaram com tom corporativo"). Contabiliza como tentativa adicional no retry 3x — se após o retry dirigido a cobertura ainda for parcial e o no-op total persistir, abortar. Fundamento: o guard whole-file (byte-idêntico pré vs pós) detecta "humanizador não rodou nada", mas NÃO detecta "humanizador rodou nos destaques mas pulou comments/post_pixel" — esse furo deixava comments com tom LLM passando silenciosamente pelo gate (#2148).
 
+**Retry 3x + fallback inline se `clarice-plugin:humanizador` Unknown skill (#2285):** se a invocação da skill retornar `Unknown skill: clarice-plugin:humanizador` (o marketplace pode ter re-sincronizado durante a sessão — causa-raiz identificada na edição 260615), **retry imediato até 3 vezes** antes de desistir. Entre tentativas, aguardar ~5s para o registro recarregar. Se após 3 retries a skill ainda não resolver, **não abortar silenciosamente** — aplicar o rubric inline via prompt direto (referência obrigatória: `context/publishers/humanizador-rubric.md` — leia o arquivo antes de formular o prompt para o LLM; contém as etapas 0-3 + regras de preservação). Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "humanizador-skill-fallback-inline: clarice-plugin:humanizador Unknown skill após 3 retries — aplicando rubric inline"`. Somente após humanização concluída (skill OU inline), prosseguir para Clarice e sentinel.
+
 **Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
 
 **Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), gravar o hash do `03-social.md` final:
 ```bash
 npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/
 ```
-Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar. Falha do `--write` não bloqueia Stage 2 (logar warn), mas o Stage 4 não vai passar sem o sentinel.
+Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.
 
-**Retry 3x + abort se persistir de `clarice-plugin:humanizador` Unknown skill (#2285):** se a invocação da skill retornar `Unknown skill: clarice-plugin:humanizador` (o marketplace pode ter re-sincronizado durante a sessão — causa-raiz identificada na edição 260615), **retry imediato até 3 vezes** antes de desistir. Entre tentativas, aguardar ~5s para o registro recarregar. Se após 3 retries a skill ainda não resolver, **não abortar silenciosamente** — aplicar os 9 passos do humanizador inline via prompt direto (referência: `context/publishers/humanizador-rubric.md` ou os 9 passos listados no skill `humanizador`), depois gravar o sentinel normalmente. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "humanizador-skill-fallback-inline: clarice-plugin:humanizador Unknown skill após 3 retries — aplicando rubric inline"`.
+Exit code handling:
+- `0` → sentinel gravado com sucesso.
+- `1` → falha ao gravar (permissão, disco) — logar warn e **CONTINUAR Stage 2**. Stage 4 vai bloquear com exit 1 até o sentinel ser gravado manualmente.
 
 **Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
 ```bash
