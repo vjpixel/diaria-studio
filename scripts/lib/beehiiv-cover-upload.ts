@@ -340,9 +340,13 @@ export function buildSnippetClearJs(): string {
       if (!editor) return { error: 'editor TipTap não encontrado (.tiptap.ProseMirror)', isEmpty: null, cleared: false };
 
       // Localizar o node htmlSnippet no doc ProseMirror
+      // Guarda no topo: return false poda sub-árvore mas NÃO para iteração de
+      // irmãos — sem o guard, 2 nodes htmlSnippet sobrescrevem snippetPos/snippetNode
+      // e o ÚLTIMO é limpo, não o PRIMEIRO (#2283 fix #8).
       let snippetPos = null;
       let snippetNode = null;
       editor.state.doc.descendants((node, pos) => {
+        if (snippetPos !== null) return false; // já encontrado — parar traversal
         if (node.type.name === 'htmlSnippet') {
           snippetPos = pos;
           snippetNode = node;
@@ -505,8 +509,10 @@ export function buildCoverReplaceStep1_RemoveExistingJs(): string {
 
       // Confirmação modal (Beehiiv às vezes pergunta "Are you sure?")
       // Aceitar variantes "Yes, remove" / "Confirm deletion" — não exigir
-      // exact match.
+      // exact match. Excluir o removeBtn já clicado — regex Remove/Delete casaria
+      // com o próprio botão se React re-renderizá-lo em 1500ms (#2283 fix #7).
       const confirmBtn = buttons().find(b => {
+        if (b === removeBtn) return false; // evitar double-click no remove button
         const txt = b.textContent?.trim() || '';
         return /^(Confirm|Yes|Remove|Delete)(\\b|,|\\.|\\s|$)/i.test(txt);
       });
@@ -547,6 +553,7 @@ export function buildCoverReplaceStep1_RemoveExistingJs(): string {
 export function buildCoverReplaceStep2_UploadJs(
   imageUrl: string,
   filename = "04-d1-2x1.jpg",
+  existingSrc = "",
 ): string {
   return `
     (async () => {
@@ -555,6 +562,8 @@ export function buildCoverReplaceStep2_UploadJs(
       const visible = (el) => el && el.offsetParent !== null;
       const buttons = () =>
         Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(visible);
+      // existingSrc capturado pela Etapa 1 — excluir da busca da img subida (#2283 fix #6)
+      const existingSrcSnapshot = ${JSON.stringify(existingSrc)};
 
       // 1) garantir input[type=file] — se ausente, abrir 'Add/Change thumbnail'
       let fileInput = document.querySelector('input[type="file"]');
@@ -582,11 +591,13 @@ export function buildCoverReplaceStep2_UploadJs(
       await sleep(5000);
 
       // 3) clicar na img recém-subida → aplica automático (sem botão Insert)
+      // Excluir existingSrcSnapshot — DOM pode ainda ter a old cover (async detach) (#2283 fix #6)
       const uploaded = Array.from(document.querySelectorAll('img')).find(i =>
         visible(i) &&
         /(media\\.beehiiv|beehiiv-images-production.*uploads)/i.test(i.src) &&
-        !(/static_assets|publication.logo/i.test(i.src)));
-      if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(2000); }
+        !(/static_assets|publication.logo/i.test(i.src)) &&
+        (existingSrcSnapshot ? i.src !== existingSrcSnapshot : true));
+      if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(3000); } // 3000ms = mesmo do buildCoverDataTransferJs validado (#2283 fix #5)
       else steps.push('uploaded img não localizada (pode ter auto-aplicado)');
 
       // 4) verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente

@@ -213,11 +213,11 @@ describe("buildSnippetClearJs (#2283 — template stale content)", () => {
     assert.match(js, /htmlSnippet não encontrado no doc/, "erro se template não tem htmlSnippet");
   });
 
-  it("NÃO contém sleep longo — call segura para CDP (<5s total)", () => {
+  it("NÃO contém sleep — call totalmente síncrona (zero sleeps, zero setTimeout) (#2283 fix #9)", () => {
     const js = buildSnippetClearJs();
-    // buildSnippetClearJs é síncrono — não deve ter nenhum sleep
-    assert.doesNotMatch(js, /sleep\(\d{4,}\)/, "NÃO deve ter sleep >=1000ms");
-    assert.doesNotMatch(js, /setTimeout.*\d{4,}/, "NÃO deve ter setTimeout longo");
+    // buildSnippetClearJs é síncrono — não deve ter nenhum sleep de qualquer duração
+    assert.doesNotMatch(js, /sleep\(\d+\)/, "NÃO deve ter nenhum sleep (zero sleeps)");
+    assert.doesNotMatch(js, /setTimeout.*\d+/, "NÃO deve ter nenhum setTimeout");
   });
 });
 
@@ -318,6 +318,38 @@ describe("buildCoverReplaceStep2_UploadJs (#2283 — split replace step 2, DataT
     const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
     assert.match(js, /uploaded.*click\(\)/, "deve clicar na img para aplicar");
     assert.match(js, /add thumbnail/i, "verifica ausência do botão Add thumbnail pós-upload");
+  });
+
+  it("usa sleep(3000) após click — mesmo que buildCoverDataTransferJs validado (#2283 fix #5)", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    // sleep(2000) foi live-tested e é 33% curto demais — buildCoverDataTransferJs usa 3000ms
+    assert.match(js, /sleep\(3000\)/, "settle sleep deve ser 3000ms (validado ao vivo 260602/260604)");
+    assert.doesNotMatch(js, /sleep\(2000\)/, "NÃO deve usar sleep(2000) — shorter than validated primary");
+  });
+
+  it("aceita existingSrc param e o embute no JS para exclusão (#2283 fix #6)", () => {
+    const url = "https://poll.diaria.workers.dev/img/new.jpg";
+    const oldSrc = "https://beehiiv-images-production.s3.amazonaws.com/uploads/old-cover.jpg";
+    const js = buildCoverReplaceStep2_UploadJs(url, "04-d1-2x1.jpg", oldSrc);
+    // existingSrcSnapshot deve estar no JS para a exclusão funcionar
+    assert.ok(js.includes(JSON.stringify(oldSrc)), "existingSrc deve ser embarcada no JS via JSON.stringify");
+    assert.match(js, /existingSrcSnapshot/, "deve referenciar existingSrcSnapshot na busca da img");
+    assert.match(js, /i\.src !== existingSrcSnapshot/, "deve excluir a cover antiga da busca");
+  });
+
+  it("sem existingSrc: exclusão é no-op (não quebra quando step1 não retornou src) (#2283 fix #6)", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    // default existingSrc = "" → guarda existingSrcSnapshot = "" → condição é no-op
+    assert.match(js, /existingSrcSnapshot/, "variável deve existir mesmo sem existingSrc");
+  });
+});
+
+describe("buildCoverReplaceStep1_RemoveExistingJs — confirmBtn guard (#2283 fix #7)", () => {
+  it("confirmBtn não pode re-clicar o removeBtn (b === removeBtn guard presente)", () => {
+    const js = buildCoverReplaceStep1_RemoveExistingJs();
+    // Sem o guard: /^(Confirm|Yes|Remove|Delete)/ casaria com o próprio removeBtn
+    // se React re-renderizá-lo em 1500ms. O guard deve excluir b === removeBtn.
+    assert.match(js, /b === removeBtn.*return false|if \(b === removeBtn\)/, "deve ter guard b===removeBtn no confirmBtn search");
   });
 });
 

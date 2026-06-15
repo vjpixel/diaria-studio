@@ -315,15 +315,17 @@ import {
   classifyCoverVerify,
 } from "scripts/lib/beehiiv-cover-upload.ts";
 
-// Detectar cover existente antes de decidir o fluxo
+// detectJs reutilizado dentro do loop — não pré-avaliar fora (fix #1: detect stale)
 const detectJs = `(() => ({
   hasCover: !!Array.from(document.querySelectorAll('img'))
     .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src))
 }))()`;
-const detect = await mcp__claude-in-chrome__javascript_tool({ code: detectJs });
 
 let cover = { applied: false, reason: "não tentado" };
 for (let attempt = 1; attempt <= 3; attempt++) {
+  // Re-detectar a cada tentativa — estado DOM pode ter mudado (fix #1: detect stale)
+  const detect = await mcp__claude-in-chrome__javascript_tool({ code: detectJs });
+
   if (detect?.hasCover) {
     // Etapa 1: remover cover existente (<5s total, seguro pro CDP)
     const step1 = await mcp__claude-in-chrome__javascript_tool({
@@ -331,14 +333,15 @@ for (let attempt = 1; attempt <= 3; attempt++) {
     });
     if (step1?.error) {
       log_warn(`Cover remove step1 falhou: ${step1.error}`);
-      break; // não prosseguir com upload se remoção falhou
+      continue; // tentar novamente na próxima iteração (fix #2: break→continue)
     }
-    // Aguardar fora do javascript_tool (não conta pro orçamento CDP)
-    // computer.wait({ seconds: 2 });
+    // Aguardar fora do javascript_tool — remoção React é async (fix #3: restore wait)
+    await computer.wait({ seconds: 2 });
 
     // Etapa 2: upload da nova cover via DataTransfer (<15s total)
+    // Passar existingSrc da Etapa 1 pra excluir cover antiga da busca da img subida (#2283 fix #6)
     const step2 = await mcp__claude-in-chrome__javascript_tool({
-      code: buildCoverReplaceStep2_UploadJs(imageUrl)
+      code: buildCoverReplaceStep2_UploadJs(imageUrl, "04-d1-2x1.jpg", step1.existingSrc ?? "")
     });
     cover = classifyCoverVerify(step2);
   } else {
@@ -351,7 +354,8 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   if (cover.applied) break;
   if (attempt < 3) {
     log_warn(`Cover tentativa ${attempt}/3 falhou: ${cover.reason}. Retry em ${attempt * 5}s...`);
-    // sleep(attempt * 5_000) — fora do javascript_tool
+    // fix #4: restore inter-attempt backoff (fora do javascript_tool)
+    await computer.wait({ seconds: attempt * 5 });
   }
 }
 ```
