@@ -64,11 +64,27 @@ export type IssueStatus =
 
 export interface PlanIssue {
   status: IssueStatus;
+  /** Origem da issue no plano: initial, mid-round, finding-depth-1, finding-depth-2, etc. */
+  source?: string;
   [key: string]: unknown;
 }
 
 export interface Plan {
   issues: PlanIssue[];
+  /**
+   * Nível atual da cadeia de re-entrada de findings.
+   * 0 = fila principal, 1 = mini-rodada 1, 2 = mini-rodada 2.
+   * Ausente em plan.json legado → tratar como 0.
+   */
+  findings_depth?: number;
+  /**
+   * Estado do review consolidado do nível atual.
+   * null/ausente = review não iniciado/concluído neste nível.
+   * "done (depth N)" = review concluído no nível N.
+   * "skipped: <motivo> (depth N)" = review pulado no nível N.
+   * Legado: "done" (sem depth) → tratar como concluído no nível corrente.
+   */
+  review?: string | null;
   [key: string]: unknown;
 }
 
@@ -94,6 +110,88 @@ const TOTAL_STAGES = STAGES.length;
 // ─── função pura testável ─────────────────────────────────────────────────────
 
 /**
+ * Retorna o rótulo do ciclo/fase atual da rodada overnight.
+ *
+ * Determinístico (sem Date.now()) — derivado exclusivamente de `plan.json`.
+ *
+ * Lógica:
+ *   1. Lê `findings_depth` (default 0 se ausente — legado).
+ *   2. Filtra as issues "relevantes para o depth atual":
+ *        - depth 0 → issues sem source "finding-depth-*" (initial, mid-round, ausente)
+ *        - depth N → issues com source "finding-depth-N"
+ *   3. Se TODAS as issues relevantes estão em status terminal E o review no depth
+ *      atual ainda não foi concluído → estamos em review consolidado:
+ *        depth 0 → "review 1.5", depth 1 → "review 1.5b", depth 2 → "review 1.5c"
+ *   4. Caso contrário → fila ou mini-rodada:
+ *        depth 0 → "fila principal", depth N ≥ 1 → "mini-rodada N"
+ *
+ * "Review concluído no depth N" = `plan.review` contém `"done (depth N)"`,
+ * `"skipped: ... (depth N)"`, ou (legado) `"done"` (sem depth — tratado como
+ * concluído no nível corrente).
+ *
+ * Robustez:
+ *   - plan null/undefined → "fila principal" (nunca throw)
+ *   - findings_depth ausente → tratar como 0 ("fila principal")
+ *   - issues vazia → "fila principal" (sem issues relevantes a verificar)
+ *   - issues sem campo source → contam no grupo "depth 0" (initial sem source)
+ *
+ * @param plan  Objeto do plan.json (ou null/undefined se ausente/malformado)
+ * @returns     Rótulo do ciclo atual ("fila principal" | "mini-rodada N" | "review 1.5x")
+ */
+export function cycleLabel(plan: Plan | null | undefined): string {
+  // Legado / ausente → fila principal
+  if (!plan) return "fila principal";
+
+  const depth = typeof plan.findings_depth === "number" ? plan.findings_depth : 0;
+  const issues = Array.isArray(plan.issues) ? plan.issues : [];
+
+  // Filtra issues relevantes para o depth atual.
+  // depth 0: issues sem source "finding-depth-*" (initial, mid-round, ou sem campo source)
+  // depth N: issues com source "finding-depth-N"
+  const relevantIssues =
+    depth === 0
+      ? issues.filter((i) => {
+          const src = typeof i?.source === "string" ? i.source : "";
+          return !src.startsWith("finding-depth-");
+        })
+      : issues.filter((i) => {
+          const src = typeof i?.source === "string" ? i.source : "";
+          return src === `finding-depth-${depth}`;
+        });
+
+  // Verifica se o review do depth atual já foi concluído.
+  // "done (depth N)" | "skipped: ... (depth N)" | legacy "done" (sem depth).
+  const reviewValue = plan.review ?? null;
+  const reviewDone =
+    (depth === 0 && reviewValue === "done") // legado: somente depth 0
+    || (typeof reviewValue === "string" && (
+      reviewValue === `done (depth ${depth})`
+      || reviewValue.startsWith(`skipped:`) && reviewValue.endsWith(`(depth ${depth})`)
+    ));
+
+  // Verifica se TODAS as issues relevantes estão em status terminal.
+  // issues vazia → allTerminal = false (bucket não-esgotado → permanece na fase ativa)
+  const allTerminal =
+    relevantIssues.length > 0
+    && relevantIssues.every((i) =>
+        TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)
+      );
+
+  // Se fila do depth esgotada E review ainda não concluído → estamos no review consolidado.
+  if (allTerminal && !reviewDone) {
+    if (depth === 0) return "review 1.5";
+    if (depth === 1) return "review 1.5b";
+    if (depth === 2) return "review 1.5c";
+    // depth > 2 não documentado, mas retorna graciosamente
+    return `review 1.5${"bcdefghijklmnopqrstuvwxyz"[depth - 1] ?? "?"}`;
+  }
+
+  // Fila ativa (não esgotada ou review já concluído).
+  if (depth === 0) return "fila principal";
+  return `mini-rodada ${depth}`;
+}
+
+/**
  * Renderiza a barra de progresso da rodada /diaria-overnight.
  *
  * @param plan  Objeto do plan.json (ou null/undefined se ausente/malformado)
@@ -117,10 +215,13 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
   const total = issues.length;
   const done = issues.filter((i) => TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)).length;
 
+  // Rótulo do ciclo/fase atual (#2298) — determinístico, sem relógio.
+  const label = cycleLabel(plan);
+
   // Rodada encerrada: todas terminais → barra cheia 100% visível (#2246 pt3)
   if (done >= total) {
     const bar = "█".repeat(BAR_WIDTH);
-    return `[${bar}] 100%  (${done}/${total})`;
+    return `[${bar}] 100%  (${done}/${total})  · ${label}`;
   }
 
   // Fix #3: use Math.floor instead of Math.round to avoid showing 100% when not all done
@@ -129,7 +230,7 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
   const empty = BAR_WIDTH - filled;
 
   const bar = "█".repeat(filled) + "░".repeat(empty);
-  return `[${bar}] ${pct}%  (${done}/${total})`;
+  return `[${bar}] ${pct}%  (${done}/${total})  · ${label}`;
 }
 
 // ─── helpers internos ─────────────────────────────────────────────────────────
