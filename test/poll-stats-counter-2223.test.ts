@@ -576,3 +576,121 @@ describe("Fix #6 — admin-correct atualiza DO StatsCounter; /stats reflete corr
     );
   });
 });
+
+// ── 8. Fix #2245: DO 400 → throw, NÃO cai no KV RMW fallback ─────────────────
+
+describe("Fix #2245 — DO /increment 400 → lança erro (não cai no KV RMW fallback)", () => {
+  it("DO retorna 400 (choice inválido) → updateStatsCounter lança; KV stats NÃO é modificado via RMW", async () => {
+    /**
+     * REGRESSÃO #2245 finding 2:
+     * Em updateStatsCounter, quando o DO retorna qualquer status !ok, o código caía
+     * no KV RMW fallback — re-introduzindo a race que o #2223 corrigiu para inputs
+     * malformados. Um DO 400 (choice inválido) é um erro de programação; o caminho
+     * correto é abortar (lançar), não fazer fallback silencioso via KV RMW.
+     *
+     * Este teste envia diretamente ao StatsCounter DO um payload com choice inválido
+     * e verifica que o DO retorna 400 SEM modificar o estado. A regressão em
+     * updateStatsCounter (index.ts) é coberta pelo segundo teste (via handleVote
+     * com binding DO que simula 400 — verifica que KV stats não é modificado).
+     */
+    const counter = makeStatsCounter();
+
+    // Incremento com choice válido antes — para ter baseline
+    await callIncrement(counter, { choice: "A", correct: true });
+
+    // Tentar incrementar com choice inválido → DO deve retornar 400
+    const badReq = new Request("https://internal/increment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice: "C", correct: null }),
+    });
+    const resp = await counter.fetch(badReq);
+
+    assert.equal(resp.status, 400, "DO deve retornar 400 para choice inválido — got: " + String(resp.status));
+
+    // Estado do DO não deve ter mudado (total ainda 1 do incremento anterior)
+    const { stats } = await callGetStats(counter);
+    assert.equal(stats.total, 1, "DO: total não deve mudar após 400 — got: " + String(stats.total));
+    assert.equal(stats.voted_a, 1, "DO: voted_a não deve mudar — got: " + String(stats.voted_a));
+  });
+
+  it("DO retorna 400 → updateStatsCounter lança; KV stats NÃO é tocado via RMW fallback", async () => {
+    /**
+     * Regressão central #2245: a guarda `if (doResp.status >= 400 && doResp.status < 500)`
+     * em updateStatsCounter deve LANÇAR em vez de cair no KV RMW fallback.
+     *
+     * Usamos um STATS_COUNTER stub que sempre retorna 400 para simular o path.
+     * Verificamos que o KV stats:260613 NÃO foi modificado via RMW (a race que #2223 corrigiu).
+     *
+     * O throw de updateStatsCounter propaga pelo handleVote (não é capturado lá),
+     * causando um erro no fetch do Worker. Verificamos dois invariantes:
+     *   1. A exceção lançada contém "400" (confirma que foi o guard 4xx que ativou).
+     *   2. O KV stats NÃO foi tocado via RMW fallback — total permanece 5.
+     */
+    const initialStats = { total: 5, voted_a: 3, voted_b: 2, correct_count: 1 };
+    const kv = makeTrackedKv({
+      "stats:260613": JSON.stringify(initialStats),
+    });
+
+    // Stub STATS_COUNTER que sempre retorna 400
+    const badChoiceStatsNs: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (): DurableObjectStub => ({
+        fetch: async () => new Response(JSON.stringify({ error: "invalid choice — must be A or B" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: makeVoteDedupNs(), // autoriza firstVote:true
+      STATS_COUNTER: badChoiceStatsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "bad400@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "A"); // choice válido no Worker — o DO stub que retorna 400
+
+    // O fetch LANÇA porque updateStatsCounter lança (não é capturado no handleVote).
+    // Antes do fix: caia silenciosamente no KV RMW fallback (incrementava total para 6).
+    // Com o fix: lança com mensagem incluindo "400".
+    let caughtError: Error | null = null;
+    try {
+      await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    } catch (e) {
+      caughtError = e as Error;
+    }
+
+    // Invariante 1: deve ter lançado (não cair silenciosamente no RMW fallback)
+    assert.ok(
+      caughtError !== null,
+      "handleVote deve lançar quando DO retorna 400 (não fazer fallback silencioso no KV RMW)",
+    );
+    assert.ok(
+      caughtError!.message.includes("400"),
+      "mensagem do erro deve incluir '400' — got: " + caughtError!.message,
+    );
+
+    // Invariante 2: KV stats NÃO deve ter sido tocado via RMW fallback
+    const statsRaw = await kv.get("stats:260613");
+    const stats = statsRaw ? JSON.parse(statsRaw) as typeof initialStats : null;
+    assert.ok(
+      stats !== null,
+      "KV stats:260613 deve ainda existir (não foi apagado)",
+    );
+    assert.equal(
+      stats!.total,
+      initialStats.total,
+      `KV stats NÃO deve ser modificado via RMW fallback quando DO retorna 400 — got total=${String(stats?.total)} (esperado ${initialStats.total})`,
+    );
+  });
+});
+

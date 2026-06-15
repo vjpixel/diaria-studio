@@ -1267,19 +1267,11 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
       continue;
     }
 
-    const scheduledMs = Date.parse(entry.scheduled_at);
-    if (isNaN(scheduledMs) || scheduledMs <= now) {
-      // Passado ou inválido — deixar pro cron fallback
-      skippedPast++;
-      continue;
-    }
-
-    // (#2235 fix F4) Tombstones com scheduled_at futuro acumulam no KV porque nem
-    // o cron (não são processados — cancelamento impediu post), nem o rearm anterior
-    // (só pulava sem deletar) os limpavam. Fix: ao encontrar tombstone com scheduled_at
-    // futuro, deletar (item já cancelado — não tem porquê re-armar).
-    // Redundante com o cron cleanup (que cobre tombstones passados), mas essencial
-    // pra limpar tombstones que ainda estão no futuro (cron não os toca até a hora).
+    // (#2245 fix F3, extends #2235 fix F4) Tombstones devem ser deletados independentemente
+    // de scheduled_at estar no passado ou no futuro. Antes: a guarda `scheduledMs <= now`
+    // vinha primeiro — um tombstone com scheduled_at passado era contado como skippedPast
+    // e NÃO deletado, acumulando no KV indefinidamente. Fix: verificar cancelled ANTES
+    // de checar se está no passado — tombstone passado ou futuro → deletar sempre.
     if (entry.cancelled) {
       console.log(`[rearm] ${k.name} has tombstone (cancelled=true) — deleting to prevent accumulation`);
       try {
@@ -1288,6 +1280,13 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
         console.warn(`[rearm] failed to delete tombstone ${k.name}: ${String(delErr)}`);
       }
       skippedTombstone++;
+      continue;
+    }
+
+    const scheduledMs = Date.parse(entry.scheduled_at);
+    if (isNaN(scheduledMs) || scheduledMs <= now) {
+      // Passado ou inválido (e não é tombstone) — deixar pro cron fallback
+      skippedPast++;
       continue;
     }
 

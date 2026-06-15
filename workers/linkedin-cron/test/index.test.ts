@@ -3138,3 +3138,100 @@ describe("#2235 handleRearm: pula + DELETA entries com tombstone (item cancelado
     }
   });
 });
+
+// ── #2245 — handleRearm: tombstone com scheduled_at PASSADO deve ser deletado ──
+
+describe("#2245 handleRearm: deleta tombstone com scheduled_at passado (além de futuro)", () => {
+  it("rearm deleta tombstone com scheduled_at passado — não deixa stale no KV", async () => {
+    /**
+     * REGRESSÃO #2245 finding 3:
+     * handleRearm verificava `scheduledMs <= now` ANTES de checar `entry.cancelled`.
+     * Um tombstone com scheduled_at no passado caía em `skippedPast++; continue` —
+     * era ignorado SEM ser deletado, acumulando no KV indefinidamente.
+     *
+     * O cron limpa tombstones PASSADOS quando processa itens que chegam na hora,
+     * mas não tem garantia de limpar tombstones cujo scheduled_at já passou E o
+     * alarm foi cancelado (o DO alarm nunca disparou — cancelled antes do fire).
+     * Esses tombstones passados ficam como lixo permanente no KV.
+     *
+     * Fix (#2245): verificar `entry.cancelled` ANTES de checar o passado —
+     * tombstone passado ou futuro → deletar sempre (skipped_tombstone, não skipped_past).
+     */
+    const { env, kv } = mkEnvWithDO();
+
+    // Gravar tombstone com scheduled_at NO PASSADO
+    const past = new Date(Date.now() - 3600_000).toISOString(); // 1h atrás
+    const queueKey = buildQueueKey(past, "uuid-tombstone-past-rearm");
+    const tombstonePastEntry: QueueEntry & { cancelled: boolean } = {
+      text: "item cancelado passado", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: new Date(Date.now() - 7200_000).toISOString(), retry_count: 0,
+      cancelled: true,
+    };
+    kv.store.set(queueKey, JSON.stringify(tombstonePastEntry));
+
+    // /rearm deve deletar o tombstone passado + retornar skipped_tombstone=1, skipped_past=0
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200, "rearm deve retornar 200");
+
+    const data = await res.json() as { rearmed: number; skipped_past: number; skipped_tombstone: number; failed: number };
+    assert.equal(data.rearmed, 0, "tombstone passado NÃO deve ser re-armado");
+    assert.equal(
+      data.skipped_tombstone,
+      1,
+      "tombstone passado deve ser contado em skipped_tombstone, não skipped_past — got skipped_tombstone=" +
+        String(data.skipped_tombstone) + " skipped_past=" + String(data.skipped_past),
+    );
+    assert.equal(data.skipped_past, 0, "tombstone passado NÃO deve ir para skipped_past");
+    assert.equal(data.failed, 0);
+
+    // Tombstone passado deve ter sido DELETADO do KV (fix #2245)
+    assert.equal(
+      kv.store.has(queueKey),
+      false,
+      "tombstone passado deve ser deletado pelo rearm (#2245 fix) — antes ficava stale",
+    );
+  });
+
+  it("rearm: 1 tombstone passado + 1 item passado válido → tombstone deletado, item válido em skipped_past", async () => {
+    /**
+     * Distingue tombstone passado (→ deletado, skipped_tombstone) de
+     * item válido passado sem tombstone (→ skipped_past, deixado para o cron).
+     */
+    const { env, kv } = mkEnvWithDO();
+
+    // Item passado válido (sem cancelled=true) — deve ser skipped_past, não deletado
+    const past1 = new Date(Date.now() - 3600_000).toISOString();
+    const keyPast = buildQueueKey(past1, "uuid-past-valid-rearm");
+    const pastValidEntry: QueueEntry = {
+      text: "item válido passado", image_url: null, scheduled_at: past1,
+      destaque: "d2", created_at: new Date(Date.now() - 7200_000).toISOString(), retry_count: 0,
+    };
+    kv.store.set(keyPast, JSON.stringify(pastValidEntry));
+
+    // Tombstone passado (cancelled=true) — deve ser deletado
+    const past2 = new Date(Date.now() - 1800_000).toISOString();
+    const keyTombPast = buildQueueKey(past2, "uuid-tombstone-past2-rearm");
+    const tombPastEntry: QueueEntry & { cancelled: boolean } = {
+      text: "item cancelado passado 2", image_url: null, scheduled_at: past2,
+      destaque: "d1", created_at: new Date(Date.now() - 5400_000).toISOString(), retry_count: 0,
+      cancelled: true,
+    };
+    kv.store.set(keyTombPast, JSON.stringify(tombPastEntry));
+
+    const req = authedRequest("https://w.test/rearm", { method: "POST" });
+    const res = await workerDefault.fetch(req, env);
+    const data = await res.json() as { rearmed: number; skipped_past: number; skipped_tombstone: number; failed: number };
+
+    assert.equal(data.rearmed, 0, "nenhum item deve ser re-armado (ambos no passado)");
+    assert.equal(data.skipped_past, 1, "item válido passado → skipped_past=1 (deixado pro cron)");
+    assert.equal(data.skipped_tombstone, 1, "tombstone passado → skipped_tombstone=1 (deletado)");
+    assert.equal(data.failed, 0);
+
+    // Item válido passado deve PERMANECER no KV (cron vai processar)
+    assert.equal(kv.store.has(keyPast), true, "item válido passado deve permanecer no KV para o cron");
+
+    // Tombstone passado deve ter sido DELETADO
+    assert.equal(kv.store.has(keyTombPast), false, "tombstone passado deve ser deletado pelo rearm (#2245)");
+  });
+});
