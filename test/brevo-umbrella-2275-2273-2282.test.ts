@@ -319,3 +319,145 @@ describe("lastgood write condicional (#2282 — não grava quando conteúdo não
       "hashes diferentes → conteúdo mudou → write seria acionado");
   });
 });
+
+// ─── Regressões F6/F7/F8 (code-review findings) ─────────────────────────────
+
+describe("F6 — retry-after: 0 produz sleep de 0ms, não fallback de 2s (#2275)", () => {
+  // Antes da correção F2: `v > 0` descartava retry-after:0, caindo no fallback 2s.
+  // Após F2: `v >= 0` aceita 0 e passa 0ms para o _sleep.
+  test("retry-after: 0 deve passar 0ms para o sleep (não 2000ms)", async () => {
+    const { withBrevo429Retry, throwBrevo429 } = await import("../scripts/lib/brevo-client.ts");
+    let receivedMs = -1;
+    const captureSleep = async (ms: number): Promise<void> => { receivedMs = ms; };
+    let calls = 0;
+    await withBrevo429Retry(async () => {
+      calls++;
+      if (calls === 1) {
+        const fakeRes = {
+          status: 429,
+          headers: { get: (h: string) => h === "retry-after" ? "0" : null },
+        } as unknown as Response;
+        throwBrevo429(fakeRes);
+      }
+      return "ok";
+    }, captureSleep);
+    assert.strictEqual(receivedMs, 0,
+      `retry-after:0 deve produzir sleep de 0ms (RFC 7231: retry imediato); recebeu ${receivedMs}ms`);
+    assert.strictEqual(calls, 2, "deve ter retentado 1x");
+  });
+});
+
+describe("F7 — poison lstats em campanha imutável deve ser gravado com TTL (#2273 auto-heal)", () => {
+  // Antes: mock KV.put sem opts não verificava o expirationTtl. O mecanismo de
+  // auto-cura (#2273) — TTL curto em lstats suspeito — ficava sem cobertura.
+  // Cenário: cache tem lstats envenenado. Re-fetch da Brevo AINDA retorna zeros
+  // (Brevo intermitente). O worker deve gravar o lstats-ainda-poison COM TTL
+  // curto (RECENT_STATS_TTL) para que a entrada se auto-destrua e um próximo
+  // render tente novamente — em vez de gravar {} (sem TTL) que criaria poison permanente.
+  test("lstats ainda-poison após re-fetch em campanha imutável → KV.put com expirationTtl = RECENT_STATS_TTL", async () => {
+    const { fetchRecentCampaigns, RECENT_STATS_TTL } = await import("../workers/brevo-dashboard/src/index.ts");
+    // Campanha imutável (> 7 dias)
+    const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+    const campaign = {
+      id: 77, name: "Old Campaign", subject: "s", status: "sent",
+      sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+      recipients: { lists: [7] }, statistics: { campaignStats: [] },
+    };
+    const fakeGs = {
+      sent: 300, delivered: 290, hardBounces: 3, softBounces: 1,
+      uniqueViews: 80, viewed: 90, trackableViews: 70, uniqueClicks: 15,
+      clickers: 12, // clickers > 0 → poison detectável
+      unsubscriptions: 1, complaints: 0, appleMppOpens: 5,
+    };
+    // lstats envenenado tanto no cache como no re-fetch (Brevo ainda instável)
+    const poisonedLstats = { "https://diar.ia/artigo": 0, "https://exemplo.com/x": 0 };
+
+    const putOpts: Record<string, unknown> = {};
+    const kv = {
+      get: async (k: string, type?: string) => {
+        const store: Record<string, unknown> = {
+          "gstats:77": fakeGs,
+          "lstats:77": poisonedLstats, // cache envenenado
+          "list:7": { id: 7, name: "T1-W1", totalSubscribers: 300 },
+        };
+        if (!(k in store)) return null;
+        return type === "json" ? store[k] : JSON.stringify(store[k]);
+      },
+      // Captura opts (terceiro argumento) — crítico para este teste
+      put: async (k: string, _v: string, opts?: unknown) => { putOpts[k] = opts; },
+    };
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [campaign] } as T;
+      if (/emailCampaigns\/77\?statistics=globalStats/.test(path)) return { ...campaign, statistics: { globalStats: fakeGs } } as T;
+      // Brevo ainda retorna lstats zerado (poison persistente — Brevo instável)
+      if (/emailCampaigns\/77\?statistics=linksStats/.test(path)) return { ...campaign, statistics: { linksStats: poisonedLstats } } as T;
+      throw new Error("path inesperado: " + path);
+    };
+
+    await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv as any } as any,
+      20, false, mockFetch as any,
+    );
+
+    const lsOpts = putOpts["lstats:77"] as any;
+    assert.ok(lsOpts !== undefined, "lstats:77 deve ser gravado no KV (ainda-poison precisa de re-write com TTL)");
+    assert.strictEqual(lsOpts?.expirationTtl, RECENT_STATS_TTL,
+      `lstats ainda-poison em campanha imutável deve usar expirationTtl=${RECENT_STATS_TTL} (auto-heal TTL), não {} (sem TTL = poison permanente)`);
+  });
+});
+
+describe("F8 — gs.sent===0: poison check usa gs raw via fallback (F1 fix)", () => {
+  // Antes do fix F1: quando gs.sent===0, globalStatsMap.set NÃO era chamado (guard linha 443).
+  // gsFetched = globalStatsMap.get(c.id) retornava undefined → isLinksStatsPoisoned(ls, null) = false.
+  // lstats envenenado era gravado sem TTL em campanha imutável — regride #2273.
+  // Após F1: gsFetched = globalStatsMap.get(c.id) ?? gs ?? null — usa gs raw mesmo com sent=0.
+  test("gs.sent===0 + clickers>0 + lstats-poison → ainda detecta poison via gs raw", async () => {
+    const { fetchRecentCampaigns, RECENT_STATS_TTL } = await import("../workers/brevo-dashboard/src/index.ts");
+    const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+    const campaign = {
+      id: 55, name: "Campaign Zeroed", subject: "s", status: "sent",
+      sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+      recipients: { lists: [7] }, statistics: { campaignStats: [] },
+    };
+    // gs.sent === 0 mas clickers > 0 — Brevo pode retornar isso em condições de zeragem parcial.
+    // O guard `if (gs && gs.sent > 0) globalStatsMap.set(...)` não chama set com este gs.
+    const gsZeroed = {
+      sent: 0, delivered: 0, hardBounces: 0, softBounces: 0,
+      uniqueViews: 0, viewed: 0, trackableViews: 0, uniqueClicks: 0,
+      clickers: 25, // clickers > 0 → poison deveria ser detectável
+      unsubscriptions: 0, complaints: 0, appleMppOpens: 0,
+    };
+    const poisonedLstats = { "https://diar.ia/z": 0, "https://outro.com/w": 0 };
+    const realLstats = { "https://diar.ia/z": 10, "https://outro.com/w": 3 };
+
+    const putOpts: Record<string, unknown> = {};
+    const kv = {
+      get: async (k: string, type?: string) => {
+        // Sem cachedGs nem cachedLs no KV → sempre re-fetch
+        if (k === "list:7") {
+          const v = { id: 7, name: "T1-W1", totalSubscribers: 500 };
+          return type === "json" ? v : JSON.stringify(v);
+        }
+        return null;
+      },
+      put: async (k: string, _v: string, opts?: unknown) => { putOpts[k] = opts; },
+    };
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [campaign] } as T;
+      if (/emailCampaigns\/55\?statistics=globalStats/.test(path)) return { ...campaign, statistics: { globalStats: gsZeroed } } as T;
+      if (/emailCampaigns\/55\?statistics=linksStats/.test(path)) return { ...campaign, statistics: { linksStats: poisonedLstats } } as T;
+      throw new Error("path inesperado: " + path);
+    };
+
+    await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv as any } as any,
+      20, false, mockFetch as any,
+    );
+
+    const lsOpts = putOpts["lstats:55"] as any;
+    assert.ok(lsOpts, "lstats:55 deve ser gravado no KV");
+    assert.strictEqual(lsOpts?.expirationTtl, RECENT_STATS_TTL,
+      `gs.sent===0 + clickers>0 + lstats-poison: deve usar expirationTtl=${RECENT_STATS_TTL} (poison detectado via gs raw). ` +
+      `Sem o fix F1, gsFetched seria undefined → poison não detectado → TTL seria {} (imutável sem TTL, regressão #2273).`);
+  });
+});

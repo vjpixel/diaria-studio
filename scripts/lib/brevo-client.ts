@@ -33,7 +33,7 @@ function parseRetryAfterMs(headers: Headers): number {
   let deltaS: number | null = null;
   if (retryAfter != null) {
     const v = Number(retryAfter);
-    if (!isNaN(v) && v > 0) deltaS = v;
+    if (!isNaN(v) && v >= 0) deltaS = v; // F2 fix: v>=0 aceita retry-after:0 (RFC 7231: retry imediato)
   } else if (sibReset != null) {
     const v = Number(sibReset);
     if (!isNaN(v)) {

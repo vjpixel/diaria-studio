@@ -278,7 +278,7 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
     const resetHeader = res.headers.get("x-sib-ratelimit-reset");
     if (retryAfterHeader != null) {
       const v = Number(retryAfterHeader);
-      if (!isNaN(v) && v > 0) retryAfter = v;
+      if (!isNaN(v) && v >= 0) retryAfter = v; // F3 fix: v>=0 aceita retry-after:0 (RFC 7231: retry imediato)
     } else if (resetHeader != null) {
       const v = Number(resetHeader);
       if (!isNaN(v)) {
@@ -373,8 +373,12 @@ export async function fetchRecentCampaigns(
         // têm TTL curto (RECENT_STATS_TTL) e expiram sozinhas; imutáveis ficam
         // sem TTL. Render dentro do TTL → hit no KV → 0 GETs à Brevo → sem o
         // 503/flicker por rate-limit. `?fresh=1` continua bypassando (`!isFresh`).
+        // F4: cachedGs e cachedLs são hoistados pro escopo do async (c) => {} para
+        // que a lógica de skip-gs-fetch abaixo consiga checar se gs já está válido.
+        let cachedGs: unknown = null;
+        let cachedLs: unknown = null;
         if (!isFresh && env.STATS_CACHE) {
-          const [cachedGs, cachedLs] = await Promise.all([
+          [cachedGs, cachedLs] = await Promise.all([
             env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
             env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
           ]);
@@ -411,13 +415,21 @@ export async function fetchRecentCampaigns(
         // withRateLimitRetry honra x-sib-ratelimit-reset com backoff capped
         // (idêntico ao comportamento da listagem, acima). Isso evita que um
         // 429 transitório durante o fetch de 50 campanhas zere os stats.
-        const detail = await withRateLimitRetry(() =>
-          _fetchFn<BrevoCampaign>(
-            `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
-            env,
-          ),
-        );
-        const gs = detail.statistics?.globalStats;
+        // F4 fix: se cachedGs já estava válido (mas lstats era poison/ausente),
+        // não re-fetchar globalStats — só buscar o lstats que falta. Economiza
+        // 1 GET/campanha no path "lstats poison, gs ok", reduzindo pressão de 429.
+        let gs: BrevoGlobalStats | undefined;
+        if (!cachedGs) {
+          const detail = await withRateLimitRetry(() =>
+            _fetchFn<BrevoCampaign>(
+              `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+              env,
+            ),
+          );
+          gs = detail.statistics?.globalStats;
+        } else {
+          gs = cachedGs as BrevoGlobalStats;
+        }
         // #2249: o GET de linksStats fica num try/catch PRÓPRIO — uma falha (429)
         // aqui NÃO pode descartar o globalStats já obtido acima. Sem esse
         // isolamento, um 429 no 2º GET cairia no catch externo e pularia o
@@ -461,9 +473,13 @@ export async function fetchRecentCampaigns(
         if (ls !== undefined) {
           linksStatsMap.set(c.id, ls);
           if (env.STATS_CACHE) {
-            // Pega o gs deste fetch (pode estar no map se foi persistido acima)
-            const gsFetched = globalStatsMap.get(c.id);
-            const lsPoison = isLinksStatsPoisoned(ls, gsFetched ?? null);
+            // Pega o gs deste fetch (pode estar no map se foi persistido acima).
+            // F1 fix: se gs.sent===0, globalStatsMap.set não foi chamado (guard linha 443),
+            // então globalStatsMap.get retornaria undefined. Usar `gs` como fallback
+            // garante que isLinksStatsPoisoned recebe o gs real do fetch atual, não null
+            // (que tornaria a poison-check sempre false → lstats envenenado sem TTL).
+            const gsFetched = globalStatsMap.get(c.id) ?? gs ?? null;
+            const lsPoison = isLinksStatsPoisoned(ls, gsFetched);
             // Poison → TTL curto mesmo em imutável (auto-cura); real → TTL normal
             const opts = (immutable && !lsPoison) ? {} : { expirationTtl: RECENT_STATS_TTL };
             await env.STATS_CACHE.put(
@@ -1990,10 +2006,16 @@ export default {
           const newHash = djb2Hash(html);
           const prevHash = await env.STATS_CACHE.get(LASTGOOD_HASH_KEY).catch(() => null);
           if (prevHash !== newHash) {
-            await Promise.all([
-              env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL }),
-              env.STATS_CACHE.put(LASTGOOD_HASH_KEY, newHash, { expirationTtl: LASTGOOD_TTL }),
-            ]).catch(() => { /* erro de KV nunca bloqueia o render */ });
+            // F5 fix: gravar hash APENAS SE o HTML write teve sucesso. Se Promise.all
+            // fosse usado e o HTML falhasse mas o hash tivesse sucesso (ex: payload grande
+            // > KV limit), o guard `prevHash === newHash` suprimiria re-writes por até 1h
+            // enquanto o HTML real seria stale/ausente. Escrita sequencial evita esse desync.
+            try {
+              await env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL });
+              await env.STATS_CACHE.put(LASTGOOD_HASH_KEY, newHash, { expirationTtl: LASTGOOD_TTL });
+            } catch {
+              /* erro de KV nunca bloqueia o render */
+            }
           }
         }
         return response;
