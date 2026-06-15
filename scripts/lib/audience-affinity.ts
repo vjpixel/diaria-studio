@@ -29,6 +29,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mtimeMs } from "./mtime.ts";
 import { parseCtrFromCsv } from "../update-audience.ts";
+import { isTutorialAcademy, hasHowToBrSignal } from "./use-melhor-curation.ts"; // #2276 #2278
 
 export const AUDIENCE_AFFINITY_FRESHNESS_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
@@ -511,6 +512,20 @@ export function annotateAudienceAffinity(
   if (isHandsOn) {
     matched.push("hands_on:true");
     for (const s of hoSignals) matched.push(`ho:${s}`);
+  }
+
+  // ─── 4. Tutorial academy (#2276) ──────────────────────────────────────────
+  // Sinal: artigo é curso/tutorial oficial (deeplearning.ai, HF /learn, etc.).
+  // "academy:true" no matched → scorer LLM aplica bônus.
+  if (isTutorialAcademy(article.url ?? "", article.title ?? "")) {
+    matched.push("academy:true");
+  }
+
+  // ─── 5. How-to PT-BR (#2278) ───────────────────────────────────────────────
+  // Sinal: título ou slug tem padrão how-to aplicado PT-BR.
+  // "howto_br:true" no matched → scorer LLM aplica bônus.
+  if (hasHowToBrSignal(article.url ?? "", article.title ?? "")) {
+    matched.push("howto_br:true");
   }
 
   // ─── Composite ─────────────────────────────────────────────────────────────

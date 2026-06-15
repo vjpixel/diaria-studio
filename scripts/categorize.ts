@@ -33,6 +33,7 @@ import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176 / #2197
+import { isMarketingCaseStudy } from "./lib/use-melhor-curation.ts"; // #2276
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -1112,13 +1113,15 @@ export function categorize(article: Article): Category {
   // 1b. Tutorial por keyword — só depois da checagem de pesquisa.
   //    Papers acadêmicos com "tutorial" no título já foram classificados
   //    como pesquisa acima.
-  if (isTutorialByKeyword(article)) return "tutorial";
+  // #2276: excluir marketing case studies antes de classificar como tutorial.
+  const _isMarkCase = isMarketingCaseStudy(article.title ?? "", article.summary ?? "");
+  if (isTutorialByKeyword(article) && !_isMarkCase) return "tutorial";
 
   // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
   //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem
   //     lancamento por default (#318).
-  if (isTutorialByDomainExtra(article.url)) return "tutorial";
-  if (isTutorialByTitleExtra(article)) return "tutorial";
+  if (isTutorialByDomainExtra(article.url) && !_isMarkCase) return "tutorial";
+  if (isTutorialByTitleExtra(article) && !_isMarkCase) return "tutorial";
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
