@@ -19,6 +19,7 @@ import {
   fetchRecentCampaigns,
   fetchScheduledCampaigns,
   withRateLimitRetry,
+  injectStaleBanner,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── mapLimit ────────────────────────────────────────────────────────────────
@@ -573,5 +574,61 @@ describe("fetchScheduledCampaigns retenta a listagem em 429 (#2268)", () => {
     assert.strictEqual(listCalls, 2, "listagem retentada após 429");
     assert.strictEqual(result.length, 1, "retorna a campanha agendada após o retry");
     assert.strictEqual(result[0].id, 57);
+  });
+});
+
+describe("fetchRecentCampaigns retenta a listagem em 429 (#2280)", () => {
+  test("429 na 1ª listagem sent → retry → não derruba a página", async () => {
+    // Regressão #2280: antes, um único 429 na listagem fazia fetchRecentCampaigns
+    // lançar → rota / retornava 503. Agora a listagem é re-tentada (withRateLimitRetry).
+    const sentDateOld = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const fakeCampaign = {
+      id: 42, name: "Test", subject: "s", status: "sent",
+      sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld, recipients: { lists: [7] },
+    };
+    let listCalls = 0;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) {
+        listCalls++;
+        if (listCalls === 1) throw new BrevoRateLimitError(1); // 1º 429 transitório
+        return { campaigns: [fakeCampaign] } as T;
+      }
+      throw new Error("path inesperado (KV deveria cobrir stats): " + path);
+    };
+    // KV cobre stats da campanha → só a listagem passa pelo _fetchFn.
+    const kv = {
+      get: async (k: string) => {
+        if (k === "gstats:42") return JSON.stringify({ sent: 100, delivered: 95 });
+        if (k === "lstats:42") return JSON.stringify({ "https://diar.ia/x": 3 });
+        if (k === "list:7") return JSON.stringify({ id: 7, name: "L", totalSubscribers: 100 });
+        return null;
+      },
+      put: async () => {},
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 50, false, mockFetch as any);
+    assert.strictEqual(listCalls, 2, "listagem sent retentada após 429");
+    assert.strictEqual(result.length, 1, "retorna campanhas após retry (não lança → não vira 503)");
+  });
+});
+
+describe("injectStaleBanner — fallback último render bom (#2280)", () => {
+  test("insere banner logo após <body> preservando o resto", () => {
+    const html = `<!DOCTYPE html><html><body class="x"><h1>Dash</h1></body></html>`;
+    const out = injectStaleBanner(html, 120);
+    assert.ok(out.includes("rate-limit"), "banner presente");
+    assert.ok(out.includes("~120s"), "mostra o retry-after");
+    assert.ok(/<body class="x">.*rate-limit/s.test(out), "banner vem logo após <body>");
+    assert.ok(out.includes("<h1>Dash</h1>"), "conteúdo original preservado");
+  });
+
+  test("retryAfter null → mensagem genérica", () => {
+    const out = injectStaleBanner("<body></body>", null);
+    assert.ok(out.includes("alguns minutos"), "fallback de mensagem sem retry-after");
+  });
+
+  test("sem <body> → prepend (nunca perde o conteúdo)", () => {
+    const out = injectStaleBanner("<div>conteudo</div>", 60);
+    assert.ok(out.startsWith("<div style="), "banner prepended quando não há <body>");
+    assert.ok(out.includes("<div>conteudo</div>"), "conteúdo original preservado");
   });
 });

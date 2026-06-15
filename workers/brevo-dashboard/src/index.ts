@@ -194,6 +194,12 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
  */
 export const RECENT_STATS_TTL = 300; // segundos
 
+// #2280: "último render bom" — HTML do `/` renderizado com sucesso é gravado no KV.
+// Em 429 (após retry), servimos este fallback (200 + banner) em vez de 503, pra que
+// uma janela de rate-limit não esconda dado correto nem regrida pra cache poisoned.
+export const LASTGOOD_KEY = "dash:lastgood:html";
+export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
+
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
 export class BrevoRateLimitError extends Error {
   constructor(public readonly retryAfterSecs: number | null) {
@@ -254,9 +260,13 @@ export async function fetchRecentCampaigns(
   // _fetchFn: injetavel em testes para mockar chamadas Brevo (padrao: brevoFetch)
   _fetchFn: typeof brevoFetch = brevoFetch,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
-  const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
-    `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
-    env,
+  // #2280: a listagem NÃO era re-tentada — um único 429 aqui derrubava a página
+  // inteira (503). withRateLimitRetry honra x-sib-ratelimit-reset com backoff curto.
+  const data = await withRateLimitRetry(() =>
+    _fetchFn<{ campaigns: BrevoCampaign[] }>(
+      `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
+      env,
+    ),
   );
   const campaigns = data.campaigns ?? [];
 
@@ -1746,6 +1756,24 @@ export function renderTrendSection(rows: WaveTrendRow[]): string {
  * Renderiza resposta de rate limit amigável (#2144).
  * Retorna 503 + Retry-After quando o listing Brevo responde 429.
  */
+/**
+ * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
+ * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
+ * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
+ */
+export function injectStaleBanner(html: string, retryAfterSecs: number | null): string {
+  const retryMsg = retryAfterSecs != null ? `~${retryAfterSecs}s` : "alguns minutos";
+  const banner =
+    `<div style="background:#FBE9A8;color:#5c4a00;padding:10px 16px;text-align:center;` +
+    `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #E0C96A;">` +
+    `⏳ Brevo em rate-limit — exibindo o último render bom (dados podem estar atrasados). ` +
+    `Atualiza em ${retryMsg}.</div>`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body[^>]*>/i, (m) => m + banner);
+  }
+  return banner + html;
+}
+
 function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean): Response {
   const retryMsg = retryAfterSecs != null ? `${retryAfterSecs}s` : "alguns minutos";
   const headers: Record<string, string> = {
@@ -1844,9 +1872,28 @@ export default {
         if (!isFresh) {
           await cache.put(request, response.clone());
         }
+        // #2280: persiste o último render bom pra fallback em 429 (nunca bloqueia).
+        if (env.STATS_CACHE) {
+          await env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL })
+            .catch(() => { /* erro de KV nunca bloqueia o render */ });
+        }
         return response;
       } catch (e) {
         if (e instanceof BrevoRateLimitError) {
+          // #2280: em vez de 503, servir o último render bom (se houver). Uma janela
+          // de rate-limit não deve esconder dado correto nem regredir pra cache poisoned.
+          const lastGood = env.STATS_CACHE
+            ? await env.STATS_CACHE.get(LASTGOOD_KEY).catch(() => null)
+            : null;
+          if (lastGood) {
+            return new Response(injectStaleBanner(lastGood, e.retryAfterSecs), {
+              headers: {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store", // não cachear a versão stale-banner
+                ...(e.retryAfterSecs != null ? { "Retry-After": String(e.retryAfterSecs) } : {}),
+              },
+            });
+          }
           return rateLimitResponse(e.retryAfterSecs, true);
         }
         return new Response(
