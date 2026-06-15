@@ -117,11 +117,24 @@ npx tsx scripts/lint-newsletter-md.ts --check all --file data/editions/{AAMMDD}/
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
-**4c.2b — Lint social + consistência post_pixel (#2145):**
+**4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash
 npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md data/editions/{AAMMDD}/03-social.md
 ```
 Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
+
+**Guard determinístico do humanizador social (#2279):**
+```bash
+npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
+```
+Exit code handling:
+- `0` → humanizador rodou e `03-social.md` não foi editado depois. Continuar.
+- `1` → **GATE-BLOCKING:** sentinel ausente — humanizador não rodou no social ou sentinel não foi gravado. Ação: re-rodar humanizador, depois `--write`, antes de aprovar.
+- `2` → **GATE-BLOCKING:** `03-social.md` foi editado/reordenado após humanização (hash diverge — caso real: edição inline em §4d.1 ou reorder de destaques). **Re-humanizar antes de aprovar:**
+  ```
+  Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
+  ```
+  Depois: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/`. Re-rodar o check; só prosseguir quando exit 0.
 
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).

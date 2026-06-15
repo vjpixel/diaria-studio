@@ -347,6 +347,14 @@ Seções verificadas: `main_d1/d2/d3` (posts principais), `comment_pixel_d1/d2/d
 
 **Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
 
+**Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), gravar o hash do `03-social.md` final:
+```bash
+npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/
+```
+Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar. Falha do `--write` não bloqueia Stage 2 (logar warn), mas o Stage 4 não vai passar sem o sentinel.
+
+**Retry 3x + abort se persistir de `clarice-plugin:humanizador` Unknown skill (#2285):** se a invocação da skill retornar `Unknown skill: clarice-plugin:humanizador` (o marketplace pode ter re-sincronizado durante a sessão — causa-raiz identificada na edição 260615), **retry imediato até 3 vezes** antes de desistir. Entre tentativas, aguardar ~5s para o registro recarregar. Se após 3 retries a skill ainda não resolver, **não abortar silenciosamente** — aplicar os 9 passos do humanizador inline via prompt direto (referência: `context/publishers/humanizador-rubric.md` ou os 9 passos listados no skill `humanizador`), depois gravar o sentinel normalmente. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "humanizador-skill-fallback-inline: clarice-plugin:humanizador Unknown skill após 3 retries — aplicando rubric inline"`.
+
 **Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
 ```bash
 npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
