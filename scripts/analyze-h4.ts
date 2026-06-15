@@ -290,6 +290,14 @@ export function computeEditionH4(
   // Return null here; computeH4Trend skips null-rho entries from rho_mean.
   const rho = spearmanRho(scorerValues, ctrValues);
 
+  // Guard: when rho is null (zero-variance CTR — all links had 0 clicks), top1_hit
+  // and top3_overlap are not meaningful. A stable sort on equal CTR values makes
+  // topCtrUrl === topScorerUrl by coincidence, inflating top1_hit_rate with noise.
+  // Return zeroed values so the caller can exclude or aggregate correctly (#2243).
+  if (rho === null) {
+    return { rho, top1_hit: false, top3_overlap: 0, n_matches: n };
+  }
+
   // Top-1 e Top-3: derivados de `matched[]` (loop unificado, O(1) por lookup).
   // matched[] já contém só os pares casados, ordenados por score desc (herda a
   // ordem de scorerHighlights que é sorted by score desc antes do join).
@@ -354,12 +362,39 @@ export function loadHistory(historyPath: string): H4HistoryEntry[] {
   for (const line of lines) {
     try {
       const entry = JSON.parse(line) as H4HistoryEntry;
-      if (entry.edition) byEdition.set(entry.edition, entry);
+      if (entry.edition) byEdition.set(entry.edition, normalizeHistoryEntry(entry));
     } catch {
       /* linha malformada — ignora */
     }
   }
   return [...byEdition.values()];
+}
+
+/**
+ * Normaliza uma entrada do histórico para corrigir o efeito do bug antigo que
+ * gravava `rho: 0.0` em vez de `rho: null` para edições zero-variância no CTR
+ * (via `spearmanRho() ?? 0` — corrigido em #2243).
+ *
+ * Assinatura do bug: `rho === 0` EXATO + `top1_hit === false` + `top3_overlap === 0`.
+ * Com rho verdadeiramente zero (correlação real nula), esperaríamos top1_hit e
+ * top3_overlap com valores variados; rho=0 + top1_hit=false + top3_overlap=0
+ * simultaneamente é o fingerprint da edição zero-CTR (todos os 0 cliques produzem
+ * desvio padrão 0 → spearmanRho=null → antigo ?? 0 → rho=0.0 gravado).
+ *
+ * Entradas legítimas com rho≈0 verdadeiro teriam normalmente top3_overlap>0 (por
+ * acaso) ou top1_hit=true (score alto casou com CTR alto por coincidência), mas a
+ * combinação rho=0+top1=false+overlap=0 é altamente improvável sem zero-CTR.
+ * False-positive residual: improvável e não-destrutivo (trataria uma correlação
+ * real nula como indefinida — subestimaria levemente o count de definedRhoEntries).
+ */
+function normalizeHistoryEntry(entry: H4HistoryEntry): H4HistoryEntry {
+  if (entry.rho === 0 && entry.top1_hit === false && entry.top3_overlap === 0) {
+    // Likely a poisoned zero written by the old `spearmanRho() ?? 0` bug.
+    // Treat as null (undefined correlation) to avoid contaminating rho_mean
+    // and spuriously triggering alert_low_rho (#2243).
+    return { ...entry, rho: null };
+  }
+  return entry;
 }
 
 /**
@@ -486,6 +521,13 @@ export function computeH4Trend(entries: H4HistoryEntry[], windowSize = 4): H4Tre
   // completo (sorted) ignoraria o windowSize e poderia acionar (ou suprimir) o alerta
   // com dados fora da janela de trend configurada.
   // Entries with rho===null are excluded from the alert (undefined != low) (#2243).
+  //
+  // Asymmetric case: last2=[{low_rho},{null}] — alert does NOT fire.
+  // Both entries must satisfy (rho !== null && rho < threshold). A null-rho entry
+  // breaks the consecutive sequence: we can't infer the correlation was low just
+  // because it was undefined (zero-CTR editions carry no signal about scorer quality).
+  // This is intentionally conservative: prefer false-negative (miss a real low-rho
+  // streak with a null interleaved) over false-positive (alert on noise from zero-CTR).
   const last2 = recent.slice(-2);
   const alertLowRho =
     last2.length === 2 &&
@@ -517,7 +559,11 @@ export function formatH4Trend(trend: H4Trend): string {
     );
   }
 
-  lines.push("", `  Rho médio (${trend.entries.length} edições): ${trend.rho_mean?.toFixed(3) ?? "—"}`);
+  // Use count of entries with defined rho (same subset used for rho_mean),
+  // not trend.entries.length (which includes null-rho editions that don't
+  // contribute to the mean — wrong label would show "4 edições" when only 3 informed the mean).
+  const definedRhoCount = trend.entries.filter((e) => e.rho !== null).length;
+  lines.push("", `  Rho médio (${definedRhoCount} edições com rho definido): ${trend.rho_mean?.toFixed(3) ?? "—"}`);
   lines.push(`  Top-1 hit rate: ${trend.top1_hit_rate !== null ? `${(trend.top1_hit_rate * 100).toFixed(0)}%` : "—"}`);
 
   if (trend.alert_low_rho) {

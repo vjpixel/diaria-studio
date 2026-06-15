@@ -169,6 +169,7 @@ describe("computeEditionH4", () => {
     const result = computeEditionH4(highlights, ctrRows, DATE);
     assert.ok(result !== null, "deve retornar resultado com n=4");
     assert.equal(result.n_matches, 4);
+    assert.ok(result.rho !== null, "rho deve ser definido (CTR não-zero)");
     assert.equal(+result.rho.toFixed(1), 0.4);
     // top-1 scorer = A (score 90); top-1 CTR = C (8%) → não acertou
     assert.equal(result.top1_hit, false);
@@ -191,6 +192,7 @@ describe("computeEditionH4", () => {
     ];
     const result = computeEditionH4(highlights, ctrRows, DATE);
     assert.ok(result !== null);
+    assert.ok(result.rho !== null, "rho deve ser definido (CTR não-zero)");
     assert.equal(+result.rho.toFixed(3), 1.0);
     assert.equal(result.top1_hit, true);
     assert.equal(result.top3_overlap, 3);
@@ -585,6 +587,27 @@ describe("computeH4Trend", () => {
     assert.equal(trend.alert_low_rho, false);
   });
 
+  // ── Regressão #6: caso assimétrico [{low},{null}] NÃO aciona alert ──────────
+  it("alerta NÃO dispara quando last2=[{low_rho},{null}] — null quebra a sequência consecutiva", () => {
+    // Assimetria intencional: só ambas as últimas 2 com rho definido < threshold acionam
+    // o alerta. Se uma das duas é null (zero-CTR — correlação indefinida), não há sinal
+    // suficiente para afirmar 2 semanas consecutivas de rho baixo. Preferimos
+    // falso-negativo (perder streak real com null intercalado) a falso-positivo
+    // (alertar por ruído de edições zero-CTR). Ver computeH4Trend.
+    const entries: H4HistoryEntry[] = [
+      { edition: "260520", rho: 0.8, top1_hit: true,  top3_overlap: 3, n_matches: 5, computed_at: "" },
+      { edition: "260521", rho: 0.6, top1_hit: true,  top3_overlap: 2, n_matches: 4, computed_at: "" },
+      { edition: "260522", rho: 0.2, top1_hit: false, top3_overlap: 1, n_matches: 4, computed_at: "" }, // baixo
+      { edition: "260525", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" }, // zero-CTR
+    ];
+    const trend = computeH4Trend(entries);
+    assert.equal(
+      trend.alert_low_rho,
+      false,
+      "last2=[{rho:0.2},{rho:null}] — null não satisfaz (rho !== null && rho < 0.4), logo alert=false",
+    );
+  });
+
   it("sem entradas → rho_mean=null, top1_hit_rate=null, alert=false", () => {
     const trend = computeH4Trend([]);
     assert.equal(trend.rho_mean, null);
@@ -688,7 +711,7 @@ describe("formatH4Trend", () => {
   it("entrada com rho=null → formatada como '—(undef)' (não falha)", () => {
     const trend = {
       entries: [
-        { edition: "260520", rho: null as unknown as number, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+        { edition: "260520", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
       ],
       rho_mean: null,
       top1_hit_rate: 0,
@@ -736,6 +759,10 @@ describe("Regressão #2243: zero-CTR edition retorna rho=null, excluída da tren
     assert.equal(result.n_matches, 4);
     // Bug anterior: result.rho === 0 (falso zero). Fix correto: result.rho === null.
     assert.equal(result.rho, null, "zero-CTR edition deve ter rho=null, não 0.0");
+    // Companion to finding #1: when rho=null, top1_hit and top3_overlap must be
+    // zeroed (not spuriously true due to stable sort on equal CTR values).
+    assert.equal(result.top1_hit, false, "zero-CTR edition: top1_hit deve ser false (sem sinal)");
+    assert.equal(result.top3_overlap, 0, "zero-CTR edition: top3_overlap deve ser 0 (sem sinal)");
   });
 
   it("computeH4Trend: rho_mean exclui entradas com rho=null (não conta como 0)", () => {
