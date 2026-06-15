@@ -8,6 +8,7 @@ import {
   validateLancamentos,
   validateLancamentosFromApproved,
   isNonProductLancamento,
+  isProgramWarn,
   hasProductSignal,
   isVerifiedTool,
 } from "../scripts/validate-lancamentos.ts";
@@ -500,7 +501,10 @@ describe("não-produto (governança/política) — #1799", () => {
   });
 
   it("flaga não-produto MESMO em domínio oficial (independente do #160)", () => {
-    // openai.com é oficial → NÃO entra em removed, mas É governança → flagged.
+    // openai.com é oficial → NÃO entra em removed. public-policy-agenda:
+    // isNonProductLancamento → true (via 'policy') → isVerifiedTool → false →
+    // not_a_tool (hard-block). Com double-reporting fix (#2277), itens em not_a_tool
+    // NÃO aparecem também em flagged_non_product; GPT-5 não é neither.
     const approved = {
       lancamento: [
         { url: "https://openai.com/index/public-policy-agenda", title: "Agenda de política pública" },
@@ -509,8 +513,9 @@ describe("não-produto (governança/política) — #1799", () => {
     };
     const r = validateLancamentosFromApproved(approved);
     assert.equal(r.removed.length, 0, "ambos oficiais → nenhum removido");
-    assert.equal(r.flagged_non_product.length, 1, "só o policy é flagado");
-    assert.match(r.flagged_non_product[0].url, /public-policy-agenda/);
+    assert.equal(r.not_a_tool.length, 1, "policy → hard-block via not_a_tool");
+    assert.match(r.not_a_tool[0].url, /public-policy-agenda/);
+    assert.equal(r.flagged_non_product.length, 0, "sem double-reporting: já em not_a_tool");
   });
 
   it("MD: regex casa header bold+emoji **🚀 LANÇAMENTOS** (antes era no-op)", () => {
@@ -528,7 +533,10 @@ describe("não-produto (governança/política) — #1799", () => {
     assert.match(urls[0].url, /openai\.com\/index\/gpt-5/);
   });
 
-  it("MD: non_product populado para item de governança", () => {
+  it("MD: item de governança → not_a_tool (hard-block), NÃO em non_product (sem double-reporting #2277)", () => {
+    // public-policy-agenda: isNonProductLancamento → true (via NON_PRODUCT_RE 'policy')
+    // → isVerifiedTool → false → not_a_tool (hard-block). O double-reporting fix
+    // exclui itens já em not_a_tool de non_product — gate vê 1 mensagem apenas.
     const md = [
       "LANÇAMENTOS",
       "",
@@ -537,7 +545,9 @@ describe("não-produto (governança/política) — #1799", () => {
       "---",
     ].join("\n");
     const r = validateLancamentos(md);
-    assert.equal(r.non_product.length, 1);
+    assert.equal(r.not_a_tool.length, 1, "policy → hard-block");
+    assert.equal(r.non_product.length, 0, "não dupla-reportar o mesmo item");
+    assert.equal(r.status, "error");
   });
 });
 
@@ -577,22 +587,24 @@ describe("#2277 — programa/parceria/bolsa detectados como not_a_tool", () => {
     );
   });
 
-  it("isNonProductLancamento: research grant → não-produto", () => {
-    assert.ok(
-      isNonProductLancamento(
-        "https://openai.com/blog/openai-research-grants-2026",
-        "OpenAI Research Grants 2026",
-      ),
-    );
+  it("isProgramWarn: research grant → warn-only (não hard-block via isNonProductLancamento)", () => {
+    // grants? é termo de MÉDIA precisão: move pra PROGRAM_WARN_RE (warn-only).
+    // isNonProductLancamento retorna false (sem hard-block); isProgramWarn = true.
+    // Evita over-block de "Anthropic Compute Grants: 1M Tokens" como lançamento.
+    const url = "https://openai.com/blog/openai-research-grants-2026";
+    const title = "OpenAI Research Grants 2026";
+    assert.ok(!isNonProductLancamento(url, title), "grants → não hard-block");
+    assert.ok(isProgramWarn(url, title), "grants → warn surfaça no gate");
   });
 
-  it("isNonProductLancamento: partnership → não-produto", () => {
-    assert.ok(
-      isNonProductLancamento(
-        "https://blogs.nvidia.com/blog/nvidia-microsoft-partnership-ai",
-        "NVIDIA and Microsoft Partnership",
-      ),
-    );
+  it("isProgramWarn: partnership → warn-only (não hard-block via isNonProductLancamento)", () => {
+    // partnership é termo de MÉDIA precisão: move pra PROGRAM_WARN_RE (warn-only).
+    // isNonProductLancamento retorna false; isProgramWarn = true.
+    // Evita over-block de "openai-google-partnership-api" (produto de parceria).
+    const url = "https://blogs.nvidia.com/blog/nvidia-microsoft-partnership-ai";
+    const title = "NVIDIA and Microsoft Partnership";
+    assert.ok(!isNonProductLancamento(url, title), "partnership → não hard-block");
+    assert.ok(isProgramWarn(url, title), "partnership → warn surfaça no gate");
   });
 
   it("isNonProductLancamento: NÃO flaga lançamento real de produto", () => {
@@ -714,5 +726,118 @@ describe("#2277 — HF model-card como domínio oficial", () => {
     assert.equal(r.invalid_urls.length, 0, "URL oficial → não inválida");
     assert.equal(r.verified_product.length, 1, "título com 'model' → produto verificado");
     assert.equal(r.status, "ok");
+  });
+
+  it("isOfficialLancamentoUrl: /allenai/spaces NÃO é modelo (reserved second segment #2277)", () => {
+    // Antes do fix, huggingface.co/allenai/spaces casava o model-card pattern
+    // porque a lookahead só bloqueava o PRIMEIRO segmento. Fix: lookahead também
+    // bloqueia palavras reservadas no SEGUNDO segmento.
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/allenai/spaces"));
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/someorg/collections"));
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/someorg/datasets"));
+    assert.ok(!isOfficialLancamentoUrl("https://huggingface.co/someorg/models"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2277 regression — regressões das findings do code-review
+// ---------------------------------------------------------------------------
+
+describe("#2277 regression — findings code-review (fixer)", () => {
+  it("REGRESSÃO F2: partnership no slug NÃO hard-bloca produto real", () => {
+    // openai.com/blog/openai-google-partnership-api: descreve um produto de API
+    // resultante de parceria. "partnership" deve ser WARN (isProgramWarn), não
+    // hard-block (isNonProductLancamento).
+    const url = "https://openai.com/blog/openai-google-partnership-api";
+    const title = "OpenAI Google Partnership API";
+    assert.ok(!isNonProductLancamento(url, title), "partnership slug → não hard-block");
+    assert.ok(isProgramWarn(url, title), "partnership slug → warn surfaça no gate");
+    // O título com PRODUCT_SIGNAL 'API' ainda dá sinal positivo
+    assert.ok(hasProductSignal(url, title));
+  });
+
+  it("REGRESSÃO F3: grant no slug NÃO hard-bloca produto real", () => {
+    // openai.com/index/compute-grants-2026 poderia ser um programa de acesso
+    // a compute — warn-only; não hard-block.
+    const url = "https://openai.com/index/compute-grants-2026";
+    assert.ok(!isNonProductLancamento(url), "grant slug → não hard-block");
+    assert.ok(isProgramWarn(url), "grant slug → warn surfaça no gate");
+  });
+
+  it("REGRESSÃO F3: corps NÃO é falso positivo em produto real (alta precisão mantida)", () => {
+    // 'corps' É alta precisão — claude-corps e afins são genuinamente programas.
+    // Um slug de produto real não usaria 'corps'; aceitamos esse trade-off.
+    assert.ok(isNonProductLancamento("https://anthropic.com/news/claude-corps", "Claude Corps"));
+  });
+
+  it("REGRESSÃO F5: HF model-card com 'fellowship' no nome → não hard-bloca se produto real", () => {
+    // fellowshipai/some-model: 'fellowships?' agora só em PROGRAM_SIGNAL_RE; o
+    // normalizedSlug de 'huggingface.co/fellowshipai/some-model' é
+    // ' fellowshipai some model' — 'fellowshipai' não tem word-boundary separando
+    // 'fellowship' de 'ai', então \bfellowships?\b NÃO casa 'fellowshipai'.
+    // Verifica que o modelo de uma org com 'fellowship' no nome não é bloqueado.
+    const url = "https://huggingface.co/fellowshipai/gpt-model-v2";
+    const title = "GPT Model v2 by FellowshipAI";
+    // 'fellowshipai' não tem \b após 'fellowship' → não casa PROGRAM_SIGNAL_RE
+    assert.ok(!isNonProductLancamento(url, title), "org-name 'fellowshipai' não dispara \bfellowship\b");
+    assert.ok(hasProductSignal(url, title), "model + gpt + v2 → produto");
+  });
+
+  it("REGRESSÃO F6: fellowships plural detectado corretamente", () => {
+    // Antes: \bfellowship\b não casava 'fellowships'. Agora: fellowships? cobre plural.
+    assert.ok(isNonProductLancamento("https://anthropic.com/news/announcing-anthropic-fellowships"));
+    assert.ok(isNonProductLancamento("https://deepmind.google/blog/deepmind-fellowships-2026"));
+  });
+
+  it("REGRESSÃO F7: double-reporting — item em not_a_tool NÃO aparece em non_product", () => {
+    // claude-corps: isNonProductLancamento → true → isVerifiedTool → false →
+    // not_a_tool. Com o fix, não deve estar também em non_product.
+    const md = [
+      "LANÇAMENTOS",
+      "**[Introducing the Claude Corps](https://www.anthropic.com/news/claude-corps)**",
+      "Bolsa.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1);
+    assert.equal(r.non_product.length, 0, "sem double-reporting: já em not_a_tool");
+  });
+
+  it("REGRESSÃO F8: partnersnetwork NÃO casa partner[\\s-]?network", () => {
+    // partner.?network casava 'partnersnetwork' (qualquer char). Fix: partner[\s-]?network.
+    assert.ok(!isNonProductLancamento("https://example.com/partnersnetwork-hub"));
+    assert.ok(!isNonProductLancamento("https://example.com/blog", "partnersnetwork launch"));
+  });
+
+  it("REGRESSÃO F8: grants? simplificado (grants e grant ambos detectados em PROGRAM_WARN_RE)", () => {
+    assert.ok(isProgramWarn("https://openai.com/index/openai-grant-program"));
+    assert.ok(isProgramWarn("https://openai.com/index/openai-grants-program"));
+  });
+
+  it("isVerifiedTool: introducing-partner-network → não-ferramenta (partner-network hard-block)", () => {
+    // Caso real 260615: o fix mantém 'partner-network' como hard-block
+    assert.ok(
+      !isVerifiedTool(
+        "https://openai.com/index/introducing-openai-partner-network",
+        "Introducing the OpenAI Partner Network",
+      ),
+    );
+  });
+
+  it("partnership in validateLancamentos: item apenas com partnership → non_product warn (não not_a_tool)", () => {
+    // partnership slug sem sinal de produto → falls through to not_a_tool anyway
+    // (hasProductSignal fails). Com partnership em PROGRAM_WARN_RE (não em
+    // isNonProductLancamento), o item PODE ter sinal de produto e passar.
+    // Cenário: partnership + API no título → produto passa (não warn só por partnership).
+    const url = "https://openai.com/index/openai-google-partnership-api";
+    const title = "OpenAI Google Partnership API";
+    // hasProductSignal via 'API' no título → produto verificado; non_product apenas
+    // adiciona warn mas NÃO bloqueia se hasProductSignal = true
+    assert.ok(hasProductSignal(url, title));
+    assert.ok(!isNonProductLancamento(url, title));
+    assert.ok(isProgramWarn(url, title));
+    // isVerifiedTool: allowlist vazio, isNonProductLancamento = false, hasProductSignal = true → true
+    assert.ok(isVerifiedTool(url, title));
   });
 });

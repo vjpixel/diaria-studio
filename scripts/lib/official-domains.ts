@@ -70,7 +70,12 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // models-lista, inference-providers). Bare /{org} (1 segmento) NÃO casa.
     path_patterns: [
       /^huggingface\.co\/blog\//,
-      /^huggingface\.co\/(?!blog\/|papers\/|datasets\/|spaces\/|docs\/|learn\/|models\/|inference-providers\/)[^/]+\/[^/]+\/?$/,
+      // Model-card: exactly 2 path segments, neither being a HF reserved namespace.
+      // Allowlist shape (positive): /{org}/{model} where neither segment is a
+      // reserved HF first-level path. Excludes profile tabs that appear as the
+      // second segment (e.g. allenai/spaces, someorg/collections) by blocking
+      // reserved words in EITHER segment position.
+      /^huggingface\.co\/(?!blog\/|papers\/|datasets\/|spaces\/|collections\/|tasks\/|leaderboards\/|enterprise\/|models\/|organizations\/|settings\/|docs\/|pricing\/|join\/|login\/|learn\/|inference-providers\/)[^/]+\/(?!spaces$|collections$|datasets$|tasks$|leaderboards$|enterprise$|models$|organizations$|settings$|docs$|pricing$|join$|login$|papers$|blog$)[^/]+\/?$/,
     ],
     detection_keywords: /\b(hugging ?face|hf)\b/i,
     primary_domain: "huggingface.co",
