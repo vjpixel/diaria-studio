@@ -186,6 +186,14 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
   return nowMs - sent > sevenDaysMs;
 }
 
+/**
+ * #2270: TTL do cache KV de stats de campanhas RECENTES (<7d, ciclo ativo).
+ * Imutáveis (>7d) ficam sem TTL (stats não mudam). Recentes mudam devagar
+ * (opens/clicks acumulando) → 5min de stale é aceitável e ≈ o edge cache, e
+ * derruba ~2 GETs/campanha por render → fim do 503/flicker por rate-limit.
+ */
+export const RECENT_STATS_TTL = 300; // segundos
+
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
 export class BrevoRateLimitError extends Error {
   constructor(public readonly retryAfterSecs: number | null) {
@@ -296,8 +304,11 @@ export async function fetchRecentCampaigns(
         const kvLsKey = `lstats:${c.id}`;
         const immutable = isImmutableCampaign(c.sentDate);
 
-        // Para campanhas imutaveis: tentar KV primeiro (exceto fresh=1)
-        if (!isFresh && immutable && env.STATS_CACHE) {
+        // #2270: tentar KV pra TODAS as campanhas (não só imutáveis). Recentes
+        // têm TTL curto (RECENT_STATS_TTL) e expiram sozinhas; imutáveis ficam
+        // sem TTL. Render dentro do TTL → hit no KV → 0 GETs à Brevo → sem o
+        // 503/flicker por rate-limit. `?fresh=1` continua bypassando (`!isFresh`).
+        if (!isFresh && env.STATS_CACHE) {
           const [cachedGs, cachedLs] = await Promise.all([
             env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
             env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
@@ -346,9 +357,12 @@ export async function fetchRecentCampaigns(
         // permanente impossivel de recuperar sem `wrangler kv:key delete`.
         if (gs && gs.sent > 0) {
           globalStatsMap.set(c.id, gs);
-          // Gravar no KV sem TTL se imutavel (stats nao mudam mais)
-          if (immutable && env.STATS_CACHE) {
-            await env.STATS_CACHE.put(kvGsKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+          // #2270: grava no KV pra imutáveis (sem TTL) E recentes (TTL curto).
+          if (env.STATS_CACHE) {
+            await env.STATS_CACHE.put(
+              kvGsKey, JSON.stringify(gs),
+              immutable ? {} : { expirationTtl: RECENT_STATS_TTL },
+            ).catch(() => { /* nunca bloqueia */ });
           }
         }
 
@@ -356,8 +370,11 @@ export async function fetchRecentCampaigns(
         // campanha não tinha links rastreados, distinguindo de "não buscado ainda").
         if (ls !== undefined) {
           linksStatsMap.set(c.id, ls);
-          if (immutable && env.STATS_CACHE) {
-            await env.STATS_CACHE.put(kvLsKey, JSON.stringify(ls)).catch(() => { /* nunca bloqueia */ });
+          if (env.STATS_CACHE) {
+            await env.STATS_CACHE.put(
+              kvLsKey, JSON.stringify(ls),
+              immutable ? {} : { expirationTtl: RECENT_STATS_TTL },
+            ).catch(() => { /* nunca bloqueia */ });
           }
         }
       } catch {
