@@ -5,8 +5,9 @@
  * O teste A/B/C de subject encerrou: **B venceu**. Encerra o B/C e consolida
  * TODA a audiência da célula C na B, pros 2 dias ainda agendados (d06 seg 15/jun,
  * d07 ter 16/jun). Análogo ao clarice-drop-a-rebalance, mas movendo 100% da C
- * pra B (sem split) — ninguém fica órfão; todo mundo recebe o digest com o
- * assunto B vencedor.
+ * pra B (sem split) — todo contato VÁLIDO recebe o digest com o assunto B
+ * vencedor (emails inválidos que a Brevo rejeita no add ficam de fora, como
+ * ficariam de qualquer jeito; o script aborta nesse caso pra inspeção).
  *
  * Mesmas pegadinhas/garantias do drop-a (#2182):
  *  - DELETE de campanha agendada é proibido → `PUT status=suspended` na C.
@@ -74,10 +75,19 @@ async function removeFromList(apiKey: string, listId: number, rows: Row[]): Prom
 /** Re-snapshot: suspend → re-set scheduledAt = re-queue força novo snapshot da membership atual. */
 async function resnapshot(apiKey: string, campId: number): Promise<void> {
   const c = await bf(apiKey, `/emailCampaigns/${campId}`);
-  if (c.status !== "queued") { console.log(`      ↻ camp #${campId} status=${c.status} — pulando re-snapshot`); return; }
-  await bf(apiKey, `/emailCampaigns/${campId}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
+  // #2272 (review): aceita 'suspended' TAMBÉM. Se um crash anterior parou ENTRE o
+  // suspend e o re-set scheduledAt, a B fica `suspended` — re-rodar precisa
+  // RE-AGENDAR (re-queue), NÃO pular (senão a B nunca volta pra fila e não envia).
+  // Só pula estados terminais (sent/in_process/etc).
+  if (c.status !== "queued" && c.status !== "suspended") {
+    console.log(`      ↻ camp #${campId} status=${c.status} — pulando re-snapshot`);
+    return;
+  }
+  if (c.status === "queued") {
+    await bf(apiKey, `/emailCampaigns/${campId}/status`, { method: "PUT", body: JSON.stringify({ status: "suspended" }) });
+  }
   await bf(apiKey, `/emailCampaigns/${campId}`, { method: "PUT", body: JSON.stringify({ scheduledAt: c.scheduledAt }) });
-  console.log(`      ↻ camp B #${campId} re-snapshot (re-agendada @ ${c.scheduledAt})`);
+  console.log(`      ↻ camp B #${campId} re-snapshot/re-queue (@ ${c.scheduledAt})`);
 }
 
 async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
