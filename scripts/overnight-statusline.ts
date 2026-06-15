@@ -1,23 +1,37 @@
 #!/usr/bin/env npx tsx
 /**
- * overnight-statusline.ts (#2184)
+ * overnight-statusline.ts (#2184, #2250)
  *
- * Barra de progresso horizontal da rodada /diaria-overnight para a
- * statusLine do Claude Code.
+ * Barra de progresso horizontal para a statusLine do Claude Code.
+ * Suporta dois modos, com precedência definida:
  *
- * Saída:
- *   Fora de rodada:   "{branch}"
- *   Durante rodada:   "{branch}  [████████░░░░] 67%  (4/6)"
- *   Rodada encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
+ *   1. Edição em curso (PRIORIDADE ALTA — #2250):
+ *      "{branch}  edição 260615  [██████░░░░░░] 3/7  Imagens"
+ *      Encerrada: "{branch}  edição 260615  [████████████] 7/7  Agendamento"
  *
- * Critério de "rodada encerrada": TODAS as entradas de `issues` têm status
+ *   2. Rodada /diaria-overnight (FALLBACK quando não há edição ativa):
+ *      "{branch}  [████████░░░░] 67%  (4/6)"
+ *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
+ *
+ * Precedência: edição em curso > overnight. Enquanto a edição está rodando,
+ * a edição toma prioridade na statusLine pois é o foco do editor.
+ * Quando a edição encerra (todos stages done/failed), a barra overnight retoma
+ * o display automaticamente — sem dependência de relógio.
+ *
+ * Critério de "rodada encerrada" overnight: TODAS as entradas de `issues` têm status
  * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando encerrada,
  * mostra 100% e permanece visível — NÃO oculta (#2246, requisito do editor).
  *
+ * Critério de "edição encerrada" (#2250): todos os stages têm status terminal
+ * (`done` | `failed`). Quando encerrada, mostra N/N (7/7) e permanece visível
+ * (espelhando #2246). A barra de overnight volta ao display quando a edição encerra.
+ *
  * Degrada graciosamente:
- *   - plan.json ausente    → string vazia (fora de rodada)
- *   - plan.json malformado → string vazia (sem throw)
- *   - total de issues = 0  → string vazia
+ *   - stage-status.json ausente/malformado → ignora (fallback overnight)
+ *   - rows ausente/vazio                   → ignora (fallback overnight)
+ *   - plan.json ausente                    → string vazia (fora de rodada overnight)
+ *   - plan.json malformado                 → string vazia (sem throw)
+ *   - total de issues = 0                  → string vazia
  *
  * Uso (Claude Code statusLine):
  *   npx tsx scripts/overnight-statusline.ts
@@ -27,6 +41,8 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
+import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +81,15 @@ export interface Plan {
 export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
+
+/** Regex for edition AAMMDD directories (exactly 6 digits, no suffixes). */
+const EDITION_DIR_RE = /^\d{6}$/;
+
+/** Stage statuses considered terminal for edition progress (#2250). */
+const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
+
+/** Total number of stages (0–6) in an edition — derived from STAGES to stay in sync. */
+const TOTAL_STAGES = STAGES.length;
 
 // ─── função pura testável ─────────────────────────────────────────────────────
 
@@ -197,13 +222,171 @@ function currentBranch(cwd: string): string {
   }
 }
 
+// ─── edição em curso (#2250) ──────────────────────────────────────────────────
+
+/**
+ * Renderiza a barra de progresso de uma edição em curso (#2250).
+ *
+ * @param doc  Documento stage-status.json (ou null/undefined se ausente/malformado)
+ * @returns    String da barra, ou "" quando deve ser ocultada.
+ *
+ * Retorna "" quando:
+ *   - doc é null/undefined
+ *   - doc.rows é ausente ou não-array
+ *   - rows.length === 0
+ *
+ * Quando todos os stages são terminais (done/failed), mostra N/N e permanece
+ * visível (espelhando #2246: barra encerrada é visível, não oculta).
+ *
+ * Formato: "edição AAMMDD  [██████░░░░░░] 3/7  Imagens"
+ * Encerrada: "edição AAMMDD  [████████████] 7/7  Agendamento"
+ */
+export function renderEditionBar(doc: StageStatusDoc | null | undefined): string {
+  if (!doc) return "";
+  if (!Array.isArray(doc.rows)) return "";
+  if (doc.rows.length === 0) return "";
+
+  const rows = doc.rows;
+  const total = TOTAL_STAGES; // always STAGES.length (stages 0–6)
+  const done = rows.filter((r) => STAGE_TERMINAL_STATUSES.has(r?.status as StageStatus)).length;
+
+  const editionId = doc.edition ?? "?";
+
+  // All stages terminal → show N/N (encerrada, visível — mirrors #2246)
+  // Guard placed early so label logic below only runs for in-progress editions.
+  if (done >= total) {
+    const bar = "█".repeat(BAR_WIDTH);
+    // Pick the label by highest stage number (not array position) to handle out-of-order rows.
+    const lastStageRow = rows.reduce(
+      (max, r) => (r.stage > (max?.stage ?? -1) ? r : max),
+      rows[0],
+    );
+    const lastLabel = STAGE_LABELS[lastStageRow?.stage ?? (TOTAL_STAGES - 1)] ?? "Agendamento";
+    return `edição ${editionId}  [${bar}] ${total}/${total}  ${lastLabel}`;
+  }
+
+  // Find the current running stage for label display (in-progress path only).
+  // Priority: first "running" stage; fallback: last "done/failed" stage (by scan); fallback: stage 0 label.
+  const runningRow = rows.find((r) => r?.status === "running");
+  // Scan from end without allocating a copy (findLast polyfill — tsconfig targets ES2022).
+  let lastDoneRow: typeof rows[0] | undefined;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (STAGE_TERMINAL_STATUSES.has(rows[i].status)) { lastDoneRow = rows[i]; break; }
+  }
+  const displayRow = runningRow ?? lastDoneRow ?? rows[0];
+  const stageLabel = STAGE_LABELS[displayRow?.stage ?? 0] ?? `Stage ${displayRow?.stage ?? 0}`;
+
+  const filled = Math.floor((done / total) * BAR_WIDTH);
+  const empty = BAR_WIDTH - filled;
+  const bar = "█".repeat(filled) + "░".repeat(empty);
+
+  return `edição ${editionId}  [${bar}] ${done}/${total}  ${stageLabel}`;
+}
+
+/**
+ * Lê e parseia stage-status.json de um diretório de edição.
+ * Falls back to the legacy stage-status.md via loadDoc() for pre-#1216 editions.
+ * Retorna null em qualquer erro ou se o formato for inválido.
+ */
+function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
+  try {
+    const jsonPath = join(editionDir, "_internal", "stage-status.json");
+    const editionId = editionDir.split(/[/\\]/).pop() ?? "";
+
+    // Fast path: JSON sidecar exists — parse directly.
+    if (existsSync(jsonPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(jsonPath, "utf8")) as StageStatusDoc;
+        // Finding #9: use typeof instead of falsy check so edition:'' is not rejected.
+        if (typeof parsed.edition !== "string" || !Array.isArray(parsed.rows)) return null;
+        return parsed;
+      } catch {
+        // corrupted JSON — fall through to loadDoc MD fallback
+      }
+    }
+
+    // Finding #4: MD fallback for pre-#1216 editions (no stage-status.json).
+    // loadDoc never throws and returns makeInitialDoc if neither JSON nor MD exist.
+    const legacyMdPath = join(editionDir, "stage-status.md");
+    if (!existsSync(legacyMdPath)) return null; // neither JSON nor MD — truly absent
+    const doc = loadDoc(editionDir, editionId);
+    // loadDoc returns makeInitialDoc (all-pending) when MD is unreadable — treat as null.
+    if (typeof doc.edition !== "string" || !Array.isArray(doc.rows) || doc.rows.length === 0) {
+      return null;
+    }
+    return doc;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detecta a edição EM CURSO mais recente escaneando data/editions/{AAMMDD}/_internal/stage-status.json.
+ *
+ * Contrato determinístico (espelha readTodayPlan):
+ *   - Sort lexicográfico desc (mais recente primeiro — AAMMDD: 260615 > 260614)
+ *   - "Em curso" = tem ao menos 1 stage `running` ou `done/failed` mas NÃO todos terminais.
+ *     Uma edição onde todos stages são `done/failed` é ENCERRADA e retorna null — isso
+ *     faz a overnight bar retomar o display (contrato docblock ln 27: "A barra de overnight
+ *     volta ao display quando a edição encerra"). (Fix Finding #1.)
+ *   - Edição all-pending (--init mas não rodando) também é ignorada — não é "em curso".
+ *   - Retorna null se não houver edição alguma em curso.
+ *
+ * Nenhuma dependência de Date.now() / relógio — 100% determinístico.
+ *
+ * @param cwd  Raiz do projeto (cwd)
+ * @returns    StageStatusDoc da edição mais recente EM CURSO (não encerrada, não all-pending), ou null.
+ */
+export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
+  try {
+    const editionsDir = join(cwd, "data", "editions");
+    if (!existsSync(editionsDir)) return null;
+
+    const entries = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse(); // most recent first (lexicographic desc: 260615 > 260614 > ...)
+
+    if (entries.length === 0) return null;
+
+    for (const dirName of entries) {
+      const editionDir = join(editionsDir, dirName);
+      const doc = readStageStatusFromDir(editionDir);
+      if (!doc) continue;
+      if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
+      // Skip all-pending editions (--init'd but not yet running).
+      const hasStarted = doc.rows.some((r) => r.status !== "pending");
+      if (!hasStarted) continue;
+      // Finding #1: skip fully-encerrada editions — overnight bar must resume when edition ends.
+      const isEncerrada = doc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status));
+      if (isEncerrada) continue;
+      // First in-progress edition → return it.
+      return doc;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── CLI (entrypoint) ─────────────────────────────────────────────────────────
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cwd = process.cwd();
   const branch = currentBranch(cwd);
-  const plan = readTodayPlan(cwd);
-  const bar = renderOvernightBar(plan);
+
+  // #2250: Edition bar has priority over overnight bar.
+  // readCurrentEditionDoc returns non-null only for IN-PROGRESS editions (started but not encerrada).
+  // When edition is fully encerrada (all terminal), readCurrentEditionDoc returns null → overnight resumes.
+  // When no edition has started → fall back to overnight bar.
+  const editionDoc = readCurrentEditionDoc(cwd);
+  const editionBar = renderEditionBar(editionDoc);
+
+  // Only compute overnight bar when there's no active edition bar to show.
+  // (Avoids misleading dual-bar scenario during morning handoff.)
+  const bar = editionBar || renderOvernightBar(readTodayPlan(cwd));
 
   // Fix #4: only include separator when branch is non-empty
   const output = bar
