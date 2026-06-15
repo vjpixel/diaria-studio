@@ -275,8 +275,9 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     const store = new Map(Object.entries(initialData));
     const getCalls: string[] = [];
     const putCalls: string[] = [];
+    const putOpts: Record<string, unknown> = {}; // #2270: captura options (TTL) por key
     return {
-      store, getCalls, putCalls,
+      store, getCalls, putCalls, putOpts,
       kv: {
         get: async (key: string, type?: string) => {
           getCalls.push(key);
@@ -285,8 +286,9 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
           if (type === "json") return JSON.parse(val);
           return val;
         },
-        put: async (key: string, value: string) => {
+        put: async (key: string, value: string, opts?: unknown) => {
           putCalls.push(key);
+          putOpts[key] = opts;
           store.set(key, value);
         },
         delete: async () => {},
@@ -462,6 +464,56 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       "globalStats deve persistir mesmo com 429 no GET de linksStats");
     assert.strictEqual(result[0].statistics?.linksStats, undefined,
       "linksStats fica undefined quando seu GET falha (degrada graceful)");
+  });
+
+  // #2270: campanha RECENTE (<7d) agora é cacheada com TTL curto → 2º render
+  // bate no KV (0 GETs à Brevo). Antes só imutáveis eram cacheadas → todo render
+  // fresco fazia 2 GETs/campanha → 503/flicker por rate-limit.
+  const sentDateRecent = new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(); // 1d atrás
+  const recentCampaign = { ...fakeCampaign, id: 77, sentDate: sentDateRecent, createdAt: sentDateRecent };
+
+  test("#2270: campanha recente é cacheada com TTL (expirationTtl) em gstats+lstats", async () => {
+    const { kv, putOpts, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [recentCampaign] } as T;
+      if (/emailCampaigns\/77\?statistics=globalStats/.test(path)) return { ...recentCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+      if (/emailCampaigns\/77\?statistics=linksStats/.test(path)) return { ...recentCampaign, statistics: { linksStats: { "https://x.com/a": 3 } } } as T;
+      throw new Error("path inesperado: " + path);
+    };
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.ok(putCalls.includes("gstats:77"), "deve cachear gstats da recente");
+    assert.ok(putCalls.includes("lstats:77"), "deve cachear lstats da recente");
+    assert.equal((putOpts["gstats:77"] as any)?.expirationTtl, 300, "gstats recente com TTL 300s");
+    assert.equal((putOpts["lstats:77"] as any)?.expirationTtl, 300, "lstats recente com TTL 300s");
+  });
+
+  test("#2270: imutável continua sem TTL (cache permanente)", async () => {
+    const { kv, putOpts } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T; // sentDateOld = imutável
+      if (/emailCampaigns\/42\?statistics=globalStats/.test(path)) return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+      if (/emailCampaigns\/42\?statistics=linksStats/.test(path)) return { ...fakeCampaign, statistics: { linksStats: {} } } as T;
+      throw new Error("path inesperado: " + path);
+    };
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.deepEqual(putOpts["gstats:42"], {}, "gstats imutável SEM expirationTtl");
+  });
+
+  test("#2270: 2º render de campanha recente cacheada → 0 GETs de stats à Brevo", async () => {
+    const { kv } = makeKVMock({
+      "list:7": JSON.stringify(fakeList),
+      "gstats:77": JSON.stringify(fakeGlobalStats),
+      "lstats:77": JSON.stringify({ "https://x.com/a": 3 }),
+    });
+    let statGets = 0;
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [recentCampaign] } as T;
+      if (/emailCampaigns\/77\?statistics=/.test(path)) { statGets++; return { ...recentCampaign, statistics: { globalStats: fakeGlobalStats } } as T; }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.equal(statGets, 0, "recente cacheada (gs+ls) → NENHUM GET de stats à Brevo no 2º render");
+    assert.equal(result[0].statistics?.globalStats?.sent, fakeGlobalStats.sent);
   });
 });
 
