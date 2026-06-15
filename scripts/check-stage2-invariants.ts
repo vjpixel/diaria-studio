@@ -22,6 +22,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { extractUrlsFromMd } from "./lib/canonical-urls.ts"; // #1456
+import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // P2 fix #2300
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -141,6 +142,43 @@ export function checkErroIntencionalRendered(editionDir: string): CheckResult {
   // Verifica se a seção ERRO INTENCIONAL existe e parece preenchida.
   // Não é um check forte (pode-se publicar sem essa seção em casos edge),
   // mas warning se o header existe mas sem conteúdo abaixo.
+  return { ok: true };
+}
+
+/**
+ * Pure (#2284): verifica que o frontmatter `intentional_error` existe em
+ * `02-reviewed.md` — mesmo que com valores placeholder. `render-erro-intencional.ts`
+ * insere o bloco placeholder automaticamente no final do Stage 2; se ausente,
+ * o script foi pulado ou houve regressão.
+ *
+ * Não valida os valores dos campos (essa responsabilidade fica com o lint do
+ * Stage 5 `--check intentional-error-flagged` que exige valores reais).
+ * Aqui basta confirmar que a chave `intentional_error:` existe no frontmatter,
+ * sinalizando que o bloco foi inserido e o editor pode preencher via Drive.
+ */
+export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResult {
+  const reviewed = join(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) {
+    return { ok: true, label: "reviewed_missing: outro check captura isso" };
+  }
+  const md = readFileSync(reviewed, "utf8");
+  // P2 fix #2300: delegate to extractFrontmatter (exported from lint-checks/intentional-error.ts)
+  // instead of re-implementing the fence-pair scan. The previous hand-rolled loop took the first
+  // two `---` fences unconditionally, which would false-negative on `---\n---\n` (empty frontmatter
+  // before the real one). extractFrontmatter skips empty-body pairs and finds the first non-empty.
+  const fmBody = extractFrontmatter(md);
+  if (!fmBody) {
+    return {
+      ok: false,
+      label: "intentional_error_frontmatter_missing: 02-reviewed.md sem frontmatter — render-erro-intencional.ts não inseriu o bloco placeholder (#2284)",
+    };
+  }
+  if (!/intentional_error\s*:/i.test(fmBody)) {
+    return {
+      ok: false,
+      label: "intentional_error_frontmatter_missing: frontmatter sem chave intentional_error — render-erro-intencional.ts foi pulado ou houve regressão (#2284)",
+    };
+  }
   return { ok: true };
 }
 
@@ -270,6 +308,7 @@ interface AggregateResult {
     humanizador: CheckResult;
     clarice: CheckResult;
     erro_intencional: CheckResult;
+    intentional_error_frontmatter: CheckResult;
     urls_accessible: CheckResult;
   };
 }
@@ -284,10 +323,11 @@ export function checkStage2Invariants(
   const humanizador = checkHumanizadorRan(internalDir);
   const clarice = checkClariceRan(editionDir);
   const erro_intencional = checkErroIntencionalRendered(editionDir);
+  const intentional_error_frontmatter = checkIntentionalErrorFrontmatter(editionDir);
   const urls_accessible = checkUrlsAccessible(editionDir, cachePath);
   return {
-    ok: humanizador.ok && clarice.ok && erro_intencional.ok && urls_accessible.ok,
-    checks: { humanizador, clarice, erro_intencional, urls_accessible },
+    ok: humanizador.ok && clarice.ok && erro_intencional.ok && intentional_error_frontmatter.ok && urls_accessible.ok,
+    checks: { humanizador, clarice, erro_intencional, intentional_error_frontmatter, urls_accessible },
   };
 }
 
@@ -311,6 +351,7 @@ function main(): void {
     if (!result.checks.humanizador.ok) failed.push(`humanizador: ${result.checks.humanizador.label}`);
     if (!result.checks.clarice.ok) failed.push(`clarice: ${result.checks.clarice.label}`);
     if (!result.checks.erro_intencional.ok) failed.push(`erro_intencional: ${result.checks.erro_intencional.label}`);
+    if (!result.checks.intentional_error_frontmatter.ok) failed.push(`intentional_error_frontmatter: ${result.checks.intentional_error_frontmatter.label}`);
     if (!result.checks.urls_accessible.ok) failed.push(`urls_accessible: ${result.checks.urls_accessible.label}`);
     console.error(`\n[check-stage2-invariants] FAIL — ${failed.length} check(s) falharam:`);
     for (const f of failed) console.error(`  - ${f}`);

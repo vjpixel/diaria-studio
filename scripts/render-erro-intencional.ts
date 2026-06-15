@@ -517,9 +517,60 @@ export function insertOrUpdateSection(
  * frontmatter. Quando o YAML está bem-formado retorna true.
  */
 export function currentHasIntentionalErrorFlag(md: string): boolean {
-  const fm = md.match(/^---\n([\s\S]*?)\n---/);
+  // \r?\n handles both LF (Unix) and CRLF (Windows) line endings (P1 fix).
+  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fm) return false;
   return /\bintentional_error\s*:/i.test(fm[1]);
+}
+
+/**
+ * Pure (#2284): insere bloco de frontmatter placeholder `intentional_error`
+ * em `md` quando nenhum frontmatter (ou nenhuma chave `intentional_error`)
+ * existe. Retorna `{ md, inserted }`.
+ *
+ * Usado pelo render-erro-intencional no final do Stage 2 (pós-Clarice, em
+ * modo auto/pre-gate) pra que o editor encontre o bloco no Drive (Stage 4)
+ * e preencha os 4 campos antes da publicação. Sem isso, o lint do Stage 5
+ * (`intentional-error-flagged`) aborta na hora da publicação, e o editor
+ * precisa adicionar o bloco na correria — como ocorreu em 260615.
+ *
+ * Caso frontmatter já exista com `intentional_error:` → retorna md sem
+ * modificação (idempotente). Caso frontmatter exista mas SEM
+ * `intentional_error:` → insere a chave dentro do bloco existente.
+ * Caso sem frontmatter → cria bloco YAML no topo.
+ *
+ * Os 4 campos são placeholders `{PREENCHER}` — o editor substitui no Drive.
+ * O lint do Stage 5 rejeita valores que ainda contêm `{PREENCHER}` (guard em
+ * `checkIntentionalError` em scripts/lib/lint-checks/intentional-error.ts).
+ */
+export function ensureIntentionalErrorFrontmatter(
+  md: string,
+): { md: string; inserted: boolean } {
+  // Já tem intentional_error: — nada a fazer.
+  if (currentHasIntentionalErrorFlag(md)) {
+    return { md, inserted: false };
+  }
+
+  const PLACEHOLDER_BLOCK = `intentional_error:
+  description: "{PREENCHER — o que o assinante deve identificar}"
+  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"
+  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"
+  correct_value: "{PREENCHER — valor correto}"`;
+
+  // Frontmatter existente sem intentional_error → inserir chave dentro do bloco.
+  // \r?\n handles CRLF on Windows (P1 fix). Replacer function avoids $-pattern
+  // expansion in replacement string (e.g. "R$1.5bi" → "$1" capture group) (P1 fix).
+  const existingFmMatch = md.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+  if (existingFmMatch) {
+    const [full, open, body, close] = existingFmMatch;
+    const newBody = body.trimEnd() + "\n" + PLACEHOLDER_BLOCK;
+    const updated = md.replace(full, () => `${open}${newBody}${close}`);
+    return { md: updated, inserted: true };
+  }
+
+  // Sem frontmatter → criar no topo.
+  const updated = `---\n${PLACEHOLDER_BLOCK}\n---\n${md}`;
+  return { md: updated, inserted: true };
 }
 
 function formatEditionLabel(edition: string): string {
@@ -667,10 +718,17 @@ function main(): void {
   // #1279: --preserve-existing-reveal opt-in; default = fresh reveal sobrescreve
   // existente pra evitar bug de stale text herdado de edições anteriores.
   const preserveExistingReveal = process.argv.includes("--preserve-existing-reveal");
-  const { md: updated, action } = insertOrUpdateSection(md, reveal, {
+  const { md: withSection, action } = insertOrUpdateSection(md, reveal, {
     preserveExistingReveal,
   });
-  if (action !== "no_change") {
+
+  // #2284: garantir que o frontmatter intentional_error existe (com placeholders
+  // quando ausente) pra que o editor encontre o bloco no Drive (Stage 4) e
+  // preencha antes da publicação. Sem isso, check-stage2-invariants passa
+  // "verde" mas o lint do Stage 5 aborta na hora H.
+  const { md: updated, inserted: frontmatterInserted } = ensureIntentionalErrorFrontmatter(withSection);
+
+  if (action !== "no_change" || frontmatterInserted) {
     writeFileSync(mdPath, updated, "utf8");
   }
 
@@ -680,6 +738,7 @@ function main(): void {
     prev_revealed: !!reveal,
     prev_source: source,
     current_has_intentional: currentHasIntentionalErrorFlag(updated),
+    frontmatter_inserted: frontmatterInserted,
     path: mdPath,
   };
   console.log(JSON.stringify(result, null, 2));

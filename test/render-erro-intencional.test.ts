@@ -25,6 +25,7 @@ import {
   findPreviousIntentionalErrorFromMd,
   narrativeHasCorrection,
   resolvePreviousError,
+  ensureIntentionalErrorFrontmatter,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 
@@ -1260,6 +1261,110 @@ describe("#2078: prev.no_error branch — frase natural no reveal", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
+  it("nada a fazer quando frontmatter com intentional_error já existe", () => {
+    const md = `---\nintentional_error:\n  description: "x"\n  location: "D1"\n  category: "factual"\n  correct_value: "y"\n---\nCorpo.`;
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, false);
+    assert.equal(out, md); // idempotente
+  });
+
+  it("insere placeholder frontmatter quando nenhum frontmatter existe", () => {
+    const md = "Corpo sem frontmatter.\n\n**ERRO INTENCIONAL**\n\nNessa edição, {PREENCHER}.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    assert.match(out, /^---\n/); // frontmatter no topo
+    assert.match(out, /intentional_error:/);
+    assert.match(out, /description:/);
+    assert.match(out, /location:/);
+    assert.match(out, /category:/);
+    assert.match(out, /correct_value:/);
+    assert.match(out, /PREENCHER/); // placeholder presente
+  });
+
+  it("insere intentional_error dentro de frontmatter existente que não tem a chave", () => {
+    const md = "---\noutro_campo: valor\n---\nCorpo.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    assert.match(out, /intentional_error:/);
+    // frontmatter deve permanecer como bloco único
+    const fmMatch = out.match(/^---\n([\s\S]*?)\n---/);
+    assert.ok(fmMatch, "frontmatter não encontrado após inserção");
+    assert.match(fmMatch![1], /outro_campo/); // campo original preservado
+    assert.match(fmMatch![1], /intentional_error/); // campo novo adicionado
+  });
+
+  it("idempotente: 2ª chamada não modifica quando placeholder já existe", () => {
+    const md = "Corpo.";
+    const { md: after1, inserted: ins1 } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(ins1, true, "primeira chamada deve inserir frontmatter"); // P3 fix #2300
+    const { md: after2, inserted: ins2 } = ensureIntentionalErrorFrontmatter(after1);
+    assert.equal(ins2, false);
+    assert.equal(after2, after1);
+  });
+
+  it("integração CLI: frontmatter inserido no output do script (#2284)", () => {
+    // Verificar que o script render-erro-intencional.ts grava o frontmatter
+    // no arquivo quando ele está ausente (regressão do bug 260615).
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-fm-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(mdPath, "Corpo sem frontmatter.\n\n**ERRO INTENCIONAL**\n\nNessa edição, {PREENCHER}.\n");
+      // Sem errors.jsonl — script deve rodar sem crashar e inserir o frontmatter
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "render-erro-intencional.ts");
+      const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath,
+        "--edition", "260616",
+        "--md", mdPath,
+        "--errors", join(dir, "nonexistent.jsonl"),
+      ], { cwd: projectRoot, encoding: "utf8" });
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.frontmatter_inserted, true);
+      const written = readFileSync(mdPath, "utf8");
+      assert.match(written, /intentional_error:/);
+      assert.match(written, /description:/);
+      assert.match(written, /correct_value:/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // P1 fix #2300: CRLF regression tests
+  it("P1 #2300: CRLF — currentHasIntentionalErrorFlag detecta frontmatter com \\r\\n", () => {
+    // Simula 02-reviewed.md salvo com CRLF no Windows
+    const md = "---\r\nintentional_error:\r\n  description: \"x\"\r\n---\r\nCorpo.";
+    assert.equal(currentHasIntentionalErrorFlag(md), true, "deve detectar com CRLF");
+  });
+
+  it("P1 #2300: CRLF — ensureIntentionalErrorFrontmatter não duplica frontmatter com \\r\\n", () => {
+    // Simula MD com frontmatter CRLF existente (sem intentional_error) —
+    // antes do fix, regex ^(---\n) não casava ---\r\n, caindo no branch
+    // "sem frontmatter" e ADICIONANDO um bloco no topo → frontmatter duplicado.
+    const md = "---\r\noutro: valor\r\n---\r\nCorpo.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    // Deve ter exatamente 1 bloco frontmatter (não duplicado)
+    const fences = (out.match(/^---/gm) ?? []).length;
+    assert.equal(fences, 2, `esperado 2 fences (1 bloco), encontrado ${fences}`);
+    assert.match(out, /intentional_error:/);
+    // Campo original preservado
+    assert.match(out, /outro: valor/);
+  });
+
+  it("P1 #2300: $ — ensureIntentionalErrorFrontmatter não corrompe valores com $ no frontmatter", () => {
+    // Simula frontmatter com campo contendo $ (ex: correct_value: "R$1.5bi")
+    // Antes do fix, String.replace(full, `${open}${newBody}${close}`) interpretava
+    // $1 como capture group (empty string), corrompendo o valor.
+    const md = "---\nsubtitle: \"Investimento R$1.5bi\"\n---\nCorpo.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    // O valor com $ deve estar INTACTO no output
+    assert.match(out, /subtitle: "Investimento R\$1\.5bi"/, "campo com $ não deve ser corrompido");
+    assert.match(out, /intentional_error:/, "intentional_error deve ter sido adicionado");
   });
 });
 

@@ -9,6 +9,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pathJoin } from "node:path";
 
 import {
   lintMultilineLinks as mlDirect,
@@ -244,6 +247,37 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     const r = ieDirect("/tmp/__nonexistent-edition__/02-reviewed.md");
     assert.equal(r.ok, false);
     assert.match(r.label ?? "", /not found/);
+  });
+
+  it("P1 fix #2300: checkIntentionalError rejeita valores {PREENCHER} no frontmatter", () => {
+    // Regressão: ensureIntentionalErrorFrontmatter insere placeholders {PREENCHER — ...}
+    // que são não-vazios e passavam no guard `value.length > 0`. Se o editor esquecesse
+    // de preenchê-los, sync-intentional-error.ts gravaria placeholders no JSONL.
+    // Verificar via arquivo temporário no disco (checkIntentionalError lê do disco).
+    const tmp = mkdtempSync(pathJoin(tmpdir(), "lint-preencher-"));
+    try {
+      const mdPath = pathJoin(tmp, "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        [
+          "---",
+          "intentional_error:",
+          '  description: "{PREENCHER — o que o assinante deve identificar}"',
+          '  location: "{PREENCHER — ex: DESTAQUE 2}"',
+          '  category: "{PREENCHER — factual|ortografico}"',
+          '  correct_value: "{PREENCHER — valor correto}"',
+          "---",
+          "Corpo.",
+        ].join("\n"),
+        "utf8",
+      );
+      const result = ieDirect(mdPath);
+      assert.equal(result.ok, false, "campos {PREENCHER} não devem passar o lint");
+      assert.match(result.label ?? "", /intentional_error_incomplete/, "label deve indicar campos incompletos");
+      assert.match(result.label ?? "", /placeholder não preenchido/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("eia-answer: check é no-op (ok) quando 01-eia.md não existe", () => {

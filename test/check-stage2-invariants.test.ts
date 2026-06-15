@@ -15,6 +15,7 @@ import {
   checkHumanizadorRan,
   checkClariceRan,
   checkErroIntencionalRendered,
+  checkIntentionalErrorFrontmatter,
   checkStage2Invariants,
 } from "../scripts/check-stage2-invariants.ts";
 
@@ -233,14 +234,23 @@ describe("checkErroIntencionalRendered (#1073)", () => {
   });
 });
 
+const REVIEWED_WITH_FRONTMATTER = `---
+intentional_error:
+  description: "teste"
+  location: "DESTAQUE 1"
+  category: "factual"
+  correct_value: "valor correto"
+---
+b clarificado, sem placeholder`;
+
 describe("checkStage2Invariants — integração", () => {
-  it("OK quando os 3 invariants passam", () => {
+  it("OK quando os 4 invariants passam (#2284: inclui frontmatter)", () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a humanizado");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
-      writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
+      writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_WITH_FRONTMATTER);
       // #1402: Clarice agora exige suggestions.json
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir);
@@ -248,6 +258,7 @@ describe("checkStage2Invariants — integração", () => {
       assert.equal(r.checks.humanizador.ok, true);
       assert.equal(r.checks.clarice.ok, true);
       assert.equal(r.checks.erro_intencional.ok, true);
+      assert.equal(r.checks.intentional_error_frontmatter.ok, true);
     } finally {
       cleanup();
     }
@@ -278,7 +289,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[T1](https://a.com/x) [T2](https://b.com/y)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[T1](https://a.com/x) [T2](https://b.com/y)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -355,7 +366,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[Cursos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia) [Wispr](https://wisprflow.ai/r?x)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[Cursos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia) [Wispr](https://wisprflow.ai/r?x)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -377,7 +388,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[T1](https://a.com/x) [T2](https://b.com/y)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[T1](https://a.com/x) [T2](https://b.com/y)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -409,7 +420,7 @@ describe("checkStage2Invariants — integração", () => {
       // MD tem URL com trailing slash, cache sem
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[T1](https://blog.google/x/) [T2](https://anthropic.com/y)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[T1](https://blog.google/x/) [T2](https://anthropic.com/y)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -439,7 +450,7 @@ describe("checkStage2Invariants — integração", () => {
       // MD tem a URL canonical (pós-redirect)
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[T](https://canonical.com/final)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[T](https://canonical.com/final)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -471,7 +482,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(
         join(dir, "02-reviewed.md"),
-        "[En Wiki](https://en.wikipedia.org/wiki/X) [Commons](https://upload.wikimedia.org/x.jpg)",
+        `${REVIEWED_WITH_FRONTMATTER}\n[En Wiki](https://en.wikipedia.org/wiki/X) [Commons](https://upload.wikimedia.org/x.jpg)`,
       );
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
@@ -513,12 +524,170 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
-      writeFileSync(join(dir, "02-reviewed.md"), "[T](https://x.com/y)");
+      writeFileSync(join(dir, "02-reviewed.md"), `${REVIEWED_WITH_FRONTMATTER}\n[T](https://x.com/y)`);
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir, { cachePath: join(dir, "nonexistent.json") });
       assert.equal(r.ok, true); // não bloqueia
       assert.equal(r.checks.urls_accessible.ok, true);
       assert.match(r.checks.urls_accessible.label ?? "", /verify_cache_missing/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // #2284: novo check intentional_error_frontmatter
+  it("#2284: FAIL quando frontmatter intentional_error ausente em 02-reviewed.md", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // Sem frontmatter — simula o bug do pre-gate onde render-erro não inseria o bloco
+      writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.intentional_error_frontmatter.ok, false);
+      assert.match(
+        r.checks.intentional_error_frontmatter.label ?? "",
+        /intentional_error_frontmatter_missing/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2284: FAIL quando frontmatter existe mas sem chave intentional_error", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "---\noutro_campo: valor\n---\nb clarificado",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.intentional_error_frontmatter.ok, false);
+      assert.match(
+        r.checks.intentional_error_frontmatter.label ?? "",
+        /intentional_error_frontmatter_missing/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2284: OK quando frontmatter tem intentional_error (mesmo com placeholders)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // Frontmatter com placeholders — inserido automaticamente por render-erro-intencional
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `---\nintentional_error:\n  description: "{PREENCHER}"\n  location: "{PREENCHER}"\n  category: "{PREENCHER}"\n  correct_value: "{PREENCHER}"\n---\nb clarificado, sem placeholder`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      assert.equal(r.checks.intentional_error_frontmatter.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("checkIntentionalErrorFrontmatter (#2284)", () => {
+  it("OK quando frontmatter tem intentional_error com valores reais", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_WITH_FRONTMATTER);
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK quando reviewed.md não existe (outro check captura)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL quando sem frontmatter algum", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "corpo sem frontmatter");
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label ?? "", /intentional_error_frontmatter_missing/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL quando frontmatter sem chave intentional_error", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "---\noutro: x\n---\ncorpo");
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label ?? "", /intentional_error_frontmatter_missing/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK com intentional_error placeholder (pre_gate auto-insert)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `---\nintentional_error:\n  description: "{PREENCHER}"\n  location: "{PREENCHER}"\n  category: "{PREENCHER}"\n  correct_value: "{PREENCHER}"\n---\ncorpo`,
+      );
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("P2 fix #2300: OK quando documento começa com stub ---/--- vazio seguido do bloco YAML real", () => {
+    // Regressão da divergência detectada em code-review: o loop hand-rolled anterior
+    // tomava os primeiros 2 `---` incondicionalmente, coletando o bloco vazio e
+    // retornando false-negative (ok: false mesmo com intentional_error presente).
+    //
+    // Cenário: `---\n---\n` (stub/empty frontmatter), seguido direto do YAML real.
+    // O loop anterior: fmStart=0, fmEnd=1, body="" → /intentional_error/ não bate → false.
+    // extractFrontmatter(): canonical regex captura o body incluindo o YAML real
+    // (entre o 1º e o último `---`) → /intentional_error/ bate → true.
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        [
+          "---",
+          "---",       // stub empty — hand-rolled loop para aqui (body="") → false-negative
+          "intentional_error:",
+          '  description: "Detalhe do erro"',
+          '  location: "DESTAQUE 1"',
+          '  category: "factual"',
+          '  correct_value: "2014"',
+          "---",
+          "",
+          "Corpo da newsletter.",
+        ].join("\n"),
+      );
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, true, "extractFrontmatter deve achar intentional_error mesmo com stub ---/--- antes");
     } finally {
       cleanup();
     }
