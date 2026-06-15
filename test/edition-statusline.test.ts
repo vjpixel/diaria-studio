@@ -240,15 +240,17 @@ describe("readCurrentEditionDoc — detecção de edição em curso", () => {
     }
   });
 
-  it("detecta edição encerrada (todos done) como mais recente — barra fica visível", () => {
+  it("edição encerrada (todos done) → retorna null — overnight bar pode retomar (Finding #1)", () => {
+    // Fix #1: readCurrentEditionDoc SKIPS encerrada editions so the overnight bar resumes.
+    // renderEditionBar still renders 7/7 when given the doc directly (see renderEditionBar tests),
+    // but readCurrentEditionDoc no longer surfaces it — the CLI falls back to overnight.
     const root = join(tmpdir(), `edition-test-done-${Date.now()}`);
     const editionDir = join(root, "data", "editions", "260615");
     const doc = makeDoc("260615", ["done", "done", "done", "done", "done", "done", "done"]);
     writeStageStatus(editionDir, doc);
     try {
       const result = readCurrentEditionDoc(root);
-      assert.ok(result !== null, "edição encerrada deve ser retornada (barra 7/7 visível)");
-      assert.equal(result!.edition, "260615");
+      assert.equal(result, null, "edição encerrada deve retornar null (overnight retoma)");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -258,16 +260,11 @@ describe("readCurrentEditionDoc — detecção de edição em curso", () => {
 // ─── readCurrentEditionDoc — múltiplas edições ───────────────────────────────
 
 describe("readCurrentEditionDoc — múltiplas edições (determinístico, sem clock)", () => {
-  const tmpRoot = join(tmpdir(), `edition-test-multi-${Date.now()}`);
-
-  after(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  });
-
   it("escolhe a edição MAIS RECENTE (lexicográfico desc) que tem atividade", () => {
-    // Setup:
+    // Setup (self-contained):
     //   260613 — stage 1 done, stage 2 running
-    //   260614 — stage 0 done, stage 1 running  ← mais recente
+    //   260614 — stage 0 done, stage 1 running  ← mais recente em curso
+    const tmpRoot = join(tmpdir(), `edition-test-multi-recent-${Date.now()}`);
     const dir260613 = join(tmpRoot, "data", "editions", "260613");
     const dir260614 = join(tmpRoot, "data", "editions", "260614");
 
@@ -277,23 +274,74 @@ describe("readCurrentEditionDoc — múltiplas edições (determinístico, sem c
     writeStageStatus(dir260613, doc260613);
     writeStageStatus(dir260614, doc260614);
 
-    const result = readCurrentEditionDoc(tmpRoot);
-    assert.ok(result !== null, "deve retornar edição");
-    assert.equal(result!.edition, "260614", `deve escolher 260614 (mais recente), got ${result!.edition}`);
+    try {
+      const result = readCurrentEditionDoc(tmpRoot);
+      assert.ok(result !== null, "deve retornar edição");
+      assert.equal(result!.edition, "260614", `deve escolher 260614 (mais recente), got ${result!.edition}`);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
-  it("se a mais recente está all-pending (não iniciada), usa a próxima mais recente com atividade", () => {
-    // Setup:
-    //   260614 — com atividade (detectada acima, já criada)
-    //   260615 — all-pending (não iniciada) ← mais recente mas deve ser ignorada
+  it("se a mais recente está all-pending (não iniciada), usa a próxima mais recente em curso", () => {
+    // Setup (self-contained — escrito inteiro aqui, não depende de outro it):
+    //   260614 — stage 0 done, stage 1 running  ← em curso (deve ser detectada)
+    //   260615 — all-pending (não iniciada)      ← mais recente mas deve ser ignorada
+    const tmpRoot = join(tmpdir(), `edition-test-multi-pending-${Date.now()}`);
+    const dir260614 = join(tmpRoot, "data", "editions", "260614");
     const dir260615 = join(tmpRoot, "data", "editions", "260615");
+
+    const doc260614 = makeDoc("260614", ["done", "running", "pending", "pending", "pending", "pending", "pending"]);
     const docAllPending = makeDoc("260615", ["pending", "pending", "pending", "pending", "pending", "pending", "pending"]);
+
+    writeStageStatus(dir260614, doc260614);
     writeStageStatus(dir260615, docAllPending);
 
-    const result = readCurrentEditionDoc(tmpRoot);
-    assert.ok(result !== null, "deve retornar edição com atividade");
-    // 260615 é all-pending → deve cair para 260614 (com atividade)
-    assert.equal(result!.edition, "260614", `deve pular 260615 all-pending e usar 260614, got ${result!.edition}`);
+    try {
+      const result = readCurrentEditionDoc(tmpRoot);
+      assert.ok(result !== null, "deve retornar edição com atividade");
+      // 260615 é all-pending → deve cair para 260614 (em curso)
+      assert.equal(result!.edition, "260614", `deve pular 260615 all-pending e usar 260614, got ${result!.edition}`);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("se a mais recente está encerrada (todos done), pula para encontrar in-progress (Finding #1)", () => {
+    // Encerrada editions are skipped by readCurrentEditionDoc — overnight bar resumes.
+    // If there's a still-running older edition, it's returned; if not, null.
+    const tmpRoot = join(tmpdir(), `edition-test-multi-encerrada-${Date.now()}`);
+    const dir260614 = join(tmpRoot, "data", "editions", "260614");
+    const dir260615 = join(tmpRoot, "data", "editions", "260615");
+
+    const docInProgress = makeDoc("260614", ["done", "running", "pending", "pending", "pending", "pending", "pending"]);
+    const docEncerrada = makeDoc("260615", ["done", "done", "done", "done", "done", "done", "done"]);
+
+    writeStageStatus(dir260614, docInProgress);
+    writeStageStatus(dir260615, docEncerrada);
+
+    try {
+      const result = readCurrentEditionDoc(tmpRoot);
+      // 260615 is encerrada → skipped; 260614 is in-progress → returned
+      assert.ok(result !== null, "deve retornar edição em curso anterior");
+      assert.equal(result!.edition, "260614", `deve pular 260615 encerrada e usar 260614 em curso, got ${result!.edition}`);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("se TODAS encerradas, retorna null (overnight retoma)", () => {
+    const tmpRoot = join(tmpdir(), `edition-test-multi-all-encerrada-${Date.now()}`);
+    const dir260614 = join(tmpRoot, "data", "editions", "260614");
+    const doc = makeDoc("260614", ["done", "done", "done", "done", "done", "done", "done"]);
+    writeStageStatus(dir260614, doc);
+
+    try {
+      const result = readCurrentEditionDoc(tmpRoot);
+      assert.equal(result, null, "todas encerradas → null (overnight retoma)");
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -343,20 +391,22 @@ describe("precedência: edição em curso > overnight bar", () => {
     assert.ok(bar.includes("(1/2)"), `barra deve mostrar overnight stats: ${bar}`);
   });
 
-  it("edição encerrada: editionBar ainda não-vazia (7/7) → overnight permanece supresso", () => {
-    // Edição encerrada ainda ocupa a statusLine (barra em 7/7 — mirrors #2246)
-    // overnight só volta quando edição encerrada não é mais a mais-recente
-    const editionDoc = makeDoc("260615", ["done", "done", "done", "done", "done", "done", "done"]);
+  it("edição encerrada: readCurrentEditionDoc retorna null → overnight bar é mostrada (Finding #1)", () => {
+    // Fix #1: readCurrentEditionDoc skips encerrada editions → CLI uses overnightBar.
+    // renderEditionBar(doc) still renders 7/7 when called directly (see renderEditionBar tests),
+    // but at the CLI level, editionDoc is null → editionBar is "" → overnight takes over.
     const overnightPlan: Plan = {
       issues: [{ status: "mergeada" }, { status: "mergeada" }, { status: "elegivel" }],
     };
 
-    const editionBar = renderEditionBar(editionDoc);
+    // Simulate what the CLI does when readCurrentEditionDoc returns null (encerrada):
+    const editionBar = renderEditionBar(null); // null because readCurrentEditionDoc skips encerrada
     const overnightBar = renderOvernightBar(overnightPlan);
 
-    assert.ok(editionBar.length > 0, `editionBar encerrada deve ser não-vazia: ${editionBar}`);
+    assert.equal(editionBar, "", "sem edição em curso, editionBar deve ser vazia");
+    assert.ok(overnightBar.length > 0, `overnightBar deve ser não-vazia: ${overnightBar}`);
     const bar = editionBar || overnightBar;
-    assert.equal(bar, editionBar, "edição encerrada ainda suprime overnight");
-    assert.ok(bar.includes("7/7"), `bar deve mostrar 7/7: ${bar}`);
+    assert.equal(bar, overnightBar, "overnight bar deve ser usada quando edição encerrada");
+    assert.ok(bar.includes("(2/3)"), `bar deve mostrar overnight stats (2 terminais / 3 total): ${bar}`);
   });
 });
