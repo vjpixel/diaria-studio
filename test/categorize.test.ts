@@ -1044,6 +1044,17 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
     );
   });
 
+  // Finding #2: domain-extra tutorial domain wins over case-study filter.
+  // AWS ML Blog with savings-style title should still land in tutorial (use_melhor).
+  it("#2276 finding #2: AWS ML Blog with 'Saves X%' title -> tutorial (domain wins over case-study)", () => {
+    // Without the fix, _isMarkCase=true would block isTutorialByDomainExtra.
+    // After fix, isTutorialByDomainExtra check is not gated by _isMarkCase.
+    assert.equal(
+      categorize({ url: "https://aws.amazon.com/blogs/machine-learning/how-bedrock-saves-inference-costs/", title: "How Bedrock Saves 40% on Inference Costs" }),
+      "tutorial",
+    );
+  });
+
   it("'Claude for Creative Work' (anthropic.com) continua lancamento", () => {
     assert.equal(
       categorize({ url: "https://www.anthropic.com/news/claude-for-creative-work", title: "Claude for Creative Work" }),

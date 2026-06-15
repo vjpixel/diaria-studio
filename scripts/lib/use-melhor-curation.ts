@@ -22,11 +22,12 @@ export const TUTORIAL_ACADEMY_DOMAINS = new Set<string>([
   "deeplearning.ai",
   "kaggle.com",
   "fast.ai",
-  "www.fast.ai",
+  // "www.fast.ai" removed: URL parser strips www before lookup, "fast.ai" already covers it (#8).
   "console.anthropic.com",
   "learndigital.withgoogle.com",
   "grow.google",
-  "learn.microsoft.com",
+  // "learn.microsoft.com" removed from domain set: would qualify ALL microsoft.com/learn URLs
+  // regardless of path. TUTORIAL_ACADEMY_PATHS scopes to /training and /paths only (#8).
   "academy.openai.com",
   "courses.nvidia.com",
   "hub.asimov.academy",
@@ -40,7 +41,8 @@ const TUTORIAL_ACADEMY_PATHS: Array<{ host: string; pathPrefix: string }> = [
   { host: "huggingface.co", pathPrefix: "/learn" },
   { host: "developers.google.com", pathPrefix: "/machine-learning" },
   { host: "ai.google.dev", pathPrefix: "/gemini-api/docs" },
-  { host: "github.com", pathPrefix: "/anthropics/anthropic-cookbook" },
+  // /anthropic-ai/anthropic-cookbook is the correct org (#8 — was /anthropics/anthropic-cookbook).
+  { host: "github.com", pathPrefix: "/anthropic-ai/anthropic-cookbook" },
   { host: "github.com", pathPrefix: "/openai/openai-cookbook" },
   { host: "cookbook.openai.com", pathPrefix: "/" },
   { host: "developers.openai.com", pathPrefix: "/cookbook" },
@@ -93,11 +95,15 @@ export function isTutorialAcademy(url: string, title: string): boolean {
  *   "How to build a RAG pipeline" — NOT matched (infinitivo after "to")
  *   "How Rocket Close optimized document processing" — MATCHED
  */
+// Key change vs original: first alternative now requires >=2 consecutive capitalized
+// words (company-name shape). Single tech-concept terms (LangChain, LLMs, RAG,
+// Transformers) no longer false-positive as marketing case studies (#1 fix).
+// Backtracking safety: .{0,20} replaced with [^\r\n]{0,20} (#4 fix).
 const MARKETING_CASE_STUDY_RE =
-  /(?:how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+){0,3}\s+(?:uses?|leverag(?:e[sd]?)?|adopted?|built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\b|how\s+we\s+(?:built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\s+\w|[A-Z]\w{2,}(?:\s+[A-Z]\w+){0,2}\s+(?:cuts?|saves?|reduces?|optimizes?|automates?)\s+(?:.{0,20})?(?:\d+%|costs?|time|hours?)\b|case\s+stud(?:y|ies)\s*:|estudo[s]?\s+de\s+caso\s*:)/i;
+  /(?:how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+){1,3}\s+(?:uses?|leverag(?:e[sd]?)?|adopted?|built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\b|how\s+we\s+(?:built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\s+\w|[A-Z]\w{2,}(?:\s+[A-Z]\w+){0,2}\s+(?:cuts?|saves?|reduces?|optimizes?|automates?)\s+(?:[^\r\n]{0,20})?(?:\d+%|costs?|time|hours?)\b|case\s+stud(?:y|ies)\s*:|estudo[s]?\s+de\s+caso\s*:)/i;
 
 const MARKETING_SUMMARY_RE =
-  /\b(roi\b|return\s+on\s+investment|cost.{0,10}saving|hours?\s+saved?|produtividade\s+aument|productivity\s+(?:gain|boost|increas))\b/i;
+  /\b(roi\b|return\s+on\s+investment|cost.{0,10}savings?|hours?\s+saved?|produtividade\s+aument|productivity\s+(?:gain|boost|increas))\b/i;
 
 /**
  * #2276: retorna true se o artigo parece um case study de marketing —
@@ -138,6 +144,8 @@ function hostOf(url: string): string {
 /**
  * Extrai domínio raiz para o cap (suporte a ccTLD duplo: .com.br, .co.uk).
  * Ex: "aws.amazon.com" → "amazon.com"; "canaltech.com.br" → "canaltech.com.br"
+ * Known limitation: techtudo.globo.com and g1.globo.com share rootDomain "globo.com",
+ * so they count toward the same per-domain cap. Acceptable — both are Globo media properties.
  */
 export function rootDomain(url: string): string {
   const host = hostOf(url);
@@ -196,6 +204,18 @@ function intersectionSize(a: Set<string>, b: Set<string>): number {
  *   2. De-dup temático (minSharedTokens, default 2 tokens em comum)
  *
  * Caso 260615: 3/5 AWS Bedrock → após dedup, fica só 1 por domínio.
+ *
+ * Ordering note (#6c): the caller at split-time passes pre-score order (not score-desc).
+ * Cap keeps first-occurrence per domain. Future score-sorted callers get highest-score-first
+ * for free. Do not assume score-ordering at this stage.
+ *
+ * Token tracking for capped items (#6a): when a domain-capped item is skipped, its topic
+ * tokens are still added to the thematic-dedup pool to block near-duplicates from
+ * different domains from slipping through.
+ *
+ * Empty rootDomain (#6b): items whose URL cannot be parsed get rootDomain="". The cap
+ * is skipped (domain is falsy) — soft-fail, they still participate in thematic dedup.
+ * Pinning this: do NOT cap on empty domain.
  */
 export function dedupeUseMelhorBucket(
   items: UseMelhorArticle[],
@@ -212,17 +232,23 @@ export function dedupeUseMelhorBucket(
     const domain = rootDomain(item.url);
     const count = domainCount.get(domain) ?? 0;
 
-    if (domain && count >= maxPerDomain) continue;
+    // Compute tokens before the domain-cap check so that capped items still
+    // contribute their token fingerprint to thematic dedup (#6a fix).
+    const tokens = item.title ? topicTokens(item.title) : new Set<string>();
 
-    if (item.title) {
-      const tokens = topicTokens(item.title);
-      if (tokens.size >= 2) {
-        const isDuplicate = keptTokens.some(
-          (kt) => intersectionSize(tokens, kt) >= minSharedTokens,
-        );
-        if (isDuplicate) continue;
-        keptTokens.push(tokens);
-      }
+    if (domain && count >= maxPerDomain) {
+      // Capped by domain — still record tokens to block thematic near-duplicates
+      // from a different domain (#6a: prevents same-topic from slipping through).
+      if (tokens.size >= 2) keptTokens.push(tokens);
+      continue;
+    }
+
+    if (tokens.size >= 2) {
+      const isDuplicate = keptTokens.some(
+        (kt) => intersectionSize(tokens, kt) >= minSharedTokens,
+      );
+      if (isDuplicate) continue;
+      keptTokens.push(tokens);
     }
 
     domainCount.set(domain, count + 1);
@@ -266,7 +292,7 @@ export function isHowtoBrAllowlisted(url: string): boolean {
  * Boost: adiciona "howto_br:true" ao matched em audience-affinity.
  */
 export const HOWTO_BR_SIGNAL_RE =
-  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como\s+fazer\s+.{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)\s+.{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|financ\w*|email|produtividade|freelanc\w*|aut[oô]nom\w*)(?!\w))\b/i;
+  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como\s+fazer\s+.{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)\s+.{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|finan[cç]\w*|email|produtividade|freelan[cç]\w*|aut[oô]nom\w*)(?!\w))\b/i;
 
 /**
  * #2278: retorna true se o título/slug tem sinal forte de how-to PT-BR.
@@ -317,8 +343,10 @@ export function getHowToDiscoveryQueries(
   count = 3,
 ): string[] {
   const total = HOWTO_BR_DISCOVERY_TOPICS.length;
+  // Clamp count to pool size to avoid duplicates (#5 fix).
+  const safeCount = Math.min(count, total);
   const queries: string[] = [];
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < safeCount; i++) {
     const idx = (editionNum + i) % total;
     queries.push(HOWTO_BR_DISCOVERY_TOPICS[idx]);
   }

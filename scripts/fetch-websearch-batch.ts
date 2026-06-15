@@ -351,6 +351,11 @@ async function main(): Promise<void> {
 
   // #2278: how-to PT-BR discovery queries — rotaciona por edição
   const _editionNum = parseInt(args.edition ?? "0", 10);
+  // #7: warn when --edition is missing so callers know which rotation was used.
+  // The orchestrator always passes --edition; this catches manual/test invocations.
+  if (!args.edition || _editionNum === 0) {
+    console.error("[fetch-websearch-batch] WARN: --edition not set or is 0; how-to queries will use rotation slot 0 (first 3 topics). Pass --edition AAMMDD to rotate.");
+  }
   const howtoQueries = getHowToDiscoveryQueries(_editionNum);
   for (const q of howtoQueries) {
     discoveryTopics.push({ query: q });

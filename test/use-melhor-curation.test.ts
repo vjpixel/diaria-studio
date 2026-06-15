@@ -154,6 +154,27 @@ describe("isMarketingCaseStudy (#2276)", () => {
       "",
     ));
   });
+
+  // Finding #1: single Capitalized tech-concept terms should NOT match (FP regression)
+  it("NAO detecta 'How LangChain uses tools' (tech concept, not company name)", () => {
+    assert.ok(!isMarketingCaseStudy("How LangChain uses tools", ""));
+  });
+
+  it("NAO detecta 'How LLMs leverage context' (acronym tech concept)", () => {
+    assert.ok(!isMarketingCaseStudy("How LLMs leverage context", ""));
+  });
+
+  it("NAO detecta 'How RAG uses vector DBs' (architecture term)", () => {
+    assert.ok(!isMarketingCaseStudy("How RAG uses vector DBs", ""));
+  });
+
+  it("NAO detecta 'How Transformers use attention' (model architecture)", () => {
+    assert.ok(!isMarketingCaseStudy("How Transformers use attention", ""));
+  });
+
+  it("DETECTA 'How Acme Corp Leveraged AI' (2-word company name)", () => {
+    assert.ok(isMarketingCaseStudy("How Acme Corp Leveraged AI to Cut Costs by 40%", ""));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -280,6 +301,31 @@ describe("dedupeUseMelhorBucket (#2276) — regressão 260615", () => {
 
   it("lista vazia retorna vazia", () => {
     assert.deepEqual(dedupeUseMelhorBucket([]), []);
+  });
+
+  it("#6a: item capped por dominio contribui tokens — near-dup de outro dominio bloqueado", () => {
+    // AWS item A kept. AWS item B capped. Azure item C near-dup of B (different domain).
+    // Without token tracking, C would slip through. With fix, C is blocked.
+    const items = [
+      { url: "https://aws.amazon.com/a", title: "Building RAG with Vectors and Embeddings" },
+      { url: "https://aws.amazon.com/b", title: "Vector Database Optimization Tips for RAG" }, // capped
+      { url: "https://pinecone.io/learn/vector-db", title: "Vector Database Performance Guide" }, // near-dup of b
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // Only item A should be kept; B capped; C blocked as near-dup of B's tokens
+    assert.equal(result.length, 1, "Azure near-dup deve ser bloqueado pelos tokens do item capped");
+    assert.equal(result[0].url, items[0].url);
+  });
+
+  it("#6b: item com URL invalida (rootDomain vazio) passa pelo cap mas ainda entra em dedup", () => {
+    const items = [
+      { url: "nao-e-uma-url", title: "Tutorial sobre RAG e embeddings" },
+      { url: "https://blog.b.com/x", title: "RAG Tutorial com embeddings avancados" }, // near-dup
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // First item passes (empty domain bypasses cap), second is near-dup and gets blocked
+    assert.equal(result.length, 1);
+    assert.equal(result[0].url, "nao-e-uma-url", "URL invalida deve passar pelo cap (soft-fail)");
   });
 });
 
@@ -460,6 +506,13 @@ describe("getHowToDiscoveryQueries (#2278)", () => {
     const queries = getHowToDiscoveryQueries(260615, 0);
     assert.deepEqual(queries, []);
   });
+
+  it("count=15 (> pool de 12) nao retorna duplicatas — clamp fix #5", () => {
+    const queries = getHowToDiscoveryQueries(260615, 15);
+    const unique = new Set(queries);
+    assert.equal(queries.length, unique.size, "nenhuma query deve se repetir");
+    assert.ok(queries.length <= 12, "resultado clamped ao tamanho do pool");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -518,5 +571,25 @@ describe("hasHowToBrSignal — regressão stems (bugfix self-review finding #2)"
       "https://blog.com/post",
       "Inteligência artificial para financas pessoais",
     ));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMarketingCaseStudy & hasHowToBrSignal — finding #1 & #3 regressions
+// ---------------------------------------------------------------------------
+
+describe("hasHowToBrSignal — finding #3: PT-BR accented stems", () => {
+  it("detecta 'IA para financas' (sem acento — financ matches)", () => {
+    // financ\w* matches 'financas' (ASCII 'c' stem)
+    assert.ok(hasHowToBrSignal("https://test.com", "Inteligencia artificial para financas pessoais"));
+  });
+
+  it("detecta 'IA para finanças' (com cedilha — finan[cç] fix)", () => {
+    // finan[cç]\w* matches 'finanças' (ç = ç, not ASCII c)
+    assert.ok(hasHowToBrSignal("https://test.com", "Inteligencia artificial para finanças pessoais"));
+  });
+
+  it("detecta 'IA para freelancers' (stem freelan[cç])", () => {
+    assert.ok(hasHowToBrSignal("https://test.com", "IA para freelancers brasileiros"));
   });
 });

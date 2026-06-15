@@ -1120,7 +1120,10 @@ export function categorize(article: Article): Category {
   // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
   //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem
   //     lancamento por default (#318).
-  if (isTutorialByDomainExtra(article.url) && !_isMarkCase) return "tutorial";
+  // #2: domain-extra tutorial domains (AWS ML Blog etc.) win over case-study filter.
+  // A tutorial on a known tutorial domain is probably still a tutorial even if the
+  // title has a case-study shape — the domain is a stronger signal (#2276 finding #2).
+  if (isTutorialByDomainExtra(article.url)) return "tutorial";
   if (isTutorialByTitleExtra(article) && !_isMarkCase) return "tutorial";
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
