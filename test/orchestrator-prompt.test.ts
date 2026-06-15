@@ -190,6 +190,27 @@ describe("orchestrator-prompt (#634)", () => {
     assert.ok(root.includes("orchestrator-stage-5.md"), "orchestrator.md não referencia stage-5");
   });
 
+  it("#2288: §0-replies condicionado a pre_gate (não auto_approve) — roda no /diaria-edicao pre-gate, pula em --no-gates", () => {
+    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    // Condição correta: pre_gate === true (editor presente, gate no Stage 4)
+    assert.ok(
+      stage0.includes("pre_gate === true"),
+      "§0-replies deve usar condição 'pre_gate === true', não 'auto_approve === false'",
+    );
+    // Condição antiga não deve aparecer no contexto do §0-replies
+    // (pode aparecer em outros contextos; estamos buscando especificamente na seção)
+    const repliesSection = stage0.slice(stage0.indexOf("### 0-replies"));
+    assert.ok(
+      !repliesSection.includes("auto_approve === false"),
+      "§0-replies não deve mais checar 'auto_approve === false' — já foi migrado para pre_gate (#2288)",
+    );
+    // Log de skip deve mencionar headless (não auto_approve)
+    assert.ok(
+      stage0.includes("0-replies skipped: headless --no-gates"),
+      "log de skip do §0-replies deve ser 'headless --no-gates', não 'auto_approve=true'",
+    );
+  });
+
   it("snapshot hash — detecta mudanças não-intencionais", () => {
     const hash = computeHash(contents);
     const fileSizes = Object.fromEntries(

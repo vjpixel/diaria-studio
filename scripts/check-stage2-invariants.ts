@@ -145,6 +145,50 @@ export function checkErroIntencionalRendered(editionDir: string): CheckResult {
 }
 
 /**
+ * Pure (#2284): verifica que o frontmatter `intentional_error` existe em
+ * `02-reviewed.md` — mesmo que com valores placeholder. `render-erro-intencional.ts`
+ * insere o bloco placeholder automaticamente no final do Stage 2; se ausente,
+ * o script foi pulado ou houve regressão.
+ *
+ * Não valida os valores dos campos (essa responsabilidade fica com o lint do
+ * Stage 5 `--check intentional-error-flagged` que exige valores reais).
+ * Aqui basta confirmar que a chave `intentional_error:` existe no frontmatter,
+ * sinalizando que o bloco foi inserido e o editor pode preencher via Drive.
+ */
+export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResult {
+  const reviewed = join(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) {
+    return { ok: true, label: "reviewed_missing: outro check captura isso" };
+  }
+  const md = readFileSync(reviewed, "utf8");
+  // Detect frontmatter block in first 60 lines (same window as extractFrontmatter
+  // in lint-checks/intentional-error.ts — aceita posição line-1 ou pós-TÍTULO).
+  const lines = md.split("\n").slice(0, 60);
+  let fmStart = -1;
+  let fmEnd = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      if (fmStart === -1) { fmStart = i; }
+      else { fmEnd = i; break; }
+    }
+  }
+  if (fmStart === -1 || fmEnd === -1) {
+    return {
+      ok: false,
+      label: "intentional_error_frontmatter_missing: 02-reviewed.md sem frontmatter — render-erro-intencional.ts não inseriu o bloco placeholder (#2284)",
+    };
+  }
+  const fmBody = lines.slice(fmStart + 1, fmEnd).join("\n");
+  if (!/intentional_error\s*:/i.test(fmBody)) {
+    return {
+      ok: false,
+      label: "intentional_error_frontmatter_missing: frontmatter sem chave intentional_error — render-erro-intencional.ts foi pulado ou houve regressão (#2284)",
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Pure (#1456): valida que todas as URLs editoriais no `02-reviewed.md` estão
  * marcadas como `accessible` no cache cross-edition de verify-accessibility.
  *
@@ -270,6 +314,7 @@ interface AggregateResult {
     humanizador: CheckResult;
     clarice: CheckResult;
     erro_intencional: CheckResult;
+    intentional_error_frontmatter: CheckResult;
     urls_accessible: CheckResult;
   };
 }
@@ -284,10 +329,11 @@ export function checkStage2Invariants(
   const humanizador = checkHumanizadorRan(internalDir);
   const clarice = checkClariceRan(editionDir);
   const erro_intencional = checkErroIntencionalRendered(editionDir);
+  const intentional_error_frontmatter = checkIntentionalErrorFrontmatter(editionDir);
   const urls_accessible = checkUrlsAccessible(editionDir, cachePath);
   return {
-    ok: humanizador.ok && clarice.ok && erro_intencional.ok && urls_accessible.ok,
-    checks: { humanizador, clarice, erro_intencional, urls_accessible },
+    ok: humanizador.ok && clarice.ok && erro_intencional.ok && intentional_error_frontmatter.ok && urls_accessible.ok,
+    checks: { humanizador, clarice, erro_intencional, intentional_error_frontmatter, urls_accessible },
   };
 }
 
@@ -311,6 +357,7 @@ function main(): void {
     if (!result.checks.humanizador.ok) failed.push(`humanizador: ${result.checks.humanizador.label}`);
     if (!result.checks.clarice.ok) failed.push(`clarice: ${result.checks.clarice.label}`);
     if (!result.checks.erro_intencional.ok) failed.push(`erro_intencional: ${result.checks.erro_intencional.label}`);
+    if (!result.checks.intentional_error_frontmatter.ok) failed.push(`intentional_error_frontmatter: ${result.checks.intentional_error_frontmatter.label}`);
     if (!result.checks.urls_accessible.ok) failed.push(`urls_accessible: ${result.checks.urls_accessible.label}`);
     console.error(`\n[check-stage2-invariants] FAIL — ${failed.length} check(s) falharam:`);
     for (const f of failed) console.error(`  - ${f}`);

@@ -408,9 +408,9 @@ Se encontrar threads:
 
 Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (não bloqueia — CI check é informativo). Logar `info "0n skipped: Gmail MCP unavailable"`.
 
-### 0-replies. Rascunhar respostas a assinantes (#1797) — SÓ com gate
+### 0-replies. Rascunhar respostas a assinantes (#1797, #2288) — SÓ sem --no-gates
 
-**Roda SOMENTE quando `auto_approve === false`** (ou seja, **pulado com `--no-gates`**) — rascunhar respostas pessoais sem revisão não faz sentido em modo automático. Análogo ao §0b-bis / §0n (Gmail MCP é top-level; orquestrar daqui).
+**Roda SOMENTE quando `pre_gate === true`** (ou seja, **pulado com `--no-gates`**) — rascunhar respostas pessoais sem revisão não faz sentido em modo headless. No `/diaria-edicao` pre-gate default o editor está presente e os rascunhos são apresentados no gate do Stage 4. Análogo ao §0b-bis / §0n (Gmail MCP é top-level; orquestrar daqui).
 
 1. Buscar via `mcp__claude_ai_Gmail__search_threads` na caixa do editor (reply-to da newsletter): query `to:vjpixel@gmail.com subject:(Re OR Res) newer_than:7d` (`Re`+`Res` cobre prefixos EN e PT-BR/Outlook; 7d cobre o intervalo entre edições + fim de semana). Limit 20. *Limitação conhecida (#1827): replies sem prefixo no assunto (só com header In-Reply-To) não são capturados nesta v1.*
 2. Para cada thread, `mcp__claude_ai_Gmail__get_thread` (`FULL_CONTENT`). Montar JSON array `[{ thread_id, from, subject, date, body }]` em `data/editions/{AAMMDD}/_internal/captured-replies.json`.
@@ -422,7 +422,7 @@ Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (nã
 4. Para **cada** resposta filtrada (`replies[]`), rascunhar uma resposta **pessoal** (voz do Pixel/Diar.ia: agradecer + responder ao conteúdo da mensagem, curto, assinatura simples) via `mcp__claude_ai_Gmail__create_draft` — **NUNCA `send`** (princípio de segurança CLAUDE.md: só rascunhar; o envio é ação do editor).
 5. **Apresentar no gate** a lista de rascunhos criados (remetente + assunto + 1ª linha do rascunho) pra o editor revisar/editar/descartar no Gmail antes de enviar.
 
-Se Gmail MCP indisponível: pular silenciosamente (logar `info "0-replies skipped: Gmail MCP unavailable"`). Nunca bloqueia a edição.
+Se Gmail MCP indisponível: pular silenciosamente (logar `info "0-replies skipped: Gmail MCP unavailable"`). Nunca bloqueia a edição. Se `pre_gate === false` (headless `--no-gates`): pular silenciosamente (logar `info "0-replies skipped: headless --no-gates"`).
 
 ### 0m. Auto-reporter — preparado pra rodar no final
 
