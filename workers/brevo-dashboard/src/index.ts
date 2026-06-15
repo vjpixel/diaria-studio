@@ -1097,7 +1097,7 @@ export function renderDashboardHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia Clarice Dashboard</title>
+<title>Clarice News Dashboard</title>
 <style>
   :root {
     --brand: ${DS.brand};
@@ -1159,7 +1159,7 @@ export function renderDashboardHtml(
 </style>
 </head>
 <body>
-<h1>📧 Diar.ia Clarice Dashboard</h1>
+<h1>📧 Clarice News Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
 ${aggregatedLinksSection}
 ${scheduledSection}
@@ -1902,7 +1902,7 @@ function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean): Resp
   if (isHtml) {
     const body = `<!DOCTYPE html>
 <html lang="pt-BR">
-<head><meta charset="utf-8"><title>Rate limit — Diar.ia Clarice Dashboard</title>
+<head><meta charset="utf-8"><title>Rate limit — Clarice News Dashboard</title>
 <style>body{font-family:system-ui,sans-serif;max-width:600px;margin:60px auto;padding:0 20px;text-align:center;}</style>
 </head>
 <body>
