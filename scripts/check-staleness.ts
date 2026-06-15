@@ -24,7 +24,8 @@
  *         "downstream_mtime": "2026-04-24T19:33:34Z",
  *         "upstream": "02-reviewed.md",
  *         "upstream_mtime": "2026-04-24T22:13:13Z",
- *         "lag_minutes": 159
+ *         "lag_minutes": 159,
+ *         "check_mode": "mtime"
  *       }
  *     ]
  *   }
@@ -34,10 +35,11 @@
  *   1 = stale detectado (orchestrator decide: re-rodar upstream ou continuar)
  *   2 = erro (edition-dir não existe, args inválidos)
  *
- * Refs #120.
+ * Refs #120, #1710, #2287.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +80,72 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Content-hash helpers for image files (#2287)
+// ---------------------------------------------------------------------------
+
+// Extensões de imagem que usam content hash em vez de mtime (#2287).
+// Reorder de destaques renomeia os arquivos de imagem sem alterar o conteúdo —
+// a data de modificação (mtime) do PROMPT upstream fica mais nova que a imagem,
+// gerando falso-positivo de staleness. O hash do conteúdo detecta se a imagem
+// REALMENTE mudou.
+const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
+/** Retorna true se o arquivo é uma imagem que deve usar content-hash check. */
+export function isImageFile(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  for (const ext of IMAGE_EXTS) {
+    if (lower.endsWith(ext)) return true;
+  }
+  return false;
+}
+
+/** Calcula SHA-256 do conteúdo de um arquivo (hex). Null se falhar. */
+export function computeFileHash(absPath: string): string | null {
+  try {
+    const buf = readFileSync(absPath);
+    return createHash("sha256").update(buf).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Caminho do arquivo sidecar de hash para uma imagem.
+ * Ex: `data/editions/260615/04-d1-2x1.jpg` → `…/04-d1-2x1.jpg.sha256`
+ *
+ * image-generate.ts escreve este sidecar imediatamente após gerar a imagem.
+ * check-staleness.ts lê este sidecar para comparar o hash registrado na geração
+ * com o hash atual — se iguais, o conteúdo não mudou (rename/reorder) → não stale.
+ */
+export function hashSidecarPath(imageAbsPath: string): string {
+  return imageAbsPath + ".sha256";
+}
+
+/**
+ * Lê o hash salvo no sidecar de uma imagem. Null se o sidecar não existe.
+ * O sidecar contém apenas o hex SHA-256, opcionalmente com newline.
+ */
+export function readImageHashSidecar(imageAbsPath: string): string | null {
+  const sidecarPath = hashSidecarPath(imageAbsPath);
+  try {
+    return readFileSync(sidecarPath, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Escreve o hash de conteúdo de uma imagem no sidecar.
+ * Chamado por image-generate.ts após gerar cada arquivo de imagem.
+ */
+export function writeImageHashSidecar(imageAbsPath: string): string | null {
+  const hash = computeFileHash(imageAbsPath);
+  if (hash == null) return null;
+  writeFileSync(hashSidecarPath(imageAbsPath), hash + "\n", "utf8");
+  return hash;
+}
+
+// ---------------------------------------------------------------------------
 // Pure helpers — exported for tests
 // ---------------------------------------------------------------------------
 
@@ -87,6 +155,8 @@ export interface StaleEntry {
   upstream: string;
   upstream_mtime: string;
   lag_minutes: number;
+  /** Modo de comparação usado: "mtime" (texto) ou "content_hash" (imagem, #2287). */
+  check_mode: "mtime" | "content_hash";
 }
 
 export interface StalenessResult {
@@ -115,13 +185,25 @@ export function lagMinutes(downstreamMs: number, upstreamMs: number): number {
 }
 
 /**
- * Versão pura: recebe um getter de mtime + lista de checks, retorna stale[].
- * Permite testar sem fs real.
+ * Versão pura: recebe getters de mtime e hash sidecar + lista de checks.
+ * Retorna stale[]. Permite testar sem fs real.
+ *
+ * Para arquivos de texto (03-social.md, 02-reviewed.md): usa mtime.
+ * Para imagens (*.jpg etc, #2287): usa content hash via sidecar:
+ *   - Se sidecar presente: compara hash atual com hash registrado na geração.
+ *     Hash igual → conteúdo não mudou (rename/reorder) → NÃO stale.
+ *     Hash diferente → imagem realmente regenerada com conteúdo novo → stale.
+ *   - Se sidecar ausente: fallback para mtime (comportamento anterior).
+ *
+ * @param getMtime      Getter de mtime em ms (retorna null se ausente).
+ * @param getHashState  Getter de { current, saved } hashes de imagem.
+ *                      Se omitido (undefined), imagens usam fallback mtime.
  */
 export function evaluateStaleness(
   checks: StageCheck[],
   getMtime: (relPath: string) => number | null,
   toleranceMs = 1000,
+  getHashState?: (relPath: string) => { current: string | null; saved: string | null } | null,
 ): StaleEntry[] {
   const stale: StaleEntry[] = [];
   for (const check of checks) {
@@ -130,6 +212,37 @@ export function evaluateStaleness(
     for (const up of check.upstreams) {
       const uMs = getMtime(up);
       if (uMs === null) continue; // upstream não existe → skip
+
+      // #2287: para imagens, usar content hash quando getHashState disponível.
+      // O reorder de destaques renomeia imagens + prompts — mtime do prompt
+      // (upstream) fica mais novo que a imagem (downstream), mas o CONTEÚDO
+      // da imagem não muda. Comparar hash atual vs hash registrado na geração
+      // elimina esse falso-positivo.
+      if (getHashState && isImageFile(check.downstream)) {
+        const hashState = getHashState(check.downstream);
+        if (hashState !== null) {
+          // Sidecar presente: comparar hash atual com hash salvo.
+          const { current, saved } = hashState;
+          if (current !== null && saved !== null && current === saved) {
+            // Conteúdo idêntico ao da geração → não stale (era só rename).
+            continue;
+          }
+          // Hash diferente ou null → conteúdo mudou ou sidecar corrompido → stale.
+          if (isStale(dMs, uMs, toleranceMs)) {
+            stale.push({
+              downstream: check.downstream,
+              downstream_mtime: new Date(dMs).toISOString(),
+              upstream: up,
+              upstream_mtime: new Date(uMs).toISOString(),
+              lag_minutes: lagMinutes(dMs, uMs),
+              check_mode: "content_hash",
+            });
+          }
+          continue;
+        }
+        // Sidecar ausente → fallback mtime (imagem gerada antes do #2287).
+      }
+
       if (isStale(dMs, uMs, toleranceMs)) {
         stale.push({
           downstream: check.downstream,
@@ -137,6 +250,7 @@ export function evaluateStaleness(
           upstream: up,
           upstream_mtime: new Date(uMs).toISOString(),
           lag_minutes: lagMinutes(dMs, uMs),
+          check_mode: "mtime",
         });
       }
     }
@@ -192,7 +306,16 @@ function main(): void {
     return statSync(full).mtimeMs;
   };
 
-  const stale = evaluateStaleness(checks, getMtime);
+  // #2287: fornecer getHashState para detectar imagens não-stale após reorder.
+  const getHashState = (relPath: string): { current: string | null; saved: string | null } | null => {
+    const full = resolve(editionDir, relPath);
+    const saved = readImageHashSidecar(full);
+    if (saved === null) return null; // sidecar ausente → fallback mtime
+    const current = computeFileHash(full);
+    return { current, saved };
+  };
+
+  const stale = evaluateStaleness(checks, getMtime, 1000, getHashState);
   const result: StalenessResult = {
     ok: stale.length === 0,
     stage: parsed.stage,

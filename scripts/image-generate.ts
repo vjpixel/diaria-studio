@@ -21,6 +21,7 @@
 
 import 'dotenv/config';
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { writeImageHashSidecar } from "./check-staleness.ts"; // #2287
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,9 +185,15 @@ function main() {
       process.exit(code);
     }
 
+    // #2287: gravar sidecar SHA-256 de cada imagem para check-staleness usar
+    // content hash em vez de mtime — evita falso-positivo pós-reorder de destaques.
+    writeImageHashSidecar(wideJpgPath);
+    writeImageHashSidecar(squareJpgPath);
     process.stdout.write(wideJpgPath + "\n");
     process.stdout.write(squareJpgPath + "\n");
   } else {
+    // #2287: sidecar SHA-256 para imagens 1x1 também.
+    writeImageHashSidecar(outJpgPath);
     process.stdout.write(outJpgPath + "\n");
   }
 }

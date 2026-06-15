@@ -28,7 +28,7 @@
  * cair no caminho single-scorer nesse caso).
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
@@ -189,6 +189,24 @@ export function main(): void {
   const chunks = buildChunks(categorized, chunkSize);
   const absOutDir = resolve(ROOT, outDir);
   mkdirSync(absOutDir, { recursive: true });
+
+  // #2287: limpar scoring-chunks/ pré-existentes antes de escrever os novos.
+  // Chunks de runs anteriores podem ter scores de URLs de outra edição.
+  // Se o scorer-chunk lê um arquivo stale antes de sobrescrever, pode mesclar
+  // dados antigos. Limpar garante que o diretório começa vazio.
+  // Ordem: PRIMEIRO limpar, DEPOIS escrever — nunca o contrário.
+  if (existsSync(absOutDir)) {
+    for (const entry of readdirSync(absOutDir)) {
+      if (entry.startsWith("scoring-chunk-") && entry.endsWith(".json")) {
+        rmSync(resolve(absOutDir, entry), { force: true });
+      }
+      // Limpar também scored-chunk-*.json de runs anteriores.
+      if (entry.startsWith("scored-chunk-") && entry.endsWith(".json")) {
+        rmSync(resolve(absOutDir, entry), { force: true });
+      }
+    }
+    console.error(`[split-articles-for-scoring] scoring-chunks/ limpo antes de escrever (#2287)`);
+  }
 
   const chunkFiles: string[] = [];
   chunks.forEach((chunk, i) => {

@@ -1,14 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   flattenCategorized,
   toCategorized,
   splitRoundRobin,
   chunkCountFor,
   buildChunks,
+  main as splitMain,
   type Categorized,
   type Article,
 } from "../scripts/split-articles-for-scoring.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const mk = (url: string, category: string): Article => ({ url, title: url, category });
 
@@ -107,5 +114,102 @@ describe("buildChunks", () => {
       chunks[0].lancamento.length + chunks[0].radar.length + chunks[0].use_melhor.length,
       7,
     );
+  });
+});
+
+describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de escrever", () => {
+  // Regressão: antes de #2287, chunks de runs anteriores ficavam no dir.
+  // scorer-chunk podia ler scored-chunk-*.json stale (de outra edição) e mesclar
+  // com dados do run atual. Agora split-articles-for-scoring limpa o dir primeiro.
+
+  it("limpa scoring-chunk-*.json e scored-chunk-*.json stale antes de escrever", () => {
+    // Setup: dir temporário simulando scoring-chunks/ com arquivos stale
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+
+    try {
+      // Escrever arquivos stale de run anterior
+      writeFileSync(join(chunksDir, "scoring-chunk-0.json"), '{"stale":"old-chunk-0"}');
+      writeFileSync(join(chunksDir, "scoring-chunk-1.json"), '{"stale":"old-chunk-1"}');
+      writeFileSync(join(chunksDir, "scored-chunk-0.json"), '{"stale":"old-scored-0"}');
+      writeFileSync(join(chunksDir, "scored-chunk-1.json"), '{"stale":"old-scored-1"}');
+      // Arquivo não-relacionado: deve ser preservado
+      writeFileSync(join(chunksDir, "other-file.txt"), "keep-me");
+
+      // Escrever input categorized.json mínimo
+      const categorized = {
+        categorized: {
+          lancamento: [{ url: "https://example.com/1", title: "T1", category: "lancamento" }],
+          radar: [],
+          use_melhor: [],
+          video: [],
+        },
+      };
+      writeFileSync(categorizedPath, JSON.stringify(categorized));
+
+      // Executar main() do split-articles-for-scoring
+      const origArgv = process.argv;
+      process.argv = [
+        "node",
+        "split-articles-for-scoring.ts",
+        "--categorized", categorizedPath,
+        "--out-dir", chunksDir,
+        "--chunk-size", "30",
+      ];
+      // Capturar stdout
+      const origWrite = process.stdout.write.bind(process.stdout);
+      let stdoutCapture = "";
+      process.stdout.write = (s: string | Uint8Array) => {
+        stdoutCapture += s.toString();
+        return true;
+      };
+      try {
+        splitMain();
+      } finally {
+        process.stdout.write = origWrite;
+        process.argv = origArgv;
+      }
+
+      // Verificar: arquivos stale removidos
+      assert.ok(
+        !existsSync(join(chunksDir, "scored-chunk-0.json")),
+        "scored-chunk-0.json stale deve ser removido antes de escrever novos chunks (#2287)",
+      );
+      assert.ok(
+        !existsSync(join(chunksDir, "scored-chunk-1.json")),
+        "scored-chunk-1.json stale deve ser removido (#2287)",
+      );
+
+      // scoring-chunk-*.json antigos são sobrescritos ou removidos
+      // (dependendo do count de chunks novo vs antigo)
+      // O importante é que scored-chunk-* foram limpos.
+
+      // Verificar: arquivo não-relacionado preservado
+      assert.ok(
+        existsSync(join(chunksDir, "other-file.txt")),
+        "arquivo não-relacionado (other-file.txt) deve ser preservado",
+      );
+
+      // Verificar: novos scoring-chunk-0.json escritos corretamente
+      const files = readdirSync(chunksDir).filter((f) => f.startsWith("scoring-chunk-"));
+      assert.ok(files.length >= 1, "deve ter ao menos 1 scoring-chunk-*.json novo");
+      // Conteúdo novo: tem shape categorized, não o stale
+      const content = JSON.parse(readFileSync(join(chunksDir, "scoring-chunk-0.json"), "utf8"));
+      assert.ok(content.categorized, "novo chunk deve ter shape categorized");
+      assert.ok(
+        !JSON.stringify(content).includes('"stale"'),
+        "novo chunk não deve conter dados stale",
+      );
+
+      // Verificar stdout: manifest JSON válido
+      const manifest = JSON.parse(stdoutCapture.trim());
+      assert.ok(typeof manifest.total_articles === "number");
+      assert.ok(typeof manifest.chunk_count === "number");
+      assert.ok(Array.isArray(manifest.chunk_files));
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
   });
 });
