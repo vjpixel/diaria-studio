@@ -99,12 +99,14 @@ describe("checkCloudflareToken (#2286)", () => {
     assert.ok(health.error?.includes("expired"), `erro deve mencionar 'expired', got: ${health.error}`);
   });
 
-  it("E2) API retorna 200 sem result.status → status: invalid", async () => {
+  it("E2) API retorna 200 + success:true sem result.status → status: error (API anomaly, não invalid) (#7)", async () => {
+    // HTTP 200 + success:true + status field absent = transient API anomaly,
+    // NOT a bad token. Must not show rotate-token banner.
     const health = await checkCloudflareToken(
       "tok_malformed_12",
       mockFetch(200, { success: true, result: {} }),
     );
-    assert.equal(health.status, "invalid");
+    assert.equal(health.status, "error", "missing result.status with success:true must be 'error', not 'invalid'");
   });
 
   it("token_prefix nunca expõe mais de 8 chars do token", async () => {
@@ -146,13 +148,24 @@ describe("renderCloudflareTokenBanner (#2286)", () => {
     );
   });
 
-  it("F) error de rede → banner informativo (não vazio)", () => {
+  it("F) error de rede → banner VAZIO (não assusta o editor com 'INVÁLIDO') (#5)", () => {
+    // status:"error" = transient network failure — the editor's token may be
+    // perfectly valid. Showing the scary "INVÁLIDO/AUSENTE" banner causes
+    // unnecessary token rotation. main() logs a soft note instead.
     const banner = renderCloudflareTokenBanner({
       status: "error",
       error: "ECONNREFUSED",
     });
-    // error de rede: a implementação decide não renderizar banner para error
-    // (exit 2, não bloqueia). Verificar que a função não lança exceção.
-    assert.ok(typeof banner === "string");
+    assert.equal(banner, "", "error de rede deve retornar banner vazio (soft note via main(), não banner de rotate-token)");
+  });
+
+  it("F) error de rede + success:true (API anomaly) → banner VAZIO (#7)", () => {
+    // HTTP 200 success:true but missing result.status also maps to "error".
+    // Must not show rotate-token banner.
+    const banner = renderCloudflareTokenBanner({
+      status: "error",
+      error: "Cloudflare API retornou status ausente com success:true",
+    });
+    assert.equal(banner, "", "API anomaly com success:true deve retornar banner vazio");
   });
 });

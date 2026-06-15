@@ -38,8 +38,7 @@
  * Refs #120, #1710, #2287.
  */
 
-import { existsSync, statSync, readFileSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -80,69 +79,72 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
 };
 
 // ---------------------------------------------------------------------------
-// Content-hash helpers for image files (#2287)
+// image-content-fresh helpers (#2287)
 // ---------------------------------------------------------------------------
 
-// Extensões de imagem que usam content hash em vez de mtime (#2287).
-// Reorder de destaques renomeia os arquivos de imagem sem alterar o conteúdo —
-// a data de modificação (mtime) do PROMPT upstream fica mais nova que a imagem,
-// gerando falso-positivo de staleness. O hash do conteúdo detecta se a imagem
-// REALMENTE mudou.
-const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
-
-/** Retorna true se o arquivo é uma imagem que deve usar content-hash check. */
-export function isImageFile(relPath: string): boolean {
-  const lower = relPath.toLowerCase();
-  for (const ext of IMAGE_EXTS) {
-    if (lower.endsWith(ext)) return true;
+/**
+ * Extrai URLs dos destaques D1/D2/D3 do 02-reviewed.md.
+ * Linha com marcador "destaque" seguida de URL — compatível com o template.
+ * Replica a lógica de extractDestaqueUrls de match-prompts-to-destaques.ts
+ * para evitar import circular / dependência do CLI.
+ */
+export function extractReviewedUrls(reviewedMd: string): string[] {
+  const urls: string[] = [];
+  // Procura por padrões: linha "URL:" ou "Link:" em contexto de destaque,
+  // ou padrão de href em markdown: [texto](URL) após seção de destaque.
+  // Mais confiável: reutiliza extractDestaqueUrls via regex direto.
+  // Padrão do template: destaque_url está no front-matter dos prompts, mas
+  // em 02-reviewed.md o URL aparece como [título](URL) na linha do headline.
+  // Regex: primeira URL de cada bloco "## D{N}" / "Destaque {N}".
+  const blockRegex = /(?:^##\s+D[1-3]|^Destaque\s+[1-3])/im;
+  // Usa o mesmo extractor que stage-4.ts: procura URLs de http(s) no MD.
+  // Ordem: D1 primeiro, D2, D3.
+  const urlRegex = /https?:\/\/[^\s\)\"]+/g;
+  // Dividir por blocos de destaque (#D{N})
+  const blocks = reviewedMd.split(/(?=^#{1,3}\s+D[1-3])/m);
+  for (const block of blocks) {
+    if (!blockRegex.test(block)) continue;
+    const m = block.match(urlRegex);
+    if (m && m[0]) urls.push(m[0]);
+    if (urls.length >= 3) break;
   }
-  return false;
+  return urls;
 }
 
-/** Calcula SHA-256 do conteúdo de um arquivo (hex). Null se falhar. */
-export function computeFileHash(absPath: string): string | null {
+/**
+ * Extrai destaque_url do frontmatter de um arquivo de prompt.
+ * Formato: `destaque_url: https://...` em linha própria.
+ */
+export function extractPromptUrlLocal(promptMd: string): string | null {
+  const m = promptMd.match(/^destaque_url:\s*(\S+)/m);
+  return m ? m[1] : null;
+}
+
+/**
+ * Normaliza URL para comparação: lowercase host, strip trailing slash,
+ * strip UTM params. Path case-sensitive (RFC 3986).
+ */
+function normalizeUrl(raw: string): string {
   try {
-    const buf = readFileSync(absPath);
-    return createHash("sha256").update(buf).digest("hex");
+    const u = new URL(raw);
+    u.hostname = u.hostname.toLowerCase();
+    // Strip tracking params
+    for (const k of [...u.searchParams.keys()]) {
+      if (/^utm_|^ref$|^source$|^medium$|^campaign$/i.test(k)) {
+        u.searchParams.delete(k);
+      }
+    }
+    let s = u.toString();
+    if (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
   } catch {
-    return null;
+    return raw.toLowerCase().replace(/\/$/, "");
   }
 }
 
-/**
- * Caminho do arquivo sidecar de hash para uma imagem.
- * Ex: `data/editions/260615/04-d1-2x1.jpg` → `…/04-d1-2x1.jpg.sha256`
- *
- * image-generate.ts escreve este sidecar imediatamente após gerar a imagem.
- * check-staleness.ts lê este sidecar para comparar o hash registrado na geração
- * com o hash atual — se iguais, o conteúdo não mudou (rename/reorder) → não stale.
- */
-export function hashSidecarPath(imageAbsPath: string): string {
-  return imageAbsPath + ".sha256";
-}
-
-/**
- * Lê o hash salvo no sidecar de uma imagem. Null se o sidecar não existe.
- * O sidecar contém apenas o hex SHA-256, opcionalmente com newline.
- */
-export function readImageHashSidecar(imageAbsPath: string): string | null {
-  const sidecarPath = hashSidecarPath(imageAbsPath);
-  try {
-    return readFileSync(sidecarPath, "utf8").trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Escreve o hash de conteúdo de uma imagem no sidecar.
- * Chamado por image-generate.ts após gerar cada arquivo de imagem.
- */
-export function writeImageHashSidecar(imageAbsPath: string): string | null {
-  const hash = computeFileHash(imageAbsPath);
-  if (hash == null) return null;
-  writeFileSync(hashSidecarPath(imageAbsPath), hash + "\n", "utf8");
-  return hash;
+/** True se as duas URLs são equivalentes após normalização. */
+export function imageUrlsMatch(a: string, b: string): boolean {
+  return normalizeUrl(a) === normalizeUrl(b);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +157,8 @@ export interface StaleEntry {
   upstream: string;
   upstream_mtime: string;
   lag_minutes: number;
-  /** Modo de comparação usado: "mtime" (texto) ou "content_hash" (imagem, #2287). */
-  check_mode: "mtime" | "content_hash";
+  /** Modo de comparação usado: "mtime" (único modo suportado). */
+  check_mode: "mtime";
 }
 
 export interface StalenessResult {
@@ -185,25 +187,35 @@ export function lagMinutes(downstreamMs: number, upstreamMs: number): number {
 }
 
 /**
- * Versão pura: recebe getters de mtime e hash sidecar + lista de checks.
+ * Versão pura: recebe getters de mtime e image-content-fresh + lista de checks.
  * Retorna stale[]. Permite testar sem fs real.
  *
  * Para arquivos de texto (03-social.md, 02-reviewed.md): usa mtime.
- * Para imagens (*.jpg etc, #2287): usa content hash via sidecar:
- *   - Se sidecar presente: compara hash atual com hash registrado na geração.
- *     Hash igual → conteúdo não mudou (rename/reorder) → NÃO stale.
- *     Hash diferente → imagem realmente regenerada com conteúdo novo → stale.
- *   - Se sidecar ausente: fallback para mtime (comportamento anterior).
+ * Para imagens (*.jpg etc, #2287): usa mtime MAS suprime o falso-positivo de
+ * reorder via `getImageFresh`:
+ *   - Se `getImageFresh(relPath)` retorna `true`, a imagem está fresca
+ *     (prompt URL bate com o artigo atual em 02-reviewed.md) → NÃO stale.
+ *     Isso cobre o FP pós-reorder: apenas os PROMPTS são renomeados no
+ *     reorder (não as imagens); o mtime novo do prompt (upstream) causava
+ *     falso-positivo de staleness, mesmo que a imagem servisse o artigo certo.
+ *   - Se retorna `false` ou não é fornecido, usa mtime normalmente.
+ *     Isso garante que uma imagem genuinamente stale (editor trocou artigo
+ *     sem regenerar imagem — image-content-fresh falha) ainda seja detectada.
  *
- * @param getMtime      Getter de mtime em ms (retorna null se ausente).
- * @param getHashState  Getter de { current, saved } hashes de imagem.
- *                      Se omitido (undefined), imagens usam fallback mtime.
+ * A verificação image-content-fresh (#1730) em Stage 4 já cobre article-swap;
+ * esta supressão só evita que reorders reportem FP de mtime em check-staleness.
+ *
+ * @param getMtime       Getter de mtime em ms (retorna null se ausente).
+ * @param getImageFresh  Getter de freshness de imagem. Retorna true se a
+ *                       imagem serve o artigo atual (URL match via prompt
+ *                       frontmatter) → suprimir falso-positivo de mtime.
+ *                       Omitido = nunca suprimir (comportamento pré-#2287).
  */
 export function evaluateStaleness(
   checks: StageCheck[],
   getMtime: (relPath: string) => number | null,
   toleranceMs = 1000,
-  getHashState?: (relPath: string) => { current: string | null; saved: string | null } | null,
+  getImageFresh?: (relPath: string) => boolean,
 ): StaleEntry[] {
   const stale: StaleEntry[] = [];
   for (const check of checks) {
@@ -213,34 +225,12 @@ export function evaluateStaleness(
       const uMs = getMtime(up);
       if (uMs === null) continue; // upstream não existe → skip
 
-      // #2287: para imagens, usar content hash quando getHashState disponível.
-      // O reorder de destaques renomeia imagens + prompts — mtime do prompt
-      // (upstream) fica mais novo que a imagem (downstream), mas o CONTEÚDO
-      // da imagem não muda. Comparar hash atual vs hash registrado na geração
-      // elimina esse falso-positivo.
-      if (getHashState && isImageFile(check.downstream)) {
-        const hashState = getHashState(check.downstream);
-        if (hashState !== null) {
-          // Sidecar presente: comparar hash atual com hash salvo.
-          const { current, saved } = hashState;
-          if (current !== null && saved !== null && current === saved) {
-            // Conteúdo idêntico ao da geração → não stale (era só rename).
-            continue;
-          }
-          // Hash diferente ou null → conteúdo mudou ou sidecar corrompido → stale.
-          if (isStale(dMs, uMs, toleranceMs)) {
-            stale.push({
-              downstream: check.downstream,
-              downstream_mtime: new Date(dMs).toISOString(),
-              upstream: up,
-              upstream_mtime: new Date(uMs).toISOString(),
-              lag_minutes: lagMinutes(dMs, uMs),
-              check_mode: "content_hash",
-            });
-          }
-          continue;
+      // #2287: para imagens, suprimir FP de mtime quando image-content-fresh
+      // passa (URL do prompt bate com artigo atual em 02-reviewed.md).
+      if (getImageFresh && isImagePath(check.downstream)) {
+        if (getImageFresh(check.downstream)) {
+          continue; // imagem fresca — FP de mtime suprimido
         }
-        // Sidecar ausente → fallback mtime (imagem gerada antes do #2287).
       }
 
       if (isStale(dMs, uMs, toleranceMs)) {
@@ -256,6 +246,69 @@ export function evaluateStaleness(
     }
   }
   return stale;
+}
+
+/**
+ * Retorna true se o caminho relativo aponta para um arquivo de imagem.
+ * Não exportado — só usado internamente em evaluateStaleness e main().
+ */
+function isImagePath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return (
+    lower.endsWith(".jpg") ||
+    lower.endsWith(".jpeg") ||
+    lower.endsWith(".png") ||
+    lower.endsWith(".webp") ||
+    lower.endsWith(".gif")
+  );
+}
+
+/**
+ * Constrói um `getImageFresh` a partir do editionDir.
+ * Lê 02-reviewed.md + prompts de _internal/ para mapear slot → fresh.
+ * Retorna undefined se reviewed.md ausente (Stage 3 não rodou ainda).
+ */
+export function buildGetImageFresh(
+  editionDir: string,
+): ((relPath: string) => boolean) | undefined {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return undefined;
+
+  let reviewedUrls: string[];
+  try {
+    reviewedUrls = extractReviewedUrls(readFileSync(reviewedPath, "utf8"));
+  } catch {
+    return undefined; // reviewed ilegível → degradation
+  }
+  if (reviewedUrls.length === 0) return undefined;
+
+  const internalDir = resolve(editionDir, "_internal");
+  const slots = ["d1", "d2", "d3"] as const;
+
+  // freshMap: relative image path → boolean (true = URL matches)
+  const freshMap: Record<string, boolean> = {};
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const reviewedUrl = reviewedUrls[i];
+    if (!reviewedUrl) continue;
+
+    const promptPath = resolve(internalDir, `02-${slot}-prompt.md`);
+    if (!existsSync(promptPath)) continue;
+
+    let promptUrl: string | null;
+    try {
+      promptUrl = extractPromptUrlLocal(readFileSync(promptPath, "utf8"));
+    } catch {
+      continue; // prompt ilegível → não suprimir
+    }
+
+    const isFresh = promptUrl !== null && imageUrlsMatch(promptUrl, reviewedUrl);
+    // Map all image variants for this slot
+    freshMap[`04-${slot}-2x1.jpg`] = isFresh;
+    freshMap[`04-${slot}-1x1.jpg`] = isFresh;
+  }
+
+  return (relPath: string) => freshMap[relPath] ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,16 +359,12 @@ function main(): void {
     return statSync(full).mtimeMs;
   };
 
-  // #2287: fornecer getHashState para detectar imagens não-stale após reorder.
-  const getHashState = (relPath: string): { current: string | null; saved: string | null } | null => {
-    const full = resolve(editionDir, relPath);
-    const saved = readImageHashSidecar(full);
-    if (saved === null) return null; // sidecar ausente → fallback mtime
-    const current = computeFileHash(full);
-    return { current, saved };
-  };
+  // #2287: suprimir FP de mtime para imagens cuja URL de prompt bate com o artigo
+  // atual no 02-reviewed.md (image-content-fresh). Se reviewed.md ausente ou prompts
+  // sem destaque_url → getImageFresh = undefined → fallback para mtime puro.
+  const getImageFresh = buildGetImageFresh(editionDir);
 
-  const stale = evaluateStaleness(checks, getMtime, 1000, getHashState);
+  const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
   const result: StalenessResult = {
     ok: stale.length === 0,
     stage: parsed.stage,

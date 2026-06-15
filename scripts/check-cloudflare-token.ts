@@ -72,6 +72,7 @@ export async function checkCloudflareToken(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(8000), // 8s — fail-fast before Stage 0 stalls (#4)
     });
 
     if (res.status === 401 || res.status === 403) {
@@ -98,10 +99,17 @@ export async function checkCloudflareToken(
 
     const cfStatus = json.result?.status ?? "";
     if (cfStatus !== "active") {
+      // #7: HTTP 200 + success:true + status absent/empty = API anomaly (not bad token).
+      // Only show "rotate your token" banner for a real auth failure (explicit non-active status).
+      const resolvedStatus =
+        json.success === true && !cfStatus ? "error" : "invalid";
       return {
-        status: "invalid",
+        status: resolvedStatus,
         token_prefix: prefix,
-        error: `Token Cloudflare não-ativo (status API: "${cfStatus}"). Renovar no .env.`,
+        error:
+          resolvedStatus === "error"
+            ? `Cloudflare API retornou status ausente com success:true — anomalia transitória. Tentar novamente.`
+            : `Token Cloudflare não-ativo (status API: "${cfStatus}"). Renovar no .env.`,
       };
     }
 
@@ -122,7 +130,10 @@ export async function checkCloudflareToken(
 export function renderCloudflareTokenBanner(
   health: CloudflareTokenHealth,
 ): string {
-  if (health.status === "active") return "";
+  // #5: transient network/API errors (status:"error") are non-blocking (exit 2).
+  // Show a soft note via main() log instead of the scary "INVÁLIDO/AUSENTE" banner,
+  // which would cause the editor to unnecessarily rotate a valid token.
+  if (health.status === "active" || health.status === "error") return "";
 
   const lines: string[] = [
     "╔══════════════════════════════════════════════════════════════════╗",
@@ -154,11 +165,16 @@ async function main(): Promise<number> {
   const health = await checkCloudflareToken();
   console.log(JSON.stringify(health, null, 2));
 
+  // #5: error = transient network/API issue — soft note only, not the scary banner.
+  if (health.status === "error") {
+    console.error(`[check-cloudflare-token] nota: ${health.error ?? "erro de rede"} — não bloqueando Stage 0.`);
+    return 2;
+  }
+
   const banner = renderCloudflareTokenBanner(health);
   if (banner) console.error("\n" + banner + "\n");
 
   if (health.status === "active") return 0;
-  if (health.status === "error") return 2; // rede/API indisponível — não bloquear
   return 1; // missing ou invalid
 }
 
