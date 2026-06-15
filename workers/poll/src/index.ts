@@ -690,15 +690,20 @@ async function updateStatsCounter(
       return;
     }
 
-    // DO retornou erro de cliente (4xx) — erro de programação, NÃO cair no KV RMW.
+    // DO retornou erro de cliente (4xx) — sinal de erro de programação.
     // (#2245): um DO 400 (choice inválido) é inalcançável em produção porque
     // handleVote já valida `choice as "A"|"B"`. Mas se um bug futuro passar choice
-    // malformado, o fallback KV RMW re-introduziria a race que o #2223 corrigiu.
-    // 4xx indica erro de programação — retry ou fallback não ajudam; lançar é seguro.
+    // malformado, o comportamento correto é:
+    //   - NÃO lançar: throw propaga não-capturado por handleVote → 500 pro votante
+    //     + voteKey nunca gravado + /confirm nunca chamado (pior que o bug original).
+    //   - NÃO cair no KV RMW: re-introduziria a race que o #2223 corrigiu.
+    //   - Logar warning (sinal de bug de programação) e PULAR o incremento de stats,
+    //     deixando o restante do fluxo de voto completar normalmente (200 + voteKey + /confirm).
+    // (#2293 self-review HIGH): substituído throw por warn+return (skip stats, vote completes).
     if (doResp.status >= 400 && doResp.status < 500) {
       const body = await doResp.text().catch(() => "(unreadable)");
-      console.error(JSON.stringify({ event: "stats_counter_do_client_error", status: doResp.status, body, edition }));
-      throw new Error(`StatsCounter DO returned ${doResp.status} (client/programming error) — aborting to prevent KV RMW race`);
+      console.warn(JSON.stringify({ event: "stats_counter_do_client_error", status: doResp.status, body, edition, action: "skip_stats_increment" }));
+      return; // pula incremento de stats — vote path continua (voteKey + /confirm intactos)
     }
 
     // DO retornou erro de servidor (5xx) — fallback para KV RMW (aceita perda residual, loga).

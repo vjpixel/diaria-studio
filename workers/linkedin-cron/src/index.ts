@@ -952,11 +952,13 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
       continue;
     }
 
-    if (scheduledMs > now) continue; // ainda não chegou a hora
-
     // (#2230 bug 2 fix) Verificar tombstone de cancelamento.
     // Se handleQueueDelete gravou um tombstone (cancelled=true) porque o KV.delete
     // falhou após o DO cancel, o cron deve pular e limpar esta entry sem postar.
+    // (#2293 self-review HIGH): movido ANTES da guarda `scheduledMs > now`.
+    // Bug original: tombstone com scheduled_at no FUTURO era `continue`d pela guarda
+    // de horário sem jamais ser deletado — acumulava no KV indefinidamente.
+    // Fix: verificar cancelled antes do skip de horário — tombstone futuro ou passado → deletar sempre.
     if (entry.cancelled) {
       // (#2235 fix F5) Garantir DO /cancel best-effort ao limpar tombstone: mesmo que o DO
       // cancel já tenha sido feito no handleQueueDelete, o DO pode ter re-armado (rearm).
@@ -970,6 +972,8 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
       console.log(`[fire] ${k.name} is a cancellation tombstone — DO cancelled + deleted without firing`);
       continue;
     }
+
+    if (scheduledMs > now) continue; // ainda não chegou a hora
 
     // (#2219 bug 2) Exactly-once via /claim atômico no DO.
     // O cron usa POST /claim em vez de GET /status-then-fire: o DO testa-e-seta
@@ -1274,12 +1278,18 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
     // de checar se está no passado — tombstone passado ou futuro → deletar sempre.
     if (entry.cancelled) {
       console.log(`[rearm] ${k.name} has tombstone (cancelled=true) — deleting to prevent accumulation`);
+      // (#2293 self-review MEDIUM): skippedTombstone++ movido para DENTRO do try —
+      // só conta como "tombstone tratado" quando o delete KV de fato tem sucesso.
+      // Antes: falha no delete logava warning mas ainda incrementava o counter,
+      // reportando skipped_tombstone=1 para um tombstone que permanecia no KV.
+      // Agora: delete falhou → failed++ (não skippedTombstone++) — próximo /rearm retenta.
       try {
         await env.LINKEDIN_QUEUE.delete(k.name);
+        skippedTombstone++;
       } catch (delErr) {
+        failed++;
         console.warn(`[rearm] failed to delete tombstone ${k.name}: ${String(delErr)}`);
       }
-      skippedTombstone++;
       continue;
     }
 

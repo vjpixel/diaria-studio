@@ -577,21 +577,13 @@ describe("Fix #6 — admin-correct atualiza DO StatsCounter; /stats reflete corr
   });
 });
 
-// ── 8. Fix #2245: DO 400 → throw, NÃO cai no KV RMW fallback ─────────────────
+// ── 8. Fix #2293 (rewrite de #2245): DO 400 → warn+skip, voto completa (200) ──
 
-describe("Fix #2245 — DO /increment 400 → lança erro (não cai no KV RMW fallback)", () => {
-  it("DO retorna 400 (choice inválido) → updateStatsCounter lança; KV stats NÃO é modificado via RMW", async () => {
+describe("Fix #2293 — DO /increment 400 → warn+skip (não throw, não RMW); voto completa com 200", () => {
+  it("DO retorna 400 (choice inválido) → StatsCounter retorna 400 e NÃO modifica estado interno", async () => {
     /**
-     * REGRESSÃO #2245 finding 2:
-     * Em updateStatsCounter, quando o DO retorna qualquer status !ok, o código caía
-     * no KV RMW fallback — re-introduzindo a race que o #2223 corrigiu para inputs
-     * malformados. Um DO 400 (choice inválido) é um erro de programação; o caminho
-     * correto é abortar (lançar), não fazer fallback silencioso via KV RMW.
-     *
-     * Este teste envia diretamente ao StatsCounter DO um payload com choice inválido
-     * e verifica que o DO retorna 400 SEM modificar o estado. A regressão em
-     * updateStatsCounter (index.ts) é coberta pelo segundo teste (via handleVote
-     * com binding DO que simula 400 — verifica que KV stats não é modificado).
+     * Teste isolado do StatsCounter DO:
+     * Um payload com choice inválido ("C") deve retornar 400 e não tocar o estado.
      */
     const counter = makeStatsCounter();
 
@@ -614,25 +606,29 @@ describe("Fix #2245 — DO /increment 400 → lança erro (não cai no KV RMW fa
     assert.equal(stats.voted_a, 1, "DO: voted_a não deve mudar — got: " + String(stats.voted_a));
   });
 
-  it("DO retorna 400 → updateStatsCounter lança; KV stats NÃO é tocado via RMW fallback", async () => {
+  it("DO retorna 400 → handleVote retorna 200 (voto NÃO perdido), voteKey gravado, KV RMW NÃO ativado", async () => {
     /**
-     * Regressão central #2245: a guarda `if (doResp.status >= 400 && doResp.status < 500)`
-     * em updateStatsCounter deve LANÇAR em vez de cair no KV RMW fallback.
+     * REGRESSÃO #2293 self-review HIGH:
+     * O fix anterior (#2245) substituiu o KV RMW fallback por throw — correto pra evitar
+     * a race, mas incorreto porque o throw propagava não-capturado pelo handleVote:
+     *   - votante recebia 500 (não 200)
+     *   - voteKey nunca gravado (voto perdido)
+     *   - /confirm nunca chamado (DO pendente órfão)
      *
-     * Usamos um STATS_COUNTER stub que sempre retorna 400 para simular o path.
-     * Verificamos que o KV stats:260613 NÃO foi modificado via RMW (a race que #2223 corrigiu).
+     * Fix #2293: DO 400 → console.warn + return (skip stats) → handleVote continua
+     * normalmente: 200 ao votante + voteKey gravado + /confirm chamado.
      *
-     * O throw de updateStatsCounter propaga pelo handleVote (não é capturado lá),
-     * causando um erro no fetch do Worker. Verificamos dois invariantes:
-     *   1. A exceção lançada contém "400" (confirma que foi o guard 4xx que ativou).
-     *   2. O KV stats NÃO foi tocado via RMW fallback — total permanece 5.
+     * Invariantes verificados:
+     *   1. handleVote retorna 200 (voto não é perdido)
+     *   2. voteKey `vote:{edition}:{email}` é gravado no KV (commit definitivo)
+     *   3. KV stats NÃO é modificado via RMW fallback (race do #2223 não reintroduzida)
      */
     const initialStats = { total: 5, voted_a: 3, voted_b: 2, correct_count: 1 };
     const kv = makeTrackedKv({
       "stats:260613": JSON.stringify(initialStats),
     });
 
-    // Stub STATS_COUNTER que sempre retorna 400
+    // Stub STATS_COUNTER que sempre retorna 400 (simula choice inválido chegando ao DO)
     const badChoiceStatsNs: DurableObjectNamespace = {
       idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
       get: (): DurableObjectStub => ({
@@ -659,33 +655,33 @@ describe("Fix #2245 — DO /increment 400 → lança erro (não cai no KV RMW fa
     url.searchParams.set("edition", "260613");
     url.searchParams.set("choice", "A"); // choice válido no Worker — o DO stub que retorna 400
 
-    // O fetch LANÇA porque updateStatsCounter lança (não é capturado no handleVote).
-    // Antes do fix: caia silenciosamente no KV RMW fallback (incrementava total para 6).
-    // Com o fix: lança com mensagem incluindo "400".
-    let caughtError: Error | null = null;
+    let res: Response;
     try {
-      await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+      res = await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
     } catch (e) {
-      caughtError = e as Error;
+      assert.fail(`handleVote NÃO deve lançar quando DO retorna 400 — mas lançou: ${String(e)}`);
+      return;
     }
 
-    // Invariante 1: deve ter lançado (não cair silenciosamente no RMW fallback)
-    assert.ok(
-      caughtError !== null,
-      "handleVote deve lançar quando DO retorna 400 (não fazer fallback silencioso no KV RMW)",
-    );
-    assert.ok(
-      caughtError!.message.includes("400"),
-      "mensagem do erro deve incluir '400' — got: " + caughtError!.message,
+    // Invariante 1: handleVote deve retornar 200 (voto não perdido)
+    assert.equal(
+      res!.status,
+      200,
+      "handleVote deve retornar 200 quando DO retorna 400 (warn+skip stats, vote continua) — got: " + String(res!.status),
     );
 
-    // Invariante 2: KV stats NÃO deve ter sido tocado via RMW fallback
+    // Invariante 2: voteKey deve ter sido gravado (voto commitado)
+    // voteKey = "vote:{edition}:{email}" — exato (sem sufixo de timestamp)
+    const voteKeyRaw = await kv.get("vote:260613:bad400@x.com");
+    assert.ok(
+      voteKeyRaw !== null,
+      "voteKey deve ter sido gravado no KV (voto commitado) — vote não foi perdido (#2293)",
+    );
+
+    // Invariante 3: KV stats NÃO deve ter sido modificado via RMW fallback
     const statsRaw = await kv.get("stats:260613");
     const stats = statsRaw ? JSON.parse(statsRaw) as typeof initialStats : null;
-    assert.ok(
-      stats !== null,
-      "KV stats:260613 deve ainda existir (não foi apagado)",
-    );
+    assert.ok(stats !== null, "KV stats:260613 deve ainda existir");
     assert.equal(
       stats!.total,
       initialStats.total,
