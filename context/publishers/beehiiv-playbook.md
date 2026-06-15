@@ -303,24 +303,64 @@ URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-p
 https://poll.diaria.workers.dev/img/img-{AAMMDD}-04-d1-2x1.jpg
 ```
 
-Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache. Dispatch + verify (o helper já faz fetch → DataTransfer → apply → verificação DOM e retorna o shape de `classifyCoverVerify`):
+Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache.
+
+**⚠️ #2283 — Cover replace em 2 etapas separadas (evita CDP timeout).** O helper legado `buildCoverReplaceJs` combinava remoção + upload num único `javascript_tool`, resultando em ~22s de sleeps + fetch → `Runtime.evaluate timed out after 45000ms`. Usar sempre as 2 etapas separadas:
 
 ```typescript
-import { buildCoverDataTransferJs, classifyCoverVerify } from "scripts/lib/beehiiv-cover-upload.ts";
+import {
+  buildCoverReplaceStep1_RemoveExistingJs,
+  buildCoverReplaceStep2_UploadJs,
+  buildCoverDataTransferJs,
+  classifyCoverVerify,
+} from "scripts/lib/beehiiv-cover-upload.ts";
+
+// detectJs reutilizado dentro do loop — não pré-avaliar fora (fix #1: detect stale)
+const detectJs = `(() => ({
+  hasCover: !!Array.from(document.querySelectorAll('img'))
+    .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src))
+}))()`;
 
 let cover = { applied: false, reason: "não tentado" };
 for (let attempt = 1; attempt <= 3; attempt++) {
-  const r = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverDataTransferJs(imageUrl) });
-  cover = classifyCoverVerify(r);
+  // Re-detectar a cada tentativa — estado DOM pode ter mudado (fix #1: detect stale)
+  const detect = await mcp__claude-in-chrome__javascript_tool({ code: detectJs });
+
+  if (detect?.hasCover) {
+    // Etapa 1: remover cover existente (<5s total, seguro pro CDP)
+    const step1 = await mcp__claude-in-chrome__javascript_tool({
+      code: buildCoverReplaceStep1_RemoveExistingJs()
+    });
+    if (step1?.error) {
+      log_warn(`Cover remove step1 falhou: ${step1.error}`);
+      continue; // tentar novamente na próxima iteração (fix #2: break→continue)
+    }
+    // Aguardar fora do javascript_tool — remoção React é async (fix #3: restore wait)
+    await computer.wait({ seconds: 2 });
+
+    // Etapa 2: upload da nova cover via DataTransfer (<15s total)
+    // Passar existingSrc da Etapa 1 pra excluir cover antiga da busca da img subida (#2283 fix #6)
+    const step2 = await mcp__claude-in-chrome__javascript_tool({
+      code: buildCoverReplaceStep2_UploadJs(imageUrl, "04-d1-2x1.jpg", step1.existingSrc ?? "")
+    });
+    cover = classifyCoverVerify(step2);
+  } else {
+    // Sem cover existente — upload direto via DataTransfer (caso normal)
+    const r = await mcp__claude-in-chrome__javascript_tool({
+      code: buildCoverDataTransferJs(imageUrl)
+    });
+    cover = classifyCoverVerify(r);
+  }
   if (cover.applied) break;
   if (attempt < 3) {
-    log_warn(`Cover (DataTransfer) tentativa ${attempt}/3 falhou: ${cover.reason}. Retry em ${attempt * 5}s...`);
-    sleep(attempt * 5_000);
+    log_warn(`Cover tentativa ${attempt}/3 falhou: ${cover.reason}. Retry em ${attempt * 5}s...`);
+    // fix #4: restore inter-attempt backoff (fora do javascript_tool)
+    await computer.wait({ seconds: attempt * 5 });
   }
 }
 ```
 
-**⚠️ Verificação é DOM-only (#1705):** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente) — NÃO validar a capa via API. `buildCoverDataTransferJs` já checa via DOM ("Add thumbnail" sumiu + thumbnail `beehiiv-images-production` presente) e `classifyCoverVerify` decide.
+**⚠️ Verificação é DOM-only (#1705):** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente) — NÃO validar a capa via API. Os helpers já checam via DOM ("Add thumbnail" sumiu + thumbnail `beehiiv-images-production` presente) e `classifyCoverVerify` decide.
 
 **Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem que `classifyCoverVerify` retorne `applied: true`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
 
@@ -332,6 +372,8 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
 
 **⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
+
+**⚠️ DEPRECATED (#2283) — `buildCoverReplaceJs` legado:** combina remoção + upload num único call e causa CDP timeout (45s) quando há cover existente. Usar `buildCoverReplaceStep1_RemoveExistingJs` + `buildCoverReplaceStep2_UploadJs` separados.
 
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
@@ -402,6 +444,29 @@ const node = document.querySelector('.node-htmlSnippet');
 ```
 
 Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`. Se editor for undefined, esperar 1-2s e retentar (TipTap pode estar inicializando).
+
+**⚠️ #2283 — Template pode carregar conteúdo da edição ANTERIOR (`isEmpty: false`).** O template "HTML" salvou o htmlSnippet da última run se o draft anterior não foi limpado antes de salvar. Se `isEmpty: false`, **NÃO prosseguir pro paste** sem antes limpar o snippet:
+
+```typescript
+import { buildSnippetClearJs } from "scripts/lib/beehiiv-cover-upload.ts";
+
+// Fase 1b — limpar snippet stale se não vazio
+if (!isEmpty) {
+  const clearResult = await mcp__claude-in-chrome__javascript_tool({ code: buildSnippetClearJs() });
+  // clearResult: { isEmpty, cleared, bytesCleared?, docSizeAfter, error? }
+  if (clearResult?.error) {
+    log_warn(`Snippet clear falhou: ${clearResult.error} — paste pode sobrepor conteúdo stale`);
+  } else if (clearResult?.cleared) {
+    log_info(`Snippet limpo: ${clearResult.bytesCleared} bytes removidos. Prosseguindo com paste.`);
+  }
+  // Aguardar autosave da limpeza (fora do javascript_tool — não desperdiça orçamento CDP)
+  // computer.wait({ seconds: 3 });
+}
+```
+
+Também resetar **Subtitle** se vier com valor da edição anterior (verificar se o campo tem valor diferente do `subtitle` extraído no passo 1 e sobrescrever via `buildSetFieldJs`). A Cover stale é tratada pelo fluxo §4b (replace em 2 etapas).
+
+**Raiz do problema (#2283):** o template "HTML" do Beehiiv persiste o htmlSnippet entre usos — salvar o template enquanto com conteúdo carrega esse conteúdo na próxima criação de post. **Mitigação permanente:** nunca salvar o template "HTML" enquanto o snippet tem conteúdo (editor deve limpar manualmente antes de "Save as template" se precisar atualizar o template).
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
@@ -513,6 +578,22 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 **#1766 — wait fora do `javascript_tool`.** NÃO colocar `await new Promise(r=>setTimeout(r,8000))` DENTRO de uma chamada `javascript_tool` — o wait conta pro orçamento dos 45s do CDP. Faça o wait via `computer.wait` (ou esperar entre chamadas MCP) e mantenha cada `javascript_tool` curto e numa chamada separada.
 
 **Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s (via `computer.wait`, não dentro do `javascript_tool`) antes de prosseguir. Validação opcional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
+
+**⚠️ #2283 — CDP timeout no editor trava o autosave.** Se qualquer `javascript_tool` retornar `CDP Runtime.evaluate timed out after 45000ms` (ou equivalente) **enquanto o editor está aberto**, o autosave do Beehiiv pode congelar: `updated_at` fica fixo e campos setados **após** o timeout (Subtitle, Subject) param de persistir mesmo com retry. Sintomas:
+
+- `updated_at` constante após edições subsequentes.
+- Subtítulo não persiste via nenhum método (execCommand, native setter, teclado real).
+- Body + título (setados ANTES do timeout) persistem normalmente.
+
+**Procedimento obrigatório após qualquer CDP timeout no editor:**
+
+1. **Registrar** o timeout em `unfixed_issues[]` com `reason: "cdp_timeout_{step}"` e o valor `docSize` no momento.
+2. **Reload da página** (`navigate` pra mesma URL do draft): forçar re-inicialização do renderer.
+3. **Re-verificar persistência** via varredura `doc.descendants` (merge tags + docSize). Se docSize voltou ao pré-paste, o autosave não capturou — re-paste obrigatório.
+4. **Re-setar campos afetados** (Subtitle, Subject) via keyboard real (`computer` click + type) pós-reload, e confirmar persistência via `get_post` antes de prosseguir.
+5. **NUNCA tentar re-setar campos sem reload** — o renderer frozen não aceita writes, mesmo que a UI pareça responsiva.
+
+**Raiz do problema (#2283):** o timeout do CDP congela o renderer do Beehiiv e o IPC do autosave. Reload restaura o IPC. Prevenção permanente: nunca combinar operações longas (fetch de blob + sleeps) num único `javascript_tool` — ver §4b cover replace em 2 etapas e `#1766`.
 
 #### 5.4 Verificação pós-paste — preview
 
