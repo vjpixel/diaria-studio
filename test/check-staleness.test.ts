@@ -1,10 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   isStale,
   lagMinutes,
   evaluateStaleness,
   STAGE_CHECKS,
+  extractReviewedUrls,
+  extractPromptUrlLocal,
+  imageUrlsMatch,
+  buildGetImageFresh,
 } from "../scripts/check-staleness.ts";
 
 describe("isStale (#120)", () => {
@@ -169,6 +176,270 @@ describe("evaluateStaleness — orchestration (#120)", () => {
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
     assert.match(stale[0].downstream_mtime, /^\d{4}-\d{2}-\d{2}T/);
     assert.match(stale[0].upstream_mtime, /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("check_mode é sempre 'mtime'", () => {
+    const get = mkGetter({
+      "03-social.md": Date.parse("2026-04-24T19:33:34Z"),
+      "02-reviewed.md": Date.parse("2026-04-24T22:13:13Z"),
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
+    assert.equal(stale[0].check_mode, "mtime");
+  });
+});
+
+describe("#2287 — image-content-fresh URL suppression", () => {
+  // Helpers
+  function mkGetter(mtimes: Record<string, number | null>) {
+    return (path: string) => mtimes[path] ?? null;
+  }
+
+  const imgOldMtime = Date.parse("2026-06-15T08:00:00Z"); // gerada antes do reorder
+  const promptNewMtime = Date.parse("2026-06-15T09:30:00Z"); // prompt renomeado = mtime novo
+
+  const checks = [
+    { downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
+  ];
+
+  it("(a) imagem genuinamente stale: getImageFresh=false → stale reportado", () => {
+    // Editor trocou artigo em 02-reviewed.md sem regenerar imagem.
+    // getImageFresh retorna false (URL mismatch) → mtime stale deve ser reportado.
+    const getMtime = mkGetter({
+      "04-d1-2x1.jpg": imgOldMtime,
+      "_internal/02-d1-prompt.md": promptNewMtime,
+    });
+    // getImageFresh=false: imagem NÃO está fresca (article-swap sem regenerar)
+    const getImageFresh = (_relPath: string) => false;
+
+    const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
+    assert.equal(stale.length, 1, "(a) imagem genuinamente stale deve ser reportada");
+    assert.equal(stale[0].downstream, "04-d1-2x1.jpg");
+    assert.equal(stale[0].check_mode, "mtime");
+  });
+
+  it("(b) reorder pós-geração: getImageFresh=true → FP de mtime suprimido", () => {
+    // Após reorder: prompts são renomeados (mtime novo), imagem não muda de conteúdo.
+    // A URL do prompt bate com o artigo atual → getImageFresh=true → NÃO stale.
+    const getMtime = mkGetter({
+      "04-d1-2x1.jpg": imgOldMtime,
+      "_internal/02-d1-prompt.md": promptNewMtime,
+    });
+    // getImageFresh=true: imagem está fresca (URL match, apenas prompt foi renomeado)
+    const getImageFresh = (_relPath: string) => true;
+
+    const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
+    assert.deepEqual(stale, [], "(b) FP de mtime deve ser suprimido quando getImageFresh=true");
+  });
+
+  it("sem getImageFresh: imagem stale por mtime (comportamento pré-#2287)", () => {
+    const getMtime = mkGetter({
+      "04-d1-2x1.jpg": imgOldMtime,
+      "_internal/02-d1-prompt.md": promptNewMtime,
+    });
+    // Sem getImageFresh: mtime puro — stale reportado (inclui FP de reorder)
+    const stale = evaluateStaleness(checks, getMtime);
+    assert.equal(stale.length, 1, "sem getImageFresh: mtime puro, stale reportado");
+    assert.equal(stale[0].check_mode, "mtime");
+  });
+
+  it("texto (03-social.md) não é afetado por getImageFresh", () => {
+    // getImageFresh só se aplica a imagens, não a arquivos de texto.
+    const textChecks = [
+      { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
+    ];
+    const getMtime = mkGetter({
+      "03-social.md": Date.parse("2026-06-15T08:00:00Z"),
+      "02-reviewed.md": Date.parse("2026-06-15T09:30:00Z"),
+    });
+    // getImageFresh sempre true — mas não deve afetar arquivos de texto
+    const getImageFresh = (_relPath: string) => true;
+
+    const stale = evaluateStaleness(textChecks, getMtime, 1000, getImageFresh);
+    assert.equal(stale.length, 1, "texto stale não deve ser suprimido por getImageFresh");
+    assert.equal(stale[0].downstream, "03-social.md");
+    assert.equal(stale[0].check_mode, "mtime");
+  });
+});
+
+describe("#2287 — extractReviewedUrls + extractPromptUrlLocal + imageUrlsMatch", () => {
+  it("extractReviewedUrls extrai URLs dos destaques do reviewed.md", () => {
+    const md = `
+## D1 — Título destaque 1
+
+Texto do destaque com [link](https://example.com/article-1).
+
+## D2 — Título destaque 2
+
+Texto com [link](https://example.com/article-2).
+
+## D3 — Título destaque 3
+
+[link](https://example.com/article-3)
+`;
+    const urls = extractReviewedUrls(md);
+    assert.ok(urls.length >= 1, "deve extrair ao menos 1 URL");
+    assert.ok(urls.some((u) => u.includes("example.com")), "deve ter URL de exemplo");
+  });
+
+  it("extractPromptUrlLocal extrai destaque_url do frontmatter", () => {
+    const prompt = `---
+destaque_url: https://example.com/article-1
+---
+# Prompt de imagem
+Van Gogh style...`;
+    assert.equal(extractPromptUrlLocal(prompt), "https://example.com/article-1");
+  });
+
+  it("extractPromptUrlLocal retorna null quando destaque_url ausente", () => {
+    const prompt = `# Prompt sem frontmatter\nVan Gogh style...`;
+    assert.equal(extractPromptUrlLocal(prompt), null);
+  });
+
+  it("imageUrlsMatch: mesma URL → true", () => {
+    assert.equal(imageUrlsMatch("https://example.com/article", "https://example.com/article"), true);
+  });
+
+  it("imageUrlsMatch: URLs iguais exceto trailing slash → true", () => {
+    assert.equal(imageUrlsMatch("https://example.com/article/", "https://example.com/article"), true);
+  });
+
+  it("imageUrlsMatch: URLs com UTM params → true (strip tracking)", () => {
+    assert.equal(
+      imageUrlsMatch(
+        "https://example.com/article?utm_source=newsletter",
+        "https://example.com/article",
+      ),
+      true,
+    );
+  });
+
+  it("imageUrlsMatch: URLs diferentes → false", () => {
+    assert.equal(imageUrlsMatch("https://example.com/article-1", "https://example.com/article-2"), false);
+  });
+});
+
+describe("#2287 — buildGetImageFresh (integração com fs real)", () => {
+  it("(a) imagem stale real: prompt URL ≠ reviewed URL → getImageFresh=false → stale reportado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      // reviewed.md com D1 = article-NEW (editor trocou o artigo)
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `## D1 — Título novo\n\nTexto com [link](https://example.com/article-NEW).\n`,
+      );
+      // prompt com destaque_url = article-OLD (imagem gerada para artigo antigo)
+      writeFileSync(
+        join(dir, "_internal", "02-d1-prompt.md"),
+        `destaque_url: https://example.com/article-OLD\n# Prompt Van Gogh\n`,
+      );
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined, "buildGetImageFresh deve retornar função");
+
+      // URL mismatch → NOT fresh → stale deve ser reportado
+      assert.equal(
+        getImageFresh!("04-d1-2x1.jpg"),
+        false,
+        "(a) URL mismatch → getImageFresh=false → imagem stale reportada",
+      );
+
+      // Confirmar que evaluateStaleness reporta stale
+      const imgOldMtime = Date.parse("2026-06-15T08:00:00Z");
+      const promptNewMtime = Date.parse("2026-06-15T09:30:00Z");
+      const getMtime = (rel: string) => {
+        if (rel === "04-d1-2x1.jpg") return imgOldMtime;
+        if (rel === "_internal/02-d1-prompt.md") return promptNewMtime;
+        return null;
+      };
+      const checks = [{ downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] }];
+      const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
+      assert.equal(stale.length, 1, "(a) imagem genuinamente stale deve ser reportada");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("(b) reorder correto: prompt URL = reviewed URL → getImageFresh=true → FP suprimido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      const articleUrl = "https://example.com/same-article";
+
+      // reviewed.md e prompt com MESMA URL (reorder: prompt renomeado, artigo igual)
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `## D1 — Título\n\nTexto com [link](${articleUrl}).\n`,
+      );
+      writeFileSync(
+        join(dir, "_internal", "02-d1-prompt.md"),
+        `destaque_url: ${articleUrl}\n# Prompt Van Gogh\n`,
+      );
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined, "buildGetImageFresh deve retornar função");
+
+      // URL match → IS fresh → FP de mtime deve ser suprimido
+      assert.equal(
+        getImageFresh!("04-d1-2x1.jpg"),
+        true,
+        "(b) URL match → getImageFresh=true → FP de mtime suprimido",
+      );
+
+      // Confirmar que evaluateStaleness NÃO reporta stale
+      const imgOldMtime = Date.parse("2026-06-15T08:00:00Z");
+      const promptNewMtime = Date.parse("2026-06-15T09:30:00Z");
+      const getMtime = (rel: string) => {
+        if (rel === "04-d1-2x1.jpg") return imgOldMtime;
+        if (rel === "_internal/02-d1-prompt.md") return promptNewMtime;
+        return null;
+      };
+      const checks = [{ downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] }];
+      const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
+      assert.deepEqual(stale, [], "(b) FP de mtime deve ser suprimido após reorder");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reviewed.md ausente → buildGetImageFresh retorna undefined (degradação graceful)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      // Sem reviewed.md → undefined
+      assert.equal(buildGetImageFresh(dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prompt sem destaque_url → getImageFresh=false (não suprime)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `## D1 — Título\n\nTexto com [link](https://example.com/article-1).\n`,
+      );
+      // Prompt SEM destaque_url (edição legada pré-#606)
+      writeFileSync(
+        join(dir, "_internal", "02-d1-prompt.md"),
+        `# Prompt Van Gogh (sem destaque_url)\nAlgum texto de prompt.\n`,
+      );
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined);
+      // Sem destaque_url → null → urlsMatch não pode comparar → false
+      assert.equal(
+        getImageFresh!("04-d1-2x1.jpg"),
+        false,
+        "prompt sem destaque_url → não suprimir (conservativo)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

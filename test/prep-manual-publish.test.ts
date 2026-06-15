@@ -1,8 +1,9 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { checkNewsletterHtml } from "../scripts/prep-manual-publish.ts";
 
 /**
@@ -85,5 +86,49 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
     const result = checkNewsletterHtml(editionDir);
     assert.equal(result.passed, false);
     assert.match(result.detail, /\{\{email\}\}/);
+  });
+});
+
+describe("prep-manual-publish #2286 — publicationId via platform.config.json fallback", () => {
+  // Regressão: antes de #2286, prep-manual-publish.ts abortava com
+  // "envs ausentes: BEEHIIV_PUBLICATION_ID" mesmo quando platform.config.json
+  // continha beehiiv.publicationId. Verificar que o módulo agora importa
+  // loadBeehiivConfig (fallback config) em vez de checar o env diretamente.
+  it("prep-manual-publish.ts importa loadBeehiivConfig de scripts/lib/beehiiv-config.ts", () => {
+    const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const src = readFileSync(resolve(ROOT, "scripts/prep-manual-publish.ts"), "utf8");
+    // O script deve importar loadBeehiivConfig
+    assert.ok(
+      src.includes("loadBeehiivConfig"),
+      "prep-manual-publish.ts deve importar loadBeehiivConfig (#2286 — fallback via config)",
+    );
+    // A verificação manual de publicationId (que abortava sem env) não deve mais existir
+    assert.ok(
+      !src.includes('missing.push("BEEHIIV_PUBLICATION_ID")'),
+      "prep-manual-publish.ts não deve mais checar BEEHIIV_PUBLICATION_ID manualmente (removido em #2286)",
+    );
+  });
+
+  it("beehiiv-config.ts: loadBeehiivConfig lê publicationId de platform.config.json quando env ausente", () => {
+    // Verifica o helper centralizado usado agora por prep-manual-publish + verify-scheduled-post.
+    const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const helperSrc = readFileSync(resolve(ROOT, "scripts/lib/beehiiv-config.ts"), "utf8");
+    // Helper deve ter lógica de fallback config
+    assert.ok(
+      helperSrc.includes("platform.config.json"),
+      "beehiiv-config.ts deve ler platform.config.json como fallback",
+    );
+    assert.ok(
+      helperSrc.includes("BEEHIIV_PUBLICATION_ID"),
+      "beehiiv-config.ts deve tentar BEEHIIV_PUBLICATION_ID primeiro",
+    );
+    // Verificar que platform.config.json tem o publicationId esperado
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+      beehiiv?: { publicationId?: string };
+    };
+    assert.ok(
+      cfg.beehiiv?.publicationId?.startsWith("pub_"),
+      `platform.config.json.beehiiv.publicationId deve começar com 'pub_', got: ${cfg.beehiiv?.publicationId}`,
+    );
   });
 });

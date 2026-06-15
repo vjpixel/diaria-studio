@@ -1,14 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   flattenCategorized,
   toCategorized,
   splitRoundRobin,
   chunkCountFor,
   buildChunks,
+  main as splitMain,
   type Categorized,
   type Article,
 } from "../scripts/split-articles-for-scoring.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const mk = (url: string, category: string): Article => ({ url, title: url, category });
 
@@ -107,5 +114,161 @@ describe("buildChunks", () => {
       chunks[0].lancamento.length + chunks[0].radar.length + chunks[0].use_melhor.length,
       7,
     );
+  });
+});
+
+// Helper to run splitMain() with argv override + stdout capture
+function runSplitMain(
+  args: { categorizedPath: string; outDir: string; chunkSize?: number },
+): { stdout: string } {
+  const origArgv = process.argv;
+  const origWrite = process.stdout.write.bind(process.stdout);
+  let stdoutCapture = "";
+  process.stdout.write = (s: string | Uint8Array) => {
+    stdoutCapture += s.toString();
+    return true;
+  };
+  process.argv = [
+    "node",
+    "split-articles-for-scoring.ts",
+    "--categorized", args.categorizedPath,
+    "--out-dir", args.outDir,
+    "--chunk-size", String(args.chunkSize ?? 30),
+  ];
+  try {
+    splitMain();
+  } finally {
+    process.stdout.write = origWrite;
+    process.argv = origArgv;
+  }
+  return { stdout: stdoutCapture };
+}
+
+const MINIMAL_CATEGORIZED = {
+  categorized: {
+    lancamento: [{ url: "https://example.com/1", title: "T1", category: "lancamento" }],
+    radar: [],
+    use_melhor: [],
+    video: [],
+  },
+};
+
+describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de escrever", () => {
+  // Regressão: antes de #2287, chunks de runs anteriores ficavam no dir.
+  // scorer-chunk podia ler scored-chunk-*.json stale (de outra edição) e mesclar
+  // com dados do run atual. Agora split-articles-for-scoring limpa o dir primeiro.
+  //
+  // #6 safety: scored-chunk-*.json são output do scorer paralelo. Apagá-los
+  // incondicionalmente destrói scoring em andamento num retry. A guarda:
+  //   - Se tmp-allscored.json (output do merge) EXISTE no pai → merge completou
+  //     → scored-chunk-*.json já foram consumidos → seguro remover.
+  //   - Se tmp-allscored.json AUSENTE → merge ainda não rodou → PRESERVAR
+  //     scored-chunk-*.json para não forçar re-scoring.
+
+  it("scoring-chunk-*.json stale de run anterior são sempre removidos", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(join(chunksDir, "scoring-chunk-0.json"), '{"stale":"old-0"}');
+      writeFileSync(join(chunksDir, "scoring-chunk-1.json"), '{"stale":"old-1"}');
+      writeFileSync(join(chunksDir, "other-file.txt"), "keep-me");
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      // Arquivos não-relacionados preservados
+      assert.ok(existsSync(join(chunksDir, "other-file.txt")), "other-file.txt preservado");
+      // Novos scoring-chunk escritos
+      const files = readdirSync(chunksDir).filter((f) => f.startsWith("scoring-chunk-"));
+      assert.ok(files.length >= 1, "novo scoring-chunk-*.json escrito");
+      const content = JSON.parse(readFileSync(join(chunksDir, "scoring-chunk-0.json"), "utf8"));
+      assert.ok(content.categorized, "novo chunk tem shape categorized");
+      assert.ok(!JSON.stringify(content).includes('"stale"'), "stale data não presente");
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it("#6 guarda: scored-chunk-*.json PRESERVADOS quando merge ainda não completou (tmp-allscored.json ausente)", () => {
+    // Cenário: pipeline interrompida após scoring, antes do merge.
+    // Re-rodar split não deve destruir os scored-chunk-*.json.
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      // scored-chunk-*.json existem (scoring completou mas merge não rodou ainda)
+      writeFileSync(join(chunksDir, "scored-chunk-0.json"), '{"scored":"chunk-0-data"}');
+      writeFileSync(join(chunksDir, "scored-chunk-1.json"), '{"scored":"chunk-1-data"}');
+      // tmp-allscored.json AUSENTE no pai (merge não rodou)
+      // (NÃO criar join(tmpBase, "tmp-allscored.json"))
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      // scored-chunk-*.json devem estar PRESERVADOS
+      assert.ok(
+        existsSync(join(chunksDir, "scored-chunk-0.json")),
+        "scored-chunk-0.json PRESERVADO quando merge não completou (#6)",
+      );
+      assert.ok(
+        existsSync(join(chunksDir, "scored-chunk-1.json")),
+        "scored-chunk-1.json PRESERVADO quando merge não completou (#6)",
+      );
+      // Conteúdo preservado (não zerado)
+      const scored = JSON.parse(readFileSync(join(chunksDir, "scored-chunk-0.json"), "utf8"));
+      assert.deepEqual(scored, { scored: "chunk-0-data" }, "conteúdo do scored-chunk preservado");
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it("#6 guarda: scored-chunk-*.json REMOVIDOS quando merge completou (tmp-allscored.json presente)", () => {
+    // Cenário: pipeline completou até o merge. scored-chunk-*.json já foram
+    // consumidos — seguro remover numa nova rodada.
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(join(chunksDir, "scored-chunk-0.json"), '{"scored":"stale-0"}');
+      writeFileSync(join(chunksDir, "scored-chunk-1.json"), '{"scored":"stale-1"}');
+      // tmp-allscored.json PRESENTE no pai (merge completou)
+      writeFileSync(join(tmpBase, "tmp-allscored.json"), '{"all_scored":[]}');
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      // scored-chunk-*.json devem ter sido REMOVIDOS (merge já os consumiu)
+      assert.ok(
+        !existsSync(join(chunksDir, "scored-chunk-0.json")),
+        "scored-chunk-0.json removido quando merge completou (#6)",
+      );
+      assert.ok(
+        !existsSync(join(chunksDir, "scored-chunk-1.json")),
+        "scored-chunk-1.json removido quando merge completou (#6)",
+      );
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it("stdout: manifest JSON válido após limpeza", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+      const { stdout } = runSplitMain({ categorizedPath, outDir: chunksDir });
+      const manifest = JSON.parse(stdout.trim());
+      assert.ok(typeof manifest.total_articles === "number");
+      assert.ok(typeof manifest.chunk_count === "number");
+      assert.ok(Array.isArray(manifest.chunk_files));
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
   });
 });

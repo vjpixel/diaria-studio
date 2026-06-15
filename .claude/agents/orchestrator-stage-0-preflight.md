@@ -103,6 +103,11 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
   npx tsx scripts/check-google-token.ts
   ```
   Exit 0 = válido (ou `expiring_soon` — funciona, mas imprime aviso de idade perto do limite de 7d). Exit 1 = expirado/inválido/ausente → o stderr traz **1 banner consolidado** com a ação (`oauth-setup.ts` + `/diaria-inbox` depois). Se exit 1, **alertar o editor com o banner e perguntar** se re-autentica agora (`npx tsx scripts/oauth-setup.ts`) antes de seguir, ou continua sem Drive/Gmail (submissões do editor desta edição não entrarão — ver `docs/google-oauth-production.md` pra causa raiz dos 7d). Isso substitui descobrir a expiração via 3 falhas espalhadas no meio do pipeline.
+- **Pre-flight token Cloudflare/wrangler (#2286).** O `CLOUDFLARE_API_TOKEN` expirado só estoura em `maintain-valid-editions` (§0d.bis) — depois de gastar tokens em dedup e CTR. Checar ANTES, análogo ao check-google-token:
+  ```bash
+  npx tsx scripts/check-cloudflare-token.ts
+  ```
+  Exit 0 = ativo. Exit 1 = ausente/inválido → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). Exit 2 = erro de rede (API Cloudflare indisponível) — não bloqueia pipeline (warn only). Se exit 1, **alertar o editor com o banner** e perguntar se renova agora ou continua (impacto: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
 - **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true`, rodar:
   ```bash
   npx tsx scripts/drive-sync.ts --health-check

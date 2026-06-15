@@ -28,7 +28,7 @@
  * cair no caminho single-scorer nesse caso).
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
@@ -189,6 +189,59 @@ export function main(): void {
   const chunks = buildChunks(categorized, chunkSize);
   const absOutDir = resolve(ROOT, outDir);
   mkdirSync(absOutDir, { recursive: true });
+
+  // #2287 / #6-fix: limpar scoring-chunks/ pré-existentes antes de escrever os novos.
+  // Chunks de runs anteriores podem ter scores de URLs de outra edição.
+  // Se o scorer-chunk lê um arquivo stale antes de sobrescrever, pode mesclar
+  // dados antigos. Limpar garante que o diretório começa vazio.
+  //
+  // GUARDA SEGURA (#6): scored-chunk-*.json são o OUTPUT dos scorer-chunk paralelos.
+  // Apagá-los incondicionalmente destrói o trabalho de scoring em caso de retry
+  // (pipeline interrompida entre scoring e merge). Só apagar scored-chunk-*.json
+  // se a merge ainda não completou — i.e., tmp-allscored.json (output do merge)
+  // ainda NÃO existe no diretório pai. Se o merge já rodou, os scored-chunk-*.json
+  // já foram consumidos e não precisamos protegê-los; mas se o merge ainda não
+  // rodou (ou nunca rodou), limpá-los forçaria re-scoring desnecessário.
+  //
+  // Ordem: PRIMEIRO limpar, DEPOIS escrever — nunca o contrário.
+  if (existsSync(absOutDir)) {
+    // Detectar se merge já completou (scored-chunk-*.json já foram consumidos).
+    const parentDir = resolve(absOutDir, "..");
+    const mergeCompleted = existsSync(resolve(parentDir, "tmp-allscored.json"));
+
+    let scoringChunksRemoved = 0;
+    let scoredChunksRemoved = 0;
+    for (const entry of readdirSync(absOutDir)) {
+      if (entry.startsWith("scoring-chunk-") && entry.endsWith(".json")) {
+        rmSync(resolve(absOutDir, entry), { force: true });
+        scoringChunksRemoved++;
+      }
+      // scored-chunk-*.json: só remover se merge ainda NÃO completou.
+      // Se merge completou, scorer-chunk já foi consumido — podemos limpar também.
+      // Se merge NÃO completou mas scored-chunk existe, scoring pode estar em curso
+      // ou parcialmente concluído → preservar para evitar re-scoring desnecessário.
+      if (entry.startsWith("scored-chunk-") && entry.endsWith(".json")) {
+        if (mergeCompleted) {
+          // Merge já consumiu os chunks — limpar é seguro.
+          rmSync(resolve(absOutDir, entry), { force: true });
+          scoredChunksRemoved++;
+        } else {
+          // Merge ainda não rodou: estes podem ser chunks de scoring em andamento.
+          // Preservar — log avisa o operador que scored-chunk pré-existentes ficaram.
+          console.error(
+            `[split-articles-for-scoring] PRESERVANDO ${entry} — merge ainda não completou ` +
+            `(tmp-allscored.json ausente). Re-rodar split não destrói scoring em andamento (#2287/#6).`,
+          );
+        }
+      }
+    }
+    if (scoringChunksRemoved > 0 || scoredChunksRemoved > 0) {
+      console.error(
+        `[split-articles-for-scoring] scoring-chunks/ limpo: ` +
+        `${scoringChunksRemoved} scoring-chunk, ${scoredChunksRemoved} scored-chunk removidos (#2287)`,
+      );
+    }
+  }
 
   const chunkFiles: string[] = [];
   chunks.forEach((chunk, i) => {

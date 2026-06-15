@@ -24,7 +24,8 @@
  *         "downstream_mtime": "2026-04-24T19:33:34Z",
  *         "upstream": "02-reviewed.md",
  *         "upstream_mtime": "2026-04-24T22:13:13Z",
- *         "lag_minutes": 159
+ *         "lag_minutes": 159,
+ *         "check_mode": "mtime"
  *       }
  *     ]
  *   }
@@ -34,10 +35,10 @@
  *   1 = stale detectado (orchestrator decide: re-rodar upstream ou continuar)
  *   2 = erro (edition-dir não existe, args inválidos)
  *
- * Refs #120.
+ * Refs #120, #1710, #2287.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +79,75 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// image-content-fresh helpers (#2287)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extrai URLs dos destaques D1/D2/D3 do 02-reviewed.md.
+ * Linha com marcador "destaque" seguida de URL — compatível com o template.
+ * Replica a lógica de extractDestaqueUrls de match-prompts-to-destaques.ts
+ * para evitar import circular / dependência do CLI.
+ */
+export function extractReviewedUrls(reviewedMd: string): string[] {
+  const urls: string[] = [];
+  // Procura por padrões: linha "URL:" ou "Link:" em contexto de destaque,
+  // ou padrão de href em markdown: [texto](URL) após seção de destaque.
+  // Mais confiável: reutiliza extractDestaqueUrls via regex direto.
+  // Padrão do template: destaque_url está no front-matter dos prompts, mas
+  // em 02-reviewed.md o URL aparece como [título](URL) na linha do headline.
+  // Regex: primeira URL de cada bloco "## D{N}" / "Destaque {N}".
+  const blockRegex = /(?:^##\s+D[1-3]|^Destaque\s+[1-3])/im;
+  // Usa o mesmo extractor que stage-4.ts: procura URLs de http(s) no MD.
+  // Ordem: D1 primeiro, D2, D3.
+  const urlRegex = /https?:\/\/[^\s\)\"]+/g;
+  // Dividir por blocos de destaque (#D{N})
+  const blocks = reviewedMd.split(/(?=^#{1,3}\s+D[1-3])/m);
+  for (const block of blocks) {
+    if (!blockRegex.test(block)) continue;
+    const m = block.match(urlRegex);
+    if (m && m[0]) urls.push(m[0]);
+    if (urls.length >= 3) break;
+  }
+  return urls;
+}
+
+/**
+ * Extrai destaque_url do frontmatter de um arquivo de prompt.
+ * Formato: `destaque_url: https://...` em linha própria.
+ */
+export function extractPromptUrlLocal(promptMd: string): string | null {
+  const m = promptMd.match(/^destaque_url:\s*(\S+)/m);
+  return m ? m[1] : null;
+}
+
+/**
+ * Normaliza URL para comparação: lowercase host, strip trailing slash,
+ * strip UTM params. Path case-sensitive (RFC 3986).
+ */
+function normalizeUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    u.hostname = u.hostname.toLowerCase();
+    // Strip tracking params
+    for (const k of [...u.searchParams.keys()]) {
+      if (/^utm_|^ref$|^source$|^medium$|^campaign$/i.test(k)) {
+        u.searchParams.delete(k);
+      }
+    }
+    let s = u.toString();
+    if (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  } catch {
+    return raw.toLowerCase().replace(/\/$/, "");
+  }
+}
+
+/** True se as duas URLs são equivalentes após normalização. */
+export function imageUrlsMatch(a: string, b: string): boolean {
+  return normalizeUrl(a) === normalizeUrl(b);
+}
+
+// ---------------------------------------------------------------------------
 // Pure helpers — exported for tests
 // ---------------------------------------------------------------------------
 
@@ -87,6 +157,8 @@ export interface StaleEntry {
   upstream: string;
   upstream_mtime: string;
   lag_minutes: number;
+  /** Modo de comparação usado: "mtime" (único modo suportado). */
+  check_mode: "mtime";
 }
 
 export interface StalenessResult {
@@ -115,13 +187,35 @@ export function lagMinutes(downstreamMs: number, upstreamMs: number): number {
 }
 
 /**
- * Versão pura: recebe um getter de mtime + lista de checks, retorna stale[].
- * Permite testar sem fs real.
+ * Versão pura: recebe getters de mtime e image-content-fresh + lista de checks.
+ * Retorna stale[]. Permite testar sem fs real.
+ *
+ * Para arquivos de texto (03-social.md, 02-reviewed.md): usa mtime.
+ * Para imagens (*.jpg etc, #2287): usa mtime MAS suprime o falso-positivo de
+ * reorder via `getImageFresh`:
+ *   - Se `getImageFresh(relPath)` retorna `true`, a imagem está fresca
+ *     (prompt URL bate com o artigo atual em 02-reviewed.md) → NÃO stale.
+ *     Isso cobre o FP pós-reorder: apenas os PROMPTS são renomeados no
+ *     reorder (não as imagens); o mtime novo do prompt (upstream) causava
+ *     falso-positivo de staleness, mesmo que a imagem servisse o artigo certo.
+ *   - Se retorna `false` ou não é fornecido, usa mtime normalmente.
+ *     Isso garante que uma imagem genuinamente stale (editor trocou artigo
+ *     sem regenerar imagem — image-content-fresh falha) ainda seja detectada.
+ *
+ * A verificação image-content-fresh (#1730) em Stage 4 já cobre article-swap;
+ * esta supressão só evita que reorders reportem FP de mtime em check-staleness.
+ *
+ * @param getMtime       Getter de mtime em ms (retorna null se ausente).
+ * @param getImageFresh  Getter de freshness de imagem. Retorna true se a
+ *                       imagem serve o artigo atual (URL match via prompt
+ *                       frontmatter) → suprimir falso-positivo de mtime.
+ *                       Omitido = nunca suprimir (comportamento pré-#2287).
  */
 export function evaluateStaleness(
   checks: StageCheck[],
   getMtime: (relPath: string) => number | null,
   toleranceMs = 1000,
+  getImageFresh?: (relPath: string) => boolean,
 ): StaleEntry[] {
   const stale: StaleEntry[] = [];
   for (const check of checks) {
@@ -130,6 +224,15 @@ export function evaluateStaleness(
     for (const up of check.upstreams) {
       const uMs = getMtime(up);
       if (uMs === null) continue; // upstream não existe → skip
+
+      // #2287: para imagens, suprimir FP de mtime quando image-content-fresh
+      // passa (URL do prompt bate com artigo atual em 02-reviewed.md).
+      if (getImageFresh && isImagePath(check.downstream)) {
+        if (getImageFresh(check.downstream)) {
+          continue; // imagem fresca — FP de mtime suprimido
+        }
+      }
+
       if (isStale(dMs, uMs, toleranceMs)) {
         stale.push({
           downstream: check.downstream,
@@ -137,11 +240,75 @@ export function evaluateStaleness(
           upstream: up,
           upstream_mtime: new Date(uMs).toISOString(),
           lag_minutes: lagMinutes(dMs, uMs),
+          check_mode: "mtime",
         });
       }
     }
   }
   return stale;
+}
+
+/**
+ * Retorna true se o caminho relativo aponta para um arquivo de imagem.
+ * Não exportado — só usado internamente em evaluateStaleness e main().
+ */
+function isImagePath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return (
+    lower.endsWith(".jpg") ||
+    lower.endsWith(".jpeg") ||
+    lower.endsWith(".png") ||
+    lower.endsWith(".webp") ||
+    lower.endsWith(".gif")
+  );
+}
+
+/**
+ * Constrói um `getImageFresh` a partir do editionDir.
+ * Lê 02-reviewed.md + prompts de _internal/ para mapear slot → fresh.
+ * Retorna undefined se reviewed.md ausente (Stage 3 não rodou ainda).
+ */
+export function buildGetImageFresh(
+  editionDir: string,
+): ((relPath: string) => boolean) | undefined {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return undefined;
+
+  let reviewedUrls: string[];
+  try {
+    reviewedUrls = extractReviewedUrls(readFileSync(reviewedPath, "utf8"));
+  } catch {
+    return undefined; // reviewed ilegível → degradation
+  }
+  if (reviewedUrls.length === 0) return undefined;
+
+  const internalDir = resolve(editionDir, "_internal");
+  const slots = ["d1", "d2", "d3"] as const;
+
+  // freshMap: relative image path → boolean (true = URL matches)
+  const freshMap: Record<string, boolean> = {};
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const reviewedUrl = reviewedUrls[i];
+    if (!reviewedUrl) continue;
+
+    const promptPath = resolve(internalDir, `02-${slot}-prompt.md`);
+    if (!existsSync(promptPath)) continue;
+
+    let promptUrl: string | null;
+    try {
+      promptUrl = extractPromptUrlLocal(readFileSync(promptPath, "utf8"));
+    } catch {
+      continue; // prompt ilegível → não suprimir
+    }
+
+    const isFresh = promptUrl !== null && imageUrlsMatch(promptUrl, reviewedUrl);
+    // Map all image variants for this slot
+    freshMap[`04-${slot}-2x1.jpg`] = isFresh;
+    freshMap[`04-${slot}-1x1.jpg`] = isFresh;
+  }
+
+  return (relPath: string) => freshMap[relPath] ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +359,12 @@ function main(): void {
     return statSync(full).mtimeMs;
   };
 
-  const stale = evaluateStaleness(checks, getMtime);
+  // #2287: suprimir FP de mtime para imagens cuja URL de prompt bate com o artigo
+  // atual no 02-reviewed.md (image-content-fresh). Se reviewed.md ausente ou prompts
+  // sem destaque_url → getImageFresh = undefined → fallback para mtime puro.
+  const getImageFresh = buildGetImageFresh(editionDir);
+
+  const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
   const result: StalenessResult = {
     ok: stale.length === 0,
     stage: parsed.stage,

@@ -23,6 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
@@ -176,17 +177,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const apiKey = process.env.BEEHIIV_API_KEY;
-  const publicationId = process.env.BEEHIIV_PUBLICATION_ID;
-  const missing: string[] = [];
-  if (!apiKey) missing.push("BEEHIIV_API_KEY");
-  if (!publicationId) missing.push("BEEHIIV_PUBLICATION_ID");
-  if (missing.length > 0) {
-    console.error(
-      `[prep-manual-publish] envs ausentes: ${missing.join(", ")} — abortando`,
-    );
-    process.exit(1);
-  }
+  // #2286: publicationId lido via loadBeehiivConfig (env → platform.config.json).
+  // BEEHIIV_API_KEY ainda é obrigatório (sem fallback); publicationId tem fallback
+  // para beehiiv.publicationId em platform.config.json.
+  const cfg = loadBeehiivConfig("[prep-manual-publish]");
+  const { apiKey, publicationId } = cfg;
 
   const editionDir = resolve(ROOT, "data", "editions", edition);
   if (!existsSync(editionDir)) {
@@ -196,7 +191,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const apiOpts = { publicationId: publicationId!, apiKey: apiKey! };
+  const apiOpts = { publicationId, apiKey };
 
   // Run all checks
   const checks: Check[] = [
