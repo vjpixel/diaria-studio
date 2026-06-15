@@ -60,7 +60,8 @@ const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
  */
 export function extractFrontmatter(md: string, scanLines = 30): string | null {
   // Tentar canonical primeiro (line 1) — fast path para o caso normal
-  const canonical = md.match(/^---\n([\s\S]*?)\n---/);
+  // \r?\n handles both LF (Unix) and CRLF (Windows) line endings (#2304).
+  const canonical = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (canonical && canonical[1].trim().length > 0) return canonical[1];
 
   // Fallback (#1378): iterar pares de `---` dentro das primeiras N linhas

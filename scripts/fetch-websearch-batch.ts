@@ -353,11 +353,20 @@ async function main(): Promise<void> {
   const _editionNum = parseInt(args.edition ?? "0", 10);
   // #7: warn when --edition is missing so callers know which rotation was used.
   // The orchestrator always passes --edition; this catches manual/test invocations.
-  if (!args.edition || _editionNum === 0) {
-    console.error("[fetch-websearch-batch] WARN: --edition not set or is 0; how-to queries will use rotation slot 0 (first 3 topics). Pass --edition AAMMDD to rotate.");
+  // #2305: guard against NaN (non-numeric --edition) — NaN !== 0, so the old
+  // `=== 0` check missed it; use Number.isFinite to catch both 0 and NaN.
+  if (!args.edition || !Number.isFinite(_editionNum) || _editionNum <= 0) {
+    console.error("[fetch-websearch-batch] WARN: --edition not set or is invalid; how-to queries will use rotation slot 0 (first 3 topics). Pass --edition AAMMDD to rotate.");
   }
-  const howtoQueries = getHowToDiscoveryQueries(_editionNum);
+  // Skip how-to queries entirely when edition is NaN to avoid pushing undefined entries.
+  const safeEditionNum = Number.isFinite(_editionNum) && _editionNum > 0 ? _editionNum : 0;
+  const howtoQueries = getHowToDiscoveryQueries(safeEditionNum);
   for (const q of howtoQueries) {
+    // NaN-safe: skip any undefined query (defensive, should not occur with safeEditionNum).
+    if (q === undefined) {
+      console.error("[fetch-websearch-batch] WARN: skipping undefined how-to query (edition rotation index out of range)");
+      continue;
+    }
     discoveryTopics.push({ query: q });
   }
   console.error(`[fetch-websearch-batch] +${howtoQueries.length} how-to PT-BR queries adicionadas (#2278)`);

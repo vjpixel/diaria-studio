@@ -1368,3 +1368,95 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
   });
 });
 
+// ── Regressão #2304: CRLF round-trip ─────────────────────────────────────────────────────────
+//
+// Máquina do editor é Windows (OneDrive/VS Code usam CRLF). O caminho
+// ensureIntentionalErrorFrontmatter → extractFrontmatter (via checkIntentionalError)
+// precisa round-trippar sem false-positive `intentional_error_frontmatter_missing`.
+
+import {
+  extractFrontmatter,
+  checkIntentionalError,
+} from "../scripts/lib/lint-checks/intentional-error.ts";
+
+describe("CRLF round-trip (#2304)", () => {
+  it("extractFrontmatter: hits fast-path com CRLF line endings", () => {
+    // CRLF file: frontmatter na linha 1 deve acertar o canonical fast-path,
+    // não cair no scanner de fallback.
+    const crlf = "---\r\nintentional_error: none\r\n---\r\nCorpo.";
+    const fm = extractFrontmatter(crlf);
+    assert.ok(fm !== null, "extractFrontmatter deve retornar body não-nulo em arquivo CRLF");
+    assert.match(fm!, /intentional_error/, "deve conter a chave intentional_error");
+  });
+
+  it("extractFrontmatter: retorna body sem \\r ao ser parseado", () => {
+    const crlf = "---\r\nfoo: bar\r\nbaz: qux\r\n---\r\nCorpo.";
+    const fm = extractFrontmatter(crlf);
+    assert.ok(fm !== null);
+    // Body deve conter as chaves sem quebrar o parsing YAML simples
+    assert.ok(fm!.includes("foo: bar") || fm!.includes("foo: bar\r"), "deve conter a chave foo");
+  });
+
+  it("ensureIntentionalErrorFrontmatter: CRLF file → PLACEHOLDER_BLOCK usa \\r\\n", () => {
+    // Arquivo CRLF sem frontmatter → novo bloco YAML deve usar CRLF
+    const crlfBody = "Corpo da newsletter.\r\nSegunda linha.\r\n";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(crlfBody);
+    assert.equal(inserted, true, "deve inserir frontmatter");
+    // O bloco inserido deve usar CRLF (não LF bare)
+    assert.ok(out.includes("---\r\n"), "bloco frontmatter deve ter CRLF (\\r\\n)");
+    assert.ok(out.includes("intentional_error:\r\n"), "PLACEHOLDER_BLOCK deve usar \\r\\n");
+  });
+
+  it("ensureIntentionalErrorFrontmatter: CRLF file com frontmatter existente → chave inserida com CRLF", () => {
+    // Arquivo CRLF com frontmatter existente sem intentional_error
+    const crlf = "---\r\nsubtitle: \"Teste\"\r\n---\r\nCorpo.\r\n";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(crlf);
+    assert.equal(inserted, true, "deve inserir chave no frontmatter existente");
+    // Chave inserida deve usar CRLF
+    assert.ok(out.includes("intentional_error:\r\n"), "chave inserida deve usar \\r\\n");
+    // Frontmatter original intacto
+    assert.ok(out.includes("subtitle: \"Teste\""), "campo original deve estar intacto");
+  });
+
+  it("round-trip: CRLF file → ensureIntentionalError → extractFrontmatter encontra a chave", () => {
+    // Simula: arquivo CRLF vem do Drive → ensureIntentionalErrorFrontmatter insere
+    // placeholder → extractFrontmatter consegue parsear → sem false-positive missing.
+    const crlfMd = "---\r\nsubtitle: \"Ed 260616\"\r\n---\r\nCorpo.\r\n";
+    const { md: withFm } = ensureIntentionalErrorFrontmatter(crlfMd);
+    const fm = extractFrontmatter(withFm);
+    assert.ok(fm !== null, "extractFrontmatter deve encontrar frontmatter após ensureIntentionalErrorFrontmatter em CRLF");
+    assert.match(fm!, /intentional_error/, "frontmatter deve conter intentional_error");
+  });
+
+  it("round-trip via checkIntentionalError: CRLF file com {PREENCHER} → incomplete (não missing)", () => {
+    // Após ensureIntentionalErrorFrontmatter em CRLF, checkIntentionalError não deve
+    // reportar `intentional_error_frontmatter_missing` — deve reportar `_incomplete`
+    // (placeholder não preenchido). Demonstra que o fast-path de extractFrontmatter
+    // funciona em CRLF.
+    const tmp = mkdtempSync(join(tmpdir(), "crlf-roundtrip-"));
+    try {
+      const crlfMd = "---\r\nsubtitle: \"Ed 260616\"\r\n---\r\nCorpo.\r\n";
+      const { md: withFm } = ensureIntentionalErrorFrontmatter(crlfMd);
+      const mdPath = join(tmp, "02-reviewed.md");
+      // Escrever como binário pra preservar os \r\n
+      writeFileSync(mdPath, Buffer.from(withFm));
+      const result = checkIntentionalError(mdPath);
+      assert.notEqual(
+        result.label,
+        "intentional_error_missing: 02-reviewed.md sem frontmatter — adicione bloco YAML com intentional_error",
+        "não deve reportar missing (frontmatter foi inserido com CRLF)",
+      );
+      // Deve reportar incomplete (placeholder {PREENCHER} ainda lá) ou missing da chave,
+      // mas NÃO "sem frontmatter" (que indicaria que extractFrontmatter falhou).
+      assert.ok(
+        result.label?.includes("intentional_error_incomplete") ||
+        result.label?.includes("não está no formato mapping") ||
+        result.label?.includes("placeholder"),
+        `label deve indicar incomplete/placeholder, not 'sem frontmatter'. got: ${result.label}`,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+

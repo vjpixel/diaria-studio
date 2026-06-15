@@ -1,5 +1,5 @@
 /**
- * check-cloudflare-token.test.ts (#2286)
+ * check-cloudflare-token.test.ts (#2286, #2306)
  *
  * Testa o preflight de auth Cloudflare/wrangler.
  *
@@ -10,9 +10,11 @@
  *   A) token ausente → status: missing
  *   B) token inválido (API retorna 401) → status: invalid
  *   C) token ativo (API retorna 200 + status: active) → status: active
- *   D) erro de rede (fetch throws) → status: error
+ *   D) erro de rede (fetch throws) → status: error (exit 0, non-blocking)
  *   E) API retorna 200 mas status != "active" → status: invalid
- *   F) banner renderizado corretamente para missing/invalid; vazio para active
+ *   E2) success:true + sem result.status → status: invalid (#2306)
+ *   F) banner renderizado corretamente para missing/invalid; vazio para active/error
+ *   G) exit codes: transient→0, invalid/missing→1, active→0 (#2306)
  */
 
 import { describe, it } from "node:test";
@@ -99,14 +101,24 @@ describe("checkCloudflareToken (#2286)", () => {
     assert.ok(health.error?.includes("expired"), `erro deve mencionar 'expired', got: ${health.error}`);
   });
 
-  it("E2) API retorna 200 + success:true sem result.status → status: error (API anomaly, não invalid) (#7)", async () => {
-    // HTTP 200 + success:true + status field absent = transient API anomaly,
-    // NOT a bad token. Must not show rotate-token banner.
+  it("E2) API retorna 200 + success:true sem result.status → status: invalid (#2306)", async () => {
+    // HTTP 200 + success:true + status field absent/null = token expired/disabled.
+    // CF returns success:true but omits result.status for disabled tokens.
+    // Must show rotate-token banner (invalid), NOT the soft "try again" path (error).
     const health = await checkCloudflareToken(
       "tok_malformed_12",
       mockFetch(200, { success: true, result: {} }),
     );
-    assert.equal(health.status, "error", "missing result.status with success:true must be 'error', not 'invalid'");
+    assert.equal(health.status, "invalid", "missing result.status with success:true must be 'invalid' (expired/disabled token), not 'error'");
+  });
+
+  it("E3) API retorna 200 + success:true + result.status null → status: invalid (#2306)", async () => {
+    // Explicit null status — same treatment as absent.
+    const health = await checkCloudflareToken(
+      "tok_null_stat_12",
+      mockFetch(200, { success: true, result: { status: null } }),
+    );
+    assert.equal(health.status, "invalid", "null result.status must be 'invalid', not 'error'");
   });
 
   it("token_prefix nunca expõe mais de 8 chars do token", async () => {
@@ -159,13 +171,70 @@ describe("renderCloudflareTokenBanner (#2286)", () => {
     assert.equal(banner, "", "error de rede deve retornar banner vazio (soft note via main(), não banner de rotate-token)");
   });
 
-  it("F) error de rede + success:true (API anomaly) → banner VAZIO (#7)", () => {
-    // HTTP 200 success:true but missing result.status also maps to "error".
-    // Must not show rotate-token banner.
+  it("F) invalid sem result.status (token expirado) → banner NÃO vazio (#2306)", () => {
+    // HTTP 200 success:true + missing result.status now maps to "invalid" (not "error").
+    // The rotate-token banner MUST appear so the editor knows to act.
     const banner = renderCloudflareTokenBanner({
-      status: "error",
-      error: "Cloudflare API retornou status ausente com success:true",
+      status: "invalid",
+      error: "Token Cloudflare retornou status ausente/null (success:true). Provável token expirado/desabilitado.",
     });
-    assert.equal(banner, "", "API anomaly com success:true deve retornar banner vazio");
+    assert.ok(banner.length > 0, "token expirado/desabilitado deve retornar banner de renovação");
+    assert.ok(
+      banner.includes("INVÁLIDO") || banner.includes("wrangler") || banner.includes("CLOUDFLARE"),
+      "banner deve instruir renovação do token",
+    );
+  });
+});
+
+// ── Regressão #2306: exit codes — transient NON-BLOCKING, invalid/missing BLOCKING ─────────────
+//
+// main() não aceita fetchFn injetado, então testamos a lógica de determinação de
+// exit code a partir do status retornado por checkCloudflareToken() (que aceitamos
+// como ground truth pelo mock acima). Mapeamento esperado:
+//   status:"active"  → main retorna 0
+//   status:"error"   → main retorna 0 (transitório, não bloqueia — #2306)
+//   status:"missing" → main retorna 1 (bloqueia, banner)
+//   status:"invalid" → main retorna 1 (bloqueia, banner)
+//
+// Implementação: derivamos o exit code da mesma lógica do main():
+//   if (status === "error") → 0
+//   if (status === "active") → 0
+//   else → 1
+
+function deriveExitCode(status: "active" | "missing" | "invalid" | "error"): number {
+  if (status === "error") return 0; // transient, non-blocking (#2306)
+  if (status === "active") return 0;
+  return 1; // missing ou invalid → bloqueia
+}
+
+describe("exit codes (#2306 — regress transient=0, invalid=1)", () => {
+  it("G1) transient network error → exit 0 (non-blocking)", async () => {
+    const health = await checkCloudflareToken("tok_net_error", throwingFetch("ECONNREFUSED"));
+    assert.equal(health.status, "error");
+    assert.equal(deriveExitCode(health.status), 0, "transient deve sair 0, não bloquear Stage 0");
+  });
+
+  it("G2) token inválido (401) → exit 1 (blocking, rotate-token)", async () => {
+    const health = await checkCloudflareToken("tok_invalid_xx", mockFetch(401, {}));
+    assert.equal(health.status, "invalid");
+    assert.equal(deriveExitCode(health.status), 1, "token inválido deve bloquear Stage 0");
+  });
+
+  it("G3) success:true + sem result.status → exit 1 (blocking, token desabilitado) (#2306)", async () => {
+    const health = await checkCloudflareToken("tok_disabled_1", mockFetch(200, { success: true, result: {} }));
+    assert.equal(health.status, "invalid", "token desabilitado (missing status) deve ser invalid");
+    assert.equal(deriveExitCode(health.status), 1, "token desabilitado deve bloquear e pedir renovação");
+  });
+
+  it("G4) token ativo → exit 0", async () => {
+    const health = await checkCloudflareToken("tok_active_1234", mockFetch(200, { success: true, result: { status: "active" } }));
+    assert.equal(health.status, "active");
+    assert.equal(deriveExitCode(health.status), 0);
+  });
+
+  it("G5) token ausente → exit 1 (blocking)", async () => {
+    const health = await checkCloudflareToken("", mockFetch(401, {}));
+    assert.equal(health.status, "missing");
+    assert.equal(deriveExitCode(health.status), 1);
   });
 });

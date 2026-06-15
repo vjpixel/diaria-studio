@@ -15,9 +15,9 @@
  *   npx tsx scripts/check-cloudflare-token.ts
  *
  * Exit codes:
- *   0 = token válido (ou verificado como ativo via API)
- *   1 = token inválido/ausente — banner com a ação (wrangler login ou renovar .env)
- *   2 = erro inesperado (rede, API indisp)
+ *   0 = token válido (ativo via API) OU erro de rede transitório (não bloqueia Stage 0)
+ *   1 = token inválido/ausente/não-ativo — banner com a ação (wrangler login ou renovar .env)
+ *   (exit 2 removido em #2306 — transitório agora sai 0, não 2)
  *
  * Guard de test: NEVER executa wrangler CLI. Usa a Cloudflare REST API
  * (v4/user/tokens/verify) diretamente — testável com mock de fetch.
@@ -99,17 +99,17 @@ export async function checkCloudflareToken(
 
     const cfStatus = json.result?.status ?? "";
     if (cfStatus !== "active") {
-      // #7: HTTP 200 + success:true + status absent/empty = API anomaly (not bad token).
-      // Only show "rotate your token" banner for a real auth failure (explicit non-active status).
-      const resolvedStatus =
-        json.success === true && !cfStatus ? "error" : "invalid";
+      // #2306: HTTP 200 + success:true + missing/falsy result.status = token is
+      // expired/disabled (CF returns success:true but result.status is absent or null
+      // for a disabled token). Treat as invalid — the correct action is to rotate
+      // the token, not to retry. (Previously this was routed to 'error' as an
+      // anomaly, but that showed "try again" to the editor when they needed to rotate.)
       return {
-        status: resolvedStatus,
+        status: "invalid",
         token_prefix: prefix,
-        error:
-          resolvedStatus === "error"
-            ? `Cloudflare API retornou status ausente com success:true — anomalia transitória. Tentar novamente.`
-            : `Token Cloudflare não-ativo (status API: "${cfStatus}"). Renovar no .env.`,
+        error: cfStatus
+          ? `Token Cloudflare não-ativo (status API: "${cfStatus}"). Renovar no .env.`
+          : `Token Cloudflare retornou status ausente/null (success:true, result.status=${JSON.stringify(json.result?.status)}). Provável token expirado/desabilitado — renovar no .env.`,
       };
     }
 
@@ -165,10 +165,13 @@ async function main(): Promise<number> {
   const health = await checkCloudflareToken();
   console.log(JSON.stringify(health, null, 2));
 
-  // #5: error = transient network/API issue — soft note only, not the scary banner.
+  // #2306: transient network/API errors (status:"error") are NON-BLOCKING.
+  // Exit 0 (not 2) so that Stage-0 callers using `|| halt` or `set -e` are NOT
+  // interrupted by a temporary CF API outage when the token itself is valid.
+  // A soft note on stderr is sufficient — the editor doesn't need to act.
   if (health.status === "error") {
     console.error(`[check-cloudflare-token] nota: ${health.error ?? "erro de rede"} — não bloqueando Stage 0.`);
-    return 2;
+    return 0;
   }
 
   const banner = renderCloudflareTokenBanner(health);

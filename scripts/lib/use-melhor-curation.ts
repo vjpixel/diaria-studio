@@ -103,7 +103,7 @@ const MARKETING_CASE_STUDY_RE =
   /(?:how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+){1,3}\s+(?:uses?|leverag(?:e[sd]?)?|adopted?|built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\b|how\s+we\s+(?:built|scaled?|optimized?|automated?|deployed?|achieved?|cut|saved?|reduced?)\s+\w|[A-Z]\w{2,}(?:\s+[A-Z]\w+){0,2}\s+(?:cuts?|saves?|reduces?|optimizes?|automates?)\s+(?:[^\r\n]{0,20})?(?:\d+%|costs?|time|hours?)\b|case\s+stud(?:y|ies)\s*:|estudo[s]?\s+de\s+caso\s*:)/i;
 
 const MARKETING_SUMMARY_RE =
-  /\b(roi\b|return\s+on\s+investment|cost.{0,10}savings?|hours?\s+saved?|produtividade\s+aument|productivity\s+(?:gain|boost|increas))\b/i;
+  /\b(roi\b|return\s+on\s+investment|cost[^\r\n]{0,10}savings?|hours?\s+saved?|produtividade\s+aument|productivity\s+(?:gain|boost|increas))\b/i;
 
 /**
  * #2276: retorna true se o artigo parece um case study de marketing —
@@ -291,8 +291,12 @@ export function isHowtoBrAllowlisted(url: string): boolean {
  * #2278: sinal de how-to aplicado PT-BR no título/slug.
  * Boost: adiciona "howto_br:true" ao matched em audience-affinity.
  */
+// #2305: [^\r\n]{0,N} prevents `.{0,N}` from crossing line boundaries.
+// Also: separators between `fazer`/`guia` and the inline content use [^\S\r\n]+
+// (horizontal-only whitespace) to prevent \s+ from matching a lone \n between
+// 'como fazer' and 'usando ia' on a different line.
 export const HOWTO_BR_SIGNAL_RE =
-  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como\s+fazer\s+.{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)\s+.{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|finan[cç]\w*|email|produtividade|freelan[cç]\w*|aut[oô]nom\w*)(?!\w))\b/i;
+  /\b(?:como\s+usar\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|o\s+chat(?:gpt)?|claude|gemini|copilot|llm)\b|como[^\S\r\n]+fazer[^\S\r\n]+[^\r\n]{0,30}\b(?:com|usando|via)\s+(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|passo\s+a\s+passo\s+(?:para|de|com)\b|guia\s+(?:para|de)[^\S\r\n]+[^\r\n]{0,20}\b(?:ia|intelig[eê]ncia\s+artificial|chatgpt|claude|gemini)\b|(?:ia|intelig[eê]ncia\s+artificial)\s+(?:para|no)\s+(?:emprego|trabalho|curr[ií]culo|entrevista|estudos|concurso|pequena\s+empresa|empreendedor|planilha|finan[cç]\w*|email|produtividade|freelan[cç]\w*|aut[oô]nom\w*)(?!\w))\b/i;
 
 /**
  * #2278: retorna true se o título/slug tem sinal forte de how-to PT-BR.
@@ -343,11 +347,14 @@ export function getHowToDiscoveryQueries(
   count = 3,
 ): string[] {
   const total = HOWTO_BR_DISCOVERY_TOPICS.length;
+  // #2305: guard NaN (e.g. parseInt("") = NaN) — fall back to slot 0 to avoid
+  // pushing undefined entries into the discovery topics array.
+  const safeBase = Number.isFinite(editionNum) ? editionNum : 0;
   // Clamp count to pool size to avoid duplicates (#5 fix).
   const safeCount = Math.min(count, total);
   const queries: string[] = [];
   for (let i = 0; i < safeCount; i++) {
-    const idx = (editionNum + i) % total;
+    const idx = (safeBase + i) % total;
     queries.push(HOWTO_BR_DISCOVERY_TOPICS[idx]);
   }
   return queries;
