@@ -21,6 +21,7 @@ import {
   withRateLimitRetry,
   injectStaleBanner,
   buildStaleResponse,
+  RECENT_STATS_TTL,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── mapLimit ────────────────────────────────────────────────────────────────
@@ -485,8 +486,9 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
     assert.ok(putCalls.includes("gstats:77"), "deve cachear gstats da recente");
     assert.ok(putCalls.includes("lstats:77"), "deve cachear lstats da recente");
-    assert.equal((putOpts["gstats:77"] as any)?.expirationTtl, 300, "gstats recente com TTL 300s");
-    assert.equal((putOpts["lstats:77"] as any)?.expirationTtl, 300, "lstats recente com TTL 300s");
+    // #2282: TTL é RECENT_STATS_TTL (agora 1800s), não hardcoded 300.
+    assert.equal((putOpts["gstats:77"] as any)?.expirationTtl, RECENT_STATS_TTL, `gstats recente com TTL ${RECENT_STATS_TTL}s`);
+    assert.equal((putOpts["lstats:77"] as any)?.expirationTtl, RECENT_STATS_TTL, `lstats recente com TTL ${RECENT_STATS_TTL}s`);
   });
 
   test("#2270: imutável continua sem TTL (cache permanente)", async () => {

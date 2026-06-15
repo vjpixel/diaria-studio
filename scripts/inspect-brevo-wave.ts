@@ -10,6 +10,7 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withBrevo429Retry, throwBrevo429 } from "./lib/brevo-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_KEY = process.env.BREVO_CLARICE_API_KEY;
@@ -25,15 +26,19 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
+// #2275: fetchListContacts agora retenta em 429 via withBrevo429Retry.
 async function fetchListContacts(listId: number): Promise<string[]> {
   const emails: string[] = [];
   let offset = 0;
   const limit = 500;
   for (;;) {
-    const url = `https://api.brevo.com/v3/contacts/lists/${listId}/contacts?limit=${limit}&offset=${offset}`;
-    const res = await fetch(url, { headers: { "api-key": API_KEY!, Accept: "application/json" } });
-    if (!res.ok) throw new Error(`Brevo GET list ${listId} failed: ${res.status} ${await res.text()}`);
-    const data = await res.json() as { contacts: Array<{ email: string }>; count?: number };
+    const data = await withBrevo429Retry(async () => {
+      const url = `https://api.brevo.com/v3/contacts/lists/${listId}/contacts?limit=${limit}&offset=${offset}`;
+      const res = await fetch(url, { headers: { "api-key": API_KEY!, Accept: "application/json" } });
+      if (res.status === 429) throwBrevo429(res);
+      if (!res.ok) throw new Error(`Brevo GET list ${listId} failed: ${res.status} ${await res.text()}`);
+      return res.json() as Promise<{ contacts: Array<{ email: string }>; count?: number }>;
+    });
     if (!data.contacts || data.contacts.length === 0) break;
     for (const c of data.contacts) emails.push(c.email.toLowerCase());
     if (data.contacts.length < limit) break;
