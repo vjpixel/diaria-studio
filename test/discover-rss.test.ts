@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import Papa from "papaparse";
 import {
   generateCandidates,
   extractFeedsFromHtml,
@@ -143,5 +144,95 @@ describe("shouldSkipHost", () => {
 
   it("URL inválida → skip (defensivo)", () => {
     assert.equal(shouldSkipHost("not-a-url"), true);
+  });
+});
+
+// ─── Regressão #2241: Papa.unparse deve preservar TODAS as colunas ────────────
+//
+// Bug: Papa.unparse era chamado com columns: ["Nome","Tipo","URL","RSS"] — lista
+// hardcoded de 4 colunas que descartava topic_filter, use_melhor, low_cadence (e
+// quaisquer colunas futuras) de todas as linhas. Fix: derivar as colunas do header
+// real do CSV parseado.
+//
+// Este teste valida a invariante via round-trip direto do Papa.parse→unparse:
+// parse um CSV com colunas extras, simula o unparse usando os campos reais,
+// e garante que NENHUMA coluna seja descartada — incluindo futuras colunas
+// adicionadas ao CSV que não conhecemos hoje.
+
+describe("Papa.unparse round-trip: preserva todas as colunas (#2241)", () => {
+  it("round-trip parse→unparse preserva todas as colunas e valores com colunas extras", () => {
+    // Simula seed/sources.csv com 7 colunas (igual ao real: Nome,Tipo,URL,RSS,topic_filter,use_melhor,low_cadence)
+    const csvInput = [
+      "Nome,Tipo,URL,RSS,topic_filter,use_melhor,low_cadence",
+      'Fonte A,Brasil,https://a.com/,https://a.com/feed,"AI,IA",,',
+      'Fonte B,Internacional,https://b.com/,,,"true",low',
+    ].join("\n");
+
+    const parsed = Papa.parse<Record<string, string>>(csvInput, {
+      header: true,
+      skipEmptyLines: true,
+    });
+    assert.equal(parsed.errors.length, 0, "CSV sem erros de parse");
+
+    // Fix: usar os campos reais do CSV, não uma lista hardcoded.
+    const allColumns = parsed.meta.fields ?? Object.keys(parsed.data[0] ?? {});
+
+    // Verificar que TODAS as colunas do input estão presentes (inclui extras)
+    const expectedColumns = ["Nome", "Tipo", "URL", "RSS", "topic_filter", "use_melhor", "low_cadence"];
+    for (const col of expectedColumns) {
+      assert.ok(allColumns.includes(col), `coluna "${col}" deve estar em allColumns`);
+    }
+
+    const unparsed = Papa.unparse(parsed.data, { columns: allColumns, newline: "\n" });
+
+    // Re-parseia o output para comparação estrutural
+    const reparsed = Papa.parse<Record<string, string>>(unparsed, {
+      header: true,
+      skipEmptyLines: true,
+    });
+
+    // Todas as colunas preservadas no header
+    for (const col of expectedColumns) {
+      assert.ok(
+        reparsed.meta.fields?.includes(col),
+        `coluna "${col}" deve estar no output do unparse`,
+      );
+    }
+
+    // Valores preservados para todas as colunas de cada row
+    assert.equal(reparsed.data.length, 2, "2 linhas de dados preservadas");
+    assert.equal(reparsed.data[0]["Nome"], "Fonte A");
+    assert.equal(reparsed.data[0]["topic_filter"], "AI,IA");
+    assert.equal(reparsed.data[0]["use_melhor"], "");
+    assert.equal(reparsed.data[0]["low_cadence"], "");
+    assert.equal(reparsed.data[1]["Nome"], "Fonte B");
+    assert.equal(reparsed.data[1]["topic_filter"], "");
+    assert.equal(reparsed.data[1]["use_melhor"], "true");
+    assert.equal(reparsed.data[1]["low_cadence"], "low");
+  });
+
+  it("round-trip com coluna desconhecida futura também é preservada", () => {
+    // Garante que colunas adicionadas no futuro ao sources.csv não sejam
+    // descartadas — a invariante é: ALL columns, not a known set.
+    const csvInput = [
+      "Nome,Tipo,URL,RSS,topic_filter,use_melhor,low_cadence,nova_coluna_futura",
+      'Fonte Z,Brasil,https://z.com/,https://z.com/feed,"AI",,,valor_futuro',
+    ].join("\n");
+
+    const parsed = Papa.parse<Record<string, string>>(csvInput, {
+      header: true,
+      skipEmptyLines: true,
+    });
+    const allColumns = parsed.meta.fields ?? Object.keys(parsed.data[0] ?? {});
+    assert.ok(allColumns.includes("nova_coluna_futura"), "coluna futura detectada do header");
+
+    const unparsed = Papa.unparse(parsed.data, { columns: allColumns, newline: "\n" });
+    const reparsed = Papa.parse<Record<string, string>>(unparsed, { header: true, skipEmptyLines: true });
+
+    assert.ok(
+      reparsed.meta.fields?.includes("nova_coluna_futura"),
+      "coluna futura preservada no output",
+    );
+    assert.equal(reparsed.data[0]["nova_coluna_futura"], "valor_futuro");
   });
 });

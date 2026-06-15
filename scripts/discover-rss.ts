@@ -337,8 +337,21 @@ async function main(): Promise<void> {
   }
 
   if (!flags.dryRun) {
+    // Preserve ALL columns from the original CSV header, not a hardcoded 4-column list.
+    // Using a hardcoded list would silently discard topic_filter, use_melhor, low_cadence,
+    // and any future columns added to the CSV (#2241).
+    const allColumns = parsed.meta.fields ?? Object.keys(rows[0] ?? {});
+    // Guard: if parsing yielded no columns/rows, abort the write to prevent truncating
+    // seed/sources.csv to an empty file. PapaParse emits no error for empty input but
+    // returns allColumns=[] which causes unparse to return "" — a destructive write (#2243).
+    if (allColumns.length === 0 || rows.length === 0) {
+      process.stderr.write(
+        `[discover-rss] ERRO: CSV parseado sem colunas ou linhas (allColumns=${allColumns.length}, rows=${rows.length}) — abortando escrita para evitar truncamento de ${flags.csvPath}\n`,
+      );
+      process.exit(1);
+    }
     const updated = Papa.unparse(rows, {
-      columns: ["Nome", "Tipo", "URL", "RSS"],
+      columns: allColumns,
       newline: "\n",
     });
     // Preserva a presença/ausência de newline final do arquivo original
