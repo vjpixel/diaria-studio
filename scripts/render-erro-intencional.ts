@@ -551,11 +551,17 @@ export function ensureIntentionalErrorFrontmatter(
     return { md, inserted: false };
   }
 
-  const PLACEHOLDER_BLOCK = `intentional_error:
-  description: "{PREENCHER — o que o assinante deve identificar}"
-  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"
-  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"
-  correct_value: "{PREENCHER — valor correto}"`;
+  // Detect the file's line ending so inserted block matches existing EOL (#2304).
+  // Prefer CRLF when the file already has CRLF (Windows/OneDrive). Fall back to LF.
+  const eol = md.includes("\r\n") ? "\r\n" : "\n";
+
+  const PLACEHOLDER_BLOCK = [
+    "intentional_error:",
+    '  description: "{PREENCHER — o que o assinante deve identificar}"',
+    '  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"',
+    '  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"',
+    '  correct_value: "{PREENCHER — valor correto}"',
+  ].join(eol);
 
   // Frontmatter existente sem intentional_error → inserir chave dentro do bloco.
   // \r?\n handles CRLF on Windows (P1 fix). Replacer function avoids $-pattern
@@ -563,13 +569,13 @@ export function ensureIntentionalErrorFrontmatter(
   const existingFmMatch = md.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
   if (existingFmMatch) {
     const [full, open, body, close] = existingFmMatch;
-    const newBody = body.trimEnd() + "\n" + PLACEHOLDER_BLOCK;
+    const newBody = body.trimEnd() + eol + PLACEHOLDER_BLOCK;
     const updated = md.replace(full, () => `${open}${newBody}${close}`);
     return { md: updated, inserted: true };
   }
 
   // Sem frontmatter → criar no topo.
-  const updated = `---\n${PLACEHOLDER_BLOCK}\n---\n${md}`;
+  const updated = `---${eol}${PLACEHOLDER_BLOCK}${eol}---${eol}${md}`;
   return { md: updated, inserted: true };
 }
 

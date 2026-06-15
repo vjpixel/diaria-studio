@@ -107,7 +107,7 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
   ```bash
   npx tsx scripts/check-cloudflare-token.ts
   ```
-  Exit 0 = ativo. Exit 1 = ausente/inválido → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). Exit 2 = erro de rede (API Cloudflare indisponível) — não bloqueia pipeline (warn only). Se exit 1, **alertar o editor com o banner** e perguntar se renova agora ou continua (impacto: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
+  Exit 0 = ativo OU erro de rede transitório (não bloqueia pipeline — soft note no stderr). Exit 1 = ausente/inválido/não-ativo → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). (Exit 2 removido em #2306 — transitório agora sai 0.) Se exit 1, **alertar o editor com o banner** e perguntar se renova agora ou continua (impacto: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
 - **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true`, rodar:
   ```bash
   npx tsx scripts/drive-sync.ts --health-check
