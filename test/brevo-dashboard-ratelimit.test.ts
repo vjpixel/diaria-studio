@@ -19,6 +19,8 @@ import {
   fetchRecentCampaigns,
   fetchScheduledCampaigns,
   withRateLimitRetry,
+  injectStaleBanner,
+  buildStaleResponse,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── mapLimit ────────────────────────────────────────────────────────────────
@@ -573,5 +575,84 @@ describe("fetchScheduledCampaigns retenta a listagem em 429 (#2268)", () => {
     assert.strictEqual(listCalls, 2, "listagem retentada após 429");
     assert.strictEqual(result.length, 1, "retorna a campanha agendada após o retry");
     assert.strictEqual(result[0].id, 57);
+  });
+});
+
+describe("fetchRecentCampaigns retenta a listagem em 429 (#2280)", () => {
+  test("429 na 1ª listagem sent → retry → não derruba a página", async () => {
+    // Regressão #2280: antes, um único 429 na listagem fazia fetchRecentCampaigns
+    // lançar → rota / retornava 503. Agora a listagem é re-tentada (withRateLimitRetry).
+    const sentDateOld = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const fakeCampaign = {
+      id: 42, name: "Test", subject: "s", status: "sent",
+      sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld, recipients: { lists: [7] },
+    };
+    let listCalls = 0;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) {
+        listCalls++;
+        if (listCalls === 1) throw new BrevoRateLimitError(1); // 1º 429 transitório
+        return { campaigns: [fakeCampaign] } as T;
+      }
+      throw new Error("path inesperado (KV deveria cobrir stats): " + path);
+    };
+    // KV cobre stats da campanha → só a listagem passa pelo _fetchFn.
+    // Mock fiel: honra o 2º arg "json" (produção chama .get(key, "json") → objeto
+    // parseado; sem "json" → string), pra não mascarar bugs de tipo no consumidor.
+    const data: Record<string, unknown> = {
+      "gstats:42": { sent: 100, delivered: 95 },
+      "lstats:42": { "https://diar.ia/x": 3 },
+      "list:7": { id: 7, name: "L", totalSubscribers: 100 },
+    };
+    const kv = {
+      get: async (k: string, type?: string) => {
+        if (!(k in data)) return null;
+        return type === "json" ? data[k] : JSON.stringify(data[k]);
+      },
+      put: async () => {},
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 50, false, mockFetch as any);
+    assert.strictEqual(listCalls, 2, "listagem sent retentada após 429");
+    assert.strictEqual(result.length, 1, "retorna campanhas após retry (não lança → não vira 503)");
+  });
+});
+
+describe("injectStaleBanner — fallback último render bom (#2280)", () => {
+  test("insere banner logo após <body> preservando o resto", () => {
+    const html = `<!DOCTYPE html><html><body class="x"><h1>Dash</h1></body></html>`;
+    const out = injectStaleBanner(html, 120);
+    assert.ok(out.includes("rate-limit"), "banner presente");
+    assert.ok(out.includes("~120s"), "mostra o retry-after");
+    assert.ok(/<body class="x">.*rate-limit/s.test(out), "banner vem logo após <body>");
+    assert.ok(out.includes("<h1>Dash</h1>"), "conteúdo original preservado");
+  });
+
+  test("retryAfter null → mensagem genérica", () => {
+    const out = injectStaleBanner("<body></body>", null);
+    assert.ok(out.includes("alguns minutos"), "fallback de mensagem sem retry-after");
+  });
+
+  test("sem <body> → prepend (nunca perde o conteúdo)", () => {
+    const out = injectStaleBanner("<div>conteudo</div>", 60);
+    assert.ok(out.startsWith("<div style="), "banner prepended quando não há <body>");
+    assert.ok(out.includes("<div>conteudo</div>"), "conteúdo original preservado");
+  });
+
+  test("buildStaleResponse: 200 + banner + X-Dashboard-Stale + Retry-After", async () => {
+    // Regressão da ROTA: em 429 com lastGood no KV, a resposta é 200 (não 503),
+    // com banner, marcador de staleness pra monitoria, e Retry-After.
+    const resp = buildStaleResponse(`<!DOCTYPE html><html><body><h1>D</h1></body></html>`, 90);
+    assert.strictEqual(resp.status, 200, "fallback é 200, não 503");
+    assert.strictEqual(resp.headers.get("X-Dashboard-Stale"), "rate-limit", "marcador p/ monitoria");
+    assert.strictEqual(resp.headers.get("Retry-After"), "90");
+    assert.strictEqual(resp.headers.get("Cache-Control"), "no-store", "não cacheia o stale");
+    const body = await resp.text();
+    assert.ok(body.includes("rate-limit") && body.includes("<h1>D</h1>"), "banner + conteúdo");
+  });
+
+  test("buildStaleResponse: sem retryAfter → sem header Retry-After", () => {
+    const resp = buildStaleResponse("<body></body>", null);
+    assert.strictEqual(resp.headers.get("Retry-After"), null);
+    assert.strictEqual(resp.status, 200);
   });
 });
