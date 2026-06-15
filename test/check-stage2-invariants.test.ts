@@ -659,4 +659,37 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
       cleanup();
     }
   });
+
+  it("P2 fix #2300: OK quando documento começa com stub ---/--- vazio seguido do bloco YAML real", () => {
+    // Regressão da divergência detectada em code-review: o loop hand-rolled anterior
+    // tomava os primeiros 2 `---` incondicionalmente, coletando o bloco vazio e
+    // retornando false-negative (ok: false mesmo com intentional_error presente).
+    //
+    // Cenário: `---\n---\n` (stub/empty frontmatter), seguido direto do YAML real.
+    // O loop anterior: fmStart=0, fmEnd=1, body="" → /intentional_error/ não bate → false.
+    // extractFrontmatter(): canonical regex captura o body incluindo o YAML real
+    // (entre o 1º e o último `---`) → /intentional_error/ bate → true.
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        [
+          "---",
+          "---",       // stub empty — hand-rolled loop para aqui (body="") → false-negative
+          "intentional_error:",
+          '  description: "Detalhe do erro"',
+          '  location: "DESTAQUE 1"',
+          '  category: "factual"',
+          '  correct_value: "2014"',
+          "---",
+          "",
+          "Corpo da newsletter.",
+        ].join("\n"),
+      );
+      const r = checkIntentionalErrorFrontmatter(dir);
+      assert.equal(r.ok, true, "extractFrontmatter deve achar intentional_error mesmo com stub ---/--- antes");
+    } finally {
+      cleanup();
+    }
+  });
 });

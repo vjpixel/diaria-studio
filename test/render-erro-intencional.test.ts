@@ -1299,7 +1299,8 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
 
   it("idempotente: 2ª chamada não modifica quando placeholder já existe", () => {
     const md = "Corpo.";
-    const { md: after1 } = ensureIntentionalErrorFrontmatter(md);
+    const { md: after1, inserted: ins1 } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(ins1, true, "primeira chamada deve inserir frontmatter"); // P3 fix #2300
     const { md: after2, inserted: ins2 } = ensureIntentionalErrorFrontmatter(after1);
     assert.equal(ins2, false);
     assert.equal(after2, after1);
@@ -1330,6 +1331,40 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // P1 fix #2300: CRLF regression tests
+  it("P1 #2300: CRLF — currentHasIntentionalErrorFlag detecta frontmatter com \\r\\n", () => {
+    // Simula 02-reviewed.md salvo com CRLF no Windows
+    const md = "---\r\nintentional_error:\r\n  description: \"x\"\r\n---\r\nCorpo.";
+    assert.equal(currentHasIntentionalErrorFlag(md), true, "deve detectar com CRLF");
+  });
+
+  it("P1 #2300: CRLF — ensureIntentionalErrorFrontmatter não duplica frontmatter com \\r\\n", () => {
+    // Simula MD com frontmatter CRLF existente (sem intentional_error) —
+    // antes do fix, regex ^(---\n) não casava ---\r\n, caindo no branch
+    // "sem frontmatter" e ADICIONANDO um bloco no topo → frontmatter duplicado.
+    const md = "---\r\noutro: valor\r\n---\r\nCorpo.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    // Deve ter exatamente 1 bloco frontmatter (não duplicado)
+    const fences = (out.match(/^---/gm) ?? []).length;
+    assert.equal(fences, 2, `esperado 2 fences (1 bloco), encontrado ${fences}`);
+    assert.match(out, /intentional_error:/);
+    // Campo original preservado
+    assert.match(out, /outro: valor/);
+  });
+
+  it("P1 #2300: $ — ensureIntentionalErrorFrontmatter não corrompe valores com $ no frontmatter", () => {
+    // Simula frontmatter com campo contendo $ (ex: correct_value: "R$1.5bi")
+    // Antes do fix, String.replace(full, `${open}${newBody}${close}`) interpretava
+    // $1 como capture group (empty string), corrompendo o valor.
+    const md = "---\nsubtitle: \"Investimento R$1.5bi\"\n---\nCorpo.";
+    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
+    assert.equal(inserted, true);
+    // O valor com $ deve estar INTACTO no output
+    assert.match(out, /subtitle: "Investimento R\$1\.5bi"/, "campo com $ não deve ser corrompido");
+    assert.match(out, /intentional_error:/, "intentional_error deve ter sido adicionado");
   });
 });
 

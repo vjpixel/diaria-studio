@@ -22,6 +22,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { extractUrlsFromMd } from "./lib/canonical-urls.ts"; // #1456
+import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // P2 fix #2300
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -161,24 +162,17 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
     return { ok: true, label: "reviewed_missing: outro check captura isso" };
   }
   const md = readFileSync(reviewed, "utf8");
-  // Detect frontmatter block in first 60 lines (same window as extractFrontmatter
-  // in lint-checks/intentional-error.ts — aceita posição line-1 ou pós-TÍTULO).
-  const lines = md.split("\n").slice(0, 60);
-  let fmStart = -1;
-  let fmEnd = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      if (fmStart === -1) { fmStart = i; }
-      else { fmEnd = i; break; }
-    }
-  }
-  if (fmStart === -1 || fmEnd === -1) {
+  // P2 fix #2300: delegate to extractFrontmatter (exported from lint-checks/intentional-error.ts)
+  // instead of re-implementing the fence-pair scan. The previous hand-rolled loop took the first
+  // two `---` fences unconditionally, which would false-negative on `---\n---\n` (empty frontmatter
+  // before the real one). extractFrontmatter skips empty-body pairs and finds the first non-empty.
+  const fmBody = extractFrontmatter(md);
+  if (!fmBody) {
     return {
       ok: false,
       label: "intentional_error_frontmatter_missing: 02-reviewed.md sem frontmatter — render-erro-intencional.ts não inseriu o bloco placeholder (#2284)",
     };
   }
-  const fmBody = lines.slice(fmStart + 1, fmEnd).join("\n");
   if (!/intentional_error\s*:/i.test(fmBody)) {
     return {
       ok: false,

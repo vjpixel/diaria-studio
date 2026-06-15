@@ -517,7 +517,8 @@ export function insertOrUpdateSection(
  * frontmatter. Quando o YAML está bem-formado retorna true.
  */
 export function currentHasIntentionalErrorFlag(md: string): boolean {
-  const fm = md.match(/^---\n([\s\S]*?)\n---/);
+  // \r?\n handles both LF (Unix) and CRLF (Windows) line endings (P1 fix).
+  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fm) return false;
   return /\bintentional_error\s*:/i.test(fm[1]);
 }
@@ -539,7 +540,8 @@ export function currentHasIntentionalErrorFlag(md: string): boolean {
  * Caso sem frontmatter → cria bloco YAML no topo.
  *
  * Os 4 campos são placeholders `{PREENCHER}` — o editor substitui no Drive.
- * O lint do Stage 5 valida que nenhum valor contém `{PREENCHER}`.
+ * O lint do Stage 5 rejeita valores que ainda contêm `{PREENCHER}` (guard em
+ * `checkIntentionalError` em scripts/lib/lint-checks/intentional-error.ts).
  */
 export function ensureIntentionalErrorFrontmatter(
   md: string,
@@ -556,11 +558,13 @@ export function ensureIntentionalErrorFrontmatter(
   correct_value: "{PREENCHER — valor correto}"`;
 
   // Frontmatter existente sem intentional_error → inserir chave dentro do bloco.
-  const existingFmMatch = md.match(/^(---\n)([\s\S]*?)(\n---)/);
+  // \r?\n handles CRLF on Windows (P1 fix). Replacer function avoids $-pattern
+  // expansion in replacement string (e.g. "R$1.5bi" → "$1" capture group) (P1 fix).
+  const existingFmMatch = md.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
   if (existingFmMatch) {
     const [full, open, body, close] = existingFmMatch;
     const newBody = body.trimEnd() + "\n" + PLACEHOLDER_BLOCK;
-    const updated = md.replace(full, `${open}${newBody}${close}`);
+    const updated = md.replace(full, () => `${open}${newBody}${close}`);
     return { md: updated, inserted: true };
   }
 

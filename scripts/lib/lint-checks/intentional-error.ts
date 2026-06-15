@@ -154,6 +154,21 @@ export function checkIntentionalError(
     };
   }
 
+  // P1 fix (#2300): reject placeholder values — ensureIntentionalErrorFrontmatter
+  // inserts "{PREENCHER — ...}" strings that are non-empty and would otherwise pass
+  // the completeness check above. If the editor forgets to fill them in,
+  // sync-intentional-error.ts would record literal placeholders into intentional-errors.jsonl.
+  const placeholderFields = REQUIRED_INTENTIONAL_ERROR_FIELDS.filter(
+    (f) => /^\{PREENCHER/i.test(parsed[f as keyof typeof parsed] ?? ""),
+  );
+  if (placeholderFields.length > 0) {
+    return {
+      ok: false,
+      label: `intentional_error_incomplete: campos com valor placeholder não preenchido — ${placeholderFields.join(", ")}`,
+      parsed,
+    };
+  }
+
   return { ok: true, parsed };
 }
 
