@@ -337,8 +337,12 @@ async function main(): Promise<void> {
   }
 
   if (!flags.dryRun) {
+    // Preserve ALL columns from the original CSV header, not a hardcoded 4-column list.
+    // Using a hardcoded list would silently discard topic_filter, use_melhor, low_cadence,
+    // and any future columns added to the CSV (#2241).
+    const allColumns = parsed.meta.fields ?? Object.keys(rows[0] ?? {});
     const updated = Papa.unparse(rows, {
-      columns: ["Nome", "Tipo", "URL", "RSS"],
+      columns: allColumns,
       newline: "\n",
     });
     // Preserva a presença/ausência de newline final do arquivo original

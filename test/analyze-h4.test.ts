@@ -684,4 +684,107 @@ describe("formatH4Trend", () => {
     const out = formatH4Trend(trend);
     assert.ok(out.includes("Sem histórico"), "deve informar ausência de dados");
   });
+
+  it("entrada com rho=null → formatada como '—(undef)' (não falha)", () => {
+    const trend = {
+      entries: [
+        { edition: "260520", rho: null as unknown as number, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+      ],
+      rho_mean: null,
+      top1_hit_rate: 0,
+      alert_low_rho: false,
+    };
+    const out = formatH4Trend(trend);
+    assert.ok(out.includes("—(undef)"), "rho null deve ser formatado como '—(undef)'");
+    assert.ok(!out.includes("toFixed"), "não deve chamar toFixed em null");
+  });
+});
+
+// ─── Regressão #2243: zero-CTR editions excluded from trend ─────────────────
+//
+// Bug: `spearmanRho ?? 0` no computeEditionH4 substituía null (correlação
+// indefinida — todas as linhas têm 0 cliques → zero-variância no CTR) por 0.0,
+// conflating "correlação indefinida" com "zero correlação". Isso fazia essas
+// edições contribuírem rho=0 para a média da trend, potencialmente disparando
+// alert_low_rho após 2 edições zero-CTR consecutivas.
+//
+// Fix: computeEditionH4 retorna rho=null quando spearmanRho retorna null;
+// computeH4Trend exclui entradas com rho===null do cálculo de rho_mean e
+// não as considera para alert_low_rho.
+
+describe("Regressão #2243: zero-CTR edition retorna rho=null, excluída da trend", () => {
+  const DATE = "2026-05-20";
+
+  it("computeEditionH4: todos os links com 0 cliques → rho=null (não 0.0)", () => {
+    // Todas as 4 URLs têm CTR=0 (zero cliques, 100 opens cada).
+    // spearmanRho([90,80,70,60], [0,0,0,0]) retorna null (desvio padrão do vetor CTR = 0).
+    // Antes do fix: ?? 0 dava rho=0.0. Depois: rho deve ser null.
+    const highlights: ScoredHighlight[] = [
+      mkHL("https://a.com/1", 90),
+      mkHL("https://b.com/2", 80),
+      mkHL("https://c.com/3", 70),
+      mkHL("https://d.com/4", 60),
+    ];
+    const zeroCtrRows: CtrRow[] = [
+      mkCtr(DATE, "https://a.com/1", 0),  // 0 cliques
+      mkCtr(DATE, "https://b.com/2", 0),
+      mkCtr(DATE, "https://c.com/3", 0),
+      mkCtr(DATE, "https://d.com/4", 0),
+    ];
+    const result = computeEditionH4(highlights, zeroCtrRows, DATE);
+    assert.ok(result !== null, "n=4 matches → deve retornar result (não null por n<4)");
+    assert.equal(result.n_matches, 4);
+    // Bug anterior: result.rho === 0 (falso zero). Fix correto: result.rho === null.
+    assert.equal(result.rho, null, "zero-CTR edition deve ter rho=null, não 0.0");
+  });
+
+  it("computeH4Trend: rho_mean exclui entradas com rho=null (não conta como 0)", () => {
+    // Cenário: 3 entradas com rho definido (0.8, 0.7, 0.6) + 1 entrada zero-CTR (rho=null).
+    // rho_mean correto = (0.8+0.7+0.6)/3 = 0.7 (só entradas definidas).
+    // Bug anterior: (0.8+0.7+0.6+0.0)/4 = 0.525 (errado — contamina com 0).
+    const entries: H4HistoryEntry[] = [
+      { edition: "260520", rho: 0.8, top1_hit: true,  top3_overlap: 3, n_matches: 5, computed_at: "" },
+      { edition: "260521", rho: 0.7, top1_hit: true,  top3_overlap: 2, n_matches: 4, computed_at: "" },
+      { edition: "260522", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" }, // zero-CTR
+      { edition: "260525", rho: 0.6, top1_hit: true,  top3_overlap: 2, n_matches: 4, computed_at: "" },
+    ];
+    const trend = computeH4Trend(entries);
+    // rho_mean deve ser (0.8+0.7+0.6)/3 = 0.7, não (0.8+0.7+0+0.6)/4 = 0.525
+    assert.ok(trend.rho_mean !== null, "rho_mean não deve ser null (há entradas definidas)");
+    assert.ok(
+      Math.abs(trend.rho_mean! - (0.8 + 0.7 + 0.6) / 3) < 0.001,
+      `rho_mean deve ser ~0.700 (excluindo null), got ${trend.rho_mean}`,
+    );
+  });
+
+  it("computeH4Trend: alert_low_rho NÃO dispara por 2 edições zero-CTR consecutivas", () => {
+    // Cenário: as últimas 2 edições são zero-CTR (rho=null).
+    // Bug anterior: ?? 0 dava rho=0.0 → ambas < 0.4 → alertLowRho=true (FALSO POSITIVO).
+    // Fix: rho=null → excluídas do alert; alertLowRho deve ser false.
+    const entries: H4HistoryEntry[] = [
+      { edition: "260520", rho: 0.8, top1_hit: true,  top3_overlap: 3, n_matches: 5, computed_at: "" },
+      { edition: "260521", rho: 0.7, top1_hit: true,  top3_overlap: 2, n_matches: 4, computed_at: "" },
+      // 2 consecutivas zero-CTR (rho=null):
+      { edition: "260522", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+      { edition: "260525", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+    ];
+    const trend = computeH4Trend(entries);
+    // alert_low_rho DEVE ser false: rho=null não é "correlação baixa", é "indefinida"
+    assert.equal(
+      trend.alert_low_rho,
+      false,
+      "alert_low_rho não deve disparar por edições zero-CTR (rho=null)",
+    );
+  });
+
+  it("computeH4Trend: rho_mean=null quando TODAS as entradas têm rho=null", () => {
+    // Se todas as entradas da janela são zero-CTR, rho_mean deve ser null (sem dados).
+    const entries: H4HistoryEntry[] = [
+      { edition: "260522", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+      { edition: "260525", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+    ];
+    const trend = computeH4Trend(entries);
+    assert.equal(trend.rho_mean, null, "rho_mean deve ser null quando não há entradas com rho definido");
+    assert.equal(trend.alert_low_rho, false);
+  });
 });

@@ -50,7 +50,7 @@ export interface ScoredHighlight {
 /** Entrada de uma edição no histórico. */
 export interface H4HistoryEntry {
   edition: string; // AAMMDD
-  rho: number; // Spearman rho entre ranking-scorer e ranking-CTR
+  rho: number | null; // Spearman rho entre ranking-scorer e ranking-CTR; null = indefinido (zero-variância)
   top1_hit: boolean; // #1 do scorer foi o mais clicado?
   top3_overlap: number; // |scorer_top3 ∩ ctr_top3| (0-3)
   n_matches: number; // quantos destaques casaram no join
@@ -284,7 +284,11 @@ export function computeEditionH4(
   const scorerValues = matched.map((m) => m.scorerScore);
   const ctrValues = matched.map((m) => m.ctr);
 
-  const rho = spearmanRho(scorerValues, ctrValues) ?? 0;
+  // Do NOT substitute null with 0 (#2243): null means "undefined correlation"
+  // (zero-variance CTR — all links had 0 clicks). Storing 0.0 conflates undefined
+  // with zero, falsely counting this edition toward alert_low_rho.
+  // Return null here; computeH4Trend skips null-rho entries from rho_mean.
+  const rho = spearmanRho(scorerValues, ctrValues);
 
   // Top-1 e Top-3: derivados de `matched[]` (loop unificado, O(1) por lookup).
   // matched[] já contém só os pares casados, ordenados por score desc (herda a
@@ -462,8 +466,14 @@ export function computeH4Trend(entries: H4HistoryEntry[], windowSize = 4): H4Tre
   const sorted = [...entries].sort((a, b) => a.edition.localeCompare(b.edition));
   const recent = sorted.slice(-windowSize);
 
+  // Skip entries with rho===null when computing rho_mean (#2243):
+  // null means "undefined correlation" (zero-variance CTR), not zero.
+  // Including them as 0 would falsely drag down the mean and trigger alert_low_rho.
+  const definedRhoEntries = recent.filter((e) => e.rho !== null);
   const rhoMean =
-    recent.length > 0 ? recent.reduce((s, e) => s + e.rho, 0) / recent.length : null;
+    definedRhoEntries.length > 0
+      ? definedRhoEntries.reduce((s, e) => s + (e.rho as number), 0) / definedRhoEntries.length
+      : null;
 
   const top1HitRate =
     recent.length > 0
@@ -475,10 +485,11 @@ export function computeH4Trend(entries: H4HistoryEntry[], windowSize = 4): H4Tre
   // windowSize: se recent já é um subconjunto da janela, comparar contra o histórico
   // completo (sorted) ignoraria o windowSize e poderia acionar (ou suprimir) o alerta
   // com dados fora da janela de trend configurada.
+  // Entries with rho===null are excluded from the alert (undefined != low) (#2243).
   const last2 = recent.slice(-2);
   const alertLowRho =
     last2.length === 2 &&
-    last2.every((e) => e.rho < H4_RHO_ALERT_THRESHOLD);
+    last2.every((e) => e.rho !== null && e.rho < H4_RHO_ALERT_THRESHOLD);
 
   return { entries: recent, rho_mean: rhoMean, top1_hit_rate: top1HitRate, alert_low_rho: alertLowRho };
 }
@@ -502,7 +513,7 @@ export function formatH4Trend(trend: H4Trend): string {
   for (const e of trend.entries) {
     const hitStr = e.top1_hit ? "✓" : "✗";
     lines.push(
-      `  ${e.edition}  rho=${e.rho.toFixed(3)}  top1=${hitStr}  top3_overlap=${e.top3_overlap}  n=${e.n_matches}`,
+      `  ${e.edition}  rho=${e.rho !== null ? e.rho.toFixed(3) : "—(undef)"}  top1=${hitStr}  top3_overlap=${e.top3_overlap}  n=${e.n_matches}`,
     );
   }
 
