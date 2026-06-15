@@ -517,6 +517,20 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // incremento que ainda não aconteceu). A ordem correta é incremento→guard;
   // o risco é crash no exato μs entre os dois, que é raríssimo em produção.
   // Documentado como residual conhecido e aceitável.
+  //
+  // FAIL-OPEN DOUBLE-COUNT STATS (#2245, estende #2231):
+  // Este guard-key é verificado via KV.get FORA da serialização do DO (VoteDedup).
+  // No caminho normal, o VoteDedup garante que apenas um request por email passa
+  // por aqui (firstVote:true). Porém, no fail-open (DO com erro 5xx após retry),
+  // doStub é nulificado e AMBOS os requests concorrentes caem como firstVote:true.
+  // Se ambos chegarem aqui com guard-key ausente (janela antes do primeiro put),
+  // ambos passarão pelo null-check e ambos chamarão updateStatsCounter → double-count.
+  // Esta é consequência DIRETA do fail-open aceito em #2231 (decisão do editor):
+  // prioriza não perder voto legítimo sob falha do DO, aceitando raro double-count.
+  // Mover este check para dentro da serialização do DO resolveria a janela, mas
+  // mudaria a semântica do fail-open — alteração deliberadamente rejeitada em #2231.
+  // Documentado aqui como extensão do residual aceito. Monitorar via event
+  // `vote_dedup_do_error` nos logs para detectar frequência de fail-open em produção.
   if (!(await env.POLL.get(statsGuardKey))) {
     await updateStatsCounter(env, edition, choice as "A" | "B", correct, brand);
     await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
@@ -675,7 +689,24 @@ async function updateStatsCounter(
       }
       return;
     }
-    // DO retornou erro — fallback para KV RMW (aceita perda residual, loga).
+
+    // DO retornou erro de cliente (4xx) — sinal de erro de programação.
+    // (#2245): um DO 400 (choice inválido) é inalcançável em produção porque
+    // handleVote já valida `choice as "A"|"B"`. Mas se um bug futuro passar choice
+    // malformado, o comportamento correto é:
+    //   - NÃO lançar: throw propaga não-capturado por handleVote → 500 pro votante
+    //     + voteKey nunca gravado + /confirm nunca chamado (pior que o bug original).
+    //   - NÃO cair no KV RMW: re-introduziria a race que o #2223 corrigiu.
+    //   - Logar warning (sinal de bug de programação) e PULAR o incremento de stats,
+    //     deixando o restante do fluxo de voto completar normalmente (200 + voteKey + /confirm).
+    // (#2293 self-review HIGH): substituído throw por warn+return (skip stats, vote completes).
+    if (doResp.status >= 400 && doResp.status < 500) {
+      const body = await doResp.text().catch(() => "(unreadable)");
+      console.warn(JSON.stringify({ event: "stats_counter_do_client_error", status: doResp.status, body, edition, action: "skip_stats_increment" }));
+      return; // pula incremento de stats — vote path continua (voteKey + /confirm intactos)
+    }
+
+    // DO retornou erro de servidor (5xx) — fallback para KV RMW (aceita perda residual, loga).
     console.error(JSON.stringify({ event: "stats_counter_do_error", status: doResp.status, edition }));
   }
 

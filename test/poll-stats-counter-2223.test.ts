@@ -576,3 +576,117 @@ describe("Fix #6 — admin-correct atualiza DO StatsCounter; /stats reflete corr
     );
   });
 });
+
+// ── 8. Fix #2293 (rewrite de #2245): DO 400 → warn+skip, voto completa (200) ──
+
+describe("Fix #2293 — DO /increment 400 → warn+skip (não throw, não RMW); voto completa com 200", () => {
+  it("DO retorna 400 (choice inválido) → StatsCounter retorna 400 e NÃO modifica estado interno", async () => {
+    /**
+     * Teste isolado do StatsCounter DO:
+     * Um payload com choice inválido ("C") deve retornar 400 e não tocar o estado.
+     */
+    const counter = makeStatsCounter();
+
+    // Incremento com choice válido antes — para ter baseline
+    await callIncrement(counter, { choice: "A", correct: true });
+
+    // Tentar incrementar com choice inválido → DO deve retornar 400
+    const badReq = new Request("https://internal/increment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice: "C", correct: null }),
+    });
+    const resp = await counter.fetch(badReq);
+
+    assert.equal(resp.status, 400, "DO deve retornar 400 para choice inválido — got: " + String(resp.status));
+
+    // Estado do DO não deve ter mudado (total ainda 1 do incremento anterior)
+    const { stats } = await callGetStats(counter);
+    assert.equal(stats.total, 1, "DO: total não deve mudar após 400 — got: " + String(stats.total));
+    assert.equal(stats.voted_a, 1, "DO: voted_a não deve mudar — got: " + String(stats.voted_a));
+  });
+
+  it("DO retorna 400 → handleVote retorna 200 (voto NÃO perdido), voteKey gravado, KV RMW NÃO ativado", async () => {
+    /**
+     * REGRESSÃO #2293 self-review HIGH:
+     * O fix anterior (#2245) substituiu o KV RMW fallback por throw — correto pra evitar
+     * a race, mas incorreto porque o throw propagava não-capturado pelo handleVote:
+     *   - votante recebia 500 (não 200)
+     *   - voteKey nunca gravado (voto perdido)
+     *   - /confirm nunca chamado (DO pendente órfão)
+     *
+     * Fix #2293: DO 400 → console.warn + return (skip stats) → handleVote continua
+     * normalmente: 200 ao votante + voteKey gravado + /confirm chamado.
+     *
+     * Invariantes verificados:
+     *   1. handleVote retorna 200 (voto não é perdido)
+     *   2. voteKey `vote:{edition}:{email}` é gravado no KV (commit definitivo)
+     *   3. KV stats NÃO é modificado via RMW fallback (race do #2223 não reintroduzida)
+     */
+    const initialStats = { total: 5, voted_a: 3, voted_b: 2, correct_count: 1 };
+    const kv = makeTrackedKv({
+      "stats:260613": JSON.stringify(initialStats),
+    });
+
+    // Stub STATS_COUNTER que sempre retorna 400 (simula choice inválido chegando ao DO)
+    const badChoiceStatsNs: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (): DurableObjectStub => ({
+        fetch: async () => new Response(JSON.stringify({ error: "invalid choice — must be A or B" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: makeVoteDedupNs(), // autoriza firstVote:true
+      STATS_COUNTER: badChoiceStatsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "bad400@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "A"); // choice válido no Worker — o DO stub que retorna 400
+
+    let res: Response;
+    try {
+      res = await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    } catch (e) {
+      assert.fail(`handleVote NÃO deve lançar quando DO retorna 400 — mas lançou: ${String(e)}`);
+      return;
+    }
+
+    // Invariante 1: handleVote deve retornar 200 (voto não perdido)
+    assert.equal(
+      res!.status,
+      200,
+      "handleVote deve retornar 200 quando DO retorna 400 (warn+skip stats, vote continua) — got: " + String(res!.status),
+    );
+
+    // Invariante 2: voteKey deve ter sido gravado (voto commitado)
+    // voteKey = "vote:{edition}:{email}" — exato (sem sufixo de timestamp)
+    const voteKeyRaw = await kv.get("vote:260613:bad400@x.com");
+    assert.ok(
+      voteKeyRaw !== null,
+      "voteKey deve ter sido gravado no KV (voto commitado) — vote não foi perdido (#2293)",
+    );
+
+    // Invariante 3: KV stats NÃO deve ter sido modificado via RMW fallback
+    const statsRaw = await kv.get("stats:260613");
+    const stats = statsRaw ? JSON.parse(statsRaw) as typeof initialStats : null;
+    assert.ok(stats !== null, "KV stats:260613 deve ainda existir");
+    assert.equal(
+      stats!.total,
+      initialStats.total,
+      `KV stats NÃO deve ser modificado via RMW fallback quando DO retorna 400 — got total=${String(stats?.total)} (esperado ${initialStats.total})`,
+    );
+  });
+});
+
