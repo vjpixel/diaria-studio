@@ -625,7 +625,7 @@ describe("cycleLabel — review 1.5 (depth 0, queue esgotada, review null)", () 
   it("review 1.5: barra exibe rótulo '· review 1.5' ao encerrar rodada", () => {
     const plan = makeDepth0Plan(["mergeada", "mergeada", "pulada"], null, 0);
     const bar = renderOvernightBar(plan);
-    assert.ok(bar.includes("· review 1.5"), `barra deve conter '· review 1.5': ${bar}`);
+    assert.match(bar, /· review 1\.5(?!b|c)/, `barra deve conter '· review 1.5' (não 1.5b/c): ${bar}`);
     assert.ok(bar.includes("100%"), `barra deve mostrar 100% (encerrada): ${bar}`);
   });
 
@@ -758,5 +758,25 @@ describe("cycleLabel — formato do rótulo na barra renderOvernightBar (#2298)"
     assert.ok(bar.includes("25%"), `deve ter 25%: ${bar}`);
     assert.ok(bar.includes("(1/4)"), `deve ter (1/4): ${bar}`);
     assert.ok(bar.includes("· fila principal"), `deve ter rótulo: ${bar}`);
+  });
+});
+
+describe("cycleLabel — review 1.5c (depth 2, finding-depth-2 esgotadas)", () => {
+  it("depth 2, todas finding-depth-2 terminais, review 'done (depth 1)' → 'review 1.5c'", () => {
+    // depth-2 bucket esgotado, review de depth 1 concluído, depth 2 pendente → review 1.5c
+    const plan = makeMiniRodadaPlan(2, ["mergeada"], ["mergeada", "pulada"], "done (depth 1)");
+    assert.equal(cycleLabel(plan), "review 1.5c");
+  });
+
+  it("depth 2, finding-depth-2 esgotadas, review null → 'review 1.5c'", () => {
+    // review pode ser null quando plan.json não gravou o review de depth anterior
+    const plan = makeMiniRodadaPlan(2, ["mergeada"], ["mergeada"], null);
+    assert.equal(cycleLabel(plan), "review 1.5c");
+  });
+
+  it("review 1.5c: barra exibe '· review 1.5c'", () => {
+    const plan = makeMiniRodadaPlan(2, ["mergeada"], ["mergeada"], "done (depth 1)");
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("· review 1.5c"), `barra deve conter '· review 1.5c': ${bar}`);
   });
 });

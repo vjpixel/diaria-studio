@@ -163,17 +163,17 @@ export function cycleLabel(plan: Plan | null | undefined): string {
   // "done (depth N)" | "skipped: ... (depth N)" | legacy "done" (sem depth).
   const reviewValue = plan.review ?? null;
   const reviewDone =
-    reviewValue === "done" // legado: sem depth → tratar como concluído no nível corrente
+    (depth === 0 && reviewValue === "done") // legado: somente depth 0
     || (typeof reviewValue === "string" && (
       reviewValue === `done (depth ${depth})`
       || reviewValue.startsWith(`skipped:`) && reviewValue.endsWith(`(depth ${depth})`)
     ));
 
   // Verifica se TODAS as issues relevantes estão em status terminal.
-  // issues vazia → allTerminal = true (vacuamente — edge case legado/plan sem issues do depth)
+  // issues vazia → allTerminal = false (bucket não-esgotado → permanece na fase ativa)
   const allTerminal =
-    relevantIssues.length === 0
-    || relevantIssues.every((i) =>
+    relevantIssues.length > 0
+    && relevantIssues.every((i) =>
         TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)
       );
 
