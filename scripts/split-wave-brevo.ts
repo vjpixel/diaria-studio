@@ -17,6 +17,7 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withBrevo429Retry, throwBrevo429 } from "./lib/brevo-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_KEY = process.env.BREVO_CLARICE_API_KEY;
@@ -27,19 +28,23 @@ const NEW_LIST_NAME = "T1-W7 (48 contatos)";
 // #1961: o arquivo foi movido pro ciclo do envio (abril→maio) em 2604-05/waves/.
 const W7_CSV = "data/clarice-subscribers/2604-05/waves/stripe-export-t01-W7.csv";
 
+// #2275: brevoFetch() agora retenta em 429 via withBrevo429Retry (brevo-client.ts).
 async function brevoFetch(path: string, opts: RequestInit = {}): Promise<unknown> {
-  const res = await fetch(`https://api.brevo.com/v3${path}`, {
-    ...opts,
-    headers: {
-      "api-key": API_KEY!,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(opts.headers ?? {}),
-    },
+  return withBrevo429Retry(async () => {
+    const res = await fetch(`https://api.brevo.com/v3${path}`, {
+      ...opts,
+      headers: {
+        "api-key": API_KEY!,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(opts.headers ?? {}),
+      },
+    });
+    if (res.status === 429) throwBrevo429(res);
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Brevo ${opts.method ?? "GET"} ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    return text ? JSON.parse(text) : {};
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Brevo ${opts.method ?? "GET"} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
 }
 
 function readEmailsFromCsv(path: string): string[] {

@@ -40,6 +40,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { withBrevo429Retry, throwBrevo429 } from "./lib/brevo-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CELLS_DIR = resolve(ROOT, "data/clarice-subscribers/2605-06/sends/cells");
@@ -85,14 +86,18 @@ export function stratSplit(rows: Row[]): { toB: Row[]; toC: Row[] } {
   return { toB, toC };
 }
 
+// #2275: bf() agora retenta em 429 via withBrevo429Retry (importado de brevo-client.ts).
 async function bf(apiKey: string, path: string, opts: RequestInit = {}): Promise<any> {
-  const res = await fetch(`https://api.brevo.com/v3${path}`, {
-    ...opts,
-    headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json", ...(opts.headers ?? {}) },
+  return withBrevo429Retry(async () => {
+    const res = await fetch(`https://api.brevo.com/v3${path}`, {
+      ...opts,
+      headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json", ...(opts.headers ?? {}) },
+    });
+    if (res.status === 429) throwBrevo429(res);
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Brevo ${opts.method ?? "GET"} ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    return text ? JSON.parse(text) : {};
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Brevo ${opts.method ?? "GET"} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
 }
 
 async function addToList(apiKey: string, listId: number, rows: Row[]): Promise<void> {

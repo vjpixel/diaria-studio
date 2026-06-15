@@ -171,6 +171,36 @@ export async function mapLimit<T, R>(
 }
 
 /**
+ * #2273: detecta se um `linksStats` cacheado é "envenenado" — todos os clicks
+ * são 0 enquanto `globalStats.clickers > 0`. Isso indica que o cache foi
+ * gravado durante a era do bug #2177 (param combinado zera linksStats).
+ *
+ * A função retorna true (poison) quando:
+ *  (a) linksStats tem ao menos 1 URL (não é vazio/nenhum link rastreado), E
+ *  (b) a soma de todos os clicks é 0, E
+ *  (c) globalStats.clickers > 0 (campanha teve cliques reais na Brevo).
+ *
+ * Retorna false (seguro) quando:
+ *  - linksStats é null/undefined (ausente → não-poison, simplesmente não buscado).
+ *  - linksStats é {} (vazio → campanha sem links rastreados, legítimo).
+ *  - globalStats é null/undefined (não temos confirmação de cliques → não podemos afirmar poison).
+ *  - os clicks não-zero existem (dados reais).
+ *
+ * Exportado para testes de regressão.
+ */
+export function isLinksStatsPoisoned(
+  ls: BrevoLinksStats | null | undefined,
+  gs: { clickers?: number } | null | undefined,
+): boolean {
+  if (!ls) return false; // ausente → não poison
+  const urls = Object.keys(ls);
+  if (urls.length === 0) return false; // {} → campanha sem links, legítimo
+  if (!gs || !gs.clickers || gs.clickers <= 0) return false; // sem confirmação de cliques reais
+  const totalClicks = Object.values(ls).reduce((s, v) => s + (Number.isFinite(v) ? v : 0), 0);
+  return totalClicks === 0; // todos-zeros + clickers>0 → poison
+}
+
+/**
  * isImmutableCampaign: campanha com `sentDate` há mais de 7 dias tem
  * stats imutáveis — não muda mais no Brevo. Usada para decidir se devemos
  * tentar ler/escrever no KV.
@@ -189,16 +219,41 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
 /**
  * #2270: TTL do cache KV de stats de campanhas RECENTES (<7d, ciclo ativo).
  * Imutáveis (>7d) ficam sem TTL (stats não mudam). Recentes mudam devagar
- * (opens/clicks acumulando) → 5min de stale é aceitável e ≈ o edge cache, e
- * derruba ~2 GETs/campanha por render → fim do 503/flicker por rate-limit.
+ * (opens/clicks acumulando) → stale de 30min é aceitável p/ dashboard e
+ * reduz writes/dia em ~6× vs. 300s anterior.
+ *
+ * #2282: subindo de 300s → 1800s (30min) como alavanca principal de redução
+ * de writes/dia no KV free-tier (shared com o poll worker). ~13 campanhas
+ * recentes × 2 chaves × (86400/1800) renders/dia = ~1248 → ~208 writes/dia
+ * (6× menor). TTL de 30min ainda é bem abaixo do staleness de decisão (o
+ * editor consulta a dashboard para ver padrão de envios passados, não stats
+ * ao segundo). Justificativa: free-tier = 1000 writes/dia shared; queremos
+ * margem confortável para o poll worker (votos em produção são P0).
  */
-export const RECENT_STATS_TTL = 300; // segundos
+export const RECENT_STATS_TTL = 1800; // segundos (30min) — #2282
 
 // #2280: "último render bom" — HTML do `/` renderizado com sucesso é gravado no KV.
 // Em 429 (após retry), servimos este fallback (200 + banner) em vez de 503, pra que
 // uma janela de rate-limit não esconda dado correto nem regrida pra cache poisoned.
 export const LASTGOOD_KEY = "dash:lastgood:html";
 export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
+
+// #2282: chave auxiliar que guarda o hash djb2 do último render bom gravado.
+// Permite write CONDICIONAL — só grava quando o conteúdo mudou, cortando writes/dia.
+export const LASTGOOD_HASH_KEY = "dash:lastgood:hash";
+
+/**
+ * #2282: hash djb2 simples (32-bit, não-criptográfico). Suficiente para
+ * comparar conteúdo de strings HTML — colisão implica write desnecessário,
+ * nunca dado errado. Zero dependências externas, roda no Worker sem import.
+ */
+export function djb2Hash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0; // >>> 0 mantém uint32
+  }
+  return h.toString(16);
+}
 
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
 export class BrevoRateLimitError extends Error {
@@ -324,13 +379,24 @@ export async function fetchRecentCampaigns(
             env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
           ]);
           if (cachedGs) globalStatsMap.set(c.id, cachedGs as BrevoGlobalStats);
-          if (cachedLs) linksStatsMap.set(c.id, cachedLs as BrevoLinksStats);
-          // Se ambos estavam em cache, skip o fetch da API.
+          // #2273: guard de sanidade contra linksStats envenenado (bug #2177).
+          // Um lstats onde TODOS os clicks são 0 mas globalStats.clickers > 0
+          // é inconsistente — indica entrada de cache envenenada. Nesse caso,
+          // NÃO confiamos no cache: forçamos re-fetch do lstats. Isso auto-cura
+          // entries gravadas durante a era #2177 sem precisar de `wrangler kv put`.
+          // Também adiciona TTL a imutáveis com lstats suspeito, para que a entrada
+          // se auto-destrua mesmo se o re-fetch falhar (limpa poison permanente).
+          const lsIsPoison = isLinksStatsPoisoned(
+            cachedLs as BrevoLinksStats | null,
+            cachedGs as BrevoGlobalStats | null,
+          );
+          if (cachedLs && !lsIsPoison) linksStatsMap.set(c.id, cachedLs as BrevoLinksStats);
+          // Se ambos estavam em cache (e lstats não-poison), skip o fetch da API.
           // Bug fix (#2183): antes o `if (cachedGs) return` pulava o fetch
           // mesmo quando lstats não estava em cache — campanhas pré-#2177 com
           // gstats cacheado nunca recebiam lstats. Agora só retorna se ambos
-          // estiverem em cache.
-          if (cachedGs && cachedLs) return;
+          // estiverem em cache (e lstats não-poison).
+          if (cachedGs && cachedLs && !lsIsPoison) return;
         }
 
         // #2249 (verificado 2026-06-14 contra a API Brevo): o param COMBINADO
@@ -341,9 +407,15 @@ export async function fetchRecentCampaigns(
         // campanha — reverte a otimização #2177, que era a causa da seção de
         // links agregados vir sempre vazia). globalStats no combinado está OK,
         // mas pedimos só globalStats pra deixar a intenção explícita.
-        const detail = await _fetchFn<BrevoCampaign>(
-          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
-          env,
+        // #2275c: os GETs de stats por campanha também retentam em 429.
+        // withRateLimitRetry honra x-sib-ratelimit-reset com backoff capped
+        // (idêntico ao comportamento da listagem, acima). Isso evita que um
+        // 429 transitório durante o fetch de 50 campanhas zere os stats.
+        const detail = await withRateLimitRetry(() =>
+          _fetchFn<BrevoCampaign>(
+            `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+            env,
+          ),
         );
         const gs = detail.statistics?.globalStats;
         // #2249: o GET de linksStats fica num try/catch PRÓPRIO — uma falha (429)
@@ -353,13 +425,16 @@ export async function fetchRecentCampaigns(
         // (regressão da divisão em 2 chamadas). ls fica undefined → fallback normal.
         let ls: BrevoLinksStats | undefined;
         try {
-          const linksDetail = await _fetchFn<BrevoCampaign>(
-            `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
-            env,
+          // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
+          const linksDetail = await withRateLimitRetry(() =>
+            _fetchFn<BrevoCampaign>(
+              `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
+              env,
+            ),
           );
           ls = linksDetail.statistics?.linksStats;
         } catch {
-          // linksStats indisponível (429/erro) — gs segue válido; seção de links degrada
+          // linksStats indisponível (429/erro após retry) — gs segue válido; seção de links degrada
         }
 
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
@@ -378,12 +453,22 @@ export async function fetchRecentCampaigns(
 
         // linksStats: gravar se o objeto existir (mesmo que vazio — indica que a
         // campanha não tinha links rastreados, distinguindo de "não buscado ainda").
+        // #2273: nunca gravar linksStats envenenado (todos-zeros + clickers>0)
+        // como imutável SEM TTL — isso recriaria o poison permanente do #2177.
+        // Se suspeito, gravar com TTL curto (RECENT_STATS_TTL) para auto-cura,
+        // mesmo em campanhas imutáveis. Um re-fetch posterior pode popular com
+        // dados reais. gsFetched: o gs que veio deste mesmo fetch (não do KV).
         if (ls !== undefined) {
           linksStatsMap.set(c.id, ls);
           if (env.STATS_CACHE) {
+            // Pega o gs deste fetch (pode estar no map se foi persistido acima)
+            const gsFetched = globalStatsMap.get(c.id);
+            const lsPoison = isLinksStatsPoisoned(ls, gsFetched ?? null);
+            // Poison → TTL curto mesmo em imutável (auto-cura); real → TTL normal
+            const opts = (immutable && !lsPoison) ? {} : { expirationTtl: RECENT_STATS_TTL };
             await env.STATS_CACHE.put(
               kvLsKey, JSON.stringify(ls),
-              immutable ? {} : { expirationTtl: RECENT_STATS_TTL },
+              opts,
             ).catch(() => { /* nunca bloqueia */ });
           }
         }
@@ -1896,9 +1981,20 @@ export default {
         // parcial) e quando as agendadas falharam (render degradado não deve virar
         // o "bom" servido depois). Per-campaign stats zeradas por 429 interno são
         // pré-existentes (#2275) e não cobertas por este guard.
+        //
+        // #2282: write CONDICIONAL — só grava quando o HTML mudou desde o último
+        // render bom. Evita +1 write/render quando o conteúdo é idêntico (ex:
+        // renders dentro do mesmo TTL de edge-cache). Usa hash simples (djb2)
+        // da string — colisão é aceitável (máximo = write desnecessário, nunca dado errado).
         if (!isFresh && scheduledOk && env.STATS_CACHE) {
-          await env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL })
-            .catch(() => { /* erro de KV nunca bloqueia o render */ });
+          const newHash = djb2Hash(html);
+          const prevHash = await env.STATS_CACHE.get(LASTGOOD_HASH_KEY).catch(() => null);
+          if (prevHash !== newHash) {
+            await Promise.all([
+              env.STATS_CACHE.put(LASTGOOD_KEY, html, { expirationTtl: LASTGOOD_TTL }),
+              env.STATS_CACHE.put(LASTGOOD_HASH_KEY, newHash, { expirationTtl: LASTGOOD_TTL }),
+            ]).catch(() => { /* erro de KV nunca bloqueia o render */ });
+          }
         }
         return response;
       } catch (e) {
