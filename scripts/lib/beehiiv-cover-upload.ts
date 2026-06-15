@@ -319,9 +319,300 @@ export function buildCoverDataTransferJs(
 }
 
 /**
- * #1457: gera JS pra REPLACE cover existente. Detecta thumbnail existente
- * via Beehiiv S3 pattern, remove via aria-label-based selector (não regex
- * frouxa) e re-utiliza upload flow do `buildCoverUploadJs`.
+ * #2283 / §5.1: detecta se o node-htmlSnippet do template já tem conteúdo
+ * (isEmpty: false — template salvou edição anterior). Se tiver, limpa via
+ * ProseMirror `tr.delete` antes do paste da nova edição.
+ *
+ * Retorna `{ isEmpty, cleared, docSizeAfter, error? }`.
+ *   - `isEmpty: true`  → snippet já estava vazio, nada feito.
+ *   - `cleared: true`  → conteúdo stale removido (era isEmpty: false).
+ *   - `error`          → editor não encontrado ou outra falha.
+ *
+ * Caller deve usar via `javascript_tool` ANTES de `buildCoverDataTransferJs`
+ * ou do paste do HTML. Não contém sleeps longos — adequado pra chamada única
+ * sem risco de CDP timeout.
+ */
+export function buildSnippetClearJs(): string {
+  return `
+    (() => {
+      const pm = document.querySelector('.tiptap.ProseMirror');
+      const editor = pm?.editor;
+      if (!editor) return { error: 'editor TipTap não encontrado (.tiptap.ProseMirror)', isEmpty: null, cleared: false };
+
+      // Localizar o node htmlSnippet no doc ProseMirror
+      let snippetPos = null;
+      let snippetNode = null;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'htmlSnippet') {
+          snippetPos = pos;
+          snippetNode = node;
+          return false;
+        }
+      });
+      if (snippetPos === null || !snippetNode) {
+        return { error: 'htmlSnippet não encontrado no doc (template errado?)', isEmpty: null, cleared: false };
+      }
+
+      // Checar se vazio via classe CSS is-empty OU content.size === 0
+      const snippetEl = document.querySelector('.node-htmlSnippet');
+      const cssEmpty = snippetEl?.classList.contains('is-empty') ?? false;
+      // content.size == 0 também indica vazio (para o node filho que armazena texto)
+      const contentEmpty = snippetNode.content.size === 0;
+      const isEmpty = cssEmpty || contentEmpty;
+
+      if (isEmpty) {
+        return { isEmpty: true, cleared: false, docSizeAfter: editor.state.doc.content.size };
+      }
+
+      // Snippet tem conteúdo stale — limpar via tr.delete sobre o range do node
+      // (snippetPos+1 a snippetPos+1+content.size apaga o conteúdo interno)
+      const from = snippetPos + 1;
+      const to = snippetPos + 1 + snippetNode.content.size;
+      const tr = editor.state.tr.delete(from, to);
+      editor.view.dispatch(tr);
+
+      return {
+        isEmpty: false,
+        cleared: true,
+        docSizeAfter: editor.state.doc.content.size,
+        bytesCleared: to - from,
+      };
+    })()
+  `;
+}
+
+/**
+ * #2283: Etapa 1 do replace de cover em 2 chamadas separadas — REMOÇÃO da
+ * cover existente. Faz hover + localiza remove button via aria-label canonical
+ * + clica + aguarda confirmação modal. Máximo ~5s de sleep total (seguro
+ * frente ao limite de 45s do CDP).
+ *
+ * Retorna `{ existingSrc, removed, steps, error? }`.
+ *   - `existingSrc`  → URL da cover removida (string vazia se não havia cover).
+ *   - `removed: true` → cover removida com sucesso.
+ *   - `removed: false` → não havia cover existente (caller pode prosseguir com upload direto).
+ *   - `error`  → remove button não encontrado; caller deve abortar ou tratar.
+ *
+ * @see buildCoverReplaceStep2_UploadJs — Etapa 2: upload da nova cover via DataTransfer.
+ * NUNCA combinar as duas etapas num único javascript_tool (total >20s → CDP timeout #2283).
+ *
+ * Pre-fix (caso 260522): heurística inline procurava remove button via
+ * regex `remove|delete|trash|×|x` no aria-label/text. \"x\" casou \"X
+ * (previously Twitter)\" no nav tab → clique navegou pra settings em vez
+ * de remover cover. Fix: selector específico por aria-label canonical do
+ * Beehiiv UI (Remove/Clear thumbnail). Mantido nesta refatoração.
+ */
+export function buildCoverReplaceStep1_RemoveExistingJs(): string {
+  return `
+    (async () => {
+      const steps = [];
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const buttons = () =>
+        Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(b => b.offsetParent !== null);
+
+      // Step 0: detectar cover existente (Beehiiv S3 src)
+      const existing = Array.from(document.querySelectorAll('img'))
+        .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src));
+
+      if (!existing) {
+        steps.push('no existing cover — skip remove');
+        return { existingSrc: '', removed: false, steps };
+      }
+
+      // #1457 review fix: capturar existingSrc ANTES do remove (existing.src
+      // pode estar stale após detach do DOM)
+      const existingSrc = existing.src;
+      steps.push('found existing cover: ' + existingSrc.slice(60, 110));
+
+      // #1457 review fix: hover via múltiplos event types — React onMouseEnter
+      // não dispara em mouseover; precisa de pointerenter ou mouseenter.
+      for (const evtType of ['pointerenter', 'mouseenter', 'mouseover']) {
+        const evt = evtType.startsWith('pointer')
+          ? new PointerEvent(evtType, { bubbles: false, cancelable: true })
+          : new MouseEvent(evtType, { bubbles: false, cancelable: true });
+        existing.dispatchEvent(evt);
+      }
+      await sleep(800);
+
+      // Procurar remove button via aria-label canonical (NUNCA via regex frouxa
+      // de texto, que casava 'X (previously Twitter)' no caso 260522)
+      const removeSelectors = [
+        'button[aria-label*="Remove thumbnail" i]',
+        'button[aria-label*="Delete thumbnail" i]',
+        'button[aria-label*="Clear thumbnail" i]',
+        'button[aria-label*="Remove cover" i]',
+        'button[aria-label*="Remove image" i]',
+      ];
+      let removeBtn = null;
+      for (const sel of removeSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el && el.offsetParent !== null) {
+            removeBtn = el;
+            steps.push('found remove btn via selector: ' + sel);
+            break;
+          }
+        } catch {
+          // CSS4 case-insensitive attribute selector pode falhar em runtimes
+          // antigos — fall back pra exact aria-label sem flag
+          const fallbackSel = sel.replace(/" i\\]$/, '"]');
+          const el = document.querySelector(fallbackSel);
+          if (el && el.offsetParent !== null) {
+            removeBtn = el;
+            steps.push('found remove btn via fallback selector: ' + fallbackSel);
+            break;
+          }
+        }
+      }
+
+      // Fallback: search APENAS no immediate parent container do thumbnail
+      // (level 0 = parent direto). Walking 5 levels podia capturar 'Delete
+      // draft' ou outros remove buttons de seções vizinhas.
+      if (!removeBtn) {
+        const container = existing.parentElement;
+        if (container) {
+          const candidates = Array.from(container.querySelectorAll('button')).filter(b => {
+            const al = (b.getAttribute('aria-label') || '').toLowerCase();
+            const txt = (b.textContent || '').trim().toLowerCase();
+            // Skip distractors no botão e em ancestors (impede 'Delete draft'
+            // dentro de panel de settings que tenha aria 'Settings').
+            if (/twitter|share|navigate|tab|settings|preview|publish|schedule|save|draft|account|user|publication/i.test(al + ' ' + txt)) return false;
+            // Skip se algum ancestor próximo é um modal/menu não relacionado a thumbnail
+            let p = b.parentElement;
+            for (let k = 0; k < 3 && p; k++) {
+              const pal = (p.getAttribute('aria-label') || '').toLowerCase();
+              if (/twitter|share|navigate|tab|settings|preview|publish|schedule|account|user|publication|toast/i.test(pal)) return false;
+              p = p.parentElement;
+            }
+            // Aceitar SOMENTE remove/trash/delete words completas (\\b boundaries
+            // pra evitar 'x' bare match — fonte do bug original do #1457).
+            return /\\b(remove|delete|trash)\\b/i.test(al) ||
+                   /\\b(remove|delete|trash)\\b/i.test(txt);
+          });
+          if (candidates.length > 0) {
+            removeBtn = candidates[0];
+            steps.push('found remove btn via parent-only fallback');
+          }
+        }
+      }
+
+      if (!removeBtn) {
+        return { error: 'remove button not found — replace requires manual remove', existingSrc, removed: false, steps };
+      }
+      removeBtn.click();
+      steps.push('clicked remove');
+      await sleep(1500);
+
+      // Confirmação modal (Beehiiv às vezes pergunta "Are you sure?")
+      // Aceitar variantes "Yes, remove" / "Confirm deletion" — não exigir
+      // exact match.
+      const confirmBtn = buttons().find(b => {
+        const txt = b.textContent?.trim() || '';
+        return /^(Confirm|Yes|Remove|Delete)(\\b|,|\\.|\\s|$)/i.test(txt);
+      });
+      if (confirmBtn) {
+        confirmBtn.click();
+        steps.push('confirmed modal');
+        await sleep(1000);
+      }
+
+      return { existingSrc, removed: true, steps };
+    })()
+  `;
+}
+
+/**
+ * #2283: Etapa 2 do replace de cover em 2 chamadas separadas — UPLOAD da nova
+ * cover via DataTransfer (método primário #1801). Análogo a `buildCoverDataTransferJs`
+ * mas pensado para o contexto de replace (chamado após a Etapa 1 já ter removido
+ * a cover existente).
+ *
+ * Máximo ~8s de sleep total — seguro frente ao limite de 45s do CDP.
+ *
+ * Retorna o shape `CoverVerifyRaw` → classificar com `classifyCoverVerify`.
+ *
+ * @param imageUrl URL pública da nova cover (Cloudflare Worker /img/ — precisa CORS *)
+ * @param filename nome do File (informativo pro Beehiiv; default 04-d1-2x1.jpg)
+ *
+ * FLUXO DE USO CORRETO (#2283):
+ *   1. javascript_tool → buildCoverReplaceStep1_RemoveExistingJs() [≤5s]
+ *   2. computer.wait({ seconds: 2 }) — fora do javascript_tool
+ *   3. javascript_tool → buildCoverReplaceStep2_UploadJs(url) [≤15s]
+ *   4. classifyCoverVerify(result)
+ *
+ * NUNCA combinar Step1 + Step2 num único javascript_tool: total >20s → CDP timeout.
+ *
+ * @see buildCoverReplaceStep1_RemoveExistingJs — Etapa 1: remove cover existente.
+ */
+export function buildCoverReplaceStep2_UploadJs(
+  imageUrl: string,
+  filename = "04-d1-2x1.jpg",
+): string {
+  return `
+    (async () => {
+      const steps = [];
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const visible = (el) => el && el.offsetParent !== null;
+      const buttons = () =>
+        Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(visible);
+
+      // 1) garantir input[type=file] — se ausente, abrir 'Add/Change thumbnail'
+      let fileInput = document.querySelector('input[type="file"]');
+      if (!fileInput) {
+        const addThumb = buttons().find(b => /add thumbnail|change thumbnail/i.test(b.textContent || ''));
+        if (addThumb) { addThumb.click(); steps.push('clicked: Add/Change thumbnail'); await sleep(1500); }
+        fileInput = document.querySelector('input[type="file"]');
+      }
+      if (!fileInput) return { error: 'input[type=file] não encontrado após Add/Change thumbnail', steps };
+
+      // 2) fetch da imagem → File → DataTransfer (método primário #1500/#1801)
+      let blob;
+      try {
+        const res = await fetch(${JSON.stringify(imageUrl)});
+        if (!res.ok) return { error: 'fetch da cover falhou: HTTP ' + res.status, steps };
+        blob = await res.blob();
+      } catch (e) {
+        return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
+      }
+      const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
+      const dt = new DataTransfer(); dt.items.add(file);
+      fileInput.files = dt.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      steps.push('dispatched: change via DataTransfer');
+      await sleep(5000);
+
+      // 3) clicar na img recém-subida → aplica automático (sem botão Insert)
+      const uploaded = Array.from(document.querySelectorAll('img')).find(i =>
+        visible(i) &&
+        /(media\\.beehiiv|beehiiv-images-production.*uploads)/i.test(i.src) &&
+        !(/static_assets|publication.logo/i.test(i.src)));
+      if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(2000); }
+      else steps.push('uploaded img não localizada (pode ter auto-aplicado)');
+
+      // 4) verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente
+      const addThumbAfter = buttons().find(b => /add thumbnail/i.test(b.textContent || ''));
+      const thumb = Array.from(document.querySelectorAll('img'))
+        .find(i => visible(i) && /beehiiv-images-production.*uploads/i.test(i.src));
+      return { addThumbnailPresent: !!addThumbAfter, thumbnailSrc: thumb ? thumb.src : null, steps };
+    })()
+  `;
+}
+
+/**
+ * #1457 / #2283: gera JS pra REPLACE cover existente num único call.
+ *
+ * @deprecated (#2283) Este helper combina remoção + upload num único
+ * `javascript_tool`, o que ultrapassa o limite de 45s do CDP quando há
+ * cover existente (remove ~3-4s + upload via DataTransfer ~8s + sleeps
+ * intermediários → total >15s, com margem ruim). Use a versão em 2 etapas:
+ *
+ *   1. `buildCoverReplaceStep1_RemoveExistingJs()` — remove (≤5s)
+ *   2. `computer.wait({ seconds: 2 })` — fora do javascript_tool
+ *   3. `buildCoverReplaceStep2_UploadJs(url)` — DataTransfer upload (≤15s)
+ *
+ * Mantido para back-compat com testes existentes e como fallback pra situações
+ * onde não há cover existente (single-call é suficientemente curto). Se `removed`
+ * vier `false` da Etapa 1, pode-se saltar direto para a Etapa 2.
  *
  * Pre-fix (caso 260522): heurística inline procurava remove button via
  * regex `remove|delete|trash|×|x` no aria-label/text. \"x\" casou \"X
