@@ -42,6 +42,12 @@ export const NEWSLETTER_LIKE_HOSTS = new Set<string>([
  * Hosts que são tutoriais de verdade — não flagar por "sem sinal de slug" (o
  * slug do cookbook/learn raramente tem verbo). Espelha (parcialmente) os
  * TUTORIAL_DOMAINS do categorize.ts.
+ *
+ * #2313: `langchain.com` removido. O /blog publica mix de tutoriais E case studies
+ * corporativos ("How LangChain Made X Predictable" — cobertura de produto, não tutorial).
+ * Sem whitelist aqui, o guard verifica o sinal de tutorial no título/slug — se não
+ * tem how-to explícito, é flagado pra revisão do editor. Os tutoriais reais de
+ * langchain.com têm verbo imperativo no slug e passam por `hasTutorialSignal`.
  */
 export const TUTORIAL_HOSTS = new Set<string>([
   "cookbook.openai.com",
@@ -54,7 +60,7 @@ export const TUTORIAL_HOSTS = new Set<string>([
   "deeplearning.ai",
   "learn.microsoft.com",
   "developers.googleblog.com",
-  "langchain.com", // #1862 — só /blog chega em use_melhor (categorize path-scoped)
+  // langchain.com removido em #2313 — mix de tutoriais e case studies corporativos.
   "wandb.ai", // #1862 — só /fully-connected chega em use_melhor
 ]);
 
@@ -77,7 +83,7 @@ export function isNewsletterLike(url: string): boolean {
 
 /** Verbo imperativo / padrão how-to no título ou no slug. */
 const TUTORIAL_SIGNAL_RE =
-  /\b(como|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build (?:your|a|an)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
+  /\b(como|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build(?:ing)? (?:your|a|an)|deploy(?:ing) (?:your|a|an|\w+)|creat(?:e|ing) (?:your|a|an|\w+)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
 
 export function hasTutorialSignal(url: string, title: string): boolean {
   const host = hostOf(url);
@@ -89,6 +95,24 @@ export function hasTutorialSignal(url: string, title: string): boolean {
     // url inválida — sem slug; cai no teste de título só.
   }
   return TUTORIAL_SIGNAL_RE.test(title) || TUTORIAL_SIGNAL_RE.test(slug);
+}
+
+/**
+ * #2313: domínios de blog corporativo que publicam mix de tutoriais E case studies/
+ * anúncios — não têm sinal de tutorial suficientemente forte no URL path por si só.
+ * Sem sinal de tutorial no título, itens desses domínios são suspeitos.
+ */
+export const CORPORATE_BLOG_HOSTS = new Set<string>([
+  "langchain.com", // /blog publica mix de tutoriais e case studies corporativos
+  "blog.langchain.dev", // #2313 — host real do LangChain blog (per categorize.ts:971)
+  "aws.amazon.com", // ML blog publica tutoriais E anúncios de serviço/release notes
+  "cloud.google.com", // blog publica tutoriais E case studies de cliente
+]);
+
+/** Detecta se a URL pertence a um blog corporativo (não dedicado a tutoriais). */
+export function isCorporateBlog(url: string): boolean {
+  const host = hostOf(url);
+  return host !== null && CORPORATE_BLOG_HOSTS.has(host);
 }
 
 export interface UseMelhorItem {
@@ -120,6 +144,11 @@ export interface ReviewResult {
  *  - latent.space "State of AI Engineering" → newsletter + sem-sinal → FLAGA ✓
  *  - latent.space "How to build an agent"   → newsletter + sinal    → não flaga ✓
  *  - eugeneyan.com "LLM Patterns"           → não-newsletter        → não flaga ✓
+ *
+ * #2313: guarda adicional — blog corporativo (langchain.com, aws ML blog) SEM
+ * sinal de tutorial no título também é flagado. Esses domínios publicam mix de
+ * tutoriais reais E case studies de produto. Sem sinal how-to explícito no título,
+ * é provável que seja cobertura/case study, não tutorial acionável.
  */
 export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
   const suspicious: SuspiciousItem[] = [];
@@ -127,12 +156,22 @@ export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
     const url = typeof item.url === "string" ? item.url : "";
     if (!url) continue;
     const title = typeof item.title === "string" ? item.title : "";
-    if (isNewsletterLike(url) && !hasTutorialSignal(url, title)) {
+    const hasTutorial = hasTutorialSignal(url, title);
+    if (isNewsletterLike(url) && !hasTutorial) {
       suspicious.push({
         url,
         title: title || undefined,
         reasons: [
           "domínio newsletter/agregador SEM sinal de tutorial no título/slug — provável cobertura/análise, não tutorial",
+        ],
+      });
+    } else if (isCorporateBlog(url) && !hasTutorial) {
+      // #2313: blog corporativo sem verbo how-to → suspeito de case study / anúncio.
+      suspicious.push({
+        url,
+        title: title || undefined,
+        reasons: [
+          "blog corporativo SEM verbo how-to/tutorial no título/slug — verificar se é case study ou anúncio de produto (#2313)",
         ],
       });
     }

@@ -17,6 +17,7 @@ import {
   STAGE_2_CAP_LANCAMENTOS,
   STAGE_2_MIN_RADAR,
   STAGE_2_MIN_USE_MELHOR,
+  STAGE_2_MAX_USE_MELHOR,
 } from "../scripts/lib/apply-stage2-caps.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
 
@@ -466,18 +467,28 @@ describe("checkStage2Caps", () => {
     assert.equal(r.expectedCaps.video, 2);
   });
 
-  it("#1693: USE MELHOR NÃO é capado (sem máximo documentado)", () => {
-    // use_melhor só tem mínimo 3 candidatos (editorial-rules:143); o editor
-    // cura quantos publica (:175). Mesmo com 8, não deve violar.
-    const approved = {
+  it("#1693: USE MELHOR ≤ 4 — cap máximo adicionado em #2313", () => {
+    // #2313: use_melhor agora tem cap máximo (STAGE_2_MAX_USE_MELHOR=4).
+    // Antes (#1693 original): sem cap; agora com 8 viola o cap.
+    const approvedOver = {
       highlights: [{}, {}, {}],
       lancamento: new Array(5).fill({}),
       radar: new Array(5).fill({}),
       use_melhor: new Array(8).fill({}),
     };
-    const r = checkStage2Caps(approved);
-    assert.equal(r.ok, true);
-    assert.deepEqual(r.violations, []);
+    const rOver = checkStage2Caps(approvedOver);
+    assert.equal(rOver.ok, false, "8 use_melhor deve violar o cap de 4");
+    assert.ok(rOver.violations.some((v) => v.includes("USE MELHOR")));
+
+    // Exatamente no cap: não viola.
+    const approvedExact = {
+      highlights: [{}, {}, {}],
+      lancamento: new Array(5).fill({}),
+      radar: new Array(5).fill({}),
+      use_melhor: new Array(4).fill({}),
+    };
+    const rExact = checkStage2Caps(approvedExact);
+    assert.equal(rExact.ok, true, "4 use_melhor está no limite — não viola");
   });
 });
 
@@ -770,5 +781,79 @@ describe("cap calculation pós-#1240 (sem inflacao do #1071)", () => {
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
     assert.equal(r.expectedCaps.radar, 8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2313 — USE MELHOR max cap = 4
+// ---------------------------------------------------------------------------
+
+describe("USE MELHOR max cap (#2313)", () => {
+  it("regressão 260616: 8 candidatos → saída ≤ 4 (cap máximo aplicado)", () => {
+    const approved = {
+      highlights: [{ url: "https://h/1" }, { url: "https://h/2" }, { url: "https://h/3" }],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 8 }, (_, i) => ({ url: `https://t/${i}`, title: `Tutorial ${i}` })),
+      runners_up: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.ok(
+      (capped.use_melhor?.length ?? 0) <= STAGE_2_MAX_USE_MELHOR,
+      `use_melhor deve ser ≤ ${STAGE_2_MAX_USE_MELHOR}, foi ${capped.use_melhor?.length}`,
+    );
+    assert.equal(capped.use_melhor?.length, STAGE_2_MAX_USE_MELHOR, "deve ser exatamente 4");
+    assert.ok(report.use_melhor.truncated > 0, "deve reportar truncamento");
+    assert.equal(report.use_melhor.truncated, 4, "truncou 4 dos 8 candidatos");
+  });
+
+  it("4 candidatos → sem truncamento (limite exato)", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 4 }, (_, i) => ({ url: `https://t/${i}` })),
+      runners_up: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(capped.use_melhor?.length, 4);
+    assert.equal(report.use_melhor.truncated, 0);
+  });
+
+  it("2 candidatos → no-op (abaixo do cap)", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: [{ url: "https://t/1" }, { url: "https://t/2" }],
+      runners_up: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(capped.use_melhor?.length, 2);
+    assert.equal(report.use_melhor.truncated, 0);
+  });
+
+  it("checkStage2Caps detecta use_melhor > 4 como violação (#2313)", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 7 }, (_, i) => ({ url: `https://t/${i}` })),
+    };
+    const r = checkStage2Caps(approved);
+    assert.equal(r.ok, false);
+    assert.ok(r.violations.some((v) => v.includes("USE MELHOR")));
+    assert.equal(r.expectedCaps.use_melhor, STAGE_2_MAX_USE_MELHOR);
+  });
+
+  it("checkStage2Caps com use_melhor exatamente 4 → ok=true (#2313)", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 4 }, (_, i) => ({ url: `https://t/${i}` })),
+    };
+    const r = checkStage2Caps(approved);
+    assert.equal(r.ok, true);
   });
 });

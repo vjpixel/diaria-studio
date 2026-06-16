@@ -17,6 +17,7 @@ import {
   isThirdPartyBlogAboutOtherCompany,
   isExplainerByTitle,
   isNewsNotTutorial,
+  isLaunchSlug,
   isCoursePage,
   hasPreExistenceSignal,
   isIncrementalReleaseOnThirdPartyBlog,
@@ -1067,6 +1068,57 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
       categorize({ url: "https://openai.com/news/release-notes-v2", title: "GPT-5 release notes for developers" }),
       "noticias",
     );
+  });
+
+  // #2313 — regressão 260616: anúncios em domínio de tutorial não devem virar tutorial.
+  it("regressão 260616: 'Introducing Gemma 4 on Amazon Bedrock' (AWS ML Blog) NÃO é tutorial (#2313)", () => {
+    // AWS ML Blog está em TUTORIAL_DOMAIN_EXTRA_PATTERNS, mas o slug "introducing-*"
+    // indica anúncio de produto. isNewsNotTutorial deve retornar true via isLaunchSlug.
+    const art: Article = {
+      url: "https://aws.amazon.com/blogs/machine-learning/introducing-gemma-4-on-amazon-bedrock/",
+      title: "Introducing Gemma 4 on Amazon Bedrock",
+    };
+    // Não deve virar tutorial (seria use_melhor — errado, é lançamento/notícia).
+    assert.notEqual(categorize(art), "tutorial", "anúncio em domínio tutorial não deve virar tutorial");
+  });
+
+  it("isLaunchSlug detecta slug 'introducing-*' (#2313)", () => {
+    assert.ok(isLaunchSlug("https://aws.amazon.com/blogs/machine-learning/introducing-gemma-4-on-amazon-bedrock/"));
+    assert.ok(isLaunchSlug("https://blog.langchain.com/announcing-langsmith-2-0/"));
+    assert.ok(!isLaunchSlug("https://aws.amazon.com/blogs/machine-learning/how-to-build-rag-pipeline/"));
+    assert.ok(!isLaunchSlug("https://aws.amazon.com/blogs/machine-learning/re-introducing-bedrock-agents/"), "re-introducing não é launch slug");
+  });
+
+  it("isNewsNotTutorial detecta slug de lançamento (#2313)", () => {
+    const art: Article = {
+      url: "https://aws.amazon.com/blogs/machine-learning/introducing-gemma-4-on-amazon-bedrock/",
+      title: "Introducing Gemma 4 on Amazon Bedrock",
+    };
+    assert.ok(isNewsNotTutorial(art), "slug 'introducing-*' deve ser detectado como news-not-tutorial");
+  });
+
+  it("tutorial real do AWS ML Blog ainda é tutorial (#2313 — sem regressão)", () => {
+    // "How to build a RAG pipeline" — slug não é launch, é how-to.
+    const art: Article = {
+      url: "https://aws.amazon.com/blogs/machine-learning/how-to-build-rag-pipeline/",
+      title: "How to Build a RAG Pipeline with Amazon Bedrock",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("case study LangChain sem type_hint 'noticia' vai para isNewsNotTutorial via isLaunchSlug ausente (#2313 — review-use-melhor guard)", () => {
+    // "How LangChain Made X Predictable" não tem slug de lançamento, mas também
+    // não tem sinal how-to → isNewsNotTutorial = false → isTutorialByDomainExtra vence → tutorial.
+    // O gate real pra este caso é review-use-melhor (corporate blog guard).
+    // Este teste documenta o comportamento esperado atual.
+    const art: Article = {
+      url: "https://www.langchain.com/blog/how-langchain-made-x-predictable",
+      title: "How LangChain Made X Predictable",
+    };
+    // categorize retorna "tutorial" porque langchain.com/blog é TUTORIAL_PATTERNS
+    // e o slug não tem sinal de lançamento nem de howto.
+    // O editor vê este item no gate via review-use-melhor (corporate blog flag).
+    assert.equal(categorize(art), "tutorial");
   });
 });
 

@@ -10,6 +10,7 @@ import {
   reviewUseMelhor,
   isNewsletterLike,
   hasTutorialSignal,
+  isCorporateBlog,
 } from "../scripts/review-use-melhor.ts";
 
 describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
@@ -89,5 +90,54 @@ describe("helpers puros (#1798)", () => {
     assert.ok(hasTutorialSignal("https://x.com/how-to-build-rag", "RAG"));
     assert.ok(hasTutorialSignal("https://huggingface.co/learn/x", "NLP"));
     assert.ok(!hasTutorialSignal("https://x.com/news-item", "OpenAI lança modelo"));
+  });
+
+  it("hasTutorialSignal: formas no gerúndio (fix #2321 finding 2)", () => {
+    // AWS tutorials com gerúndio no título não devem ser falso-flagados
+    assert.ok(hasTutorialSignal("https://aws.amazon.com/blogs/ml/x", "Deploying Gemma 4 on SageMaker Studio"));
+    assert.ok(hasTutorialSignal("https://aws.amazon.com/blogs/ml/x", "Building a RAG pipeline with Bedrock"));
+    assert.ok(hasTutorialSignal("https://aws.amazon.com/blogs/ml/x", "Creating a serverless API with Lambda"));
+  });
+});
+
+describe("isCorporateBlog + reviewUseMelhor — guarda corporativo (#2313 / #2321)", () => {
+  it("isCorporateBlog: aws.amazon.com e blog.langchain.dev são corporativos", () => {
+    assert.ok(isCorporateBlog("https://aws.amazon.com/blogs/machine-learning/x"), "aws.amazon.com deve ser corporativo");
+    assert.ok(isCorporateBlog("https://blog.langchain.dev/how-langchain-made-x/"), "blog.langchain.dev deve ser corporativo (fix #2321 finding 1)");
+    assert.ok(isCorporateBlog("https://cloud.google.com/blog/topics/ai/x"), "cloud.google.com deve ser corporativo");
+    assert.ok(!isCorporateBlog("https://huggingface.co/blog/x"), "huggingface.co NÃO é corporativo neste sentido");
+  });
+
+  it("flaga aws.amazon.com SEM sinal de tutorial (true positive — evita case study no use_melhor)", () => {
+    const items = [
+      { url: "https://aws.amazon.com/blogs/machine-learning/introducing-bedrock-enterprise/", title: "Introducing Amazon Bedrock Enterprise" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "AWS case study/anúncio sem how-to deve ser flagado");
+    assert.match(suspicious[0].reasons.join(" "), /corporativo/);
+  });
+
+  it("NÃO flaga aws.amazon.com COM sinal de tutorial (false positive evitado)", () => {
+    const items = [
+      { url: "https://aws.amazon.com/blogs/machine-learning/deploy-gemma-4-on-sagemaker/", title: "Deploying Gemma 4 on SageMaker Studio" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 0, "AWS tutorial com gerúndio não deve ser flagado");
+  });
+
+  it("flaga blog.langchain.dev SEM sinal de tutorial (true positive)", () => {
+    const items = [
+      { url: "https://blog.langchain.dev/how-langchain-made-x-predictable/", title: "How LangChain Made X Predictable" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "LangChain case study sem how-to deve ser flagado");
+  });
+
+  it("NÃO flaga blog.langchain.dev COM sinal de tutorial", () => {
+    const items = [
+      { url: "https://blog.langchain.dev/how-to-build-agents/", title: "Como construir agentes com LangChain" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 0, "LangChain com how-to = tutorial real, não deve ser flagado");
   });
 });

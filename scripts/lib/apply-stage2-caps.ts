@@ -110,9 +110,7 @@ export const STAGE_2_MIN_RADAR = 5;
 /**
  * VÍDEOS: máximo 2 por edição (#1693, editorial-rules.md:100). Cap fixo e
  * independente do alvo de 12 (VÍDEOS é seção opcional fora da soma
- * destaques+lançamentos+radar). USE MELHOR NÃO tem cap máximo documentado —
- * só mínimo 3 candidatos no pipeline (editorial-rules.md:143) e é curado
- * manualmente pelo editor (:175) — por isso não é validado aqui.
+ * destaques+lançamentos+radar).
  */
 export const STAGE_2_CAP_VIDEO = 2;
 
@@ -125,6 +123,13 @@ export const STAGE_2_CAP_VIDEO = 2;
  * sinaliza warn loud no gate (não inventar item).
  */
 export const STAGE_2_MIN_USE_MELHOR = 2;
+
+/**
+ * USE MELHOR: máximo 4 itens renderizados por edição (#2313). Sem cap, todos
+ * os candidatos passam para o writer — 260616 saiu com 7 itens, 0 casual.
+ * Editorial-rules §Use melhor #1798: padrão é ~4 itens (2 casual + 2 dev-beginner).
+ */
+export const STAGE_2_MAX_USE_MELHOR = 4;
 
 /**
  * Cap pra Radar dado contagem dos outros buckets já capados (#1629).
@@ -158,10 +163,12 @@ export interface CapReport {
   removed_overlap: { lancamento: number; radar: number };
   /**
    * #1855: enforcement do mínimo de USE MELHOR.
+   * #2313: enforcement do máximo de USE MELHOR.
    *   before          — quantos itens o bucket tinha antes (pré-dedup/promoção)
    *   removed_overlap  — itens removidos por já estarem em highlights[] (#1240)
    *   promoted         — runners-up `use_melhor` promovidos pra bater o mínimo
-   *   after            — total final
+   *   after            — total final (após min promotion + max cap)
+   *   truncated        — itens descartados pelo cap máximo (#2313)
    *   shortfall        — quantos AINDA faltam pro mínimo (pool insuficiente) → warn loud no gate
    */
   use_melhor: {
@@ -169,6 +176,7 @@ export interface CapReport {
     removed_overlap: number;
     promoted: number;
     after: number;
+    truncated: number;
     shortfall: number;
   };
 }
@@ -286,7 +294,7 @@ export function applyStage2Caps(
   const rCap = capRadar(dest, lFinal);
   const rFinal = Math.min(rDeduped.kept.length, rCap);
 
-  // #1855: USE MELHOR não tem cap máximo, mas tem mínimo (2). Antes de promover,
+  // #1855: USE MELHOR tem mínimo (2). #2313: tem máximo (4). Antes de promover,
   // dedup vs highlights[] (#1240 — igual lançamento/radar): um tutorial promovido
   // a destaque NÃO pode render 2× (no destaque + na seção). Sem esse dedup o
   // bucket escapava o #1240 e duplicava o item.
@@ -299,11 +307,21 @@ export function applyStage2Caps(
     STAGE_2_MIN_USE_MELHOR,
   );
 
+  // #2313: aplicar cap máximo APÓS promoção (promoção pode elevar acima de MIN).
+  // O cap também cobre o caso em que o bucket original já tinha > 4 candidatos.
+  const umFinal = um.kept.slice(0, STAGE_2_MAX_USE_MELHOR);
+  const umTruncated = um.kept.length - umFinal.length;
+  if (umTruncated > 0) {
+    console.warn(
+      `[apply-stage2-caps] USE MELHOR: ${um.kept.length} → ${umFinal.length} (cap máximo ${STAGE_2_MAX_USE_MELHOR} aplicado, #2313)`,
+    );
+  }
+
   const out: ApprovedJson = {
     ...approved,
     lancamento: lDeduped.kept.slice(0, lFinal),
     radar: rDeduped.kept.slice(0, rFinal),
-    use_melhor: um.kept,
+    use_melhor: umFinal,
   };
 
   return {
@@ -330,7 +348,8 @@ export function applyStage2Caps(
         before: umBefore,
         removed_overlap: umDeduped.removed,
         promoted: um.promoted,
-        after: um.kept.length,
+        after: umFinal.length,
+        truncated: umTruncated,
         shortfall: um.shortfall,
       },
     },
@@ -346,24 +365,27 @@ export function checkStage2Caps(
 ): {
   ok: boolean;
   violations: string[];
-  expectedCaps: { lancamento: number; radar: number; video: number };
+  expectedCaps: { lancamento: number; radar: number; video: number; use_melhor: number };
 } {
   const dest = approved.highlights?.length ?? 0;
   const lCap = STAGE_2_CAP_LANCAMENTOS;
   const lCount = approved.lancamento?.length ?? 0;
   const rCap = capRadar(dest, Math.min(lCount, lCap));
   const rCount = approved.radar?.length ?? 0;
-  // #1693: VÍDEOS ≤ 2 (cap documentado). USE MELHOR não tem cap máximo → não valida.
+  // #1693: VÍDEOS ≤ 2 (cap documentado). #2313: USE MELHOR ≤ 4.
   const vCap = STAGE_2_CAP_VIDEO;
   const vCount = approved.video?.length ?? 0;
+  const umCap = STAGE_2_MAX_USE_MELHOR;
+  const umCount = approved.use_melhor?.length ?? 0;
 
   const violations: string[] = [];
   if (lCount > lCap) violations.push(`LANÇAMENTOS: ${lCount} > cap ${lCap}`);
   if (rCount > rCap) violations.push(`RADAR: ${rCount} > cap ${rCap}`);
   if (vCount > vCap) violations.push(`VÍDEOS: ${vCount} > cap ${vCap}`);
+  if (umCount > umCap) violations.push(`USE MELHOR: ${umCount} > cap ${umCap}`);
   return {
     ok: violations.length === 0,
     violations,
-    expectedCaps: { lancamento: lCap, radar: rCap, video: vCap },
+    expectedCaps: { lancamento: lCap, radar: rCap, video: vCap, use_melhor: umCap },
   };
 }
