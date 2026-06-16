@@ -639,7 +639,7 @@ export function finalizeStage1(
   const USE_MELHOR_DOMAIN_CAP = 1;
   if ((enriched["use_melhor"] ?? []).length > 0) {
     const umCountByDomain = new Map<string, number>();
-    const umDropped: Array<{ url: string; title?: string; domain: string }> = [];
+    const umDropped: Array<{ url: string; title?: string; domain: string; score: number | null }> = [];
     enriched["use_melhor"] = (enriched["use_melhor"] ?? []).filter((a) => {
       if (protectedUrls.has(a.url)) return true; // highlight/runner-up bypassa
       let host: string | null = null;
@@ -650,7 +650,7 @@ export function finalizeStage1(
       }
       const count = umCountByDomain.get(host) ?? 0;
       if (count >= USE_MELHOR_DOMAIN_CAP) {
-        umDropped.push({ url: a.url, title: a.title, domain: host });
+        umDropped.push({ url: a.url, title: a.title, domain: host, score: a.score ?? null });
         return false;
       }
       umCountByDomain.set(host, count + 1);
@@ -670,7 +670,7 @@ export function finalizeStage1(
           url: d.url,
           title: d.title,
           domain: d.domain,
-          score: null as number | null,
+          score: d.score, // #2321: usar score real (não null) para logs de auditoria úteis
         })),
       );
     }

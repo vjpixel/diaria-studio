@@ -83,7 +83,7 @@ export function isNewsletterLike(url: string): boolean {
 
 /** Verbo imperativo / padrão how-to no título ou no slug. */
 const TUTORIAL_SIGNAL_RE =
-  /\b(como|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build (?:your|a|an)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
+  /\b(como|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build(?:ing)? (?:your|a|an)|deploy(?:ing) (?:your|a|an|\w+)|creat(?:e|ing) (?:your|a|an|\w+)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
 
 export function hasTutorialSignal(url: string, title: string): boolean {
   const host = hostOf(url);
@@ -104,6 +104,7 @@ export function hasTutorialSignal(url: string, title: string): boolean {
  */
 export const CORPORATE_BLOG_HOSTS = new Set<string>([
   "langchain.com", // /blog publica mix de tutoriais e case studies corporativos
+  "blog.langchain.dev", // #2313 — host real do LangChain blog (per categorize.ts:971)
   "aws.amazon.com", // ML blog publica tutoriais E anúncios de serviço/release notes
   "cloud.google.com", // blog publica tutoriais E case studies de cliente
 ]);

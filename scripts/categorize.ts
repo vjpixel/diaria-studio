@@ -639,12 +639,15 @@ export function isLaunchSlug(url: string): boolean {
  *     LLMs: a reference"); ejetá-los esvaziaria use_melhor.
  */
 export function isNewsNotTutorial(article: Article): boolean {
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence
+  // #2313: slug de lançamento no path → anúncio, mesmo que título diga "How to use X".
+  // Vendor blogs frequentemente publicam anúncios com wording de tutorial no título
+  // (ex: "How to use Amazon Bedrock Guardrails" em .../introducing-bedrock-guardrails/).
+  // URL-slug é sinal mais confiável que keywords do título nesses casos.
+  if (isLaunchSlug(article.url ?? "")) return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
-  // #2313: slug de lançamento no path → anúncio, não tutorial.
-  if (isLaunchSlug(article.url ?? "")) return true;
   return isBusinessDeal(article) || isReport(article);
 }
 
