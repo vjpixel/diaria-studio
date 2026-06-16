@@ -57,7 +57,7 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query: `subject:"[TEST] {edition_title}" from:beehiiv.com newer_than:1d`.
 3. Se nao encontrar resultados, tentar query sem prefixo `[TEST]`: `subject:"{edition_title}" from:beehiiv.com newer_than:1d` (o prefixo e adicionado pelo Beehiiv e pode mudar).
 4. Se encontrar, obter o `threadId` do resultado mais recente.
-5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode retornar apenas partes MIME ou truncar o body em emails grandes (~34KB). Se a resposta tiver multiplas partes MIME (`parts[]`), concatenar TODOS os payloads de texto (`mimeType: text/html` ou `text/plain`) para montar o corpo completo antes de prosseguir.
+5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode retornar apenas partes MIME ou truncar o body em emails grandes (~34KB). Se a resposta tiver multiplas partes MIME (`parts[]`), preferir a parte `mimeType: text/html` (corpo HTML renderizado) — é o que o leitor vê. Se não houver parte HTML, usar `text/plain`. Não concatenar partes de tipos diferentes (HTML + plain juntos formariam um blob misto inútil para checks de seção).
 6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **fallback para Chrome** (metodo secundario abaixo).
 7. Se nenhum metodo encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
    ```json
@@ -79,36 +79,52 @@ Emails da Diar.ia têm ~34KB (newsletter-final.html). O Gmail MCP pode truncar o
 
 **Procedimento obrigatório antes de qualquer check de seção:**
 
+**Passo 1 — salvar o corpo do email em arquivo temporário e medir o tamanho.**
+
+Você já tem o corpo do email em mãos (resultado do `get_thread` acima, armazenado na sua memória de contexto). Salve-o em disco e meça os bytes:
+
 ```bash
-# 1. Obter o tamanho do corpo email recebido (em bytes/caracteres)
-EMAIL_BODY_LEN=$(echo -n "$EMAIL_BODY" | wc -c)
-
-# 2. Obter o tamanho do newsletter-final.html local (fonte de verdade)
-FINAL_HTML_LEN=$(wc -c < "{edition_dir}/_internal/newsletter-final.html" 2>/dev/null || echo "0")
-
-# 3. Classificar completeness via helper determinístico
-node --input-type=module <<'EOF'
-import { classifyFetchCompleteness } from './scripts/lib/email-fetch-completeness.ts';
-const emailLen = parseInt(process.env.EMAIL_BODY_LEN);
-const htmlLen = parseInt(process.env.FINAL_HTML_LEN);
-const result = classifyFetchCompleteness(emailLen, htmlLen);
-console.log(result);
-EOF
+# Salvar o corpo do email (texto obtido via Gmail MCP) em arquivo temp.
+# Você vai escrever o conteúdo com Write tool ou via Bash com heredoc.
+# Depois medir com wc -c:
+EMAIL_BODY_FILE="{edition_dir}/_internal/.email-body.tmp"
+# (escrever o conteúdo via Write tool neste path primeiro)
+EMAIL_BODY_LEN=$(wc -c < "$EMAIL_BODY_FILE")
 ```
 
-Ou, mais diretamente, calcular manualmente: se `EMAIL_BODY_LEN < 0.5 * FINAL_HTML_LEN` → fetch **incompleto**.
+**Na prática:** use a tool `Write` com o conteúdo do email (da sua memória de contexto) para o path `{edition_dir}/_internal/.email-body.tmp` — você já tem o texto, basta materializá-lo em disco. Depois execute o bash acima para medir os bytes. O passo 8-9 usa o mesmo arquivo (`test-email-{AAMMDD}.txt`), mas este `.email-body.tmp` é temporário e só para a medição de tamanho.
 
-**Se fetch incompleto (incomplete):**
+**Passo 2 — invocar o helper determinístico para classificar o fetch:**
+
+```bash
+# Usar o path real da edição que você está processando.
+# edition_dir é o valor recebido como input (ex: "data/editions/260617/").
+# Converter para path absoluto se necessário.
+COMPLETENESS=$(npx tsx scripts/check-fetch-completeness.ts \
+  --email-len "$EMAIL_BODY_LEN" \
+  --html-path "{edition_dir}/_internal/newsletter-final.html")
+# Saída: "complete" ou "incomplete"
+# Exit 0 = classificação ok. Exit 1 = arquivo HTML não encontrado ou arg inválido.
+```
+
+Se o helper falhar (exit 1, arquivo não encontrado), assumir **complete** (fail-safe) e logar `info:check_completeness_failed: helper retornou erro — assumindo fetch completo` no issues[].
+
+**Se fetch incompleto (`incomplete`):**
 - NÃO emitir `section_missing` para seções que não aparecem no corpo do email.
 - Para CADA seção que "faltaria" no email, verificar primeiro no `newsletter-final.html` local. Se a seção está no HTML local → o email provavelmente tem ela (o MCP só não trouxe) → `inconclusive`, NÃO `section_missing`.
-- O resultado final: se o corpo truncado não permite confirmar a presença de seções, retornar:
+- O resultado final: se o corpo truncado não permite confirmar a presença de seções, retornar com as issues já coletadas até este ponto (unfixed_issues do passo 0 + subject check do passo 0.5, se já executados):
   ```json
-  { "status": "inconclusive", "issues": [], "details": "Corpo do email obtido via Gmail MCP ({EMAIL_BODY_LEN} bytes) é muito menor que newsletter-final.html ({FINAL_HTML_LEN} bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor deve verificar visualmente ou via Chrome fallback." }
+  {
+    "status": "inconclusive",
+    "issues": ["<unfixed_issues e subject checks já coletados>"],
+    "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor deve verificar visualmente ou via Chrome fallback."
+  }
   ```
+  Substituir `EMAIL_BODY_LEN` e `FINAL_HTML_LEN` pelos valores reais obtidos.
   **Não bloquear** o loop com `section_missing` neste caso — o fix loop re-paste não resolveria um truncamento de fetch.
-- Checks que NÃO dependem de conteúdo completo (subject, encoding de subject, links no cabeçalho, unfixed_issues do publish) ainda DEVEM ser executados e reportados.
+- Checks que NÃO dependem de conteúdo completo (subject, encoding de subject, links no cabeçalho, unfixed_issues do publish) ainda DEVEM ser executados e reportados, mesmo no `inconclusive`.
 
-**Se fetch completo:** prosseguir normalmente com todos os checks.
+**Se fetch completo (`complete`):** prosseguir normalmente com todos os checks de seção.
 
 ### 2. Ler conteudo renderizado
 

@@ -58,6 +58,16 @@ export function classifyFetchCompleteness(
   finalHtmlLen: number,
   threshold = DEFAULT_COMPLETENESS_THRESHOLD,
 ): FetchCompleteness {
+  // Guard NaN/inválido (#2317 finding 6): entradas não-numéricas devem falhar loud
+  // em vez de retornar silenciosamente "complete" (NaN < X é sempre false → mascararia
+  // truncamento real). O caller (CLI) valida antes de chamar, mas a lib protege
+  // contra uso errado em código — invariante de segurança.
+  if (!Number.isFinite(emailBodyLen) || !Number.isFinite(finalHtmlLen)) {
+    throw new TypeError(
+      `classifyFetchCompleteness: argumentos devem ser números finitos, recebidos: emailBodyLen=${emailBodyLen}, finalHtmlLen=${finalHtmlLen}`,
+    );
+  }
+
   // Sem HTML local de referência → não podemos avaliar → assume completo.
   if (finalHtmlLen <= 0) return "complete";
 

@@ -134,4 +134,47 @@ describe("classifyFetchCompleteness (#2317)", () => {
   it("DEFAULT_COMPLETENESS_THRESHOLD é 0.5", () => {
     assert.equal(DEFAULT_COMPLETENESS_THRESHOLD, 0.5);
   });
+
+  // -------------------------------------------------------------------------
+  // NaN / Infinity guard (#2317 finding 6)
+  // Entradas inválidas devem falhar loud (throw TypeError), não retornar
+  // silenciosamente "complete". NaN < X é sempre false → mascararia
+  // truncamento real se a função retornasse complete sem proteção.
+  // -------------------------------------------------------------------------
+
+  it("emailBodyLen=NaN → throws TypeError (não retorna complete silenciosamente)", () => {
+    assert.throws(
+      () => classifyFetchCompleteness(NaN, REAL_HTML_SIZE),
+      TypeError,
+      "NaN como emailBodyLen deve lançar TypeError, não retornar complete",
+    );
+  });
+
+  it("finalHtmlLen=NaN → throws TypeError", () => {
+    assert.throws(
+      () => classifyFetchCompleteness(2048, NaN),
+      TypeError,
+    );
+  });
+
+  it("emailBodyLen=Infinity → throws TypeError", () => {
+    assert.throws(
+      () => classifyFetchCompleteness(Infinity, REAL_HTML_SIZE),
+      TypeError,
+    );
+  });
+
+  it("finalHtmlLen=-Infinity → throws TypeError", () => {
+    assert.throws(
+      () => classifyFetchCompleteness(2048, -Infinity),
+      TypeError,
+    );
+  });
+
+  it("ambos NaN → throws TypeError (fail loud, não complete)", () => {
+    assert.throws(
+      () => classifyFetchCompleteness(NaN, NaN),
+      TypeError,
+    );
+  });
 });
