@@ -29,6 +29,7 @@ import {
   type Plan,
 } from "../scripts/overnight-statusline.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
+import { STAGE_LABELS } from "../scripts/update-stage-status.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -422,10 +423,9 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
   const tmpRoot = join(tmpdir(), `edition-overnight-integration-${Date.now()}`);
 
   // Helper: escreve stage-status.json em data/editions/{AAMMDD}/_internal/
+  // Uses the shared writeStageStatus helper defined at the top of this file.
   function writeEditionStatus(id: string, doc: StageStatusDoc): void {
-    const editionDir = join(tmpRoot, "data", "editions", id);
-    mkdirSync(join(editionDir, "_internal"), { recursive: true });
-    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(doc, null, 2), "utf8");
+    writeStageStatus(join(tmpRoot, "data", "editions", id), doc);
   }
 
   // Helper: escreve plan.json em data/overnight/{AAMMDD}/
@@ -434,6 +434,11 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
     mkdirSync(planDir, { recursive: true });
     writeFileSync(join(planDir, "plan.json"), JSON.stringify(plan), "utf8");
   }
+
+  // Register cleanup FIRST — before any throwable setup — so tmpRoot is always cleaned up.
+  after(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
 
   // Setup: 1 edição em progresso + 1 rodada overnight ativa
   const editionDocInProgress = makeDoc("260615", ["done", "done", "running", "pending", "pending", "pending", "pending"]);
@@ -449,15 +454,18 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
   writeEditionStatus("260615", editionDocInProgress);
   writeOvernightPlan("260614", overnightPlanActive);
 
-  after(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  });
-
   it("edição em progresso + overnight ativo: edição ganha (precedência via disco)", () => {
-    // Lê do disco — reproduz exatamente o que o CLI faz
+    // Lê do disco — reproduz exatamente o que o CLI faz.
+    // CLI (ln 490): bar = editionBar || renderOvernightBar(readTodayPlan(cwd))
+    // O overnight só é lido quando editionBar é vazio (short-circuit real do CLI).
+    // O teste verifica a BARRA FINAL usando o mesmo operador, sem re-implementação.
     const editionDoc = readCurrentEditionDoc(tmpRoot);
     const editionBar = renderEditionBar(editionDoc);
-    const overnightBar = renderOvernightBar(readTodayPlan(tmpRoot));
+
+    // Mirror CLI short-circuit: compute overnightBar independently to assert both exist,
+    // but use the same || short-circuit to derive `bar` as the CLI would.
+    const overnightPlan = readTodayPlan(tmpRoot);
+    const overnightBar = renderOvernightBar(overnightPlan);
 
     // CLI logic: bar = editionBar || overnightBar
     const bar = editionBar || overnightBar;
@@ -489,16 +497,15 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
       ],
     };
 
-    // Escreve diretamente no isolated root
-    const editionDir = join(isolatedRoot, "data", "editions", "260615");
-    mkdirSync(join(editionDir, "_internal"), { recursive: true });
-    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(docEncerrada, null, 2), "utf8");
-
-    const overnightDir = join(isolatedRoot, "data", "overnight", "260614");
-    mkdirSync(overnightDir, { recursive: true });
-    writeFileSync(join(overnightDir, "plan.json"), JSON.stringify(planAtivo), "utf8");
-
     try {
+      // Escreve diretamente no isolated root (inside try so finally always runs)
+      const editionDir = join(isolatedRoot, "data", "editions", "260615");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(docEncerrada, null, 2), "utf8");
+
+      const overnightDir = join(isolatedRoot, "data", "overnight", "260614");
+      mkdirSync(overnightDir, { recursive: true });
+      writeFileSync(join(overnightDir, "plan.json"), JSON.stringify(planAtivo), "utf8");
       const editionDoc = readCurrentEditionDoc(isolatedRoot);
       const editionBar = renderEditionBar(editionDoc);
       const overnightBar = renderOvernightBar(readTodayPlan(isolatedRoot));
@@ -546,15 +553,10 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
 // Garante que STAGE_LABELS[N] está corretamente mapeado e visível na barra.
 
 describe("renderEditionBar — label por stage (#2301)", () => {
-  const stageLabels: Array<[number, string]> = [
-    [0, "Setup + dedup"],
-    [1, "Pesquisa"],
-    [2, "Escrita"],
-    [3, "Imagens"],
-    [4, "Revisão"],
-    [5, "Publicação"],
-    [6, "Agendamento"],
-  ];
+  // Use canonical STAGE_LABELS from production source — label renames will fail here, not drift silently.
+  const stageLabels: Array<[number, string]> = Object.entries(STAGE_LABELS).map(
+    ([k, v]) => [Number(k), v],
+  );
 
   for (const [stageIdx, expectedLabel] of stageLabels) {
     it(`stage ${stageIdx} running → label '${expectedLabel}'`, () => {

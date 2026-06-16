@@ -17,7 +17,7 @@
  *   - cycleLabel (#2298): fila principal / mini-rodada N / review 1.5x determinístico
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -130,7 +130,8 @@ describe("renderOvernightBar — progresso 0/5 = 0%", () => {
     const plan = makePlan(["elegivel", "elegivel", "elegivel", "elegivel", "elegivel"]);
     const result = renderOvernightBar(plan);
 
-    assert.ok(result.includes("0%"), `deve ter 0%: ${result}`);
+    // Use "] 0%" to avoid false-positive match on "100%"
+    assert.ok(result.includes("] 0%"), `deve ter 0% (não 100%): ${result}`);
     assert.ok(result.includes("(0/5)"), `deve ter (0/5): ${result}`);
     // 12 blocos vazios quando done=0
     assert.ok(result.includes("░░░░░░░░░░░░"), `deve ter 12 blocos vazios: ${result}`);
@@ -310,7 +311,8 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
     const result = renderOvernightBar(plan);
     assert.notEqual(result, "", "plan com todos não-terminais deve mostrar barra ativa");
     assert.ok(result.includes("(0/5)"), `nenhum dos não-terminais deve contar: ${result}`);
-    assert.ok(result.includes("0%"), `deve mostrar 0%: ${result}`);
+    // Use " 0%" (with leading space) to avoid false-positive match on "100%"
+    assert.ok(result.includes("] 0%"), `deve mostrar 0% (não 100%): ${result}`);
   });
 });
 
@@ -493,12 +495,15 @@ describe("readTodayPlan — integração com dirs reais (#2246 pt2)", () => {
     writeFileSync(join(overnightDir, "260613c", "plan.json"), makeTerminalPlan(4));
   }
 
-  // Cria os dirs antes do primeiro it
-  createFixtureDirs();
-
+  // Register cleanup FIRST — before any throwable setup — so tmpRoot is always cleaned up.
   after(() => {
     // Limpa os tmp dirs no teardown — não em afterEach (os tests compartilham a estrutura)
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Cria os dirs via before() hook (runs after after() registration, before first it)
+  before(() => {
+    createFixtureDirs();
   });
 
   it("retorna plan do dir MAIS RECENTE (260613c), NÃO do antigo com não-terminal (260611)", () => {
