@@ -32,7 +32,7 @@ import { resolve, extname, dirname, basename as pathBasename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { gFetch } from "./google-auth.ts";
+import { gFetch, classifyRefreshError } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 import {
@@ -56,6 +56,34 @@ import type { DriveCache, FileEntry, EditionCache } from "./lib/schemas/drive-ca
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
+
+// ---------------------------------------------------------------------------
+// OAuth error detection (#2318) — dedup invalid_grant em alerta único
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure (#2318): detecta se uma mensagem de erro de Drive/OAuth é um
+ * `invalid_grant` — refresh token expirado ou revogado. Distinto de erros
+ * transientes (rede, 5xx) que podem resolver sem re-auth.
+ *
+ * Nota: o gFetch base já tentou um refresh forçado em caso de 401 antes de
+ * propagar — se chegou aqui com invalid_grant, o refresh TAMBÉM falhou.
+ * "Refresh once" está satisfeito pelo mecanismo interno do gFetch.
+ */
+export function classifyOAuthError(msg: string): "invalid_grant" | "other" {
+  return classifyRefreshError(msg) === "invalid_grant" ? "invalid_grant" : "other";
+}
+
+/**
+ * Mensagem de alerta consolidado para invalid_grant (#2318).
+ * Emitida UMA VEZ (não por arquivo) quando o token OAuth está morto.
+ * Pipeline não bloqueia — Drive sync é non-blocking por design — mas o
+ * alerta é unmissable e actionable.
+ */
+export const OAUTH_EXPIRED_ALERT =
+  "[drive-sync] ⚠  Drive OAuth EXPIRADO/REVOGADO — rode 'npx tsx scripts/oauth-setup.ts' pra re-autenticar. " +
+  "Todos os arquivos desta operação foram pulados. " +
+  "Afeta: Drive sync (push/pull) · Editor não recebe outputs para revisar no celular.";
 
 // ---------------------------------------------------------------------------
 // Tipos locais (não existem em drive-cache.ts)
@@ -1059,12 +1087,28 @@ async function main(): Promise<void> {
 
   const cache = loadCache();
 
+  // #2318: dedup guard — invalid_grant é emitido UMA VEZ, não por arquivo.
+  // Quando o refresh token está morto, TODA operação Drive vai falhar com o mesmo
+  // motivo. Em vez de N warnings idênticos (1 por arquivo), emitimos 1 alerta
+  // claro e actionable e pulamos os arquivos restantes.
+  let invalidGrantEmitted = false;
+
+  /** Emite alerta de invalid_grant uma vez e retorna true (para uso em guards). */
+  function emitInvalidGrantAlert(): void {
+    if (invalidGrantEmitted) return;
+    invalidGrantEmitted = true;
+    result.warnings.push({ file: "(oauth)", error_message: OAUTH_EXPIRED_ALERT });
+  }
+
   try {
     const edicoesId = await resolveEdicoesFolder(cache);
     const isMonthly = editionDir.includes("/monthly/");
     const dayFolderId = await resolveDayFolder(cache, yymmdd, edicoesId, isMonthly);
 
     for (const filename of files) {
+      // #2318: se invalid_grant já foi detectado, não tentar arquivos restantes.
+      if (invalidGrantEmitted) break;
+
       try {
         const localPath = resolve(ROOT, editionDir, filename);
         if (!existsSync(localPath) && mode === "push") {
@@ -1079,12 +1123,22 @@ async function main(): Promise<void> {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        result.warnings.push({ file: filename, error_message: msg });
+        // #2318: invalid_grant → alerta único em vez de warning por arquivo.
+        if (classifyOAuthError(msg) === "invalid_grant") {
+          emitInvalidGrantAlert();
+        } else {
+          result.warnings.push({ file: filename, error_message: msg });
+        }
       }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    result.warnings.push({ file: "(global)", error_message: msg });
+    // #2318: invalid_grant no setup (folder resolution) → alerta único.
+    if (classifyOAuthError(msg) === "invalid_grant") {
+      emitInvalidGrantAlert();
+    } else {
+      result.warnings.push({ file: "(global)", error_message: msg });
+    }
   } finally {
     saveCache(cache);
   }
