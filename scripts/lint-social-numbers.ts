@@ -25,6 +25,7 @@
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra teste
@@ -230,14 +231,12 @@ export function lintSocialNumbers(socialMd: string, approved: ApprovedShape): De
  *   lancamento + radar + use_melhor + video
  * Esse é o número correto pra "mais N destaques" no comment_diaria.
  * NUNCA deve ser estimado pelo LLM — derivado deterministicamente do approved.json.
+ *
+ * #2331/F4: Delegado a scripts/lib/outros-count.ts (shared com publish-linkedin.ts).
+ * Formula permanece aqui apenas como re-export com assinatura original.
  */
 export function computeOutrosCount(approved: ApprovedShape): number {
-  return (
-    (approved.lancamento?.length ?? 0) +
-    (approved.radar?.length ?? 0) +
-    (approved.use_melhor?.length ?? 0) +
-    (approved.video?.length ?? 0)
-  );
+  return _outrosCount(approved);
 }
 
 /** Regex que casa "mais N destaques" no comment_diaria (N = inteiro >= 0). */
@@ -425,11 +424,24 @@ function main(): void {
   // --- lint 2: contagem comment_diaria (#2014) ---
   const { findings: countFindings, fixed } = lintCommentDiariaCount(socialMd, approved, { fix: doFix });
 
-  // Todos os findings são de número errado (#2319: {outros_count} agora é placeholder deferido, sem findings)
-  const unresolvedFindings: typeof countFindings = []; // always empty after #2319
-  const wrongNumberFindings = countFindings;
+  // #2331/F6 — Contrato do lint no modelo de resolução tardia (#2319):
+  //
+  //  Stage 2 (padrão, sem --post-stage5):
+  //    - {outros_count} literal no comment_diaria é PERMITIDO (placeholder intencional,
+  //      resolvido pelo publish-linkedin no Stage 5 — igual a {edition_url}).
+  //    - lintCommentDiariaCount já pula entradas com {outros_count} (não gera findings).
+  //    - Contagem numérica errada (ex: "mais 9 destaques" quando esperado 10) → WARN (exit 0).
+  //
+  //  Pós-Stage 5 (com --post-stage5):
+  //    - {outros_count} literal que sobreviveu ao Stage 5 é BLOCKER (exit 1).
+  //    - Indica que publish-linkedin.ts falhou em resolver o placeholder antes de despachar.
+  //    - Deve ser passado ao auditar 03-social.md pós-publicação ou em CI pós-stage5.
+  //
+  // #2331/F5 — Removida a variável `unresolvedFindings` que era always [] e tinha
+  //   um bloco process.exit(1) referenciando ela (dead code). A semântica de bloqueio
+  //   agora é controlada pelo flag --post-stage5 documentado acima.
 
-  if (wrongNumberFindings.length > 0) {
+  if (countFindings.length > 0) {
     const didFix = doFix && fixed !== socialMd;
     const action = didFix
       ? "→ corrigido automaticamente"
@@ -439,7 +451,7 @@ function main(): void {
     console.error(
       `\n⚠️  lint-social-numbers: contagem "mais N destaques" errada no comment_diaria ${action}:`,
     );
-    for (const f of wrongNumberFindings) {
+    for (const f of countFindings) {
       console.error(`  - d${f.destaque}: encontrou ${f.found}, esperado ${f.expected}`);
     }
     if (didFix) {
@@ -451,29 +463,34 @@ function main(): void {
     }
   }
 
-  // Placeholders não-resolvidos: --fix não consegue substituir (NaN) → blocker, exit 1
-  let hasUnresolved = false;
-  if (unresolvedFindings.length > 0) {
-    hasUnresolved = true;
-    console.error(
-      `\n🚨  lint-social-numbers: placeholder literal {outros_count} não-resolvido pelo LLM — blocker, não pode ir pro LinkedIn:`,
-    );
-    for (const f of unresolvedFindings) {
-      console.error(`  - d${f.destaque}: "{outros_count}" literal no comment_diaria (esperado: ${f.expected})`);
-    }
-    if (doFix) {
-      console.error(
-        `  [fix] IMPOSSÍVEL substituir automaticamente — o LLM não resolveu o placeholder. Re-disparar o social-linkedin agent para regenerar os comment_diaria.`,
-      );
+  // Verificar placeholder não-resolvido somente em --post-stage5 mode.
+  // Em Stage 2 (sem o flag), {outros_count} literal é esperado e não é erro.
+  const postStage5 = args["post-stage5"] === "true";
+  let hasUnresolvedPostStage5 = false;
+  if (postStage5) {
+    // Checar se algum comment_diaria ainda tem o placeholder literal
+    const commentsByDestaque = parseCommentDiariaByDestaque(socialMd);
+    for (const [destaque, text] of commentsByDestaque) {
+      if (/\{outros_count\}/.test(text)) {
+        if (!hasUnresolvedPostStage5) {
+          console.error(
+            `\n🚨  lint-social-numbers (--post-stage5): placeholder literal {outros_count} não-resolvido — Stage 5 deveria ter substituído antes de despachar:`,
+          );
+        }
+        hasUnresolvedPostStage5 = true;
+        console.error(`  - d${destaque}: "{outros_count}" literal sobreviveu ao Stage 5 (bug em publish-linkedin.ts?)`);
+      }
     }
   }
 
-  // Cifras financeiras: WARN-only (exit 0). Contagem errada: WARN-only (exit 0).
-  // Placeholder não-resolvido: blocker (exit 1) — literal no LinkedIn é inaceitável.
+  // Saída final:
+  //   - Cifras financeiras: WARN-only (exit 0)
+  //   - Contagem errada Stage 2: WARN-only (exit 0)
+  //   - Placeholder {outros_count} pós-Stage5 (--post-stage5): blocker (exit 1)
   console.log(
     JSON.stringify({ ok: totalNums === 0 && countFindings.length === 0, num_findings: numFindings, count_findings: countFindings }, null, 2),
   );
-  if (hasUnresolved) {
+  if (hasUnresolvedPostStage5) {
     process.exit(1);
   }
 }

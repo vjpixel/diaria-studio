@@ -69,7 +69,8 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
     // fail-fast bloco específico do #923 não dispara.
     const tmp = mkdtempSync(resolve(tmpdir(), "publish-linkedin-fail-fast-2-"));
     const editionDir = resolve(tmp, "260998");
-    mkdirSync(editionDir, { recursive: true });
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
     writeFileSync(
       resolve(editionDir, "03-social.md"),
       "# Facebook\n\n## d1\nFB d1.\n\n## d2\nFB d2.\n\n## d3\nFB d3.\n\n# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
@@ -84,6 +85,11 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
           d3: { url: "https://example.com/d3.jpg" },
         },
       }),
+    );
+    // #2331/F3: approved JSON necessário pra evitar abort por outros_count null
+    writeFileSync(
+      resolve(internalDir, "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}, {}], lancamento: [], radar: [], use_melhor: [], video: [] }),
     );
 
     const result = runCli(
@@ -262,7 +268,8 @@ describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
   function setupEditionDir(): { tmp: string; editionDir: string } {
     const tmp = mkdtempSync(resolve(tmpdir(), "comments-default-"));
     const editionDir = resolve(tmp, "261201");
-    mkdirSync(editionDir, { recursive: true });
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
     writeFileSync(
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n### comment_diaria\nCD d1.\n\n### comment_pixel\nCP d1.\n\n## d2\nLI d2.\n\n### comment_diaria\nCD d2.\n\n### comment_pixel\nCP d2.\n\n## d3\nLI d3.\n\n### comment_diaria\nCD d3.\n\n### comment_pixel\nCP d3.\n",
@@ -276,6 +283,11 @@ describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
           d3: { url: "https://example.com/d3.jpg" },
         },
       }),
+    );
+    // #2331/F3: approved JSON necessário pra evitar abort por outros_count null
+    writeFileSync(
+      resolve(internalDir, "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}, {}], lancamento: [], radar: [], use_melhor: [], video: [] }),
     );
     return { tmp, editionDir };
   }

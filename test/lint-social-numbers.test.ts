@@ -625,3 +625,93 @@ describe("lint-social-numbers CLI (#2061) — fallback pra edição pré-#2053",
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2331/F6 — Contrato do lint: --post-stage5 falha em placeholder não-resolvido;
+//            sem o flag (Stage 2 mode), {outros_count} é aceito silenciosamente.
+// ---------------------------------------------------------------------------
+
+describe("lint-social-numbers CLI (#2331/F6) — contrato Stage2 vs pós-Stage5", () => {
+  function runLintCliF6(socialPath: string, approvedPath: string, extraArgs: string[] = []) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-social-numbers.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--social", socialPath, "--approved", approvedPath, ...extraArgs],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  it("Stage 2 (sem --post-stage5): {outros_count} literal → exit 0 (não é erro no Stage 2)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-f6a-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      // Social com placeholder literal (saída normal do social-linkedin no Stage 2)
+      const socialWithPlaceholder = SOCIAL_WITH_COMMENTS.replace(
+        /mais 9 destaques de IA do dia/g,
+        "mais {outros_count} destaques de IA do dia",
+      );
+      writeFileSync(socialPath, socialWithPlaceholder, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCliF6(socialPath, approvedPath);
+
+      // Stage 2: {outros_count} não é erro → exit 0
+      assert.equal(result.status, 0, `F6: Stage 2 não deve falhar em {outros_count} literal. stderr: ${result.stderr}`);
+      // Não deve mencionar "blocker" ou "🚨" no Stage 2
+      assert.doesNotMatch(result.stderr, /blocker|🚨/i, "F6: Stage 2 não deve tratar placeholder como blocker");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--post-stage5: {outros_count} literal → exit 1 (Stage 5 deveria ter resolvido)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-f6b-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      // Social com placeholder literal — simula falha no Stage 5 que não resolveu
+      const socialWithPlaceholder = SOCIAL_WITH_COMMENTS.replace(
+        /mais 9 destaques de IA do dia/g,
+        "mais {outros_count} destaques de IA do dia",
+      );
+      writeFileSync(socialPath, socialWithPlaceholder, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCliF6(socialPath, approvedPath, ["--post-stage5"]);
+
+      // --post-stage5: {outros_count} que sobreviveu é blocker → exit 1
+      assert.equal(result.status, 1, `F6: --post-stage5 deve falhar em {outros_count} literal. stderr: ${result.stderr}`);
+      // Deve mencionar o problema
+      assert.match(result.stderr, /Stage 5|post-stage5|outros_count.*Stage 5/i,
+        "F6: mensagem deve explicar que Stage 5 deveria ter resolvido o placeholder");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--post-stage5: placeholder resolvido (número correto) → exit 0 (Stage 5 fez seu trabalho)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-f6c-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      // Social com placeholder já resolvido pelo Stage 5 para "10" (correto)
+      const approvedWith9 = {
+        ...APPROVED_13_ITEMS,
+        lancamento: [{}],
+        radar: [{}, {}, {}, {}, {}, {}, {}, {}],
+      };
+      const socialWithResolved = SOCIAL_WITH_COMMENTS; // já tem "mais 9 destaques" (match com approvedWith9)
+      writeFileSync(socialPath, socialWithResolved, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(approvedWith9), "utf8");
+
+      const result = runLintCliF6(socialPath, approvedPath, ["--post-stage5"]);
+
+      // Sem {outros_count} literal + número correto → exit 0 mesmo com --post-stage5
+      assert.equal(result.status, 0, `F6: --post-stage5 com placeholder resolvido deve sair exit 0. stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
