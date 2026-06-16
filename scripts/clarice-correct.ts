@@ -17,6 +17,9 @@
  *   npx tsx scripts/clarice-correct.ts \
  *     --in data/editions/{AAMMDD}/_internal/02-humanized.md \
  *     --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+ *     [--retry]           # habilita retry com backoff exponencial (recomendado)
+ *     [--timeout-ms N]    # timeout por tentativa em ms (default: 60000 com --retry, 30000 sem)
+ *     [--max-attempts N]  # número máximo de tentativas com --retry (default: 3)
  *
  * Saída: `--out` recebe JSON array de `{ from, to, rule?, explanation? }` —
  * mesmo shape que `mcp__clarice__correct_text` retorna, então o
@@ -26,7 +29,7 @@
  *   0 — sucesso
  *   1 — args inválidos
  *   2 — env CLARICE_API_KEY ausente
- *   3 — HTTP non-2xx da API Clarice
+ *   3 — HTTP non-2xx da API Clarice (todas as tentativas esgotadas)
  *   4 — I/O (read --in ou write --out)
  */
 
@@ -43,8 +46,92 @@ export interface CorrectOptions {
   text: string;
   /** Opcional — injeta fetch pra testes. Default = global fetch. */
   fetchImpl?: typeof fetch;
-  /** Timeout em ms — default 30s. */
+  /** Timeout em ms por tentativa — default 30s (60s quando via withClariceRetry). */
   timeoutMs?: number;
+}
+
+/**
+ * Política de retry do Clarice REST (#2320).
+ *
+ * Por padrão: 3 tentativas, 60s timeout cada, backoff exponencial.
+ * Backoff[i] = baseBackoffMs * 2^(i-1) pra tentativa i ≥ 2 (0ms na 1ª).
+ *
+ * Total máximo de espera (excluindo tempo de fetch):
+ *   attempts=3, baseBackoffMs=5000 → 0 + 5s + 10s = 15s de espera entre tentativas
+ *   + 3 × 60s de timeout = teto de ~3min15s por chamada.
+ *
+ * Exporta interface + factory para testabilidade: tests injetam `baseBackoffMs=0`
+ * para não ter sleep real nos testes.
+ */
+export interface RetryPolicy {
+  /** Número máximo de tentativas (inclui a primeira). Default: 3. */
+  maxAttempts: number;
+  /** Timeout por tentativa em ms. Default: 60000. */
+  timeoutMs: number;
+  /** Backoff base em ms (dobra por tentativa adicional). Default: 5000. */
+  baseBackoffMs: number;
+}
+
+export const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  maxAttempts: 3,
+  timeoutMs: 60_000,
+  baseBackoffMs: 5_000,
+};
+
+/**
+ * Calcula o delay de backoff para tentativa `attempt` (0-indexed).
+ * Tentativa 0 = 0ms (sem espera). Tentativa 1+ = baseBackoffMs × 2^(attempt-1).
+ */
+export function backoffDelayMs(attempt: number, baseBackoffMs: number): number {
+  if (attempt === 0) return 0;
+  return baseBackoffMs * Math.pow(2, attempt - 1);
+}
+
+export interface RetryResult {
+  suggestions: ClariceSuggestions;
+  /** Número de tentativas usadas (1 = sucesso na primeira). */
+  attempts: number;
+}
+
+/**
+ * Chama `correctTextViaREST` com retry + backoff exponencial.
+ *
+ * Em erros de rede/timeout (AbortError, TypeError de network) OU em HTTP 5xx
+ * (server-side lento), tenta novamente até `policy.maxAttempts` vezes com delay
+ * crescente entre tentativas. Em HTTP 4xx (auth, bad request), falha imediatamente
+ * sem retry (retryable=false).
+ *
+ * O orchestrator ainda pode decidir fazer um skip consciente após este helper
+ * retornar erro — este helper apenas aumenta a resiliência da tentativa REST.
+ */
+export async function withClariceRetry(
+  opts: CorrectOptions,
+  policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+  sleepFn: (ms: number) => Promise<void> = (ms) =>
+    new Promise((r) => setTimeout(r, ms)),
+): Promise<RetryResult> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+    const delay = backoffDelayMs(attempt, policy.baseBackoffMs);
+    if (delay > 0) await sleepFn(delay);
+    try {
+      const suggestions = await correctTextViaREST({
+        ...opts,
+        timeoutMs: opts.timeoutMs ?? policy.timeoutMs,
+      });
+      return { suggestions, attempts: attempt + 1 };
+    } catch (e) {
+      lastError = e as Error;
+      const msg = lastError.message ?? "";
+      // HTTP 4xx = não é problema de disponibilidade — não há sentido em retry.
+      // Detectamos por "HTTP 4" no início da mensagem de erro do correctTextViaREST.
+      const is4xx = /^HTTP 4\d\d/.test(msg);
+      if (is4xx) break;
+      // Timeout (AbortError) e erros de rede (TypeError: fetch failed) → retry.
+      // HTTP 5xx → retry.
+    }
+  }
+  throw lastError ?? new Error("clarice REST: todas as tentativas falharam");
 }
 
 /**
@@ -82,6 +169,9 @@ export async function correctTextViaREST(
 
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "<unreadable>");
+    // IMPORTANT: the message format 'HTTP {status}: ...' is relied upon by
+    // withClariceRetry's 4xx detection regex (/^HTTP 4\d\d/) — do not change
+    // without updating the is4xx check in withClariceRetry (~line 128).
     throw new Error(`HTTP ${res.status}: ${bodyText.slice(0, 500)}`);
   }
 
@@ -116,18 +206,43 @@ function flatten(raw: unknown): unknown[] {
   return [];
 }
 
-interface CliArgs {
+export interface CliArgs {
   inPath: string;
   outPath: string;
+  retry: boolean;
+  timeoutMs?: number;
+  maxAttempts?: number;
 }
 
-function parseCliArgs(argv: string[]): CliArgs | null {
-  const out: Partial<CliArgs> = {};
+export function parseCliArgs(argv: string[]): CliArgs | null {
+  const out: Partial<CliArgs> = { retry: false };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
-    const value = argv[i + 1];
+    // Guard: only treat the next token as a value if it is not itself a --flag.
+    // Without this guard, `--max-attempts --retry` would consume "--retry" as
+    // the integer value of --max-attempts (argv-consumption bug, finding #8).
+    const value = argv[i + 1]?.startsWith("--") ? undefined : argv[i + 1];
     if (flag === "--in" && value) { out.inPath = value; i++; }
     else if (flag === "--out" && value) { out.outPath = value; i++; }
+    else if (flag === "--retry") { out.retry = true; }
+    else if (flag === "--timeout-ms" && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`--timeout-ms deve ser um número positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.timeoutMs = n;
+      i++;
+    }
+    else if (flag === "--max-attempts" && value) {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1) {
+        console.error(`--max-attempts deve ser um inteiro positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.maxAttempts = n;
+      i++;
+    }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
@@ -136,7 +251,9 @@ function parseCliArgs(argv: string[]): CliArgs | null {
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
-    console.error("Uso: clarice-correct.ts --in <text-file> --out <suggestions-json>");
+    console.error(
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--retry] [--timeout-ms N] [--max-attempts N]",
+    );
     process.exit(1);
   }
   const apiKey = process.env.CLARICE_API_KEY;
@@ -154,21 +271,52 @@ async function main(): Promise<void> {
   }
 
   let suggestions: ClariceSuggestions;
+
   try {
-    suggestions = await correctTextViaREST({ apiKey, text });
+    if (args.retry) {
+      const policy: RetryPolicy = {
+        maxAttempts: args.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
+        timeoutMs: args.timeoutMs ?? DEFAULT_RETRY_POLICY.timeoutMs,
+        baseBackoffMs: DEFAULT_RETRY_POLICY.baseBackoffMs,
+      };
+      const result = await withClariceRetry({ apiKey, text }, policy);
+      suggestions = result.suggestions;
+      try {
+        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
+      } catch (e) {
+        console.error(`erro escrevendo --out: ${(e as Error).message}`);
+        process.exit(4);
+      }
+      console.log(
+        JSON.stringify({
+          suggestions_count: suggestions.length,
+          out: args.outPath,
+          attempts_used: result.attempts,
+        }),
+      );
+    } else {
+      suggestions = await correctTextViaREST({
+        apiKey,
+        text,
+        timeoutMs: args.timeoutMs,
+      });
+      try {
+        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
+      } catch (e) {
+        console.error(`erro escrevendo --out: ${(e as Error).message}`);
+        process.exit(4);
+      }
+      console.log(
+        JSON.stringify({
+          suggestions_count: suggestions.length,
+          out: args.outPath,
+        }),
+      );
+    }
   } catch (e) {
     console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
     process.exit(3);
   }
-
-  try {
-    writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
-  } catch (e) {
-    console.error(`erro escrevendo --out: ${(e as Error).message}`);
-    process.exit(4);
-  }
-
-  console.log(JSON.stringify({ suggestions_count: suggestions.length, out: args.outPath }));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

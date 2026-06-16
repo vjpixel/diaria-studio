@@ -247,13 +247,35 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido). Salvar a resposta crua em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume).
 
-     **Fallback REST (#1329).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST que escreve no mesmo path:
+     **Fallback REST (#1329, retry #2320).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST com retry/backoff que escreve no mesmo path:
      ```bash
      npx tsx scripts/clarice-correct.ts \
        --in data/editions/{AAMMDD}/_internal/{FILENAME} \
-       --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+       --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json \
+       --retry
      ```
-     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Logar warn no run-log: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'`. Se `CLARICE_REST = false` (do Stage 0 healthcheck), pular direto pro halt banner — sem chance de fallback bem-sucedido.
+     `--retry` usa 3 tentativas × 60s timeout com backoff exponencial (0s → 5s → 10s entre tentativas). Teto total: ~3min15s — não stalla Stage 2 para sempre. Sem `--retry`, timeout é 30s e há apenas 1 tentativa (comportamento legado).
+
+     Logar warn no run-log antes de invocar o script:
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'
+     ```
+
+     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `CLARICE_REST = false` (do Stage 0 healthcheck), pular direto pro halt banner — sem chance de fallback bem-sucedido.
+
+     **Skip consciente (#2320).** Se editor aprovar o skip após halt (MCP + REST falharam):
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn \
+       --message "clarice_skip" \
+       --details '{"reason":"mcp_down_rest_exit3_editor_approved","stage":2}'
+     ```
+     Este evento estruturado é detectado por `collect-edition-signals.ts` (`signalsFromClariceSkips`) e surfaçado pelo auto-reporter como signal `clarice_skip` pra rastrear frequência. Ao skip:
+     1. Copiar `02-pre-clarice.md` → `02-reviewed.md`.
+     2. Gravar `[]` em `_internal/02-clarice-suggestions.json` (array vazio = Clarice chamada sem sugestões — aceito por `checkClariceRan` em `check-stage2-invariants.ts`):
+        ```bash
+        echo '[]' > data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+        ```
+     3. Continuar o pipeline normalmente.
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
   4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash
