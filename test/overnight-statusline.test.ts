@@ -17,7 +17,7 @@
  *   - cycleLabel (#2298): fila principal / mini-rodada N / review 1.5x determinístico
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -130,7 +130,8 @@ describe("renderOvernightBar — progresso 0/5 = 0%", () => {
     const plan = makePlan(["elegivel", "elegivel", "elegivel", "elegivel", "elegivel"]);
     const result = renderOvernightBar(plan);
 
-    assert.ok(result.includes("0%"), `deve ter 0%: ${result}`);
+    // Use "] 0%" to avoid false-positive match on "100%"
+    assert.ok(result.includes("] 0%"), `deve ter 0% (não 100%): ${result}`);
     assert.ok(result.includes("(0/5)"), `deve ter (0/5): ${result}`);
     // 12 blocos vazios quando done=0
     assert.ok(result.includes("░░░░░░░░░░░░"), `deve ter 12 blocos vazios: ${result}`);
@@ -287,6 +288,31 @@ describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqu
     const result = renderOvernightBar(plan);
     assert.notEqual(result, "", `deve estar ativo: ${result}`);
     assert.ok(result.includes("(1/3)"), `só mergeada conta como terminal: ${result}`);
+  });
+
+  // Todos os 5 não-terminais do tipo IssueStatus (#2301)
+  it("'not-this-week' não conta como terminal — barra fica visível", () => {
+    const plan = makePlan(["not-this-week", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `not-this-week não deve encerrar a rodada: ${result}`);
+    assert.ok(result.includes("(0/2)"), `not-this-week não deve contar como terminal: ${result}`);
+  });
+
+  it("'fora-do-escopo' não conta como terminal — barra fica visível", () => {
+    const plan = makePlan(["fora-do-escopo", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", `fora-do-escopo não deve encerrar a rodada: ${result}`);
+    assert.ok(result.includes("(0/2)"), `fora-do-escopo não deve contar como terminal: ${result}`);
+  });
+
+  it("mix de todos os não-terminais: nenhum conta como terminal", () => {
+    // Todos os 5 não-terminais documentados em IssueStatus
+    const plan = makePlan(["elegivel", "precisa-resposta", "bloqueada-externa", "not-this-week", "fora-do-escopo"]);
+    const result = renderOvernightBar(plan);
+    assert.notEqual(result, "", "plan com todos não-terminais deve mostrar barra ativa");
+    assert.ok(result.includes("(0/5)"), `nenhum dos não-terminais deve contar: ${result}`);
+    // Use " 0%" (with leading space) to avoid false-positive match on "100%"
+    assert.ok(result.includes("] 0%"), `deve mostrar 0% (não 100%): ${result}`);
   });
 });
 
@@ -469,12 +495,15 @@ describe("readTodayPlan — integração com dirs reais (#2246 pt2)", () => {
     writeFileSync(join(overnightDir, "260613c", "plan.json"), makeTerminalPlan(4));
   }
 
-  // Cria os dirs antes do primeiro it
-  createFixtureDirs();
-
+  // Register cleanup FIRST — before any throwable setup — so tmpRoot is always cleaned up.
   after(() => {
     // Limpa os tmp dirs no teardown — não em afterEach (os tests compartilham a estrutura)
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Cria os dirs via before() hook (runs after after() registration, before first it)
+  before(() => {
+    createFixtureDirs();
   });
 
   it("retorna plan do dir MAIS RECENTE (260613c), NÃO do antigo com não-terminal (260611)", () => {
@@ -778,5 +807,68 @@ describe("cycleLabel — review 1.5c (depth 2, finding-depth-2 esgotadas)", () =
     const plan = makeMiniRodadaPlan(2, ["mergeada"], ["mergeada"], "done (depth 1)");
     const bar = renderOvernightBar(plan);
     assert.ok(bar.includes("· review 1.5c"), `barra deve conter '· review 1.5c': ${bar}`);
+  });
+});
+
+// ─── legado: plan.json sem findings_depth — renderOvernightBar completo (#2301) ─
+// Confirma que plan.json legado (sem findings_depth nem review — gerado antes de
+// #2298) não quebra o render e produz a barra correta end-to-end.
+
+describe("renderOvernightBar — plan.json legado sem findings_depth (#2301)", () => {
+  it("plan legado com issues ativas: bar parcial com rótulo '· fila principal'", () => {
+    // Plan sem findings_depth nem review → legado pré-#2298
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      issues: [
+        { number: 1001, status: "mergeada" } as Plan["issues"][0],
+        { number: 1002, status: "elegivel" } as Plan["issues"][0],
+        { number: 1003, status: "elegivel" } as Plan["issues"][0],
+      ],
+    };
+    // findings_depth ausente → tratado como 0 → fila principal
+    const bar = renderOvernightBar(plan);
+
+    assert.ok(bar.length > 0, `legado com issues ativas deve produzir barra: ${bar}`);
+    assert.ok(bar.includes("33%"), `legado 1/3 deve mostrar 33%: ${bar}`);
+    assert.ok(bar.includes("(1/3)"), `legado deve mostrar (1/3): ${bar}`);
+    assert.ok(bar.includes("· fila principal"), `legado deve mostrar '· fila principal': ${bar}`);
+    // Formato: [bar] NN%  (X/Y)  · fila principal
+    assert.match(bar, /^\[[█░]+\] \d+%  \(\d+\/\d+\)  · fila principal$/);
+  });
+
+  it("plan legado com todas terminais: bar 100% com rótulo '· review 1.5'", () => {
+    // Todas terminais, review ausente → review 1.5 (aguardando revisão consolidada)
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      issues: [
+        { number: 1001, status: "mergeada" } as Plan["issues"][0],
+        { number: 1002, status: "pulada" } as Plan["issues"][0],
+        { number: 1003, status: "draft-ci-vermelho" } as Plan["issues"][0],
+      ],
+    };
+    const bar = renderOvernightBar(plan);
+
+    assert.ok(bar.length > 0, `legado encerrado deve produzir barra visível: ${bar}`);
+    assert.ok(bar.includes("100%"), `legado encerrado deve mostrar 100%: ${bar}`);
+    assert.ok(bar.includes("(3/3)"), `legado encerrado deve mostrar (3/3): ${bar}`);
+    assert.ok(bar.includes("· review 1.5"), `legado encerrado deve mostrar '· review 1.5': ${bar}`);
+    // Formato: [████████████] 100%  (N/N)  · review 1.5
+    assert.match(bar, /^\[█{12}\] 100%  \(\d+\/\d+\)  · review 1\.5(?!b|c)/);
+  });
+
+  it("plan legado com review:'done' (sem depth): cycleLabel retorna 'fila principal' (não review 1.5)", () => {
+    // Plan legado: review 'done' sem indicador de depth → concluído no nível atual → não em review
+    const plan: Plan = {
+      started_at: "2026-06-01T22:00:00.000Z",
+      review: "done",
+      issues: [
+        { number: 1001, status: "mergeada" } as Plan["issues"][0],
+        { number: 1002, status: "mergeada" } as Plan["issues"][0],
+      ],
+    };
+    const bar = renderOvernightBar(plan);
+
+    assert.ok(bar.includes("100%"), `legado com review:done deve mostrar 100%: ${bar}`);
+    assert.ok(bar.includes("· fila principal"), `review:done concluído deve mostrar '· fila principal': ${bar}`);
   });
 });
