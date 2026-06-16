@@ -46,6 +46,8 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
+import { applyStage2Caps } from "./lib/apply-stage2-caps.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -150,8 +152,28 @@ export function extractPostText(socialMd: string, destaque: string): string {
 }
 
 /**
+ * Calcula o total de itens não-destaque da edição a partir do approved JSON:
+ *   lancamento + radar + use_melhor + video
+ * Esse é o número correto pra "mais N destaques" no comment_diaria (#2319).
+ * Resolvido no Stage 5 (publish-linkedin) a partir do estado FINAL da edição
+ * — não no Stage 2 (writer), evitando staleness quando a edição é editada
+ * entre os dois stages (highlights trocados, Use Melhor re-curado, etc).
+ *
+ * #2331/F4: Delegado a scripts/lib/outros-count.ts (shared com lint-social-numbers.ts).
+ */
+export function resolveOutrosCount(approved: {
+  lancamento?: unknown[];
+  radar?: unknown[];
+  use_melhor?: unknown[];
+  video?: unknown[];
+}): number {
+  return _outrosCount(approved);
+}
+
+/**
  * Extrai o texto do `### comment_diaria` de um destaque (#595).
  * Substitui `{edition_url}` pelo URL da edição se passado.
+ * Substitui `{outros_count}` pela contagem final se passado (#2319).
  *
  * Retorna `null` se a subseção não existe (backward-compat com 03-social.md
  * gerados antes do schema #595 — main only).
@@ -160,6 +182,7 @@ export function extractCommentDiaria(
   socialMd: string,
   destaque: string,
   editionUrl: string | null = null,
+  outrosCount: number | null = null,
 ): string | null {
   const block = extractDestaqueBlock(socialMd, destaque);
   // Match `### comment_diaria\n...` até `### comment_pixel` ou fim
@@ -169,6 +192,9 @@ export function extractCommentDiaria(
   let text = m[1].trim();
   if (editionUrl) {
     text = text.replaceAll("{edition_url}", editionUrl);
+  }
+  if (outrosCount !== null) {
+    text = text.replaceAll("{outros_count}", String(outrosCount));
   }
   return text;
 }
@@ -639,6 +665,12 @@ async function main(): Promise<void> {
     }
   }
 
+  // #2319/#2331: outros_count é resolvido abaixo (após o image-cache fail-fast),
+  // pois a resolução pode fail-fast (F3) e deve ocorrer DEPOIS dos guards mais
+  // críticos (Worker config e 06-public-images). Declarar aqui pra que o bloco
+  // downstream o enxergue no mesmo escopo de main().
+  let outrosCount: number | null = null;
+
   // Extrair edition date (últimos 6 chars do caminho)
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
   if (!/^\d{6}$/.test(editionDate)) {
@@ -731,6 +763,67 @@ async function main(): Promise<void> {
           "",
           "  (--mode all também serve — uploada cover/eai_a/eia_b + d1/d2/d3 em uma chamada)",
         ].join("\n"),
+      );
+      process.exit(2);
+    }
+  }
+
+  // #2319 — Resolver outros_count pra substituir {outros_count} em comment_diaria.
+  // Lido do 01-approved-capped.json no Stage 5 (estado FINAL da edição),
+  // não do valor injetado no Stage 2, evitando staleness.
+  //
+  // Colocado APÓS o image-cache fail-fast (#999/#1275) para que os guards mais críticos
+  // (Worker config e imagens faltando) tenham prioridade no stderr do editor.
+  //
+  // #2331 fixes:
+  //   F1: break estava fora do try/catch — JSON corrompido ainda rompia o loop,
+  //       silenciando o fallback para 01-approved.json. Agora: só continua quando
+  //       a leitura/parse succeed (break só no sucesso).
+  //   F2: fallback pro uncapped aplica applyStage2Caps() antes de contar, para
+  //       não inflar o número (uncapped inclui lancamento/radar extras antes do cap).
+  //   F3: se outrosCount ainda é null (nenhum arquivo legível), abortar o script
+  //       — NUNCA despachar literal {outros_count} no LinkedIn.
+  {
+    const cappedPath = resolve(editionDir, "_internal", "01-approved-capped.json");
+    const uncappedPath = resolve(editionDir, "_internal", "01-approved.json");
+
+    // 1ª tentativa: capped (preferencial — estado FINAL)
+    if (existsSync(cappedPath)) {
+      try {
+        const approvedData = JSON.parse(readFileSync(cappedPath, "utf8")) as {
+          lancamento?: unknown[];
+          radar?: unknown[];
+          use_melhor?: unknown[];
+          video?: unknown[];
+        };
+        outrosCount = resolveOutrosCount(approvedData);
+        console.log(`#2319: outros_count resolvido de capped → ${outrosCount}`);
+      } catch (e) {
+        // F1: corrupção no capped NÃO rompe o fluxo — tenta uncapped abaixo
+        console.warn(`#2319: falha ao parsear 01-approved-capped.json (${(e as Error).message}) — tentando 01-approved.json com caps aplicados`);
+      }
+    }
+
+    // 2ª tentativa: uncapped com caps aplicados (F2 — evita contagem inflada)
+    if (outrosCount === null && existsSync(uncappedPath)) {
+      try {
+        const approvedData = JSON.parse(readFileSync(uncappedPath, "utf8")) as Parameters<typeof applyStage2Caps>[0];
+        // Aplicar caps do Stage 2 pro uncapped para que a contagem reflita
+        // o que foi realmente publicado (sem os extras cortados pelo cap).
+        const { approved: cappedData } = applyStage2Caps(approvedData);
+        outrosCount = resolveOutrosCount(cappedData);
+        console.log(`#2319: outros_count resolvido de uncapped+caps → ${outrosCount}`);
+      } catch (e) {
+        console.warn(`#2319: falha ao parsear 01-approved.json — ${(e as Error).message}`);
+      }
+    }
+
+    // F3: se nenhum arquivo foi legível, FAIL LOUD — nunca despachar literal
+    if (outrosCount === null) {
+      console.error(
+        "#2331/F3: ERRO — outros_count não pôde ser resolvido (nenhum approved JSON legível em " +
+        resolve(editionDir, "_internal") +
+        "). Abortando para não postar literal {outros_count} no LinkedIn.",
       );
       process.exit(2);
     }
@@ -888,7 +981,7 @@ async function main(): Promise<void> {
 
     // ── 2. COMMENT_DIARIA (T+3min) ─────────────────────────────────
     {
-      const cdText = extractCommentDiaria(socialMd, d, editionUrl);
+      const cdText = extractCommentDiaria(socialMd, d, editionUrl, outrosCount);
       if (cdText === null) {
         // Schema antigo (sem subseção comment_diaria) — backward-compat: skip.
         console.log(`linkedin/${d}/comment_diaria: subseção ausente em 03-social.md — schema pré-#595, skip`);

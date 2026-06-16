@@ -32,7 +32,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved-capped.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
-- `outros_count`: **número inteiro** = total de itens não-destaque da edição (`lancamento + radar + use_melhor + video`), calculado pelo orchestrator e injetado no prompt. **NUNCA estime — use EXATAMENTE o número recebido neste parâmetro** (#2014).
+- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — será substituído em Stage 5 (`publish-linkedin`) a partir do estado FINAL da edição (igual a `{edition_url}`). Escrever o template com `{outros_count}` literal, nunca um número estimado.
 
 ## Processo
 
@@ -59,13 +59,14 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    - Tom: curto, CTA claro.
    - Inclui CTA + **URL da edição completa Diar.ia**: leitor abre a edição inteira (não o artigo source).
-   - Formato (**usar o `outros_count` injetado pelo orchestrator — NUNCA estime**):
+   - Formato (**manter os dois placeholders literais — ambos substituídos em Stage 5, nunca estime ou substitua manualmente**. `{outros_count}` #2319 segue a mesma convenção de `{edition_url}` #595):
      ```
      Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
      Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
      ```
-   - **Placeholder `{edition_url}`** é substituído em Stage 4 pelo URL Beehiiv real (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`). Em Stage 2, deixar o placeholder literal.
+   - **Placeholder `{edition_url}`** é substituído em Stage 5 pelo URL Beehiiv real (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`). Em Stage 2, deixar o placeholder literal.
+   - **Placeholder `{outros_count}`** (#2319) é substituído em Stage 5 pelo total de itens não-destaque (`lancamento + radar + use_melhor + video`) lido do `01-approved-capped.json` FINAL. Em Stage 2, deixar o placeholder literal. Não estime, não substitua manualmente.
    - 200–400 caracteres (incluindo URL formatada).
 
    ### 3c. Comment Pixel pessoal (`### comment_pixel`)

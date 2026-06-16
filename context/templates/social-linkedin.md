@@ -75,6 +75,14 @@ Stage 2 (writer) gera o texto com o placeholder literal `{edition_url}`. Stage 5
 
 Em Stage 2, NÃO inventar URL — sempre `{edition_url}`. Lint detecta se placeholder vaza pra produção.
 
+### Placeholder `{outros_count}` (#2319)
+
+Stage 2 (writer) gera o texto com o placeholder literal `{outros_count}`. Stage 5 (publish-linkedin) substitui pelo total de itens não-destaque (`lancamento + radar + use_melhor + video`) lido do `01-approved-capped.json` FINAL da edição antes de enfileirar no Worker.
+
+Motivação: resolver em Stage 2 causava staleness quando a edição era editada após o social ser gerado (ex: 260616 — "17" ficou no texto após edição reduç para 13 itens).
+
+Em Stage 2, NÃO estimar nem substituir — sempre `{outros_count}` literal.
+
 ## 3. Comment Pixel pessoal (`### comment_pixel`)
 
 Postado **8 min após** o main post pela conta pessoal `vjpixel`. Amplifica via 2ª conta — sinal forte pro algoritmo + 2ª notificação aos seguidores.

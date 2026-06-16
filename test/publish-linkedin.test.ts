@@ -9,12 +9,14 @@ import {
   postToMakeWebhook,
   postToWorkerQueue,
   sanitizeFallbackReason,
+  resolveOutrosCount,
   type DispatchContext,
   type DispatchInput,
 } from "../scripts/publish-linkedin.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
 const CRLF = LF.replace(/\n/g, "\r\n");
@@ -711,6 +713,300 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
     } finally {
       cleanup();
       globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ── #2319 — resolveOutrosCount + {outros_count} resolução no Stage 5 ———————————————————————
+
+
+describe("#2319 resolveOutrosCount: conta itens não-destaque do approved JSON", () => {
+  it("soma lancamento + radar + use_melhor + video", () => {
+    const count = resolveOutrosCount({
+      lancamento: [{}, {}],
+      radar: [{}, {}, {}, {}, {}],
+      use_melhor: [{}, {}, {}],
+      video: [{}, {}],
+    });
+    assert.equal(count, 12);
+  });
+
+  it("arrays ausentes contam como 0", () => {
+    const count = resolveOutrosCount({});
+    assert.equal(count, 0);
+  });
+
+  it("apenas radar", () => {
+    const count = resolveOutrosCount({ radar: new Array(7) });
+    assert.equal(count, 7);
+  });
+
+  it("edition com 13 itens (caso 260616 pós-edição)", () => {
+    // 260616: após edição, edição ficou com 13 itens total não-destaque
+    const count = resolveOutrosCount({
+      lancamento: new Array(2),
+      radar: new Array(6),
+      use_melhor: new Array(3),
+      video: new Array(2),
+    });
+    assert.equal(count, 13);
+  });
+});
+
+// ── Fixture para testes de comment_diaria com {outros_count} ──
+
+const SOCIAL_2319 = [
+  "# Facebook",
+  "",
+  "## d1",
+  "Facebook d1.",
+  "",
+  "# LinkedIn",
+  "",
+  "## d1",
+  "Main post d1.",
+  "",
+  "#InteligenciaArtificial",
+  "",
+  "### comment_diaria",
+  "",
+  "Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}",
+  "",
+  "Receba a Diar.ia em diar.ia.br",
+  "",
+  "### comment_pixel",
+  "",
+  "Opinião pessoal do Pixel.",
+  "",
+  "## d2",
+  "Main d2.",
+  "",
+  "### comment_diaria",
+  "Edição com mais {outros_count} destaques em {edition_url}",
+  "",
+  "### comment_pixel",
+  "Pixel d2.",
+].join("\n");
+
+describe("#2319 extractCommentDiaria: {outros_count} substituído no Stage 5", () => {
+  it("resolve {outros_count} com número correto do estado final", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", 13);
+    assert.ok(t);
+    assert.match(t!, /mais 13 destaques/);
+    assert.ok(!t!.includes("{outros_count}"), "placeholder não deve vazar");
+    assert.ok(!t!.includes("{edition_url}"), "edition_url também deve ser substituído");
+    assert.match(t!, /https:\/\/diar\.ia\.br\/p\/foo/);
+  });
+
+  it("override valor stale do Stage 2: placeholder substituído pelo número final", () => {
+    // Simula o cenário do bug 260616:
+    // Stage 2 geraria "17" no texto se resolvesse cedo demais.
+    // Com Option A, o texto tem {outros_count} literal até Stage 5,
+    // onde é substituído pelo valor FINAL (13, não 17).
+    const socialMdWithPlaceholder = [
+      "# LinkedIn", "",
+      "## d1", "Main.", "",
+      "### comment_diaria", "",
+      "Edição com mais {outros_count} destaques em {edition_url}", "",
+      "### comment_pixel", "Pixel.",
+    ].join("\n");
+
+    // Stage 5 lê outrosCount=13 do approved FINAL (não o 17 do Stage 2)
+    const finalCount = 13; // valor correto pós-edição
+    const t = extractCommentDiaria(socialMdWithPlaceholder, "d1", "https://diar.ia.br/p/test", finalCount);
+
+    assert.ok(t, "deve retornar texto");
+    assert.match(t!, /mais 13 destaques/, "deve usar o número FINAL (13)");
+    assert.ok(!t!.includes("17"), "não deve ter o valor stale do Stage 2");
+    assert.ok(!t!.includes("{outros_count}"), "placeholder não deve vazar");
+  });
+
+  it("sem outrosCount passado: {outros_count} permanece literal (backward-compat)", () => {
+    // Quando outrosCount=null (approved.json ausente), o placeholder fica intacto
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", null);
+    assert.ok(t);
+    assert.match(t!, /\{outros_count\}/, "placeholder deve permanecer quando outrosCount=null");
+    assert.ok(!t!.includes("{edition_url}"), "edition_url ainda é substituído mesmo sem outrosCount");
+  });
+
+  it("d2: {outros_count} e {edition_url} ambos resolvidos", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d2", "https://diar.ia.br/p/bar", 7);
+    assert.ok(t);
+    assert.match(t!, /mais 7 destaques/);
+    assert.match(t!, /https:\/\/diar\.ia\.br\/p\/bar/);
+    assert.ok(!t!.includes("{outros_count}"));
+    assert.ok(!t!.includes("{edition_url}"));
+  });
+
+  it("outrosCount=0: zero destaques adicionais é válido", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", 0);
+    assert.ok(t);
+    assert.match(t!, /mais 0 destaques/);
+    assert.ok(!t!.includes("{outros_count}"));
+  });
+});
+
+// ── #2331 — Findings F1/F2/F3: resolução de outrosCount no main() ─────────────────
+
+// Helper: monta edition dir com _internal/ e approved files.
+// O editionDir deve terminar em AAMMDD — o script valida isso.
+function mkEditionDir(_opts: Record<string, unknown> = {}): { tmp: string; dir: string; internalDir: string; cleanup: () => void } {
+  const tmp = mkdtempSync(join(tmpdir(), "pl-2331-"));
+  const dir = join(tmp, "260999"); // AAMMDD válido pra passar o guard
+  const internalDir = join(dir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+  return { tmp, dir, internalDir, cleanup: () => rmSync(tmp, { recursive: true, force: true }) };
+}
+
+// Shape mínimo de approved JSON com contagem controlada
+const APPROVED_CAPPED = JSON.stringify({
+  highlights: [{ article: { title: "D1" } }, { article: { title: "D2" } }, { article: { title: "D3" } }],
+  lancamento: [{ title: "L1" }, { title: "L2" }],
+  radar: [{ title: "R1" }, { title: "R2" }, { title: "R3" }, { title: "R4" }, { title: "R5" }],
+  use_melhor: [],
+  video: [],
+});
+// outros = lancamento(2) + radar(5) = 7
+
+// Uncapped JSON com mais lançamentos que o cap (5)
+const APPROVED_UNCAPPED_INFLATED = JSON.stringify({
+  highlights: [{ article: { title: "D1", url: "https://a.com/1" } }, { article: { title: "D2", url: "https://a.com/2" } }, { article: { title: "D3", url: "https://a.com/3" } }],
+  lancamento: [
+    { title: "L1", url: "https://l.com/1" }, { title: "L2", url: "https://l.com/2" },
+    { title: "L3", url: "https://l.com/3" }, { title: "L4", url: "https://l.com/4" },
+    { title: "L5", url: "https://l.com/5" }, { title: "L6", url: "https://l.com/6" }, // cap=5 → L6 seria cortado
+    { title: "L7", url: "https://l.com/7" }, // L7 também cortado
+  ],
+  radar: [{ title: "R1", url: "https://r.com/1" }, { title: "R2", url: "https://r.com/2" }, { title: "R3", url: "https://r.com/3" }, { title: "R4", url: "https://r.com/4" }, { title: "R5", url: "https://r.com/5" }],
+  use_melhor: [],
+  video: [],
+});
+// uncapped sum = 7 + 5 = 12. After caps: lancamento=min(7,5)=5, radar stays 5 → 10.
+
+function runPublishLinkedinCli(editionDir: string, extraArgs: string[] = []) {
+  const projectRoot = join(import.meta.dirname, "..");
+  const scriptPath = join(projectRoot, "scripts", "publish-linkedin.ts");
+  // Set minimal env to not trigger Worker guard and to not hit Make webhook
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", scriptPath, "--edition-dir", editionDir, "--fire-now", ...extraArgs],
+    {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        // Use fire-now mode (no schedule → no Worker required)
+        MAKE_LINKEDIN_WEBHOOK_URL: "https://hook.test/noop",
+        // Remove Worker config so --fire-now path is taken (no fail-fast)
+        DIARIA_LINKEDIN_CRON_URL: "",
+        DIARIA_LINKEDIN_CRON_TOKEN: "",
+      },
+    },
+  );
+}
+
+describe("#2331/F1: JSON corrompido no capped → fallback para uncapped (não abandona)", () => {
+  it("capped com JSON corrompido + uncapped válido → resolvido do uncapped", () => {
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      // Capped existe mas tem JSON corrompido
+      writeFileSync(join(internalDir, "01-approved-capped.json"), "{ CORRUPT JSON }", "utf8");
+      // Uncapped é válido (capped seria preferido mas está corrompido)
+      writeFileSync(join(internalDir, "01-approved.json"), APPROVED_CAPPED, "utf8");
+      // Criar 03-social.md mínimo e 06-public-images.json
+      writeFileSync(join(dir, "03-social.md"), [
+        "# LinkedIn", "", "## d1", "Post d1.", "",
+        "### comment_diaria", "", "Mais {outros_count} destaques em {edition_url}", "",
+        "# Facebook", "", "## d1", "FB d1.",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+      // Deve mencionar "tentando 01-approved.json" no stderr (F1)
+      assert.match(result.stderr + result.stdout, /tentando 01-approved\.json|uncapped\+caps/i,
+        `F1: deve indicar fallback para uncapped. stderr: ${result.stderr}`);
+      // Não deve conter "ERRO — outros_count não pôde ser resolvido" (F3 exit path)
+      assert.doesNotMatch(result.stderr, /outros_count não pôde ser resolvido/, "F1: fallback deve funcionar, não deve abortar");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("#2331/F2: fallback uncapped aplica caps (não infla contagem)", () => {
+  it("uncapped com 7 lançamentos → após caps, conta 5 (não 7)", () => {
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      // Sem capped — usa uncapped direto
+      writeFileSync(join(internalDir, "01-approved.json"), APPROVED_UNCAPPED_INFLATED, "utf8");
+      writeFileSync(join(dir, "03-social.md"), [
+        "# LinkedIn", "", "## d1", "Post d1.", "",
+        "### comment_diaria", "", "Mais {outros_count} destaques em {edition_url}", "",
+        "# Facebook", "", "## d1", "FB d1.",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+      // F2: log deve mostrar "uncapped+caps" (não o número inflado 12)
+      assert.match(result.stderr + result.stdout, /uncapped\+caps/i,
+        `F2: deve usar caps no fallback. stderr: ${result.stderr}`);
+      // Não deve mostrar → 12 (numero inflado). Deve mostrar → 10 (lancamento capped=5 + radar=5)
+      assert.doesNotMatch(result.stdout + result.stderr, /→ 12\b/, "F2: não deve exibir contagem inflada (12)");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("#2331/F3: outrosCount não-resolvível → abort (nunca posta literal)", () => {
+  it("sem approved JSON algum → exit 2 com mensagem clara", () => {
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      // _internal existe mas sem approved files
+      writeFileSync(join(dir, "03-social.md"), [
+        "# LinkedIn", "", "## d1", "Post d1.", "",
+        "### comment_diaria", "", "Mais {outros_count} destaques em {edition_url}", "",
+        "# Facebook", "", "## d1", "FB d1.",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+      // F3: deve abortar com exit != 0
+      assert.notEqual(result.status, 0, `F3: deve abortar quando approved JSON ausente. stderr: ${result.stderr}`);
+      // Mensagem de erro deve mencionar o motivo
+      assert.match(result.stderr, /outros_count não pôde ser resolvido/i,
+        "F3: mensagem de erro deve explicar por que abortou");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("ambos os approved files com JSON corrompido → exit 2 (nunca posta literal)", () => {
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      writeFileSync(join(internalDir, "01-approved-capped.json"), "{ NOT JSON }", "utf8");
+      writeFileSync(join(internalDir, "01-approved.json"), "[ ALSO CORRUPT ]", "utf8");
+      writeFileSync(join(dir, "03-social.md"), [
+        "# LinkedIn", "", "## d1", "Post d1.", "",
+        "### comment_diaria", "", "Mais {outros_count} destaques em {edition_url}", "",
+        "# Facebook", "", "## d1", "FB d1.",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+      assert.notEqual(result.status, 0, `F3: deve abortar quando ambos corrompidos. stderr: ${result.stderr}`);
+      // Must NOT dispatch literal — the exit should happen before any Make webhook call
+      assert.doesNotMatch(result.stdout, /\{outros_count\}/, "F3: literal não deve aparecer no stdout/dispatch");
+    } finally {
+      cleanup();
     }
   });
 });
