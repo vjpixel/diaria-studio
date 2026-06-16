@@ -283,9 +283,10 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
       const v = Number(resetHeader);
       if (!isNaN(v)) {
         // Delta direto (ex: 256s) ou epoch Unix (ex: ~1.7e9)?
+        // #2307: v>=0 aceita reset:0 (janela já passou → retry imediato), igual a retry-after:0
         retryAfter = v >= 1e9
           ? Math.max(0, Math.ceil(v - Date.now() / 1000))
-          : v > 0 ? v : null;
+          : v >= 0 ? v : null;
       }
     }
     throw new BrevoRateLimitError(retryAfter);
@@ -360,28 +361,45 @@ export async function fetchRecentCampaigns(
       }
     }),
     // Batch 2: globalStats + linksStats com KV cache para campanhas imutaveis (> 7d).
-    // #2177: ambas as stats vêm do mesmo GET por id (param `statistics=globalStats,linksStats`),
-    // sem custo extra de chamada. linksStats: url → clicks (unique-clicks por link não
-    // está disponível neste endpoint da API Brevo v3).
+    // #2177: ambas as stats vêm de GETs separados por id.
+    // linksStats: url → clicks (unique-clicks por link não está disponível na API Brevo v3).
+    //
+    // #2314: chave unificada `stats:{id}` → 1 KV write por campanha (era 2: gstats: + lstats:).
+    // Leitura retrocompatível: tenta `stats:{id}` primeiro; se ausente, cai nos legados
+    // `gstats:{id}` + `lstats:{id}` (migração transparente sem wrangler kv delete).
     mapLimit(campaigns, 5, async (c) => {
       try {
+        const kvStatsKey = `stats:${c.id}`;
+        // Chaves legadas mantidas apenas para LEITURA de migração (não mais gravadas).
         const kvGsKey = `gstats:${c.id}`;
         const kvLsKey = `lstats:${c.id}`;
         const immutable = isImmutableCampaign(c.sentDate);
 
-        // #2270: tentar KV pra TODAS as campanhas (não só imutáveis). Recentes
-        // têm TTL curto (RECENT_STATS_TTL) e expiram sozinhas; imutáveis ficam
-        // sem TTL. Render dentro do TTL → hit no KV → 0 GETs à Brevo → sem o
-        // 503/flicker por rate-limit. `?fresh=1` continua bypassando (`!isFresh`).
-        // F4: cachedGs e cachedLs são hoistados pro escopo do async (c) => {} para
+        // #2270/#2314: tentar KV pra TODAS as campanhas (não só imutáveis). Recentes
+        // têm TTL curto (RECENT_STATS_TTL) e expiram sozinhas; imutáveis ficam sem TTL.
+        // Render dentro do TTL → hit no KV → 0 GETs à Brevo → sem 503/flicker.
+        // `?fresh=1` continua bypassando (`!isFresh`).
+        // F4: cachedGs e cachedLs são hoistados para o escopo deste callback para
         // que a lógica de skip-gs-fetch abaixo consiga checar se gs já está válido.
         let cachedGs: unknown = null;
         let cachedLs: unknown = null;
+        // Finding #2 (#2323): hoistado para que o guard do ls-fetch abaixo consiga
+        // verificar se cachedLs está envenenado (e portanto deve ser re-fetchado).
+        let cachedLsIsPoison = false;
         if (!isFresh && env.STATS_CACHE) {
-          [cachedGs, cachedLs] = await Promise.all([
-            env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
-            env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
-          ]);
+          // #2314: tenta chave unificada primeiro; fallback retrocompatível para as legadas.
+          const unified = await env.STATS_CACHE.get(kvStatsKey, "json").catch(() => null) as
+            { gs: BrevoGlobalStats; ls: BrevoLinksStats } | null;
+          if (unified) {
+            cachedGs = unified.gs ?? null;
+            cachedLs = unified.ls ?? null;
+          } else {
+            // Migração: lê chaves legadas (gravadas por versões anteriores do worker).
+            [cachedGs, cachedLs] = await Promise.all([
+              env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
+              env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
+            ]);
+          }
           if (cachedGs) globalStatsMap.set(c.id, cachedGs as BrevoGlobalStats);
           // #2273: guard de sanidade contra linksStats envenenado (bug #2177).
           // Um lstats onde TODOS os clicks são 0 mas globalStats.clickers > 0
@@ -394,6 +412,7 @@ export async function fetchRecentCampaigns(
             cachedLs as BrevoLinksStats | null,
             cachedGs as BrevoGlobalStats | null,
           );
+          cachedLsIsPoison = lsIsPoison; // hoist para escopo do callback (#2323 finding #2)
           if (cachedLs && !lsIsPoison) linksStatsMap.set(c.id, cachedLs as BrevoLinksStats);
           // Se ambos estavam em cache (e lstats não-poison), skip o fetch da API.
           // Bug fix (#2183): antes o `if (cachedGs) return` pulava o fetch
@@ -435,58 +454,61 @@ export async function fetchRecentCampaigns(
         // isolamento, um 429 no 2º GET cairia no catch externo e pularia o
         // `globalStatsMap.set` lá embaixo, perdendo o gs que veio OK no 1º GET
         // (regressão da divisão em 2 chamadas). ls fica undefined → fallback normal.
+        // #2249: guard `if (!cachedLs || cachedLsIsPoison)` espelha o guard do gs
+        // path acima (`if (!cachedGs)`). Finding #2 (#2323): sem esse guard, cachedLs
+        // populado via legado `lstats:{id}` era ignorado e o fetch da API sobrescrevia
+        // — se o fetch falhasse, ls ficava undefined e o write subsequente descartava
+        // o dado legado válido. Poison continua re-fetchado (cachedLsIsPoison=true).
         let ls: BrevoLinksStats | undefined;
-        try {
-          // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
-          const linksDetail = await withRateLimitRetry(() =>
-            _fetchFn<BrevoCampaign>(
-              `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
-              env,
-            ),
-          );
-          ls = linksDetail.statistics?.linksStats;
-        } catch {
-          // linksStats indisponível (429/erro após retry) — gs segue válido; seção de links degrada
+        if (!cachedLs || cachedLsIsPoison) {
+          try {
+            // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
+            const linksDetail = await withRateLimitRetry(() =>
+              _fetchFn<BrevoCampaign>(
+                `/v3/emailCampaigns/${c.id}?statistics=linksStats`,
+                env,
+              ),
+            );
+            ls = linksDetail.statistics?.linksStats;
+          } catch {
+            // linksStats indisponível (429/erro após retry) — gs segue válido; seção de links degrada
+          }
+        } else {
+          ls = cachedLs as BrevoLinksStats;
         }
 
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
         // zerado em certas condicoes; persistir zerado sem TTL criaria entrada
         // permanente impossivel de recuperar sem `wrangler kv:key delete`.
-        if (gs && gs.sent > 0) {
-          globalStatsMap.set(c.id, gs);
-          // #2270: grava no KV pra imutáveis (sem TTL) E recentes (TTL curto).
-          if (env.STATS_CACHE) {
-            await env.STATS_CACHE.put(
-              kvGsKey, JSON.stringify(gs),
-              immutable ? {} : { expirationTtl: RECENT_STATS_TTL },
-            ).catch(() => { /* nunca bloqueia */ });
-          }
+        //
+        // #2314: coalesce — grava 1 `stats:{id}` em vez de `gstats:{id}` + `lstats:{id}`.
+        // gs pode ser undefined se o fetch falhou ou retornou zerado; ls pode ser undefined
+        // se o GET separado falhou. Só grava quando ao menos gs é real (sent>0).
+        // Poison-check de ls: idêntico ao original — TTL curto mesmo em imutável.
+        const gsReal = gs && gs.sent > 0;
+        if (gsReal) {
+          globalStatsMap.set(c.id, gs!);
         }
-
-        // linksStats: gravar se o objeto existir (mesmo que vazio — indica que a
-        // campanha não tinha links rastreados, distinguindo de "não buscado ainda").
-        // #2273: nunca gravar linksStats envenenado (todos-zeros + clickers>0)
-        // como imutável SEM TTL — isso recriaria o poison permanente do #2177.
-        // Se suspeito, gravar com TTL curto (RECENT_STATS_TTL) para auto-cura,
-        // mesmo em campanhas imutáveis. Um re-fetch posterior pode popular com
-        // dados reais. gsFetched: o gs que veio deste mesmo fetch (não do KV).
         if (ls !== undefined) {
           linksStatsMap.set(c.id, ls);
-          if (env.STATS_CACHE) {
-            // Pega o gs deste fetch (pode estar no map se foi persistido acima).
-            // F1 fix: se gs.sent===0, globalStatsMap.set não foi chamado (guard linha 443),
-            // então globalStatsMap.get retornaria undefined. Usar `gs` como fallback
-            // garante que isLinksStatsPoisoned recebe o gs real do fetch atual, não null
-            // (que tornaria a poison-check sempre false → lstats envenenado sem TTL).
-            const gsFetched = globalStatsMap.get(c.id) ?? gs ?? null;
-            const lsPoison = isLinksStatsPoisoned(ls, gsFetched);
-            // Poison → TTL curto mesmo em imutável (auto-cura); real → TTL normal
-            const opts = (immutable && !lsPoison) ? {} : { expirationTtl: RECENT_STATS_TTL };
-            await env.STATS_CACHE.put(
-              kvLsKey, JSON.stringify(ls),
-              opts,
-            ).catch(() => { /* nunca bloqueia */ });
-          }
+        }
+
+        if (gsReal && env.STATS_CACHE) {
+          const gsFetched = globalStatsMap.get(c.id) ?? gs ?? null;
+          const lsPoison = ls !== undefined ? isLinksStatsPoisoned(ls, gsFetched) : false;
+          // Poison → TTL curto mesmo em imutável (auto-cura); real → TTL normal.
+          // Finding #1 (#2323): só grava sem TTL (permanente) quando ls está presente E
+          // não-poison. Se ls === undefined (fetch falhou), a entrada TTL'd auto-cura na
+          // próxima cache-miss → re-fetcha ls. Sem esse guard, a entrada permanente ficaria
+          // para sempre sem ls (exigiria `wrangler kv:key delete` para recuperar).
+          const opts = (immutable && !lsPoison && ls !== undefined) ? {} : { expirationTtl: RECENT_STATS_TTL };
+          // #2314: 1 write por campanha (era 2). ls pode ser undefined (linksStats
+          // fetch falhou) — guardamos o que temos; na próxima cache-miss o ls é
+          // re-fetchado separadamente (cachedGs presente → skip gs-fetch, só ls).
+          await env.STATS_CACHE.put(
+            kvStatsKey, JSON.stringify({ gs: gs!, ls }),
+            opts,
+          ).catch(() => { /* nunca bloqueia */ });
         }
       } catch {
         // Falha individual nao bloqueia o resto -- campaignStats fica como fallback
@@ -522,17 +544,38 @@ export async function fetchRecentCampaigns(
 }
 
 /**
+ * #2307: helper puro que converte `retryAfterSecs` (campo de BrevoRateLimitError)
+ * em milissegundos de espera. Extraído de withRateLimitRetry para:
+ *   (a) ser testável isoladamente;
+ *   (b) uniformizar a semântica: retryAfterSecs=0 → 0ms (retry imediato,
+ *       RFC 7231), não mais clampeado para 1s (regressão anterior).
+ *
+ * Lógica: cap máximo de 5s (protege dashboard contra throttle sustentado).
+ * Mínimo: 0ms (aceita retry imediato quando Brevo sinaliza reset:0).
+ * Fallback: 2s quando retryAfterSecs é null (header ausente).
+ */
+export function computeRetryDelayMs(retryAfterSecs: number | null): number {
+  const s = retryAfterSecs ?? 2; // null = header ausente = fallback 2s
+  // Finding #3 (#2323): Math.max(0, ...) garante mínimo 0ms para inputs negativos
+  // (ex: Brevo enviando header negativo por bug). Math.min cap de 5s protege
+  // contra throttle sustentado (Brevo pode mandar Retry-After: 256s — clampamos).
+  return Math.max(0, Math.min(s, 5)) * 1000;
+}
+
+/**
  * #2268: retry com backoff em chamada que pode 429. O fetch de enviadas tolera
  * 429 por-campanha (fallback campaignStats), mas a listagem de agendadas não tem
  * fallback — sem retry, um 429 some com a seção inteira. Retenta respeitando o
  * `Retry-After`, até `attempts`. `_sleep` injetável p/ teste.
  *
- * Clamp 1–5s NO ESPERA por chamada: cobre o caso comum (429 de BURST no início do
- * fetch pesado de enviadas). NÃO sobrevive a um throttle SUSTENTADO (a Brevo já
- * mandou Retry-After de 256s — clampamos pra não pendurar o request da dashboard
- * 4min); nesse caso esgota as tentativas → o chamador cai no `.catch` (seção
- * oculta + log). A mitigação primária do caso comum é o REORDER (buscar agendadas
- * ANTES das enviadas, com a janela de rate-limit fresca) — ver a rota `/`.
+ * Cap 5s por chamada: cobre o caso comum (429 de BURST no início do fetch pesado
+ * de enviadas). NÃO sobrevive a um throttle SUSTENTADO (a Brevo já mandou
+ * Retry-After de 256s — clampamos pra não pendurar o request da dashboard 4min);
+ * nesse caso esgota as tentativas → o chamador cai no `.catch` (seção oculta + log).
+ * A mitigação primária do caso comum é o REORDER (buscar agendadas ANTES das
+ * enviadas, com a janela de rate-limit fresca) — ver a rota `/`.
+ *
+ * #2307: retryAfterSecs=0 → retry imediato (sem clamp inferior). Usa computeRetryDelayMs.
  */
 export async function withRateLimitRetry<T>(
   fn: () => Promise<T>,
@@ -544,8 +587,7 @@ export async function withRateLimitRetry<T>(
       return await fn();
     } catch (e) {
       if (i >= attempts - 1 || !(e instanceof BrevoRateLimitError)) throw e;
-      const waitS = Math.min(Math.max(e.retryAfterSecs ?? 2, 1), 5);
-      await _sleep(waitS * 1000);
+      await _sleep(computeRetryDelayMs(e.retryAfterSecs));
     }
   }
 }

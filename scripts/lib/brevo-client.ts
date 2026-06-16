@@ -37,9 +37,10 @@ function parseRetryAfterMs(headers: Headers): number {
   } else if (sibReset != null) {
     const v = Number(sibReset);
     if (!isNaN(v)) {
+      // #2307: v>=0 aceita reset:0 (janela já passou → retry imediato), igual a retry-after:0
       deltaS = v >= 1e9
         ? Math.max(0, Math.ceil(v - Date.now() / 1000))
-        : v > 0 ? v : null;
+        : v >= 0 ? v : null;
     }
   }
   if (deltaS == null) deltaS = 2; // fallback 2s quando header ausente
