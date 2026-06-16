@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { filterDateWindow, bucketWindowDays, effectiveDate } from "../scripts/filter-date-window.ts";
+import { filterDateWindow, bucketWindowDays, effectiveDate, TUTORIAL_WINDOW_DAYS } from "../scripts/filter-date-window.ts";
 
 describe("filterDateWindow", () => {
   it("remove artigos antes da janela", () => {
@@ -473,10 +473,17 @@ describe("bucketWindowDays (#1155, #1629 — agora aceita Category)", () => {
     assert.equal(bucketWindowDays("pesquisa", 7), 7);
   });
 
-  it("categories noticias e tutorial usam default direto", () => {
+  it("category noticias usa default direto", () => {
     assert.equal(bucketWindowDays("noticias", 3), 3);
     assert.equal(bucketWindowDays("noticias", 7), 7);
-    assert.equal(bucketWindowDays("tutorial", 3), 3);
+  });
+
+  it("category tutorial usa 60 dias (#2312) — isolada dos demais buckets", () => {
+    // #2312: tutorial/use_melhor ampliou de default → 60 dias.
+    assert.equal(bucketWindowDays("tutorial", 3), 60);
+    assert.equal(bucketWindowDays("tutorial", 60), 60);
+    // Quando defaultDays > 60 (ex: backfill), usa o maior valor.
+    assert.equal(bucketWindowDays("tutorial", 90), 90);
   });
 
   it("category video usa default", () => {
@@ -539,5 +546,144 @@ describe("filterDateWindow — janela adaptativa por bucket (#1155)", () => {
     };
     const { removed } = filterDateWindow(input, "2026-05-15", 3);
     assert.ok(removed[0].detail.includes("bucket-window=7d"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2312 — janela tutorial = 60 dias, ISOLADA dos demais buckets
+// ---------------------------------------------------------------------------
+
+describe("bucketWindowDays — tutorial 60d isolado (#2312)", () => {
+  it("TUTORIAL_WINDOW_DAYS é 60", () => {
+    assert.equal(TUTORIAL_WINDOW_DAYS, 60);
+  });
+
+  it("tutorial usa 60d (independente do defaultDays=3)", () => {
+    assert.equal(bucketWindowDays("tutorial", 3), 60);
+  });
+
+  it("tutorial usa max(defaultDays, 60) quando defaultDays > 60", () => {
+    // Ex: backfill com --window-days 90 → tutorial usa 90 (não trunca pra 60).
+    assert.equal(bucketWindowDays("tutorial", 90), 90);
+  });
+
+  it("noticias NÃO herda a janela de tutorial (segue default)", () => {
+    assert.equal(bucketWindowDays("noticias", 3), 3);
+  });
+
+  it("lancamento NÃO herda a janela de tutorial (usa 7d)", () => {
+    assert.equal(bucketWindowDays("lancamento", 3), 7);
+  });
+
+  it("pesquisa NÃO herda a janela de tutorial (usa 5d)", () => {
+    assert.equal(bucketWindowDays("pesquisa", 3), 5);
+  });
+
+  it("video NÃO herda a janela de tutorial (segue default)", () => {
+    assert.equal(bucketWindowDays("video", 3), 3);
+  });
+});
+
+describe("filterDateWindow — tutorial 45 dias aceito, notícia 45 dias rejeitada (#2312 regressão)", () => {
+  // anchor = 2026-06-15, window_days = 3 (default pipeline)
+  // 45 dias atrás = 2026-05-01
+  //
+  // Tutorial (category="tutorial"): janela = max(3, 60) = 60d → cutoff = 2026-04-16.
+  //   → 2026-05-01 ≥ 2026-04-16 → ACEITO
+  // Notícia (category="noticias"): janela = 3d → cutoff = 2026-06-12.
+  //   → 2026-05-01 < 2026-06-12 → REJEITADA
+  //
+  // Prova de isolamento: o mesmo artigo de 45 dias tem sorte diferente dependendo do bucket.
+
+  const ANCHOR = "2026-06-15";
+  const DEFAULT_WINDOW = 3;
+  const DATE_45_DAYS_AGO = "2026-05-01"; // anchor − 45d
+
+  it("tutorial publicado 45 dias atrás é ACEITO no bucket use_melhor", () => {
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://cookbook.openai.com/examples/rag-tutorial",
+          title: "RAG Tutorial: Build a Document Search Pipeline",
+          date: DATE_45_DAYS_AGO,
+          category: "tutorial",
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, ANCHOR, DEFAULT_WINDOW);
+    assert.equal(kept.use_melhor.length, 1, "tutorial 45d deve ser aceito (janela 60d)");
+    assert.equal(removed.length, 0, "nenhum artigo deve ser removido");
+  });
+
+  it("notícia publicada 45 dias atrás é REJEITADA no bucket radar", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        {
+          url: "https://techcrunch.com/2026/05/01/openai-news",
+          title: "OpenAI anuncia novidades",
+          date: DATE_45_DAYS_AGO,
+          category: "noticias",
+        },
+      ],
+      use_melhor: [],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, ANCHOR, DEFAULT_WINDOW);
+    assert.equal(kept.radar.length, 0, "notícia 45d deve ser rejeitada (janela 3d)");
+    assert.equal(removed.length, 1, "deve remover o artigo por date_window");
+  });
+
+  it("isolamento: tutorial 45d aceito E notícia 45d rejeitada na mesma chamada", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        {
+          url: "https://techcrunch.com/2026/05/01/news",
+          title: "Notícia de tecnologia",
+          date: DATE_45_DAYS_AGO,
+          category: "noticias",
+        },
+      ],
+      use_melhor: [
+        {
+          url: "https://cookbook.openai.com/examples/tutorial",
+          title: "Build Your First RAG Pipeline",
+          date: DATE_45_DAYS_AGO,
+          category: "tutorial",
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, ANCHOR, DEFAULT_WINDOW);
+    assert.equal(kept.use_melhor.length, 1, "tutorial 45d ACEITO (janela 60d)");
+    assert.equal(kept.radar.length, 0, "notícia 45d REJEITADA (janela 3d)");
+    assert.equal(removed.length, 1, "exatamente 1 remoção");
+    assert.equal(removed[0].bucket, "radar", "o removido é do bucket radar");
+  });
+
+  it("tutorial publicado 61 dias atrás é REJEITADO (além da janela de 60d)", () => {
+    // anchor = 2026-06-15, cutoff = 2026-06-15 − 60d = 2026-04-16
+    // 61 dias atrás = 2026-04-15 < 2026-04-16 → REJEITADO
+    const DATE_61_DAYS_AGO = "2026-04-15"; // anchor − 61d
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://cookbook.openai.com/examples/old-tutorial",
+          title: "Tutorial muito antigo",
+          date: DATE_61_DAYS_AGO,
+          category: "tutorial",
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, ANCHOR, DEFAULT_WINDOW);
+    assert.equal(kept.use_melhor.length, 0, "tutorial 61d deve ser rejeitado (além da janela 60d)");
+    assert.equal(removed.length, 1, "deve remover por date_window");
   });
 });

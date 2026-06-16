@@ -719,6 +719,43 @@ describe("getHowToDiscoveryQueries NaN guard (#2305)", () => {
 // #2313 — Regressão: fallback Path B SEMPRE deve dispatchar howto PT-BR queries
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// #2309 item 2 — single-token capped items block cross-domain near-dups
+// ---------------------------------------------------------------------------
+
+describe("dedupeUseMelhorBucket — single-token capped item blocks cross-domain near-dup (#2309)", () => {
+  it("single-token capped item contribui token e bloqueia near-dup de outro domínio", () => {
+    // Cenário: "Bedrock" é o único token significativo de dois artigos.
+    // Item A (amazon.com) → kept (primeiro do domínio).
+    // Item B (amazon.com, mesmo título quase) → capped por domínio.
+    //   Sem o fix: B tinha size<2, não registrava tokens → C passava.
+    //   Com o fix: B registra "bedrock" (size>=1) → C é near-dup e bloqueado.
+    // Item C (pinecone.io) → near-dup de B via token "bedrock".
+    const items = [
+      { url: "https://aws.amazon.com/blogs/ml/bedrock-intro", title: "Bedrock" },
+      { url: "https://aws.amazon.com/blogs/ml/bedrock-agents", title: "Bedrock agents" }, // capped (mesmo domínio)
+      { url: "https://pinecone.io/learn/bedrock-guide", title: "Bedrock guide" }, // near-dup de B
+    ];
+    // minSharedTokens=1: 1 token em comum basta para considerar near-dup.
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 1 });
+    // A é kept; B é capped e registra "bedrock"; C near-dup de B → bloqueado.
+    assert.equal(result.length, 1, "C deve ser bloqueado pelos tokens do item capped B");
+    assert.equal(result[0].url, items[0].url, "só A deve ser mantido");
+  });
+
+  it("single-token item KEPT (não capped) ainda usa size>=2 guard (não bloqueia tudo)", () => {
+    // Item A kept com 1 token → NÃO deve bloquear artigos distintos.
+    // O guard size>=2 permanece para items KEPT (não capped).
+    const items = [
+      { url: "https://blog.a.com/post1", title: "Bedrock" },       // 1 token → não bloqueia via dedup
+      { url: "https://blog.b.com/post2", title: "LangChain guide" }, // distinto → deve ser mantido
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // A tem size<2 → não entra no pool de dedup → B não é near-dup → ambos kept.
+    assert.equal(result.length, 2, "item com 1 token kept não deve bloquear artigos distintos");
+  });
+});
+
 describe("getHowToDiscoveryQueries — regressão 260616 fallback Path B (#2313)", () => {
   it("retorna ≥2 queries PT-BR para edição 260616", () => {
     // Regressão 260616: 10 discovery-searcher rodaram, ZERO com query casual.
