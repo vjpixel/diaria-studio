@@ -64,7 +64,8 @@ export interface Signal {
     | "chrome_disconnects"
     | "mcp_unavailable"
     | "test_warning"
-    | "runtime_fix";
+    | "runtime_fix"
+    | "clarice_skip";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -539,6 +540,82 @@ export function signalsFromMcpUnavailable(
 }
 
 // ===========================================================================
+// Signal 5a (#2320): clarice_skip — edição foi a produção sem revisão Clarice.
+//
+// Detecta eventos `clarice_skip` no run-log (logados pelo orchestrator quando
+// MCP + REST falham e o editor aprova o skip consciente). Um skip por edição é
+// já sinal de problema; ≥2 indica padrão recorrente que merece atenção no
+// clarice-mcp ou na política de retry.
+// ===========================================================================
+
+/**
+ * Conta eventos `clarice_skip` no run-log de uma edição específica.
+ *
+ * O orchestrator de Stage 2 deve logar:
+ *   `log-event.ts --level warn --message "clarice_skip" --details '{"reason":"..."}'`
+ * quando MCP + REST falham e o editor aprova o skip.
+ *
+ * Um skip é "medium" severity (edição foi ao ar sem revisão Clarice, qualidade
+ * reduzida mas não fatal). ≥2 skips em uma edição vira "high" (padrão recorrente
+ * ou falha de infra clarice prolongada).
+ */
+export function signalsFromClariceSkips(
+  lines: string[],
+  edition: string | null,
+): Signal[] {
+  let count = 0;
+  const reasons: string[] = [];
+  const firstAt: string[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+
+    const msg = (parsed.message ?? "").toLowerCase();
+    // Match both structured "clarice_skip" and legacy prose variants used
+    // in the run-log from 260616 ("clarice SKIP consciente").
+    const isClariceSkip =
+      msg === "clarice_skip" ||
+      msg.includes("clarice_skip") ||
+      msg.includes("clarice skip");
+    if (!isClariceSkip) continue;
+    if (parsed.level !== "warn" && parsed.level !== "error") continue;
+
+    count++;
+    if (parsed.timestamp && firstAt.length < 5) firstAt.push(parsed.timestamp);
+    const detailsObj = parsed.details as Record<string, unknown> | undefined;
+    const reason = typeof detailsObj?.reason === "string" ? detailsObj.reason : "";
+    if (reason && reasons.length < 5) reasons.push(reason);
+  }
+
+  if (count === 0) return [];
+
+  return [
+    {
+      kind: "clarice_skip",
+      severity: count >= 2 ? "high" : "medium",
+      title: `Clarice SKIP: edição foi ao ar sem revisão ortográfica/estilo (${count}×)`,
+      details: {
+        count,
+        first_occurrences: firstAt,
+        reasons,
+      },
+      suggested_action:
+        "Edição foi publicada sem passar pela revisão Clarice (MCP + REST falharam e o editor aprovou o skip). " +
+        "Aumentar timeout/retry em clarice-correct.ts (--retry --timeout-ms 60000 --max-attempts 3) ou investigar " +
+        "instabilidade do endpoint cortex.clarice.ai. Se recorrente (≥2 edições), abrir issue no clarice-mcp.",
+      related_issue: "#2320",
+    },
+  ];
+}
+
+// ===========================================================================
 // Signal 5 (opt-in via --include-test-warnings, #519): generic error/warn
 // events na edição agrupados por agent + mensagem normalizada.
 //
@@ -548,9 +625,9 @@ export function signalsFromMcpUnavailable(
 // individual com kind=test_warning.
 // ===========================================================================
 
-/** Patterns de mensagem cobertos pelos signals 3 (chrome_disconnects) e 4
- *  (mcp_unavailable). Eventos que batem em qualquer um destes não são
- *  re-emitidos como test_warning para evitar duplicação. */
+/** Patterns de mensagem cobertos pelos signals 3 (chrome_disconnects), 4
+ *  (mcp_unavailable) e 5a (clarice_skip). Eventos que batem em qualquer um
+ *  destes não são re-emitidos como test_warning para evitar duplicação. */
 const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   /chrome_disconnected/i,
   /not connected/i,
@@ -565,6 +642,9 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   // #556, #559 — by-design no /diaria-test: warns que mencionam test_mode
   // não merecem virar issue (são comportamento esperado em modo teste).
   /test_mode/i,
+  // #2320 — clarice_skip events captured by signalsFromClariceSkips.
+  /clarice_skip/i,
+  /clarice skip/i,
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -802,7 +882,7 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
     }
   }
 
-  // Signal 3 + 4: run-log chrome_disconnects + mcp_unavailable
+  // Signal 3 + 4 + 5a: run-log chrome_disconnects + mcp_unavailable + clarice_skip
   // Signal 5 (opt-in #519): test_warning genérico
   const runLogPath = resolve(rootDir, "data/run-log.jsonl");
   if (existsSync(runLogPath)) {
@@ -816,6 +896,8 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
         ...signalsFromRunLog(lines, edition, opts.chromeThreshold ?? 3),
       );
       signals.push(...signalsFromMcpUnavailable(lines, edition));
+      // Signal 5a (#2320): conta clarice_skip para observabilidade de frequência.
+      signals.push(...signalsFromClariceSkips(lines, edition));
       if (opts.includeTestWarnings) {
         signals.push(...signalsFromTestWarnings(lines, edition));
       }
@@ -910,6 +992,7 @@ function main(): void {
           unfixed_issue: draft.signals.filter((s) => s.kind === "unfixed_issue").length,
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
           mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
+          clarice_skip: draft.signals.filter((s) => s.kind === "clarice_skip").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
         },
