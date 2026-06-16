@@ -41,6 +41,20 @@
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { urlsMatch } from "./lib/url-utils.ts";
+import {
+  extractDestaqueUrls,
+  extractPromptUrl,
+} from "./match-prompts-to-destaques.ts";
+
+// ---------------------------------------------------------------------------
+// Params de tracking que a versão local (normalizeUrl pré-#2308) stripava
+// e que canonicalize() de url-utils.ts não cobre (source, medium, campaign
+// são ambíguos para dedup, mas localmente são sempre tracking de RSS/feeds).
+// #2308-finding-2: stripping local em vez de alterar canonicalize globalmente
+// (dedup e outros callers podem precisar de `source` como param semântico).
+// ---------------------------------------------------------------------------
+const LOCAL_TRACKING_PARAMS = new Set(["source", "medium", "campaign"]);
 
 // ---------------------------------------------------------------------------
 // Config: por stage, quais downstream → upstream(s) checar
@@ -84,67 +98,50 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
 
 /**
  * Extrai URLs dos destaques D1/D2/D3 do 02-reviewed.md.
- * Linha com marcador "destaque" seguida de URL — compatível com o template.
- * Replica a lógica de extractDestaqueUrls de match-prompts-to-destaques.ts
- * para evitar import circular / dependência do CLI.
+ * Delega para extractDestaqueUrls de match-prompts-to-destaques.ts (#2308).
+ * A implementação local foi removida por duplicar lógica divergente
+ * (regex parava em `)`, truncando URLs Wikipedia com parênteses balanceados).
  */
 export function extractReviewedUrls(reviewedMd: string): string[] {
-  const urls: string[] = [];
-  // Procura por padrões: linha "URL:" ou "Link:" em contexto de destaque,
-  // ou padrão de href em markdown: [texto](URL) após seção de destaque.
-  // Mais confiável: reutiliza extractDestaqueUrls via regex direto.
-  // Padrão do template: destaque_url está no front-matter dos prompts, mas
-  // em 02-reviewed.md o URL aparece como [título](URL) na linha do headline.
-  // Regex: primeira URL de cada bloco "## D{N}" / "Destaque {N}".
-  const blockRegex = /(?:^##\s+D[1-3]|^Destaque\s+[1-3])/im;
-  // Usa o mesmo extractor que stage-4.ts: procura URLs de http(s) no MD.
-  // Ordem: D1 primeiro, D2, D3.
-  const urlRegex = /https?:\/\/[^\s\)\"]+/g;
-  // Dividir por blocos de destaque (#D{N})
-  const blocks = reviewedMd.split(/(?=^#{1,3}\s+D[1-3])/m);
-  for (const block of blocks) {
-    if (!blockRegex.test(block)) continue;
-    const m = block.match(urlRegex);
-    if (m && m[0]) urls.push(m[0]);
-    if (urls.length >= 3) break;
-  }
-  return urls;
+  return extractDestaqueUrls(reviewedMd);
 }
 
 /**
  * Extrai destaque_url do frontmatter de um arquivo de prompt.
- * Formato: `destaque_url: https://...` em linha própria.
+ * Delega para extractPromptUrl de match-prompts-to-destaques.ts (#2308).
+ * A implementação local era divergente: não tinha o fallback de body-field
+ * (`destaque_url:` fora do frontmatter — prompts antigos pré-#606).
  */
 export function extractPromptUrlLocal(promptMd: string): string | null {
-  const m = promptMd.match(/^destaque_url:\s*(\S+)/m);
-  return m ? m[1] : null;
+  return extractPromptUrl(promptMd);
 }
 
 /**
- * Normaliza URL para comparação: lowercase host, strip trailing slash,
- * strip UTM params. Path case-sensitive (RFC 3986).
+ * Stripa params de tracking RSS (source, medium, campaign) de uma URL.
+ * Retorna a URL original se inválida (sem lançar exceção).
+ * Usado localmente antes de delegar a urlsMatch (#2308-finding-2).
  */
-function normalizeUrl(raw: string): string {
+function stripLocalTrackingParams(url: string): string {
   try {
-    const u = new URL(raw);
-    u.hostname = u.hostname.toLowerCase();
-    // Strip tracking params
-    for (const k of [...u.searchParams.keys()]) {
-      if (/^utm_|^ref$|^source$|^medium$|^campaign$/i.test(k)) {
-        u.searchParams.delete(k);
+    const u = new URL(url);
+    for (const key of [...u.searchParams.keys()]) {
+      if (LOCAL_TRACKING_PARAMS.has(key.toLowerCase())) {
+        u.searchParams.delete(key);
       }
     }
-    let s = u.toString();
-    if (s.endsWith("/")) s = s.slice(0, -1);
-    return s;
+    return u.toString();
   } catch {
-    return raw.toLowerCase().replace(/\/$/, "");
+    return url;
   }
 }
 
-/** True se as duas URLs são equivalentes após normalização. */
+/** True se as duas URLs são equivalentes após canonicalização (#2308).
+ * Delega para urlsMatch() de lib/url-utils.ts (finding-1: evita reimplementação)
+ * com pré-stripping de source/medium/campaign (finding-2: params RSS que
+ * canonicalize() não remove mas normalizeUrl() local removia — sem isso
+ * imageUrlsMatch("url?source=rss", "url") retornaria false, regressão). */
 export function imageUrlsMatch(a: string, b: string): boolean {
-  return normalizeUrl(a) === normalizeUrl(b);
+  return urlsMatch(stripLocalTrackingParams(a), stripLocalTrackingParams(b));
 }
 
 // ---------------------------------------------------------------------------

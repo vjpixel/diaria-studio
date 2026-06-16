@@ -99,9 +99,13 @@ export function extractPromptUrl(promptMd: string): string | null {
     const urlInFm = fmMatch[1].match(/^destaque_url:\s*(\S+)$/m);
     if (urlInFm) return urlInFm[1];
   }
-  // Fallback: procurar URL solta no body (raro — alguns prompts antigos
-  // mencionam URL no comentário inicial)
-  const bodyUrl = promptMd.match(/destaque_url:\s*(\S+)/);
+  // Fallback: procurar `destaque_url:` no body (raro — alguns prompts antigos
+  // mencionam URL no comentário inicial HTML `<!-- destaque_url: URL -->`).
+  // Âncora `^` + prefixo HTML-comment opcional + flag `m` para não capturar
+  // `destaque_url:` mid-prose (finding-3 de #2308 — ex: "usa o campo
+  // destaque_url: para identificar" em prosa retornaria URL errada).
+  // Permite: linha própria (`destaque_url: URL`) ou comentário (`<!-- destaque_url: URL`).
+  const bodyUrl = promptMd.match(/^(?:<!--\s*)?destaque_url:\s*(\S+)/m);
   return bodyUrl ? bodyUrl[1] : null;
 }
 
