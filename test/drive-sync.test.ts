@@ -20,6 +20,7 @@ import {
   MAX_ARCHIVES_PER_FILE,
   classifyOAuthError,
   OAUTH_EXPIRED_ALERT,
+  makeInvalidGrantGuard,
   type DriveCache,
   type SyncResult,
 } from "../scripts/drive-sync.ts";
@@ -1047,6 +1048,30 @@ describe("classifyOAuthError (#2318)", () => {
     );
   });
 
+  // F3 (#2318): variantes reais do Google que inbox-drain.ts::isAuthExpiredError
+  // já cobria via regex mais ampla (#1973). classifyOAuthError (e classifyRefreshError
+  // por baixo) agora usa a mesma amplitude — sem isso, UNAUTHENTICATED vira 'other'
+  // e emite warning por arquivo em vez do alerta único consolidado.
+  it("UNAUTHENTICATED (401 moderno do Google) → 'invalid_grant'", () => {
+    assert.equal(classifyOAuthError("UNAUTHENTICATED"), "invalid_grant");
+    assert.equal(classifyOAuthError("Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project. (UNAUTHENTICATED)"), "invalid_grant");
+  });
+
+  it("token_revoked → 'invalid_grant'", () => {
+    assert.equal(classifyOAuthError("token has been expired or revoked"), "invalid_grant");
+    assert.equal(classifyOAuthError("Token has been expired or revoked."), "invalid_grant");
+  });
+
+  it("invalid_token → 'invalid_grant'", () => {
+    assert.equal(classifyOAuthError("invalid_token"), "invalid_grant");
+    assert.equal(classifyOAuthError("INVALID_TOKEN: access token expired"), "invalid_grant");
+  });
+
+  it("unauthorized → 'invalid_grant'", () => {
+    assert.equal(classifyOAuthError("unauthorized"), "invalid_grant");
+    assert.equal(classifyOAuthError("Unauthorized request"), "invalid_grant");
+  });
+
   it("outros erros → 'other' (transiente, rate-limit, etc)", () => {
     assert.equal(classifyOAuthError("Drive transient 429: Too Many Requests"), "other");
     assert.equal(classifyOAuthError("Drive upload error (500): internal error"), "other");
@@ -1064,6 +1089,18 @@ describe("OAUTH_EXPIRED_ALERT (#2318)", () => {
   });
   it("identifica Drive sync como afetado", () => {
     assert.match(OAUTH_EXPIRED_ALERT, /Drive sync/i);
+  });
+  // F4 (#2318): alerta deve listar todos os sistemas afetados, não só Drive sync.
+  // Sem isso, editor não sabe que precisa rodar /diaria-inbox para recuperar
+  // submissões perdidas quando o token expira mid-pipeline.
+  it("menciona inbox-drain como sistema afetado (F4)", () => {
+    assert.match(OAUTH_EXPIRED_ALERT, /inbox-drain/i);
+  });
+  it("menciona imagens sociais como sistema afetado (F4)", () => {
+    assert.match(OAUTH_EXPIRED_ALERT, /imagens sociais/i);
+  });
+  it("inclui comando de recuperação /diaria-inbox (F4)", () => {
+    assert.match(OAUTH_EXPIRED_ALERT, /\/diaria-inbox/);
   });
 });
 
@@ -1220,5 +1257,82 @@ describe("invalid_grant dedup guard (#2318) — alerta único via pullFile", () 
     assert.equal(fakeResult.uploaded.length, 0);  // nenhum upload aconteceu
     assert.equal(fakeResult.pulled.length, 0);    // nenhum pull aconteceu
     // Não lançou — pipeline continua (non-blocking por design).
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5/F11/F12/F13 (#2318): testes do guard REAL via makeInvalidGrantGuard
+// Os testes anteriores (F11/F12) re-implementavam o guard inline — uma regressão
+// no main() real passaria despercebida. Este bloco testa o factory exportado
+// (makeInvalidGrantGuard) que main() usa internamente, garantindo que o código
+// real satisfaz os invariantes de dedup.
+// ---------------------------------------------------------------------------
+
+describe("makeInvalidGrantGuard (#2318) — guard real exportado pelo main()", () => {
+  it("primeira chamada emite alerta e retorna true — result.warnings.length === 1", () => {
+    const result = makeSyncResult({ mode: "pull" });
+    const guard = makeInvalidGrantGuard(result);
+
+    const wasFirst = guard();
+
+    assert.equal(wasFirst, true, "primeira chamada deve retornar true");
+    assert.equal(result.warnings.length, 1, "EXATAMENTE 1 warning após primeira chamada");
+    assert.equal(result.warnings[0].file, "(oauth)", "warning marcado como (oauth)");
+    assert.match(result.warnings[0].error_message, /oauth-setup\.ts/, "alerta inclui instrução de re-auth");
+  });
+
+  it("chamadas subsequentes não duplicam o warning (dedup real)", () => {
+    const result = makeSyncResult({ mode: "pull" });
+    const guard = makeInvalidGrantGuard(result);
+
+    guard(); // 1ª vez — emite alerta
+    const wasSecond = guard(); // 2ª vez — dedup
+    const wasThird = guard();  // 3ª vez — dedup
+
+    assert.equal(wasSecond, false, "segunda chamada deve retornar false");
+    assert.equal(wasThird, false, "terceira chamada deve retornar false");
+    assert.equal(result.warnings.length, 1, "N chamadas → ainda EXATAMENTE 1 warning (dedup real)");
+    assert.equal(result.warnings[0].file, "(oauth)", "único warning é o (oauth)");
+  });
+
+  it("simula o catch block do main(): N erros invalid_grant → 1 único warning via guard real", () => {
+    // F5: este teste reproduz o padrão exato do main() mas usando o factory real,
+    // não uma re-implementação inline. Uma regressão no guard falha aqui.
+    const result = makeSyncResult({ mode: "pull" });
+    const guard = makeInvalidGrantGuard(result);
+
+    // Simula 3 arquivos com erros invalid_grant (como main() faz no for..of loop):
+    const errors = [
+      'Token refresh falhou (400): { "error": "invalid_grant" }',
+      'UNAUTHENTICATED: token has been expired or revoked',
+      'invalid_token: Request had invalid authentication credentials.',
+    ];
+    for (const msg of errors) {
+      if (classifyOAuthError(msg) === "invalid_grant") {
+        guard(); // real guard — dedup interno
+      } else {
+        result.warnings.push({ file: "file.md", error_message: msg });
+      }
+    }
+
+    // F13: o título "EXATAMENTE 1 warning" agora tem assertion correspondente.
+    assert.equal(result.warnings.length, 1, "3 erros auth-expired → EXATAMENTE 1 warning via guard real");
+    assert.equal(result.warnings[0].file, "(oauth)", "warning marcado como (oauth)");
+    assert.match(result.warnings[0].error_message, /\/diaria-inbox/, "alerta inclui recuperação /diaria-inbox");
+    // Pipeline não bloqueou:
+    assert.equal(result.uploaded.length, 0);
+    assert.equal(result.pulled.length, 0);
+  });
+
+  it("guard com variantes amplas (F3): UNAUTHENTICATED e invalid_token também deduplicam", () => {
+    const result = makeSyncResult({ mode: "push" });
+    const guard = makeInvalidGrantGuard(result);
+
+    // Cada variante dispara o guard — mas dedup só deixa 1 warning
+    for (const msg of ["UNAUTHENTICATED", "invalid_token", "unauthorized", "token has been expired or revoked"]) {
+      if (classifyOAuthError(msg) === "invalid_grant") guard();
+    }
+
+    assert.equal(result.warnings.length, 1, "4 variantes auth-expired → 1 warning via dedup real");
   });
 });

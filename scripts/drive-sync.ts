@@ -62,13 +62,17 @@ const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
 // ---------------------------------------------------------------------------
 
 /**
- * Pure (#2318): detecta se uma mensagem de erro de Drive/OAuth é um
- * `invalid_grant` — refresh token expirado ou revogado. Distinto de erros
- * transientes (rede, 5xx) que podem resolver sem re-auth.
+ * Pure (#2318): detecta se uma mensagem de erro de Drive/OAuth indica um token
+ * expirado/revogado — distinto de erros transientes (rede, 5xx) que podem
+ * resolver sem re-auth.
+ *
+ * Delega pra `classifyRefreshError` em `google-auth.ts`, que cobre a amplitude
+ * completa de variantes Google: `invalid_grant`, `UNAUTHENTICATED`,
+ * `token has been expired or revoked`, `unauthorized`, `invalid_token`
+ * (#2318/#1973 — alinhado com inbox-drain.ts::isAuthExpiredError).
  *
  * Nota: o gFetch base já tentou um refresh forçado em caso de 401 antes de
- * propagar — se chegou aqui com invalid_grant, o refresh TAMBÉM falhou.
- * "Refresh once" está satisfeito pelo mecanismo interno do gFetch.
+ * propagar — se chegou aqui, o refresh TAMBÉM falhou.
  */
 export function classifyOAuthError(msg: string): "invalid_grant" | "other" {
   return classifyRefreshError(msg) === "invalid_grant" ? "invalid_grant" : "other";
@@ -79,11 +83,16 @@ export function classifyOAuthError(msg: string): "invalid_grant" | "other" {
  * Emitida UMA VEZ (não por arquivo) quando o token OAuth está morto.
  * Pipeline não bloqueia — Drive sync é non-blocking por design — mas o
  * alerta é unmissable e actionable.
+ *
+ * Alinhado com renderTokenHealthBanner em google-auth.ts (#2318/#1973):
+ * lista todos os sistemas afetados (Drive sync, inbox-drain, imagens sociais)
+ * e inclui o comando de recuperação /diaria-inbox.
  */
 export const OAUTH_EXPIRED_ALERT =
   "[drive-sync] ⚠  Drive OAuth EXPIRADO/REVOGADO — rode 'npx tsx scripts/oauth-setup.ts' pra re-autenticar. " +
   "Todos os arquivos desta operação foram pulados. " +
-  "Afeta: Drive sync (push/pull) · Editor não recebe outputs para revisar no celular.";
+  "Afeta de uma vez: Drive sync (push/pull) · inbox-drain (submissões do editor) · upload de imagens sociais. " +
+  "Após re-autenticar: rode /diaria-inbox pra recuperar submissões perdidas.";
 
 // ---------------------------------------------------------------------------
 // Tipos locais (não existem em drive-cache.ts)
@@ -816,6 +825,9 @@ export async function pushFile(
       );
     } catch (archiveErr) {
       const msg = archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
+      // #2318: re-throw auth-expired so the outer per-file catch routes to the
+      // single dedup alert instead of emitting a misleading archive_failed warning.
+      if (classifyOAuthError(msg) === "invalid_grant") throw archiveErr;
       result.warnings.push({
         file: filename,
         error_message: `archive_failed (#998): ${msg} — continuando com PATCH in-place (sem versão histórica)`,
@@ -826,6 +838,8 @@ export async function pushFile(
       await cleanupOldArchives(base, ext, convertToDoc, targetParentId, result, filename);
     } catch (cleanupErr) {
       const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      // #2318: re-throw auth-expired so outer catch routes to the single dedup alert.
+      if (classifyOAuthError(msg) === "invalid_grant") throw cleanupErr;
       result.warnings.push({
         file: filename,
         error_message: `archive_cleanup_failed (#998): ${msg}`,
@@ -852,8 +866,11 @@ export async function pushFile(
       savePrePushSnapshot(editionDir, filename, bytes);
       return;
     } catch (updateErr) {
-      // Fallback: arquivo pode ter sido deletado no Drive — criar novo normalmente
       const msg = updateErr instanceof Error ? updateErr.message : String(updateErr);
+      // #2318: re-throw auth-expired so outer catch routes to the single dedup alert
+      // instead of a misleading update_in_place_failed warning.
+      if (classifyOAuthError(msg) === "invalid_grant") throw updateErr;
+      // Fallback: arquivo pode ter sido deletado no Drive — criar novo normalmente
       result.warnings.push({
         file: filename,
         error_message: `update_in_place_failed: ${canonicalTitle} (${msg}) — criando novo arquivo`,
@@ -1001,8 +1018,31 @@ export async function pullFile(
 }
 
 // ---------------------------------------------------------------------------
-// CLI
+// CLI helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * #2318: Factory para o dedup guard de invalid_grant (#2318).
+ * Retorna uma função que emite `OAUTH_EXPIRED_ALERT` em `result.warnings`
+ * UMA VEZ (true na 1ª chamada, false nas subsequentes).
+ *
+ * Exportado para testes — permite testar o guard real sem chamar main().
+ * main() usa este factory internamente para a mesma lógica de dedup.
+ *
+ * Uso em tests:
+ *   const guard = makeInvalidGrantGuard(result);
+ *   guard(); // → true (emite alerta, warnings.length === 1)
+ *   guard(); // → false (dedup: sem duplicata)
+ */
+export function makeInvalidGrantGuard(result: SyncResult): () => boolean {
+  let emitted = false;
+  return (): boolean => {
+    if (emitted) return false;
+    emitted = true;
+    result.warnings.push({ file: "(oauth)", error_message: OAUTH_EXPIRED_ALERT });
+    return true;
+  };
+}
 
 /**
  * Health check — chamada Drive API mínima pra validar OAuth (#121).
@@ -1018,12 +1058,17 @@ async function healthCheck(): Promise<void> {
     process.exit(0);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // #2318: use OAUTH_EXPIRED_ALERT text so healthCheck remediation stays in
+    // sync with the alert emitted mid-pipeline (single source of truth).
+    const isAuthErr = classifyOAuthError(msg) === "invalid_grant";
     console.log(
       JSON.stringify(
         {
           ok: false,
           error: msg,
-          remediation: "Token OAuth pode estar expirado. Rode: npx tsx scripts/oauth-setup.ts",
+          remediation: isAuthErr
+            ? OAUTH_EXPIRED_ALERT
+            : "Erro de Drive API. Verifique conectividade e credenciais.",
         },
         null,
         2,
@@ -1093,11 +1138,16 @@ async function main(): Promise<void> {
   // claro e actionable e pulamos os arquivos restantes.
   let invalidGrantEmitted = false;
 
-  /** Emite alerta de invalid_grant uma vez e retorna true (para uso em guards). */
-  function emitInvalidGrantAlert(): void {
-    if (invalidGrantEmitted) return;
-    invalidGrantEmitted = true;
-    result.warnings.push({ file: "(oauth)", error_message: OAUTH_EXPIRED_ALERT });
+  /**
+   * Emite alerta de invalid_grant UMA vez e retorna true na primeira chamada
+   * (false nas subsequentes — para uso em guards: `if (!emitInvalidGrantAlert()) return`).
+   * Delegates para makeInvalidGrantGuard — factory exportado para testes (#2318).
+   */
+  const _guardFactory = makeInvalidGrantGuard(result);
+  function emitInvalidGrantAlert(): boolean {
+    const wasNew = _guardFactory();
+    if (wasNew) invalidGrantEmitted = true;
+    return wasNew;
   }
 
   try {
@@ -1156,17 +1206,27 @@ async function main(): Promise<void> {
 
   // #977: opt-in fail-on-warning. Default mantém exit 0 mesmo com warnings
   // (compatibilidade com chamadas existentes). Quando flag ligada:
-  //   --fail-on-warning           exit 2 se há QUALQUER warning
+  //   --fail-on-warning           exit 2 se há QUALQUER warning não-oauth;
+  //                               exit 3 se há oauth-expiry (remediação diferente)
   //   --fail-on-conflict          exit 2 só se há warning de CONFLICT
+  //   --fail-on-oauth             exit 3 só se há oauth-expiry
   // Conflito do editor (#496/#605/#963) é categoria especial: indica que
   // o Drive tem edições do editor que o pipeline não pegou — orchestrator
   // precisa pular pra modo halt em vez de seguir achando que push deu certo.
+  // OAuth expiry (#2318) usa exit 3 pra distinguir de CONFLICT (exit 2):
+  // remediação é re-auth (oauth-setup.ts), não pull — callers precisam tratar
+  // os dois casos de forma diferente.
   if (result.warnings.length > 0) {
     const failOnWarning = flags.has("fail-on-warning");
     const failOnConflict = flags.has("fail-on-conflict");
+    const failOnOauth = flags.has("fail-on-oauth");
     const hasConflict = result.warnings.some((w) =>
       w.error_message.startsWith("CONFLICT:"),
     );
+    const hasOauth = result.warnings.some((w) => w.file === "(oauth)");
+    if (hasOauth && (failOnOauth || failOnWarning)) {
+      process.exit(3);
+    }
     if (failOnWarning || (failOnConflict && hasConflict)) {
       process.exit(2);
     }
@@ -1176,11 +1236,15 @@ async function main(): Promise<void> {
 function logSyncWarnings(result: SyncResult): void {
   // #612: delega pra scripts/lib/run-log.ts. logEvent já encapsula resolve do
   // path (config + fallback) e swallow de exceções.
+  // #2318: oauth expiry is logged at 'error' (requires immediate re-auth action);
+  // other warnings remain at 'warn'. Without this, /diaria-log 260618 error
+  // returns nothing for an oauth alert, making it invisible to error-level filters.
+  const hasOauthAlert = result.warnings.some((w) => w.file === "(oauth)");
   logEvent({
     edition: result.edition,
     stage: result.stage,
     agent: "drive-sync",
-    level: "warn",
+    level: hasOauthAlert ? "error" : "warn",
     message: `${result.warnings.length} sync warning(s) em ${result.mode} (Stage ${result.stage})`,
     details: {
       mode: result.mode,
