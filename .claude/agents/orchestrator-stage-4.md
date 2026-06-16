@@ -16,10 +16,25 @@ Antes de publicar, o orchestrator monta um **resumo consolidado da edição fina
 ### Pré-condição: sentinel Stage 3
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-3.md §Escrever sentinel de conclusão do Stage 3 -->
+
+**#2316: 2-destaque editions** — antes de rodar o sentinel, verificar quantos destaques a edição tem:
+```bash
+npx tsx scripts/extract-destaques.ts data/editions/{AAMMDD}/02-reviewed.md 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(String(d.destaques.length))"
+```
+Se 2 destaques: usar `--outputs` sem `04-d3-*.jpg` (os arquivos D3 não existem). Se 3 destaques: comando padrão abaixo.
+
+**3 destaques (padrão):**
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 3 \
   --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg"
+```
+
+**2 destaques:**
+```bash
+npx tsx scripts/pipeline-sentinel.ts assert \
+  --edition {AAMMDD} --step 3 \
+  --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg"
 ```
 
 Exit code handling:

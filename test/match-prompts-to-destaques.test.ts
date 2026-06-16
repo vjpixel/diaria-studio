@@ -270,4 +270,52 @@ describe("computeSwaps (#606)", () => {
     const d3Final = r.swaps.find((s) => s.from === "02-d3-prompt.swap-tmp.md");
     assert.equal(d3Final?.to, "02-d2-prompt.md");
   });
+
+  // ── #2316: 2-destaque support ─────────────────────────────────────────────
+
+  it("#2316: 2 destaques alinhados → ok=true, 0 swaps (d3=null aceito)", () => {
+    // Com 2 destaques, d3 não existe — d3: null é esperado, não erro.
+    const r = computeSwaps(
+      { d1: "https://a", d2: "https://b", d3: null },
+      ["https://a", "https://b"], // só 2 URLs → has3=false, d3 excluído do check
+    );
+    assert.equal(r.ok, true, r.ok ? "" : r.reason);
+    assert.ok(r.ok && r.swaps.length === 0);
+  });
+
+  it("#2316: 2 destaques reordenados → swaps via tmp só pra d1/d2", () => {
+    const r = computeSwaps(
+      { d1: "https://b", d2: "https://a", d3: null },
+      ["https://a", "https://b"], // editor reordenou: a→D1, b→D2
+    );
+    assert.equal(r.ok, true, r.ok ? "" : r.reason);
+    if (!r.ok) return;
+    // 4 swaps: 2 pra .swap-tmp + 2 pra destinos (apenas d1 e d2)
+    assert.equal(r.swaps.length, 4);
+    assert.ok(r.swaps.slice(0, 2).every((s) => s.to.includes(".swap-tmp")));
+    const d1Final = r.swaps.find((s) => s.from === "02-d1-prompt.swap-tmp.md");
+    assert.equal(d1Final?.to, "02-d2-prompt.md"); // d1 move pra posição 2
+    const d2Final = r.swaps.find((s) => s.from === "02-d2-prompt.swap-tmp.md");
+    assert.equal(d2Final?.to, "02-d1-prompt.md"); // d2 move pra posição 1
+  });
+
+  it("#2316: 2 destaques — d1 null (sem frontmatter) → fail-closed mesmo com 2 URLs", () => {
+    const r = computeSwaps(
+      { d1: null, d2: "https://b", d3: null },
+      ["https://a", "https://b"],
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.reason, /02-d1-prompt\.md/);
+    assert.match(r.ok ? "" : r.reason, /destaque_url/);
+  });
+
+  it("#2316: 3 destaques — d3 null → fail-closed (comportamento inalterado)", () => {
+    // Com 3 URLs revisadas, d3: null ainda é erro (arquivo esperado mas ausente).
+    const r = computeSwaps(
+      { d1: "https://a", d2: "https://b", d3: null },
+      ["https://a", "https://b", "https://c"],
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.reason, /02-d3-prompt\.md/);
+  });
 });

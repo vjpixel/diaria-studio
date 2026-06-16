@@ -334,6 +334,50 @@ describe("parseDestaques (#172)", () => {
   });
 });
 
+// ── #2316: 2-destaque support ────────────────────────────────────────────────
+
+describe("#2316: parseDestaques aceita 2 destaques", () => {
+  const md2 = [
+    "DESTAQUE 1 | PRODUTO",
+    "Título D1",
+    "https://example.com/d1",
+    "",
+    "Corpo D1.",
+    "",
+    "Por que isso importa:",
+    "Impacto D1.",
+    "",
+    "---",
+    "DESTAQUE 2 | PESQUISA",
+    "Título D2",
+    "https://example.com/d2",
+    "",
+    "Corpo D2.",
+    "",
+    "Por que isso importa:",
+    "Impacto D2.",
+  ].join("\n");
+
+  it("parseia 2 destaques sem erro", () => {
+    const destaques = parseDestaques(md2);
+    assert.equal(destaques.length, 2);
+    assert.equal(destaques[0].n, 1);
+    assert.equal(destaques[0].title, "Título D1");
+    assert.equal(destaques[1].n, 2);
+    assert.equal(destaques[1].title, "Título D2");
+  });
+
+  it("subtitle com 2 destaques usa só D2 (sem ' | ')", () => {
+    // Regressão: subtitle = buildSubtitle(d2, d3) quando d3 existe;
+    // com 2 destaques, deve usar só d2.title.slice(0, 200).
+    const destaques = parseDestaques(md2);
+    assert.equal(destaques.length, 2);
+    // destaques[2] é undefined → d3 undefined → subtitle = d2 title
+    const d3 = destaques[2];
+    assert.equal(d3, undefined);
+  });
+});
+
 describe("buildSubtitle (#1214)", () => {
   it("junta d2 e d3 quando combinado cabe em 200 chars", () => {
     const r = buildSubtitle("Título curto 2", "Título curto 3");

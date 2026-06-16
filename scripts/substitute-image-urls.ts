@@ -64,9 +64,12 @@ export interface SubstitutionResult {
 }
 
 /**
- * #2316: Verifica se o HTML de input (newsletter-draft.html) é mais antigo que
- * o markdown fonte (02-reviewed.md). Retorna mensagem de erro quando stale, ou
- * `null` quando ok / arquivos ausentes (fail-open: sem 02-reviewed.md = sem guard).
+ * #2316: Verifica se o HTML de input (newsletter-draft.html) existe e está
+ * atualizado (mais novo que 02-reviewed.md). Retorna mensagem de erro quando:
+ *   - HTML ausente (render não produziu o arquivo)
+ *   - HTML mais antigo que reviewed.md (render rodou antes da última edição)
+ * Retorna `null` quando ok ou quando reviewed.md não existe (fail-open: sem
+ * reviewed.md = fora de pipeline normal = sem guard).
  *
  * Pure — não lança exceção, não tem side-effects. Caller decide o que fazer.
  *
@@ -81,7 +84,17 @@ export function checkInputHtmlFreshness(
   if (mdMtime === null) return null; // 02-reviewed.md ausente — sem guard.
 
   const htmlMtime = mtimeMs(htmlInputPath);
-  if (htmlMtime === null) return null; // HTML ausente — erro de outro tipo.
+  // #2316 fail-loud: HTML ausente = render não rodou (ou falhou). Erro acionável
+  // antes de chegar no readFileSync que daria ENOENT opaco.
+  if (htmlMtime === null) {
+    return (
+      `[substitute-image-urls] ERRO: HTML de input não encontrado — ` +
+      `${htmlInputPath} não existe. ` +
+      `O render-newsletter-html.ts não produziu o arquivo (falhou silenciosamente?). ` +
+      `Re-rode o render antes de substituir as imagens: ` +
+      `npx tsx scripts/render-newsletter-html.ts <edition-dir> --format html --out ${htmlInputPath}`
+    );
+  }
 
   if (htmlMtime < mdMtime) {
     return (

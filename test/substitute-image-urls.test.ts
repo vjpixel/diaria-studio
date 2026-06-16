@@ -158,4 +158,25 @@ describe("#2316: checkInputHtmlFreshness — rejeita HTML mais antigo que 02-rev
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #2316 fail-loud: HTML ausente deve retornar mensagem acionável (não deixar
+  // readFileSync jogar ENOENT opaco mais tarde).
+  it("#2316: retorna mensagem de erro quando HTML de input não existe (fail-loud)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-subst-nohtml-"));
+    try {
+      const htmlPath = join(dir, "newsletter-draft.html");
+      const mdPath = join(dir, "02-reviewed.md");
+      // reviewed.md existe, HTML não
+      writeFileSync(mdPath, "# md", "utf8");
+
+      const result = checkInputHtmlFreshness(htmlPath, mdPath);
+      assert.ok(result !== null, "deve retornar mensagem de erro quando HTML não existe");
+      assert.match(result, /não encontrado/);
+      assert.match(result, /render-newsletter-html\.ts/);
+      // Deve mencionar o path do HTML ausente
+      assert.ok(result.includes("newsletter-draft.html"), `mensagem: ${result}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

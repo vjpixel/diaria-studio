@@ -118,6 +118,9 @@ export type SwapsResult =
  * de ser executável sequencialmente sem conflitos (usa intermediário .tmp
  * quando ciclo).
  *
+ * #2316: aceita 2 ou 3 destaques. Com 2 destaques (`reviewedUrls.length === 2`),
+ * `promptUrls.d3 === null` é esperado (arquivo não existe) e não é erro.
+ *
  * Fail-closed quando informação insuficiente (#691):
  *
  * - Se prompt sem `destaque_url:` no frontmatter (`promptUrls.dN === null`),
@@ -133,8 +136,13 @@ export function computeSwaps(
   promptUrls: { d1: string | null; d2: string | null; d3: string | null },
   reviewedUrls: string[],
 ): SwapsResult {
-  // Frontmatter ausente em algum prompt → fail-closed: não dá pra detectar reorder
-  for (const cur of ["d1", "d2", "d3"] as const) {
+  // #2316: determina quais prompts participam com base no nº de destaques.
+  // Com 2 destaques, d3 não existe — excluir do check de frontmatter/URL.
+  const has3 = reviewedUrls.length >= 3;
+  const activeCurs = (has3 ? ["d1", "d2", "d3"] : ["d1", "d2"]) as Array<"d1" | "d2" | "d3">;
+
+  // Frontmatter ausente em prompt ativo → fail-closed: não dá pra detectar reorder
+  for (const cur of activeCurs) {
     if (promptUrls[cur] === null) {
       return {
         ok: false,
@@ -156,14 +164,13 @@ export function computeSwaps(
   const desiredFor = new Map<string, number>(); // canonical url → position (1-indexed)
   reviewedUrls.forEach((url, idx) => desiredFor.set(canonicalize(url), idx + 1));
 
-  const currentByPrompt: Record<string, number | null> = {
-    d1: desiredFor.get(canonicalize(promptUrls.d1!)) ?? null,
-    d2: desiredFor.get(canonicalize(promptUrls.d2!)) ?? null,
-    d3: desiredFor.get(canonicalize(promptUrls.d3!)) ?? null,
-  };
+  const currentByPrompt: Record<string, number | null> = {};
+  for (const cur of activeCurs) {
+    currentByPrompt[cur] = desiredFor.get(canonicalize(promptUrls[cur]!)) ?? null;
+  }
 
-  // URL do prompt ausente do reviewed → fail-closed também
-  for (const cur of ["d1", "d2", "d3"] as const) {
+  // URL do prompt ativo ausente do reviewed → fail-closed também
+  for (const cur of activeCurs) {
     if (currentByPrompt[cur] === null) {
       return {
         ok: false,
@@ -177,7 +184,8 @@ export function computeSwaps(
   }
 
   // Já alinhado?
-  if (currentByPrompt.d1 === 1 && currentByPrompt.d2 === 2 && currentByPrompt.d3 === 3) {
+  const alreadyAligned = activeCurs.every((cur, idx) => currentByPrompt[cur] === idx + 1);
+  if (alreadyAligned) {
     return { ok: true, swaps: [], reason: "prompts já alinhados" };
   }
 
@@ -185,15 +193,15 @@ export function computeSwaps(
   const swaps: Array<{ from: string; to: string }> = [];
   const tmpSuffix = ".swap-tmp";
 
-  // Step 1: rename atuais pra .swap-tmp
-  for (const cur of ["d1", "d2", "d3"] as const) {
+  // Step 1: rename ativos pra .swap-tmp
+  for (const cur of activeCurs) {
     swaps.push({
       from: `02-${cur}-prompt.md`,
       to: `02-${cur}-prompt${tmpSuffix}.md`,
     });
   }
   // Step 2: rename .swap-tmp → posição final desejada
-  for (const cur of ["d1", "d2", "d3"] as const) {
+  for (const cur of activeCurs) {
     const desired = currentByPrompt[cur]!;
     swaps.push({
       from: `02-${cur}-prompt${tmpSuffix}.md`,
@@ -243,10 +251,11 @@ function main(): void {
 
   const reviewedMd = readFileSync(reviewedPath, "utf8");
   const reviewedUrls = extractDestaqueUrls(reviewedMd);
-  if (reviewedUrls.length !== 3) {
+  // #2316: aceita 2–3 destaques (editorial legítimo: editor demove D3 para Radar).
+  if (reviewedUrls.length < 2 || reviewedUrls.length > 3) {
     console.log(JSON.stringify({
       ok: false,
-      reason: `Esperado 3 destaques em 02-reviewed.md, encontrado ${reviewedUrls.length}`,
+      reason: `Esperado 2–3 destaques em 02-reviewed.md, encontrado ${reviewedUrls.length}`,
     }));
     process.exit(1);
   }

@@ -225,7 +225,7 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
       "",
       "Corpo.",
     ].join("\n");
-    // 1 destaque só → countTitles falha (espera 3) mas o destaque tem 1 título
+    // 1 destaque só → countTitles falha (espera 2-3) mas o destaque tem 1 título
     const tc = titlesDirect(oneTitle);
     assert.equal(tc.destaques[0].title_count, 1);
     assert.equal(tc.destaques[0].status, "ok");
@@ -237,6 +237,40 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(tlenDirect(longTitle).ok, false);
     assert.ok(tlenDirect(longTitle).errors[0].length > 52);
     assert.equal(tlenDirect(oneTitle).ok, true);
+  });
+
+  // #2316: titles-per-highlight aceita 2 destaques
+  it("#2316: titles-per-highlight aceita 2 destaques com 1 título cada", () => {
+    const twoDestaques = [
+      "**DESTAQUE 1 | PRODUTO**",
+      "",
+      "[Título D1](https://x.com/1)",
+      "",
+      "https://x.com/1",
+      "",
+      "Corpo D1.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | PESQUISA**",
+      "",
+      "[Título D2](https://x.com/2)",
+      "",
+      "https://x.com/2",
+      "",
+      "Corpo D2.",
+    ].join("\n");
+    const tc = titlesDirect(twoDestaques);
+    // Ambos os destaques têm 1 título correto
+    assert.equal(tc.destaques.length, 2);
+    assert.equal(tc.destaques[0].title_count, 1);
+    assert.equal(tc.destaques[0].status, "ok");
+    assert.equal(tc.destaques[1].title_count, 1);
+    assert.equal(tc.destaques[1].status, "ok");
+    // Sem erro de contagem de destaques (2 é válido)
+    assert.equal(tc.errors.filter((e) => e.includes("Esperado")).length, 0,
+      `erros inesperados: ${tc.errors.join("; ")}`);
+    assert.equal(tc.ok, true);
   });
 
   it("intentional-error: extractFrontmatter + checkIntentionalError standalone", () => {

@@ -449,7 +449,8 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     assert.equal(r.destaques[2].status, "ok");
   });
 
-  it("erro quando há menos de 3 destaques", () => {
+  // #2316: 2 destaques é válido; 1 destaque ainda é erro (mínimo = 2).
+  it("erro quando há menos de 2 destaques (1 destaque)", () => {
     const md = [
       "**DESTAQUE 1 | PRODUTO**",
       "",
@@ -461,7 +462,9 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     ].join("\n");
     const r = countTitlesPerHighlight(md);
     assert.equal(r.ok, false);
-    assert.ok(r.errors.some((e) => e.includes("Esperado 3 destaques")));
+    // Mensagem updated #2316: "Esperado 2–3 destaques"
+    assert.ok(r.errors.some((e) => e.includes("Esperado 2–3 destaques")),
+      `erros: ${r.errors.join("; ")}`);
   });
 
   it("URL na linha logo abaixo do header é ignorada (não conta como título)", () => {
