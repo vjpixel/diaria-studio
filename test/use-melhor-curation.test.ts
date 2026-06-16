@@ -756,6 +756,94 @@ describe("dedupeUseMelhorBucket — single-token capped item blocks cross-domain
   });
 });
 
+// ---------------------------------------------------------------------------
+// Self-review findings 1-3 regressions (#2325)
+// ---------------------------------------------------------------------------
+
+describe("dedupeUseMelhorBucket — self-review finding 1: generic token false-positive (#2325)", () => {
+  it("multi-token capped fingerprint via generic token 'open' does NOT block unrelated candidate", () => {
+    // Failure scenario from PR review: capped item "Open AI Bedrock Guide" (amazon.com)
+    // produces tokens {"open","bedrock"}. A later candidate "Open Source RAG Pipelines"
+    // (github.com) produces {"open","source","pipelines"}.
+    // With threshold=1 (old bug): intersection=1 ("open") → candidate incorrectly blocked.
+    // With adaptive threshold (fix): threshold=min(2,2)=2 → intersection=1 < 2 → candidate kept.
+    const items = [
+      { url: "https://aws.amazon.com/a", title: "AWS Bedrock Complete Guide" }, // kept (amazon.com slot)
+      { url: "https://aws.amazon.com/b", title: "Open AI Bedrock Guide" },      // capped: {"open","bedrock"}
+      { url: "https://github.com/org/repo", title: "Open Source RAG Pipelines" }, // candidate: {"open","source","pipelines"}
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // Both aws.amazon.com item (a) and github.com item should be kept.
+    assert.equal(result.length, 2, "candidato github.com NÃO deve ser bloqueado só por compartilhar 'open'");
+    assert.ok(result.some((r) => r.url === items[2].url), "github.com candidate deve estar no resultado");
+  });
+
+  it("single-token capped fingerprint {'bedrock'} STILL blocks genuine cross-domain near-dup", () => {
+    // The fix must NOT break the #2309 intent: when a capped item has exactly 1 specific token,
+    // a cross-domain candidate sharing that same specific token IS a near-dup and should be blocked.
+    const items = [
+      { url: "https://aws.amazon.com/a", title: "Bedrock" },            // kept: {"bedrock"}
+      { url: "https://aws.amazon.com/b", title: "Bedrock agents" },     // capped: {"bedrock"}
+      { url: "https://pinecone.io/c", title: "Bedrock guide" },         // near-dup via "bedrock" → should be blocked
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // pinecone.io candidate shares "bedrock" with the 1-token capped fingerprint {"bedrock"}.
+    // threshold = min(2, 1) = 1 → intersection=1 >= 1 → blocked. Correct.
+    assert.equal(result.length, 1, "near-dup específico ainda deve ser bloqueado");
+    assert.equal(result[0].url, items[0].url, "só o primeiro kept deve ser mantido");
+  });
+});
+
+describe("dedupeUseMelhorBucket — self-review finding 2: 1-token kept item blind spot (#2325)", () => {
+  it("genuine near-dup of a 1-token kept item is blocked", () => {
+    // Old bug: kept item with 1 token ("Bedrock" → {"bedrock"}) skipped keptTokens.push
+    // because of size>=2 guard. A later cross-domain item "AWS Bedrock Advanced Guide" (size=2)
+    // passed both old checks and landed in output alongside the 1-token kept item.
+    // Fix: 1-token kept items also register their fingerprint in seenTokens.
+    const items = [
+      { url: "https://blog.a.com/a", title: "Bedrock" },                // kept: {"bedrock"} — now registers
+      { url: "https://blog.b.com/b", title: "AWS Bedrock Advanced Guide" }, // near-dup: shares "bedrock"
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // blog.b.com candidate: tokens {"bedrock","advanced"} (size=2).
+    // seenTokens has {"bedrock"} (size=1). threshold=min(2,1)=1. intersection=1 >= 1 → blocked.
+    assert.equal(result.length, 1, "near-dup do item kept com 1 token deve ser bloqueado");
+    assert.equal(result[0].url, items[0].url, "o item original kept deve ser mantido");
+  });
+
+  it("distinct item after a 1-token kept item is NOT blocked", () => {
+    // Regression guard: 1-token kept item should block near-dups but not unrelated items.
+    const items = [
+      { url: "https://blog.a.com/a", title: "Bedrock" },             // kept: {"bedrock"}
+      { url: "https://blog.b.com/b", title: "LangChain Tutorial" },  // distinct: {"langchain","tutorial"} — wait, "tutorial" may be stopword?
+    ];
+    // topicTokens("LangChain Tutorial") → "tutorial" is NOT in STOPWORDS (4 chars, not listed)
+    // Actually check: STOPWORDS has 'step','start','guide' etc but not 'tutorial'. Safe.
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // {"langchain","tutorial"} vs {"bedrock"}: intersection=0 < threshold=1 → NOT blocked.
+    assert.equal(result.length, 2, "item distinto após 1-token kept não deve ser bloqueado");
+  });
+});
+
+describe("dedupeUseMelhorBucket — self-review finding 3: two-pool thematic leak (#2325)", () => {
+  it("near-dup of a candidate already blocked by seenTokens is also blocked", () => {
+    // Scenario: 3 items from 3 different domains, same topic "vector database".
+    // Item A (domain a) → kept, registers {"vector","database"}.
+    // Item B (domain b) → near-dup of A (shares "vector","database") → blocked by keptTokens.
+    //   Old two-pool bug: B's tokens were NOT recorded after being blocked → C could slip.
+    //   Fix: blocked candidates also record their tokens in seenTokens.
+    // Item C (domain c) → near-dup of B (shares "vector","database") → should be blocked.
+    const items = [
+      { url: "https://domain-a.com/x", title: "Vector Database Architecture" },      // kept
+      { url: "https://domain-b.com/y", title: "Vector Database Performance Guide" }, // near-dup of A → blocked
+      { url: "https://domain-c.com/z", title: "Vector Database Benchmarks" },        // near-dup of B → must also be blocked
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    assert.equal(result.length, 1, "terceiro near-dup também deve ser bloqueado (finding 3 fix)");
+    assert.equal(result[0].url, items[0].url, "só o primeiro deve ser mantido");
+  });
+});
+
 describe("getHowToDiscoveryQueries — regressão 260616 fallback Path B (#2313)", () => {
   it("retorna ≥2 queries PT-BR para edição 260616", () => {
     // Regressão 260616: 10 discovery-searcher rodaram, ZERO com query casual.

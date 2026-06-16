@@ -192,9 +192,15 @@ export function topicTokens(title: string): Set<string> {
   );
 }
 
-function intersectionSize(a: Set<string>, b: Set<string>): number {
+function intersectionSize(a: Set<string>, b: Set<string>, earlyExitAt?: number): number {
   let count = 0;
-  for (const t of a) if (b.has(t)) count++;
+  for (const t of a) {
+    if (b.has(t)) {
+      count++;
+      // Short-circuit once we've confirmed the threshold is met (finding 4).
+      if (earlyExitAt !== undefined && count >= earlyExitAt) return count;
+    }
+  }
   return count;
 }
 
@@ -227,15 +233,25 @@ export function dedupeUseMelhorBucket(
   const minSharedTokens = opts.minSharedTokens ?? 2;
 
   const domainCount = new Map<string, number>();
-  // keptTokens: token sets from KEPT items (require size>=2 to contribute to thematic dedup).
-  const keptTokens: Set<string>[] = [];
-  // cappedTokens: token sets from DOMAIN-CAPPED items (#2309 item 2).
-  // Stored separately with no size guard so that single-token capped items (e.g. title = "Bedrock")
-  // can block thematically-equivalent items from a different domain.
-  // A candidate is blocked by a capped token set when ANY token overlaps (intersection >= 1),
-  // regardless of minSharedTokens — because the capped item already represents a "used slot"
-  // for that topic and the cross-domain near-dup adds nothing editorially.
-  const cappedTokens: Set<string>[] = [];
+
+  // seenTokens: unified fingerprint pool for ALL items that "claim" a topic slot —
+  // both KEPT items and DOMAIN-CAPPED items (#2309 item 2, self-review findings 1-3).
+  //
+  // Threshold for near-dup check is adaptive per fingerprint size:
+  //   Math.min(minSharedTokens, fingerprint.size)
+  // This means:
+  //   • 1-token fingerprint (e.g. {"bedrock"}) → threshold 1: any candidate sharing that
+  //     specific token is a near-dup. Preserves #2309 intent.
+  //   • ≥2-token fingerprint → threshold minSharedTokens (default 2): candidate must
+  //     share ≥2 tokens. Prevents a generic token like "open" from a multi-token
+  //     fingerprint {"open","bedrock"} from blocking unrelated articles (finding 1 fix).
+  //
+  // Size guard removed (#2309 item 2 + finding 2): 1-token items from kept AND capped
+  // paths both register here, ensuring symmetric coverage. Items blocked by a previous
+  // seenTokens entry also register (finding 3 fix: prevents thematic leak where only
+  // the intermediary capped item — not the original kept item — shares tokens with the
+  // later near-dup).
+  const seenTokens: Set<string>[] = [];
   const kept: UseMelhorArticle[] = [];
 
   for (const item of items) {
@@ -247,33 +263,29 @@ export function dedupeUseMelhorBucket(
     const tokens = item.title ? topicTokens(item.title) : new Set<string>();
 
     if (domain && count >= maxPerDomain) {
-      // Capped by domain — record into cappedTokens (no size guard).
-      // #2309 item 2: single-token capped items must contribute their fingerprint.
-      // They go to cappedTokens (not keptTokens) — candidates are checked against
-      // cappedTokens with a lower threshold (intersection >= 1) to prevent same-topic
-      // from slipping in via a different domain.
-      if (tokens.size >= 1) cappedTokens.push(tokens);
+      // Capped by domain — record tokens so thematic near-dups from other domains
+      // are blocked. Adaptive threshold in the candidate check handles specificity.
+      if (tokens.size >= 1) seenTokens.push(tokens);
       continue;
     }
 
-    // Check near-dup against keptTokens (min intersection = minSharedTokens, default 2).
-    if (tokens.size >= 2) {
-      const isDuplicate = keptTokens.some(
-        (kt) => intersectionSize(tokens, kt) >= minSharedTokens,
-      );
-      if (isDuplicate) continue;
+    // Check near-dup against seenTokens with adaptive per-fingerprint threshold.
+    // Candidates with no tokens (empty title) skip the dedup check entirely.
+    if (tokens.size >= 1) {
+      const isDuplicate = seenTokens.some((st) => {
+        const threshold = Math.min(minSharedTokens, st.size);
+        return intersectionSize(tokens, st, threshold) >= threshold;
+      });
+      if (isDuplicate) {
+        // Record this blocked candidate's tokens so a later near-dup of THIS
+        // item is also caught (finding 3: prevents two-pool thematic leak).
+        seenTokens.push(tokens);
+        continue;
+      }
     }
 
-    // #2309 item 2: check against cappedTokens with threshold 1 — any single-token
-    // overlap with a capped item's fingerprint means this is a cross-domain near-dup.
-    // We check ALL candidates (even size=1) against cappedTokens, because a 1-token
-    // candidate can still be a near-dup of a 1-token capped item.
-    if (tokens.size >= 1 && cappedTokens.some((ct) => intersectionSize(tokens, ct) >= 1)) {
-      continue;
-    }
-
-    if (tokens.size >= 2) keptTokens.push(tokens);
-
+    // Accepted — record tokens and keep the item.
+    if (tokens.size >= 1) seenTokens.push(tokens);
     domainCount.set(domain, count + 1);
     kept.push(item);
   }
