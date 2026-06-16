@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyStage2Caps,
   STAGE_2_MIN_USE_MELHOR,
+  STAGE_2_MAX_USE_MELHOR,
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
 import { formatCoverageLine } from "./lib/inbox-stats.ts";
@@ -96,7 +97,8 @@ function main(): void {
       `lanç=${report.before.lancamento}→${report.after.lancamento} (cap ${report.caps.lancamento}), ` +
       `radar=${report.before.radar}→${report.after.radar} (cap ${report.caps.radar}), ` +
       `use_melhor=${report.use_melhor.before}→${report.use_melhor.after}` +
-      (report.use_melhor.promoted > 0 ? ` (+${report.use_melhor.promoted} promovidos)` : ""),
+      (report.use_melhor.promoted > 0 ? ` (+${report.use_melhor.promoted} promovidos)` : "") +
+      (report.use_melhor.truncated > 0 ? ` (−${report.use_melhor.truncated} pelo cap máximo ${STAGE_2_MAX_USE_MELHOR}, #2313)` : ""),
   );
   // #1855: warn loud quando nem com runners-up dá pra bater o mínimo de USE
   // MELHOR — o orchestrator surfa no gate. NUNCA preencher com não-tutorial.

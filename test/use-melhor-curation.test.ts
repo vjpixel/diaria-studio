@@ -714,3 +714,48 @@ describe("getHowToDiscoveryQueries NaN guard (#2305)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2313 — Regressão: fallback Path B SEMPRE deve dispatchar howto PT-BR queries
+// ---------------------------------------------------------------------------
+
+describe("getHowToDiscoveryQueries — regressão 260616 fallback Path B (#2313)", () => {
+  it("retorna ≥2 queries PT-BR para edição 260616", () => {
+    // Regressão 260616: 10 discovery-searcher rodaram, ZERO com query casual.
+    // O Path B (agents fallback) nunca chamava getHowToDiscoveryQueries.
+    // Este teste garante que a função determinística retorna ≥2 queries
+    // PT-BR para qualquer edição — o orchestrator deve sempre chamá-la.
+    const queries = getHowToDiscoveryQueries(260616, 2);
+    assert.equal(queries.length, 2, "deve retornar exatamente 2 queries quando count=2");
+    for (const q of queries) {
+      assert.ok(typeof q === "string" && q.length > 0, "query válida");
+    }
+  });
+
+  it("todas as queries do pool são PT-BR (contêm palavras em português)", () => {
+    // Garante que as queries são de fato em PT-BR (não inglês).
+    const queries = getHowToDiscoveryQueries(0, HOWTO_BR_DISCOVERY_TOPICS.length);
+    const ptWords = /\b(como|usar|para|com|sem|fazer|de|em|que|no|na|os|as|um|uma|ao|pra|tutorial|guia|dicas)\b/i;
+    for (const q of queries) {
+      assert.ok(
+        ptWords.test(q),
+        `Query não parece PT-BR: "${q}" — verificar HOWTO_BR_DISCOVERY_TOPICS`,
+      );
+    }
+  });
+
+  it("helper é exportado e testável sem BRAVE_API_KEY (#2313 deterministic part)", () => {
+    // A função deve rodar sem dependência de rede (pura, determinística).
+    // Se BRAVE_API_KEY não está setada, o script fetch-websearch-batch não roda,
+    // MAS getHowToDiscoveryQueries deve funcionar independentemente.
+    let thrown = false;
+    let result: string[] = [];
+    try {
+      result = getHowToDiscoveryQueries(260616, 2);
+    } catch {
+      thrown = true;
+    }
+    assert.equal(thrown, false, "getHowToDiscoveryQueries não deve lançar exceção");
+    assert.equal(result.length, 2, "deve retornar 2 queries sem dependência externa");
+  });
+});

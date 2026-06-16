@@ -630,6 +630,52 @@ export function finalizeStage1(
     }
   }
 
+  // Step 3.6 (#2313 #5): cap de domínio por-bucket para use_melhor = 1.
+  // O cap global (Step 3.5) é 3 (DEFAULT_DOMAIN_CAP) — suficiente para radar/lancamento,
+  // mas insuficiente para use_melhor onde 3× AWS ou 2× langchain ainda sobram.
+  // Em split-articles-for-scoring.ts já há maxPerDomain:2 (pré-scoring), mas após o
+  // scorer o global cap de 3 pode trazer 3 do mesmo domínio de volta.
+  // Fix: aplicar cap 1 por domínio exclusivamente no bucket use_melhor pós-global-cap.
+  const USE_MELHOR_DOMAIN_CAP = 1;
+  if ((enriched["use_melhor"] ?? []).length > 0) {
+    const umCountByDomain = new Map<string, number>();
+    const umDropped: Array<{ url: string; title?: string; domain: string }> = [];
+    enriched["use_melhor"] = (enriched["use_melhor"] ?? []).filter((a) => {
+      if (protectedUrls.has(a.url)) return true; // highlight/runner-up bypassa
+      let host: string | null = null;
+      try {
+        host = new URL(a.url).hostname.replace(/^www\./, "");
+      } catch {
+        return true; // URL inválida passa (defensive)
+      }
+      const count = umCountByDomain.get(host) ?? 0;
+      if (count >= USE_MELHOR_DOMAIN_CAP) {
+        umDropped.push({ url: a.url, title: a.title, domain: host });
+        return false;
+      }
+      umCountByDomain.set(host, count + 1);
+      return true;
+    });
+    if (umDropped.length > 0) {
+      console.error(
+        `[finalize-stage1] use_melhor domain cap (${USE_MELHOR_DOMAIN_CAP}): ` +
+        `dropped ${umDropped.length} URL(s) (#2313/#5)`,
+      );
+      for (const d of umDropped) {
+        console.error(`  ${d.domain}: ${d.url.slice(0, 80)}`);
+      }
+      // Adicionar ao domainCapped geral para auditoria
+      domainCapped.push(
+        ...umDropped.map((d) => ({
+          url: d.url,
+          title: d.title,
+          domain: d.domain,
+          score: null as number | null,
+        })),
+      );
+    }
+  }
+
   return {
     buckets: {
       ...categorized,

@@ -597,6 +597,26 @@ export function isExplainerByTitle(article: Article): boolean {
 }
 
 /**
+ * #2313: slug de anúncio de produto/serviço — "introducing-X", "announcing-X",
+ * "new-in-X" no path da URL. Em domínios de tutorial (AWS ML Blog, LangChain)
+ * esses slugs indicam post de lançamento/release note, não tutorial.
+ *
+ * Exemplos reais 260616:
+ *   - aws.amazon.com/blogs/machine-learning/introducing-gemma-4-on-amazon-bedrock/
+ *     → slug "introducing-gemma-4-on-amazon-bedrock" → anúncio, não tutorial.
+ * Conservador: requer prefixo EXATO (não "re-introducing" nem "how-to-introduce").
+ */
+const LAUNCH_SLUG_RE = /\/(introducing|announcing|new-in|what-is-new)-[a-z]/i;
+
+export function isLaunchSlug(url: string): boolean {
+  try {
+    return LAUNCH_SLUG_RE.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
  * notícia/comentário/análise. Os domínios de "Use Melhor" (cookbook.openai.com,
  * blogs de devrel) também postam comentário/cobertura, e a classificação por
@@ -605,7 +625,8 @@ export function isExplainerByTitle(article: Article): boolean {
  * MUITO conservador — falso-ejetar um tutorial real custa mais que manter um
  * comentário borderline. Só desclassifica com sinal inequívoco de não-tutorial:
  *   - type_hint do agent (que LEU a página) = noticia OU opiniao, OU
- *   - business deal (funding/M&A) ou relatório no título.
+ *   - business deal (funding/M&A) ou relatório no título, OU
+ *   - #2313: slug de lançamento no path (introducing-X, announcing-X).
  *
  * Deliberadamente NÃO usa:
  *   - `isExplainerByTitle` — "How X works" / "Understanding Y" / "A guide to Z"
@@ -622,6 +643,8 @@ export function isNewsNotTutorial(article: Article): boolean {
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
+  // #2313: slug de lançamento no path → anúncio, não tutorial.
+  if (isLaunchSlug(article.url ?? "")) return true;
   return isBusinessDeal(article) || isReport(article);
 }
 
@@ -1120,10 +1143,12 @@ export function categorize(article: Article): Category {
   // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
   //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem
   //     lancamento por default (#318).
-  // #2: domain-extra tutorial domains (AWS ML Blog etc.) win over case-study filter.
-  // A tutorial on a known tutorial domain is probably still a tutorial even if the
-  // title has a case-study shape — the domain is a stronger signal (#2276 finding #2).
-  if (isTutorialByDomainExtra(article.url)) return "tutorial";
+  // #2313: guarda `!isNewsNotTutorial` para excluir posts de ANÚNCIO (slug
+  // "introducing-X", "announcing-X") que aparecem em domínios de tutorial.
+  // Exemplo real 260616: AWS ML Blog "Introducing Gemma 4 on Amazon Bedrock" — o
+  // domínio era tutorial (aws ML blog), mas o slug e o tipo revelam lançamento.
+  // Antes: `isTutorialByDomainExtra` retornava "tutorial" sem olhar o conteúdo.
+  if (isTutorialByDomainExtra(article.url) && !isNewsNotTutorial(article)) return "tutorial";
   if (isTutorialByTitleExtra(article) && !_isMarkCase) return "tutorial";
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente

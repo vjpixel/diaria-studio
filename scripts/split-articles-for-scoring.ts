@@ -203,11 +203,21 @@ export function main(): void {
   // já foram consumidos e não precisamos protegê-los; mas se o merge ainda não
   // rodou (ou nunca rodou), limpá-los forçaria re-scoring desnecessário.
   //
-  // Ordem: PRIMEIRO limpar, DEPOIS escrever — nunca o contrário.
+  // #2313 (#4): ao re-splittar, apagar tmp-allscored.json DEPOIS de usar sua
+  // presença para decidir sobre os scored-chunk-*.json (#6 guard). O arquivo
+  // é re-gerado pelo merge depois. NÃO apagar se não existir (idempotente).
+  // Razão: scores stale de runs anteriores contaminam o finalize-stage1 —
+  // ex: 260616: AWS Bedrock scores de um run anterior atravessaram o threshold.
+  //
+  // Ordem:
+  //   1. Checar tmp-allscored.json → decidir cleanup de scored-chunk-*.json (#6).
+  //   2. Remover tmp-allscored.json stale (invalida merge anterior — scorer novo vai gerar).
+  //   3. Escrever scoring-chunk-*.json novos.
+  const parentDir = resolve(absOutDir, "..");
+  const allScoredPath = resolve(parentDir, "tmp-allscored.json");
   if (existsSync(absOutDir)) {
-    // Detectar se merge já completou (scored-chunk-*.json já foram consumidos).
-    const parentDir = resolve(absOutDir, "..");
-    const mergeCompleted = existsSync(resolve(parentDir, "tmp-allscored.json"));
+    // PASSO 1: Detectar se merge já completou (scored-chunk-*.json já foram consumidos).
+    const mergeCompleted = existsSync(allScoredPath);
 
     let scoringChunksRemoved = 0;
     let scoredChunksRemoved = 0;
@@ -239,6 +249,18 @@ export function main(): void {
       console.error(
         `[split-articles-for-scoring] scoring-chunks/ limpo: ` +
         `${scoringChunksRemoved} scoring-chunk, ${scoredChunksRemoved} scored-chunk removidos (#2287)`,
+      );
+    }
+
+    // PASSO 2 (#2313/#4): após usar a presença de tmp-allscored.json para decidir
+    // o cleanup de scored-chunks, REMOVER o arquivo — scores do merge anterior não
+    // devem contaminar o finalize-stage1 neste re-split. O merge irá re-gerá-lo.
+    if (existsSync(allScoredPath)) {
+      rmSync(allScoredPath, { force: true });
+      console.error(
+        "[split-articles-for-scoring] tmp-allscored.json removido após re-split — " +
+        "scores do run anterior não contaminarão o finalize (#2313/#4). " +
+        "O merge vai re-gerar o arquivo.",
       );
     }
   }
