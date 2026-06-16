@@ -102,6 +102,13 @@ export function checkPromotedDedup(
 
   // Iterar in-place (splice conforme demotamos)
   const lancamentos = buckets.lancamento;
+
+  // Detectar duplicatas within-edition: duas promoções para a mesma URL oficial
+  // na mesma rodada (passo 1m-ter pode substituir dois artigos pro mesmo destino).
+  // Estratégia: manter o PRIMEIRO encontrado; demote todos os subsequentes.
+  // allocatedUrls rastreia URLs oficiais já "alocadas" a um item nesta edição.
+  const allocatedOfficialUrls = new Set<string>();
+
   for (let i = 0; i < lancamentos.length; i++) {
     const article = lancamentos[i];
     const sub = article.primary_source_substituted;
@@ -110,14 +117,36 @@ export function checkPromotedDedup(
     checked++;
     const canonicalTo = canonicalize(sub.to);
 
-    if (!pastUrls.has(canonicalTo)) continue; // URL oficial não repete — ok
+    // Verificar repetição histórica (past-editions) OU duplicata within-edition
+    const repeatsHistory = pastUrls.has(canonicalTo);
+    // Duplicata within-edition: já alocamos esta URL oficial a outro item nesta edição
+    const isWithinEditionDuplicate = !repeatsHistory && allocatedOfficialUrls.has(canonicalTo);
 
-    // Repetição detectada: reverter para radar com URL original
-    const reason = `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar`;
+    if (!repeatsHistory && !isWithinEditionDuplicate) {
+      // URL nova e não duplicada: alocar (manter em lancamento)
+      allocatedOfficialUrls.add(canonicalTo);
+      continue;
+    }
+
+    // Guarda: from === to (1m-ter anotou no-op) — avisar que ambas as URLs repetem
+    if (sub.from === sub.to) {
+      console.error(
+        `[check-promoted-dedup] WARN: artigo "${article.title ?? sub.from}" tem from===to na substituição — ` +
+          `ambas as URLs repetem. Rebaixando para radar sem restaurar URL (restauração seria a mesma URL repetida).`,
+      );
+    }
+
+    const reason = isWithinEditionDuplicate
+      ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar`
+      : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar`;
+
+    // Restaurar URL de pesquisa original, EXCETO quando from===to (ambas repetem — manter from mesmo assim
+    // para rastreabilidade, mas anotar o fato no primary_source_demoted)
+    const restoredUrl = sub.from;
 
     const demotedArticle: Article = {
       ...article,
-      url: sub.from, // restaura URL de pesquisa original
+      url: restoredUrl, // restaura URL de pesquisa original
       primary_source_demoted: {
         url_oficial: sub.to,
         reason,
@@ -162,7 +191,16 @@ function parseArgs(argv: string[]): {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--categorized" && argv[i + 1]) categorized = argv[++i];
     else if (argv[i] === "--past-editions" && argv[i + 1]) pastEditions = argv[++i];
-    else if (argv[i] === "--window" && argv[i + 1]) window = parseInt(argv[++i], 10);
+    else if (argv[i] === "--window" && argv[i + 1]) {
+      const w = parseInt(argv[++i], 10);
+      if (!Number.isInteger(w) || w < 1) {
+        console.error(
+          `[check-promoted-dedup] --window deve ser um inteiro positivo (recebido: ${argv[i]})`,
+        );
+        process.exit(1);
+      }
+      window = w;
+    }
   }
 
   if (!categorized) {
@@ -193,7 +231,9 @@ if (
   const raw = JSON.parse(readFileSync(args.categorized, "utf8")) as CategorizedFlat;
 
   // Ler URLs das edições passadas
-  const pastMd = readPastEditionsMd(args.pastEditions);
+  // required: true → falha explícita se o arquivo estiver ausente (fresh clone,
+  // Stage 0 offline, typo no path) — evita dedup silencioso sem histórico.
+  const pastMd = readPastEditionsMd(args.pastEditions, { required: true });
   const pastUrls = extractPastUrls(pastMd, args.window);
 
   // Verificar e demote in-place
@@ -208,7 +248,7 @@ if (
       console.warn(`  - ${label} | oficial: ${d.url_to} → restaurado: ${d.url_from}`);
     }
   } else {
-    console.log(
+    console.error(
       `[check-promoted-dedup] ${result.checked} promoção(ões) verificadas — nenhuma repete past-editions.`,
     );
   }

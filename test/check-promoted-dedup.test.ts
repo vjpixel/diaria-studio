@@ -250,4 +250,131 @@ describe("#2315 — checkPromotedDedup", () => {
     assert.equal(result.demoted.length, 0);
     assert.equal(buckets.lancamento?.length, 1, "artigo mantido quando histórico vazio");
   });
+
+  // ---------------------------------------------------------------------------
+  // P3 (finding #7): chave 'radar' ausente no input → deve ser inicializada
+  // ---------------------------------------------------------------------------
+
+  it("inicializa radar quando ausente no input (#2315 P3)", () => {
+    const promoted = makePromotedLancamento({
+      researchUrl: "https://techcrunch.com/2026/06/15/test/",
+      officialUrl: "https://huggingface.co/test/model",
+    });
+    // Sem chave 'radar' no objeto (ausente, não apenas vazio)
+    const buckets: CategorizedFlat = { lancamento: [promoted] };
+    const pastUrls = pastUrlsFrom("https://huggingface.co/test/model");
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.demoted.length, 1, "deve registrar 1 demote");
+    assert.ok(Array.isArray(buckets.radar), "radar deve ser inicializado como array");
+    assert.equal(buckets.radar!.length, 1, "radar deve conter o artigo demotado");
+  });
+
+  // ---------------------------------------------------------------------------
+  // P2 (finding #5): duplicata within-edition — duas promoções para mesma URL
+  // ---------------------------------------------------------------------------
+
+  it("demote duplicata within-edition — duas promoções para a mesma URL oficial (#2315 P2)", () => {
+    const officialUrl = "https://openai.com/blog/gpt5";
+    const research1 = "https://techcrunch.com/2026/06/15/gpt5-launch/";
+    const research2 = "https://the-decoder.com/2026/06/15/gpt5/";
+
+    const buckets: CategorizedFlat = {
+      lancamento: [
+        makePromotedLancamento({ researchUrl: research1, officialUrl, title: "GPT-5 via TC" }),
+        makePromotedLancamento({ researchUrl: research2, officialUrl, title: "GPT-5 via Decoder" }),
+      ],
+      radar: [],
+    };
+    // URL oficial NÃO está em past-editions (só duplicada within-edition)
+    const pastUrls = new Set<string>();
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    // Ambas as promoções foram verificadas
+    assert.equal(result.checked, 2, "2 promoções verificadas");
+    // Pelo menos 1 demote por duplicata within-edition
+    assert.ok(result.demoted.length >= 1, "deve haver pelo menos 1 demote por URL duplicada");
+    // No máximo 1 deve sobrar em lancamento (a primeira)
+    assert.ok(
+      (buckets.lancamento?.length ?? 0) <= 1,
+      "no máximo 1 artigo deve sobrar em lancamento",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // P3 (finding #6): from === to edge — URL research = URL oficial
+  // ---------------------------------------------------------------------------
+
+  it("lida com from===to sem crash — demota artigo quando URL repete (#2315 P3)", () => {
+    const url = "https://huggingface.co/some/model";
+    // 1m-ter anotou no-op: from e to são iguais
+    const article: Article = {
+      url,
+      title: "Modelo X",
+      primary_source_substituted: { from: url, to: url },
+    };
+    const buckets: CategorizedFlat = { lancamento: [article], radar: [] };
+    const pastUrls = pastUrlsFrom(url); // URL repete past-editions
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    // Deve demote (URL repete) sem lançar exceção
+    assert.equal(result.demoted.length, 1, "deve demote artigo com from===to que repete");
+    assert.equal(buckets.lancamento?.length, 0, "artigo removido de lancamento");
+    assert.equal(buckets.radar?.length, 1, "artigo adicionado a radar");
+    // URL restaurada é from (mesmo que igual a to — sem alternativa)
+    assert.equal(buckets.radar![0].url, url, "url restaurada para from (mesmo que === to)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3 (finding #8): CLI integration smoke — stdout deve ser JSON puro
+// ---------------------------------------------------------------------------
+
+import { execSync } from "node:child_process";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+describe("#2315 — check-promoted-dedup CLI stdout smoke", () => {
+  it("stdout é JSON parseable e limpo no caso sem demotions", () => {
+    // Criar fixture sem promoções (nenhum primary_source_substituted)
+    const fixture = {
+      lancamento: [{ url: "https://openai.com/blog/new", title: "Sem promoção" }],
+      radar: [],
+    };
+    const dir = mkdtempSync(join(tmpdir(), "dedup-cli-test-"));
+    const fixturePath = join(dir, "tmp-categorized.json");
+    writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+
+    // past-editions.md com 1 seção válida (para não disparar required: true error)
+    const pastEditionsPath = join(dir, "past-editions.md");
+    writeFileSync(
+      pastEditionsPath,
+      "## 2026-06-15\n- https://some-other.com/article\n",
+      "utf8",
+    );
+
+    // Executar o script e capturar stdout
+    const stdout = execSync(
+      `node --import=tsx/esm scripts/check-promoted-dedup.ts --categorized "${fixturePath}" --past-editions "${pastEditionsPath}"`,
+      {
+        cwd: new URL("..", import.meta.url).pathname.replace(/\/$/, "").replace(/^\/([A-Za-z]:)/, "$1"),
+        encoding: "utf8",
+      },
+    );
+
+    // stdout deve ser JSON puro e parseable
+    let parsed: unknown;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(stdout);
+    }, `stdout deve ser JSON válido — recebido: ${JSON.stringify(stdout)}`);
+
+    const result = parsed as { demoted: unknown[]; checked: number };
+    assert.ok(typeof result.checked === "number", "resultado.checked deve ser number");
+    assert.ok(Array.isArray(result.demoted), "resultado.demoted deve ser array");
+    assert.equal(result.demoted.length, 0, "sem demotions esperadas");
+  });
 });
