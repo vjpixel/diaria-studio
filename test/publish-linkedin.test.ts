@@ -9,6 +9,7 @@ import {
   postToMakeWebhook,
   postToWorkerQueue,
   sanitizeFallbackReason,
+  resolveOutrosCount,
   type DispatchContext,
   type DispatchInput,
 } from "../scripts/publish-linkedin.ts";
@@ -712,5 +713,134 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
       cleanup();
       globalThis.fetch = savedFetch;
     }
+  });
+});
+
+// ── #2319 — resolveOutrosCount + {outros_count} resolução no Stage 5 ———————————————————————
+
+
+describe("#2319 resolveOutrosCount: conta itens não-destaque do approved JSON", () => {
+  it("soma lancamento + radar + use_melhor + video", () => {
+    const count = resolveOutrosCount({
+      lancamento: [{}, {}],
+      radar: [{}, {}, {}, {}, {}],
+      use_melhor: [{}, {}, {}],
+      video: [{}, {}],
+    });
+    assert.equal(count, 12);
+  });
+
+  it("arrays ausentes contam como 0", () => {
+    const count = resolveOutrosCount({});
+    assert.equal(count, 0);
+  });
+
+  it("apenas radar", () => {
+    const count = resolveOutrosCount({ radar: new Array(7) });
+    assert.equal(count, 7);
+  });
+
+  it("edition com 13 itens (caso 260616 pós-edição)", () => {
+    // 260616: após edição, edição ficou com 13 itens total não-destaque
+    const count = resolveOutrosCount({
+      lancamento: new Array(2),
+      radar: new Array(6),
+      use_melhor: new Array(3),
+      video: new Array(2),
+    });
+    assert.equal(count, 13);
+  });
+});
+
+// ── Fixture para testes de comment_diaria com {outros_count} ──
+
+const SOCIAL_2319 = [
+  "# Facebook",
+  "",
+  "## d1",
+  "Facebook d1.",
+  "",
+  "# LinkedIn",
+  "",
+  "## d1",
+  "Main post d1.",
+  "",
+  "#InteligenciaArtificial",
+  "",
+  "### comment_diaria",
+  "",
+  "Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}",
+  "",
+  "Receba a Diar.ia em diar.ia.br",
+  "",
+  "### comment_pixel",
+  "",
+  "Opinião pessoal do Pixel.",
+  "",
+  "## d2",
+  "Main d2.",
+  "",
+  "### comment_diaria",
+  "Edição com mais {outros_count} destaques em {edition_url}",
+  "",
+  "### comment_pixel",
+  "Pixel d2.",
+].join("\n");
+
+describe("#2319 extractCommentDiaria: {outros_count} substituído no Stage 5", () => {
+  it("resolve {outros_count} com número correto do estado final", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", 13);
+    assert.ok(t);
+    assert.match(t!, /mais 13 destaques/);
+    assert.ok(!t!.includes("{outros_count}"), "placeholder não deve vazar");
+    assert.ok(!t!.includes("{edition_url}"), "edition_url também deve ser substituído");
+    assert.match(t!, /https:\/\/diar\.ia\.br\/p\/foo/);
+  });
+
+  it("override valor stale do Stage 2: placeholder substituído pelo número final", () => {
+    // Simula o cenário do bug 260616:
+    // Stage 2 geraria "17" no texto se resolvesse cedo demais.
+    // Com Option A, o texto tem {outros_count} literal até Stage 5,
+    // onde é substituído pelo valor FINAL (13, não 17).
+    const socialMdWithPlaceholder = [
+      "# LinkedIn", "",
+      "## d1", "Main.", "",
+      "### comment_diaria", "",
+      "Edição com mais {outros_count} destaques em {edition_url}", "",
+      "### comment_pixel", "Pixel.",
+    ].join("\n");
+
+    // Stage 5 lê outrosCount=13 do approved FINAL (não o 17 do Stage 2)
+    const finalCount = 13; // valor correto pós-edição
+    const t = extractCommentDiaria(socialMdWithPlaceholder, "d1", "https://diar.ia.br/p/test", finalCount);
+
+    assert.ok(t, "deve retornar texto");
+    assert.match(t!, /mais 13 destaques/, "deve usar o número FINAL (13)");
+    assert.ok(!t!.includes("17"), "não deve ter o valor stale do Stage 2");
+    assert.ok(!t!.includes("{outros_count}"), "placeholder não deve vazar");
+  });
+
+  it("sem outrosCount passado: {outros_count} permanece literal (backward-compat)", () => {
+    // Quando outrosCount=null (approved.json ausente), o placeholder fica intacto
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", null);
+    assert.ok(t);
+    assert.match(t!, /\{outros_count\}/, "placeholder deve permanecer quando outrosCount=null");
+    assert.ok(!t!.includes("{edition_url}"), "edition_url ainda é substituído mesmo sem outrosCount");
+  });
+
+  it("d2: {outros_count} e {edition_url} ambos resolvidos", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d2", "https://diar.ia.br/p/bar", 7);
+    assert.ok(t);
+    assert.match(t!, /mais 7 destaques/);
+    assert.match(t!, /https:\/\/diar\.ia\.br\/p\/bar/);
+    assert.ok(!t!.includes("{outros_count}"));
+    assert.ok(!t!.includes("{edition_url}"));
+  });
+
+  it("outrosCount=0: zero destaques adicionais é válido", () => {
+    const t = extractCommentDiaria(SOCIAL_2319, "d1", "https://diar.ia.br/p/foo", 0);
+    assert.ok(t);
+    assert.match(t!, /mais 0 destaques/);
+    assert.ok(!t!.includes("{outros_count}"));
   });
 });

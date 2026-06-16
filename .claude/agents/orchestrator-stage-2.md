@@ -97,7 +97,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 2. `Agent` → `social-linkedin` passando:
    - `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved-capped.json`
    - `out_dir = data/editions/{AAMMDD}/`
-   - `outros_count = {N}` onde N = `lancamento.length + radar.length + use_melhor.length + video.length` do `01-approved-capped.json` lido no passo anterior (#2014 — contagem derivada, nunca estimada pelo LLM).
+   - `outros_count`: **não injetar (#2319)** — `social-linkedin` mantëm `{outros_count}` como placeholder literal (igual a `{edition_url}`). Stage 5 (`publish-linkedin`) resolve do `01-approved-capped.json` FINAL antes de enfileirar. Não calcular nem passar no prompt.
 
 3. `Agent` → `social-facebook` (mesmo input que social-linkedin, exceto `outros_count` que não se aplica ao Facebook).
 
@@ -149,7 +149,7 @@ Fallback dispatch:
    - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
    - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
 
-2. `Agent` → `social-linkedin` (mesmo input do writer + `outros_count` = `lancamento.length + radar.length + use_melhor.length + video.length` de `_internal/01-approved-capped.json` — idêntico ao modo padrão, explicitamente do capped para consistência com a newsletter publicada).
+2. `Agent` → `social-linkedin` (mesmo input do writer; `{outros_count}` é placeholder literal no output — não injetar #2319).
 3. `Agent` → `social-facebook` (mesmo input do writer).
 
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
@@ -369,7 +369,7 @@ Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês
 ```bash
 npx tsx scripts/lint-social-numbers.ts --social data/editions/{AAMMDD}/03-social.md --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
 ```
-Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0) para cifras alucinadas e contagem errada. **Blocker (exit 1)** quando `{outros_count}` literal não foi resolvido pelo LLM no `comment_diaria` — placeholder literal publicaria texto quebrado no LinkedIn. **Exit 1 = re-disparar `social-linkedin` agent** (mesmo mecanismo que `--check linkedin-schema`). Incluir no prompt do gate apenas se a 2ª tentativa também falhar. **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Cifras: heurística conservadora (pode ter falso-positivo se a fonte usa formato muito diferente).
+Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0) para cifras alucinadas e contagem errada. `{outros_count}` no `comment_diaria` é placeholder intencional deferido para Stage 5 (#2319) — o lint não bloqueia mais por isso. **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Cifras: heurística conservadora (pode ter falso-positivo se a fonte usa formato muito diferente).
 
 **Lint LinkedIn schema 3-textos pré-gate (#595):** social-linkedin agora gera main + comment_diaria + comment_pixel por destaque. Validar:
 ```bash

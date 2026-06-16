@@ -150,8 +150,31 @@ export function extractPostText(socialMd: string, destaque: string): string {
 }
 
 /**
+ * Calcula o total de itens não-destaque da edição a partir do approved JSON:
+ *   lancamento + radar + use_melhor + video
+ * Esse é o número correto pra "mais N destaques" no comment_diaria (#2319).
+ * Resolvido no Stage 5 (publish-linkedin) a partir do estado FINAL da edição
+ * — não no Stage 2 (writer), evitando staleness quando a edição é editada
+ * entre os dois stages (highlights trocados, Use Melhor re-curado, etc).
+ */
+export function resolveOutrosCount(approved: {
+  lancamento?: unknown[];
+  radar?: unknown[];
+  use_melhor?: unknown[];
+  video?: unknown[];
+}): number {
+  return (
+    (approved.lancamento?.length ?? 0) +
+    (approved.radar?.length ?? 0) +
+    (approved.use_melhor?.length ?? 0) +
+    (approved.video?.length ?? 0)
+  );
+}
+
+/**
  * Extrai o texto do `### comment_diaria` de um destaque (#595).
  * Substitui `{edition_url}` pelo URL da edição se passado.
+ * Substitui `{outros_count}` pela contagem final se passado (#2319).
  *
  * Retorna `null` se a subseção não existe (backward-compat com 03-social.md
  * gerados antes do schema #595 — main only).
@@ -160,6 +183,7 @@ export function extractCommentDiaria(
   socialMd: string,
   destaque: string,
   editionUrl: string | null = null,
+  outrosCount: number | null = null,
 ): string | null {
   const block = extractDestaqueBlock(socialMd, destaque);
   // Match `### comment_diaria\n...` até `### comment_pixel` ou fim
@@ -169,6 +193,9 @@ export function extractCommentDiaria(
   let text = m[1].trim();
   if (editionUrl) {
     text = text.replaceAll("{edition_url}", editionUrl);
+  }
+  if (outrosCount !== null) {
+    text = text.replaceAll("{outros_count}", String(outrosCount));
   }
   return text;
 }
@@ -639,6 +666,40 @@ async function main(): Promise<void> {
     }
   }
 
+  // #2319 — Resolver outros_count pra substituir {outros_count} em comment_diaria.
+  // Lido do 01-approved-capped.json no Stage 5 (estado FINAL da edição),
+  // não do valor injetado no Stage 2, evitando staleness.
+  let outrosCount: number | null = null;
+  {
+    const approvedPaths = [
+      resolve(editionDir, "_internal", "01-approved-capped.json"),
+      resolve(editionDir, "_internal", "01-approved.json"),
+    ];
+    for (const ap of approvedPaths) {
+      if (existsSync(ap)) {
+        try {
+          const approvedData = JSON.parse(readFileSync(ap, "utf8")) as {
+            lancamento?: unknown[];
+            radar?: unknown[];
+            use_melhor?: unknown[];
+            video?: unknown[];
+          };
+          outrosCount = resolveOutrosCount(approvedData);
+          console.log(`#2319: outros_count resolvido de ${ap} → ${outrosCount}`);
+        } catch (e) {
+          console.warn(`#2319: falha ao ler ${ap} — ${(e as Error).message}. {outros_count} não será substituído.`);
+        }
+        break;
+      }
+    }
+    if (outrosCount === null) {
+      console.warn(
+        "#2319: 01-approved-capped.json não encontrado em " + resolve(editionDir, "_internal") +
+        " — {outros_count} não será substituído no comment_diaria.",
+      );
+    }
+  }
+
   // Extrair edition date (últimos 6 chars do caminho)
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
   if (!/^\d{6}$/.test(editionDate)) {
@@ -888,7 +949,7 @@ async function main(): Promise<void> {
 
     // ── 2. COMMENT_DIARIA (T+3min) ─────────────────────────────────
     {
-      const cdText = extractCommentDiaria(socialMd, d, editionUrl);
+      const cdText = extractCommentDiaria(socialMd, d, editionUrl, outrosCount);
       if (cdText === null) {
         // Schema antigo (sem subseção comment_diaria) — backward-compat: skip.
         console.log(`linkedin/${d}/comment_diaria: subseção ausente em 03-social.md — schema pré-#595, skip`);

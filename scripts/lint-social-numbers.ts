@@ -328,10 +328,11 @@ export function lintCommentDiariaCount(
   const findings: CommentCountFinding[] = [];
 
   for (const [destaque, text] of [...commentsByDestaque.entries()].sort((a, b) => a[0] - b[0])) {
-    // Detectar placeholder literal não-resolvido pelo LLM (#2033)
+    // #2319: {outros_count} é agora placeholder intencional deferido para Stage 5
+    // (igual a {edition_url} #595). Não é mais um erro no Stage 2.
+    // Pular o check de contagem para este destaque (não tem número no texto ainda).
     if (/\{outros_count\}/.test(text)) {
-      findings.push({ destaque, found: NaN, expected, unresolved_placeholder: true });
-      continue; // um finding por destaque basta
+      continue;
     }
     const matches = [...text.matchAll(COMMENT_COUNT_RE)];
     for (const m of matches) {
@@ -424,9 +425,9 @@ function main(): void {
   // --- lint 2: contagem comment_diaria (#2014) ---
   const { findings: countFindings, fixed } = lintCommentDiariaCount(socialMd, approved, { fix: doFix });
 
-  // Separar findings resolvíveis (número errado) dos não-resolvíveis (placeholder literal)
-  const unresolvedFindings = countFindings.filter((f) => f.unresolved_placeholder);
-  const wrongNumberFindings = countFindings.filter((f) => !f.unresolved_placeholder);
+  // Todos os findings são de número errado (#2319: {outros_count} agora é placeholder deferido, sem findings)
+  const unresolvedFindings: typeof countFindings = []; // always empty after #2319
+  const wrongNumberFindings = countFindings;
 
   if (wrongNumberFindings.length > 0) {
     const didFix = doFix && fixed !== socialMd;

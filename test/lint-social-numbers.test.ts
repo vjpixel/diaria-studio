@@ -388,17 +388,15 @@ Post Facebook d1.
     assert.match(fixed, /mais 10 destaques de IA do dia/, "comment_diaria deve ter o número correto");
   });
 
-  it("placeholder {outros_count} literal → finding com unresolved_placeholder=true (#2033)", () => {
-    // Se o LLM escreve o placeholder literal em vez do número resolvido,
-    // o texto "mais {outros_count} destaques de IA do dia" publica broken.
+  it("placeholder {outros_count} literal → sem findings (#2319: placeholder agora é deferido para Stage 5)", () => {
+    // #2319: {outros_count} é um placeholder intencional deferido (igual a {edition_url}).
+    // O lint no Stage 2 não deve mais bloquear por isso — Stage 5 resolve do approved FINAL.
     const socialWithPlaceholder = SOCIAL_WITH_COMMENTS.replace(
       /mais 9 destaques de IA do dia/g,
       "mais {outros_count} destaques de IA do dia",
     );
     const { findings } = lintCommentDiariaCount(socialWithPlaceholder, APPROVED_13_ITEMS);
-    assert.equal(findings.length, 3, "deve ter finding pra cada destaque com placeholder literal");
-    assert.ok(findings[0].unresolved_placeholder, "finding deve indicar unresolved_placeholder");
-    assert.ok(isNaN(findings[0].found), "found deve ser NaN para placeholder não-resolvido");
+    assert.equal(findings.length, 0, "#2319: {outros_count} literal não gera mais finding no Stage 2");
   });
 
   it("approved sem 01-approved.json (buckets ausentes) → comportamento gracioso", () => {
@@ -505,10 +503,11 @@ describe("lint-social-numbers CLI (#2044) — unresolved_placeholder com --fix",
     );
   }
 
-  it("--fix com unresolved_placeholder: NÃO imprime 'corrigido automaticamente', sai exit 1 (#2044)", () => {
+  it("--fix com unresolved_placeholder: sai exit 0 (#2319: {outros_count} agora é placeholder deferido, não blocker)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "lint-social-2044-"));
     try {
-      // Social com placeholder literal não-resolvido
+      // #2319: {outros_count} é placeholder deferido para Stage 5 (como {edition_url}).
+      // No Stage 2, o lint não deve mais bloquear por isso.
       const socialContent = SOCIAL_WITH_COMMENTS.replace(
         /mais 9 destaques de IA do dia/g,
         "mais {outros_count} destaques de IA do dia",
@@ -520,26 +519,13 @@ describe("lint-social-numbers CLI (#2044) — unresolved_placeholder com --fix",
 
       const result = runLintCli(socialPath, approvedPath, ["--fix"]);
 
-      // Deve sair com exit 1 (blocker — placeholder literal)
-      assert.equal(result.status, 1, `expected exit 1, got ${result.status}\nstderr: ${result.stderr}`);
+      // #2319: {outros_count} literal não é mais blocker — deve sair exit 0
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status}
+stderr: ${result.stderr}`);
 
-      // NÃO deve imprimir "corrigido automaticamente"
-      assert.doesNotMatch(
-        result.stderr,
-        /corrigido automaticamente/i,
-        "não deve imprimir 'corrigido automaticamente' para placeholder não-resolvível",
-      );
-
-      // Deve imprimir mensagem clara de blocker
-      assert.match(
-        result.stderr,
-        /\{outros_count\}/,
-        "deve mencionar o placeholder literal no stderr",
-      );
-
-      // O arquivo NÃO deve ter sido modificado (placeholder ainda lá)
+      // O arquivo NÃO deve ter sido modificado (placeholder permanece — Stage 5 resolve)
       const contentAfter = readFileSync(socialPath, "utf8");
-      assert.match(contentAfter, /\{outros_count\}/, "arquivo não deve ter sido modificado");
+      assert.match(contentAfter, /\{outros_count\}/, "arquivo não deve ter sido modificado — Stage 5 resolve o placeholder");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
