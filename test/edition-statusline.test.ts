@@ -25,6 +25,7 @@ import {
   renderEditionBar,
   readCurrentEditionDoc,
   renderOvernightBar,
+  readTodayPlan,
   type Plan,
 } from "../scripts/overnight-statusline.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
@@ -409,4 +410,162 @@ describe("precedência: edição em curso > overnight bar", () => {
     assert.equal(bar, overnightBar, "overnight bar deve ser usada quando edição encerrada");
     assert.ok(bar.includes("(2/3)"), `bar deve mostrar overnight stats (2 terminais / 3 total): ${bar}`);
   });
+});
+
+// ─── integração com disco: precedência real edition+overnight (#2301) ─────────
+// Estes testes exercitam o caminho completo do CLI:
+//   readCurrentEditionDoc(cwd) → readTodayPlan(cwd) → editionBar || overnightBar
+// usando fixtures reais em tmpdir, confirmando que a precedência funciona
+// não apenas via chamadas diretas às funções puras, mas via detecção no disco.
+
+describe("integração disco: edição em curso + rodada overnight simultâneos (#2301)", () => {
+  const tmpRoot = join(tmpdir(), `edition-overnight-integration-${Date.now()}`);
+
+  // Helper: escreve stage-status.json em data/editions/{AAMMDD}/_internal/
+  function writeEditionStatus(id: string, doc: StageStatusDoc): void {
+    const editionDir = join(tmpRoot, "data", "editions", id);
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(doc, null, 2), "utf8");
+  }
+
+  // Helper: escreve plan.json em data/overnight/{AAMMDD}/
+  function writeOvernightPlan(id: string, plan: Plan): void {
+    const planDir = join(tmpRoot, "data", "overnight", id);
+    mkdirSync(planDir, { recursive: true });
+    writeFileSync(join(planDir, "plan.json"), JSON.stringify(plan), "utf8");
+  }
+
+  // Setup: 1 edição em progresso + 1 rodada overnight ativa
+  const editionDocInProgress = makeDoc("260615", ["done", "done", "running", "pending", "pending", "pending", "pending"]);
+  const overnightPlanActive: Plan = {
+    started_at: "2026-06-14T22:00:00.000Z",
+    issues: [
+      { number: 1001, status: "mergeada" },
+      { number: 1002, status: "mergeada" },
+      { number: 1003, status: "elegivel" },
+    ],
+  };
+
+  writeEditionStatus("260615", editionDocInProgress);
+  writeOvernightPlan("260614", overnightPlanActive);
+
+  after(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("edição em progresso + overnight ativo: edição ganha (precedência via disco)", () => {
+    // Lê do disco — reproduz exatamente o que o CLI faz
+    const editionDoc = readCurrentEditionDoc(tmpRoot);
+    const editionBar = renderEditionBar(editionDoc);
+    const overnightBar = renderOvernightBar(readTodayPlan(tmpRoot));
+
+    // CLI logic: bar = editionBar || overnightBar
+    const bar = editionBar || overnightBar;
+
+    // Ambos os planos são lidos corretamente
+    assert.ok(editionBar.length > 0, `editionBar deve estar presente no disco: ${editionBar}`);
+    assert.ok(overnightBar.length > 0, `overnightBar deve estar presente no disco: ${overnightBar}`);
+
+    // Edição tem prioridade
+    assert.equal(bar, editionBar, "editionBar deve ter prioridade sobre overnightBar (precedência via disco)");
+    assert.ok(bar.includes("edição 260615"), `barra deve mostrar a edição ativa: ${bar}`);
+    assert.ok(bar.includes("Escrita"), `barra deve mostrar stage 'Escrita' (running): ${bar}`);
+    assert.ok(bar.includes("2/7"), `barra deve mostrar 2/7 (2 done): ${bar}`);
+    // Overnight NÃO deve aparecer
+    assert.ok(!bar.includes("(2/3)"), `overnight stats não devem aparecer enquanto edição ativa: ${bar}`);
+  });
+
+  it("edição encerrada + overnight ativo: overnight retoma (precedência via disco)", () => {
+    // Cria um tmpRoot isolado para este case (garante isolamento)
+    const isolatedRoot = join(tmpdir(), `edition-overnight-resumed-${Date.now()}`);
+
+    const docEncerrada = makeDoc("260615", ["done", "done", "done", "done", "done", "done", "done"]);
+    const planAtivo: Plan = {
+      started_at: "2026-06-14T22:00:00.000Z",
+      issues: [
+        { number: 2001, status: "mergeada" },
+        { number: 2002, status: "elegivel" },
+        { number: 2003, status: "elegivel" },
+      ],
+    };
+
+    // Escreve diretamente no isolated root
+    const editionDir = join(isolatedRoot, "data", "editions", "260615");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(docEncerrada, null, 2), "utf8");
+
+    const overnightDir = join(isolatedRoot, "data", "overnight", "260614");
+    mkdirSync(overnightDir, { recursive: true });
+    writeFileSync(join(overnightDir, "plan.json"), JSON.stringify(planAtivo), "utf8");
+
+    try {
+      const editionDoc = readCurrentEditionDoc(isolatedRoot);
+      const editionBar = renderEditionBar(editionDoc);
+      const overnightBar = renderOvernightBar(readTodayPlan(isolatedRoot));
+
+      const bar = editionBar || overnightBar;
+
+      // readCurrentEditionDoc deve retornar null para edição encerrada
+      assert.equal(editionDoc, null, "edição encerrada deve retornar null de readCurrentEditionDoc");
+      assert.equal(editionBar, "", "editionBar deve ser vazia quando edição encerrada");
+
+      // Overnight deve assumir o display
+      assert.ok(overnightBar.length > 0, `overnightBar deve estar presente: ${overnightBar}`);
+      assert.equal(bar, overnightBar, "overnight deve assumir o display quando edição encerra");
+      assert.ok(bar.includes("(1/3)"), `barra overnight deve mostrar 1 terminal de 3: ${bar}`);
+      assert.ok(bar.includes("33%"), `barra overnight deve mostrar 33%: ${bar}`);
+    } finally {
+      rmSync(isolatedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("sem edição nem overnight: barra é string vazia (idle)", () => {
+    const idleRoot = join(tmpdir(), `edition-overnight-idle-${Date.now()}`);
+    mkdirSync(join(idleRoot, "data", "editions"), { recursive: true });
+    mkdirSync(join(idleRoot, "data", "overnight"), { recursive: true });
+
+    try {
+      const editionDoc = readCurrentEditionDoc(idleRoot);
+      const editionBar = renderEditionBar(editionDoc);
+      const plan = readTodayPlan(idleRoot);
+      const overnightBar = renderOvernightBar(plan);
+
+      const bar = editionBar || overnightBar;
+
+      assert.equal(editionDoc, null, "sem edição: deve retornar null");
+      assert.equal(plan, null, "sem overnight: deve retornar null");
+      assert.equal(bar, "", "idle: barra deve ser string vazia");
+    } finally {
+      rmSync(idleRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── renderEditionBar — label correto por stage (#2301) ──────────────────────
+// Verifica que cada stage produz o label correto no output renderizado.
+// Garante que STAGE_LABELS[N] está corretamente mapeado e visível na barra.
+
+describe("renderEditionBar — label por stage (#2301)", () => {
+  const stageLabels: Array<[number, string]> = [
+    [0, "Setup + dedup"],
+    [1, "Pesquisa"],
+    [2, "Escrita"],
+    [3, "Imagens"],
+    [4, "Revisão"],
+    [5, "Publicação"],
+    [6, "Agendamento"],
+  ];
+
+  for (const [stageIdx, expectedLabel] of stageLabels) {
+    it(`stage ${stageIdx} running → label '${expectedLabel}'`, () => {
+      // Todos stages anteriores done, stage stageIdx running, restantes pending
+      const statuses: Array<"pending" | "running" | "done" | "failed"> = Array.from(
+        { length: 7 },
+        (_, i) => (i < stageIdx ? "done" : i === stageIdx ? "running" : "pending"),
+      );
+      const doc = makeDoc("260615", statuses);
+      const result = renderEditionBar(doc);
+      assert.ok(result.includes(expectedLabel), `stage ${stageIdx} deve mostrar '${expectedLabel}': ${result}`);
+    });
+  }
 });
