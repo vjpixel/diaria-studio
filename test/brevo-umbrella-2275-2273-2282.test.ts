@@ -291,9 +291,10 @@ describe("RECENT_STATS_TTL elevado (#2282)", () => {
       throw new Error("path inesperado: " + path);
     };
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv as any } as any, 20, false, mockFetch as any);
-    const gsTtl = (putOpts["gstats:99"] as any)?.expirationTtl;
-    assert.strictEqual(gsTtl, RECENT_STATS_TTL,
-      `TTL de gstats recente deve ser ${RECENT_STATS_TTL}s (RECENT_STATS_TTL), não hardcoded`);
+    // #2314: chave unificada stats:{id} substitui gstats:{id}+lstats:{id}.
+    const statsTtl = (putOpts["stats:99"] as any)?.expirationTtl;
+    assert.strictEqual(statsTtl, RECENT_STATS_TTL,
+      `TTL de stats:{id} recente deve ser ${RECENT_STATS_TTL}s (RECENT_STATS_TTL), não hardcoded`);
   });
 });
 
@@ -399,10 +400,12 @@ describe("F7 — poison lstats em campanha imutável deve ser gravado com TTL (#
       20, false, mockFetch as any,
     );
 
-    const lsOpts = putOpts["lstats:77"] as any;
-    assert.ok(lsOpts !== undefined, "lstats:77 deve ser gravado no KV (ainda-poison precisa de re-write com TTL)");
-    assert.strictEqual(lsOpts?.expirationTtl, RECENT_STATS_TTL,
-      `lstats ainda-poison em campanha imutável deve usar expirationTtl=${RECENT_STATS_TTL} (auto-heal TTL), não {} (sem TTL = poison permanente)`);
+    // #2314: chave unificada stats:{id}. A poison-check ainda aplica TTL curto ao stats:{id}
+    // quando lstats está envenenado, garantindo auto-heal (sem TTL = poison permanente).
+    const statsOpts = putOpts["stats:77"] as any;
+    assert.ok(statsOpts !== undefined, "stats:77 deve ser gravado no KV (ainda-poison precisa de re-write com TTL, #2314)");
+    assert.strictEqual(statsOpts?.expirationTtl, RECENT_STATS_TTL,
+      `stats:{id} ainda-poison em campanha imutável deve usar expirationTtl=${RECENT_STATS_TTL} (auto-heal TTL), não {} (sem TTL = poison permanente)`);
   });
 });
 
@@ -454,10 +457,13 @@ describe("F8 — gs.sent===0: poison check usa gs raw via fallback (F1 fix)", ()
       20, false, mockFetch as any,
     );
 
-    const lsOpts = putOpts["lstats:55"] as any;
-    assert.ok(lsOpts, "lstats:55 deve ser gravado no KV");
-    assert.strictEqual(lsOpts?.expirationTtl, RECENT_STATS_TTL,
-      `gs.sent===0 + clickers>0 + lstats-poison: deve usar expirationTtl=${RECENT_STATS_TTL} (poison detectado via gs raw). ` +
-      `Sem o fix F1, gsFetched seria undefined → poison não detectado → TTL seria {} (imutável sem TTL, regressão #2273).`);
+    // #2314: com a coalesce, gs.sent===0 (gsReal=false) → guard impede a escrita inteira.
+    // Nem stats:55 nem lstats:55 são gravados. Isso é mais seguro que o comportamento
+    // anterior (que gravava lstats:55 com TTL curto quando poison detectado).
+    // Invariant primário: lstats-poison não é gravado sem TTL em campanha imutável.
+    assert.ok(!putOpts["lstats:55"], "lstats:55 (chave legada) NÃO deve ser gravado — gs.sent=0 guard previne toda escrita");
+    // #2314: stats:55 também não deve ser gravado quando gs.sent===0
+    assert.ok(!putOpts["stats:55"],
+      "stats:55 NÃO deve ser gravado quando gs.sent===0 (guard gsReal=false previne poison de lstats e escrita de stats zerados)");
   });
 });

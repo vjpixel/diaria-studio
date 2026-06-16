@@ -319,10 +319,11 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
 
   test("KV hit de gstats+lstats imutavel evita chamada ao _fetchFn por campanha", async () => {
     // Regressão #2183: apenas quando AMBOS gstats e lstats estão em cache o fetch é pulado.
+    // #2314: chave unificada `stats:{id}` — hit nesta chave evita o fetch.
     const fakeLinksStats = { "https://diar.ia/edicao/test": 5 };
     const { kv, getCalls } = makeKVMock({
-      "gstats:42": JSON.stringify(fakeGlobalStats),
-      "lstats:42": JSON.stringify(fakeLinksStats),
+      // #2314: chave unificada (nova) — quando presente, é suficiente para o hit.
+      "stats:42": JSON.stringify({ gs: fakeGlobalStats, ls: fakeLinksStats }),
       "list:7": JSON.stringify(fakeList),
     });
     let detailCalled = false;
@@ -332,19 +333,22 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       throw new Error("path inesperado: " + path);
     };
     const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
-    assert.strictEqual(detailCalled, false, "fetchFn NAO deve ser chamado com KV hit de ambos gstats+lstats");
-    assert.ok(getCalls.includes("gstats:42"), "KV.get deve ter sido chamado para gstats");
-    assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter sido chamado para lstats");
+    assert.strictEqual(detailCalled, false, "fetchFn NAO deve ser chamado com KV hit de stats:{id}");
+    assert.ok(getCalls.includes("stats:42"), "KV.get deve ter sido chamado para stats:42 (chave unificada)");
     assert.strictEqual(result[0].statistics?.globalStats?.sent, 100, "sent deve vir do KV");
   });
 
-  test("regressão #2183: gstats em cache mas lstats ausente → fetchFn DEVE ser chamada", async () => {
+  test("regressão #2183: gstats em cache (legado) mas lstats ausente → fetchFn DEVE ser chamada", async () => {
     // Bug: `if (cachedGs) return` pulava fetch mesmo sem lstats, impedindo campanhas
     // pré-#2177 (que só têm gstats no KV) de receber dados de links.
+    // #2314: com chave unificada stats:{id} ausente E gstats:42 presente (legado),
+    // o código faz fallback para os legados. Como gstats está mas lstats não está
+    // (nem no legado), o fetch DEVE ocorrer para buscar linksStats.
     const { kv, getCalls, putCalls } = makeKVMock({
       "gstats:42": JSON.stringify(fakeGlobalStats),
       "list:7": JSON.stringify(fakeList),
-      // lstats:42 ausente propositalmente — simula campanha pré-#2177
+      // lstats:42 ausente propositalmente — simula campanha pré-#2177 sem lstats
+      // stats:42 também ausente — cai no fallback legado
     });
     let detailCalled = false;
     const fakeLinksStats = { "https://diar.ia/edicao/test": 10 };
@@ -358,14 +362,17 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     };
     const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
     assert.strictEqual(detailCalled, true,
-      "fetchFn DEVE ser chamada quando gstats está em cache mas lstats está ausente (bug #2183)");
-    assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter sido tentado para lstats");
-    assert.ok(putCalls.includes("lstats:42"), "KV.put deve persistir lstats após fetch");
+      "fetchFn DEVE ser chamada quando gstats legado está em cache mas lstats está ausente (bug #2183)");
+    assert.ok(getCalls.includes("gstats:42"), "KV.get deve ter lido gstats:42 (fallback legado)");
+    assert.ok(getCalls.includes("lstats:42"), "KV.get deve ter tentado lstats:42 (fallback legado)");
+    // Após fetch, deve gravar na chave UNIFICADA (não mais nas legadas separadas)
+    assert.ok(putCalls.includes("stats:42"), "KV.put deve persistir na chave unificada stats:42 (#2314)");
     // linksStats deve estar disponível em statistics.linksStats (fonte única, #2199.3)
     assert.ok(result[0].statistics?.linksStats !== undefined, "linksStats deve estar presente em result[0].statistics.linksStats");
   });
 
-  test("KV miss de gstats chama _fetchFn e persiste no KV", async () => {
+  test("KV miss de stats:{id} chama _fetchFn e persiste no KV (chave unificada)", async () => {
+    // #2314: em vez de gstats:42 + lstats:42, persiste stats:42 (1 write).
     const { kv, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
     let detailCalled = false;
     const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
@@ -378,7 +385,8 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
     };
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
     assert.strictEqual(detailCalled, true, "fetchFn DEVE ser chamado em KV miss");
-    assert.ok(putCalls.includes("gstats:42"), "KV.put deve persistir gstats:42");
+    assert.ok(putCalls.includes("stats:42"), "KV.put deve persistir stats:42 (chave unificada, #2314)");
+    assert.ok(!putCalls.includes("gstats:42"), "NÃO deve persistir na chave legada gstats:42");
   });
 
   test("isFresh=true bypassa KV e chama _fetchFn mesmo com KV populado", async () => {
@@ -399,6 +407,7 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
   });
 
   test("gstats zerado (sent=0) nao e persistido no KV", async () => {
+    // #2314: a guarda gs.sent>0 se aplica à chave unificada stats:{id} também.
     const { kv, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
     const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
       if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
@@ -408,8 +417,10 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       throw new Error("path inesperado: " + path);
     };
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.strictEqual(putCalls.includes("stats:42"), false,
+      "KV.put NAO deve ser chamado para gstats zerado (evita envenenamento permanente) — chave unificada stats:{id}");
     assert.strictEqual(putCalls.includes("gstats:42"), false,
-      "KV.put NAO deve ser chamado para gstats zerado (evita envenenamento permanente)");
+      "KV.put NAO deve ser chamado na chave legada gstats:42 (não é mais gravada)");
   });
 
   test("#2249: linksStats é buscado via param ÚNICO (?statistics=linksStats), não combinado", async () => {
@@ -475,7 +486,9 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
   const sentDateRecent = new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(); // 1d atrás
   const recentCampaign = { ...fakeCampaign, id: 77, sentDate: sentDateRecent, createdAt: sentDateRecent };
 
-  test("#2270: campanha recente é cacheada com TTL (expirationTtl) em gstats+lstats", async () => {
+  test("#2270/#2314: campanha recente é cacheada com TTL (expirationTtl) na chave unificada stats:{id}", async () => {
+    // #2314: chave coalesced stats:{id} substitui gstats:+lstats: separados.
+    // #2282: TTL é RECENT_STATS_TTL (agora 1800s), não hardcoded 300.
     const { kv, putOpts, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
     const mockFetch = async <T>(path: string): Promise<T> => {
       if (path.includes("emailCampaigns?status=sent")) return { campaigns: [recentCampaign] } as T;
@@ -484,11 +497,10 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       throw new Error("path inesperado: " + path);
     };
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
-    assert.ok(putCalls.includes("gstats:77"), "deve cachear gstats da recente");
-    assert.ok(putCalls.includes("lstats:77"), "deve cachear lstats da recente");
-    // #2282: TTL é RECENT_STATS_TTL (agora 1800s), não hardcoded 300.
-    assert.equal((putOpts["gstats:77"] as any)?.expirationTtl, RECENT_STATS_TTL, `gstats recente com TTL ${RECENT_STATS_TTL}s`);
-    assert.equal((putOpts["lstats:77"] as any)?.expirationTtl, RECENT_STATS_TTL, `lstats recente com TTL ${RECENT_STATS_TTL}s`);
+    assert.ok(putCalls.includes("stats:77"), "deve cachear stats:77 (chave unificada, #2314)");
+    assert.ok(!putCalls.includes("gstats:77"), "NÃO deve cachear na chave legada gstats:77");
+    assert.ok(!putCalls.includes("lstats:77"), "NÃO deve cachear na chave legada lstats:77");
+    assert.equal((putOpts["stats:77"] as any)?.expirationTtl, RECENT_STATS_TTL, `stats:{id} recente com TTL ${RECENT_STATS_TTL}s`);
   });
 
   test("#2270: imutável continua sem TTL (cache permanente)", async () => {
@@ -500,7 +512,8 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
       throw new Error("path inesperado: " + path);
     };
     await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
-    assert.deepEqual(putOpts["gstats:42"], {}, "gstats imutável SEM expirationTtl");
+    // #2314: chave unificada stats:{id}. Imutável sem TTL → options objeto vazio {}.
+    assert.deepEqual(putOpts["stats:42"], {}, "stats:{id} imutável SEM expirationTtl (#2314 coalesce)");
   });
 
   test("#2270: 2º render de campanha recente cacheada → 0 GETs de stats à Brevo", async () => {
