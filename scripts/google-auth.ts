@@ -121,11 +121,20 @@ export interface TokenHealth {
 }
 
 /**
- * Pure (#1973): classifica a mensagem de erro de um refresh falho. `invalid_grant`
- * (expirado/revogado) é o caso que pede re-auth; o resto é erro transiente/outro.
+ * Pure (#1973, #2318): classifica a mensagem de erro de um refresh falho.
+ * `invalid_grant` (expirado/revogado) é o caso que pede re-auth; o resto é
+ * erro transiente/outro.
+ *
+ * Cobre o legado (`invalid_grant`, `Invalid Credentials`) E o 401 moderno do
+ * Google (`UNAUTHENTICATED`, `token has been expired or revoked`, `unauthorized`,
+ * `invalid_token`) — alinhado com inbox-drain.ts::isAuthExpiredError (#1973).
+ * Sem esta amplitude, um token morto que surge como 401 UNAUTHENTICATED resultaria
+ * em warnings por arquivo em vez do alerta único consolidado.
  */
 export function classifyRefreshError(msg: string): "invalid_grant" | "error" {
-  return /invalid_grant/i.test(msg) ? "invalid_grant" : "error";
+  return /invalid_grant|token has been expired or revoked|invalid[_ ]?(authentication )?credentials|unauthenticated|unauthorized|invalid_token/i.test(msg)
+    ? "invalid_grant"
+    : "error";
 }
 
 /**
