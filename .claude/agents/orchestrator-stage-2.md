@@ -269,7 +269,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
        --message "clarice_skip" \
        --details '{"reason":"mcp_down_rest_exit3_editor_approved","stage":2}'
      ```
-     Este evento estruturado é detectado por `collect-edition-signals.ts` (`signalsFromClariceSkips`) e surfaçado pelo auto-reporter como signal `clarice_skip` pra rastrear frequência. Ao skip, copiar `02-pre-clarice.md` → `02-reviewed.md` e continuar o pipeline normalmente (o invariant `check-stage2-invariants.ts` vai marcar `clarice_skip_conscious: true` como pass especial).
+     Este evento estruturado é detectado por `collect-edition-signals.ts` (`signalsFromClariceSkips`) e surfaçado pelo auto-reporter como signal `clarice_skip` pra rastrear frequência. Ao skip:
+     1. Copiar `02-pre-clarice.md` → `02-reviewed.md`.
+     2. Gravar `[]` em `_internal/02-clarice-suggestions.json` (array vazio = Clarice chamada sem sugestões — aceito por `checkClariceRan` em `check-stage2-invariants.ts`):
+        ```bash
+        echo '[]' > data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+        ```
+     3. Continuar o pipeline normalmente.
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
   4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash

@@ -117,6 +117,27 @@ describe("checkClariceRan (#1072, refined #1402)", () => {
     }
   });
 
+  // Finding #1 (#2320 self-review): on conscious skip, orchestrator writes `[]`
+  // to 02-clarice-suggestions.json so that checkClariceRan does NOT block.
+  it("finding #1 (#2320): skip consciente com suggestions=[] NÃO bloqueia o invariant", () => {
+    // Scenario: MCP + REST failed, editor approved skip. Orchestrator:
+    //   cp 02-pre-clarice.md → 02-reviewed.md (same content)
+    //   echo '[]' > 02-clarice-suggestions.json
+    // checkClariceRan must return ok: true ([] = Clarice ran, found nothing).
+    const { dir, cleanup } = mkEdition();
+    try {
+      const txt = "texto que foi ao ar sem revisão Clarice (skip consciente)";
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), txt);
+      writeFileSync(join(dir, "02-reviewed.md"), txt); // cópia direta no skip
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkClariceRan(dir);
+      assert.equal(r.ok, true,
+        `skip consciente com suggestions=[] deve passar — checkClariceRan não deve bloquear. label: ${r.label}`);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("FAIL quando 02-reviewed.md não existe", () => {
     const { dir, cleanup } = mkEdition();
     try {

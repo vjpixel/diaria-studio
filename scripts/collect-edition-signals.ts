@@ -576,19 +576,23 @@ export function signalsFromClariceSkips(
       continue;
     }
     if (edition && parsed.edition && parsed.edition !== edition) continue;
+    // Guard: log line sem campo `edition` não deve ser atribuída à edição atual
+    // (mesma lógica de signalsFromTestWarnings linha ~704).
+    if (edition && !parsed.edition) continue;
 
     const msg = (parsed.message ?? "").toLowerCase();
     // Match both structured "clarice_skip" and legacy prose variants used
     // in the run-log from 260616 ("clarice SKIP consciente").
+    // Word-boundary anchored to avoid false positives from messages like
+    // "checking clarice skip rate: 0" or "pre-clarice skip count summary".
     const isClariceSkip =
-      msg === "clarice_skip" ||
       msg.includes("clarice_skip") ||
-      msg.includes("clarice skip");
+      /\bclarice skip\b/i.test(msg); // legacy prose match (260616 compat)
     if (!isClariceSkip) continue;
     if (parsed.level !== "warn" && parsed.level !== "error") continue;
 
     count++;
-    if (parsed.timestamp && firstAt.length < 5) firstAt.push(parsed.timestamp);
+    if (typeof parsed.timestamp === "string" && firstAt.length < 5) firstAt.push(parsed.timestamp);
     const detailsObj = parsed.details as Record<string, unknown> | undefined;
     const reason = typeof detailsObj?.reason === "string" ? detailsObj.reason : "";
     if (reason && reasons.length < 5) reasons.push(reason);
@@ -625,6 +629,12 @@ export function signalsFromClariceSkips(
 // individual com kind=test_warning.
 // ===========================================================================
 
+// IMPORTANT: These patterns suppress 'test_warning' de-duplication for messages
+// that are ALSO handled by specific signal functions (Signal 3: signalsFromChromeDisconnects,
+// Signal 4: signalsFromMcpUnavailable, Signal 5a: signalsFromClariceSkips).
+// When adding a new variant to any of those functions, add the same pattern here
+// to avoid double-counting between Signal 5 (test_warning) and the specific signal.
+// The clarice_skip patterns (below) MUST mirror signalsFromClariceSkips matchers exactly.
 /** Patterns de mensagem cobertos pelos signals 3 (chrome_disconnects), 4
  *  (mcp_unavailable) e 5a (clarice_skip). Eventos que batem em qualquer um
  *  destes não são re-emitidos como test_warning para evitar duplicação. */
@@ -643,8 +653,12 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   // não merecem virar issue (são comportamento esperado em modo teste).
   /test_mode/i,
   // #2320 — clarice_skip events captured by signalsFromClariceSkips.
+  // Mirrors the isClariceSkip matchers in signalsFromClariceSkips above.
+  // Word-boundary anchored to match exactly what signalsFromClariceSkips matches:
+  //   msg.includes('clarice_skip') → /clarice_skip/i
+  //   /\bclarice skip\b/i (legacy 260616 prose) → /\bclarice skip\b/i
   /clarice_skip/i,
-  /clarice skip/i,
+  /\bclarice skip\b/i, // legacy prose match — keep in sync with signalsFromClariceSkips
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`

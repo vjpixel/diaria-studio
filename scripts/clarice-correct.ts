@@ -169,6 +169,9 @@ export async function correctTextViaREST(
 
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "<unreadable>");
+    // IMPORTANT: the message format 'HTTP {status}: ...' is relied upon by
+    // withClariceRetry's 4xx detection regex (/^HTTP 4\d\d/) — do not change
+    // without updating the is4xx check in withClariceRetry (~line 128).
     throw new Error(`HTTP ${res.status}: ${bodyText.slice(0, 500)}`);
   }
 
@@ -203,7 +206,7 @@ function flatten(raw: unknown): unknown[] {
   return [];
 }
 
-interface CliArgs {
+export interface CliArgs {
   inPath: string;
   outPath: string;
   retry: boolean;
@@ -211,16 +214,35 @@ interface CliArgs {
   maxAttempts?: number;
 }
 
-function parseCliArgs(argv: string[]): CliArgs | null {
+export function parseCliArgs(argv: string[]): CliArgs | null {
   const out: Partial<CliArgs> = { retry: false };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
-    const value = argv[i + 1];
+    // Guard: only treat the next token as a value if it is not itself a --flag.
+    // Without this guard, `--max-attempts --retry` would consume "--retry" as
+    // the integer value of --max-attempts (argv-consumption bug, finding #8).
+    const value = argv[i + 1]?.startsWith("--") ? undefined : argv[i + 1];
     if (flag === "--in" && value) { out.inPath = value; i++; }
     else if (flag === "--out" && value) { out.outPath = value; i++; }
     else if (flag === "--retry") { out.retry = true; }
-    else if (flag === "--timeout-ms" && value) { out.timeoutMs = Number(value); i++; }
-    else if (flag === "--max-attempts" && value) { out.maxAttempts = Number(value); i++; }
+    else if (flag === "--timeout-ms" && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`--timeout-ms deve ser um número positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.timeoutMs = n;
+      i++;
+    }
+    else if (flag === "--max-attempts" && value) {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1) {
+        console.error(`--max-attempts deve ser um inteiro positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.maxAttempts = n;
+      i++;
+    }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
@@ -249,7 +271,6 @@ async function main(): Promise<void> {
   }
 
   let suggestions: ClariceSuggestions;
-  let usedAttempts = 1;
 
   try {
     if (args.retry) {
@@ -260,33 +281,42 @@ async function main(): Promise<void> {
       };
       const result = await withClariceRetry({ apiKey, text }, policy);
       suggestions = result.suggestions;
-      usedAttempts = result.attempts;
+      try {
+        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
+      } catch (e) {
+        console.error(`erro escrevendo --out: ${(e as Error).message}`);
+        process.exit(4);
+      }
+      console.log(
+        JSON.stringify({
+          suggestions_count: suggestions.length,
+          out: args.outPath,
+          attempts_used: result.attempts,
+        }),
+      );
     } else {
       suggestions = await correctTextViaREST({
         apiKey,
         text,
         timeoutMs: args.timeoutMs,
       });
+      try {
+        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
+      } catch (e) {
+        console.error(`erro escrevendo --out: ${(e as Error).message}`);
+        process.exit(4);
+      }
+      console.log(
+        JSON.stringify({
+          suggestions_count: suggestions.length,
+          out: args.outPath,
+        }),
+      );
     }
   } catch (e) {
     console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
     process.exit(3);
   }
-
-  try {
-    writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
-  } catch (e) {
-    console.error(`erro escrevendo --out: ${(e as Error).message}`);
-    process.exit(4);
-  }
-
-  console.log(
-    JSON.stringify({
-      suggestions_count: suggestions.length,
-      out: args.outPath,
-      ...(args.retry ? { attempts_used: usedAttempts } : {}),
-    }),
-  );
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
