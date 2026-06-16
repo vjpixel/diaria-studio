@@ -131,12 +131,20 @@ export function todayUtcIso(): string {
  *   - Lançamentos: notícias frescas, perdem relevância rápido (até 7 dias)
  *   - Pesquisas: papers/posts duram mais (até 5 dias)
  *   - Notícias: notícias gerais, prazo médio (3-4 dias = default windowDays)
- *   - Tutorial: evergreen mas raro — segue default
+ *   - Tutorial (#2312): evergreen — janela expandida para 60 dias (isolada do
+ *     bucket use_melhor e dos demais buckets). Cookbooks e how-tos de qualidade
+ *     não seguem o ciclo de notícias; 30d era curto demais para capturar bons
+ *     tutoriais publicados há 1-2 meses. O valor 60 é parametrizado aqui —
+ *     não toca janelas de LANÇAMENTO/RADAR/VÍDEO.
  *
  * Tradeoff: lançamentos com janela maior aumenta recall (não perdemos product
  * launches que demoram 1-2 dias pra aparecer no RSS). Notícias mais curta
  * aumenta precisão (só o que é REALMENTE recente vai pra leitor).
  */
+
+/** Janela de use_melhor/tutorial em dias (#2312). Isolada — não afeta outros buckets. */
+export const TUTORIAL_WINDOW_DAYS = 60;
+
 export function bucketWindowDays(bucket: string, defaultDays: number): number {
   // #1629: a função recebe a `category` do artigo (não o bucket). Antes
   // bucket e category eram nomes idênticos; após o rename, bucket `radar`
@@ -147,8 +155,12 @@ export function bucketWindowDays(bucket: string, defaultDays: number): number {
       return Math.max(defaultDays, 7);
     case "pesquisa":
       return Math.max(defaultDays, 5);
-    case "noticias":
     case "tutorial":
+      // #2312: tutoriais são evergreen — janela de 60 dias, isolada dos
+      // demais buckets. Math.max garante que window-days grande do caller
+      // (ex: --window-days 90 pra backfill) não seja truncado.
+      return Math.max(defaultDays, TUTORIAL_WINDOW_DAYS);
+    case "noticias":
     case "video":
     default:
       return defaultDays;

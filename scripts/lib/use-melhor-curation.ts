@@ -74,7 +74,9 @@ export function isTutorialAcademy(url: string, title: string): boolean {
   } catch {
     return false;
   }
-  if (TUTORIAL_ACADEMY_DOMAINS.has(host) || TUTORIAL_ACADEMY_DOMAINS.has("www." + host)) {
+  // Note: `TUTORIAL_ACADEMY_DOMAINS.has("www." + host)` removed (#2309) — host already
+  // has www stripped above, and the set contains no www-prefixed entries.
+  if (TUTORIAL_ACADEMY_DOMAINS.has(host)) {
     return true;
   }
   for (const { host: h, pathPrefix } of TUTORIAL_ACADEMY_PATHS) {
@@ -190,9 +192,15 @@ export function topicTokens(title: string): Set<string> {
   );
 }
 
-function intersectionSize(a: Set<string>, b: Set<string>): number {
+function intersectionSize(a: Set<string>, b: Set<string>, earlyExitAt?: number): number {
   let count = 0;
-  for (const t of a) if (b.has(t)) count++;
+  for (const t of a) {
+    if (b.has(t)) {
+      count++;
+      // Short-circuit once we've confirmed the threshold is met (finding 4).
+      if (earlyExitAt !== undefined && count >= earlyExitAt) return count;
+    }
+  }
   return count;
 }
 
@@ -225,7 +233,25 @@ export function dedupeUseMelhorBucket(
   const minSharedTokens = opts.minSharedTokens ?? 2;
 
   const domainCount = new Map<string, number>();
-  const keptTokens: Set<string>[] = [];
+
+  // seenTokens: unified fingerprint pool for ALL items that "claim" a topic slot —
+  // both KEPT items and DOMAIN-CAPPED items (#2309 item 2, self-review findings 1-3).
+  //
+  // Threshold for near-dup check is adaptive per fingerprint size:
+  //   Math.min(minSharedTokens, fingerprint.size)
+  // This means:
+  //   • 1-token fingerprint (e.g. {"bedrock"}) → threshold 1: any candidate sharing that
+  //     specific token is a near-dup. Preserves #2309 intent.
+  //   • ≥2-token fingerprint → threshold minSharedTokens (default 2): candidate must
+  //     share ≥2 tokens. Prevents a generic token like "open" from a multi-token
+  //     fingerprint {"open","bedrock"} from blocking unrelated articles (finding 1 fix).
+  //
+  // Size guard removed (#2309 item 2 + finding 2): 1-token items from kept AND capped
+  // paths both register here, ensuring symmetric coverage. Items blocked by a previous
+  // seenTokens entry also register (finding 3 fix: prevents thematic leak where only
+  // the intermediary capped item — not the original kept item — shares tokens with the
+  // later near-dup).
+  const seenTokens: Set<string>[] = [];
   const kept: UseMelhorArticle[] = [];
 
   for (const item of items) {
@@ -237,20 +263,29 @@ export function dedupeUseMelhorBucket(
     const tokens = item.title ? topicTokens(item.title) : new Set<string>();
 
     if (domain && count >= maxPerDomain) {
-      // Capped by domain — still record tokens to block thematic near-duplicates
-      // from a different domain (#6a: prevents same-topic from slipping through).
-      if (tokens.size >= 2) keptTokens.push(tokens);
+      // Capped by domain — record tokens so thematic near-dups from other domains
+      // are blocked. Adaptive threshold in the candidate check handles specificity.
+      if (tokens.size >= 1) seenTokens.push(tokens);
       continue;
     }
 
-    if (tokens.size >= 2) {
-      const isDuplicate = keptTokens.some(
-        (kt) => intersectionSize(tokens, kt) >= minSharedTokens,
-      );
-      if (isDuplicate) continue;
-      keptTokens.push(tokens);
+    // Check near-dup against seenTokens with adaptive per-fingerprint threshold.
+    // Candidates with no tokens (empty title) skip the dedup check entirely.
+    if (tokens.size >= 1) {
+      const isDuplicate = seenTokens.some((st) => {
+        const threshold = Math.min(minSharedTokens, st.size);
+        return intersectionSize(tokens, st, threshold) >= threshold;
+      });
+      if (isDuplicate) {
+        // Record this blocked candidate's tokens so a later near-dup of THIS
+        // item is also caught (finding 3: prevents two-pool thematic leak).
+        seenTokens.push(tokens);
+        continue;
+      }
     }
 
+    // Accepted — record tokens and keep the item.
+    if (tokens.size >= 1) seenTokens.push(tokens);
     domainCount.set(domain, count + 1);
     kept.push(item);
   }

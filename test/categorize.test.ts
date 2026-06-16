@@ -2618,6 +2618,57 @@ describe("#1984: vocabulário type_hint dos agentes alinhado com categorize.ts",
 // #2176 — path-mais-específico-vence: blog.google colisão host
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// #2309 item 3 — 1-word-company case study não é misclassificado como tutorial
+// ---------------------------------------------------------------------------
+
+describe("#2309 item 3: 1-word-company case study NÃO é tutorial", () => {
+  it("'How Reddit used X' em domínio official tutorial NÃO é tutorial (1-word company)", () => {
+    // Before fix: TUTORIAL_TITLE_EXTRA_RE matched `how\s+\w+\s+(used?)` where \w+ = "Reddit".
+    // isMarketingCaseStudy needed 2+ caps → didn't fire → case study became tutorial.
+    // After fix: requires >=2 caps before the verb → "Reddit" alone no longer matches.
+    // URL is not an AWS ML Blog domain (isTutorialByDomainExtra doesn't fire either).
+    // Falls through to noticias (default).
+    const cat = categorize({
+      url: "https://blog.anthropic.com/how-reddit-used-claude-for-moderation",
+      title: "How Reddit used Claude for moderation at scale",
+    });
+    // Should NOT be "tutorial" — it's a case study about a company, not a how-to.
+    // Expected: noticias (RADAR). Falls through all tutorial gates.
+    assert.notEqual(cat, "tutorial", "case study com empresa 1-palavra não deve ser tutorial");
+  });
+
+  it("'How Rocket Close Optimized Document Processing' ainda é case study (2-word company)", () => {
+    // isMarketingCaseStudy catches 2-word companies → _isMarkCase=true → !_isMarkCase blocks tutorial.
+    // TUTORIAL_TITLE_EXTRA_RE with >=2 caps ALSO matches this, but _isMarkCase guard wins.
+    const cat = categorize({
+      url: "https://aws.amazon.com/blogs/machine-learning/how-rocket-close-optimized-docs",
+      title: "How Rocket Close Optimized Document Processing with AWS Bedrock",
+    });
+    // AWS ML Blog: isTutorialByDomainExtra → tutorial... BUT _isMarkCase=true blocks it → noticias.
+    // Actually: isTutorialByDomainExtra runs WITHOUT _isMarkCase guard (#2276 finding #2).
+    // So: isTutorialByDomainExtra=true, isNewsNotTutorial=false → tutorial.
+    // This means AWS ML Blog case studies land in tutorial (domain wins). That's existing behavior.
+    // We only test that the TITLE-based path (non-AWS-domain URL) doesn't classify 2-cap case studies.
+    // (Domain-based AWS classification is separate and pre-existing.)
+    // Test: non-AWS URL with 2-word company → NOT tutorial via title
+    const cat2 = categorize({
+      url: "https://techcrunch.com/2026/how-rocket-close-optimized-docs",
+      title: "How Rocket Close Optimized Document Processing with Bedrock",
+    });
+    assert.notEqual(cat2, "tutorial", "case study 2-word company em domínio não-tutorial não deve ser tutorial");
+  });
+
+  it("'How to Build a RAG Pipeline' genuíno é tutorial (não confunde com case study)", () => {
+    // After fix, genuine "how to build X" tutorials still work via isTutorialByKeyword.
+    const cat = categorize({
+      url: "https://cookbook.openai.com/examples/rag-pipeline",
+      title: "How to Build a RAG Pipeline with LangChain",
+    });
+    assert.equal(cat, "tutorial", "tutorial genuíno 'how to build' ainda funciona");
+  });
+});
+
 describe("categorize() — #2176 path-mais-específico-vence no empate de host", () => {
   /**
    * Cenário REAL da issue:

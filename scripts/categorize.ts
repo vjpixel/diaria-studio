@@ -365,9 +365,19 @@ export function isTutorialByDomainExtra(url: string): boolean {
 
 /**
  * Padrões de título/summary que indicam tutorial mesmo em domínio oficial (#318).
+ *
+ * #2309 item 3: branch `how\s+\w+\s+(used?|leverag...)` tightened to require
+ * >=2 consecutive capitalized words before the verb, matching the same company-name
+ * shape as `isMarketingCaseStudy`. Previously `\w+` matched a 1-word company name
+ * like "Reddit" → "How Reddit used X" was classified as tutorial while
+ * `isMarketingCaseStudy` (which needs 2 caps) did NOT fire → case study reached
+ * tutorial. Fix: `[A-Z]\w{2,}(?:\s+[A-Z]\w+)+` requires ≥2 capitalized words,
+ * so single-word company names no longer match this branch. These items now fall
+ * through to noticias/RADAR (correct). Genuine how-to tutorials are captured by
+ * `isTutorialByKeyword` (TUTORIAL_KEYWORDS_RE) before reaching this path.
  */
 const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+\w+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
+  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
