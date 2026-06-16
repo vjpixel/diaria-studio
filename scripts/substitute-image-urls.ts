@@ -14,16 +14,22 @@
  *   npx tsx scripts/substitute-image-urls.ts \
  *     --html <input.html> \
  *     --images <06-public-images.json> \
- *     [--out <output.html>]
+ *     [--out <output.html>] \
+ *     [--reviewed-md <02-reviewed.md>]
  *
  * Output: HTML com placeholders substituídos. Se alguma placeholder
  * não tiver imagem correspondente, loga warning e mantém a placeholder
  * como está (editor precisa resolver manualmente).
+ *
+ * #2316: fail-loud guard — se o HTML de input for mais antigo que
+ * 02-reviewed.md (render não rodou após a última edição), aborta com
+ * exit code 3 em vez de substituir placeholders num HTML stale.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
 
 interface PublicImage {
   file_id: string;
@@ -55,6 +61,40 @@ export interface SubstitutionResult {
   html: string;
   substitutions: number;
   unresolved: string[];
+}
+
+/**
+ * #2316: Verifica se o HTML de input (newsletter-draft.html) é mais antigo que
+ * o markdown fonte (02-reviewed.md). Retorna mensagem de erro quando stale, ou
+ * `null` quando ok / arquivos ausentes (fail-open: sem 02-reviewed.md = sem guard).
+ *
+ * Pure — não lança exceção, não tem side-effects. Caller decide o que fazer.
+ *
+ * @param htmlInputPath  Path do HTML de entrada do substitute (newsletter-draft.html).
+ * @param reviewedMdPath Path do 02-reviewed.md da edição.
+ */
+export function checkInputHtmlFreshness(
+  htmlInputPath: string,
+  reviewedMdPath: string,
+): string | null {
+  const mdMtime = mtimeMs(reviewedMdPath);
+  if (mdMtime === null) return null; // 02-reviewed.md ausente — sem guard.
+
+  const htmlMtime = mtimeMs(htmlInputPath);
+  if (htmlMtime === null) return null; // HTML ausente — erro de outro tipo.
+
+  if (htmlMtime < mdMtime) {
+    return (
+      `[substitute-image-urls] ERRO: HTML de input está desatualizado — ` +
+      `mtime(${htmlInputPath})=${new Date(htmlMtime).toISOString()} < ` +
+      `mtime(${reviewedMdPath})=${new Date(mdMtime).toISOString()}. ` +
+      `O render-newsletter-html.ts não rodou (ou falhou) após a última edição de 02-reviewed.md. ` +
+      `Re-rode o render antes de substituir as imagens: ` +
+      `npx tsx scripts/render-newsletter-html.ts <edition-dir> --format html --out ${htmlInputPath}`
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -98,16 +138,47 @@ function main(): void {
   const htmlArg = args.html;
   const imagesArg = args.images;
   const outArg = args.out;
+  // #2316: --reviewed-md pode ser explícito ou auto-deduzido a partir do path
+  // do HTML de entrada (newsletter-draft.html → ../../02-reviewed.md).
+  const reviewedMdArg = args["reviewed-md"];
 
   if (!htmlArg || !imagesArg) {
     console.error(
-      "Uso: substitute-image-urls.ts --html <input.html> --images <images.json> [--out <output.html>]",
+      "Uso: substitute-image-urls.ts --html <input.html> --images <images.json> " +
+        "[--out <output.html>] [--reviewed-md <02-reviewed.md>]",
     );
     process.exit(1);
   }
 
   const htmlPath = resolve(ROOT, htmlArg);
   const imagesPath = resolve(ROOT, imagesArg);
+
+  // #2316: fail-loud guard — abortar se HTML de input é mais antigo que
+  // 02-reviewed.md (render falhou ou não rodou). Auto-detecta o reviewed-md
+  // a partir do path padrão da pipeline (_internal/newsletter-draft.html →
+  // ../../02-reviewed.md). Flag --reviewed-md permite override explícito.
+  // Sem reviewed-md (nem explícito nem deduzível): sem guard (compatibilidade).
+  {
+    let resolvedReviewedMd: string | null = null;
+    if (reviewedMdArg) {
+      resolvedReviewedMd = resolve(ROOT, reviewedMdArg);
+    } else {
+      // Auto-detect: _internal/newsletter-draft.html → editionDir/02-reviewed.md
+      // Path canônico da pipeline: data/editions/AAMMDD/_internal/newsletter-draft.html
+      const htmlDir = dirname(htmlPath);
+      const htmlDirName = htmlDir.split(/[/\\]/).pop() ?? "";
+      if (htmlDirName === "_internal") {
+        resolvedReviewedMd = resolve(htmlDir, "..", "02-reviewed.md");
+      }
+    }
+    if (resolvedReviewedMd) {
+      const stalenessError = checkInputHtmlFreshness(htmlPath, resolvedReviewedMd);
+      if (stalenessError) {
+        process.stderr.write(stalenessError + "\n");
+        process.exit(3); // Exit 3 = HTML stale (distinto de outros erros: 1=args, 2=unresolved)
+      }
+    }
+  }
 
   const html = readFileSync(htmlPath, "utf8");
   const imagesFile = JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile;

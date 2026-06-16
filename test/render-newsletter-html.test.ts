@@ -1896,3 +1896,71 @@ describe("renderLeaderboardTop1Row top1 fallback (#1672)", () => {
     assert.match(html, /3º Caio/);
   });
 });
+
+// ── #2316 — 2-destaque render regression ─────────────────────────────────────
+
+describe("#2316: extractContent aceita 2 destaques + renderHTML produz HTML coerente", () => {
+  const twoDestaquesMd = [
+    "**DESTAQUE 1 | LANÇAMENTO**",
+    "",
+    "**[IA chega às fábricas brasileiras](https://example.com/1)**",
+    "",
+    "Corpo do primeiro destaque com contexto suficiente.",
+    "",
+    "Por que isso importa: automatização industrial tem impacto direto no emprego.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 2 | PESQUISA**",
+    "",
+    "**[Modelos de linguagem superam humanos em diagnóstico](https://example.com/2)**",
+    "",
+    "Corpo do segundo destaque.",
+    "",
+    "Por que isso importa: abre caminho para triagem automatizada em clínicas.",
+    "",
+  ].join("\n");
+
+  it("extractContent não lança para 2 destaques", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-2dest-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), twoDestaquesMd, "utf8");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // Não deve lançar — antes lançaria 'Expected 3 destaques, got 2'
+      assert.doesNotThrow(() => extractContent(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renderHTML com 2 destaques produz HTML com cover + 2 heroes + subtitle só de D2", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-2dest-render-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), twoDestaquesMd, "utf8");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const content = extractContent(dir);
+
+      // 2 destaques, não 3
+      assert.equal(content.destaques.length, 2);
+
+      // Title = D1, subtitle = D2 (sem " | D3")
+      assert.equal(content.title, "IA chega às fábricas brasileiras");
+      assert.equal(content.subtitle, "Modelos de linguagem superam humanos em diagnóstico");
+      assert.ok(!content.subtitle.includes("|"), "subtitle sem separador | quando só 2 destaques");
+
+      // HTML não lança e contém as 2 manchetes
+      const html = renderHTML(content);
+      assert.match(html, /IA chega às fábricas brasileiras/);
+      assert.match(html, /Modelos de linguagem superam humanos em diagnóstico/);
+
+      // Cover image (D1 2x1) presente
+      assert.match(html, /\{\{IMG:04-d1-2x1\.jpg\}\}/);
+      // D2 hero presente
+      assert.match(html, /\{\{IMG:04-d2-2x1\.jpg\}\}/);
+      // D3 hero ausente (não há terceiro destaque)
+      assert.doesNotMatch(html, /\{\{IMG:04-d3-2x1\.jpg\}\}/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

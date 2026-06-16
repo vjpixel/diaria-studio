@@ -1,8 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   buildFilenameMap,
   substituteImagePlaceholders,
+  checkInputHtmlFreshness,
 } from "../scripts/substitute-image-urls.ts";
 
 describe("buildFilenameMap", () => {
@@ -94,5 +98,64 @@ describe("substituteImagePlaceholders", () => {
     const map = new Map([["04-d1.jpg", "https://a.com/d1"]]);
     const result = substituteImagePlaceholders(html, map);
     assert.equal(result.substitutions, 1);
+  });
+});
+
+// ── #2316: fail-loud stale guard ─────────────────────────────────────────────
+
+describe("#2316: checkInputHtmlFreshness — rejeita HTML mais antigo que 02-reviewed.md", () => {
+  it("retorna null quando HTML é mais novo que reviewed.md (pipeline ok)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-subst-fresh-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      const htmlPath = join(dir, "newsletter-draft.html");
+      // MD criado primeiro (timestamp mais antigo)
+      writeFileSync(mdPath, "# md", "utf8");
+      // Força mtime do MD para 1s no passado
+      const pastMs = Date.now() - 2000;
+      utimesSync(mdPath, new Date(pastMs), new Date(pastMs));
+      // HTML criado depois (timestamp mais recente)
+      writeFileSync(htmlPath, "<html/>", "utf8");
+      assert.strictEqual(checkInputHtmlFreshness(htmlPath, mdPath), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna mensagem de erro quando HTML é mais antigo que reviewed.md (render falhou)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-subst-stale-"));
+    try {
+      const htmlPath = join(dir, "newsletter-draft.html");
+      const mdPath = join(dir, "02-reviewed.md");
+      // HTML criado primeiro (timestamp mais antigo)
+      writeFileSync(htmlPath, "<html/>", "utf8");
+      // Força mtime do HTML para 2s no passado
+      const pastMs = Date.now() - 2000;
+      utimesSync(htmlPath, new Date(pastMs), new Date(pastMs));
+      // MD criado depois (timestamp mais recente = render não rodou desde o MD)
+      writeFileSync(mdPath, "# md", "utf8");
+
+      const result = checkInputHtmlFreshness(htmlPath, mdPath);
+      assert.ok(result !== null, "deve retornar mensagem de erro quando HTML está stale");
+      assert.match(result, /desatualizado/);
+      assert.match(result, /render-newsletter-html\.ts/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando reviewed.md não existe (fail-open)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-subst-nomd-"));
+    try {
+      const htmlPath = join(dir, "newsletter-draft.html");
+      writeFileSync(htmlPath, "<html/>", "utf8");
+      // reviewed.md não existe — sem guard (compatibilidade)
+      assert.strictEqual(
+        checkInputHtmlFreshness(htmlPath, join(dir, "02-reviewed.md")),
+        null,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
