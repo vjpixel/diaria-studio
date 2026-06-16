@@ -41,6 +41,11 @@
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canonicalize } from "./lib/url-utils.ts";
+import {
+  extractDestaqueUrls,
+  extractPromptUrl,
+} from "./match-prompts-to-destaques.ts";
 
 // ---------------------------------------------------------------------------
 // Config: por stage, quais downstream → upstream(s) checar
@@ -84,67 +89,29 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
 
 /**
  * Extrai URLs dos destaques D1/D2/D3 do 02-reviewed.md.
- * Linha com marcador "destaque" seguida de URL — compatível com o template.
- * Replica a lógica de extractDestaqueUrls de match-prompts-to-destaques.ts
- * para evitar import circular / dependência do CLI.
+ * Delega para extractDestaqueUrls de match-prompts-to-destaques.ts (#2308).
+ * A implementação local foi removida por duplicar lógica divergente
+ * (regex parava em `)`, truncando URLs Wikipedia com parênteses balanceados).
  */
 export function extractReviewedUrls(reviewedMd: string): string[] {
-  const urls: string[] = [];
-  // Procura por padrões: linha "URL:" ou "Link:" em contexto de destaque,
-  // ou padrão de href em markdown: [texto](URL) após seção de destaque.
-  // Mais confiável: reutiliza extractDestaqueUrls via regex direto.
-  // Padrão do template: destaque_url está no front-matter dos prompts, mas
-  // em 02-reviewed.md o URL aparece como [título](URL) na linha do headline.
-  // Regex: primeira URL de cada bloco "## D{N}" / "Destaque {N}".
-  const blockRegex = /(?:^##\s+D[1-3]|^Destaque\s+[1-3])/im;
-  // Usa o mesmo extractor que stage-4.ts: procura URLs de http(s) no MD.
-  // Ordem: D1 primeiro, D2, D3.
-  const urlRegex = /https?:\/\/[^\s\)\"]+/g;
-  // Dividir por blocos de destaque (#D{N})
-  const blocks = reviewedMd.split(/(?=^#{1,3}\s+D[1-3])/m);
-  for (const block of blocks) {
-    if (!blockRegex.test(block)) continue;
-    const m = block.match(urlRegex);
-    if (m && m[0]) urls.push(m[0]);
-    if (urls.length >= 3) break;
-  }
-  return urls;
+  return extractDestaqueUrls(reviewedMd);
 }
 
 /**
  * Extrai destaque_url do frontmatter de um arquivo de prompt.
- * Formato: `destaque_url: https://...` em linha própria.
+ * Delega para extractPromptUrl de match-prompts-to-destaques.ts (#2308).
+ * A implementação local era divergente: não tinha o fallback de body-field
+ * (`destaque_url:` fora do frontmatter — prompts antigos pré-#606).
  */
 export function extractPromptUrlLocal(promptMd: string): string | null {
-  const m = promptMd.match(/^destaque_url:\s*(\S+)/m);
-  return m ? m[1] : null;
+  return extractPromptUrl(promptMd);
 }
 
-/**
- * Normaliza URL para comparação: lowercase host, strip trailing slash,
- * strip UTM params. Path case-sensitive (RFC 3986).
- */
-function normalizeUrl(raw: string): string {
-  try {
-    const u = new URL(raw);
-    u.hostname = u.hostname.toLowerCase();
-    // Strip tracking params
-    for (const k of [...u.searchParams.keys()]) {
-      if (/^utm_|^ref$|^source$|^medium$|^campaign$/i.test(k)) {
-        u.searchParams.delete(k);
-      }
-    }
-    let s = u.toString();
-    if (s.endsWith("/")) s = s.slice(0, -1);
-    return s;
-  } catch {
-    return raw.toLowerCase().replace(/\/$/, "");
-  }
-}
-
-/** True se as duas URLs são equivalentes após normalização. */
+/** True se as duas URLs são equivalentes após canonicalização (#2308).
+ * Usa canonicalize() de lib/url-utils.ts em vez de normalizeUrl() local
+ * (que perdia fragment e ref_src stripping). */
 export function imageUrlsMatch(a: string, b: string): boolean {
-  return normalizeUrl(a) === normalizeUrl(b);
+  return canonicalize(a) === canonicalize(b);
 }
 
 // ---------------------------------------------------------------------------
