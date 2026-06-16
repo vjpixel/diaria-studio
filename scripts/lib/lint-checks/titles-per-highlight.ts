@@ -128,10 +128,10 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
     i = j;
   }
 
-  // Garantir que houve 3 destaques
-  if (destaques.length !== 3) {
+  // #2316: aceita 2–3 destaques (editorial legítimo: editor demove D3 para Radar).
+  if (destaques.length < 2 || destaques.length > 3) {
     errors.push(
-      `Esperado 3 destaques (DESTAQUE 1/2/3); encontrei ${destaques.length}.`,
+      `Esperado 2–3 destaques (DESTAQUE 1/2 ou 1/2/3); encontrei ${destaques.length}.`,
     );
   }
 

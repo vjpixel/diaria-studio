@@ -664,9 +664,18 @@ export function extractContent(editionDir: string): NewsletterContent {
   const destaquesText = stripMidCalloutFromD1(reviewedText);
 
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
+  // #2316: aceita 2–3 destaques (o caso editorial legítimo é 2 quando o editor
+  // demove um destaque para Radar sem ter um substituto). Menos de 2 → erro fatal
+  // (newsletter sem destaque não faz sentido); mais de 3 → erro fatal (template
+  // não tem layout para 4+ destaques — parseDestaques regex `([123])` só captura
+  // 1/2/3 e Destaque.n é typed `1 | 2 | 3`, então "4" nunca é retornado; o guard
+  // alinha ao range real). Para 3 destaques, comportamento inalterado.
   const baseDestaques = parseDestaques(destaquesText);
-  if (baseDestaques.length !== 3) {
-    throw new Error(`Expected 3 destaques, got ${baseDestaques.length}`);
+  if (baseDestaques.length < 2 || baseDestaques.length > 3) {
+    throw new Error(
+      `Expected 2–3 destaques, got ${baseDestaques.length}. ` +
+      `Verifique a formatação em ${reviewedPath}.`,
+    );
   }
 
   // Enrich with emoji (#2158: imageFile removed — renderDestaque derives heroFile
@@ -733,9 +742,19 @@ export function extractContent(editionDir: string): NewsletterContent {
   // Imagem só vai pro box de livros; box 📣 CLARICE recebe null (sem hero).
   const midCalloutImage = readMidCalloutImage(editionDir, midCallout);
 
+  // #2316: subtitle adapta-se ao número real de destaques.
+  // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
+  // Explicit undefined check — subtitleD3 pode ser "" (título vazio) que é
+  // falsy mas ainda indica que o destaque existe; undefined = sem D3.
+  const subtitleD2 = destaques[1]?.title ?? "";
+  const subtitleD3 = destaques[2]?.title;
+  const subtitle = subtitleD3 !== undefined
+    ? buildSubtitle(subtitleD2, subtitleD3)
+    : subtitleD2.slice(0, 200);
+
   return {
     title: destaques[0].title,
-    subtitle: buildSubtitle(destaques[1].title, destaques[2].title),
+    subtitle,
     coverImage: "04-d1-2x1.jpg",
     destaques,
     eia,

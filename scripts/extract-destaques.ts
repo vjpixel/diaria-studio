@@ -213,8 +213,9 @@ function main() {
   const raw = fs.readFileSync(path, 'utf8');
   const destaques = parseDestaques(raw);
 
-  if (destaques.length !== 3) {
-    console.error(`Expected 3 destaques, got ${destaques.length}. Check formatting in ${path}.`);
+  // #2316: aceita 2–3 destaques (editorial legítimo: editor demove D3 para Radar).
+  if (destaques.length < 2 || destaques.length > 3) {
+    console.error(`Expected 2–3 destaques, got ${destaques.length}. Check formatting in ${path}.`);
     process.exit(1);
   }
 
@@ -229,10 +230,15 @@ function main() {
     process.exit(1);
   }
 
-  const [d1, d2, d3] = destaques;
+  const d1 = destaques[0];
+  const d2 = destaques[1];
+  const d3 = destaques[2]; // undefined para edições com 2 destaques
+  const subtitle = d3 !== undefined
+    ? buildSubtitle(d2.title, d3.title)
+    : d2.title.slice(0, 200);
   const output = {
     title: d1.title,
-    subtitle: buildSubtitle(d2.title, d3.title),
+    subtitle,
     destaques,
   };
 

@@ -208,16 +208,22 @@ export function checkUnsafeTargetBlank(html: string): LintIssue[] {
 }
 
 /**
- * Verifica que as 3 marcas de destaque + crédito É IA? estão presentes (#93).
+ * Verifica que as marcas de destaque estão presentes no HTML (#93).
  * Catches the failure mode where render-newsletter-html.ts produced HTML
  * missing seções esperadas (parse error em extract-destaques.ts, etc).
+ *
+ * #2316: aceita 2–3 destaques via parâmetro opcional `expectedDestaqueCount`.
+ * Default = 3 (backwards-compat: callers sem o parâmetro continuam exigindo D3).
+ * Passe 2 quando a edição é explicitamente de 2 destaques (ausência de D3 é
+ * intencional, não uma falha de render).
  */
-export function checkRequiredSections(html: string): LintIssue[] {
-  const required = [
+export function checkRequiredSections(html: string, expectedDestaqueCount = 3): LintIssue[] {
+  const allMarkers = [
     { marker: "<!-- Destaque 1 -->", label: "destaque 1" },
     { marker: "<!-- Destaque 2 -->", label: "destaque 2" },
     { marker: "<!-- Destaque 3 -->", label: "destaque 3" },
   ];
+  const required = allMarkers.slice(0, Math.min(expectedDestaqueCount, 3));
   const missing = required.filter((r) => !html.includes(r.marker)).map((r) => r.label);
   if (missing.length === 0) return [];
   return [
@@ -294,12 +300,11 @@ export function checkHtmlSize(html: string): LintIssue[] {
   ];
 }
 
-const ALL_CHECKS = [
+const ALL_CHECKS_NO_SECTIONS = [
   { fn: checkUnresolvedPlaceholders, rule: "unresolved_placeholders" },
   { fn: checkBrokenLinks, rule: "broken_links" },
   { fn: checkDuplicateHeadings, rule: "duplicate_headings" },
   { fn: checkMojibake, rule: "mojibake" },
-  { fn: checkRequiredSections, rule: "missing_required_sections" },
   { fn: checkInsecureImageSrc, rule: "insecure_image_src" },
   { fn: checkWideTables, rule: "wide_tables" },
   { fn: checkImgsWithoutAlt, rule: "img_without_alt" },
@@ -307,20 +312,31 @@ const ALL_CHECKS = [
   { fn: checkHtmlSize, rule: "html_size" },
 ];
 
-export function lintHtml(html: string): LintResult {
+export interface LintHtmlOptions {
+  /** #2316: número esperado de destaques (2 ou 3). Default: 3. */
+  expectedDestaqueCount?: 2 | 3;
+}
+
+export function lintHtml(html: string, options: LintHtmlOptions = {}): LintResult {
+  const { expectedDestaqueCount = 3 } = options;
   const errors: LintIssue[] = [];
   const warnings: LintIssue[] = [];
-  for (const check of ALL_CHECKS) {
+  for (const check of ALL_CHECKS_NO_SECTIONS) {
     const issues = check.fn(html);
     for (const issue of issues) {
       if (issue.severity === "error") errors.push(issue);
       else warnings.push(issue);
     }
   }
+  // checkRequiredSections receives the expected destaque count (#2316)
+  for (const issue of checkRequiredSections(html, expectedDestaqueCount)) {
+    if (issue.severity === "error") errors.push(issue);
+    else warnings.push(issue);
+  }
   return {
     errors,
     warnings,
-    checked_rules: ALL_CHECKS.map((c) => c.rule),
+    checked_rules: [...ALL_CHECKS_NO_SECTIONS.map((c) => c.rule), "missing_required_sections"],
   };
 }
 
@@ -342,12 +358,16 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const htmlArg = args.html;
   if (typeof htmlArg !== "string") {
-    console.error("Uso: lint-newsletter-html.ts --html <path> [--strict]");
+    console.error("Uso: lint-newsletter-html.ts --html <path> [--strict] [--destaque-count 2|3]");
     process.exit(1);
   }
   const htmlPath = resolve(ROOT, htmlArg);
   const html = readFileSync(htmlPath, "utf8");
-  const result = lintHtml(html);
+  // #2316: --destaque-count 2 para edições com 2 destaques (default: 3)
+  const rawCount = args["destaque-count"];
+  const expectedDestaqueCount: 2 | 3 =
+    typeof rawCount === "string" && rawCount === "2" ? 2 : 3;
+  const result = lintHtml(html, { expectedDestaqueCount });
 
   console.log(JSON.stringify(result, null, 2));
 
