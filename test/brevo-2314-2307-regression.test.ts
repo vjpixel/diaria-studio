@@ -360,3 +360,217 @@ describe("clarice-build-waves brevoGet: header-aware retry (#2307)", () => {
       "brevoGet deve retentar com x-sib-ratelimit-reset:0 (reset imediato, #2307)");
   });
 });
+
+// ─── #2323 Finding 1: immutable + ls failed → TTL'd entry (não permanente) ──────
+
+describe("#2323 Finding 1: imutável com ls-fetch falho → entry TTL'd, não permanente", () => {
+  function makeKVMock(initialData: Record<string, unknown> = {}) {
+    const store = new Map(
+      Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
+    );
+    const putCallsWithOpts: Array<{ key: string; opts: unknown }> = [];
+    return {
+      store,
+      putCallsWithOpts,
+      kv: {
+        get: async (key: string, type?: string) => {
+          const val = store.get(key);
+          if (!val) return null;
+          if (type === "json") return JSON.parse(val);
+          return val;
+        },
+        put: async (key: string, value: string, opts?: unknown) => {
+          putCallsWithOpts.push({ key, opts: opts ?? null });
+          store.set(key, value);
+        },
+        delete: async () => {},
+        list: async () => ({ keys: [], cursor: "", list_complete: true }),
+        getWithMetadata: async () => ({ value: null, metadata: null }),
+      } as unknown as KVNamespace,
+    };
+  }
+
+  // Campanha imutável (>7 dias atrás)
+  const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+  const fakeGs = {
+    sent: 100, delivered: 95, hardBounces: 2, softBounces: 1,
+    uniqueViews: 40, viewed: 45, trackableViews: 35, uniqueClicks: 10,
+    clickers: 9, unsubscriptions: 1, complaints: 0, appleMppOpens: 5,
+  };
+  const fakeList = { id: 9, name: "Lista F1", totalSubscribers: 200 };
+  const fakeCampaign = {
+    id: 77, name: "Campaign F1", subject: "F1", status: "sent",
+    sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+    recipients: { lists: [9] },
+    statistics: { campaignStats: [] },
+  };
+
+  test("ls-fetch falha → stats:77 gravado com expirationTtl (NÃO permanente)", async () => {
+    const { kv, putCallsWithOpts } = makeKVMock({ "list:9": fakeList });
+
+    // Mock: gs retorna ok; ls lança erro
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/77\?statistics=globalStats/.test(path)) {
+        return { ...fakeCampaign, statistics: { globalStats: fakeGs } } as T;
+      }
+      if (/emailCampaigns\/77\?statistics=linksStats/.test(path)) {
+        throw new Error("linksStats 429 simulado");
+      }
+      if (/contacts\/lists\/9/.test(path)) return fakeList as T;
+      throw new Error("path inesperado: " + path);
+    };
+
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+
+    const statsPut = putCallsWithOpts.find((p) => p.key === "stats:77");
+    assert.ok(statsPut, "deve escrever stats:77");
+
+    // Finding 1: quando ls === undefined (fetch falhou), a entrada NÃO pode ser
+    // permanente (opts={}) — deve ter expirationTtl para auto-cura. Sem o fix,
+    // opts={} para campanha imutável mesmo sem ls → entrada permanente irrecuperável.
+    const opts = statsPut!.opts as { expirationTtl?: number } | null;
+    assert.ok(
+      opts !== null && typeof (opts as any).expirationTtl === "number",
+      `stats:77 com ls-fetch falho DEVE ter expirationTtl (auto-cura). ` +
+      `opts recebido: ${JSON.stringify(opts)}. ` +
+      "Sem o fix de #2323 F1, seria opts={} (permanente) → poison eterno",
+    );
+  });
+
+  test("ls-fetch ok → stats:77 imutável gravado SEM expirationTtl (permanente)", async () => {
+    const { kv, putCallsWithOpts } = makeKVMock({ "list:9": fakeList });
+    const fakeLs = { "https://diar.ia/post": 5 };
+
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/77\?statistics=globalStats/.test(path)) {
+        return { ...fakeCampaign, statistics: { globalStats: fakeGs } } as T;
+      }
+      if (/emailCampaigns\/77\?statistics=linksStats/.test(path)) {
+        return { ...fakeCampaign, statistics: { linksStats: fakeLs } } as T;
+      }
+      if (/contacts\/lists\/9/.test(path)) return fakeList as T;
+      throw new Error("path inesperado: " + path);
+    };
+
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+
+    const statsPut = putCallsWithOpts.find((p) => p.key === "stats:77");
+    assert.ok(statsPut, "deve escrever stats:77");
+
+    // Quando ls está presente e não-poison, campanha imutável → opts={} (permanente)
+    const opts = statsPut!.opts as { expirationTtl?: number } | null;
+    assert.ok(
+      opts === null || !(opts as any).expirationTtl,
+      `stats:77 com ls ok DEVE ser permanente (opts={} ou null). ` +
+      `opts recebido: ${JSON.stringify(opts)}`,
+    );
+  });
+});
+
+// ─── #2323 Finding 2: legacy lstats: válido sobrevive a falha do ls-fetch ────────
+
+describe("#2323 Finding 2: lstats: legado válido sobrevive falha do ls-fetch fresh", () => {
+  function makeKVMock(initialData: Record<string, unknown> = {}) {
+    const store = new Map(
+      Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
+    );
+    const putCalls: string[] = [];
+    return {
+      store, putCalls,
+      kv: {
+        get: async (key: string, type?: string) => {
+          const val = store.get(key);
+          if (!val) return null;
+          if (type === "json") return JSON.parse(val);
+          return val;
+        },
+        put: async (key: string, value: string, _opts?: unknown) => {
+          putCalls.push(key);
+          store.set(key, value);
+        },
+        delete: async () => {},
+        list: async () => ({ keys: [], cursor: "", list_complete: true }),
+        getWithMetadata: async () => ({ value: null, metadata: null }),
+      } as unknown as KVNamespace,
+    };
+  }
+
+  const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+  const legacyGs = {
+    sent: 80, delivered: 78, hardBounces: 1, softBounces: 1,
+    uniqueViews: 30, viewed: 35, trackableViews: 25, uniqueClicks: 8,
+    clickers: 7, unsubscriptions: 0, complaints: 0, appleMppOpens: 3,
+  };
+  const legacyLs = { "https://diar.ia/legacy-link": 12 };
+  const fakeList = { id: 11, name: "Lista F2", totalSubscribers: 100 };
+  const fakeCampaign = {
+    id: 88, name: "Campaign F2", subject: "F2", status: "sent",
+    sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+    recipients: { lists: [11] },
+    statistics: { campaignStats: [] },
+  };
+
+  test("gstats:88 ausente, lstats:88 presente: ls-fetch fresco falha → linksStats do legado preservado", async () => {
+    // Cenário Finding 2: só lstats: presente (gstats: ausente, stats: ausente)
+    // sem o fix: ls-fetch roda, falha → ls=undefined → write descarta lstats legado
+    // com o fix: cachedLs != null → if (!cachedLs || poison) → pula fetch → ls=legacyLs
+    const { kv } = makeKVMock({
+      "lstats:88": legacyLs,  // legacy ls presente
+      "list:11": fakeList,
+      // gstats:88 AUSENTE, stats:88 AUSENTE
+    });
+
+    let lsFetchCalled = false;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/88\?statistics=globalStats/.test(path)) {
+        // gs fetch retorna dados válidos
+        return { ...fakeCampaign, statistics: { globalStats: legacyGs } } as T;
+      }
+      if (/emailCampaigns\/88\?statistics=linksStats/.test(path)) {
+        lsFetchCalled = true;
+        throw new Error("ls-fetch falhou — Finding 2 test");
+      }
+      if (/contacts\/lists\/11/.test(path)) return fakeList as T;
+      throw new Error("path inesperado: " + path);
+    };
+
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+
+    // Com o fix (#2323 F2): cachedLs=legacyLs → skip ls-fetch → ls=legacyLs
+    assert.ok(!lsFetchCalled,
+      "ls-fetch NÃO deve ser chamado quando cachedLs está populado do legado (Finding #2)");
+
+    // linksStats do resultado deve ter vindo do legado
+    assert.deepEqual(
+      result[0].statistics?.linksStats,
+      legacyLs,
+      "linksStats do resultado deve ser o do legado (lstats:88), não undefined",
+    );
+  });
+});
+
+// ─── #2323 Finding 3: computeRetryDelayMs never returns < 0 ──────────────────
+
+describe("#2323 Finding 3: computeRetryDelayMs nunca retorna negativo", () => {
+  test("retryAfterSecs=-1 → 0ms (não negativo)", () => {
+    assert.strictEqual(computeRetryDelayMs(-1), 0,
+      "input negativo deve ser clampeado para 0ms (Math.max(0, ...))");
+  });
+
+  test("retryAfterSecs=-100 → 0ms (não negativo)", () => {
+    assert.strictEqual(computeRetryDelayMs(-100), 0,
+      "input muito negativo deve resultar em 0ms");
+  });
+
+  test("retryAfterSecs=0 → 0ms (boundary, sem mudança de comportamento)", () => {
+    // Teste já existia, mas confirma que o Math.max(0,...) não quebra o caso boundary
+    assert.strictEqual(computeRetryDelayMs(0), 0);
+  });
+
+  test("retryAfterSecs=3 → 3000ms (valor positivo normal não é afetado pelo Math.max)", () => {
+    assert.strictEqual(computeRetryDelayMs(3), 3000);
+  });
+});
