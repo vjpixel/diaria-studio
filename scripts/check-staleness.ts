@@ -41,11 +41,20 @@
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalize } from "./lib/url-utils.ts";
+import { urlsMatch } from "./lib/url-utils.ts";
 import {
   extractDestaqueUrls,
   extractPromptUrl,
 } from "./match-prompts-to-destaques.ts";
+
+// ---------------------------------------------------------------------------
+// Params de tracking que a versão local (normalizeUrl pré-#2308) stripava
+// e que canonicalize() de url-utils.ts não cobre (source, medium, campaign
+// são ambíguos para dedup, mas localmente são sempre tracking de RSS/feeds).
+// #2308-finding-2: stripping local em vez de alterar canonicalize globalmente
+// (dedup e outros callers podem precisar de `source` como param semântico).
+// ---------------------------------------------------------------------------
+const LOCAL_TRACKING_PARAMS = new Set(["source", "medium", "campaign"]);
 
 // ---------------------------------------------------------------------------
 // Config: por stage, quais downstream → upstream(s) checar
@@ -107,11 +116,32 @@ export function extractPromptUrlLocal(promptMd: string): string | null {
   return extractPromptUrl(promptMd);
 }
 
+/**
+ * Stripa params de tracking RSS (source, medium, campaign) de uma URL.
+ * Retorna a URL original se inválida (sem lançar exceção).
+ * Usado localmente antes de delegar a urlsMatch (#2308-finding-2).
+ */
+function stripLocalTrackingParams(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const key of [...u.searchParams.keys()]) {
+      if (LOCAL_TRACKING_PARAMS.has(key.toLowerCase())) {
+        u.searchParams.delete(key);
+      }
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 /** True se as duas URLs são equivalentes após canonicalização (#2308).
- * Usa canonicalize() de lib/url-utils.ts em vez de normalizeUrl() local
- * (que perdia fragment e ref_src stripping). */
+ * Delega para urlsMatch() de lib/url-utils.ts (finding-1: evita reimplementação)
+ * com pré-stripping de source/medium/campaign (finding-2: params RSS que
+ * canonicalize() não remove mas normalizeUrl() local removia — sem isso
+ * imageUrlsMatch("url?source=rss", "url") retornaria false, regressão). */
 export function imageUrlsMatch(a: string, b: string): boolean {
-  return canonicalize(a) === canonicalize(b);
+  return urlsMatch(stripLocalTrackingParams(a), stripLocalTrackingParams(b));
 }
 
 // ---------------------------------------------------------------------------

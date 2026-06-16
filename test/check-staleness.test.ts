@@ -376,6 +376,40 @@ Algum texto de prompt.`;
   it("imageUrlsMatch: URLs diferentes → false", () => {
     assert.equal(imageUrlsMatch("https://example.com/article-1", "https://example.com/article-2"), false);
   });
+
+  // #2308-finding-2: REGRESSÃO — normalizeUrl() local stripava source/medium/campaign;
+  // canonicalize() não os stripava. imageUrlsMatch("url?source=rss", "url") retornava
+  // false após o helper-swap — falso-positivo de staleness para URLs descobertas via RSS.
+  it("#2308-finding-2: imageUrlsMatch com ?source=rss → true (regressão RSS tracking param)", () => {
+    assert.equal(
+      imageUrlsMatch(
+        "https://example.com/article?source=rss",
+        "https://example.com/article",
+      ),
+      true,
+      "?source= deve ser stripado (param RSS — antes stripava, regrediu em #2308)",
+    );
+  });
+
+  it("#2308-finding-2: imageUrlsMatch com ?medium=email → true", () => {
+    assert.equal(
+      imageUrlsMatch(
+        "https://example.com/article?medium=email",
+        "https://example.com/article",
+      ),
+      true,
+    );
+  });
+
+  it("#2308-finding-2: imageUrlsMatch com ?campaign=abc → true", () => {
+    assert.equal(
+      imageUrlsMatch(
+        "https://example.com/article?campaign=abc123",
+        "https://example.com/article",
+      ),
+      true,
+    );
+  });
 });
 
 // Helper: gera 02-reviewed.md no formato real (DESTAQUE N | CATEGORIA) com 1 destaque
@@ -386,6 +420,29 @@ function makeReviewedMd(d1Url: string): string {
     `**[Título do destaque](${d1Url})**`,
     "",
     "Por que isso importa: texto de exemplo.",
+  ].join("\n");
+}
+
+// #2308-finding-6: variante com D2/D3 para cobrir freshMap multi-slot
+function makeReviewedMd3(d1Url: string, d2Url: string, d3Url: string): string {
+  return [
+    "**DESTAQUE 1 | 📡 RADAR**",
+    "",
+    `**[Título D1](${d1Url})**`,
+    "",
+    "Por que isso importa: d1.",
+    "",
+    "**DESTAQUE 2 | 🚀 LANÇAMENTO**",
+    "",
+    `**[Título D2](${d2Url})**`,
+    "",
+    "Por que isso importa: d2.",
+    "",
+    "**DESTAQUE 3 | 🛠 USE MELHOR**",
+    "",
+    `**[Título D3](${d3Url})**`,
+    "",
+    "Por que isso importa: d3.",
   ].join("\n");
 }
 
@@ -514,6 +571,113 @@ describe("#2287 — buildGetImageFresh (integração com fs real)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // #2308-finding-2 regressão end-to-end: URL com ?source=rss não deve causar
+  // false staleness. normalizeUrl() local stripava source; canonicalize() não;
+  // imageUrlsMatch agora usa pré-strip local antes de delegar a urlsMatch.
+  it("#2308-finding-2: ?source=rss em reviewed URL → sem false staleness (regressão RSS)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      const cleanUrl = "https://example.com/article-rss";
+      const rssUrl = `${cleanUrl}?source=rss`;
+
+      // reviewed.md tem a URL sem tracking (como publicada)
+      writeFileSync(join(dir, "02-reviewed.md"), makeReviewedMd(cleanUrl));
+      // prompt tem a URL com ?source=rss (como chegou via feed RSS)
+      writeFileSync(
+        join(dir, "_internal", "02-d1-prompt.md"),
+        `---\ndestaque_url: ${rssUrl}\n---\n# Prompt Van Gogh\n`,
+      );
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined, "buildGetImageFresh deve retornar função");
+
+      // ?source=rss é tracking param → deve ser stripado → URLs equivalentes → fresh
+      assert.equal(
+        getImageFresh!("04-d1-2x1.jpg"),
+        true,
+        "#2308-finding-2: URL com ?source=rss deve ser fresh (sem FP de staleness)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2308-finding-6: D2/D3 freshMap — buildGetImageFresh com 3 destaques
+  it("#2308-finding-6: D2/D3 também mapeados no freshMap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      const d1 = "https://example.com/d1";
+      const d2 = "https://example.com/d2";
+      const d3 = "https://example.com/d3";
+      writeFileSync(join(dir, "02-reviewed.md"), makeReviewedMd3(d1, d2, d3));
+      writeFileSync(join(dir, "_internal", "02-d1-prompt.md"), `---\ndestaque_url: ${d1}\n---\n`);
+      writeFileSync(join(dir, "_internal", "02-d2-prompt.md"), `---\ndestaque_url: ${d2}\n---\n`);
+      writeFileSync(join(dir, "_internal", "02-d3-prompt.md"), `---\ndestaque_url: ${d3}\n---\n`);
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined);
+      assert.equal(getImageFresh!("04-d1-2x1.jpg"), true, "D1 fresh");
+      assert.equal(getImageFresh!("04-d1-1x1.jpg"), true, "D1 1x1 fresh");
+      assert.equal(getImageFresh!("04-d2-1x1.jpg"), true, "D2 fresh");
+      assert.equal(getImageFresh!("04-d3-1x1.jpg"), true, "D3 fresh");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2308-finding-7: exercitar path de frontmatter de extractPromptUrl
+  // via buildGetImageFresh (tests (a)/(b) existentes usam body-field; aqui frontmatter)
+  it("#2308-finding-7: extractPromptUrl via frontmatter (--- block) funciona em buildGetImageFresh", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-staleness-test-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      const articleUrl = "https://example.com/with-frontmatter";
+      writeFileSync(join(dir, "02-reviewed.md"), makeReviewedMd(articleUrl));
+      // Formato com bloco ---...--- (frontmatter real pós-#606)
+      writeFileSync(
+        join(dir, "_internal", "02-d1-prompt.md"),
+        `---\ndestaque_url: ${articleUrl}\nstyle: van-gogh\n---\n# Prompt\n`,
+      );
+
+      const getImageFresh = buildGetImageFresh(dir);
+      assert.ok(getImageFresh !== undefined);
+      assert.equal(
+        getImageFresh!("04-d1-2x1.jpg"),
+        true,
+        "#2308-finding-7: frontmatter path deve ser lido corretamente",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2308-finding-3: body fallback regex COM âncora ^ não deve capturar
+  // `destaque_url:` mid-prose (ex: texto que menciona a chave no meio).
+  // O fix: /^destaque_url:\s*(\S+)/m em vez de /destaque_url:\s*(\S+)/.
+  it("#2308-finding-3: extractPromptUrlLocal não captura destaque_url mid-prose", () => {
+    const prompt = `# Prompt de imagem
+Instrução: use o campo destaque_url: do frontmatter para identificar.
+Algum texto com destaque_url: https://wrong.example.com/mid-prose
+Fim do texto.`;
+    // Sem frontmatter e sem destaque_url em linha própria → deve retornar null
+    // (o que havia antes: regex sem ^ capturaria "https://wrong.example.com/mid-prose"
+    // caso o match encontrasse "destaque_url:" em qualquer posição da linha)
+    //
+    // Com o fix /^destaque_url:/m, exige que a chave esteja no início da linha.
+    // A linha "Algum texto com destaque_url: ..." NÃO começa com `destaque_url:`
+    // → null correto.
+    assert.equal(
+      extractPromptUrlLocal(prompt),
+      null,
+      "#2308-finding-3: destaque_url mid-prose não deve ser capturado",
+    );
   });
 
   // #2308: regressão end-to-end — URL com parêntese balanceado (Wikipedia) não
