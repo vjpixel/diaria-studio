@@ -57,9 +57,9 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query: `subject:"[TEST] {edition_title}" from:beehiiv.com newer_than:1d`.
 3. Se nao encontrar resultados, tentar query sem prefixo `[TEST]`: `subject:"{edition_title}" from:beehiiv.com newer_than:1d` (o prefixo e adicionado pelo Beehiiv e pode mudar).
 4. Se encontrar, obter o `threadId` do resultado mais recente.
-5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`.
+5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode retornar apenas partes MIME ou truncar o body em emails grandes (~34KB). Se a resposta tiver multiplas partes MIME (`parts[]`), preferir a parte `mimeType: text/html` (corpo HTML renderizado) — é o que o leitor vê. Se não houver parte HTML, usar `text/plain`. Não concatenar partes de tipos diferentes (HTML + plain juntos formariam um blob misto inútil para checks de seção).
 6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **fallback para Chrome** (metodo secundario abaixo).
-6. Se nenhum metodo encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
+7. Se nenhum metodo encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
    ```json
    { "status": "inconclusive", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor deve verificar visualmente." }
    ```
@@ -72,6 +72,59 @@ Usar apenas se o Gmail MCP falhar:
 2. Buscar o email de teste por assunto (`edition_title`) e remetente (beehiiv).
 3. Abrir e ler conteudo via `read_page` ou `get_page_text`.
 4. Deixar a aba aberta ao final (a versao atual do MCP nao expoe `tabs_close_mcp`; o editor fecha manualmente se quiser).
+
+### 1c. Sanidade de tamanho do fetch (#2317) — rodar ANTES dos checks de conteudo
+
+Emails da Diar.ia têm ~34KB (newsletter-final.html). O Gmail MCP pode truncar o body e retornar apenas 2-4KB, fazendo o agente concluir falsamente `section_missing` para seções que existem mas ficaram além do corte.
+
+**Procedimento obrigatório antes de qualquer check de seção:**
+
+**Passo 1 — salvar o corpo do email em arquivo temporário e medir o tamanho.**
+
+Você já tem o corpo do email em mãos (resultado do `get_thread` acima, armazenado na sua memória de contexto). Salve-o em disco e meça os bytes:
+
+```bash
+# Salvar o corpo do email (texto obtido via Gmail MCP) em arquivo temp.
+# Você vai escrever o conteúdo com Write tool ou via Bash com heredoc.
+# Depois medir com wc -c:
+EMAIL_BODY_FILE="{edition_dir}/_internal/.email-body.tmp"
+# (escrever o conteúdo via Write tool neste path primeiro)
+EMAIL_BODY_LEN=$(wc -c < "$EMAIL_BODY_FILE")
+```
+
+**Na prática:** use a tool `Write` com o conteúdo do email (da sua memória de contexto) para o path `{edition_dir}/_internal/.email-body.tmp` — você já tem o texto, basta materializá-lo em disco. Depois execute o bash acima para medir os bytes. O passo 8-9 usa o mesmo arquivo (`test-email-{AAMMDD}.txt`), mas este `.email-body.tmp` é temporário e só para a medição de tamanho.
+
+**Passo 2 — invocar o helper determinístico para classificar o fetch:**
+
+```bash
+# Usar o path real da edição que você está processando.
+# edition_dir é o valor recebido como input (ex: "data/editions/260617/").
+# Converter para path absoluto se necessário.
+COMPLETENESS=$(npx tsx scripts/check-fetch-completeness.ts \
+  --email-len "$EMAIL_BODY_LEN" \
+  --html-path "{edition_dir}/_internal/newsletter-final.html")
+# Saída: "complete" ou "incomplete"
+# Exit 0 = classificação ok. Exit 1 = arquivo HTML não encontrado ou arg inválido.
+```
+
+Se o helper falhar (exit 1, arquivo não encontrado), assumir **complete** (fail-safe) e logar `info:check_completeness_failed: helper retornou erro — assumindo fetch completo` no issues[].
+
+**Se fetch incompleto (`incomplete`):**
+- NÃO emitir `section_missing` para seções que não aparecem no corpo do email.
+- Para CADA seção que "faltaria" no email, verificar primeiro no `newsletter-final.html` local. Se a seção está no HTML local → o email provavelmente tem ela (o MCP só não trouxe) → `inconclusive`, NÃO `section_missing`.
+- O resultado final: se o corpo truncado não permite confirmar a presença de seções, retornar com as issues já coletadas até este ponto (unfixed_issues do passo 0 + subject check do passo 0.5, se já executados):
+  ```json
+  {
+    "status": "inconclusive",
+    "issues": ["<unfixed_issues e subject checks já coletados>"],
+    "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor deve verificar visualmente ou via Chrome fallback."
+  }
+  ```
+  Substituir `EMAIL_BODY_LEN` e `FINAL_HTML_LEN` pelos valores reais obtidos.
+  **Não bloquear** o loop com `section_missing` neste caso — o fix loop re-paste não resolveria um truncamento de fetch.
+- Checks que NÃO dependem de conteúdo completo (subject, encoding de subject, links no cabeçalho, unfixed_issues do publish) ainda DEVEM ser executados e reportados, mesmo no `inconclusive`.
+
+**Se fetch completo (`complete`):** prosseguir normalmente com todos os checks de seção.
 
 ### 2. Ler conteudo renderizado
 
@@ -124,10 +177,19 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
    **MAS** quando o email JA tem URLs de imagem reais (Worker `/img/` ou Drive `uc?id=`), verificar freshness via lint determinístico — captura cache stale do Gmail Image Proxy / Beehiiv preview (caso real edição 260514: editor regenerou D1 sem texto, URL servia versão antiga por 1 ano). Ver passo 16.
 
-6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
-   `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
-   **E IA? e critico:** se a secao E IA? estiver ausente (nenhuma mencao a "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
-   `"section_missing_critical: Secao 'E IA?' ausente — provavel que o template Default nao foi usado na criacao do post"`
+6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal parece estar faltando, seguir este protocolo em 2 etapas (#2317):
+
+   **Etapa 6a — verificar no HTML local primeiro (fonte de verdade):**
+   Ler `{edition_dir}/_internal/newsletter-final.html` e verificar se a seção aparece lá.
+   - Se a seção ESTÁ no HTML local mas NÃO aparece no email → o MCP pode ter truncado o corpo → verificar se o fetch foi `incomplete` (ver seção 1c). Se incompleto: `inconclusive` (não registrar como `section_missing`). Se completo: pode ser problema real (seção sumiu no paste/template) → registrar como `section_missing`.
+   - Se a seção NÃO está no HTML local E NÃO está no email → problema real de renderização/paste → registrar como `section_missing`.
+
+   **Formatos de issue (só registrar quando confirmado como problema real):**
+   `"email:section_missing: Secao '{nome}' esperada mas nao encontrada no email nem no newsletter-final.html"`
+   `"email:section_missing: Secao '{nome}' presente no newsletter-final.html mas ausente no email — provavel drop no paste Beehiiv"`
+
+   **E IA? e critico:** se a secao E IA? estiver ausente tanto do email quanto do HTML local, isso indica que o template Default nao foi usado. Registrar:
+   `"email:section_missing_critical: Secao 'E IA?' ausente — provavel que o template Default nao foi usado na criacao do post"`
 
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
    - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
@@ -304,6 +366,8 @@ Mapear `issues[]`:
 - `type:eia_section_missing` → `"email:eia_section_missing: source tem É IA? mas email não"`
 - `type:section_missing` → `"email:section_missing: '{section}' presente no source com {N} itens, ausente no email"`
 - `type:destaque_count_mismatch` → `"email:destaque_count_mismatch: source {N}, email {M}"`
+
+**#2317 — antes de emitir qualquer `section_missing` do CLI:** verificar se o fetch foi `incomplete` (seção 1c). Se incompleto, NÃO emitir `section_missing` — downgrade para `inconclusive`. A saída do CLI ainda é gerada (útil para debug), mas as issues de `section_missing` são suprimidas do `issues[]` final do agente enquanto o fetch for incompleto.
 
 Detecção heurística (regex/keyword) — falsos-positivos aceitáveis. Editor
 revisa visualmente quando lint apita.

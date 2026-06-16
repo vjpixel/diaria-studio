@@ -325,15 +325,38 @@ export function isEncodingDropSectionEmojiByDesign(
  * o sufixo após `email:section_missing:`. Se o nome normalizado aparecer no
  * HTML local → FP (a seção existe, o agent só leu o email truncado).
  *
+ * EXCEÇÃO CRÍTICA (#2317 finding 4): Se a issue já afirma explicitamente que
+ * a seção "está presente no newsletter-final.html mas ausente no email" (ou
+ * variações desse padrão), isso é um bug REAL de paste-drop, não FP de
+ * truncamento. Esse formato é emitido apenas quando o agent já verificou no
+ * HTML local E confirmou que a seção consta lá — a issue está sinalizando um
+ * drop real no paste Beehiiv. NÃO dropar como FP neste caso.
+ *
  * Limitação: match simples por substring — não valida se a seção tem conteúdo.
  * Mas "seção ausente + encontrada no HTML" é sempre FP de truncamento (se o
- * HTML local é correto, a seção está lá e o Beehiiv vai renderizar).
+ * HTML local é correto, a seção está lá e o Beehiiv vai renderizar) — EXCETO
+ * quando a issue já incorporou essa lógica e sinaliza paste-drop explícito.
  */
 export function isSectionMissingFalsePositive(
   issue: string,
   htmlLocal: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   if (!/^email:section_missing/i.test(issue)) return { falsePositive: false };
+
+  // #2317 finding 4: se a issue já afirma que a seção está presente no HTML
+  // local mas ausente no email, isso é um bug REAL de paste-drop — NÃO é FP
+  // de truncamento. O agent só emite esse formato quando verificou no
+  // newsletter-final.html e confirmou que a seção existe lá.
+  // Frases que indicam paste-drop confirmado (não FP de truncamento):
+  //   "presente no newsletter-final.html mas ausente no email"
+  //   "presente no newsletter-final.html"  (formato de paste-drop)
+  //   "provavel drop no paste" / "drop no paste"
+  if (
+    /presente\s+no\s+newsletter[-_]?final\.html/i.test(issue) ||
+    /provavel\s+drop\s+no\s+paste|drop\s+no\s+paste\s+beehiiv/i.test(issue)
+  ) {
+    return { falsePositive: false };
+  }
 
   // Extrair o nome da seção: primeiro tenta aspas simples, depois o texto após ':'
   const quotedTerms = extractQuotedTerms(issue);

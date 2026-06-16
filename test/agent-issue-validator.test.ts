@@ -420,6 +420,50 @@ describe("#2013 — isSectionMissingFalsePositive", () => {
     const r = isSectionMissingFalsePositive(issue, htmlWithSections);
     assert.equal(r.falsePositive, false);
   });
+
+  // #2317 finding 4: paste-drop confirmado NÃO é FP de truncamento
+  it("#2317: NÃO é FP quando issue afirma 'presente no newsletter-final.html mas ausente no email' (paste-drop real)", () => {
+    // A seção está no HTML local MAS a issue já verificou e afirma que é paste-drop.
+    // isSectionMissingFalsePositive NÃO deve dropar — é um sinal real.
+    const issue = "email:section_missing: Secao 'LANÇAMENTOS' presente no newsletter-final.html mas ausente no email — provavel drop no paste Beehiiv";
+    const r = isSectionMissingFalsePositive(issue, htmlWithSections);
+    assert.equal(r.falsePositive, false,
+      "paste-drop confirmado ('presente no newsletter-final.html') NÃO é FP de truncamento");
+  });
+
+  it("#2317: NÃO é FP quando issue menciona 'provavel drop no paste Beehiiv'", () => {
+    const issue = "email:section_missing: 'RADAR' presente no newsletter-final.html mas ausente no email — provavel drop no paste Beehiiv";
+    const r = isSectionMissingFalsePositive(issue, htmlWithSections);
+    assert.equal(r.falsePositive, false,
+      "sinal de paste-drop Beehiiv deve ser preservado");
+  });
+
+  it("#2317: FP normal (seção presente no HTML, sem sinal paste-drop) → ainda é FP", () => {
+    // O formato antigo sem o sinal explícito de paste-drop ainda é FP de truncamento.
+    const issue = "email:section_missing: 'LANÇAMENTOS' presente no source com 3 itens, ausente no email";
+    const r = isSectionMissingFalsePositive(issue, htmlWithSections);
+    assert.equal(r.falsePositive, true,
+      "format antigo sem 'newsletter-final.html' ainda é FP de truncamento");
+  });
+
+  it("#2317: filterAgentIssues mantém paste-drop mesmo com seção no HTML", async () => {
+    // Cenário: seção está no HTML local (para testar o filtro)
+    // mas a issue afirma que é paste-drop → deve ser mantida como bug real
+    const html = "<td>&#9679;&nbsp;LANÇAMENTOS</td><td>&#9679;&nbsp;RADAR</td>";
+    const issues = [
+      // Bug real: paste-drop confirmado
+      "email:section_missing: Secao 'LANÇAMENTOS' presente no newsletter-final.html mas ausente no email — provavel drop no paste Beehiiv",
+      // FP normal: formato antigo (seção presente no HTML, sem sinal de paste-drop)
+      "email:section_missing: 'RADAR' presente no source com 2 itens, ausente no email",
+    ];
+    const r = await filterAgentIssues(issues, html, "260617");
+    // paste-drop deve ser MANTIDO
+    assert.equal(r.kept.length, 1, `paste-drop deve ser kept: ${JSON.stringify(r.kept)}`);
+    assert.match(r.kept[0], /newsletter-final\.html/, "issue mantida deve ser o paste-drop");
+    // FP normal deve ser DROPADO
+    assert.equal(r.dropped.length, 1);
+    assert.match(r.dropped[0].issue, /RADAR/);
+  });
 });
 
 describe("#2013 — extractLinkDeadUrl", () => {
