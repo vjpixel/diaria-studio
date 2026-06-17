@@ -71,13 +71,18 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(2);
   }
   const newOrder = args["new-order"].split(",").map((s) => parseInt(s.trim(), 10));
+  // #2352: aceita permutação de [1,2] (2-destaque) OU [1,2,3] (3-destaque).
+  // N = length do newOrder; válido se length ∈ {2,3} e é permutação de [1..N].
+  const n = newOrder.length;
+  const validNs = [2, 3];
+  const expected = Array.from({ length: n }, (_, i) => i + 1);
   if (
-    newOrder.length !== 3 ||
-    newOrder.some((n) => ![1, 2, 3].includes(n)) ||
-    new Set(newOrder).size !== 3
+    !validNs.includes(n) ||
+    newOrder.some((x) => !expected.includes(x)) ||
+    new Set(newOrder).size !== n
   ) {
     console.error(
-      `--new-order inválido: "${args["new-order"]}". Deve ser permutação de 1,2,3 (ex: 2,1,3 ou 3,1,2).`,
+      `--new-order inválido: "${args["new-order"]}". Deve ser permutação de 1,2 (2-destaque) ou 1,2,3 (3-destaque).`,
     );
     process.exit(2);
   }
@@ -98,16 +103,21 @@ interface FilesModified {
  * Ex: newOrder=[2,1,3] → highlights[0] = original highlights[1] (D2),
  *                       highlights[1] = original highlights[0] (D1),
  *                       highlights[2] = original highlights[2] (D3).
+ *
+ * #2352: suporta newOrder de comprimento 2 (2-destaque) ou 3 (3-destaque).
+ * `h.length < newOrder.length` → return false (não tenta reordenar mais
+ * destaques do que existem no JSON). 3-destaque com newOrder de 2 elementos
+ * é inválido por definição — CLI valida antes de chegar aqui.
  */
 export function reorderHighlightsInJson(
   json: { highlights?: unknown[] },
   newOrder: number[],
 ): boolean {
   const h = json.highlights;
-  if (!Array.isArray(h) || h.length < 3) return false;
+  if (!Array.isArray(h) || h.length < newOrder.length) return false;
   const reordered = newOrder.map((n) => h[n - 1]);
-  // Preserva slots 3+ (raro mas possível)
-  const tail = h.slice(3);
+  // Preserva slots após os N reordenados (ex: runners-up em posição 3+)
+  const tail = h.slice(newOrder.length);
   json.highlights = [...reordered, ...tail];
   return true;
 }
@@ -139,7 +149,8 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
     blocks.push(m[1]);
     positions.push({ start: m.index, end: m.index + m[1].length });
   }
-  if (blocks.length < 3) return md;
+  // #2352: require at least as many blocks as positions in newOrder (2 or 3).
+  if (blocks.length < newOrder.length) return md;
 
   // Reorder + renumerar
   const reorderedBlocks = newOrder.map((n, i) => {
@@ -150,7 +161,10 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
       `**DESTAQUE ${i + 1}$1`,
     );
   });
-  const tail = blocks.slice(3);
+  // #2352: tail = blocks beyond the N reordered ones (e.g. slot 3 in a 3-block
+  // MD when newOrder has 2 elements is intentionally not included here, because
+  // a 2-destaque edition has only 2 blocks — tail is empty in the normal case).
+  const tail = blocks.slice(newOrder.length);
 
   // Construir resultado: prefixo (antes do 1º block) + blocos reordenados +
   // sufixo (após o último block original).
@@ -353,8 +367,9 @@ function main(): void {
   }
   const internalDir = resolve(editionDir, "_internal");
 
-  // No-op se ordem é canônica
-  if (args.newOrder.join(",") === "1,2,3") {
+  // No-op se ordem é canônica (1,2 ou 1,2,3 dependendo de N).
+  const canonical = Array.from({ length: args.newOrder.length }, (_, i) => i + 1).join(",");
+  if (args.newOrder.join(",") === canonical) {
     console.log(JSON.stringify({ edition: args.edition, no_op: true }, null, 2));
     return;
   }
