@@ -34,6 +34,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,24 +75,17 @@ function loadPublished(path: string): SocialPublished {
 /**
  * #2343: extrai a lista de destaques presentes na seção de uma plataforma do 03-social.md.
  * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição. Fallback para ["d1","d2","d3"]
- * se a plataforma não for encontrada (mantém comportamento legado).
+ * se a plataforma não for encontrada ou estiver vazia (mantém comportamento legado).
+ * Reusa `extractPlatformSection` de lint-social-md.ts (#2343 review — evita drift de regex).
  */
 export function extractDestaquesFromSocialMd(socialMd: string, platform: string): string[] {
-  const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
-  const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
-  const platMatch = socialMd.replace(/\r\n/g, "\n").match(platRe);
-  if (!platMatch) return ["d1", "d2", "d3"]; // fallback
-  const section = platMatch[1];
-  const destaques: string[] = [];
-  // Match ## d1, ## d2, ## d3 headers (not ## post_pixel etc)
-  const headerRe = /(?:^|\n)## (d\d+)\b/gi;
-  let m: RegExpExecArray | null;
-  while ((m = headerRe.exec(section)) !== null) {
-    const d = m[1].toLowerCase();
-    if (!destaques.includes(d)) destaques.push(d);
-  }
-  // Only accept d1..d3 in order; if none found, fallback
-  const valid = ["d1", "d2", "d3"].filter((d) => destaques.includes(d));
+  const section =
+    platform === "facebook" || platform === "linkedin"
+      ? extractPlatformSection(socialMd, platform)
+      : null;
+  if (section === null) return ["d1", "d2", "d3"]; // fallback (plataforma ausente)
+  const valid = parseDestaqueHeaders(section);
+  // Fallback para legado se a seção não tem ao menos 2 destaques bem-formados.
   return valid.length >= 2 ? valid : ["d1", "d2", "d3"];
 }
 

@@ -18,6 +18,9 @@ import {
   checkApprovedHas3Highlights,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import { stitchNewsletter } from "../scripts/stitch-newsletter.ts";
+import { extractDestaquesFromSocialMd } from "../scripts/publish-facebook.ts";
+import { extractDestaquesFromLinkedInMd } from "../scripts/publish-linkedin.ts";
+import { parseDestaqueHeaders } from "../scripts/lint-social-md.ts";
 
 // ---------------------------------------------------------------------------
 // Stage-1 invariant: range {2,3} aceito; {<2, >3} falha
@@ -289,5 +292,50 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Publishers: derivação de destaques presentes do 03-social.md (#2343 review)
+// ---------------------------------------------------------------------------
+
+describe("publishers extract destaques presentes (#2343)", () => {
+  const social3 =
+    "# LinkedIn\n## d1\npost1\n## d2\npost2\n## d3\npost3\n\n# Facebook\n## d1\nfb1\n## d2\nfb2\n## d3\nfb3\n";
+  const social2 =
+    "# LinkedIn\n## d1\npost1\n## d2\npost2\n\n# Facebook\n## d1\nfb1\n## d2\nfb2\n";
+
+  it("Facebook: 3-destaque retorna [d1,d2,d3] (regressão happy path)", () => {
+    assert.deepEqual(extractDestaquesFromSocialMd(social3, "facebook"), ["d1", "d2", "d3"]);
+  });
+
+  it("Facebook: 2-destaque retorna [d1,d2]", () => {
+    assert.deepEqual(extractDestaquesFromSocialMd(social2, "facebook"), ["d1", "d2"]);
+  });
+
+  it("Facebook: seção ausente cai no fallback [d1,d2,d3]", () => {
+    assert.deepEqual(extractDestaquesFromSocialMd("# LinkedIn\n## d1\nx\n", "facebook"), ["d1", "d2", "d3"]);
+  });
+
+  it("Facebook: CRLF (Drive Windows) ainda parseia", () => {
+    const crlf = social2.replace(/\n/g, "\r\n");
+    assert.deepEqual(extractDestaquesFromSocialMd(crlf, "facebook"), ["d1", "d2"]);
+  });
+
+  it("LinkedIn: 3-destaque retorna [d1,d2,d3] (regressão happy path)", () => {
+    assert.deepEqual(extractDestaquesFromLinkedInMd(social3), ["d1", "d2", "d3"]);
+  });
+
+  it("LinkedIn: 2-destaque retorna [d1,d2]", () => {
+    assert.deepEqual(extractDestaquesFromLinkedInMd(social2), ["d1", "d2"]);
+  });
+
+  it("LinkedIn: seção ausente retorna [] (caller aplica fallback)", () => {
+    assert.deepEqual(extractDestaquesFromLinkedInMd("# Facebook\n## d1\nx\n"), []);
+  });
+
+  it("parseDestaqueHeaders: ignora ## post_pixel e dedup, ordem canônica", () => {
+    const section = "## d2\nb\n## post_pixel\nx\n## d1\na\n## d1\nrepeat\n";
+    assert.deepEqual(parseDestaqueHeaders(section), ["d1", "d2"]);
   });
 });

@@ -320,7 +320,11 @@ function main(): void {
         // parse failure → keep default 3 (stitch will re-throw on required files)
       }
     }
-    const d3Path = destaqueCount >= 3
+    // #2343: D3 existe SOMENTE em edições de exatamente 3 destaques. `=== 3`
+    // (não `>= 3`): um count corrompido de 4+ que escape do invariant Stage-1
+    // não deve silenciosamente virar edição de 3 destaques — fica null e o
+    // stitch falha alto no check de arquivo requerido, em vez de dropar o 4º.
+    const d3Path = destaqueCount === 3
       ? join(editionDir, "_internal", "02-d3-draft.md")
       : null;
 

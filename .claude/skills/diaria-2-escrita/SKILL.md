@@ -112,9 +112,9 @@ npx tsx scripts/translate-summaries.ts \
 
 Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de prefixo arXiv + 1ª frase + truncate 150 chars. Stitch adiciona prefix `[TRADUZIR]` em items `summary_lang === "en"`; humanizer (ou editor no gate) remove o prefix downstream.
 
-## Passo 2 — Dispatch paralelo (writer-destaque × 3 + social, #1451/#1463)
+## Passo 2 — Dispatch paralelo (writer-destaque × N + social, #1451/#1463/#2343)
 
-**INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × 3 + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.
+**INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × N (N = highlights.length ∈ {2,3}) + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.
 
 **Pré-dispatch — ler highlights inline (sem extract-destaques.ts — esse parsea MD, não JSON):**
 
@@ -122,15 +122,16 @@ Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de
 node -e "
   const fs=require('fs');
   const j=JSON.parse(fs.readFileSync('data/editions/$1/_internal/01-approved-capped.json','utf8'));
-  if(!j.highlights||j.highlights.length!==3){
-    console.error('FALLBACK: highlights.length='+(j.highlights?.length||0)+' — usar writer legacy');
+  const n=j.highlights?.length||0;
+  if(!j.highlights||n<2||n>3){
+    console.error('FALLBACK: highlights.length='+n+' — fora do range {2,3}, usar writer legacy');
     process.exit(1);
   }
   console.log(JSON.stringify(j.highlights.map((h,i)=>({n:i+1,article:h.article,bucket:h.bucket})),null,2));
 "
 ```
 
-Se `highlights.length !== 3`: cair em writer único legacy (ver bloco "Fallback" abaixo).
+Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legacy (ver bloco "Fallback" abaixo). **#2343:** para 2 destaques, dispatch `writer-destaque` × 2 (D1 + D2 apenas — pular o D3 writer abaixo); para 3, × 3 (D1 + D2 + D3). O `stitch-newsletter.ts` detecta o `destaque_count` do `01-approved-capped.json` e omite o bloco D3 automaticamente quando são 2 destaques.
 
 ### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
 
@@ -152,6 +153,8 @@ Agent({
   description: "Etapa 2 — D3 writer",
   prompt: "Escreve DESTAQUE 3... [análogo, com highlights[2].article + peer_titles dos outros 2]"
 })
+// #2343: dispatchar este D3 writer SOMENTE quando highlights.length === 3.
+// Em edições de 2 destaques, pular este Agent (stitch omite o bloco D3).
 
 Agent({
   subagent_type: "social-linkedin",

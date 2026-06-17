@@ -48,6 +48,7 @@ import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
 import { applyStage2Caps } from "./lib/apply-stage2-caps.ts";
+import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -142,21 +143,12 @@ function extractDestaqueBlock(socialMd: string, destaque: string): string {
  * #2343: Extrai a lista de destaques presentes na seção LinkedIn do 03-social.md.
  * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição.
  * Fallback para [] se a seção não for encontrada (caller usa ["d1","d2","d3"]).
+ * Reusa `extractPlatformSection` + `parseDestaqueHeaders` (#2343 review — evita drift de regex).
  */
 export function extractDestaquesFromLinkedInMd(socialMd: string): string[] {
-  const platRe = /(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)/i;
-  const platMatch = socialMd.replace(/\r\n/g, "\n").match(platRe);
-  if (!platMatch) return [];
-  const section = platMatch[1];
-  const destaques: string[] = [];
-  const headerRe = /(?:^|\n)## (d\d+)\b/gi;
-  let m: RegExpExecArray | null;
-  while ((m = headerRe.exec(section)) !== null) {
-    const d = m[1].toLowerCase();
-    if (!destaques.includes(d)) destaques.push(d);
-  }
-  // Only accept d1..d3 in order
-  return ["d1", "d2", "d3"].filter((d) => destaques.includes(d));
+  const section = extractPlatformSection(socialMd, "linkedin");
+  if (section === null) return [];
+  return parseDestaqueHeaders(section);
 }
 
 /**
