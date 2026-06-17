@@ -257,13 +257,28 @@ export function djb2Hash(s: string): string {
 
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
 export class BrevoRateLimitError extends Error {
-  constructor(public readonly retryAfterSecs: number | null) {
+  /**
+   * @param retryAfterSecs valor inteiro (segundos) honrado pelo cliente E
+   *   ecoado no header HTTP `Retry-After` (RFC 7231: precisa ser inteiro).
+   * @param floorMs #2337 fix 1: piso opcional (em ms) aplicado SÓ ao backoff de
+   *   retry interno (computeRetryDelayMs), nunca ao header HTTP. Usado quando o
+   *   `x-sib-ratelimit-reset` é um epoch já expirado (delta→0): o header reporta
+   *   0s (janela esgotada), mas o backoff interno usa ≥250ms pra não disparar as
+   *   3 re-tentativas em microsegundos. Distinto de `retry-after: 0` literal
+   *   (RFC 7231 retry imediato), que não recebe piso.
+   */
+  constructor(
+    public readonly retryAfterSecs: number | null,
+    public readonly floorMs = 0,
+  ) {
     super(`Brevo rate limit (retry-after: ${retryAfterSecs ?? "?"}s)`);
     this.name = "BrevoRateLimitError";
   }
 }
 
-async function brevoFetch<T>(path: string, env: Env): Promise<T> {
+// #2337 fix 1: exportado para teste direto do parse de headers de rate-limit
+// (epoch-elapsed → retryAfterSecs inteiro 0 + floorMs 250).
+export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
     headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
   });
@@ -274,6 +289,9 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
     // se for formato epoch (>= 1e9), convertemos via Math.ceil(v - Date.now()/1000).
     // Standard retry-after (RFC 7231) e lido como delta direto quando presente.
     let retryAfter: number | null = null;
+    // #2337 fix 1: piso aplicado SÓ ao backoff interno (não ao header HTTP),
+    // quando o epoch-reset já expirou (delta arredonda a 0). 0 = sem piso.
+    let floorMs = 0;
     const retryAfterHeader = res.headers.get("retry-after");
     const resetHeader = res.headers.get("x-sib-ratelimit-reset");
     if (retryAfterHeader != null) {
@@ -283,20 +301,22 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
       const v = Number(resetHeader);
       if (!isNaN(v)) {
         // Delta direto (ex: 256s) ou epoch Unix (ex: ~1.7e9)?
-        // #2337 fix 1: épocas já expiradas (Math.ceil → 0) recebem floor de 0.25s —
-        // um epoch-reset já passado indica que a janela se esgotou neste segundo, não
-        // que Brevo pediu retry imediato. Sem o floor, `computeRetryDelayMs(0) = 0ms`
-        // e as 3 re-tentativas disparam em microsegundos, pressionando a janela seguinte.
-        // Distinto de `retry-after: 0` (RFC 7231 imediato, mantido em 0ms acima).
+        // #2337 fix 1: épocas já expiradas (Math.ceil → 0) recebem floor de 250ms
+        // NO BACKOFF INTERNO (não no header). Um epoch-reset já passado indica que a
+        // janela se esgotou neste segundo, não que Brevo pediu retry imediato. Sem o
+        // floor, `computeRetryDelayMs(0) = 0ms` e as 3 re-tentativas disparam em
+        // microsegundos, pressionando a janela seguinte. O header continua reportando
+        // 0s (inteiro, RFC 7231-válido). Distinto de `retry-after: 0` literal (acima),
+        // que é retry imediato e não recebe floor.
         if (v >= 1e9) {
-          const delta = Math.max(0, Math.ceil(v - Date.now() / 1000));
-          retryAfter = delta === 0 ? 0.25 : delta; // elapsed epoch → floor 250ms
+          retryAfter = Math.max(0, Math.ceil(v - Date.now() / 1000));
+          if (retryAfter === 0) floorMs = 250; // elapsed epoch → piso só no backoff
         } else {
           retryAfter = v >= 0 ? v : null;
         }
       }
     }
-    throw new BrevoRateLimitError(retryAfter);
+    throw new BrevoRateLimitError(retryAfter, floorMs);
   }
   if (!res.ok) {
     throw new Error(`Brevo API ${path} failed (${res.status}): ${await res.text()}`);
@@ -583,13 +603,20 @@ export async function fetchRecentCampaigns(
  * Lógica: cap máximo de 5s (protege dashboard contra throttle sustentado).
  * Mínimo: 0ms (aceita retry imediato quando Brevo sinaliza reset:0).
  * Fallback: 2s quando retryAfterSecs é null (header ausente).
+ *
+ * #2337 fix 1: `floorMs` é um piso opcional aplicado ao RESULTADO (não ao header).
+ * Usado quando o `x-sib-ratelimit-reset` é um epoch já expirado (retryAfterSecs=0
+ * mas a janela se esgotou neste segundo): o backoff interno usa ≥floorMs pra não
+ * disparar as 3 re-tentativas em microsegundos. Default 0 (sem piso) preserva o
+ * comportamento de `retry-after: 0` literal (RFC 7231 retry imediato).
  */
-export function computeRetryDelayMs(retryAfterSecs: number | null): number {
+export function computeRetryDelayMs(retryAfterSecs: number | null, floorMs = 0): number {
   const s = retryAfterSecs ?? 2; // null = header ausente = fallback 2s
   // Finding #3 (#2323): Math.max(0, ...) garante mínimo 0ms para inputs negativos
   // (ex: Brevo enviando header negativo por bug). Math.min cap de 5s protege
   // contra throttle sustentado (Brevo pode mandar Retry-After: 256s — clampamos).
-  return Math.max(0, Math.min(s, 5)) * 1000;
+  const baseMs = Math.max(0, Math.min(s, 5)) * 1000;
+  return Math.max(baseMs, floorMs); // #2337: piso de epoch-elapsed (não afeta header)
 }
 
 /**
@@ -606,6 +633,7 @@ export function computeRetryDelayMs(retryAfterSecs: number | null): number {
  * enviadas, com a janela de rate-limit fresca) — ver a rota `/`.
  *
  * #2307: retryAfterSecs=0 → retry imediato (sem clamp inferior). Usa computeRetryDelayMs.
+ * #2337 fix 1: honra `floorMs` da BrevoRateLimitError (piso de epoch-elapsed) no sleep.
  */
 export async function withRateLimitRetry<T>(
   fn: () => Promise<T>,
@@ -617,7 +645,7 @@ export async function withRateLimitRetry<T>(
       return await fn();
     } catch (e) {
       if (i >= attempts - 1 || !(e instanceof BrevoRateLimitError)) throw e;
-      await _sleep(computeRetryDelayMs(e.retryAfterSecs));
+      await _sleep(computeRetryDelayMs(e.retryAfterSecs, e.floorMs));
     }
   }
 }

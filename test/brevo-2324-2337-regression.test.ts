@@ -86,25 +86,87 @@ describe("parseRetryAfterMs compartilhado (#2324)", async () => {
 // ─── #2337 fix 1: elapsed epoch-reset → ≥250ms floor no dashboard worker ────
 
 describe("brevoFetch epoch-reset-elapsed vs retry-after:0 (#2337 fix 1)", async () => {
-  const { computeRetryDelayMs, BrevoRateLimitError, withRateLimitRetry } =
+  const { computeRetryDelayMs, BrevoRateLimitError, withRateLimitRetry, buildStaleResponse, brevoFetch } =
     await import("../workers/brevo-dashboard/src/index.ts");
 
-  // Testa via withRateLimitRetry + BrevoRateLimitError, pois brevoFetch não é
-  // exportado. O fix é no campo retryAfterSecs do BrevoRateLimitError lançado
-  // por brevoFetch: epoch-elapsed → retryAfterSecs=0.25 → computeRetryDelayMs(0.25) = 250ms.
-  // Antes do fix: epoch-elapsed → retryAfterSecs=0 → computeRetryDelayMs(0) = 0ms.
+  // ── brevoFetch header-parse direto (cobre o branch alterado, não só o downstream) ──
 
-  test("computeRetryDelayMs(0.25) → 250ms (representa floor do epoch-elapsed)", () => {
-    assert.strictEqual(computeRetryDelayMs(0.25), 250,
-      "0.25s (floor para epoch elapsed) deve resultar em 250ms");
+  async function captureBrevoFetchError(headers: Record<string, string>): Promise<InstanceType<typeof BrevoRateLimitError>> {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(null, { status: 429, headers })) as unknown as typeof globalThis.fetch;
+    try {
+      await brevoFetch("/v3/test", { BREVO_API_KEY: "k" } as any);
+      throw new Error("brevoFetch deveria ter lançado BrevoRateLimitError");
+    } catch (e) {
+      if (e instanceof BrevoRateLimitError) return e;
+      throw e;
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  test("brevoFetch: x-sib-ratelimit-reset epoch JÁ EXPIRADO → retryAfterSecs=0 (int) + floorMs=250", async () => {
+    const pastEpoch = Math.floor(Date.now() / 1000) - 30; // 30s no passado
+    const e = await captureBrevoFetchError({ "x-sib-ratelimit-reset": String(pastEpoch) });
+    assert.strictEqual(e.retryAfterSecs, 0, "epoch expirado → retryAfterSecs 0 (inteiro p/ header)");
+    assert.strictEqual(e.floorMs, 250, "epoch expirado → floorMs 250 (piso no backoff)");
   });
 
-  test("retry-after:0 literal → computeRetryDelayMs(0) = 0ms (RFC 7231 imediato)", () => {
+  test("brevoFetch: retry-after:0 literal → retryAfterSecs=0 + floorMs=0 (sem piso, RFC 7231)", async () => {
+    const e = await captureBrevoFetchError({ "retry-after": "0" });
+    assert.strictEqual(e.retryAfterSecs, 0, "retry-after:0 → retryAfterSecs 0");
+    assert.strictEqual(e.floorMs, 0, "retry-after:0 literal NÃO recebe floor (retry imediato)");
+  });
+
+  test("brevoFetch: x-sib-ratelimit-reset epoch FUTURO → delta inteiro positivo, sem floor", async () => {
+    const futureEpoch = Math.floor(Date.now() / 1000) + 10; // 10s futuro
+    const e = await captureBrevoFetchError({ "x-sib-ratelimit-reset": String(futureEpoch) });
+    assert.ok(e.retryAfterSecs !== null && e.retryAfterSecs >= 9 && e.retryAfterSecs <= 11,
+      `epoch futuro → ~10s, foi ${e.retryAfterSecs}`);
+    assert.strictEqual(e.floorMs, 0, "epoch futuro não recebe floor");
+  });
+
+  test("brevoFetch: x-sib-ratelimit-reset delta direto (256s) → 256, sem floor", async () => {
+    const e = await captureBrevoFetchError({ "x-sib-ratelimit-reset": "256" });
+    assert.strictEqual(e.retryAfterSecs, 256, "delta direto < 1e9 → valor cru");
+    assert.strictEqual(e.floorMs, 0, "delta direto não recebe floor");
+  });
+
+  // O fix distingue, no backoff INTERNO, dois casos que ambos mapeiam a
+  // retryAfterSecs=0: (a) `retry-after: 0` literal (RFC 7231 retry imediato → 0ms,
+  // floorMs=0); (b) `x-sib-ratelimit-reset` epoch já expirado (janela esgotou →
+  // floorMs=250 aplicado SÓ ao sleep). O header HTTP Retry-After permanece inteiro
+  // (0s) em ambos — o piso fracionário nunca vaza pro header.
+
+  test("computeRetryDelayMs(0) sem floor → 0ms (retry-after:0 literal, RFC 7231)", () => {
     assert.strictEqual(computeRetryDelayMs(0), 0,
       "literal retry-after:0 deve resultar em 0ms — RFC 7231 retry imediato, sem clamp inferior");
   });
 
-  test("withRateLimitRetry com BrevoRateLimitError(0) → sleep(0ms)", async () => {
+  test("computeRetryDelayMs(0, 250) → 250ms (epoch-elapsed floor no backoff)", () => {
+    assert.strictEqual(computeRetryDelayMs(0, 250), 250,
+      "floor 250ms deve elevar o backoff de epoch-elapsed, mantendo retryAfterSecs=0");
+  });
+
+  test("computeRetryDelayMs floor não rebaixa um delay maior (3s vs floor 250ms)", () => {
+    assert.strictEqual(computeRetryDelayMs(3, 250), 3000,
+      "floor é um piso (Math.max), não um cap — 3s domina os 250ms");
+  });
+
+  test("BrevoRateLimitError.floorMs default = 0 (retry-after:0 literal não recebe piso)", () => {
+    const e = new BrevoRateLimitError(0);
+    assert.strictEqual(e.floorMs, 0, "default floorMs deve ser 0 (sem piso)");
+    assert.strictEqual(e.retryAfterSecs, 0, "retryAfterSecs preservado");
+  });
+
+  test("BrevoRateLimitError(0, 250): retryAfterSecs INTEIRO 0 (header válido) + floorMs 250 (backoff)", () => {
+    const e = new BrevoRateLimitError(0, 250);
+    assert.strictEqual(e.retryAfterSecs, 0,
+      "retryAfterSecs deve ser 0 inteiro — vai pro header HTTP Retry-After (RFC 7231 exige inteiro)");
+    assert.strictEqual(e.floorMs, 250, "floorMs carrega o piso do backoff interno");
+  });
+
+  test("withRateLimitRetry: BrevoRateLimitError(0) (literal) → sleep(0ms)", async () => {
     let sleepMs: number | undefined;
     const fakeSleep = async (ms: number) => { sleepMs = ms; };
     let calls = 0;
@@ -117,24 +179,35 @@ describe("brevoFetch epoch-reset-elapsed vs retry-after:0 (#2337 fix 1)", async 
       "BrevoRateLimitError(0) — retry-after:0 literal — deve chamar sleep(0ms)");
   });
 
-  test("withRateLimitRetry com BrevoRateLimitError(0.25) → sleep(250ms) (epoch-elapsed)", async () => {
-    // brevoFetch após o fix: epoch elapsed → retryAfterSecs=0.25
+  test("withRateLimitRetry: BrevoRateLimitError(0, 250) (epoch-elapsed) → sleep(250ms)", async () => {
     let sleepMs: number | undefined;
     const fakeSleep = async (ms: number) => { sleepMs = ms; };
     let calls = 0;
     await withRateLimitRetry(async () => {
       calls++;
-      if (calls === 1) throw new BrevoRateLimitError(0.25); // epoch elapsed → floor
+      if (calls === 1) throw new BrevoRateLimitError(0, 250); // epoch elapsed → floor
       return "ok";
     }, 3, fakeSleep);
-    assert.ok(sleepMs !== undefined && sleepMs >= 250,
-      `epoch-elapsed (BrevoRateLimitError(0.25)) deve resultar em sleep ≥ 250ms, foi ${sleepMs}ms`);
+    assert.strictEqual(sleepMs, 250,
+      "epoch-elapsed (floorMs=250) deve resultar em sleep(250ms), não 0ms");
   });
 
   test("epoch-elapsed floor não regride para caso > 0 (ex: reset em 3s)", () => {
-    // BrevoRateLimitError(3) → computeRetryDelayMs(3) = 3000ms — sem alteração
     assert.strictEqual(computeRetryDelayMs(3), 3000,
       "epoch futuro (3s) não deve ser afetado pelo floor de elapsed");
+  });
+
+  test("REGRESSÃO: header HTTP Retry-After de epoch-elapsed é inteiro (não 0.25)", () => {
+    // O bug do design anterior: retryAfter=0.25 (fracionário) vazava para o header
+    // Retry-After via buildStaleResponse/rateLimitResponse → "Retry-After: 0.25"
+    // (inválido RFC 7231). Agora retryAfterSecs é sempre inteiro; o piso vive em floorMs.
+    const e = new BrevoRateLimitError(0, 250); // epoch-elapsed como brevoFetch o constrói
+    const resp = buildStaleResponse("<html><body>x</body></html>", e.retryAfterSecs);
+    const header = resp.headers.get("Retry-After");
+    assert.strictEqual(header, "0",
+      "header Retry-After deve ser '0' (inteiro), nunca '0.25' (fracionário, inválido RFC 7231)");
+    assert.ok(!header!.includes("."),
+      "header Retry-After nunca deve conter ponto decimal");
   });
 });
 
@@ -234,7 +307,7 @@ describe("lsPending:true previne KV-write churn (#2337 fix 2)", async () => {
     const writesAfter1st = putCalls.length;
 
     // 2ª render: KV contém lsPending:true → ls-fetch NÃO deve ocorrer; 0 writes
-    await fetchRecentCampaigns(
+    const result = await fetchRecentCampaigns(
       { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
       20, false, mockFetch as any,
     );
@@ -244,6 +317,15 @@ describe("lsPending:true previne KV-write churn (#2337 fix 2)", async () => {
     const newWrites = putCalls.slice(writesAfter1st).filter(p => p.key === "stats:99");
     assert.strictEqual(newWrites.length, 0,
       "2ª render com lsPending:true → NENHUM novo write de stats:99 (sem churn KV)");
+
+    // gs DEVE continuar acessível no resultado (early-return ocorre APÓS globalStatsMap.set).
+    const campaign = result.find((c: any) => c.id === 99);
+    assert.ok(campaign?.statistics?.globalStats,
+      "gs deve estar presente no resultado mesmo com lsPending (early-return preserva gs)");
+    assert.strictEqual(campaign!.statistics!.globalStats!.sent, 100,
+      "gs.sent deve refletir os dados cacheados (não zerado)");
+    assert.ok(campaign?.statistics?.linksStats === undefined,
+      "linksStats ausente do resultado (ls-fetch falhou, lsPending suprime re-fetch)");
   });
 
   test("lsPending expira (KV miss) → próxima render tenta ls-fetch novamente", async () => {
