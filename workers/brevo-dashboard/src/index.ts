@@ -523,9 +523,18 @@ export async function fetchRecentCampaigns(
           } catch {
             // linksStats indisponível (429/erro após retry) — gs segue válido; seção de links degrada
           }
-        } else {
+        } else if (!cachedLsWasPending) {
+          // cachedLs is present and not poison — reuse it
           ls = cachedLs as BrevoLinksStats;
         }
+        // #2355 fix 3: when cachedLsWasPending=true (ls-fetch failed in prior cycle),
+        // leave ls === undefined so the KV write below keeps lsPending:true sentinel
+        // (payload = { gs, lsPending:true }). Previously: ls = cachedLs (null) →
+        // null !== undefined → writes { gs, ls:null } → sentinel destroyed → 2-cycle
+        // churn resumes. The fix: cachedLsWasPending falls through WITHOUT setting ls,
+        // preserving undefined. The linksStatsMap does not get set (ls still undefined),
+        // which is correct — links section degrades until TTL expires and a fresh attempt
+        // succeeds. The `ls !== undefined` guard on linksStatsMap.set below handles this.
 
         // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
         // zerado em certas condicoes; persistir zerado sem TTL criaria entrada

@@ -186,7 +186,21 @@ export function stitchNewsletter(input: StitchInput): string {
   if (input.d3Path != null && d3 === null) {
     throw new Error(`stitch: input ausente: ${input.d3Path}`);
   }
-  const approved = JSON.parse(readFileSync(input.approvedCappedPath, "utf8")) as ApprovedJsonShape;
+  // #2355 fix 1: required draft files must not be empty/whitespace-only —
+  // an empty destaque block produces a bare `---` in the output (silently corrupt edition).
+  // D1 and D2 are always required; D3 only when d3Path is provided.
+  if (!d1) throw new Error(`stitch: 02-d1-draft.md vazio: ${input.d1Path}`);
+  if (!d2) throw new Error(`stitch: 02-d2-draft.md vazio: ${input.d2Path}`);
+  if (input.d3Path != null && d3 === "") {
+    throw new Error(`stitch: 02-d3-draft.md vazio (esperado para edição de 3 destaques): ${input.d3Path}`);
+  }
+  // #2355 fix 2: wrap parse to give a diagnostic when the capped JSON is corrupt.
+  let approved: ApprovedJsonShape;
+  try {
+    approved = JSON.parse(readFileSync(input.approvedCappedPath, "utf8")) as ApprovedJsonShape;
+  } catch (parseErr) {
+    throw new Error(`stitch: approved-capped.json corrompido (parse falhou): ${input.approvedCappedPath} — ${(parseErr as Error).message}`);
+  }
 
   const coverageLine = approved.coverage?.line ??
     "Para esta edição, eu (o editor) enviei N submissões e a Diar.ia encontrou outros M artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.";
@@ -308,17 +322,23 @@ function main(): void {
   }
   try {
     // #2343: detect destaque_count from approved-capped.json to determine if D3 exists.
+    // #2355 fix 2: report missing/corrupt capped JSON explicitly — don't mask it as a
+    // missing D3 draft. Previously: absent → destaqueCount=3 → d3Path set → stitch
+    // throws "input ausente: 02-d3-draft.md" (wrong diagnosis). Now: absent/corrupt
+    // throws immediately with the real cause.
     const approvedCappedPath = join(editionDir, "_internal", "01-approved-capped.json");
-    let destaqueCount = 3; // default
-    if (existsSync(approvedCappedPath)) {
-      try {
-        const approved = JSON.parse(readFileSync(approvedCappedPath, "utf8")) as { highlights?: unknown[] };
-        if (Array.isArray(approved.highlights)) {
-          destaqueCount = approved.highlights.length;
-        }
-      } catch {
-        // parse failure → keep default 3 (stitch will re-throw on required files)
+    if (!existsSync(approvedCappedPath)) {
+      throw new Error(`stitch: approved-capped.json ausente — execute o Stage 1 antes: ${approvedCappedPath}`);
+    }
+    let destaqueCount = 3; // default when highlights field is absent (valid)
+    try {
+      const approved = JSON.parse(readFileSync(approvedCappedPath, "utf8")) as { highlights?: unknown[] };
+      if (Array.isArray(approved.highlights)) {
+        destaqueCount = approved.highlights.length;
       }
+    } catch (parseErr) {
+      // #2355 fix 2: parse failure → fail loud with the capped JSON as the cause.
+      throw new Error(`stitch: approved-capped.json corrompido (parse falhou): ${approvedCappedPath} — ${(parseErr as Error).message}`);
     }
     // #2343: D3 existe SOMENTE em edições de exatamente 3 destaques. `=== 3`
     // (não `>= 3`): um count corrompido de 4+ que escape do invariant Stage-1
