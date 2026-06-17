@@ -416,6 +416,9 @@ describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () 
     const result = resolveDestaques(sections, highlights);
     assert.equal(result.length, 2, "demoção de D3 preservada: deve retornar 2 destaques");
     assert.deepEqual(result, ["https://a.com/1", "https://b.com/2"]);
+    // double-placement guard: URL demovida permanece no radar e NÃO entra nos destaques
+    assert.ok(sections.radar.includes("https://c.com/3"), "radar não deve ser mutado por resolveDestaques");
+    assert.ok(!result.includes("https://c.com/3"), "c.com/3 não deve aparecer nos destaques E no radar ao mesmo tempo");
   });
 
   it("#2333: URL demovida NÃO aparece nos destaques após demoção 3→2", () => {
@@ -448,6 +451,21 @@ describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () 
     assert.ok(!result.includes("https://d.com/extra"));
   });
 
+  it("#2333: URL demovida para lancamento também é preservada (guard cobre todos os buckets)", () => {
+    // mdBucketUrls inclui lancamento+radar+use_melhor+video.
+    // Se a lógica regredisse para bloquear só radar, este teste pegaria a regressão.
+    const sections = {
+      destaques: ["https://a.com/1", "https://b.com/2"],
+      lancamento: ["https://c.com/3"], // URL demovida está em lancamento, não radar
+      radar: [],
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.equal(result.length, 2, "demoção para lancamento preservada: deve retornar 2 destaques");
+    assert.ok(!result.includes("https://c.com/3"), "c.com/3 demovida para lancamento não deve reaparecer nos destaques");
+  });
+
   it("#2333: editor com 1 destaque ainda recebe fill (lacuna provavelmente acidental)", () => {
     // 1 < 2 → ainda entra no fill-loop (comportamento inalterado)
     const sections = {
@@ -459,7 +477,7 @@ describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () 
     };
     const result = resolveDestaques(sections, highlights);
     assert.equal(result[0], "https://a.com/1", "D1 manual preservado");
-    assert.ok(result.length > 1, "fill deve completar quando count < 2");
+    assert.equal(result.length, 3, "fill deve completar até 3 quando count < 2");
     assert.ok(result.includes("https://b.com/2"), "rank 2 deve ser adicionado no fill");
   });
 });

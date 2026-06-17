@@ -173,8 +173,9 @@ export function resolveDestaques(
 ): string[] {
   let destaquesUrls = [...sections.destaques];
 
-  // #2333: piso 2 — se o editor deixou 2 destaques, respeitar (demoção de D3).
-  // Só completar quando 0 ou 1 destaque (lacuna provavelmente acidental).
+  // #2333: limiar 2 pra ativar fill; alvo do fill continua 3.
+  // Se o editor deixou ≥2 destaques, respeitar (demoção intencional de D3 → não preencher).
+  // Só entrar no fill-loop quando 0 ou 1 destaque (lacuna provavelmente acidental).
   if (destaquesUrls.length < 2) {
     // #663: só aceitar URLs que ainda estão em algum bucket do MD
     const mdBucketUrls = new Set([
