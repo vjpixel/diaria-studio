@@ -513,10 +513,12 @@ export function selectUseMelhorSplit(
   let targetCasual: number;
   let targetDev: number;
   if (bothClassesExist && target >= 2 && target < 4) {
-    // Small target with both classes: split evenly so neither is starved.
-    // floor(target/2) for casual, ceil(target/2) for dev keeps total = target.
-    targetDev = Math.ceil(target / 2);
-    targetCasual = target - targetDev;
+    // Small target with both classes: casual is the favored (harder-to-fill) class.
+    // ceil for casual ensures casual >= dev on odd targets:
+    //   target=3 → casual=2, dev=1  (2 casual + 1 dev — editorial standard)
+    //   target=2 → casual=1, dev=1  (balanced 1+1)
+    targetCasual = Math.ceil(target / 2);
+    targetDev = target - targetCasual;
   } else {
     targetCasual = Math.min(2, target);
     targetDev = Math.min(2, target - targetCasual);

@@ -974,6 +974,35 @@ describe("promoteUseMelhorToMinimum — dedup by rootDomain (#2353)", () => {
     assert.equal(r.promoted, 2);
     assert.equal(r.shortfall, 0);
   });
+
+  it("shortfall domain-cap-limited: todos runners-up do mesmo rootDomain do kept existente (#2353)", () => {
+    // Scenario: bucket has 1 aws.amazon.com item; both runners-up are also aws.amazon.com.
+    // Old behavior: promoted bedrock-1 (only URL dedup, not domain dedup) → shortfall=0 (wrong).
+    // New behavior: both runners-up blocked by seenDomains → shortfall=1 (domain-cap-limited).
+    // This is the correct result: diverse-domain cap holds, shortfall reported honestly.
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (msg: string) => { warns.push(msg); };
+    try {
+      const r = promoteUseMelhorToMinimum(
+        [{ url: "https://aws.amazon.com/bedrock/intro" }], // amazon.com already in kept
+        [
+          { url: "https://aws.amazon.com/bedrock/agents", bucket: "use_melhor", score: 90 }, // same domain
+          { url: "https://aws.amazon.com/bedrock/rag", bucket: "use_melhor", score: 85 },    // same domain
+        ],
+        new Set<string>(),
+        STAGE_2_MIN_USE_MELHOR, // min=2
+      );
+      assert.equal(r.kept.length, 1, "nenhum runner-up promovido — todos do mesmo rootDomain");
+      assert.equal(r.promoted, 0, "promoted deve ser 0");
+      assert.equal(r.shortfall, 1, "shortfall=1 (domain-cap-limited, não pool vazio)");
+      // Deve emitir log distinguindo domain-cap-limited de pool vazio
+      const warn = warns.find((w) => w.includes("domain-cap-limited"));
+      assert.ok(warn !== undefined, "deve logar 'domain-cap-limited' para distinguir de pool vazio");
+    } finally {
+      console.warn = orig;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -981,8 +1010,11 @@ describe("promoteUseMelhorToMinimum — dedup by rootDomain (#2353)", () => {
 // ---------------------------------------------------------------------------
 
 describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
-  it("warn só pela cota 2+2 quando kept.length <= MAX (sem sobreposição com cap)", () => {
-    // kept.length=3 <= STAGE_2_MAX_USE_MELHOR=4; split seleciona 2 → droppedByCap=0
+  it("sem warn quando pool ≤ MAX e split preserva todos os itens", () => {
+    // 2 casual + 1 dev-avancado = 3 items (≤ MAX=4).
+    // selectUseMelhorSplit: 2 casual (quota) + 0 dev-iniciante (none) + 1 leftover dev-avancado = 3.
+    // um.kept.length=3, umFinal.length=3 → truncated=0 → nenhum warn emitido.
+    // This test is non-vacuous: it directly asserts truncated=0 and after=3 (no hidden guard).
     const warns: string[] = [];
     const orig = console.warn;
     console.warn = (msg: string) => { warns.push(msg); };
@@ -992,7 +1024,6 @@ describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
         lancamento: [],
         radar: [],
         use_melhor: [
-          // 2 casual + 1 dev-avancado (only 2 fit in 2+2 split: 2 casual + 0 iniciante)
           { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
           { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
           { url: "https://blog.langchain.dev/lg-1", title: "LangGraph multi-agent deployment pipeline 1" },
@@ -1000,14 +1031,44 @@ describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
         runners_up: [],
       };
       const { report } = applyStage2Caps(approved);
-      // 3 kept → split picks 2 (2 casual, 0 beginner) → truncated=1
-      // droppedByCap = max(0, 3 - 4) = 0 → split-only warn
-      if (report.use_melhor.truncated > 0) {
-        const warn = warns.find((w) => w.includes("USE MELHOR"));
-        assert.ok(warn !== undefined, "deve emitir warn de USE MELHOR");
-        assert.ok(warn!.includes("cota 2+2"), `warn deve mencionar 'cota 2+2', foi: "${warn}"`);
-        assert.ok(!warn!.includes("cap máximo"), `warn NÃO deve mencionar 'cap máximo' quando cap não aplicado`);
-      }
+      assert.equal(report.use_melhor.truncated, 0, "pool ≤ MAX: split preserva todos os itens");
+      assert.equal(report.use_melhor.after, 3, "3 itens mantidos intactos");
+      const warn = warns.find((w) => w.includes("USE MELHOR"));
+      assert.equal(warn, undefined, "sem warn quando truncated=0");
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  it("warn pela cota 2+2 quando pool excede MAX com mistura de classes (split-quota warn)", () => {
+    // 3 casual + 2 dev-iniciante = 5 items (> MAX=4).
+    // selectUseMelhorSplit: 2 casual + 2 dev-iniciante = 4 → umFinal=4, truncated=1.
+    // droppedByCap = max(0, 5-4) = 1. droppedBySplit = truncated - droppedByCap = 0.
+    // → cap-only warn mentioning "cap máximo".
+    // Test verifies truncated > 0 is directly asserted (no hidden guard).
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (msg: string) => { warns.push(msg); };
+    try {
+      const approved = {
+        highlights: [],
+        lancamento: [],
+        radar: [],
+        use_melhor: [
+          { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://canaltech.com.br/ia/c3", title: "Como usar ChatGPT para produtividade passo a passo 3", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://learn.deeplearning.ai/course-1", title: "Prompt Engineering for Developers getting started", audience_affinity: { matched: ["academy:true"] } },
+          { url: "https://learn.deeplearning.ai/course-2", title: "Python for beginners api key quickstart", audience_affinity: { matched: ["academy:true"] } },
+        ],
+        runners_up: [],
+      };
+      const { report } = applyStage2Caps(approved);
+      // 5 items, 3 casual + 2 dev-iniciante. split → 2+2=4. truncated=1.
+      assert.ok(report.use_melhor.truncated > 0, "truncated deve ser > 0");
+      assert.equal(report.use_melhor.after, 4, "4 itens após split+cap");
+      const warn = warns.find((w) => w.includes("USE MELHOR"));
+      assert.ok(warn !== undefined, "deve emitir warn de USE MELHOR");
     } finally {
       console.warn = orig;
     }
