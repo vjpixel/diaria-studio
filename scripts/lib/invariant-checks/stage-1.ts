@@ -29,8 +29,9 @@ interface ApprovedJson {
 }
 
 /**
- * Stage 2 espera exatamente 3 highlights. Editor pode ter aprovado com 2 ou 4
- * (corrupção do gate UX). Falha cedo.
+ * Stage 2 espera 2 ou 3 highlights. Editor pode ter aprovado com 1 ou 4+
+ * (corrupção do gate UX). Falha cedo para fora do range {2,3}.
+ * #2343: 2-destaque é suportado; range válido é [2,3].
  */
 function checkApprovedHas3Highlights(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "01-approved.json");
@@ -60,12 +61,15 @@ function checkApprovedHas3Highlights(editionDir: string): InvariantViolation[] {
     ];
   }
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
-  if (highlights.length !== 3) {
+  // #2343: 2-destaque é suportado — range válido {2,3}. <2 ou >3 é erro.
+  if (highlights.length < 2 || highlights.length > 3) {
     return [
       {
         rule: "approved-has-3-highlights",
-        message: `_internal/01-approved.json tem ${highlights.length} highlights — Stage 2 espera exatamente 3 (D1, D2, D3).`,
-        source_issue: "#159",
+        message:
+          `_internal/01-approved.json tem ${highlights.length} highlight(s) — ` +
+          `Stage 2 aceita 2 ou 3 (D1+D2 ou D1+D2+D3). Fora desse range indica corrupção do gate.`,
+        source_issue: "#2343",
         severity: "error",
         file: path,
       },
@@ -142,8 +146,8 @@ function checkCoverageLinePresent(editionDir: string): InvariantViolation[] {
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
-    description: "01-approved.json tem 3 highlights (#159)",
-    source_issue: "#159",
+    description: "01-approved.json tem 2 ou 3 highlights (#2343)",
+    source_issue: "#2343",
     stage: 1,
     run: checkApprovedHas3Highlights,
   },

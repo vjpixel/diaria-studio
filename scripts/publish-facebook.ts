@@ -1,7 +1,8 @@
 /**
  * publish-facebook.ts
  *
- * Publica 3 posts no Facebook (d1, d2, d3) via Graph API.
+ * Publica posts no Facebook (d1, d2 — ou d1, d2, d3) via Graph API.
+ * #2343: suporta edições com 2 ou 3 destaques.
  * Cada post: imagem + caption. Suporta publicação imediata ou agendada.
  *
  * Uso:
@@ -33,6 +34,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -68,6 +70,23 @@ function loadPublished(path: string): SocialPublished {
     return JSON.parse(readFileSync(path, "utf8"));
   }
   return { posts: [] };
+}
+
+/**
+ * #2343: extrai a lista de destaques presentes na seção de uma plataforma do 03-social.md.
+ * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição. Fallback para ["d1","d2","d3"]
+ * se a plataforma não for encontrada ou estiver vazia (mantém comportamento legado).
+ * Reusa `extractPlatformSection` de lint-social-md.ts (#2343 review — evita drift de regex).
+ */
+export function extractDestaquesFromSocialMd(socialMd: string, platform: string): string[] {
+  const section =
+    platform === "facebook" || platform === "linkedin"
+      ? extractPlatformSection(socialMd, platform)
+      : null;
+  if (section === null) return ["d1", "d2", "d3"]; // fallback (plataforma ausente)
+  const valid = parseDestaqueHeaders(section);
+  // Fallback para legado se a seção não tem ao menos 2 destaques bem-formados.
+  return valid.length >= 2 ? valid : ["d1", "d2", "d3"];
 }
 
 export function extractPostText(socialMd: string, platform: string, destaque: string): string {
@@ -490,7 +509,8 @@ async function main() {
     return;
   }
 
-  const destaques = ["d1", "d2", "d3"];
+  // #2343: derive destaque list from actual social MD (supports 2 or 3 destaques).
+  const destaques = extractDestaquesFromSocialMd(socialMd, "facebook");
   const results: PostEntry[] = [];
 
   // #1056 — wrapper que injeta is_test:true em entries quando rodando test_mode

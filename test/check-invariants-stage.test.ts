@@ -214,15 +214,38 @@ describe("Stage 1 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("approved-has-3-highlights falha com 2 highlights", () => {
+  // #2343: 2 destaques são válidos — range {2,3}. Antes era obrigatório exatamente 3.
+  it("approved-has-3-highlights PASSA com 2 highlights (#2343 — range {2,3})", () => {
     writeFileSync(
       join(fixture, "_internal", "01-approved.json"),
       JSON.stringify({ highlights: [{}, {}] }),
     );
     const v = checkApprovedHas3Highlights(fixture);
+    assert.equal(v.length, 0, `Esperava 0 violations com 2 destaques (range {2,3}): ${JSON.stringify(v)}`);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("approved-has-3-highlights falha com 1 highlight (fail-loud: < 2)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{}] }),
+    );
+    const v = checkApprovedHas3Highlights(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "approved-has-3-highlights");
-    assert.match(v[0].message, /2 highlights/);
+    assert.match(v[0].message, /1 highlight/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("approved-has-3-highlights falha com 4 highlights (fail-loud: > 3)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}, {}, {}] }),
+    );
+    const v = checkApprovedHas3Highlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "approved-has-3-highlights");
+    assert.match(v[0].message, /4 highlight/);
     rmSync(fixture, { recursive: true, force: true });
   });
 

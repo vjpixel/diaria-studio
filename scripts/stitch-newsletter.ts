@@ -159,7 +159,8 @@ function readEiaBlock(editionDir: string): string {
 interface StitchInput {
   d1Path: string;
   d2Path: string;
-  d3Path: string;
+  /** #2343: D3 é opcional. Ausente quando destaque_count == 2 (2-destaque edition). */
+  d3Path?: string | null;
   approvedCappedPath: string;
   editionDir: string;
   /** #1938: injeta o midCallout de divulgação CLARICE entre D1 e D2. Default
@@ -168,15 +169,23 @@ interface StitchInput {
 }
 
 export function stitchNewsletter(input: StitchInput): string {
-  const reads = [input.d1Path, input.d2Path, input.d3Path, input.approvedCappedPath];
-  for (const p of reads) {
+  // #2343: D3 is optional for 2-destaque editions. Required paths = d1, d2, approvedCapped.
+  const requiredReads = [input.d1Path, input.d2Path, input.approvedCappedPath];
+  for (const p of requiredReads) {
     if (!existsSync(p)) {
       throw new Error(`stitch: input ausente: ${p}`);
     }
   }
   const d1 = readFileSync(input.d1Path, "utf8").trim();
   const d2 = readFileSync(input.d2Path, "utf8").trim();
-  const d3 = readFileSync(input.d3Path, "utf8").trim();
+  // #2343: D3 is present only for 3-destaque editions.
+  const d3: string | null = (input.d3Path != null && existsSync(input.d3Path))
+    ? readFileSync(input.d3Path, "utf8").trim()
+    : null;
+  // If d3Path is provided but missing, crash loudly (caller passed wrong path).
+  if (input.d3Path != null && d3 === null) {
+    throw new Error(`stitch: input ausente: ${input.d3Path}`);
+  }
   const approved = JSON.parse(readFileSync(input.approvedCappedPath, "utf8")) as ApprovedJsonShape;
 
   const coverageLine = approved.coverage?.line ??
@@ -232,11 +241,16 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
     "---",
     "",
-    d3,
-    "",
-    "---",
-    "",
   );
+  // #2343: D3 is optional. For 2-destaque editions, omit the D3 block entirely.
+  if (d3 !== null) {
+    parts.push(
+      d3,
+      "",
+      "---",
+      "",
+    );
+  }
 
   // #1752: USE MELHOR antes de LANÇAMENTOS (decisão editorial 260603).
   if (useMelhor) {
@@ -293,18 +307,39 @@ function main(): void {
     process.exit(1);
   }
   try {
+    // #2343: detect destaque_count from approved-capped.json to determine if D3 exists.
+    const approvedCappedPath = join(editionDir, "_internal", "01-approved-capped.json");
+    let destaqueCount = 3; // default
+    if (existsSync(approvedCappedPath)) {
+      try {
+        const approved = JSON.parse(readFileSync(approvedCappedPath, "utf8")) as { highlights?: unknown[] };
+        if (Array.isArray(approved.highlights)) {
+          destaqueCount = approved.highlights.length;
+        }
+      } catch {
+        // parse failure → keep default 3 (stitch will re-throw on required files)
+      }
+    }
+    // #2343: D3 existe SOMENTE em edições de exatamente 3 destaques. `=== 3`
+    // (não `>= 3`): um count corrompido de 4+ que escape do invariant Stage-1
+    // não deve silenciosamente virar edição de 3 destaques — fica null e o
+    // stitch falha alto no check de arquivo requerido, em vez de dropar o 4º.
+    const d3Path = destaqueCount === 3
+      ? join(editionDir, "_internal", "02-d3-draft.md")
+      : null;
+
     const out = stitchNewsletter({
       d1Path: join(editionDir, "_internal", "02-d1-draft.md"),
       d2Path: join(editionDir, "_internal", "02-d2-draft.md"),
-      d3Path: join(editionDir, "_internal", "02-d3-draft.md"),
-      approvedCappedPath: join(editionDir, "_internal", "01-approved-capped.json"),
+      d3Path,
+      approvedCappedPath,
       editionDir,
       // #1938: kill-switch — `--no-sponsor` pula o midCallout da Clarice.
       sponsor: values["no-sponsor"] ? false : true,
     });
     const outPath = join(editionDir, "_internal", "02-draft.md");
     writeFileSync(outPath, out);
-    console.log(JSON.stringify({ out_path: outPath, bytes: out.length }, null, 2));
+    console.log(JSON.stringify({ out_path: outPath, bytes: out.length, destaque_count: destaqueCount }, null, 2));
   } catch (e) {
     console.error(`[stitch-newsletter] erro: ${(e as Error).message}`);
     process.exit(1);

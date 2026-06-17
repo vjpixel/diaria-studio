@@ -57,6 +57,23 @@ export function extractPlatformSection(md: string, platform: "linkedin" | "faceb
 }
 
 /**
+ * #2343: extrai a lista de destaques (`## dN`) presentes numa seção de plataforma.
+ * Retorna a lista em ordem canônica d1..d3, sem duplicatas; [] se nenhum achado.
+ * Compartilhado por publish-facebook.ts e publish-linkedin.ts (evita drift de regex).
+ */
+export function parseDestaqueHeaders(section: string): string[] {
+  const destaques: string[] = [];
+  // Match ## d1, ## d2, ## d3 headers (not ## post_pixel etc)
+  const headerRe = /(?:^|\n)## (d\d+)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = headerRe.exec(section)) !== null) {
+    const d = m[1].toLowerCase();
+    if (!destaques.includes(d)) destaques.push(d);
+  }
+  return ["d1", "d2", "d3"].filter((d) => destaques.includes(d));
+}
+
+/**
  * Valida CTAs do LinkedIn — devem usar `diar.ia.br` puro.
  *
  * Aceitos:

@@ -31,7 +31,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
-| `approved-has-3-highlights` | 01-approved.json tem 3 highlights (#159) | #159 |
+| `approved-has-3-highlights` | 01-approved.json tem 2 ou 3 highlights (#2343) | #2343 |
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
 
