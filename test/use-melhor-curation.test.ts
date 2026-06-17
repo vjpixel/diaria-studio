@@ -836,6 +836,29 @@ describe("dedupeUseMelhorBucket — self-review finding 2: 1-token kept item bli
     // {"langchain","tutorial"} vs {"bedrock"}: intersection=0 < threshold=2 → NOT blocked.
     assert.equal(result.length, 2, "item distinto após 1-token kept não deve ser bloqueado");
   });
+
+  it("≥2-token kept item registers tokens — near-dup sharing ≥2 tokens IS blocked (#2325 discriminant)", () => {
+    // This test is the #2325 regression discriminant: it FAILS if the seenTokens.push
+    // at line 300 (kept-item registration) is reverted.
+    //
+    // Without registration: seenTokens empty when B is evaluated → B not blocked → length=2.
+    // With registration (fix): A's {"vector","database","search","architecture"} is in seenTokens.
+    //   B tokens {"vector","database","indexing","techniques"}: intersection=2 ("vector","database") ≥ threshold=2 → BLOCKED.
+    //   → length=1.
+    //
+    // Uses ≥2-token fingerprints (not 1-token) so the #2336 floor doesn't obscure the signal:
+    //   threshold = max(2, min(2, 4)) = 2; intersection=2 >= 2 → blocked.
+    const items = [
+      { url: "https://blog.a.com/vector-search", title: "Vector Database Search Architecture" }, // kept: {"vector","database","search","architecture"}
+      { url: "https://blog.b.com/vector-index",  title: "Vector Database Indexing Techniques" }, // near-dup: shares "vector","database"
+    ];
+    const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
+    // A kept → registers {"vector","database","search","architecture"}.
+    // B: tokens {"vector","database","indexing","techniques"}.
+    // intersectionSize >= 2 ("vector","database") ≥ threshold=2 → BLOCKED.
+    assert.equal(result.length, 1, "#2325 discriminant: ≥2-token near-dup deve ser bloqueado pelo kept item registrado");
+    assert.equal(result[0].url, items[0].url, "só o primeiro (A) deve ser mantido");
+  });
 });
 
 describe("dedupeUseMelhorBucket — self-review finding 3: two-pool thematic leak (#2325)", () => {

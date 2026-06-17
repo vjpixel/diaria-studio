@@ -458,6 +458,18 @@ describe("#2338/fix2 — empty from guard", () => {
     const radarUrl = buckets.radar![0].url;
     assert.notEqual(radarUrl, "", "#2338: radar item deve ter URL navegável (não '' mesmo com from vazio)");
     assert.ok(typeof radarUrl === "string" && radarUrl.startsWith("http"), "#2338: URL do radar item deve ser uma URL válida");
+
+    // #2356 fix 1 — reason deve incluir aviso de que URL do radar TAMBÉM repete
+    // (ternary branch `fromEmptyRadarAlsoRepeats ? "; a URL do radar TAMBÉM repete..." : ""`).
+    // Sem esse ramo, o editor vê reason genérico "URL oficial repete" sem entender que
+    // re-promover com a URL de pesquisa original (article.url) ainda repetiria.
+    // Este assert FALHA se o ternary branch for removido ou alterado para retornar "".
+    const demotedReason = result.demoted[0].reason;
+    assert.match(
+      demotedReason,
+      /TAMBÉM repete/,
+      "#2356: reason deve incluir aviso que URL do radar também repete quando from='' e URL repete past-editions",
+    );
   });
 
   it("from='' com to válido e NÃO repetido: mantém em lancamento", () => {

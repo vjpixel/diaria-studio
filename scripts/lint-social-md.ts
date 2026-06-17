@@ -70,6 +70,18 @@ export function parseDestaqueHeaders(section: string): string[] {
     const d = m[1].toLowerCase();
     if (!destaques.includes(d)) destaques.push(d);
   }
+  // Warn about any ## dN headers that are outside the canonical set [d1, d2, d3].
+  // A writer typo like `## d4` instead of `## d3` would silently drop the third
+  // destaque, producing only 2 social posts instead of 3 (#2356 fix 2).
+  const canonical = new Set(["d1", "d2", "d3"]);
+  for (const d of destaques) {
+    if (!canonical.has(d)) {
+      console.error(
+        `[parseDestaqueHeaders] WARN: header ## ${d} encontrado mas está fora do conjunto canônico [d1, d2, d3] — ` +
+          `possível typo (ex: ## d4 em vez de ## d3)? Este destaque será ignorado.`,
+      );
+    }
+  }
   return ["d1", "d2", "d3"].filter((d) => destaques.includes(d));
 }
 
