@@ -143,9 +143,25 @@ export function checkPromotedDedup(
       );
     }
 
+    // Guarda: from === '' (orquestrador não preencheu URL de pesquisa) — a URL
+    // restaurada no radar SERÁ a URL oficial repetida (article.url === sub.to).
+    // Anotar explicitamente que a URL do próprio item radar também repete, para
+    // que o editor não re-promova pensando que apenas a URL oficial estava repetida
+    // e que o item original (radar) está limpo (#2356 fix 1).
+    const fromEmptyRadarAlsoRepeats =
+      sub.from === "" && pastUrls.has(canonicalize(article.url));
+    if (fromEmptyRadarAlsoRepeats) {
+      console.error(
+        `[check-promoted-dedup] WARN: artigo "${article.title ?? sub.to}" tem from='' (sem URL de pesquisa original) ` +
+          `e a URL do radar restaurada (${article.url}) TAMBÉM repete past-editions — não re-promover sem trocar a URL.`,
+      );
+    }
+
     const fromRepeatSuffix = fromAlsoRepeats
       ? `; URL de pesquisa original (from=${sub.from}) também repete — não re-promover sem trocar a URL`
-      : "";
+      : fromEmptyRadarAlsoRepeats
+        ? `; a URL do radar TAMBÉM repete — não re-promover sem trocar a URL`
+        : "";
 
     const reason = isWithinEditionDuplicate
       ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar${fromRepeatSuffix}`

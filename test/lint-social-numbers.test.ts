@@ -786,4 +786,53 @@ describe("lint-social-numbers CLI (#2338/fix1) — ok:false no JSON em --post-st
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("--post-stage5 com {outros_count} literal mas sem count-findings: JSON ok=false (#2356 discriminant)", () => {
+    // This test is the #2338/fix1 discriminant for the ok field: it FAILS if the
+    // `!hasUnresolvedPostStage5` term is removed from the ok expression.
+    //
+    // Without `!hasUnresolvedPostStage5` in ok:
+    //   ok = (totalNums===0 && countFindings.length===0) = (0===0 && 0===0) = true  ← WRONG
+    // With the term:
+    //   ok = (0===0 && 0===0 && !true) = false  ← correct
+    //
+    // Scenario: {outros_count} literal (Stage 5 forgot to resolve it) with no numeric
+    // count-findings (lintCommentDiariaCount skips {outros_count} entries). So the ONLY
+    // reason ok=false is the unresolved placeholder check — the term we're testing.
+    const tmp = mkdtempSync(join(tmpdir(), "lint-2338-fix1c-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      // Use approved data where count doesn't matter (placeholder will short-circuit lint)
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      // Social: {outros_count} literal (unresolved by Stage 5) — no numeric findings
+      const socialWithUnresolved = SOCIAL_WITH_COMMENTS.replace(
+        /mais 9 destaques de IA do dia/g,
+        "mais {outros_count} destaques de IA do dia",
+      );
+      writeFileSync(socialPath, socialWithUnresolved, "utf8");
+
+      const result = runLintCli2338(socialPath, approvedPath, ["--post-stage5"]);
+
+      // exit 1 because of unresolved placeholder
+      assert.equal(result.status, 1, "#2356: --post-stage5 com {outros_count} deve sair exit 1");
+
+      // ok must be false — this is what the test discriminates:
+      // if !hasUnresolvedPostStage5 were removed from the ok expression, ok would be
+      // true here (no num-findings, no count-findings) even though exit=1.
+      let parsed: { ok: boolean } | undefined;
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(result.stdout) as { ok: boolean };
+      }, `stdout deve ser JSON válido — recebido: ${JSON.stringify(result.stdout)}`);
+      assert.equal(
+        parsed!.ok,
+        false,
+        "#2356 discriminant: ok deve ser false quando há {outros_count} literal pós-Stage5, " +
+          "mesmo sem count-findings — remove !hasUnresolvedPostStage5 do ok e este teste falha",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
