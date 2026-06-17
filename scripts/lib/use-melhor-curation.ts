@@ -348,26 +348,207 @@ export function hasHowToBrSignal(url: string, title: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// #2339 — Classificação casual vs dev-iniciante
+// ---------------------------------------------------------------------------
+
+/**
+ * Classe de audiência para um item USE MELHOR.
+ *
+ * - `"casual"`:       Tutorial para usuário não-técnico (leigo/consciente).
+ *   Critérios: sinal how-to PT-BR, ferramenta consumer (ChatGPT/Gemini/Copilot),
+ *   temática aplicada (carreira, produtividade, finanças), fonte BR de allowlist.
+ *   Não requer código ou API.
+ * - `"dev-iniciante"`: Tutorial técnico para desenvolvedor iniciante.
+ *   Critérios: academy/curso oficial, getting-started, sinal "aprenda a programar
+ *   IA", mas SEM indicadores avançados (fine-tuning, deployment, infra, agentes
+ *   complexos).
+ * - `"dev-avancado"`:  Tutorial técnico para desenvolvedor experiente — não entra
+ *   nas duas cotas acima.
+ */
+export type UseMelhorAudienceClass = "casual" | "dev-iniciante" | "dev-avancado";
+
+/**
+ * Regex de conteúdo avançado — quando presente, classifica como `dev-avancado`
+ * independente de outros sinais. Cobre: fine-tuning, RAG completo, agents/LangGraph,
+ * infra de ML, verifiers, deployment, TPU/GPU, RLHF, distilação, vector stores.
+ *
+ * Nota: `agents?` sozinho é genérico (ex: "como usar agentes no ChatGPT"), então
+ * é qualificado por termos de infra/framework ao redor.
+ */
+const RE_ADVANCED_DEV =
+  /\b(fine[- ]?tun(ing|e|ed?)|rlhf|distillat(ion|ing)|deployment\s+(?:pipeline|infra|at\s+scale)|tpu\s+stack|langgraph|langchain\s+(?:agent|graph|multi)|multi[- ]?agent|rag\s+pipeline|vector\s+(?:store|index|search|database)\s+(?:optim|scal|build|archit)|sentiment[- ]?analysis\s+pipeline|scikit[- ]?llm|verifier\s+(?:model|agent|chain|pipeline|module|framework)|llm[- ]?verifier|reward[- ]?verifier|legal\s+agent|end[- ]?to[- ]?end\s+pipeline|mlops|kubeflow|sagemaker\s+(?:training|pipeline|endpoint)|bedrock\s+(?:agent|fine|runtime))\b/i;
+
+/**
+ * Regex de sinal "dev iniciante" — termos de onboarding técnico sem infra avançada.
+ * Exemplos: getting started, hello world, API key, build your first, intro to,
+ * playground, cookbook, learn to code, iniciante dev.
+ */
+const RE_DEV_BEGINNER =
+  /\b(getting[- ]?started|hello[- ]?world|api[- ]?key\b|build\s+your\s+first|intro(?:duction)?\s+to\s+(?:llm|ai|ml|python|prompt)|beginner(?:s?)\s+(?:guide|tutorial|course)|learn(?:ing)?\s+(?:python|typescript|javascript|coding|programming)\s+(?:with|using)?\s*(?:ai|ia)?|iniciante\s+(?:dev|programador|desenvolvedor)|python\s+para\s+iniciante|primeiros\s+passos\s+(?:com\s+)?(?:api|python|llm|dev|código)|playground\b|quickstart|step[- ]?by[- ]?step\s+(?:code|api|python|implementation)|notebook\s+(?:completo|tutorial|passo)|colab\b)/i;
+
+/**
+ * Regex de sinal casual (leigo/consciente): how-to em ferramentas consumer,
+ * tópicos de produtividade/carreira/vida, sem setup técnico.
+ */
+const RE_CASUAL =
+  /\b(chatgpt\s+(?:para|no|na|no\s+trabalho|gratis|gratuito)|gemini\s+(?:para|no|na)|copilot\s+(?:para|no)|notebooklm|como\s+usar\s+(?:ia|intelig[eê]ncia|chatgpt|gemini|claude|copilot)\s+(?:para|no|na|em)\b|passo\s+a\s+passo\s+(?:para|com|de)\b|IA\s+para\s+(?:emprego|trabalho|curriculo|currículo|entrevista|concurso|produtividade|redes\s+sociais|financ|planilha|autonomo|autônomo|freelanc|peque\w+\s+empresa|empreende(?:dor(?:es?|a)?|r)?|atendimento|ingles|inglês|estudos?)\b|tutorial[^\w]*(?:chatgpt|gemini|copilot|ia\s+para)|guia\s+(?:completo|prático|pratico)\s+(?:para|de)\s+(?:iniciantes|leigos|qualquer\s+um)|sem\s+(?:código|programar|saber\s+(?:programar|código))|sem\s+precisar\s+(?:programar|saber|código))\b/i;
+
+/**
+ * #2339: Classifica um item USE MELHOR como "casual", "dev-iniciante" ou "dev-avancado".
+ *
+ * Algoritmo (em ordem de precedência):
+ *   1. Se título/summary tem sinal avançado (RE_ADVANCED_DEV) → dev-avancado (vence qualquer sinal PT-BR).
+ *      Garante que artigo técnico avançado de fonte BR (ex: fine-tuning no canaltech) não caia em "casual"
+ *      por causa de `howto_br_source:true`.
+ *   2. Se tem sinal `"howto_br:true"` (slug URL) no audience_affinity.matched → casual.
+ *   3. Se tem sinal `"howto_br_source:true"` (domínio BR, sinal mais fraco) → casual.
+ *   4. Se tem sinal casual no texto (RE_CASUAL) → casual.
+ *   5. Se tem sinal de dev-iniciante (RE_DEV_BEGINNER) ou academy (matched contém "academy:true") → dev-iniciante.
+ *   6. Default: dev-avancado (conservador — não promover pro-novato sem sinal).
+ *
+ * @param item  Artigo com url, title, summary opcionais e audience_affinity opcionalmente anotado.
+ */
+export function classifyAudienceClass(
+  item: {
+    url?: string;
+    title?: string;
+    summary?: string;
+    audience_affinity?: { matched?: string[] } | null;
+  },
+): UseMelhorAudienceClass {
+  const matched = item.audience_affinity?.matched ?? [];
+  const hay = [item.title ?? "", item.summary ?? ""].join(" ");
+
+  // 1. Advanced dev signal always wins — even from a PT-BR tech source (fix: priority inversion)
+  //    A fine-tuning/RAG article from canaltech.com.br gets howto_br_source:true annotated,
+  //    but the content is dev-avancado. Strongest signal wins first.
+  if (RE_ADVANCED_DEV.test(hay)) {
+    return "dev-avancado";
+  }
+
+  // 2. howto_br:true (URL slug signal) → casual (strong PT-BR how-to indicator)
+  if (matched.includes("howto_br:true")) {
+    return "casual";
+  }
+
+  // 3. howto_br_source:true (weaker domain-only signal) + no advanced → casual
+  if (matched.includes("howto_br_source:true")) {
+    return "casual";
+  }
+
+  // 4. Casual signal in text
+  if (RE_CASUAL.test(hay)) {
+    return "casual";
+  }
+
+  // 5. Dev-beginner signal in text OR academy:true annotation
+  if (RE_DEV_BEGINNER.test(hay) || matched.includes("academy:true")) {
+    return "dev-iniciante";
+  }
+
+  // 6. Default: dev-avancado (conservador)
+  return "dev-avancado";
+}
+
+/**
+ * #2339: Seleciona os itens finais de USE MELHOR aplicando a cota 2 casual + 2 dev-iniciante.
+ *
+ * Estratégia:
+ *   - Prefere preencher 2 casual + 2 dev-iniciante quando há candidatos suficientes.
+ *   - Degrada graciosamente: se não há 2 de uma classe, preenche com a outra (nunca
+ *     crasha, nunca adiciona item fora do pool).
+ *   - Ordem de preferência dentro de cada classe: preserva ordem de entrada (presumida
+ *     por score desc do scorer).
+ *   - Itens "dev-avancado" só entram se uma das cotas não puder ser preenchida.
+ *
+ * @param items   Candidatos use_melhor (pós-dedup, pós-cap, em order de score desc).
+ * @param target  Total máximo de itens (default 4 = STAGE_2_MAX_USE_MELHOR).
+ * @returns       Array selecionado com ao máximo `target` itens.
+ */
+export function selectUseMelhorSplit(
+  items: Array<{ url?: string; title?: string; summary?: string; audience_affinity?: { matched?: string[] } | null; [k: string]: unknown }>,
+  target = 4,
+): typeof items {
+  if (items.length === 0) return [];
+
+  const casual: typeof items = [];
+  const devBeginner: typeof items = [];
+  const devAdvanced: typeof items = [];
+
+  for (const item of items) {
+    const cls = classifyAudienceClass(item);
+    if (cls === "casual") casual.push(item);
+    else if (cls === "dev-iniciante") devBeginner.push(item);
+    else devAdvanced.push(item);
+  }
+
+  // Quota: up to 2 casual + 2 dev-beginner; fill remaining from opposite class or advanced.
+  const targetCasual = Math.min(2, target);
+  const targetDev = Math.min(2, target - targetCasual);
+
+  const selected: typeof items = [];
+
+  // Fill casual quota first
+  selected.push(...casual.slice(0, targetCasual));
+  // Fill dev-beginner quota
+  selected.push(...devBeginner.slice(0, targetDev));
+
+  // If we still have room (< target), fill with leftover casual, then dev-beginner, then advanced.
+  const remaining = target - selected.length;
+  if (remaining > 0) {
+    const leftoverCasual = casual.slice(targetCasual);
+    const leftoverDev = devBeginner.slice(targetDev);
+    const extras = [...leftoverCasual, ...leftoverDev, ...devAdvanced];
+    selected.push(...extras.slice(0, remaining));
+  }
+
+  return selected;
+}
+
+// ---------------------------------------------------------------------------
 // #2278 — Queries de discovery por edição
 // ---------------------------------------------------------------------------
 
 /**
  * Temas de how-to PT-BR para o passo de discovery dedicado.
  * Rotaciona para cobrir diferentes domínios de aplicação por edição.
+ *
+ * #2339: Queries reescritas para mirar tutoriais passo-a-passo reais.
+ * Problema: queries genéricas ("como usar IA para criar curriculo") voltavam com
+ * listicles/matérias de jornal (Administradores, Público, R7) — jornalismo de
+ * tema IA, não guias práticos. Solução: adicionar "tutorial passo a passo",
+ * "como fazer", e site: filters para plataformas de tutorial. As queries PT-BR
+ * são mantidas para preservar o alcance (PT-BR reach).
+ *
+ * Estratégia de enriquecimento (por query):
+ *   a) Adicionar "tutorial passo a passo" ou "guia prático" ao final das queries
+ *      mais genéricas para forçar indexadores a priorizar conteúdo how-to.
+ *   b) Substituir queries amplas por pares (tema + verbo imperativo + ferramenta
+ *      consumer específica) — ex: "crie seu currículo com ChatGPT passo a passo".
+ *   c) Manter variedade de domínios de aplicação (carreira, finanças, negócio,
+ *      redes sociais, estudos) para cobrir o perfil casual da audiência.
  */
 export const HOWTO_BR_DISCOVERY_TOPICS: readonly string[] = [
-  "como usar IA para se preparar para entrevista de emprego",
-  "como usar IA para criar curriculo",
-  "como usar IA para estudar e passar em concurso",
-  "como usar IA para pequena empresa e empreendedor",
-  "como usar IA para produtividade no trabalho",
-  "como usar IA para criar conteudo para redes sociais",
-  "como usar ChatGPT para organizar planilhas",
-  "como usar IA para financas pessoais",
-  "como usar IA para atendimento ao cliente",
-  "como usar IA para aprender ingles",
-  "guia passo a passo IA para iniciantes Brasil",
-  "como usar IA para freelancer e autonomo",
+  // Carreira / CV
+  "tutorial passo a passo como criar curriculo com ChatGPT",
+  "como se preparar para entrevista de emprego com IA guia pratico",
+  // Estudos / concurso
+  "tutorial como usar IA para estudar para concurso publico passo a passo",
+  "guia pratico como usar ChatGPT para resumir textos e estudar",
+  // Pequena empresa / empreendedor
+  "tutorial passo a passo como usar IA para pequena empresa",
+  "como usar ChatGPT para atendimento ao cliente guia iniciante",
+  // Produtividade / planilhas
+  "como usar IA para organizar planilhas Excel Google Sheets passo a passo",
+  "tutorial como usar Copilot ou Gemini para produtividade no trabalho",
+  // Redes sociais / conteudo
+  "tutorial passo a passo como criar conteudo para redes sociais com IA",
+  // Financas pessoais
+  "guia como usar IA para financas pessoais iniciante passo a passo",
+  // Iniciantes / geral
+  "tutorial IA para iniciantes sem precisar programar passo a passo Brasil",
+  // Freelancer / autonomo
+  "como usar ChatGPT para freelancer e autonomo tutorial pratico",
 ];
 
 /**

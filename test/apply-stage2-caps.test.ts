@@ -857,3 +857,78 @@ describe("USE MELHOR max cap (#2313)", () => {
     assert.equal(r.ok, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2345 — CRITICAL: selectUseMelhorSplit wired into production applyStage2Caps
+// ---------------------------------------------------------------------------
+
+describe("applyStage2Caps — 2+2 split wired (#2345 CRITICAL)", () => {
+  // Helpers to build items with audience_affinity annotations
+  const makeCasualItem = (i: number) => ({
+    url: `https://canaltech.com.br/ia/chatgpt-curriculo-${i}`,
+    title: `Como usar ChatGPT para produtividade no trabalho passo a passo ${i}`,
+    audience_affinity: { matched: ["howto_br:true"] },
+  });
+  const makeDevBeginnerItem = (i: number) => ({
+    url: `https://learn.deeplearning.ai/course-${i}`,
+    title: `Prompt Engineering for Developers ${i}`,
+    audience_affinity: { matched: ["academy:true"] },
+  });
+  const makeDevAdvancedItem = (i: number) => ({
+    url: `https://blog.langchain.dev/langgraph-${i}`,
+    title: `LangGraph multi-agent deployment pipeline ${i}`,
+  });
+
+  it("regressão 260616: 7 candidatos com casual/iniciante → saída honra cota 2+2 (produção)", async () => {
+    // The 260616 incident: 7 use_melhor items, all dev-avancado. Blind slice kept all dev-avancado.
+    // This test verifies the production path (applyStage2Caps) calls selectUseMelhorSplit.
+    const approved = {
+      highlights: [{ url: "https://h/1" }, { url: "https://h/2" }, { url: "https://h/3" }],
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        makeCasualItem(1),
+        makeCasualItem(2),
+        makeDevBeginnerItem(1),
+        makeDevBeginnerItem(2),
+        makeDevAdvancedItem(1),
+        makeDevAdvancedItem(2),
+        makeDevAdvancedItem(3),
+      ],
+      runners_up: [],
+    };
+    const { approved: capped } = applyStage2Caps(approved);
+
+    // Production path must honor the 2+2 split — NOT a blind slice
+    assert.equal(capped.use_melhor?.length, 4, "must be capped at 4");
+
+    const { classifyAudienceClass } = await import("../scripts/lib/use-melhor-curation.ts");
+    const casual = (capped.use_melhor ?? []).filter(
+      (item) => classifyAudienceClass(item as Parameters<typeof classifyAudienceClass>[0]) === "casual",
+    );
+    const beginner = (capped.use_melhor ?? []).filter(
+      (item) => classifyAudienceClass(item as Parameters<typeof classifyAudienceClass>[0]) === "dev-iniciante",
+    );
+
+    assert.equal(casual.length, 2, "must have exactly 2 casual items (not 0 as in 260616 incident)");
+    assert.equal(beginner.length, 2, "must have exactly 2 dev-iniciante items");
+  });
+
+  it("all-advanced pool (no casual/iniciante): fills gracefully without crash", () => {
+    // When there are no casual/iniciante items, selectUseMelhorSplit degrades gracefully
+    // and fills with dev-avancado. This is acceptable fallback behavior.
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 7 }, (_, i) => makeDevAdvancedItem(i)),
+      runners_up: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.ok(
+      (capped.use_melhor?.length ?? 0) <= 4,
+      `use_melhor must be ≤ 4, was ${capped.use_melhor?.length}`,
+    );
+    assert.ok(report.use_melhor.truncated >= 0, "truncated is reported");
+  });
+});

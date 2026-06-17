@@ -25,6 +25,8 @@ import {
   HOWTO_BR_ALLOWLIST,
   TUTORIAL_ACADEMY_DOMAINS,
   HOWTO_BR_SIGNAL_RE,
+  classifyAudienceClass,
+  selectUseMelhorSplit,
 } from "../scripts/lib/use-melhor-curation.ts";
 
 // ---------------------------------------------------------------------------
@@ -882,5 +884,398 @@ describe("getHowToDiscoveryQueries — regressão 260616 fallback Path B (#2313)
     }
     assert.equal(thrown, false, "getHowToDiscoveryQueries não deve lançar exceção");
     assert.equal(result.length, 2, "deve retornar 2 queries sem dependência externa");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2339 — classifyAudienceClass
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass (#2339)", () => {
+  it("howto_br:true no matched → casual", () => {
+    const item = {
+      url: "https://canaltech.com.br/ia/chatgpt-curriculo",
+      title: "Como usar ChatGPT para criar currículo",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual");
+  });
+
+  it("howto_br_source:true no matched → casual", () => {
+    const item = {
+      url: "https://exame.com/ia/ia-no-trabalho",
+      title: "IA no trabalho: como aumentar produtividade",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual");
+  });
+
+  it("sinal casual no título (sem anotação) → casual", () => {
+    const item = {
+      url: "https://example.com/post",
+      title: "ChatGPT para produtividade no trabalho passo a passo",
+    };
+    assert.equal(classifyAudienceClass(item), "casual");
+  });
+
+  it("sinal casual: IA para currículo passo a passo → casual", () => {
+    const item = {
+      url: "https://example.com/post",
+      title: "IA para currículo: guia completo passo a passo para iniciantes",
+    };
+    assert.equal(classifyAudienceClass(item), "casual");
+  });
+
+  it("academy:true no matched → dev-iniciante (sem sinal avançado)", () => {
+    const item = {
+      url: "https://learn.deeplearning.ai/courses/prompt-engineering",
+      title: "Prompt Engineering for Developers",
+      audience_affinity: { matched: ["academy:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "dev-iniciante");
+  });
+
+  it("sinal de beginner no título → dev-iniciante", () => {
+    const item = {
+      url: "https://huggingface.co/learn/intro",
+      title: "Getting Started with LLMs: a beginner's guide",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-iniciante");
+  });
+
+  it("sinal de dev avançado (fine-tuning) → dev-avancado, override de casual", () => {
+    const item = {
+      url: "https://blog.example.com/fine-tuning",
+      title: "Fine-tuning GPT-4o for Brazilian Portuguese",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado");
+  });
+
+  it("sinal de dev avançado (RAG pipeline) → dev-avancado", () => {
+    const item = {
+      url: "https://blog.langchain.dev/rag-pipeline",
+      title: "Building an End-to-End Sentiment Analysis Pipeline with Scikit-LLM",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado");
+  });
+
+  it("sinal de dev avançado (LangGraph) → dev-avancado mesmo com howto_br_source", () => {
+    // advanced dev signal overrides even source whitelist
+    const item = {
+      url: "https://canaltech.com.br/ia/langgraph",
+      title: "LangGraph multi-agent deployment at scale",
+      audience_affinity: { matched: [] },
+    };
+    // Not howto_br signal → goes to advanced check first
+    assert.equal(classifyAudienceClass(item), "dev-avancado");
+  });
+
+  it("sem sinais: default dev-avancado", () => {
+    const item = {
+      url: "https://ai.example.com/research-paper",
+      title: "Advances in Neural Network Architectures",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado");
+  });
+
+  it("audience_affinity null → usa só sinais textuais", () => {
+    const item = {
+      url: "https://example.com/post",
+      title: "ChatGPT para finanças pessoais passo a passo",
+      audience_affinity: null,
+    };
+    // RE_CASUAL should match "ChatGPT para finanças pessoais"
+    assert.equal(classifyAudienceClass(item), "casual");
+  });
+
+  it("quickstart sem sinal avançado → dev-iniciante", () => {
+    const item = {
+      url: "https://cookbook.openai.com/quickstart",
+      title: "OpenAI API Quickstart: build your first app",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-iniciante");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2339 — selectUseMelhorSplit: seleção 2 casuais + 2 dev-iniciante
+// ---------------------------------------------------------------------------
+
+describe("selectUseMelhorSplit (#2339)", () => {
+  const makeCasual = (n: number) => ({
+    url: `https://canaltech.com.br/ia/chatgpt-curriculo-${n}`,
+    title: `Como usar ChatGPT para produtividade no trabalho passo a passo ${n}`,
+    audience_affinity: { matched: ["howto_br:true"] },
+  });
+  const makeDevBeginner = (n: number) => ({
+    url: `https://learn.deeplearning.ai/course-${n}`,
+    title: `Prompt Engineering for Developers ${n}`,
+    audience_affinity: { matched: ["academy:true"] },
+  });
+  const makeDevAdvanced = (n: number) => ({
+    url: `https://blog.langchain.dev/langgraph-${n}`,
+    title: `LangGraph multi-agent deployment pipeline ${n}`,
+  });
+
+  it("pool perfeito (≥2 casual + ≥2 iniciante): seleciona exatamente 2+2", () => {
+    const items = [
+      makeCasual(1),
+      makeCasual(2),
+      makeCasual(3),        // extra casual
+      makeDevBeginner(1),
+      makeDevBeginner(2),
+      makeDevBeginner(3),   // extra iniciante
+      makeDevAdvanced(1),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4, "total deve ser 4 (target padrão)");
+    const casual = result.filter(
+      (r) => classifyAudienceClass(r) === "casual",
+    );
+    const beginner = result.filter(
+      (r) => classifyAudienceClass(r) === "dev-iniciante",
+    );
+    assert.equal(casual.length, 2, "exatamente 2 casuais");
+    assert.equal(beginner.length, 2, "exatamente 2 dev-iniciantes");
+  });
+
+  it("degradação: só 1 casual disponível → preenche slot restante com dev-iniciante", () => {
+    const items = [
+      makeCasual(1),         // 1 casual (< quota de 2)
+      makeDevBeginner(1),
+      makeDevBeginner(2),
+      makeDevBeginner(3),
+      makeDevAdvanced(1),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4);
+    const casual = result.filter((r) => classifyAudienceClass(r) === "casual");
+    assert.equal(casual.length, 1, "1 casual (não crashou, não padded com lixo)");
+    // Not padded with advanced if there's still beginner available
+    const advanced = result.filter((r) => classifyAudienceClass(r) === "dev-avancado");
+    assert.equal(advanced.length, 0, "sem dev-avancado quando há sobra de iniciante");
+  });
+
+  it("degradação: 0 casuais disponíveis → seleciona iniciantes + avançados para preencher", () => {
+    const items = [
+      makeDevBeginner(1),
+      makeDevBeginner(2),
+      makeDevAdvanced(1),
+      makeDevAdvanced(2),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4);
+    const casual = result.filter((r) => classifyAudienceClass(r) === "casual");
+    assert.equal(casual.length, 0, "0 casuais disponíveis → não inventa");
+    // Should not crash
+    assert.ok(result.length > 0, "não crashou, retornou itens");
+  });
+
+  it("degradação: 0 iniciantes disponíveis → seleciona casuais + avançados", () => {
+    const items = [
+      makeCasual(1),
+      makeCasual(2),
+      makeDevAdvanced(1),
+      makeDevAdvanced(2),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4);
+    const beginner = result.filter((r) => classifyAudienceClass(r) === "dev-iniciante");
+    assert.equal(beginner.length, 0, "0 iniciantes disponíveis → não inventa");
+    assert.ok(result.length > 0, "não crashou, retornou itens");
+  });
+
+  it("pool menor que target: retorna todos disponíveis (sem padding)", () => {
+    const items = [
+      makeCasual(1),
+      makeDevBeginner(1),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 2, "pool menor que 4 → retorna o que tem, sem padding");
+  });
+
+  it("pool vazio: retorna vazio sem crash", () => {
+    assert.deepEqual(selectUseMelhorSplit([]), []);
+  });
+
+  it("respeita target customizado", () => {
+    const items = [makeCasual(1), makeCasual(2), makeDevBeginner(1), makeDevBeginner(2)];
+    const result = selectUseMelhorSplit(items, 2);
+    assert.equal(result.length, 2, "target=2 deve retornar 2 itens");
+  });
+
+  it("preserva ordem de entrada dentro de cada classe", () => {
+    // First casual should be casual(1) (higher presumed score), not casual(3)
+    const items = [
+      makeCasual(1),   // url ends with -1
+      makeDevBeginner(1),
+      makeCasual(2),   // url ends with -2
+      makeDevBeginner(2),
+      makeCasual(3),   // extra
+    ];
+    const result = selectUseMelhorSplit(items);
+    const casuais = result.filter((r) => classifyAudienceClass(r) === "casual");
+    assert.ok(
+      casuais[0].url?.includes("-1") && casuais[1].url?.includes("-2"),
+      "ordem de casual preservada (1 antes de 2)",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2339 — HOWTO_BR_DISCOVERY_TOPICS: queries melhoradas
+// ---------------------------------------------------------------------------
+
+describe("HOWTO_BR_DISCOVERY_TOPICS — queries how-to reescritas (#2339)", () => {
+  it("todas as queries contêm sinal de tutorial/guia/passo-a-passo", () => {
+    // Regressão: queries antigas eram genéricas e voltavam listicles.
+    // Novas queries devem conter "tutorial", "guia", "passo a passo" ou "como fazer".
+    const tutorialSignalRe = /\b(tutorial|guia|passo\s+a\s+passo|como\s+(?:usar|fazer|se\s+preparar|criar))\b/i;
+    for (const q of HOWTO_BR_DISCOVERY_TOPICS) {
+      assert.ok(
+        tutorialSignalRe.test(q),
+        `Query deveria ter sinal how-to ("tutorial", "guia", "passo a passo"): "${q}"`,
+      );
+    }
+  });
+
+  it("todas as queries são PT-BR (mantém alcance BR)", () => {
+    // Garantia de não ter removido o PT-BR por acidente.
+    const ptWords = /\b(como|usar|para|com|sem|fazer|de|em|que|no|na|os|as|um|uma|ao|tutorial|guia|dicas|passo|pratico|prático|iniciante|Brasil)\b/i;
+    for (const q of HOWTO_BR_DISCOVERY_TOPICS) {
+      assert.ok(ptWords.test(q), `Query deve ser PT-BR: "${q}"`);
+    }
+  });
+
+  it("pool tem 12 temas distintos (sem duplicatas)", () => {
+    assert.equal(HOWTO_BR_DISCOVERY_TOPICS.length, 12);
+    const unique = new Set(HOWTO_BR_DISCOVERY_TOPICS);
+    assert.equal(unique.size, 12, "sem duplicatas no pool");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2345 self-review findings — classifier regression tests
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass — finding 2: priority inversion (RE_ADVANCED_DEV before howto_br)", () => {
+  it("[finding 2] canaltech fine-tuning/RAG article → dev-avancado (NOT casual via howto_br_source)", () => {
+    // Bug: howto_br_source:true (domain signal) fired before RE_ADVANCED_DEV check.
+    // A fine-tuning article from canaltech.com.br would wrongly classify as "casual".
+    // Fix: RE_ADVANCED_DEV check is now FIRST, overriding any howto_br signal.
+    const item = {
+      url: "https://canaltech.com.br/ia/fine-tuning-llama",
+      title: "Como fazer fine-tuning do LLaMA: guia passo a passo de RAG pipeline",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "fine-tuning/RAG from canaltech must be dev-avancado despite howto_br_source:true");
+  });
+
+  it("[finding 2] howto_br:true (slug signal) also loses to RE_ADVANCED_DEV", () => {
+    // Even the stronger slug signal must lose to an explicit advanced-dev keyword.
+    const item = {
+      url: "https://example.com/ia/langgraph-passo-a-passo",
+      title: "LangGraph multi-agent fine-tuning pipeline passo a passo",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "fine-tuning/LangGraph content must be dev-avancado even with howto_br:true");
+  });
+
+  it("[finding 2] casual canaltech article without advanced signal → still casual", () => {
+    // Regression guard: normal howto_br_source articles without advanced keywords stay casual.
+    const item = {
+      url: "https://canaltech.com.br/ia/chatgpt-curriculo",
+      title: "Como usar ChatGPT para fazer currículo passo a passo",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "regular howto_br_source article without advanced signal must remain casual");
+  });
+});
+
+describe("classifyAudienceClass — finding 3: RE_ADVANCED_DEV bare verifier FP", () => {
+  it("[finding 3] casual item mentioning 'email verifier' → casual (not bumped to dev-avancado)", () => {
+    // Bug: bare `verifier\b` matched "email verifier" in titles that were otherwise casual,
+    // incorrectly bumping them to dev-avancado and shrinking the casual pool.
+    // Fix: require ML-specific collocation. Items with casual signals + "verifier" stay casual.
+    const item = {
+      url: "https://canaltech.com.br/ia/email-verifier-leads",
+      title: "Como usar um email verifier para limpar sua lista de leads passo a passo",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "casual item mentioning 'email verifier' must NOT be bumped to dev-avancado");
+  });
+
+  it("[finding 3] item with howto_br_source and 'link verifier' → casual (not bumped to dev-avancado)", () => {
+    const item = {
+      url: "https://exame.com/ia/link-verifier-seo",
+      title: "Link verifier para SEO: como usar IA para verificar links quebrados",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "casual item mentioning 'link verifier' must NOT be bumped to dev-avancado");
+  });
+
+  it("[finding 3] 'verifier model' (ML collocate) → dev-avancado (qualified form still works)", () => {
+    const item = {
+      url: "https://arxiv.org/abs/verifier-model",
+      title: "Training a Verifier Model to Evaluate LLM Reasoning",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "ML-specific 'verifier model' must still classify as dev-avancado");
+  });
+
+  it("[finding 3] 'reward verifier' (ML collocate) → dev-avancado", () => {
+    const item = {
+      url: "https://blog.example.com/reward-verifier",
+      title: "Reward Verifier Architectures for RLHF Training",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "reward-verifier must still classify as dev-avancado");
+  });
+});
+
+describe("classifyAudienceClass — finding 4: RE_CASUAL misses empreendedor/empreendedores", () => {
+  it("[finding 4] 'IA para empreendedores' → casual (noun plural form previously missed)", () => {
+    // Bug: regex had `empreende\b` (verb stem only), missing noun forms like empreendedores.
+    // Fix: `empreende(?:dor(?:es?|a)?|r)?` covers empreendedor/empreendedores/empreendedora/empreender.
+    const item = {
+      url: "https://example.com/ia-empreendedores",
+      title: "IA para empreendedores: como escalar seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedores' (plural) must classify as casual");
+  });
+
+  it("[finding 4] 'IA para empreendedor' (singular) → casual", () => {
+    // Singular form "empreendedor" also must match the pattern.
+    const item = {
+      url: "https://example.com/ia-empreendedor",
+      title: "IA para empreendedor: guia prático para seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedor' (singular) must classify as casual");
+  });
+
+  it("[finding 4] 'empreender' (infinitive) still matches → casual (regression guard)", () => {
+    // The infinitive form `empreender` matched before the fix too — must still work.
+    const item = {
+      url: "https://example.com/ia-empreender",
+      title: "IA para empreender: ferramentas essenciais para começar",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreender' (infinitive) must still classify as casual");
+  });
+
+  it("[finding 4] 'empreendedora' (feminine) → casual", () => {
+    const item = {
+      url: "https://example.com/ia-empreendedora",
+      title: "IA para empreendedora: como usar ChatGPT no seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedora' must classify as casual");
   });
 });

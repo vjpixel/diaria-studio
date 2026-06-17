@@ -29,6 +29,7 @@
  */
 
 import { canonicalize } from "./url-utils.ts";
+import { selectUseMelhorSplit } from "./use-melhor-curation.ts";
 
 export interface StageArticle {
   url?: string;
@@ -307,9 +308,14 @@ export function applyStage2Caps(
     STAGE_2_MIN_USE_MELHOR,
   );
 
-  // #2313: aplicar cap máximo APÓS promoção (promoção pode elevar acima de MIN).
-  // O cap também cobre o caso em que o bucket original já tinha > 4 candidatos.
-  const umFinal = um.kept.slice(0, STAGE_2_MAX_USE_MELHOR);
+  // #2339: aplicar split 2 casual + 2 dev-iniciante ANTES do cap máximo.
+  // Sem isso, a seleção seria um blind slice por score, preservando todos os
+  // dev-avancado quando o scorer os rankeou mais alto (caso 260616: 7 itens, 0 casual).
+  // selectUseMelhorSplit respeita STAGE_2_MAX_USE_MELHOR como target e também aplica o cap.
+  const umSplit = selectUseMelhorSplit(um.kept, STAGE_2_MAX_USE_MELHOR);
+  // Slice is a safety net in case selectUseMelhorSplit returns more than target
+  // (shouldn't happen but guards against future API changes).
+  const umFinal = umSplit.slice(0, STAGE_2_MAX_USE_MELHOR);
   const umTruncated = um.kept.length - umFinal.length;
   if (umTruncated > 0) {
     console.warn(
