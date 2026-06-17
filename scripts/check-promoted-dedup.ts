@@ -112,7 +112,11 @@ export function checkPromotedDedup(
   for (let i = 0; i < lancamentos.length; i++) {
     const article = lancamentos[i];
     const sub = article.primary_source_substituted;
-    if (!sub?.from || !sub?.to) continue; // não promovido via 1m-ter — skip
+    if (!sub?.to) continue; // não promovido via 1m-ter — skip
+    // Guard: empty from ('') is not the same as "no substitution" — sub.to was set,
+    // so the item IS promoted. Don't skip; from just has no original URL (#2338 fix 2).
+    // (The old combined guard `!sub.from || !sub.to` would silently skip from:'' items
+    // even when sub.to is a valid official URL that needs to be checked for repeats.)
 
     checked++;
     const canonicalTo = canonicalize(sub.to);
@@ -128,7 +132,10 @@ export function checkPromotedDedup(
       continue;
     }
 
-    // Guarda: from === to (1m-ter anotou no-op) — avisar que ambas as URLs repetem
+    // Guarda: from === to (1m-ter anotou no-op) — avisar que ambas as URLs repetem.
+    // Also check sub.from against pastUrls: when from===to, the restored URL is the
+    // same repeated URL, so the editor must not re-promote thinking it's safe (#2338 fix 2).
+    const fromAlsoRepeats = sub.from === sub.to && pastUrls.has(canonicalize(sub.from));
     if (sub.from === sub.to) {
       console.error(
         `[check-promoted-dedup] WARN: artigo "${article.title ?? sub.from}" tem from===to na substituição — ` +
@@ -136,13 +143,19 @@ export function checkPromotedDedup(
       );
     }
 
+    const fromRepeatSuffix = fromAlsoRepeats
+      ? `; URL de pesquisa original (from=${sub.from}) também repete — não re-promover sem trocar a URL`
+      : "";
+
     const reason = isWithinEditionDuplicate
-      ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar`
-      : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar`;
+      ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar${fromRepeatSuffix}`
+      : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar${fromRepeatSuffix}`;
 
     // Restaurar URL de pesquisa original, EXCETO quando from===to (ambas repetem — manter from mesmo assim
-    // para rastreabilidade, mas anotar o fato no primary_source_demoted)
-    const restoredUrl = sub.from;
+    // para rastreabilidade, mas anotar o fato no primary_source_demoted).
+    // Quando from==='' (orquestrador não preencheu URL de pesquisa), cair de volta para
+    // article.url (a URL oficial) para que o item em radar permaneça navegável pelo editor.
+    const restoredUrl = sub.from || article.url;
 
     const demotedArticle: Article = {
       ...article,
