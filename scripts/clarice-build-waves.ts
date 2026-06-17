@@ -47,6 +47,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { parseRetryAfterMs } from "./lib/brevo-client.ts";
 
 loadProjectEnv();
 
@@ -175,31 +176,8 @@ export function representativeSplit(
 // ---------------------------------------------------------------------------
 
 const RETRY_MS = [1000, 3000, 9000];
-const RETRY_MAX_MS = 30_000; // cap 30s por tentativa (idêntico ao brevo-client.ts)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-/**
- * #2307: lê os headers de rate-limit da Brevo e retorna milissegundos de espera.
- * Uniformiza semântica com brevo-client.ts: retry-after:0 / reset:0 → 0ms (imediato).
- * Fallback: RETRY_MS[attempt] quando os headers estão ausentes.
- */
-function parseBrevoRetryAfterMs(headers: Headers, fallbackMs: number): number {
-  const retryAfter = headers.get("retry-after");
-  const sibReset = headers.get("x-sib-ratelimit-reset");
-  if (retryAfter != null) {
-    const v = Number(retryAfter);
-    if (!isNaN(v) && v >= 0) return Math.min(v * 1000, RETRY_MAX_MS);
-  } else if (sibReset != null) {
-    const v = Number(sibReset);
-    if (!isNaN(v)) {
-      const deltaS = v >= 1e9
-        ? Math.max(0, Math.ceil(v - Date.now() / 1000))
-        : v >= 0 ? v : null;
-      if (deltaS !== null) return Math.min(deltaS * 1000, RETRY_MAX_MS);
-    }
-  }
-  return fallbackMs;
-}
+// #2324: parseRetryAfterMs importado de scripts/lib/brevo-client.ts (eliminada cópia local).
 
 /**
  * GET na Brevo v3 que FALHA ALTO em vez de silenciar.
@@ -225,7 +203,7 @@ export async function brevoGet(
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
       // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.
       const waitMs = attempt < RETRY_MS.length
-        ? parseBrevoRetryAfterMs(r.headers, RETRY_MS[attempt])
+        ? parseRetryAfterMs(r.headers, RETRY_MS[attempt])
         : 0;
       await r.body?.cancel().catch(() => {});
       lastErr = new Error(`Brevo GET ${path} HTTP ${r.status}`);

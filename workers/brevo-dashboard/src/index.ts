@@ -257,13 +257,28 @@ export function djb2Hash(s: string): string {
 
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
 export class BrevoRateLimitError extends Error {
-  constructor(public readonly retryAfterSecs: number | null) {
+  /**
+   * @param retryAfterSecs valor inteiro (segundos) honrado pelo cliente E
+   *   ecoado no header HTTP `Retry-After` (RFC 7231: precisa ser inteiro).
+   * @param floorMs #2337 fix 1: piso opcional (em ms) aplicado SÓ ao backoff de
+   *   retry interno (computeRetryDelayMs), nunca ao header HTTP. Usado quando o
+   *   `x-sib-ratelimit-reset` é um epoch já expirado (delta→0): o header reporta
+   *   0s (janela esgotada), mas o backoff interno usa ≥250ms pra não disparar as
+   *   3 re-tentativas em microsegundos. Distinto de `retry-after: 0` literal
+   *   (RFC 7231 retry imediato), que não recebe piso.
+   */
+  constructor(
+    public readonly retryAfterSecs: number | null,
+    public readonly floorMs = 0,
+  ) {
     super(`Brevo rate limit (retry-after: ${retryAfterSecs ?? "?"}s)`);
     this.name = "BrevoRateLimitError";
   }
 }
 
-async function brevoFetch<T>(path: string, env: Env): Promise<T> {
+// #2337 fix 1: exportado para teste direto do parse de headers de rate-limit
+// (epoch-elapsed → retryAfterSecs inteiro 0 + floorMs 250).
+export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
     headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
   });
@@ -274,6 +289,9 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
     // se for formato epoch (>= 1e9), convertemos via Math.ceil(v - Date.now()/1000).
     // Standard retry-after (RFC 7231) e lido como delta direto quando presente.
     let retryAfter: number | null = null;
+    // #2337 fix 1: piso aplicado SÓ ao backoff interno (não ao header HTTP),
+    // quando o epoch-reset já expirou (delta arredonda a 0). 0 = sem piso.
+    let floorMs = 0;
     const retryAfterHeader = res.headers.get("retry-after");
     const resetHeader = res.headers.get("x-sib-ratelimit-reset");
     if (retryAfterHeader != null) {
@@ -283,13 +301,22 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
       const v = Number(resetHeader);
       if (!isNaN(v)) {
         // Delta direto (ex: 256s) ou epoch Unix (ex: ~1.7e9)?
-        // #2307: v>=0 aceita reset:0 (janela já passou → retry imediato), igual a retry-after:0
-        retryAfter = v >= 1e9
-          ? Math.max(0, Math.ceil(v - Date.now() / 1000))
-          : v >= 0 ? v : null;
+        // #2337 fix 1: épocas já expiradas (Math.ceil → 0) recebem floor de 250ms
+        // NO BACKOFF INTERNO (não no header). Um epoch-reset já passado indica que a
+        // janela se esgotou neste segundo, não que Brevo pediu retry imediato. Sem o
+        // floor, `computeRetryDelayMs(0) = 0ms` e as 3 re-tentativas disparam em
+        // microsegundos, pressionando a janela seguinte. O header continua reportando
+        // 0s (inteiro, RFC 7231-válido). Distinto de `retry-after: 0` literal (acima),
+        // que é retry imediato e não recebe floor.
+        if (v >= 1e9) {
+          retryAfter = Math.max(0, Math.ceil(v - Date.now() / 1000));
+          if (retryAfter === 0) floorMs = 250; // elapsed epoch → piso só no backoff
+        } else {
+          retryAfter = v >= 0 ? v : null;
+        }
       }
     }
-    throw new BrevoRateLimitError(retryAfter);
+    throw new BrevoRateLimitError(retryAfter, floorMs);
   }
   if (!res.ok) {
     throw new Error(`Brevo API ${path} failed (${res.status}): ${await res.text()}`);
@@ -386,15 +413,32 @@ export async function fetchRecentCampaigns(
         // Finding #2 (#2323): hoistado para que o guard do ls-fetch abaixo consiga
         // verificar se cachedLs está envenenado (e portanto deve ser re-fetchado).
         let cachedLsIsPoison = false;
+        // #2337 fix 2: sinal de que ls-fetch já foi tentado mas falhou no ciclo anterior.
+        // Impede que `ls === undefined` no JSON → `cachedLs = null` → re-fetch+re-write em
+        // toda render dentro do TTL (KV-write churn). Quando true, o ls-fetch é pulado e
+        // o resultado é idêntico ao caso "ls fetch falhou" — links section fica sem dados
+        // até a entrada TTL expirar (RECENT_STATS_TTL = 30min) e uma nova tentativa ocorrer.
+        let cachedLsWasPending = false;
         if (!isFresh && env.STATS_CACHE) {
           // #2314: tenta chave unificada primeiro; fallback retrocompatível para as legadas.
           const unified = await env.STATS_CACHE.get(kvStatsKey, "json").catch(() => null) as
-            { gs: BrevoGlobalStats; ls: BrevoLinksStats } | null;
+            { gs: BrevoGlobalStats; ls?: BrevoLinksStats; lsPending?: true } | null;
           if (unified) {
             cachedGs = unified.gs ?? null;
             cachedLs = unified.ls ?? null;
+            // #2337 fix 2: detecta entrada gravada com lsPending:true (ls-fetch falhou
+            // na carga anterior). Seta o flag para pular o fetch neste render — sem isso,
+            // ls=null → re-fetch → nova escrita → loop de churn até o TTL expirar.
+            if (unified.lsPending === true) cachedLsWasPending = true;
           } else {
             // Migração: lê chaves legadas (gravadas por versões anteriores do worker).
+            // Este path é READ-ONLY / aging-out: nada mais escreve `gstats:{id}` ou
+            // `lstats:{id}` — o writer sempre usa `stats:{id}` desde #2314. Entradas
+            // legadas expiram pelo TTL original ou ficam permanentes até serem
+            // sobrescritas quando `stats:{id}` for gravado numa próxima render ativa.
+            // NÃO aplica a sentinela lsPending aqui: o path legado é read-only e as
+            // entradas envelhecem sem nova escrita; adicionar churn-guard num path
+            // que nunca escreve seria maquinário morto.
             [cachedGs, cachedLs] = await Promise.all([
               env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
               env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
@@ -419,7 +463,9 @@ export async function fetchRecentCampaigns(
           // mesmo quando lstats não estava em cache — campanhas pré-#2177 com
           // gstats cacheado nunca recebiam lstats. Agora só retorna se ambos
           // estiverem em cache (e lstats não-poison).
-          if (cachedGs && cachedLs && !lsIsPoison) return;
+          // #2337 fix 2: cachedLsWasPending (lsPending:true no KV) também satisfaz a
+          // condição — gs está disponível e ls-fetch não deve ser tentado neste render.
+          if (cachedGs && ((!lsIsPoison && cachedLs) || cachedLsWasPending)) return;
         }
 
         // #2249 (verificado 2026-06-14 contra a API Brevo): o param COMBINADO
@@ -459,8 +505,12 @@ export async function fetchRecentCampaigns(
         // populado via legado `lstats:{id}` era ignorado e o fetch da API sobrescrevia
         // — se o fetch falhasse, ls ficava undefined e o write subsequente descartava
         // o dado legado válido. Poison continua re-fetchado (cachedLsIsPoison=true).
+        // #2337 fix 2: cachedLsWasPending (lsPending:true no KV) suprime o ls-fetch
+        // neste render — a entrada já registrou que ls falhou; não tentar de novo até
+        // o TTL expirar. Sem isso: ls=undefined → write → ls=null na leitura → re-fetch
+        // → re-write em toda render dentro do TTL (churn exato que #2314 tentou evitar).
         let ls: BrevoLinksStats | undefined;
-        if (!cachedLs || cachedLsIsPoison) {
+        if (!cachedLsWasPending && (!cachedLs || cachedLsIsPoison)) {
           try {
             // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
             const linksDetail = await withRateLimitRetry(() =>
@@ -502,11 +552,18 @@ export async function fetchRecentCampaigns(
           // próxima cache-miss → re-fetcha ls. Sem esse guard, a entrada permanente ficaria
           // para sempre sem ls (exigiria `wrangler kv:key delete` para recuperar).
           const opts = (immutable && !lsPoison && ls !== undefined) ? {} : { expirationTtl: RECENT_STATS_TTL };
-          // #2314: 1 write por campanha (era 2). ls pode ser undefined (linksStats
-          // fetch falhou) — guardamos o que temos; na próxima cache-miss o ls é
-          // re-fetchado separadamente (cachedGs presente → skip gs-fetch, só ls).
+          // #2314: 1 write por campanha (era 2).
+          // #2337 fix 2: quando ls === undefined (fetch falhou), gravar `lsPending: true`
+          // em vez de omitir o campo ls. JSON.stringify({ ls: undefined }) omite o campo →
+          // próxima leitura: unified.ls = undefined → ?? null = null → !cachedLs true →
+          // novo fetch+write em toda render dentro do TTL (churn). Com lsPending:true o
+          // próximo render detecta `unified.lsPending === true`, seta cachedLsWasPending e
+          // pula o fetch — sem novo write até o TTL expirar e uma tentativa fresca ocorrer.
+          const payload = ls !== undefined
+            ? { gs: gs!, ls }
+            : { gs: gs!, lsPending: true };
           await env.STATS_CACHE.put(
-            kvStatsKey, JSON.stringify({ gs: gs!, ls }),
+            kvStatsKey, JSON.stringify(payload),
             opts,
           ).catch(() => { /* nunca bloqueia */ });
         }
@@ -553,13 +610,20 @@ export async function fetchRecentCampaigns(
  * Lógica: cap máximo de 5s (protege dashboard contra throttle sustentado).
  * Mínimo: 0ms (aceita retry imediato quando Brevo sinaliza reset:0).
  * Fallback: 2s quando retryAfterSecs é null (header ausente).
+ *
+ * #2337 fix 1: `floorMs` é um piso opcional aplicado ao RESULTADO (não ao header).
+ * Usado quando o `x-sib-ratelimit-reset` é um epoch já expirado (retryAfterSecs=0
+ * mas a janela se esgotou neste segundo): o backoff interno usa ≥floorMs pra não
+ * disparar as 3 re-tentativas em microsegundos. Default 0 (sem piso) preserva o
+ * comportamento de `retry-after: 0` literal (RFC 7231 retry imediato).
  */
-export function computeRetryDelayMs(retryAfterSecs: number | null): number {
+export function computeRetryDelayMs(retryAfterSecs: number | null, floorMs = 0): number {
   const s = retryAfterSecs ?? 2; // null = header ausente = fallback 2s
   // Finding #3 (#2323): Math.max(0, ...) garante mínimo 0ms para inputs negativos
   // (ex: Brevo enviando header negativo por bug). Math.min cap de 5s protege
   // contra throttle sustentado (Brevo pode mandar Retry-After: 256s — clampamos).
-  return Math.max(0, Math.min(s, 5)) * 1000;
+  const baseMs = Math.max(0, Math.min(s, 5)) * 1000;
+  return Math.max(baseMs, floorMs); // #2337: piso de epoch-elapsed (não afeta header)
 }
 
 /**
@@ -576,6 +640,7 @@ export function computeRetryDelayMs(retryAfterSecs: number | null): number {
  * enviadas, com a janela de rate-limit fresca) — ver a rota `/`.
  *
  * #2307: retryAfterSecs=0 → retry imediato (sem clamp inferior). Usa computeRetryDelayMs.
+ * #2337 fix 1: honra `floorMs` da BrevoRateLimitError (piso de epoch-elapsed) no sleep.
  */
 export async function withRateLimitRetry<T>(
   fn: () => Promise<T>,
@@ -587,7 +652,7 @@ export async function withRateLimitRetry<T>(
       return await fn();
     } catch (e) {
       if (i >= attempts - 1 || !(e instanceof BrevoRateLimitError)) throw e;
-      await _sleep(computeRetryDelayMs(e.retryAfterSecs));
+      await _sleep(computeRetryDelayMs(e.retryAfterSecs, e.floorMs));
     }
   }
 }

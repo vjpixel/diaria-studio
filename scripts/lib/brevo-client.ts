@@ -13,7 +13,12 @@
 
 /**
  * Lê os headers de rate-limit da Brevo e retorna quantos milissegundos
- * devemos esperar antes de re-tentar. Capped em MAX_WAIT_MS.
+ * devemos esperar antes de re-tentar. Capped em MAX_WAIT_MS (30s).
+ *
+ * #2324: exportado para reutilização em clarice-build-waves.ts (eliminando cópia
+ * duplicada com comentário "idêntico ao brevo-client.ts"). O parâmetro opcional
+ * `fallbackMs` permite que o chamador forneça um fallback baseado em attempt
+ * (ex: RETRY_MS[attempt] em clarice-build-waves); se omitido, usa 2000ms.
  *
  * Semantica dos headers observada empiricamente (2026-06-14):
  *  - `retry-after`: RFC 7231, delta em segundos.
@@ -27,7 +32,7 @@
 const MAX_WAIT_MS = 30_000; // 30s — cap de espera por tentativa
 const MAX_ATTEMPTS = 3;     // total de tentativas (1 original + 2 re-tentativas)
 
-function parseRetryAfterMs(headers: Headers): number {
+export function parseRetryAfterMs(headers: Headers, fallbackMs = 2000): number {
   const retryAfter = headers.get("retry-after");
   const sibReset = headers.get("x-sib-ratelimit-reset");
   let deltaS: number | null = null;
@@ -43,7 +48,7 @@ function parseRetryAfterMs(headers: Headers): number {
         : v >= 0 ? v : null;
     }
   }
-  if (deltaS == null) deltaS = 2; // fallback 2s quando header ausente
+  if (deltaS == null) return Math.min(fallbackMs, MAX_WAIT_MS);
   return Math.min(deltaS * 1000, MAX_WAIT_MS);
 }
 
