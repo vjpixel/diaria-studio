@@ -9,10 +9,12 @@
  * modificar testes existentes.
  */
 
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   checkAllImagesExist,
@@ -769,6 +771,59 @@ describe("renameDestaqueImages 2-destaque (#2352)", () => {
       assert.ok(!froms.some((f) => f.startsWith("04-d3-")), "d3 unchanged no swap 1↔2");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reorder-destaques CLI: guard newOrder.length vs readDestaqueCount (#2352 F2)
+// ---------------------------------------------------------------------------
+
+const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REORDER_SCRIPT = resolve(ROOT_DIR, "scripts/reorder-destaques.ts");
+
+function runReorder(editionDir: string, newOrder: string, extra: string[] = []) {
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", REORDER_SCRIPT, "--edition", "test", "--edition-dir", editionDir, "--new-order", newOrder, "--dry-run", ...extra],
+    { encoding: "utf8", cwd: ROOT_DIR, env: { ...process.env } },
+  );
+}
+
+describe("reorder-destaques CLI guard: newOrder.length vs destaque_count (#2352 F2)", () => {
+  it("REJEITA --new-order 2,1 numa edição 3-destaque (mismatch de comprimento)", () => {
+    const { dir, cleanup } = makeEdition(3);
+    try {
+      const r = runReorder(dir, "2,1");
+      assert.equal(r.status, 2, `Esperava exit 2 (reject). stderr: ${r.stderr}`);
+      assert.match(r.stderr, /3.*destaque|2.*posições|mismatch/i,
+        `Mensagem de erro deve mencionar o mismatch. stderr: ${r.stderr}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("ACEITA --new-order 2,1 numa edição 2-destaque (comprimento correto)", () => {
+    const { dir, cleanup } = makeEdition(2);
+    try {
+      // Precisa de _internal para não falhar no existsSync do internalDir
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const r = runReorder(dir, "2,1");
+      // dry-run em edição 2D válida — pode ser no-op (exit 0) ou processar (exit 0)
+      assert.equal(r.status, 0, `Esperava exit 0 para edição 2D com --new-order 2,1. stderr: ${r.stderr}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("ACEITA --new-order 3,1,2 numa edição 3-destaque (comprimento correto)", () => {
+    const { dir, cleanup } = makeEdition(3);
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const r = runReorder(dir, "3,1,2");
+      assert.equal(r.status, 0, `Esperava exit 0 para edição 3D com --new-order 3,1,2. stderr: ${r.stderr}`);
+    } finally {
+      cleanup();
     }
   });
 });

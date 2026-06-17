@@ -41,6 +41,7 @@ import {
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -366,6 +367,18 @@ function main(): void {
     process.exit(1);
   }
   const internalDir = resolve(editionDir, "_internal");
+
+  // #2352: Rejeita quando o comprimento de --new-order não bate com o
+  // destaque_count real da edição. Ex: --new-order 2,1 numa edição 3-destaque
+  // faria reorderHighlightsInJson emitir [D2,D1,D3] sem aviso — footgun.
+  const editionDestaqueCount = readDestaqueCount(editionDir);
+  if (args.newOrder.length !== editionDestaqueCount) {
+    console.error(
+      `Erro: --new-order tem ${args.newOrder.length} posições mas a edição tem ${editionDestaqueCount} destaques. ` +
+      `Forneça uma permutação completa de 1..${editionDestaqueCount} (ex: ${Array.from({ length: editionDestaqueCount }, (_, i) => i + 1).join(",")}).`,
+    );
+    process.exit(2);
+  }
 
   // No-op se ordem é canônica (1,2 ou 1,2,3 dependendo de N).
   const canonical = Array.from({ length: args.newOrder.length }, (_, i) => i + 1).join(",");
