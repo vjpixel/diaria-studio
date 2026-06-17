@@ -9,7 +9,7 @@
  * existentes de 3 destaques.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -337,5 +337,34 @@ describe("publishers extract destaques presentes (#2343)", () => {
   it("parseDestaqueHeaders: ignora ## post_pixel e dedup, ordem canônica", () => {
     const section = "## d2\nb\n## post_pixel\nx\n## d1\na\n## d1\nrepeat\n";
     assert.deepEqual(parseDestaqueHeaders(section), ["d1", "d2"]);
+  });
+
+  it("parseDestaqueHeaders: warns on ## d4 (typo) but NOT on valid ## d1/d2/d3 (#2356 fix 2)", () => {
+    // #2356 fix 2 — garante que o bloco de warn em parseDestaqueHeaders detecta
+    // headers fora do conjunto canônico [d1, d2, d3].
+    //
+    // Failure scenario: se o `for (const d of destaques) { if (!canonical.has(d)) ... }`
+    // for removido, errors.length === 0 e o assert abaixo FALHA, mantendo CI vermelho.
+    const errors: string[] = [];
+    mock.method(console, "error", (...args: unknown[]) =>
+      errors.push(String(args[0])),
+    );
+
+    try {
+      // ## d4 deve disparar warn e NÃO aparecer no retorno (filtrado pelo canonical)
+      const result = parseDestaqueHeaders("## d4\nalgum texto\n## d1\nvalido\n");
+      assert.deepEqual(result, ["d1"], "d4 deve ser filtrado do retorno");
+      assert.ok(
+        errors.some((e) => e.includes("d4")),
+        "#2356: parseDestaqueHeaders deve emitir console.error mencionando 'd4' ao encontrar header não-canônico",
+      );
+
+      // Headers válidos d1/d2/d3 NÃO devem gerar warn
+      errors.length = 0;
+      parseDestaqueHeaders("## d1\na\n## d2\nb\n## d3\nc\n");
+      assert.equal(errors.length, 0, "d1/d2/d3 canônicos não devem gerar warn");
+    } finally {
+      mock.restoreAll();
+    }
   });
 });

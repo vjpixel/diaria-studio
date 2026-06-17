@@ -842,12 +842,12 @@ describe("dedupeUseMelhorBucket — self-review finding 2: 1-token kept item bli
     // at line 300 (kept-item registration) is reverted.
     //
     // Without registration: seenTokens empty when B is evaluated → B not blocked → length=2.
-    // With registration (fix): A's {"vector","database","search"} is in seenTokens.
-    //   B tokens {"vector","database","indexing"}: intersection=2 ("vector","database") ≥ threshold=2 → BLOCKED.
+    // With registration (fix): A's {"vector","database","search","architecture"} is in seenTokens.
+    //   B tokens {"vector","database","indexing","techniques"}: intersection=2 ("vector","database") ≥ threshold=2 → BLOCKED.
     //   → length=1.
     //
     // Uses ≥2-token fingerprints (not 1-token) so the #2336 floor doesn't obscure the signal:
-    //   threshold = max(2, min(2, 3)) = 2; intersection=2 >= 2 → blocked.
+    //   threshold = max(2, min(2, 4)) = 2; intersection=2 >= 2 → blocked.
     const items = [
       { url: "https://blog.a.com/vector-search", title: "Vector Database Search Architecture" }, // kept: {"vector","database","search","architecture"}
       { url: "https://blog.b.com/vector-index",  title: "Vector Database Indexing Techniques" }, // near-dup: shares "vector","database"
