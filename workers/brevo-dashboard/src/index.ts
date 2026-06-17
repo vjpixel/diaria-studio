@@ -432,6 +432,13 @@ export async function fetchRecentCampaigns(
             if (unified.lsPending === true) cachedLsWasPending = true;
           } else {
             // Migração: lê chaves legadas (gravadas por versões anteriores do worker).
+            // Este path é READ-ONLY / aging-out: nada mais escreve `gstats:{id}` ou
+            // `lstats:{id}` — o writer sempre usa `stats:{id}` desde #2314. Entradas
+            // legadas expiram pelo TTL original ou ficam permanentes até serem
+            // sobrescritas quando `stats:{id}` for gravado numa próxima render ativa.
+            // NÃO aplica a sentinela lsPending aqui: o path legado é read-only e as
+            // entradas envelhecem sem nova escrita; adicionar churn-guard num path
+            // que nunca escreve seria maquinário morto.
             [cachedGs, cachedLs] = await Promise.all([
               env.STATS_CACHE.get(kvGsKey, "json").catch(() => null),
               env.STATS_CACHE.get(kvLsKey, "json").catch(() => null),
@@ -554,7 +561,7 @@ export async function fetchRecentCampaigns(
           // pula o fetch — sem novo write até o TTL expirar e uma tentativa fresca ocorrer.
           const payload = ls !== undefined
             ? { gs: gs!, ls }
-            : { gs: gs!, lsPending: true as const };
+            : { gs: gs!, lsPending: true };
           await env.STATS_CACHE.put(
             kvStatsKey, JSON.stringify(payload),
             opts,
