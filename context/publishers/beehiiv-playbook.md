@@ -403,6 +403,7 @@ Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa
 **⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
 
 **⚠️ DEPRECATED (#2283) — `buildCoverReplaceJs` legado:** combina remoção + upload num único call e causa CDP timeout (45s) quando há cover existente. Usar `buildCoverDataTransferJs` (#1500) como primário (cover nova e replace); só usar `buildCoverReplaceStep1_RemoveExistingJs` + `buildCoverReplaceStep2_UploadJs` separados como fallback quando #1500 retornar `applied:false`.
+
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
 **Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.

@@ -32,8 +32,9 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
     );
 
     // Sanity: o script deve ter pelo menos os 3 exit codes conhecidos
-    assert.ok(exitCodes.length >= 2, `Expected ≥2 exit codes, got: ${exitCodes}`);
+    assert.ok(exitCodes.length >= 3, `Expected ≥3 exit codes, got: ${exitCodes}`);
     assert.ok(exitCodes.includes(1), "exit(1) deve existir (args inválidos)");
+    assert.ok(exitCodes.includes(2), "exit(2) deve existir (placeholders não resolvidas)");
     assert.ok(exitCodes.includes(3), "exit(3) deve existir (HTML stale — #2316)");
 
     // 2. Ler beehiiv-playbook.md e verificar que cada exit code é mencionado
