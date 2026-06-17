@@ -470,6 +470,60 @@ Foto descrição.
     }
   });
 
+  it("#2355 finding 2: D1 vazio (whitespace-only) → erro, não bloco vazio", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "   \n  \t  ");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
+      );
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        /02-d1-draft\.md vazio/,
+        "D1 vazio deve lançar erro explícito",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2355 finding 2: D2 vazio (whitespace-only) → erro, não bloco vazio", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "   \n  \t  ");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
+      );
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        /02-d2-draft\.md vazio/,
+        "D2 vazio deve lançar erro explícito",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   // ─── #2355 fix 2: missing/corrupt approved-capped.json → explicit error ──────
 
   it("#2355 fix 2: approved-capped.json ausente → erro nomeia o capped JSON (não D3)", () => {
@@ -496,8 +550,8 @@ Foto descrição.
     }
   });
 
-  it("#2355 fix 2: main() com approved-capped.json ausente → erro nomeia capped JSON (diagnóstico correto)", () => {
-    // Validates the main()-level fix: missing JSON should not produce "input ausente: 02-d3-draft.md"
+  it("#2355 fix 2: stitchNewsletter() com approved-capped.json ausente → erro nomeia capped JSON (não D3)", () => {
+    // Validates stitchNewsletter(): missing JSON should not produce "input ausente: 02-d3-draft.md"
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");

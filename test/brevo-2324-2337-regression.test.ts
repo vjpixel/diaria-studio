@@ -211,36 +211,38 @@ describe("brevoFetch epoch-reset-elapsed vs retry-after:0 (#2337 fix 1)", async 
   });
 });
 
+// ─── Shared KV mock helper (used by #2337 fix 2 and #2355 fix 3) ─────────────
+
+function makeKVMock(initialData: Record<string, unknown> = {}) {
+  const store = new Map(
+    Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
+  );
+  const putCalls: Array<{ key: string; value: string; opts: unknown }> = [];
+  return {
+    store,
+    putCalls,
+    kv: {
+      get: async (key: string, type?: string) => {
+        const val = store.get(key);
+        if (!val) return null;
+        if (type === "json") return JSON.parse(val);
+        return val;
+      },
+      put: async (key: string, value: string, opts?: unknown) => {
+        putCalls.push({ key, value, opts: opts ?? null });
+        store.set(key, value);
+      },
+      delete: async () => {},
+      list: async () => ({ keys: [], cursor: "", list_complete: true }),
+      getWithMetadata: async () => ({ value: null, metadata: null }),
+    } as unknown as KVNamespace,
+  };
+}
+
 // ─── #2337 fix 2: lsPending:true — sem KV-write churn em ls-fetch falho ──────
 
 describe("lsPending:true previne KV-write churn (#2337 fix 2)", async () => {
   const { fetchRecentCampaigns } = await import("../workers/brevo-dashboard/src/index.ts");
-
-  function makeKVMock(initialData: Record<string, unknown> = {}) {
-    const store = new Map(
-      Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
-    );
-    const putCalls: Array<{ key: string; value: string; opts: unknown }> = [];
-    return {
-      store,
-      putCalls,
-      kv: {
-        get: async (key: string, type?: string) => {
-          const val = store.get(key);
-          if (!val) return null;
-          if (type === "json") return JSON.parse(val);
-          return val;
-        },
-        put: async (key: string, value: string, opts?: unknown) => {
-          putCalls.push({ key, value, opts: opts ?? null });
-          store.set(key, value);
-        },
-        delete: async () => {},
-        list: async () => ({ keys: [], cursor: "", list_complete: true }),
-        getWithMetadata: async () => ({ value: null, metadata: null }),
-      } as unknown as KVNamespace,
-    };
-  }
 
   // Campanha imutável (>7 dias atrás)
   const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
@@ -384,32 +386,6 @@ describe("lsPending:true previne KV-write churn (#2337 fix 2)", async () => {
 describe("lsPending sentinel sobrevive quando gs TAMBÉM expirou (#2355 fix 3)", async () => {
   const { fetchRecentCampaigns } = await import("../workers/brevo-dashboard/src/index.ts");
 
-  function makeKVMock(initialData: Record<string, unknown> = {}) {
-    const store = new Map(
-      Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
-    );
-    const putCalls: Array<{ key: string; value: string; opts: unknown }> = [];
-    return {
-      store,
-      putCalls,
-      kv: {
-        get: async (key: string, type?: string) => {
-          const val = store.get(key);
-          if (!val) return null;
-          if (type === "json") return JSON.parse(val);
-          return val;
-        },
-        put: async (key: string, value: string, opts?: unknown) => {
-          putCalls.push({ key, value, opts: opts ?? null });
-          store.set(key, value);
-        },
-        delete: async () => {},
-        list: async () => ({ keys: [], cursor: "", list_complete: true }),
-        getWithMetadata: async () => ({ value: null, metadata: null }),
-      } as unknown as KVNamespace,
-    };
-  }
-
   const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
   const fakeGs = {
     sent: 100, delivered: 95, hardBounces: 2, softBounces: 1,
@@ -475,7 +451,7 @@ describe("lsPending sentinel sobrevive quando gs TAMBÉM expirou (#2355 fix 3)",
     // edge case where only the lsPending signal survived.
     //
     // Plant: { lsPending: true } without gs — cachedGs=null, cachedLsWasPending=true
-    kv.put("stats:42", JSON.stringify({ lsPending: true }));
+    await kv.put("stats:42", JSON.stringify({ lsPending: true }));
     // Reset putCalls tracking after plant
     putCalls.length = 0;
 

@@ -186,10 +186,11 @@ export function stitchNewsletter(input: StitchInput): string {
   if (input.d3Path != null && d3 === null) {
     throw new Error(`stitch: input ausente: ${input.d3Path}`);
   }
-  // #2355 fix 1: D3 expected (d3Path provided) but file is empty/whitespace-only →
-  // fail loud. An empty destaque block produces a bare `---` in the output which is
-  // a silently corrupt edition. Only fire when D3 was expected; 2-destaque editions
-  // (d3Path=null) are never affected — the block is simply omitted.
+  // #2355 fix 1: required draft files must not be empty/whitespace-only —
+  // an empty destaque block produces a bare `---` in the output (silently corrupt edition).
+  // D1 and D2 are always required; D3 only when d3Path is provided.
+  if (!d1) throw new Error(`stitch: 02-d1-draft.md vazio: ${input.d1Path}`);
+  if (!d2) throw new Error(`stitch: 02-d2-draft.md vazio: ${input.d2Path}`);
   if (input.d3Path != null && d3 === "") {
     throw new Error(`stitch: 02-d3-draft.md vazio (esperado para edição de 3 destaques): ${input.d3Path}`);
   }
