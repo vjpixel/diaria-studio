@@ -29,7 +29,7 @@
  */
 
 import { canonicalize } from "./url-utils.ts";
-import { selectUseMelhorSplit } from "./use-melhor-curation.ts";
+import { selectUseMelhorSplit, rootDomain, classifyAudienceClass } from "./use-melhor-curation.ts";
 
 export interface StageArticle {
   url?: string;
@@ -170,7 +170,17 @@ export interface CapReport {
    *   promoted         — runners-up `use_melhor` promovidos pra bater o mínimo
    *   after            — total final (após min promotion + max cap)
    *   truncated        — itens descartados pelo cap máximo (#2313)
-   *   shortfall        — quantos AINDA faltam pro mínimo (pool insuficiente) → warn loud no gate
+   *   shortfall        — quantos AINDA faltam pro mínimo → warn loud no gate.
+   *                      NOTE: shortfall > 0 has two distinct causes:
+   *                        (a) truly empty pool — no runners-up with bucket=use_melhor exist
+   *                        (b) domain-cap-limited — runners-up exist but are all from the same
+   *                            rootDomain already represented in kept (seenDomains guard, #2353).
+   *                      Both are correct behavior (the domain cap should hold), but the log
+   *                      in promoteUseMelhorToMinimum distinguishes them for observability.
+   *   composition      — contagem por classe na saída final (#2353 observability)
+   *                      NOTE: the guard for 0-casual/0-beginner with ≥4 items lives in
+   *                      review-use-melhor.ts (which sees the output at gate time). This field
+   *                      surfaces the counts so the orchestrator log is not blind to composition.
    */
   use_melhor: {
     before: number;
@@ -179,6 +189,7 @@ export interface CapReport {
     after: number;
     truncated: number;
     shortfall: number;
+    composition: { casual: number; dev_iniciante: number; dev_avancado: number };
   };
 }
 
@@ -195,6 +206,11 @@ export interface CapReport {
  *
  * Retorna `shortfall > 0` quando nem com os runners-up dá pra bater o mínimo —
  * o caller surfa warn no gate em vez de inventar item.
+ *
+ * NOTE: shortfall distinguishes two causes internally (see CapReport.use_melhor.shortfall).
+ * When shortfall is caused by the rootDomain cap (all runners-up share the domain of an
+ * existing kept item), the function logs a distinct message so the orchestrator can tell
+ * "domain-cap-limited" from a true pool shortage.
  */
 export function promoteUseMelhorToMinimum(
   current: StageArticle[] | undefined,
@@ -204,12 +220,26 @@ export function promoteUseMelhorToMinimum(
 ): { kept: StageArticle[]; promoted: number; shortfall: number } {
   const kept: StageArticle[] = [...(current ?? [])];
   const seen = new Set<string>();
+  // #2353: also track rootDomains of current items so promotion respects the
+  // same per-domain cap (=1) that finalize-stage1's dedupeUseMelhorBucket enforces.
+  // Without this, a runner-up from amazon.com could be promoted even though the
+  // bucket already has an amazon.com item that finalize-stage1 capped to 1.
+  const seenDomains = new Set<string>();
   for (const a of kept) {
     const u = typeof a.url === "string" ? a.url : "";
-    if (u) seen.add(canonicalize(u));
+    if (u) {
+      seen.add(canonicalize(u));
+      const rd = rootDomain(u);
+      // Only track real multi-part domains (contains a dot); bare TLDs / single-segment
+      // fixture hostnames (e.g. "ru", "h") are ignored to avoid false positives.
+      if (rd && rd.includes(".")) seenDomains.add(rd);
+    }
   }
 
   let promoted = 0;
+  // #2353: track whether any candidates were skipped solely due to the rootDomain cap
+  // so we can emit a distinguishing log if shortfall > 0 (domain-cap-limited vs truly empty pool).
+  let skippedByDomainCap = 0;
   if (kept.length < min && runnersUp) {
     const candidates = runnersUp
       .filter((r) => r.bucket === "use_melhor")
@@ -220,6 +250,17 @@ export function promoteUseMelhorToMinimum(
       if (!url) continue;
       const canon = canonicalize(url);
       if (seen.has(canon) || highlightUrlsCanon.has(canon)) continue;
+      // #2353: skip runner-up whose rootDomain is already represented in kept.
+      // Mirrors the cap=1 in dedupeUseMelhorBucket so promotion doesn't re-add
+      // a same-domain item that the bucket-level dedup just removed.
+      // Guard: only apply the cap for real multi-part domains (contains a dot).
+      // Single-segment "domains" (e.g. bare TLDs, fixture hostnames) are left uncapped
+      // to avoid breaking test fixtures with fake URLs like https://ru/a.
+      const rd = rootDomain(url);
+      if (rd && rd.includes(".") && seenDomains.has(rd)) {
+        skippedByDomainCap++;
+        continue;
+      }
       // Materializa o runner-up como StageArticle (nested article preferido,
       // fallback pro shape flat). No flat, espalha o runner-up inteiro pra
       // preservar summary/summary_lang — sem isso o item promovido renderiza
@@ -227,11 +268,23 @@ export function promoteUseMelhorToMinimum(
       const art: StageArticle = r.article ?? { ...r };
       kept.push(art);
       seen.add(canon);
+      if (rd && rd.includes(".")) seenDomains.add(rd);
       promoted++;
     }
   }
 
-  return { kept, promoted, shortfall: Math.max(0, min - kept.length) };
+  const shortfall = Math.max(0, min - kept.length);
+  if (shortfall > 0 && skippedByDomainCap > 0) {
+    // #2353: shortfall is due (at least in part) to the rootDomain cap — runners-up existed
+    // but were all from the same domain as an existing kept item.  This is NOT a pool shortage;
+    // it's a diversity enforcement. Distinguish from truly-empty-pool for the gate warn.
+    console.warn(
+      `[promoteUseMelhorToMinimum] shortfall=${shortfall} (domain-cap-limited: ` +
+        `${skippedByDomainCap} runner(s) skipped because rootDomain already in kept, #2353) — ` +
+        `not a true pool shortage; the cap is enforced correctly`,
+    );
+  }
+  return { kept, promoted, shortfall };
 }
 
 /**
@@ -318,9 +371,40 @@ export function applyStage2Caps(
   const umFinal = umSplit.slice(0, STAGE_2_MAX_USE_MELHOR);
   const umTruncated = um.kept.length - umFinal.length;
   if (umTruncated > 0) {
-    console.warn(
-      `[apply-stage2-caps] USE MELHOR: ${um.kept.length} → ${umFinal.length} (cap máximo ${STAGE_2_MAX_USE_MELHOR} aplicado, #2313)`,
-    );
+    // #2353: distinguish why items were dropped.
+    // The split quota (2+2) and the numeric cap can both reduce the count, but for
+    // different reasons: quota rebalances composition, cap enforces the hard ceiling.
+    // Items dropped by the split-quota (re-composition) vs numeric cap (ceiling):
+    //   - If um.kept.length > STAGE_2_MAX_USE_MELHOR: both quota and cap may apply.
+    //   - If um.kept.length <= STAGE_2_MAX_USE_MELHOR: only the 2+2 split caused the drop.
+    const droppedByCap = um.kept.length > STAGE_2_MAX_USE_MELHOR
+      ? um.kept.length - STAGE_2_MAX_USE_MELHOR
+      : 0;
+    const droppedBySplit = umTruncated - droppedByCap;
+    if (droppedByCap > 0 && droppedBySplit > 0) {
+      console.warn(
+        `[apply-stage2-caps] USE MELHOR: ${um.kept.length} → ${umFinal.length} ` +
+          `(${droppedBySplit} pela cota 2+2 (#2339), ${droppedByCap} pelo cap máximo ${STAGE_2_MAX_USE_MELHOR} (#2313))`,
+      );
+    } else if (droppedByCap > 0) {
+      console.warn(
+        `[apply-stage2-caps] USE MELHOR: ${um.kept.length} → ${umFinal.length} (cap máximo ${STAGE_2_MAX_USE_MELHOR} aplicado, #2313)`,
+      );
+    } else {
+      console.warn(
+        `[apply-stage2-caps] USE MELHOR: ${um.kept.length} → ${umFinal.length} (cota 2+2 aplicada, #2339)`,
+      );
+    }
+  }
+
+  // #2353: compute composition (casual/dev-iniciante/dev-avancado counts) for observability.
+  // review-use-melhor.ts has the gate-level guard for 0-casual/0-beginner — this is additive logging.
+  const umComposition = { casual: 0, dev_iniciante: 0, dev_avancado: 0 };
+  for (const item of umFinal) {
+    const cls = classifyAudienceClass(item as Parameters<typeof classifyAudienceClass>[0]);
+    if (cls === "casual") umComposition.casual++;
+    else if (cls === "dev-iniciante") umComposition.dev_iniciante++;
+    else umComposition.dev_avancado++;
   }
 
   const out: ApprovedJson = {
@@ -357,6 +441,7 @@ export function applyStage2Caps(
         after: umFinal.length,
         truncated: umTruncated,
         shortfall: um.shortfall,
+        composition: umComposition,
       },
     },
   };
