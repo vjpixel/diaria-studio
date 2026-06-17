@@ -391,3 +391,75 @@ describe("resolveDestaques (#663) — fallback respeita intenção do editor", (
     assert.equal(result[0], "https://a.com/1");
   });
 });
+
+describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () => {
+  // Cenário exato do #2333: editor tinha 3 destaques e demoveu D3 (c.com/3) para Radar.
+  // Antes do fix, resolveDestaques via length < 3 → entrava no fill-loop →
+  // c.com/3 estava em mdBucketUrls (radar) → era re-adicionado aos destaques →
+  // demoção desfeita + URL aparecia em destaques E radar ao mesmo tempo.
+
+  const highlights = [
+    { rank: 1, url: "https://a.com/1" },
+    { rank: 2, url: "https://b.com/2" },
+    { rank: 3, url: "https://c.com/3" },
+  ];
+
+  it("#2333: editor demove D3 (c.com/3) para Radar → resultado tem 2 URLs, não 3", () => {
+    // Editor deixou 2 destaques e moveu c.com/3 para radar.
+    const sections = {
+      destaques: ["https://a.com/1", "https://b.com/2"],
+      lancamento: [],
+      radar: ["https://c.com/3"], // URL demovida está aqui
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.equal(result.length, 2, "demoção de D3 preservada: deve retornar 2 destaques");
+    assert.deepEqual(result, ["https://a.com/1", "https://b.com/2"]);
+  });
+
+  it("#2333: URL demovida NÃO aparece nos destaques após demoção 3→2", () => {
+    const sections = {
+      destaques: ["https://a.com/1", "https://b.com/2"],
+      lancamento: [],
+      radar: ["https://c.com/3"],
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.ok(
+      !result.includes("https://c.com/3"),
+      "c.com/3 foi demovida para Radar — não deve reaparecer nos destaques",
+    );
+  });
+
+  it("#2333: 2 destaques com D3 demovida + outros itens em radar → não preenche com itens de radar", () => {
+    // Garante que qualquer URL em radar não sobe para destaques quando count == 2
+    const sections = {
+      destaques: ["https://a.com/1", "https://b.com/2"],
+      lancamento: [],
+      radar: ["https://c.com/3", "https://d.com/extra"],
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.equal(result.length, 2, "nenhum item do Radar deve preencher os destaques quando count == 2");
+    assert.ok(!result.includes("https://c.com/3"));
+    assert.ok(!result.includes("https://d.com/extra"));
+  });
+
+  it("#2333: editor com 1 destaque ainda recebe fill (lacuna provavelmente acidental)", () => {
+    // 1 < 2 → ainda entra no fill-loop (comportamento inalterado)
+    const sections = {
+      destaques: ["https://a.com/1"],
+      lancamento: [],
+      radar: ["https://b.com/2", "https://c.com/3"],
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.equal(result[0], "https://a.com/1", "D1 manual preservado");
+    assert.ok(result.length > 1, "fill deve completar quando count < 2");
+    assert.ok(result.includes("https://b.com/2"), "rank 2 deve ser adicionado no fill");
+  });
+});

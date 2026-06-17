@@ -10,8 +10,9 @@
  * Comportamento:
  *   - Parseia as 4 seções: `## Destaques`, `## Lançamentos`, `## Pesquisas`, `## Notícias`.
  *   - Para cada seção, extrai as URLs na ORDEM FÍSICA em que aparecem.
- *   - `Destaques`: primeiras 3 viram D1/D2/D3 (rank 1/2/3). Se < 3, completa
- *     com candidatos originais do scorer por rank. Se > 3, mantém as 3 primeiras.
+ *   - `Destaques`: 2–3 viram D1/D2/D3 (rank 1/2/3). 2 destaques é válido (editor
+ *     demoveu D3 intencionalmente, #2316). Se < 2, completa com candidatos do scorer
+ *     por rank. Se > 3, mantém as 3 primeiras. (#2333)
  *   - `Lançamentos` / `Pesquisas` / `Notícias`: honra exatamente as URLs que o editor
  *     deixou, na ordem que aparecem. Artigos removidos do MD são dropados.
  *   - Artigos podem ter sido movidos entre buckets — o categorizer original fica
@@ -155,11 +156,14 @@ export function canonicalizeUrl(url: string): string {
 }
 
 /**
- * Resolve a lista final de URLs para a seção Destaques (#663).
+ * Resolve a lista final de URLs para a seção Destaques (#663, #2333).
  *
- * Se o editor não preencheu os 3 destaques, completa com candidatos do scorer
+ * Se o editor deixou 0 ou 1 destaque, completa com candidatos do scorer
  * por rank — mas **apenas** URLs que ainda existem em algum bucket do MD.
  * Artigos que o editor removeu dos buckets não podem voltar como destaques.
+ *
+ * Se o editor deixou 2 destaques (demoção intencional de D3, #2316), essa
+ * decisão é preservada: não se completa até 3. O piso editorial válido é 2.
  *
  * Retorna array de 0–3 URLs na ordem editorial.
  */
@@ -169,7 +173,9 @@ export function resolveDestaques(
 ): string[] {
   let destaquesUrls = [...sections.destaques];
 
-  if (destaquesUrls.length < 3) {
+  // #2333: piso 2 — se o editor deixou 2 destaques, respeitar (demoção de D3).
+  // Só completar quando 0 ou 1 destaque (lacuna provavelmente acidental).
+  if (destaquesUrls.length < 2) {
     // #663: só aceitar URLs que ainda estão em algum bucket do MD
     const mdBucketUrls = new Set([
       ...sections.lancamento,
@@ -256,7 +262,13 @@ function main() {
     console.error(
       `[apply-gate-edits] ${sections.destaques.length} destaques no MD — mantendo só os 3 primeiros por posição.`,
     );
-  } else if (sections.destaques.length < 3) {
+  } else if (sections.destaques.length === 2) {
+    // #2333: 2 destaques é decisão editorial válida (demoção de D3, #2316) — não preencher.
+    console.error(
+      `[apply-gate-edits] INFO: Editor deixou 2 destaques (demoção de D3 preservada — #2316/#2333).`,
+    );
+  } else if (sections.destaques.length < 2) {
+    // #2333: só completar quando o editor deixou 0 ou 1 (lacuna provavelmente acidental).
     const filled = destaquesUrls.length - sections.destaques.length;
     if (destaquesUrls.length === 0) {
       console.error(
