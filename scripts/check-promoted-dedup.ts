@@ -152,8 +152,10 @@ export function checkPromotedDedup(
       : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar${fromRepeatSuffix}`;
 
     // Restaurar URL de pesquisa original, EXCETO quando from===to (ambas repetem — manter from mesmo assim
-    // para rastreabilidade, mas anotar o fato no primary_source_demoted)
-    const restoredUrl = sub.from;
+    // para rastreabilidade, mas anotar o fato no primary_source_demoted).
+    // Quando from==='' (orquestrador não preencheu URL de pesquisa), cair de volta para
+    // article.url (a URL oficial) para que o item em radar permaneça navegável pelo editor.
+    const restoredUrl = sub.from || article.url;
 
     const demotedArticle: Article = {
       ...article,

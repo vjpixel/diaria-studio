@@ -454,6 +454,10 @@ describe("#2338/fix2 — empty from guard", () => {
     assert.equal(result.demoted.length, 1, "#2338: deve demote quando to repete, mesmo com from:''");
     assert.equal(buckets.lancamento?.length, 0, "artigo deve sair de lancamento");
     assert.equal(buckets.radar?.length, 1, "artigo deve ir pra radar");
+    // O item demotado deve ter URL navegável (não vazia) — fallback para article.url quando from===''
+    const radarUrl = buckets.radar![0].url;
+    assert.notEqual(radarUrl, "", "#2338: radar item deve ter URL navegável (não '' mesmo com from vazio)");
+    assert.ok(typeof radarUrl === "string" && radarUrl.startsWith("http"), "#2338: URL do radar item deve ser uma URL válida");
   });
 
   it("from='' com to válido e NÃO repetido: mantém em lancamento", () => {
