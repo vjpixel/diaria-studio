@@ -1150,8 +1150,11 @@ export function categorize(article: Article): Category {
   //    Papers acadêmicos com "tutorial" no título já foram classificados
   //    como pesquisa acima.
   // #2276: excluir marketing case studies antes de classificar como tutorial.
+  // #2334: guarda `!isNewsNotTutorial` consistente com L1093/1094/1116/1164 — anúncios
+  // com keyword how-to no título (ex: "Introducing Gemma 4 — how to get started") não
+  // devem virar tutorial. isLaunchSlug dentro de isNewsNotTutorial é o discriminante.
   const _isMarkCase = isMarketingCaseStudy(article.title ?? "", article.summary ?? "");
-  if (isTutorialByKeyword(article) && !_isMarkCase) return "tutorial";
+  if (isTutorialByKeyword(article) && !_isMarkCase && !isNewsNotTutorial(article)) return "tutorial";
 
   // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
   //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem

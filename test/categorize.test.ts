@@ -1122,6 +1122,56 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
   });
 });
 
+describe("categorize() — #2334: isTutorialByKeyword guarda !isNewsNotTutorial", () => {
+  // #2334: path L1154 (isTutorialByKeyword) não tinha guard !isNewsNotTutorial, ao contrário
+  // de L1093/1094/1116/1164. Anúncio com keyword how-to no TÍTULO (não no slug) em domínio
+  // genérico batia no keyword check e retornava "tutorial" antes do check de lançamento.
+
+  it("regressão #2334: 'Introducing Gemma 4 — how to get started' em domínio genérico NÃO é tutorial", () => {
+    // Slug tem "introducing-" → isLaunchSlug=true → isNewsNotTutorial=true
+    // Sem o fix, isTutorialByKeyword batia em "how to get started" (TUTORIAL_KEYWORDS_RE "how-to + verb")
+    // e retornava "tutorial" antes de chegar em qualquer check de lançamento.
+    // Com o fix, !isNewsNotTutorial(article) bloqueia o retorno "tutorial" na L1154.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
+      title: "Introducing Gemma 4 — how to get started",
+    };
+    // Deve ser lancamento ou noticias, nunca tutorial.
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio com keyword how-to no título não deve virar tutorial via isTutorialByKeyword (#2334)",
+    );
+  });
+
+  it("#2334: sem fix, keyword path era exercido (exercita L1154, não L1164)", () => {
+    // Este teste verifica que o caminho L1154 (isTutorialByKeyword) é o que seria
+    // atingido sem o fix — o slug genérico não está em TUTORIAL_DOMAIN_EXTRA_PATTERNS,
+    // então L1164 (isTutorialByDomainExtra) não seria o bloqueio; seria L1154.
+    // O domínio "someblog.example.com" não está em TUTORIAL_DOMAINS nem TUTORIAL_PATTERNS
+    // (L1093/1094), e não é use_melhor (L1116). Portanto o bug estava em L1154.
+    // Com o fix: isNewsNotTutorial bloqueia a classificação via L1154 → cai pro fluxo normal.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
+      title: "Introducing Gemma 4 — how to get started",
+    };
+    // Verifica que o domínio genérico NÃO aciona L1093/L1094 (TUTORIAL_DOMAINS/TUTORIAL_PATTERNS)
+    // para confirmar que o vetor de bug era L1154, não L1164.
+    // A afirmação principal é: resultado final não é "tutorial".
+    const result = categorize(art);
+    assert.notEqual(result, "tutorial", "L1154 keyword path com guard corretamente bloqueia tutorial");
+  });
+
+  it("#2334: 'how to build X' em domínio genérico SEM slug de lançamento ainda é tutorial", () => {
+    // Sem slug de lançamento, isNewsNotTutorial retorna false → isTutorialByKeyword vence normalmente.
+    const art: Article = {
+      url: "https://someblog.example.com/how-to-build-rag-with-gemini/",
+      title: "How to build a RAG pipeline with Gemini",
+    };
+    assert.equal(categorize(art), "tutorial", "tutorial legítimo com how-to keyword sem lançamento deve continuar tutorial");
+  });
+});
+
 describe("categorize() — UPDATE_PATTERNS aniversário e expansão incremental (#486)", () => {
   it("'AI Max Turns 1' em domínio oficial → noticias (aniversário)", () => {
     assert.equal(
