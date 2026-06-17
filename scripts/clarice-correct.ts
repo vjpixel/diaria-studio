@@ -41,6 +41,21 @@ import { parseClariceSuggestions } from "./lib/schemas/clarice-suggestions.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 
+/**
+ * Erro estruturado lançado por `correctTextViaREST` em respostas HTTP não-2xx.
+ * Carrega o `.status` numérico para que `withClariceRetry` possa detectar 4xx
+ * de forma estrutural (sem string-matching da mensagem), resistindo a proxies
+ * ou wrappers que alteram o prefixo da mensagem (#2338 fix 3).
+ */
+export class ClariceHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, body: string) {
+    super(`HTTP ${status}: ${body}`);
+    this.name = "ClariceHttpError";
+    this.status = status;
+  }
+}
+
 export interface CorrectOptions {
   apiKey: string;
   text: string;
@@ -122,10 +137,13 @@ export async function withClariceRetry(
       return { suggestions, attempts: attempt + 1 };
     } catch (e) {
       lastError = e as Error;
-      const msg = lastError.message ?? "";
       // HTTP 4xx = não é problema de disponibilidade — não há sentido em retry.
-      // Detectamos por "HTTP 4" no início da mensagem de erro do correctTextViaREST.
-      const is4xx = /^HTTP 4\d\d/.test(msg);
+      // Detecção estrutural: ClariceHttpError carrega .status — preferir isso a
+      // string-matching da mensagem, que falha quando proxy/wrapper altera o prefixo
+      // (#2338 fix 3). Fallback ao regex para erros lançados por código externo.
+      const is4xx =
+        (e instanceof ClariceHttpError && e.status >= 400 && e.status < 500) ||
+        /^HTTP 4\d\d/.test(lastError.message ?? "");
       if (is4xx) break;
       // Timeout (AbortError) e erros de rede (TypeError: fetch failed) → retry.
       // HTTP 5xx → retry.
@@ -169,10 +187,9 @@ export async function correctTextViaREST(
 
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "<unreadable>");
-    // IMPORTANT: the message format 'HTTP {status}: ...' is relied upon by
-    // withClariceRetry's 4xx detection regex (/^HTTP 4\d\d/) — do not change
-    // without updating the is4xx check in withClariceRetry (~line 128).
-    throw new Error(`HTTP ${res.status}: ${bodyText.slice(0, 500)}`);
+    // Throw ClariceHttpError (carries .status) so withClariceRetry can detect
+    // 4xx structurally instead of string-matching the message (#2338 fix 3).
+    throw new ClariceHttpError(res.status, bodyText.slice(0, 500));
   }
 
   const raw = await res.json() as unknown;

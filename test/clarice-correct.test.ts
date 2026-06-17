@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   correctTextViaREST,
   extractSuggestions,
+  withClariceRetry,
+  ClariceHttpError,
+  type RetryPolicy,
 } from "../scripts/clarice-correct.ts";
 
 function mockFetch(response: {
@@ -123,5 +126,99 @@ describe("extractSuggestions", () => {
 
   it("rejeita shapes inválidos (sem from/to)", () => {
     assert.throws(() => extractSuggestions([{ rule: "x" }]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2338 fix 3 — ClariceHttpError structural detection
+// ---------------------------------------------------------------------------
+
+describe("ClariceHttpError (#2338)", () => {
+  it("correctTextViaREST lança ClariceHttpError com .status em non-2xx", async () => {
+    const fetchImpl = mockFetch({ status: 401, body: "unauthorized" });
+    let caught: unknown;
+    try {
+      await correctTextViaREST({ apiKey: "k", text: "texto", fetchImpl });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof ClariceHttpError, "deve ser ClariceHttpError");
+    assert.equal((caught as ClariceHttpError).status, 401);
+    assert.match((caught as ClariceHttpError).message, /HTTP 401/);
+  });
+
+  it("correctTextViaREST lança ClariceHttpError com .status 403", async () => {
+    const fetchImpl = mockFetch({ status: 403, body: "forbidden" });
+    let caught: unknown;
+    try {
+      await correctTextViaREST({ apiKey: "k", text: "texto", fetchImpl });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof ClariceHttpError, "deve ser ClariceHttpError");
+    assert.equal((caught as ClariceHttpError).status, 403);
+  });
+});
+
+describe("withClariceRetry (#2338) — 4xx fast-fail, 5xx retries", () => {
+  const noSleep = async (_ms: number): Promise<void> => {};
+  const fastPolicy: RetryPolicy = {
+    maxAttempts: 3,
+    timeoutMs: 5_000,
+    baseBackoffMs: 0,
+  };
+
+  it("401 → fast-fail sem retry (attempts = 1)", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response("unauthorized", { status: 401 });
+    };
+    await assert.rejects(
+      () =>
+        withClariceRetry({ apiKey: "k", text: "x", fetchImpl }, fastPolicy, noSleep),
+      ClariceHttpError,
+      "deve rejeitar com ClariceHttpError",
+    );
+    assert.equal(callCount, 1, "401 não deve ser retentado — deve chamar fetch apenas 1×");
+  });
+
+  it("403 → fast-fail sem retry (attempts = 1)", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response("forbidden", { status: 403 });
+    };
+    await assert.rejects(
+      () =>
+        withClariceRetry({ apiKey: "k", text: "x", fetchImpl }, fastPolicy, noSleep),
+      ClariceHttpError,
+    );
+    assert.equal(callCount, 1, "403 não deve ser retentado");
+  });
+
+  it("503 → retried até maxAttempts (3 chamadas)", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response("service unavailable", { status: 503 });
+    };
+    await assert.rejects(
+      () =>
+        withClariceRetry({ apiKey: "k", text: "x", fetchImpl }, fastPolicy, noSleep),
+    );
+    assert.equal(callCount, fastPolicy.maxAttempts, `5xx deve tentar ${fastPolicy.maxAttempts}×`);
+  });
+
+  it("sucesso na 2ª tentativa após 503 → retorna resultado", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      if (callCount === 1) return new Response("service unavailable", { status: 503 });
+      return new Response(JSON.stringify([{ from: "a", to: "b" }]), { status: 200 });
+    };
+    const result = await withClariceRetry({ apiKey: "k", text: "x", fetchImpl }, fastPolicy, noSleep);
+    assert.equal(result.attempts, 2, "deve ter usado 2 tentativas");
+    assert.equal(result.suggestions.length, 1);
   });
 });

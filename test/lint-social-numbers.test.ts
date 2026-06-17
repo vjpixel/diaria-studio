@@ -715,3 +715,75 @@ describe("lint-social-numbers CLI (#2331/F6) — contrato Stage2 vs pós-Stage5"
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2338 fix 1 — ok:false no JSON quando --post-stage5 detecta placeholder
+// ---------------------------------------------------------------------------
+
+describe("lint-social-numbers CLI (#2338/fix1) — ok:false no JSON em --post-stage5", () => {
+  function runLintCli2338(socialPath: string, approvedPath: string, extraArgs: string[] = []) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-social-numbers.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--social", socialPath, "--approved", approvedPath, ...extraArgs],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  it("--post-stage5 com {outros_count} literal: JSON ok=false E exit 1", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-2338-fix1-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      const socialWithPlaceholder = SOCIAL_WITH_COMMENTS.replace(
+        /mais 9 destaques de IA do dia/g,
+        "mais {outros_count} destaques de IA do dia",
+      );
+      writeFileSync(socialPath, socialWithPlaceholder, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCli2338(socialPath, approvedPath, ["--post-stage5"]);
+
+      // exit 1 (already covered by F6 test, but repeat for clarity)
+      assert.equal(result.status, 1, "#2338: --post-stage5 deve sair exit 1 em placeholder literal");
+
+      // JSON stdout must have ok=false — callers using `jq -e '.ok'` also detect failure
+      let parsed: { ok: boolean } | undefined;
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(result.stdout) as { ok: boolean };
+      }, `stdout deve ser JSON válido — recebido: ${JSON.stringify(result.stdout)}`);
+      assert.equal(parsed!.ok, false, "#2338: ok deve ser false quando exit=1 (--post-stage5 placeholder)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--post-stage5 com placeholder resolvido (número certo): JSON ok=true E exit 0", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-2338-fix1b-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      const approvedWith9 = {
+        ...APPROVED_13_ITEMS,
+        lancamento: [{}],
+        radar: [{}, {}, {}, {}, {}, {}, {}, {}],
+      };
+      // Social com "mais 9 destaques" — número correto para approvedWith9 (outros=9)
+      writeFileSync(socialPath, SOCIAL_WITH_COMMENTS, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(approvedWith9), "utf8");
+
+      const result = runLintCli2338(socialPath, approvedPath, ["--post-stage5"]);
+
+      assert.equal(result.status, 0, "#2338: exit 0 quando resolvido corretamente");
+
+      let parsed: { ok: boolean } | undefined;
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(result.stdout) as { ok: boolean };
+      }, `stdout deve ser JSON válido — recebido: ${JSON.stringify(result.stdout)}`);
+      assert.equal(parsed!.ok, true, "#2338: ok deve ser true quando placeholder resolvido e número correto");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

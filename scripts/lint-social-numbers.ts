@@ -487,8 +487,15 @@ function main(): void {
   //   - Cifras financeiras: WARN-only (exit 0)
   //   - Contagem errada Stage 2: WARN-only (exit 0)
   //   - Placeholder {outros_count} pós-Stage5 (--post-stage5): blocker (exit 1)
+  // ok must be false whenever hasUnresolvedPostStage5 — same condition that drives
+  // exit 1 — so callers that parse `| jq -e '.ok'` instead of the exit code also
+  // detect the failure (#2338 fix 1).
   console.log(
-    JSON.stringify({ ok: totalNums === 0 && countFindings.length === 0, num_findings: numFindings, count_findings: countFindings }, null, 2),
+    JSON.stringify({
+      ok: totalNums === 0 && countFindings.length === 0 && !hasUnresolvedPostStage5,
+      num_findings: numFindings,
+      count_findings: countFindings,
+    }, null, 2),
   );
   if (hasUnresolvedPostStage5) {
     process.exit(1);

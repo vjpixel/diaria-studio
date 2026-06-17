@@ -378,3 +378,98 @@ describe("#2315 — check-promoted-dedup CLI stdout smoke", () => {
     assert.equal(result.demoted.length, 0, "sem demotions esperadas");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2338 fix 2 — from===to annotation + empty-from guard
+// ---------------------------------------------------------------------------
+
+describe("#2338/fix2 — from===to repeated URL annotated in reason", () => {
+  it("from===to com URL repetida: reason inclui aviso que from também repete", () => {
+    const url = "https://huggingface.co/some/model";
+    const article: Article = {
+      url,
+      title: "Modelo X",
+      primary_source_substituted: { from: url, to: url }, // from === to
+    };
+    const buckets: CategorizedFlat = { lancamento: [article], radar: [] };
+    const pastUrls = pastUrlsFrom(url); // URL repete past-editions
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.demoted.length, 1, "deve demote");
+    const demotedReason = result.demoted[0].reason;
+    // reason must flag that the from URL also repeats, so editor knows not to re-promote
+    assert.match(
+      demotedReason,
+      /from.*repete|também repete/i,
+      "#2338: reason deve avisar que from (=URL de pesquisa original) também repete past-editions",
+    );
+  });
+
+  it("from===to com URL NÃO repetida: reason NÃO inclui sufixo de from-repeat", () => {
+    // within-edition duplicate: from===to but URL not in past-editions
+    const url = "https://openai.com/blog/new-model";
+    const article1: Article = {
+      url,
+      title: "New Model A",
+      primary_source_substituted: { from: url, to: url },
+    };
+    const article2: Article = {
+      url,
+      title: "New Model B",
+      primary_source_substituted: { from: url, to: url },
+    };
+    const buckets: CategorizedFlat = { lancamento: [article1, article2], radar: [] };
+    const pastUrls = new Set<string>(); // não repete past-editions
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    // O segundo deve ser demotado por within-edition duplicate
+    assert.ok(result.demoted.length >= 1, "pelo menos 1 demote por within-edition duplicate");
+    // O reason do within-edition duplicate não deve mencionar "from repete" (URL é nova)
+    const withinReason = result.demoted[0].reason;
+    assert.doesNotMatch(
+      withinReason,
+      /from.*repete/i,
+      "#2338: reason de within-edition-duplicate não deve incluir sufixo de from-repeat quando URL não está em past-editions",
+    );
+  });
+});
+
+describe("#2338/fix2 — empty from guard", () => {
+  it("from='' com to válido e repetido: deve demote (não pular silenciosamente)", () => {
+    const officialUrl = "https://huggingface.co/some/model";
+    const article: Article = {
+      url: officialUrl,
+      title: "Modelo Y",
+      primary_source_substituted: { from: "", to: officialUrl }, // from vazio
+    };
+    const buckets: CategorizedFlat = { lancamento: [article], radar: [] };
+    const pastUrls = pastUrlsFrom(officialUrl); // URL oficial repete
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    // Deve ter verificado e demotado (não pulado por from vazio)
+    assert.equal(result.checked, 1, "#2338: from:'' não deve impedir a verificação de to");
+    assert.equal(result.demoted.length, 1, "#2338: deve demote quando to repete, mesmo com from:''");
+    assert.equal(buckets.lancamento?.length, 0, "artigo deve sair de lancamento");
+    assert.equal(buckets.radar?.length, 1, "artigo deve ir pra radar");
+  });
+
+  it("from='' com to válido e NÃO repetido: mantém em lancamento", () => {
+    const officialUrl = "https://openai.com/blog/brand-new";
+    const article: Article = {
+      url: officialUrl,
+      title: "Coisa Nova",
+      primary_source_substituted: { from: "", to: officialUrl },
+    };
+    const buckets: CategorizedFlat = { lancamento: [article], radar: [] };
+    const pastUrls = new Set<string>(); // sem histórico
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.checked, 1, "#2338: from:'' deve ser verificado normalmente");
+    assert.equal(result.demoted.length, 0, "URL nova não deve ser demotada");
+    assert.equal(buckets.lancamento?.length, 1, "artigo deve permanecer em lancamento");
+  });
+});
