@@ -283,10 +283,17 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
       const v = Number(resetHeader);
       if (!isNaN(v)) {
         // Delta direto (ex: 256s) ou epoch Unix (ex: ~1.7e9)?
-        // #2307: v>=0 aceita reset:0 (janela já passou → retry imediato), igual a retry-after:0
-        retryAfter = v >= 1e9
-          ? Math.max(0, Math.ceil(v - Date.now() / 1000))
-          : v >= 0 ? v : null;
+        // #2337 fix 1: épocas já expiradas (Math.ceil → 0) recebem floor de 0.25s —
+        // um epoch-reset já passado indica que a janela se esgotou neste segundo, não
+        // que Brevo pediu retry imediato. Sem o floor, `computeRetryDelayMs(0) = 0ms`
+        // e as 3 re-tentativas disparam em microsegundos, pressionando a janela seguinte.
+        // Distinto de `retry-after: 0` (RFC 7231 imediato, mantido em 0ms acima).
+        if (v >= 1e9) {
+          const delta = Math.max(0, Math.ceil(v - Date.now() / 1000));
+          retryAfter = delta === 0 ? 0.25 : delta; // elapsed epoch → floor 250ms
+        } else {
+          retryAfter = v >= 0 ? v : null;
+        }
       }
     }
     throw new BrevoRateLimitError(retryAfter);
@@ -386,13 +393,23 @@ export async function fetchRecentCampaigns(
         // Finding #2 (#2323): hoistado para que o guard do ls-fetch abaixo consiga
         // verificar se cachedLs está envenenado (e portanto deve ser re-fetchado).
         let cachedLsIsPoison = false;
+        // #2337 fix 2: sinal de que ls-fetch já foi tentado mas falhou no ciclo anterior.
+        // Impede que `ls === undefined` no JSON → `cachedLs = null` → re-fetch+re-write em
+        // toda render dentro do TTL (KV-write churn). Quando true, o ls-fetch é pulado e
+        // o resultado é idêntico ao caso "ls fetch falhou" — links section fica sem dados
+        // até a entrada TTL expirar (RECENT_STATS_TTL = 30min) e uma nova tentativa ocorrer.
+        let cachedLsWasPending = false;
         if (!isFresh && env.STATS_CACHE) {
           // #2314: tenta chave unificada primeiro; fallback retrocompatível para as legadas.
           const unified = await env.STATS_CACHE.get(kvStatsKey, "json").catch(() => null) as
-            { gs: BrevoGlobalStats; ls: BrevoLinksStats } | null;
+            { gs: BrevoGlobalStats; ls?: BrevoLinksStats; lsPending?: true } | null;
           if (unified) {
             cachedGs = unified.gs ?? null;
             cachedLs = unified.ls ?? null;
+            // #2337 fix 2: detecta entrada gravada com lsPending:true (ls-fetch falhou
+            // na carga anterior). Seta o flag para pular o fetch neste render — sem isso,
+            // ls=null → re-fetch → nova escrita → loop de churn até o TTL expirar.
+            if (unified.lsPending === true) cachedLsWasPending = true;
           } else {
             // Migração: lê chaves legadas (gravadas por versões anteriores do worker).
             [cachedGs, cachedLs] = await Promise.all([
@@ -419,7 +436,9 @@ export async function fetchRecentCampaigns(
           // mesmo quando lstats não estava em cache — campanhas pré-#2177 com
           // gstats cacheado nunca recebiam lstats. Agora só retorna se ambos
           // estiverem em cache (e lstats não-poison).
-          if (cachedGs && cachedLs && !lsIsPoison) return;
+          // #2337 fix 2: cachedLsWasPending (lsPending:true no KV) também satisfaz a
+          // condição — gs está disponível e ls-fetch não deve ser tentado neste render.
+          if (cachedGs && ((!lsIsPoison && cachedLs) || cachedLsWasPending)) return;
         }
 
         // #2249 (verificado 2026-06-14 contra a API Brevo): o param COMBINADO
@@ -459,8 +478,12 @@ export async function fetchRecentCampaigns(
         // populado via legado `lstats:{id}` era ignorado e o fetch da API sobrescrevia
         // — se o fetch falhasse, ls ficava undefined e o write subsequente descartava
         // o dado legado válido. Poison continua re-fetchado (cachedLsIsPoison=true).
+        // #2337 fix 2: cachedLsWasPending (lsPending:true no KV) suprime o ls-fetch
+        // neste render — a entrada já registrou que ls falhou; não tentar de novo até
+        // o TTL expirar. Sem isso: ls=undefined → write → ls=null na leitura → re-fetch
+        // → re-write em toda render dentro do TTL (churn exato que #2314 tentou evitar).
         let ls: BrevoLinksStats | undefined;
-        if (!cachedLs || cachedLsIsPoison) {
+        if (!cachedLsWasPending && (!cachedLs || cachedLsIsPoison)) {
           try {
             // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
             const linksDetail = await withRateLimitRetry(() =>
@@ -502,11 +525,18 @@ export async function fetchRecentCampaigns(
           // próxima cache-miss → re-fetcha ls. Sem esse guard, a entrada permanente ficaria
           // para sempre sem ls (exigiria `wrangler kv:key delete` para recuperar).
           const opts = (immutable && !lsPoison && ls !== undefined) ? {} : { expirationTtl: RECENT_STATS_TTL };
-          // #2314: 1 write por campanha (era 2). ls pode ser undefined (linksStats
-          // fetch falhou) — guardamos o que temos; na próxima cache-miss o ls é
-          // re-fetchado separadamente (cachedGs presente → skip gs-fetch, só ls).
+          // #2314: 1 write por campanha (era 2).
+          // #2337 fix 2: quando ls === undefined (fetch falhou), gravar `lsPending: true`
+          // em vez de omitir o campo ls. JSON.stringify({ ls: undefined }) omite o campo →
+          // próxima leitura: unified.ls = undefined → ?? null = null → !cachedLs true →
+          // novo fetch+write em toda render dentro do TTL (churn). Com lsPending:true o
+          // próximo render detecta `unified.lsPending === true`, seta cachedLsWasPending e
+          // pula o fetch — sem novo write até o TTL expirar e uma tentativa fresca ocorrer.
+          const payload = ls !== undefined
+            ? { gs: gs!, ls }
+            : { gs: gs!, lsPending: true as const };
           await env.STATS_CACHE.put(
-            kvStatsKey, JSON.stringify({ gs: gs!, ls }),
+            kvStatsKey, JSON.stringify(payload),
             opts,
           ).catch(() => { /* nunca bloqueia */ });
         }
