@@ -237,11 +237,12 @@ export function dedupeUseMelhorBucket(
   // seenTokens: unified fingerprint pool for ALL items that "claim" a topic slot —
   // both KEPT items and DOMAIN-CAPPED items (#2309 item 2, self-review findings 1-3).
   //
-  // Threshold for near-dup check is adaptive per fingerprint size:
-  //   Math.min(minSharedTokens, fingerprint.size)
+  // Threshold for near-dup check is adaptive per fingerprint size, with a floor of 2 (#2336):
+  //   Math.max(2, Math.min(minSharedTokens, fingerprint.size))
   // This means:
-  //   • 1-token fingerprint (e.g. {"bedrock"}) → threshold 1: any candidate sharing that
-  //     specific token is a near-dup. Preserves #2309 intent.
+  //   • 1-token fingerprint (e.g. {bedrock}) → threshold = max(2,1) = 2 (floor #2336):
+  //     never blocks candidates. A 1-token fingerprint is too ambiguous to gate on.
+  //     Domain cap already handles same-domain duplicates for this case.
   //   • ≥2-token fingerprint → threshold minSharedTokens (default 2): candidate must
   //     share ≥2 tokens. Prevents a generic token like "open" from a multi-token
   //     fingerprint {"open","bedrock"} from blocking unrelated articles (finding 1 fix).
@@ -251,6 +252,14 @@ export function dedupeUseMelhorBucket(
   // seenTokens entry also register (finding 3 fix: prevents thematic leak where only
   // the intermediary capped item — not the original kept item — shares tokens with the
   // later near-dup).
+  //
+  // #2336 floor: threshold never drops below 2, even for 1-token fingerprints.
+  // Adaptive threshold `Math.min(minSharedTokens, st.size)` with st.size=1 → threshold=1
+  // → any candidate containing that one generic token ('bedrock', 'open', etc.) is blocked,
+  // causing over-block across different topics. Floor at 2 preserves #2325's genuine
+  // near-dup catch (genuine near-dups still share ≥2 tokens) while preventing the
+  // single-token over-block. A 1-token fingerprint effectively disables near-dup blocking
+  // for that item (threshold=2 > fingerprint.size=1, so intersectionSize can never reach 2).
   const seenTokens: Set<string>[] = [];
   const kept: UseMelhorArticle[] = [];
 
@@ -273,7 +282,10 @@ export function dedupeUseMelhorBucket(
     // Candidates with no tokens (empty title) skip the dedup check entirely.
     if (tokens.size >= 1) {
       const isDuplicate = seenTokens.some((st) => {
-        const threshold = Math.min(minSharedTokens, st.size);
+        // #2336: floor at 2 so a 1-token fingerprint never sets threshold=1.
+        // Without the floor, {"bedrock"} → threshold 1 → any article mentioning
+        // "bedrock" on any topic is blocked as a near-dup (over-block).
+        const threshold = Math.max(2, Math.min(minSharedTokens, st.size));
         return intersectionSize(tokens, st, threshold) >= threshold;
       });
       if (isDuplicate) {

@@ -32,6 +32,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
 import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
+import { rootDomain } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap usa rootDomain (colapsa subdomínios)
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -642,12 +643,11 @@ export function finalizeStage1(
     const umDropped: Array<{ url: string; title?: string; domain: string; score: number | null }> = [];
     enriched["use_melhor"] = (enriched["use_melhor"] ?? []).filter((a) => {
       if (protectedUrls.has(a.url)) return true; // highlight/runner-up bypassa
-      let host: string | null = null;
-      try {
-        host = new URL(a.url).hostname.replace(/^www\./, "");
-      } catch {
-        return true; // URL inválida passa (defensive)
-      }
+      // #2336: usa rootDomain (colapsa subdomínios) em vez de hostname —
+      // para que aws.amazon.com e docs.aws.amazon.com contem juntos sob cap=1,
+      // alinhado com dedupeUseMelhorBucket que também usa rootDomain.
+      const host = rootDomain(a.url);
+      if (!host) return true; // URL inválida ou rootDomain vazio passa (defensive)
       const count = umCountByDomain.get(host) ?? 0;
       if (count >= USE_MELHOR_DOMAIN_CAP) {
         umDropped.push({ url: a.url, title: a.title, domain: host, score: a.score ?? null });

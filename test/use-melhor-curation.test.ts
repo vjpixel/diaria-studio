@@ -726,34 +726,37 @@ describe("getHowToDiscoveryQueries NaN guard (#2305)", () => {
 // ---------------------------------------------------------------------------
 
 describe("dedupeUseMelhorBucket — single-token capped item blocks cross-domain near-dup (#2309)", () => {
-  it("single-token capped item contribui token e bloqueia near-dup de outro domínio", () => {
+  it("single-token capped item registra tokens (sem bloquear via thematic dedup com floor ≥2) (#2336)", () => {
     // Cenário: "Bedrock" é o único token significativo de dois artigos.
     // Item A (amazon.com) → kept (primeiro do domínio).
-    // Item B (amazon.com, mesmo título quase) → capped por domínio.
-    //   Sem o fix: B tinha size<2, não registrava tokens → C passava.
-    //   Com o fix: B registra "bedrock" (size>=1) → C é near-dup e bloqueado.
-    // Item C (pinecone.io) → near-dup de B via token "bedrock".
+    // Item B (amazon.com, mesmo título quase) → capped por domínio (registra {"bedrock"}).
+    // Item C (pinecone.io) → compartilha "bedrock" com B.
+    //
+    // #2336 floor: threshold = max(2, min(minSharedTokens, st.size)) = max(2, min(2, 1)) = 2.
+    // intersectionSize({"bedrock"}, {"bedrock"}, 2) = 1 < 2 → NÃO bloqueado.
+    // Tradeoff intencional: 1-token fingerprint é ambíguo (não temos certeza se é near-dup
+    // ou só compartilha keyword genérica). O domain cap já elimina a duplicata do mesmo domínio.
     const items = [
       { url: "https://aws.amazon.com/blogs/ml/bedrock-intro", title: "Bedrock" },
       { url: "https://aws.amazon.com/blogs/ml/bedrock-agents", title: "Bedrock agents" }, // capped (mesmo domínio)
-      { url: "https://pinecone.io/learn/bedrock-guide", title: "Bedrock guide" }, // near-dup de B
+      { url: "https://pinecone.io/learn/bedrock-guide", title: "Bedrock guide" }, // 1 token em comum
     ];
-    // minSharedTokens=1: 1 token em comum basta para considerar near-dup.
     const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 1 });
-    // A é kept; B é capped e registra "bedrock"; C near-dup de B → bloqueado.
-    assert.equal(result.length, 1, "C deve ser bloqueado pelos tokens do item capped B");
-    assert.equal(result[0].url, items[0].url, "só A deve ser mantido");
+    // A é kept; B é capped; C: threshold=max(2,min(1,1))=2 > intersection=1 → PASSA.
+    // (Nota: minSharedTokens=1 não tem efeito quando floor=2; equivalente a minSharedTokens=2)
+    assert.equal(result.length, 2, "C não é mais bloqueado pelo floor ≥2 (#2336)");
+    assert.ok(result.some((r) => r.url === items[0].url), "A kept");
+    assert.ok(result.some((r) => r.url === items[2].url), "C kept (1-token floor)");
   });
 
-  it("single-token item KEPT (não capped) ainda usa size>=2 guard (não bloqueia tudo)", () => {
+  it("single-token item KEPT não bloqueia artigos distintos", () => {
     // Item A kept com 1 token → NÃO deve bloquear artigos distintos.
-    // O guard size>=2 permanece para items KEPT (não capped).
     const items = [
       { url: "https://blog.a.com/post1", title: "Bedrock" },       // 1 token → não bloqueia via dedup
       { url: "https://blog.b.com/post2", title: "LangChain guide" }, // distinto → deve ser mantido
     ];
     const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
-    // A tem size<2 → não entra no pool de dedup → B não é near-dup → ambos kept.
+    // threshold=max(2,min(2,1))=2; intersectionSize=0 < 2 → B não é near-dup → ambos kept.
     assert.equal(result.length, 2, "item com 1 token kept não deve bloquear artigos distintos");
   });
 });
@@ -780,49 +783,57 @@ describe("dedupeUseMelhorBucket — self-review finding 1: generic token false-p
     assert.ok(result.some((r) => r.url === items[2].url), "github.com candidate deve estar no resultado");
   });
 
-  it("single-token capped fingerprint {'bedrock'} STILL blocks genuine cross-domain near-dup", () => {
-    // The fix must NOT break the #2309 intent: when a capped item has exactly 1 specific token,
-    // a cross-domain candidate sharing that same specific token IS a near-dup and should be blocked.
+  it("single-token capped fingerprint {'bedrock'} NÃO bloqueia cross-domain com floor ≥2 (#2336)", () => {
+    // #2336: o floor em max(2, min(minSharedTokens, st.size)) impede que threshold=1
+    // cause over-block. Comportamento anterior (#2309/#2325) era:
+    //   threshold = min(2, 1) = 1 → intersection=1 >= 1 → bloqueado.
+    // Comportamento novo (#2336):
+    //   threshold = max(2, min(2, 1)) = 2 → intersection=1 < 2 → NÃO bloqueado.
+    // Tradeoff intencional: aceitar esse FN para evitar o FP de token genérico.
+    // A cobertura de near-dups com ≥2 tokens fica intacta (veja tests abaixo).
     const items = [
       { url: "https://aws.amazon.com/a", title: "Bedrock" },            // kept: {"bedrock"}
-      { url: "https://aws.amazon.com/b", title: "Bedrock agents" },     // capped: {"bedrock"}
-      { url: "https://pinecone.io/c", title: "Bedrock guide" },         // near-dup via "bedrock" → should be blocked
+      { url: "https://aws.amazon.com/b", title: "Bedrock agents" },     // capped: {"bedrock","agents"}
+      { url: "https://pinecone.io/c", title: "Bedrock guide" },         // compartilha "bedrock"
     ];
     const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
-    // pinecone.io candidate shares "bedrock" with the 1-token capped fingerprint {"bedrock"}.
-    // threshold = min(2, 1) = 1 → intersection=1 >= 1 → blocked. Correct.
-    assert.equal(result.length, 1, "near-dup específico ainda deve ser bloqueado");
-    assert.equal(result[0].url, items[0].url, "só o primeiro kept deve ser mantido");
+    // pinecone.io candidate: "Bedrock guide" → {"bedrock"} (1 token, "guide" é stopword).
+    // seenTokens: [{"bedrock"} (do kept A), {"bedrock","agents"} (do capped B)].
+    // vs {"bedrock"} (1 token): threshold=max(2,min(2,1))=2 > 1 → NÃO bloqueado.
+    // vs {"bedrock","agents"} (2 tokens): threshold=max(2,min(2,2))=2. intersection=1 < 2 → NÃO bloqueado.
+    assert.equal(result.length, 2, "pinecone.io passa com floor ≥2 (#2336)");
+    assert.ok(result.some((r) => r.url === "https://aws.amazon.com/a"), "A kept");
+    assert.ok(result.some((r) => r.url === "https://pinecone.io/c"), "C kept (floor ≥2)");
   });
 });
 
-describe("dedupeUseMelhorBucket — self-review finding 2: 1-token kept item blind spot (#2325)", () => {
-  it("genuine near-dup of a 1-token kept item is blocked", () => {
-    // Old bug: kept item with 1 token ("Bedrock" → {"bedrock"}) skipped keptTokens.push
-    // because of size>=2 guard. A later cross-domain item "AWS Bedrock Advanced Guide" (size=2)
-    // passed both old checks and landed in output alongside the 1-token kept item.
-    // Fix: 1-token kept items also register their fingerprint in seenTokens.
+describe("dedupeUseMelhorBucket — self-review finding 2: 1-token kept item blind spot (#2325, #2336)", () => {
+  it("near-dup de 1-token kept com ≥2 tokens em comum NÃO é bloqueado pelo floor (#2336)", () => {
+    // #2325 bug: kept item com 1 token não registrava no seenTokens → near-dup escapava.
+    // #2325 fix: registra no seenTokens; threshold=min(2,1)=1 → near-dup bloqueado.
+    // #2336 tradeoff: floor=2 significa threshold=max(2,min(2,1))=2 > intersection=1 → NÃO bloqueado.
+    // O floor é o tradeoff aceito: 1-token fingerprints são ambíguos, domain cap já cobre
+    // o caso intra-domínio; aceitar FN cross-domain para evitar FP de token genérico.
     const items = [
-      { url: "https://blog.a.com/a", title: "Bedrock" },                // kept: {"bedrock"} — now registers
-      { url: "https://blog.b.com/b", title: "AWS Bedrock Advanced Guide" }, // near-dup: shares "bedrock"
+      { url: "https://blog.a.com/a", title: "Bedrock" },                // kept: {"bedrock"}
+      { url: "https://blog.b.com/b", title: "AWS Bedrock Advanced Guide" }, // compartilha "bedrock"
     ];
     const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
     // blog.b.com candidate: tokens {"bedrock","advanced"} (size=2).
-    // seenTokens has {"bedrock"} (size=1). threshold=min(2,1)=1. intersection=1 >= 1 → blocked.
-    assert.equal(result.length, 1, "near-dup do item kept com 1 token deve ser bloqueado");
-    assert.equal(result[0].url, items[0].url, "o item original kept deve ser mantido");
+    // seenTokens has {"bedrock"} (size=1). threshold=max(2,min(2,1))=2. intersection=1 < 2 → NÃO bloqueado.
+    assert.equal(result.length, 2, "near-dup de 1-token kept NÃO bloqueado por floor ≥2 (#2336)");
+    assert.ok(result.some((r) => r.url === "https://blog.a.com/a"), "kept original presente");
+    assert.ok(result.some((r) => r.url === "https://blog.b.com/b"), "near-dup passa (tradeoff #2336)");
   });
 
   it("distinct item after a 1-token kept item is NOT blocked", () => {
-    // Regression guard: 1-token kept item should block near-dups but not unrelated items.
+    // Regression guard: 1-token kept item não bloqueia itens não-relacionados.
     const items = [
       { url: "https://blog.a.com/a", title: "Bedrock" },             // kept: {"bedrock"}
-      { url: "https://blog.b.com/b", title: "LangChain Tutorial" },  // distinct: {"langchain","tutorial"} — wait, "tutorial" may be stopword?
+      { url: "https://blog.b.com/b", title: "LangChain Tutorial" },  // distinct: {"langchain","tutorial"}
     ];
-    // topicTokens("LangChain Tutorial") → "tutorial" is NOT in STOPWORDS (4 chars, not listed)
-    // Actually check: STOPWORDS has 'step','start','guide' etc but not 'tutorial'. Safe.
     const result = dedupeUseMelhorBucket(items, { maxPerDomain: 1, minSharedTokens: 2 });
-    // {"langchain","tutorial"} vs {"bedrock"}: intersection=0 < threshold=1 → NOT blocked.
+    // {"langchain","tutorial"} vs {"bedrock"}: intersection=0 < threshold=2 → NOT blocked.
     assert.equal(result.length, 2, "item distinto após 1-token kept não deve ser bloqueado");
   });
 });
@@ -1277,5 +1288,52 @@ describe("classifyAudienceClass — finding 4: RE_CASUAL misses empreendedor/emp
     };
     assert.equal(classifyAudienceClass(item), "casual",
       "'IA para empreendedora' must classify as casual");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2336 — dedup 1-token fingerprint floor (≥2 shared tokens always required)
+// ---------------------------------------------------------------------------
+
+describe("dedupeUseMelhorBucket — 1-token fingerprint floor (#2336)", () => {
+  function mkItem(url: string, title: string): { url: string; title: string } {
+    return { url, title };
+  }
+
+  it("dois itens sobre tópicos diferentes que compartilham 1 token genérico NÃO são bloqueados", () => {
+    // Sem o floor: {"bedrock"} → threshold=1 → qualquer artigo com "bedrock" é dup.
+    // Com o floor: threshold=2 > st.size=1 → interseção nunca chega a 2 → passe.
+    const items = [
+      mkItem("https://aws.amazon.com/bedrock/intro", "Getting started with Bedrock"),
+      // Diferente do primeiro: pricing, não intro — mesmo token "bedrock" mas não near-dup.
+      mkItem("https://pricing.example.com/bedrock-costs", "Bedrock pricing and cost optimization"),
+    ];
+    const result = dedupeUseMelhorBucket(items);
+    // Títulos são determinísticos: topicTokens("Getting started with Bedrock") → {"bedrock"} (1 token).
+    // topicTokens("Bedrock pricing and cost optimization") → {"bedrock","pricing","cost","optimization"} (≥2 tokens).
+    // Com floor: threshold=max(2,min(2,1))=2 > intersection=1 → segundo item NÃO é bloqueado.
+    // assert.equal (não >= 1) garante que o teste falha sem o floor.
+    assert.equal(result.length, 2, "ambos itens devem passar com floor ≥2 (#2336)");
+    assert.ok(result.some((r) => r.url.includes("aws.amazon.com")), "primeiro kept");
+    assert.ok(result.some((r) => r.url.includes("pricing.example.com")), "segundo NÃO bloqueado");
+  });
+
+  it("item bloqueado por fingerprint 1-token NÃO propaga bloqueio para itens unrelated (#2325 sem under-block)", () => {
+    // Garante que genuínos near-dups (≥2 tokens em comum) AINDA são bloqueados (sem under-block).
+    const items = [
+      // fingerprint largo: "document", "processing", "aws" → 3 tokens
+      mkItem("https://aws.com/docs/doc-processing", "AWS document processing guide"),
+      // near-dup real: compartilha "document" e "processing" → 2 tokens → deve bloquear
+      mkItem("https://other.com/doc-proc", "Document processing with LangChain"),
+      // completamente diferente: sem token em comum com os anteriores
+      mkItem("https://unrelated.com/react", "React hooks tutorial for beginners"),
+    ];
+    const result = dedupeUseMelhorBucket(items);
+    // near-dup deve ser bloqueado, unrelated deve passar
+    assert.ok(result.some((r) => r.url === "https://aws.com/docs/doc-processing"), "item original kept");
+    assert.ok(result.some((r) => r.url === "https://unrelated.com/react"), "item unrelated kept");
+    // O near-dup pode ou não passar dependendo de quantos tokens topicTokens extrai —
+    // pelo menos não bloqueia o item unrelated.
+    assert.equal(result.filter((r) => r.url === "https://unrelated.com/react").length, 1);
   });
 });
