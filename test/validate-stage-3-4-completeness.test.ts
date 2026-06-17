@@ -155,6 +155,94 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #2352 — findMissingStage3Outputs: 2-destaque edition (d3 not required)
+// ---------------------------------------------------------------------------
+
+describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
+  it("PASSA para edição 2-destaque com d1/d2 images (sem d3)", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // approved-capped com 2 highlights → readDestaqueCount returns 2
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+      );
+      writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
+      writeFileSync(join(dir, "01-eia.md"), "# eia");
+
+      const missing = findMissingStage3Outputs(dir);
+      assert.deepEqual(
+        missing,
+        [],
+        `Esperava 0 missing para 2D edition sem d3. Achei: ${JSON.stringify(missing)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FALHA para edição 2-destaque quando d2 ausente (d3 NÃO conta)", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+      );
+      writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
+      // 04-d2-1x1.jpg ausente
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
+      writeFileSync(join(dir, "01-eia.md"), "# eia");
+
+      const missing = findMissingStage3Outputs(dir);
+      assert.ok(
+        missing.some((m) => m.file === "04-d2-1x1.jpg"),
+        `Deve reportar 04-d2-1x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
+      );
+      assert.ok(
+        !missing.some((m) => m.file.includes("d3")),
+        `d3 NÃO deve aparecer em violações de edição 2-destaque. Achei: ${JSON.stringify(missing)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO 3-destaque: ainda falha quando d3 ausente (sem approved-capped → default 3)", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // sem approved-capped → readDestaqueCount defaults to 3
+      writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
+      // 04-d3-1x1.jpg ausente
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
+      writeFileSync(join(dir, "01-eia.md"), "# eia");
+
+      const missing = findMissingStage3Outputs(dir);
+      assert.ok(
+        missing.some((m) => m.file === "04-d3-1x1.jpg"),
+        `3D edition (default) deve reportar 04-d3-1x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("findMissingStage4Outputs (#1132 P1.2)", () => {
   it("retorna vazio quando outputs newsletter + social presentes", () => {
     const dir = makeDir();

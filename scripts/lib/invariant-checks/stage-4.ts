@@ -15,6 +15,7 @@ import {
   extractPromptUrl,
 } from "../../match-prompts-to-destaques.ts";
 import { urlsMatch } from "../url-utils.ts";
+import { readDestaqueCount } from "./stage-3.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -72,8 +73,12 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
   const images = data.images ?? {};
 
+  // #2352: d3 URL only required when destaque_count == 3.
+  const destaqueCount = readDestaqueCount(editionDir);
+  const socialKeys = destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
+
   // Social 1x1 keys — required for LinkedIn/Facebook (DLQ incident #999).
-  for (const key of ["d1", "d2", "d3"]) {
+  for (const key of socialKeys) {
     const slot = images[key];
     const url = slot?.url;
     if (!url || typeof url !== "string" || url.trim().length === 0) {
@@ -98,7 +103,9 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   // Newsletter hero 2x1 keys — required for email body substitution (#2133/#2141).
   // Absent → substitute-image-urls.ts writes literal {{IMG:04-d{N}-2x1.jpg}} and
   // exits 2. Warning (not error) so social-only runs are not blocked.
-  for (const key of ["cover", "d2_2x1", "d3_2x1"]) {
+  // #2352: d3_2x1 only required when destaque_count == 3.
+  const newsletterHeroKeys = destaqueCount === 2 ? ["cover", "d2_2x1"] : ["cover", "d2_2x1", "d3_2x1"];
+  for (const key of newsletterHeroKeys) {
     const slot = images[key];
     const url = slot?.url;
     if (!url || typeof url !== "string" || url.trim().length === 0) {

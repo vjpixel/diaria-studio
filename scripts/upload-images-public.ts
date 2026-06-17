@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
+import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -160,12 +161,21 @@ export interface ImageSpec {
  * novas edições usam `01-eia-A.jpg`/`01-eia-B.jpg` (#192, random); edições
  * antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`. Sem `editionDir`, default
  * pra naming novo (A/B).
+ *
+ * #2352: quando `editionDir` é passado, lê destaque_count de
+ * `_internal/01-approved-capped.json`. Se count==2, omite as specs do D3
+ * (não requer nem espera imagens d3 nessa edição). Default 3 preserva o
+ * comportamento anterior para edições 3-destaque e chamadas sem editionDir.
  */
 export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
+  // #2352: determine destaque count to conditionally include d3 specs.
+  const destaqueCount: 2 | 3 = editionDir ? readDestaqueCount(editionDir) : 3;
+
   const social: ImageSpec[] = [
     { key: "d1", filename: "04-d1-1x1.jpg" },
     { key: "d2", filename: "04-d2-1x1.jpg" },
-    { key: "d3", filename: "04-d3-1x1.jpg" },
+    // #2352: d3 only required when destaque_count == 3.
+    ...(destaqueCount === 3 ? [{ key: "d3", filename: "04-d3-1x1.jpg" }] : []),
   ];
 
   const eaiSpecs = (() => {
@@ -213,10 +223,12 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     // optional=true: não bloqueiam o upload se ausentes (ex: re-run de edição
     // pré-#2133, ou regeneração manual falhou parcialmente).
     { key: "d2_2x1", filename: "04-d2-2x1.jpg", optional: true },
-    { key: "d3_2x1", filename: "04-d3-2x1.jpg", optional: true },
+    // #2352: d3_2x1 only expected when destaque_count == 3.
+    ...(destaqueCount === 3 ? [{ key: "d3_2x1", filename: "04-d3-2x1.jpg", optional: true }] : []),
     // #1701: 1x1 de d2/d3 sobem ao CF pro social preview.
     { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
-    { key: "d3", filename: "04-d3-1x1.jpg", optional: true },
+    // #2352: d3 1x1 only expected when destaque_count == 3.
+    ...(destaqueCount === 3 ? [{ key: "d3", filename: "04-d3-1x1.jpg", optional: true }] : []),
     // #1808: box promo de livros (entre D1 e D2 no email, renderMidCallout).
     // optional — nem toda edição tem o box. Mantém o md5 cache-bust (#1584): a
     // URL é per-edição (`img-{AAMMDD}-04-livros-promo.jpg`) e o sufixo md5 evita
@@ -537,23 +549,32 @@ export async function uploadPublicImages(
  * é chamado várias vezes mas cache fica parcial (ex: mode newsletter rodou,
  * mode social não, mas publish-linkedin lê cache assumindo d1/d2/d3 presentes).
  *
+ * #2352: `destaqueCount` (default 3) controla se d3/d3_2x1 são exigidas.
+ * Para edições 2-destaque, d3 não é requerida em nenhum mode.
+ *
  * Throw com erro claro se alguma key estiver faltando.
  */
 export function assertCacheCompleteness(
   images: Record<string, PublicImage>,
   mode: UploadMode,
+  destaqueCount: 2 | 3 = 3,
 ): void {
   const expectedKeys = (() => {
-    if (mode === "social") return ["d1", "d2", "d3"];
+    if (mode === "social") return destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
     // #1583: newsletter sobe cover/d1/eia (o que o EMAIL usa). #1701: d2/d3
     // 1x1 também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional).
     // #2133/#2141: d2_2x1/d3_2x1 são required — email body usa {{IMG:04-d2-2x1.jpg}}
     // / {{IMG:04-d3-2x1.jpg}}; se ausentes, substitute-image-urls.ts escreve o HTML
     // com placeholders crus e sai com exit 2. Defense-in-depth na camada de upload.
+    // #2352: d3_2x1 only required when destaque_count == 3.
     if (mode === "newsletter")
-      return ["cover", "d1", "eia_a", "eia_b", "d2_2x1", "d3_2x1"];
-    // mode === "all"
-    return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
+      return destaqueCount === 2
+        ? ["cover", "d1", "eia_a", "eia_b", "d2_2x1"]
+        : ["cover", "d1", "eia_a", "eia_b", "d2_2x1", "d3_2x1"];
+    // mode === "all" — #2352: d3 only required when destaque_count == 3.
+    return destaqueCount === 2
+      ? ["cover", "eia_a", "eia_b", "d1", "d2"]
+      : ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
   })();
   const missing = expectedKeys.filter((k) => !images[k]?.url);
   if (missing.length > 0) {
@@ -612,10 +633,12 @@ async function main(): Promise<void> {
 
   // #1275: validate cache completeness por default. Opt-out via --no-require-keys
   // pra casos onde caller sabe que cache final é parcial (raro).
+  // #2352: pass destaque_count so d3 is not required for 2-destaque editions.
   const requireKeys = !args["no-require-keys"];
   if (requireKeys) {
+    const dc = readDestaqueCount(editionDir);
     try {
-      assertCacheCompleteness(result.images, mode);
+      assertCacheCompleteness(result.images, mode, dc);
     } catch (err) {
       console.error((err as Error).message);
       process.exit(2);
