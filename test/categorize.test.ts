@@ -1122,6 +1122,72 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
   });
 });
 
+describe("categorize() — #2334: isTutorialByKeyword guarda !isNewsNotTutorial", () => {
+  // #2334: path L1154 (isTutorialByKeyword) não tinha guard !isNewsNotTutorial, ao contrário
+  // de L1093/1094/1116/1164. Anúncio com keyword how-to no TÍTULO (não no slug) em domínio
+  // genérico batia no keyword check e retornava "tutorial" antes do check de lançamento.
+
+  it("regressão #2334: anúncio 'Introducing Gemma 4 — how to deploy' em domínio genérico NÃO é tutorial", () => {
+    // Slug "introducing-*" → isLaunchSlug=true → isNewsNotTutorial=true.
+    // Título tem "how to deploy" que DISPARA TUTORIAL_KEYWORDS_RE (verbo 'deploy' listado).
+    // Sem o fix, isTutorialByKeyword retornava "tutorial" na L1154 (domínio genérico
+    // não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS, então L1093/1094 não acionavam;
+    // tampouco usa_melhor seed, então L1116 não acionava; L1154 era o primeiro match).
+    // Com o fix, !isNewsNotTutorial(article) bloqueia via isLaunchSlug → não é tutorial.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-on-bedrock/",
+      title: "Introducing Gemma 4 — how to deploy",
+    };
+    // Deve ser noticias (domínio genérico, slug introducing-*, sem LANCAMENTO_DOMAINS match).
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio com keyword how-to no título não deve virar tutorial via isTutorialByKeyword (#2334)",
+    );
+  });
+
+  it("#2334: sem fix, keyword path (L1154) era o vetor — domínio genérico não aciona L1093/L1094/L1116", () => {
+    // Confirma que "someblog.example.com" não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS
+    // (L1093/1094 passam) e não é use_melhor seed (L1116 passa) — portanto o bug
+    // estava em L1154 (isTutorialByKeyword), e NÃO em L1164 (isTutorialByDomainExtra).
+    // O TUTORIAL_KEYWORDS_RE bate em "how to deploy" (verbo 'deploy' listado).
+    // Com o fix: isNewsNotTutorial via isLaunchSlug bloqueia na L1154 antes de L1164.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-on-bedrock/",
+      title: "Introducing Gemma 4 — how to deploy",
+    };
+    const result = categorize(art);
+    assert.notEqual(result, "tutorial", "L1154 keyword path com guard !isNewsNotTutorial bloqueia tutorial");
+  });
+
+  it("#2334: 'how to build X' em domínio genérico SEM slug de lançamento ainda é tutorial", () => {
+    // Sem slug de lançamento, isNewsNotTutorial retorna false → isTutorialByKeyword vence normalmente.
+    const art: Article = {
+      url: "https://someblog.example.com/how-to-build-rag-with-gemini/",
+      title: "How to build a RAG pipeline with Gemini",
+    };
+    assert.equal(categorize(art), "tutorial", "tutorial legítimo com how-to keyword sem lançamento deve continuar tutorial");
+  });
+
+  it("regressão #2334 (titleExtra path): anúncio com 'step-by-step' no título em domínio genérico com slug de lançamento NÃO é tutorial", () => {
+    // TUTORIAL_TITLE_EXTRA_RE bate em "step-by-step" no título → isTutorialByTitleExtra=true.
+    // Slug "introducing-*" → isLaunchSlug=true → isNewsNotTutorial=true.
+    // Domínio genérico: não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS (L1093/L1094 passam),
+    // nem em use_melhor seed (L1116 passa), nem em isTutorialByKeyword (L1154 — sem how-to keyword).
+    // Sem o fix em L1168, isTutorialByTitleExtra retornava "tutorial" aqui.
+    // Com o fix, !isNewsNotTutorial(article) bloqueia via isLaunchSlug → não é tutorial.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
+      title: "Introducing Gemma 4: a step-by-step overview",
+    };
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio com 'step-by-step' no título e slug introducing-* não deve virar tutorial via isTutorialByTitleExtra (#2334)",
+    );
+  });
+});
+
 describe("categorize() — UPDATE_PATTERNS aniversário e expansão incremental (#486)", () => {
   it("'AI Max Turns 1' em domínio oficial → noticias (aniversário)", () => {
     assert.equal(
