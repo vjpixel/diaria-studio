@@ -5,7 +5,10 @@
  * substitute-image-urls.ts estão documentados em beehiiv-playbook.md
  * (evita drift doc↔código).
  *
- * Também testa o guard assertDataTransferAttempted (#2341).
+ * #2341: a invariante "tentar #1500 antes de declarar falha de cover" é
+ * enforced pelo playbook §4b (regras que o orchestrator segue), não por um
+ * guard de runtime TS — porque o orchestrator é um agent prompt, não código TS.
+ * Testes abaixo verificam que o playbook documenta as regras corretas.
  */
 
 import { describe, it } from "node:test";
@@ -13,7 +16,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertDataTransferAttempted } from "../scripts/lib/beehiiv-cover-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,37 +99,12 @@ describe("#2335: substitute-image-urls.ts exit codes documentados em beehiiv-pla
   });
 });
 
-// ── #2341: assertDataTransferAttempted guard ─────────────────────────────────
+// ── #2341: playbook rules enforcement ───────────────────────────────────────
+// Note: assertDataTransferAttempted() was removed (dead code — no TS caller).
+// The invariant is enforced by playbook §4b rules the orchestrator follows.
+// Tests below verify the playbook documents those rules correctly.
 
-describe("#2341: assertDataTransferAttempted — guard pré-cover_status:stale", () => {
-  it("não lança quando buildCoverDataTransferJs foi tentado (attempted=true)", () => {
-    assert.doesNotThrow(
-      () => assertDataTransferAttempted(true),
-      "não deve lançar quando DataTransfer foi tentado",
-    );
-  });
-
-  it("lança Error quando attempted=false (invariante #2341 violada)", () => {
-    assert.throws(
-      () => assertDataTransferAttempted(false),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "deve lançar Error");
-        assert.match(err.message, /#2341/, "mensagem deve referenciar #2341");
-        assert.match(
-          err.message,
-          /buildCoverDataTransferJs|#1500/,
-          "mensagem deve mencionar buildCoverDataTransferJs ou #1500",
-        );
-        assert.match(
-          err.message,
-          /stale_pending_manual|cover_replace_failed/,
-          "mensagem deve mencionar os status proibidos",
-        );
-        return true;
-      },
-    );
-  });
-
+describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como fallback", () => {
   it("beehiiv-playbook.md documenta o guard (#2341): #1500 primeiro, 2-step só como fallback", () => {
     const playbookSrc = readFileSync(
       resolve(ROOT, "context/publishers/beehiiv-playbook.md"),

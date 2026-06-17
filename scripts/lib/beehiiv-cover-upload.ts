@@ -251,29 +251,6 @@ export function classifyCoverVerify(
 }
 
 /**
- * #2341 — Guard: garante que buildCoverDataTransferJs (#1500) foi tentado
- * antes de declarar falha de cover (cover_status:stale_pending_manual /
- * cover_replace_failed). Lança Error se o guard for violado.
- *
- * Uso no orchestrator:
- *   assertDataTransferAttempted(dataTransferWasCalled);
- *   // só então: escrever cover_status:stale_pending_manual
- *
- * @param attempted true se buildCoverDataTransferJs foi chamado ao menos 1×
- * @throws Error se attempted === false
- */
-export function assertDataTransferAttempted(attempted: boolean): void {
-  if (!attempted) {
-    throw new Error(
-      "[beehiiv-cover-upload] INVARIANTE #2341 violada: " +
-        "cover_status:stale_pending_manual/cover_replace_failed não pode ser " +
-        "escrito sem ter chamado buildCoverDataTransferJs (#1500) e recebido " +
-        "applied:false. Tentar #1500 primeiro.",
-    );
-  }
-}
-
-/**
  * #1801 / #1500 / #2341: método PRIMÁRIO de cover — DataTransfer no
  * `input[type=file]`. **PRIMÁRIO TANTO PARA COVER NOVA QUANTO PARA REPLACE.**
  *

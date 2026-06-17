@@ -369,7 +369,15 @@ for (let attempt = 1; attempt <= 3; attempt++) {
     });
     cover = classifyCoverVerify(step2);
   } else {
-    log_warn(`Cover tentativa ${attempt}/3: #1500 retornou applied:false, sem cover existente pra remover. Reason: ${cover.reason}`);
+    // Sem cover existente + #1500 retornou applied:false = input[type=file] ausente.
+    // Recuperação: clicar "Add thumbnail" para expor o input antes de re-tentar #1500.
+    // Se após 3 tentativas ainda applied:false, não há fallback 2-step (o 2-step exige
+    // cover existente para remover). Emitir aviso e deixar cover_status:stale_pending_manual.
+    log_warn(`Cover tentativa ${attempt}/3: #1500 retornou applied:false, sem cover existente pra remover. Reason: ${cover.reason}. Tentando clicar "Add thumbnail" para expor input[type=file]...`);
+    // Clicar o botão "Add thumbnail" (expõe input[type=file] que estava oculto)
+    await computer.left_click_text("Add thumbnail");
+    await computer.wait({ seconds: 1 });
+    // A próxima iteração do loop vai re-tentar buildCoverDataTransferJs com o input exposto
   }
 
   if (cover.applied) break;
@@ -391,7 +399,7 @@ const coverChanged = postAfter.thumbnail_url !== postBefore.thumbnail_url;
 
 > **⚠️ #1705 (atualizado em #2340):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free). Por enquanto, o único caminho viável para SETAR a cover é Chrome/#1500. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano.
 
-**Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" nem escreva `cover_status: stale_pending_manual` ou `cover_replace_failed` sem que `classifyCoverVerify` retorne `applied: false` depois de ter tentado `buildCoverDataTransferJs`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final:
+**Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem `classifyCoverVerify` retornar `applied: true`. E, simetricamente, **NUNCA** escreva `cover_status: stale_pending_manual` ou `cover_replace_failed` sem ter chamado `buildCoverDataTransferJs` (#1500) e recebido `applied: false` em resposta — ter chamado #1500 e obtido `applied: false` é pré-condição para declarar falha, não consequência. Se após 3 tentativas `applied: false`, **SEMPRE** emita no gate e no resumo final:
 
 ```
 ⚠️ Cover NÃO confirmada (${cover.reason}) — suba manualmente no Beehiiv
