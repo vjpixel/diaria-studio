@@ -219,10 +219,22 @@ npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out {edi
 npx tsx scripts/substitute-image-urls.ts \
   --html {edition_dir}/_internal/newsletter-draft.html \
   --images {edition_dir}/06-public-images.json \
-  --out {edition_dir}/_internal/newsletter-final.html
+  --out {edition_dir}/_internal/newsletter-final.html \
+  --reviewed-md {edition_dir}/02-reviewed.md
 ```
 
-Se substituição reportar `unresolved: []` não vazio, abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
+**Exit codes de `substitute-image-urls.ts` (#2316):**
+
+| Exit | Significado | Ação |
+|------|-------------|------|
+| `0` | Sucesso — todas as placeholders substituídas | Continuar |
+| `1` | Erro de args (uso incorreto da CLI) | Verificar comando; abortar |
+| `2` | Placeholders não resolvidas — `unresolved[]` não vazio | Abortar — verificar `06-public-images.json` e fluxo de upload |
+| `3` | **HTML stale** — `newsletter-draft.html` mais antigo que `02-reviewed.md` | **Não é fatal.** Re-rodar `render-newsletter-html.ts` (passo acima) e então re-rodar `substitute-image-urls.ts` |
+
+> **Exit 3 (#2316, #2335):** o `render-newsletter-html.ts` não rodou (ou falhou silenciosamente) após a última edição de `02-reviewed.md`. O stderr já inclui o comando exato de re-render. Mensagem: `[substitute-image-urls] ERRO: HTML de input está desatualizado — mtime(...)`. Ação: re-renderizar e re-substituir. **Nunca tratar exit 3 como erro fatal irrecuperável** — é uma instrução de re-render, não uma falha de pipeline.
+
+Se substituição reportar `unresolved: []` não vazio (exit 2), abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
 
 **Modo `--split` (legacy, NÃO usar pelo agent)**: o renderer ainda suporta `--split` que gera `newsletter-body.html` + `newsletter-eia.html` separados. Era pra resolver merge tags via insertContent que não funcionava. #1054 validou que paste-into-htmlSnippet preserva merge tags em arquivo único — `--split` fica obsoleto pro agent flow, mantido só pra eventual debug.
 
@@ -295,7 +307,7 @@ const metaDesc = seoMetaDescription(title, subtitle); // ≤155ch
 
 #### 4b. Aplicar a cover image — DataTransfer (#1801 / #1500)
 
-Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Método primário (validado ao vivo 260602/260604):** `DataTransfer` no `input[type=file]` do editor + `.click()` na img recém-subida, que aplica **automático** (sem botão Insert) — porque o upload veio do próprio input do editor (user-activation context).
+Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Método primário — `buildCoverDataTransferJs` (#1500) — SEMPRE o primeiro, inclusive em replace (#2341).** DataTransfer no `input[type=file]` do editor + `.click()` na img recém-subida, que aplica **automático** (sem botão Insert) — porque o upload veio do próprio input do editor (user-activation context). Validado ao vivo 260602/260604. **Funciona para cover nova E para replace** — não requer remover a cover existente antes de tentar #1500.
 
 URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-public.ts --mode newsletter`):
 
@@ -305,64 +317,89 @@ https://poll.diaria.workers.dev/img/img-{AAMMDD}-04-d1-2x1.jpg
 
 Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache.
 
-**⚠️ #2283 — Cover replace em 2 etapas separadas (evita CDP timeout).** O helper legado `buildCoverReplaceJs` combinava remoção + upload num único `javascript_tool`, resultando em ~22s de sleeps + fetch → `Runtime.evaluate timed out after 45000ms`. Usar sempre as 2 etapas separadas:
+**Fluxo correto (#2341 — #1500 primeiro, 2-step replace só como fallback):**
 
 ```typescript
 import {
+  buildCoverDataTransferJs,
   buildCoverReplaceStep1_RemoveExistingJs,
   buildCoverReplaceStep2_UploadJs,
-  buildCoverDataTransferJs,
   classifyCoverVerify,
 } from "scripts/lib/beehiiv-cover-upload.ts";
 
-// detectJs reutilizado dentro do loop — não pré-avaliar fora (fix #1: detect stale)
-const detectJs = `(() => ({
-  hasCover: !!Array.from(document.querySelectorAll('img'))
-    .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src))
-}))()`;
-
+// INVARIANTE (#2341): SEMPRE tentar buildCoverDataTransferJs PRIMEIRO —
+// funciona pra cover nova E pra replace. Só cair no 2-step remove se #1500
+// retornar applied:false (input[type=file] ausente). NUNCA escrever
+// cover_status:stale_pending_manual ou cover_replace_failed sem ter chamado
+// buildCoverDataTransferJs e recebido applied:false.
 let cover = { applied: false, reason: "não tentado" };
 for (let attempt = 1; attempt <= 3; attempt++) {
-  // Re-detectar a cada tentativa — estado DOM pode ter mudado (fix #1: detect stale)
+  // Tentativa primária: DataTransfer (#1500) — funciona com ou sem cover existente
+  const r = await mcp__claude-in-chrome__javascript_tool({
+    code: buildCoverDataTransferJs(imageUrl)
+  });
+  // NOTA (#2341): javascript_tool pode retornar {} para fns async longas —
+  // {} NÃO significa falha. Verificar estado via get_post ou DOM re-scan.
+  cover = classifyCoverVerify(r);
+  if (cover.applied) break;
+
+  // Fallback: 2-step replace (#2283) — só quando #1500 retornou applied:false
+  // (ex: input[type=file] ausente na DOM após Add thumbnail não funcionar)
+  const detectJs = `(() => ({
+    hasCover: !!Array.from(document.querySelectorAll('img'))
+      .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src))
+  }))()`;
   const detect = await mcp__claude-in-chrome__javascript_tool({ code: detectJs });
 
   if (detect?.hasCover) {
-    // Etapa 1: remover cover existente (<5s total, seguro pro CDP)
+    // Etapa 1: remover cover existente (<5s total, seguro pro CDP) (#2283)
     const step1 = await mcp__claude-in-chrome__javascript_tool({
       code: buildCoverReplaceStep1_RemoveExistingJs()
     });
     if (step1?.error) {
       log_warn(`Cover remove step1 falhou: ${step1.error}`);
-      continue; // tentar novamente na próxima iteração (fix #2: break→continue)
+      continue;
     }
-    // Aguardar fora do javascript_tool — remoção React é async (fix #3: restore wait)
+    // Aguardar fora do javascript_tool — remoção React é async
     await computer.wait({ seconds: 2 });
 
-    // Etapa 2: upload da nova cover via DataTransfer (<15s total)
-    // Passar existingSrc da Etapa 1 pra excluir cover antiga da busca da img subida (#2283 fix #6)
+    // Etapa 2: upload via DataTransfer após remoção (<15s total)
     const step2 = await mcp__claude-in-chrome__javascript_tool({
       code: buildCoverReplaceStep2_UploadJs(imageUrl, "04-d1-2x1.jpg", step1.existingSrc ?? "")
     });
     cover = classifyCoverVerify(step2);
   } else {
-    // Sem cover existente — upload direto via DataTransfer (caso normal)
-    const r = await mcp__claude-in-chrome__javascript_tool({
-      code: buildCoverDataTransferJs(imageUrl)
-    });
-    cover = classifyCoverVerify(r);
+    // Sem cover existente + #1500 retornou applied:false = input[type=file] ausente.
+    // Recuperação: clicar "Add thumbnail" para expor o input antes de re-tentar #1500.
+    // Se após 3 tentativas ainda applied:false, não há fallback 2-step (o 2-step exige
+    // cover existente para remover). Emitir aviso e deixar cover_status:stale_pending_manual.
+    log_warn(`Cover tentativa ${attempt}/3: #1500 retornou applied:false, sem cover existente pra remover. Reason: ${cover.reason}. Tentando clicar "Add thumbnail" para expor input[type=file]...`);
+    // Clicar o botão "Add thumbnail" (expõe input[type=file] que estava oculto)
+    await computer.left_click_text("Add thumbnail");
+    await computer.wait({ seconds: 1 });
+    // A próxima iteração do loop vai re-tentar buildCoverDataTransferJs com o input exposto
   }
+
   if (cover.applied) break;
   if (attempt < 3) {
     log_warn(`Cover tentativa ${attempt}/3 falhou: ${cover.reason}. Retry em ${attempt * 5}s...`);
-    // fix #4: restore inter-attempt backoff (fora do javascript_tool)
     await computer.wait({ seconds: attempt * 5 });
   }
 }
 ```
 
-**⚠️ Verificação é DOM-only (#1705):** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente) — NÃO validar a capa via API. Os helpers já checam via DOM ("Add thumbnail" sumiu + thumbnail `beehiiv-images-production` presente) e `classifyCoverVerify` decide.
+**Verificação via API após apply (#2341):** `mcp__claude_ai_Beehiiv__get_post` expõe `thumbnail_url` (campo presente no schema — READ, não plan-gated). Após `applied: true` via DOM, verificar que `thumbnail_url` mudou vs. valor anterior — o asset id muda em cada replace. Isso confirma que a cover foi realmente persistida no backend, não só na DOM. Exemplo:
 
-**Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem que `classifyCoverVerify` retorne `applied: true`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
+```typescript
+const postBefore = await mcp__claude_ai_Beehiiv__get_post({ post_id });
+// ... apply cover ...
+const postAfter = await mcp__claude_ai_Beehiiv__get_post({ post_id });
+const coverChanged = postAfter.thumbnail_url !== postBefore.thumbnail_url;
+```
+
+> **⚠️ #1705 (atualizado em #2340):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free). Por enquanto, o único caminho viável para SETAR a cover é Chrome/#1500. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano.
+
+**Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem `classifyCoverVerify` retornar `applied: true`. E, simetricamente, **NUNCA** escreva `cover_status: stale_pending_manual` ou `cover_replace_failed` sem ter chamado `buildCoverDataTransferJs` (#1500) e recebido `applied: false` em resposta — ter chamado #1500 e obtido `applied: false` é pré-condição para declarar falha, não consequência. Se após 3 tentativas `applied: false`, **SEMPRE** emita no gate e no resumo final:
 
 ```
 ⚠️ Cover NÃO confirmada (${cover.reason}) — suba manualmente no Beehiiv
@@ -373,7 +410,7 @@ Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa
 
 **⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
 
-**⚠️ DEPRECATED (#2283) — `buildCoverReplaceJs` legado:** combina remoção + upload num único call e causa CDP timeout (45s) quando há cover existente. Usar `buildCoverReplaceStep1_RemoveExistingJs` + `buildCoverReplaceStep2_UploadJs` separados.
+**⚠️ DEPRECATED (#2283) — `buildCoverReplaceJs` legado:** combina remoção + upload num único call e causa CDP timeout (45s) quando há cover existente. Usar `buildCoverDataTransferJs` (#1500) como primário (cover nova e replace); só usar `buildCoverReplaceStep1_RemoveExistingJs` + `buildCoverReplaceStep2_UploadJs` separados como fallback quando #1500 retornar `applied:false`.
 
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 

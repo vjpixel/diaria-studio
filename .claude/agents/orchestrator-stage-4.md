@@ -93,6 +93,17 @@ npx tsx scripts/render-halt-banner.ts \
 
 2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker. **Capturar a `url` do JSON stdout de `upload-html-public.ts`** — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML). Sem o hash, fetch retorna 404 (review #1612 regression).
 
+   **Exit codes de `substitute-image-urls.ts` (#2316, #2335):**
+
+   | Exit | Significado | Ação |
+   |------|-------------|------|
+   | `0` | Sucesso | Continuar |
+   | `1` | Erro de args (CLI) | Verificar comando; abortar |
+   | `2` | Placeholders não resolvidas | Abortar — verificar `06-public-images.json` e fluxo de upload |
+   | `3` | **HTML stale** — `newsletter-draft.html` mais antigo que `02-reviewed.md` | Re-rodar `render-newsletter-html.ts` primeiro, depois re-rodar `substitute-image-urls.ts`. **Não é fatal** — não tratar como falha de pipeline. |
+
+   > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
+
 3. Pre-render do social preview HTML:
    ```bash
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.

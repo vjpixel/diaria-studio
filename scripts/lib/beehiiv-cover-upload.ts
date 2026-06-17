@@ -1,11 +1,27 @@
 /**
- * beehiiv-cover-upload.ts (#1416, #1801)
+ * beehiiv-cover-upload.ts (#1416, #1801, #2341)
  *
  * Helper pra setar a cover image (thumbnail) do post no Beehiiv.
  *
- * ✅ MÉTODO PRIMÁRIO (#1801 / #1500): `buildCoverDataTransferJs` — DataTransfer
- *    no `input[type=file]` do editor + `.click()` na img subida (aplica auto).
- *    Validado ao vivo em 260602/260604. É o que se deve usar.
+ * ✅ MÉTODO PRIMÁRIO (#1801 / #1500 / #2341): `buildCoverDataTransferJs` —
+ *    DataTransfer no `input[type=file]` do editor + `.click()` na img subida
+ *    (aplica auto). Validado ao vivo em 260602/260604.
+ *    É o que se deve usar TANTO para cover nova QUANTO para REPLACE de cover
+ *    existente (#2341). Não requer remover a cover antes — #1500 substitui
+ *    diretamente. O 2-step remove (buildCoverReplaceStep1 + Step2) só como
+ *    fallback se #1500 retornar applied:false (input[type=file] ausente).
+ *
+ *    INVARIANTE (#2341): NUNCA escrever cover_status:stale_pending_manual ou
+ *    cover_replace_failed sem ter chamado buildCoverDataTransferJs e recebido
+ *    applied:false. Ver beehiiv-playbook §4b para o fluxo completo.
+ *
+ * ✅ VERIFICAÇÃO VIA API (#2341): `get_post.thumbnail_url` (READ-only, não
+ *    plan-gated) muda a cada replace — útil pra confirmar persistência no
+ *    backend após apply via DOM. Comparar thumbnail_url antes e depois.
+ *
+ * ⚠️ #1705 / #2340: o campo `thumbnail_image_url` em `edit_post`/`save_post`
+ *    existe no schema MCP mas está gated por plano pago (plano atual = Launch/
+ *    free). Por enquanto, cover só pode ser SETADA via Chrome/#1500. Ver #2340.
  *
  * ⚠️ DEPRECATED (#1705): o fluxo "Upload from URL" abaixo (`buildCoverUploadJs`
  *    + `buildCoverApplyLocateJs`) sobe pro media library mas NÃO aplica como
@@ -24,15 +40,6 @@
  *
  * Caller deve:
  *   - Hospedar a imagem publicamente acessível (Cloudflare Worker KV ou Drive)
- *
- * ⚠️ #1705 (2026-06-02): NÃO validar via `get_post > web_thumbnail_url` — esse
- * campo NÃO é exposto pelo MCP (sempre ausente), e não há via de API/MCP pra
- * setar/confirmar a capa (thumbnail é UI-only). Além disso, o Beehiiv mudou o
- * media-picker: clicar no card recém-uploadado abre preview, NÃO aplica (sem
- * botão Insert/Select pra imagens do workspace), então o step 8 abaixo virou
- * no-op na UI atual. O upload pro library funciona; o aplicar não. Caller
- * NUNCA deve declarar "capa aplicada" sem sinal confiável — ver beehiiv-playbook
- * §4b: emitir "⚠️ Cover NÃO confirmada — suba manual" no gate/resumo.
  */
 
 /**
@@ -244,13 +251,22 @@ export function classifyCoverVerify(
 }
 
 /**
- * #1801 / #1500: método PRIMÁRIO de cover — DataTransfer no `input[type=file]`.
+ * #1801 / #1500 / #2341: método PRIMÁRIO de cover — DataTransfer no
+ * `input[type=file]`. **PRIMÁRIO TANTO PARA COVER NOVA QUANTO PARA REPLACE.**
  *
  * Substitui o fluxo "Upload from URL" (#1416/#1705), que sobe pro library mas
  * NÃO aplica como thumbnail na UI atual (clicar o card abre preview). Validado
  * ao vivo em 260602/260604: o `.click()` na img recém-subida aqui APLICA
  * automático (sem botão Insert), porque o upload veio do próprio input do
  * editor (user-activation context), não do media-picker do workspace.
+ *
+ * Para replace (#2341): não é necessário remover a cover existente antes de
+ * chamar buildCoverDataTransferJs — o DataTransfer substitui diretamente. O
+ * 2-step remove (buildCoverReplaceStep1 + Step2) só deve ser usado como
+ * fallback se esta função retornar applied:false (input[type=file] ausente).
+ *
+ * NOTA (#2341): `javascript_tool` pode retornar `{}` para funções async longas.
+ * `{}` NÃO significa falha — verificar estado via DOM re-scan ou `get_post`.
  *
  * Fluxo:
  *   1. garantir `input[type=file]` (se ausente, abrir 'Add thumbnail')
@@ -259,7 +275,10 @@ export function classifyCoverVerify(
  *   4. verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente
  *
  * Retorna o shape `CoverVerifyRaw` → classificar direto com `classifyCoverVerify`.
- * (`get_post` do MCP não expõe `web_thumbnail_url`, então verificação é DOM-only.)
+ *
+ * Verificação adicional via API: `get_post.thumbnail_url` muda em cada replace
+ * (campo READ-only disponível no plano free). Comparar antes/depois para
+ * confirmar persistência no backend além da verificação DOM.
  *
  * @param imageUrl URL pública da cover (Cloudflare Worker /img/ — precisa CORS *)
  * @param filename nome do File (informativo pro Beehiiv; default 04-d1-2x1.jpg)
