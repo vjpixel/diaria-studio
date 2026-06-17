@@ -11,6 +11,7 @@ import {
   isNewsletterLike,
   hasTutorialSignal,
   isCorporateBlog,
+  reviewUseMelhorComposition,
 } from "../scripts/review-use-melhor.ts";
 
 describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
@@ -139,5 +140,138 @@ describe("isCorporateBlog + reviewUseMelhor — guarda corporativo (#2313 / #232
     ];
     const { suspicious } = reviewUseMelhor(items);
     assert.equal(suspicious.length, 0, "LangChain com how-to = tutorial real, não deve ser flagado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2339 — reviewUseMelhorComposition: guard casual/iniciante
+// ---------------------------------------------------------------------------
+
+describe("reviewUseMelhorComposition (#2339) — guard de composição casual/iniciante", () => {
+  it("lista vazia: sem warnings, tudo zerado", () => {
+    const result = reviewUseMelhorComposition([]);
+    assert.equal(result.casualCount, 0);
+    assert.equal(result.beginnerCount, 0);
+    assert.equal(result.advancedCount, 0);
+    assert.equal(result.missingCasual, true, "0 itens = 0 casual = missingCasual");
+    assert.equal(result.missingBeginner, true, "0 itens = 0 iniciante = missingBeginner");
+    assert.deepEqual(result.breakdown, []);
+  });
+
+  it("somente itens dev-avancado: missingCasual=true AND missingBeginner=true (caso 260617)", () => {
+    // Replica o caso real de 260617: 4 itens todos avançados
+    const items = [
+      {
+        url: "https://blog.langchain.dev/building-end-to-end-sentiment-analysis/",
+        title: "Building an End-to-End Sentiment Analysis Pipeline with Scikit-LLM",
+      },
+      {
+        url: "https://blog.langchain.dev/designing-efficient-verifiers/",
+        title: "Designing Efficient Verifiers for Legal Agents",
+      },
+      {
+        url: "https://developers.googleblog.com/gemma4-visual-guide",
+        title: "A Visual Guide to Gemma 4 12B",
+      },
+      {
+        url: "https://cloud.google.com/blog/topics/tpu-stack",
+        title: "Unlocking the Power of the TPU Stack",
+      },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.missingCasual, true, "caso 260617: zero casual itens");
+    assert.equal(result.missingBeginner, true, "caso 260617: zero dev-iniciante itens");
+    assert.equal(result.advancedCount, items.length);
+  });
+
+  it("missingCasual=false quando há item casual (howto_br:true no matched)", () => {
+    const items = [
+      {
+        url: "https://canaltech.com.br/ia/como-usar-chatgpt-curriculo",
+        title: "Como usar ChatGPT para criar currículo passo a passo",
+        audience_affinity: { matched: ["howto_br:true", "howto_br_source:true"] },
+      },
+      {
+        url: "https://blog.langchain.dev/rag-pipeline",
+        title: "Building RAG Pipeline with LangGraph",
+      },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.casualCount, 1, "item com howto_br:true deve ser casual");
+    assert.equal(result.missingCasual, false, "tem item casual → missingCasual=false");
+    assert.equal(result.missingBeginner, true, "ainda sem dev-iniciante");
+  });
+
+  it("missingBeginner=false quando há item dev-iniciante (academy:true no matched)", () => {
+    const items = [
+      {
+        url: "https://learn.deeplearning.ai/courses/prompt-engineering",
+        title: "Prompt Engineering for Developers",
+        audience_affinity: { matched: ["academy:true"] },
+      },
+      {
+        url: "https://blog.langchain.dev/rag-pipeline",
+        title: "Building RAG Pipeline with LangGraph",
+      },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.beginnerCount, 1, "academy:true = dev-iniciante");
+    assert.equal(result.missingBeginner, false, "tem dev-iniciante → missingBeginner=false");
+    assert.equal(result.missingCasual, true, "ainda sem casual");
+  });
+
+  it("2+2 perfeito: missingCasual=false AND missingBeginner=false", () => {
+    const items = [
+      {
+        url: "https://canaltech.com.br/ia/chatgpt-produtividade",
+        title: "ChatGPT para produtividade no trabalho passo a passo",
+        audience_affinity: { matched: ["howto_br:true"] },
+      },
+      {
+        url: "https://exame.com/ia/como-usar-ia-financas",
+        title: "Como usar IA para finanças pessoais guia pratico",
+        audience_affinity: { matched: ["howto_br_source:true"] },
+      },
+      {
+        url: "https://learn.deeplearning.ai/courses/chatgpt-api",
+        title: "ChatGPT API for Developers",
+        audience_affinity: { matched: ["academy:true"] },
+      },
+      {
+        url: "https://huggingface.co/learn/nlp-course",
+        title: "Getting Started with NLP and Transformers",
+        audience_affinity: { matched: ["academy:true"] },
+      },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.casualCount, 2);
+    assert.equal(result.beginnerCount, 2);
+    assert.equal(result.missingCasual, false, "2 casuais → missingCasual=false");
+    assert.equal(result.missingBeginner, false, "2 iniciantes → missingBeginner=false");
+  });
+
+  it("breakdown contém todos os itens com classe atribuída", () => {
+    const items = [
+      { url: "https://canaltech.com.br/ia/x", title: "ChatGPT passo a passo", audience_affinity: { matched: ["howto_br:true"] } },
+      { url: "https://blog.langchain.dev/rag", title: "RAG Pipeline LangGraph" },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.breakdown.length, 2);
+    const casual = result.breakdown.find((b) => b.url.includes("canaltech"));
+    assert.ok(casual, "item canaltech deve estar no breakdown");
+    assert.equal(casual?.class, "casual");
+  });
+
+  it("missingCasual=false quando item tem sinal casual no título (sem audience_affinity)", () => {
+    // classifyAudienceClass usa o texto mesmo sem audience_affinity anotado
+    const items = [
+      {
+        url: "https://example.com/chatgpt-para-trabalho",
+        title: "ChatGPT para produtividade no trabalho passo a passo para iniciantes",
+      },
+    ];
+    const result = reviewUseMelhorComposition(items);
+    assert.equal(result.casualCount, 1, "sinal casual no título sem anotação = casual");
+    assert.equal(result.missingCasual, false);
   });
 });

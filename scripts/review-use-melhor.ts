@@ -23,6 +23,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { isAggregator } from "./lib/aggregators.ts";
+import { classifyAudienceClass } from "./lib/use-melhor-curation.ts";
 
 /**
  * Domínios primariamente newsletter/podcast/análise — só PARTE do conteúdo é
@@ -118,6 +119,8 @@ export function isCorporateBlog(url: string): boolean {
 export interface UseMelhorItem {
   url?: string;
   title?: string;
+  summary?: string;
+  audience_affinity?: { matched?: string[] } | null;
   [k: string]: unknown;
 }
 
@@ -130,6 +133,63 @@ export interface SuspiciousItem {
 export interface ReviewResult {
   total: number;
   suspicious: SuspiciousItem[];
+}
+
+/**
+ * Resultado do guard de composição casual/iniciante (#2339).
+ *
+ * - `casualCount`    — número de itens classificados como "casual".
+ * - `beginnerCount`  — número de itens classificados como "dev-iniciante".
+ * - `advancedCount`  — número de itens classificados como "dev-avancado".
+ * - `missingCasual`  — true quando casualCount === 0 (warn: sem tutorial para leigo).
+ * - `missingBeginner`— true quando beginnerCount === 0 (warn: sem tutorial para dev iniciante).
+ * - `breakdown`      — lista de itens com a classificação atribuída (para surfaçar no gate).
+ */
+export interface CompositionResult {
+  casualCount: number;
+  beginnerCount: number;
+  advancedCount: number;
+  missingCasual: boolean;
+  missingBeginner: boolean;
+  breakdown: Array<{ url: string; title?: string; class: string }>;
+}
+
+/**
+ * #2339: Guard determinístico de composição casual/iniciante no bucket use_melhor.
+ *
+ * WARN-ONLY (nunca bloqueia). Sinaliza para o editor no gate quando o bucket
+ * final de USE MELHOR não tem nenhum item casual (para leigos) ou nenhum item
+ * para dev iniciante — indicando que a curadoria automática ficou enviesada
+ * para conteúdo dev avançado.
+ *
+ * Analogia com `reviewUseMelhor` (#1798): aquele detecta itens mal-bucketados
+ * (newsletter no lugar de tutorial); este detecta desequilíbrio de público-alvo
+ * dentro dos tutoriais corretos.
+ */
+export function reviewUseMelhorComposition(items: UseMelhorItem[]): CompositionResult {
+  let casualCount = 0;
+  let beginnerCount = 0;
+  let advancedCount = 0;
+  const breakdown: CompositionResult["breakdown"] = [];
+
+  for (const item of items) {
+    const url = typeof item.url === "string" ? item.url : "";
+    const title = typeof item.title === "string" ? item.title : undefined;
+    const cls = classifyAudienceClass(item);
+    if (cls === "casual") casualCount++;
+    else if (cls === "dev-iniciante") beginnerCount++;
+    else advancedCount++;
+    breakdown.push({ url, title, class: cls });
+  }
+
+  return {
+    casualCount,
+    beginnerCount,
+    advancedCount,
+    missingCasual: casualCount === 0,
+    missingBeginner: beginnerCount === 0,
+    breakdown,
+  };
 }
 
 /**
@@ -207,7 +267,8 @@ function main(): void {
 
   const items = Array.isArray(approved.use_melhor) ? approved.use_melhor : [];
   const result = reviewUseMelhor(items);
-  console.log(JSON.stringify(result, null, 2));
+  const composition = reviewUseMelhorComposition(items);
+  console.log(JSON.stringify({ ...result, composition }, null, 2));
 
   if (result.suspicious.length > 0) {
     console.error(
@@ -220,6 +281,22 @@ function main(): void {
     }
     console.error(
       "Revise no gate: USE MELHOR é tutorial de verdade, não cobertura/análise (#1798).",
+    );
+  }
+
+  // #2339: guard de composição casual/iniciante (warn-only)
+  if (composition.missingCasual || composition.missingBeginner) {
+    const missing: string[] = [];
+    if (composition.missingCasual) missing.push("casual (para leigos)");
+    if (composition.missingBeginner) missing.push("dev-iniciante");
+    console.error(
+      `\n⚠️ USE MELHOR sem representação de: ${missing.join(", ")} (padrão: 2 casual + 2 dev-iniciante, #2339).`,
+    );
+    console.error(
+      `   Distribuição atual: ${composition.casualCount} casual / ${composition.beginnerCount} dev-iniciante / ${composition.advancedCount} dev-avançado.`,
+    );
+    console.error(
+      "   Revise no gate: adicione tutoriais para o público faltante antes de publicar.",
     );
   }
   // Warn-only: nunca bloqueia (exit 0).
