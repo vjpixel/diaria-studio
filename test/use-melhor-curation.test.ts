@@ -1337,3 +1337,200 @@ describe("dedupeUseMelhorBucket — 1-token fingerprint floor (#2336)", () => {
     assert.equal(result.filter((r) => r.url === "https://unrelated.com/react").length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2354 — classifyAudienceClass: howto_br_source fix (domain alone not enough)
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass — #2354: howto_br_source requires casual text signal", () => {
+  it("[#2354.1] BR-domain technical article without casual text → NOT casual (dev-avancado)", () => {
+    // Bug: howto_br_source:true alone classified any BR-domain article as casual,
+    // even clearly-technical content. Fix: require RE_CASUAL or HOWTO_BR_SIGNAL_RE to confirm.
+    const item = {
+      url: "https://canaltech.com.br/ia/vector-store-optimization",
+      title: "Vector store index optimization for RAG pipelines at scale",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    // RE_ADVANCED_DEV matches ("rag\s+pipeline" + "vector\s+store\s+optim") → dev-avancado (step 1)
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "technical BR-domain article with RE_ADVANCED_DEV must be dev-avancado despite howto_br_source");
+  });
+
+  it("[#2354.1] BR-domain intermediate article without any signal → dev-avancado (not casual)", () => {
+    // A technically-written article from a BR source without RE_ADVANCED_DEV but also
+    // without any casual text signal should fall through to dev-avancado (conservative default).
+    const item = {
+      url: "https://exame.com/ia/transformers-architecture-explained",
+      title: "Transformers Architecture: attention mechanisms explained in depth",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    // Not casual signal, not HOWTO_BR_SIGNAL, not advanced → step 3 skipped → step 6: dev-avancado
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "BR-domain dev-intermediate article without casual text must NOT be casual via domain signal alone");
+  });
+
+  it("[#2354.1] BR-domain article WITH casual text signal → still casual (no regression)", () => {
+    // Regression guard: a howto_br_source item WITH casual content should still be casual.
+    const item = {
+      url: "https://exame.com/ia/chatgpt-no-trabalho",
+      title: "Como usar ChatGPT para produtividade no trabalho passo a passo",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "howto_br_source with casual text still classifies as casual");
+  });
+
+  it("[#2354.1] BR-domain article with HOWTO_BR_SIGNAL_RE but not RE_CASUAL → casual", () => {
+    // The HOWTO_BR_SIGNAL_RE is a weaker but still valid casual signal.
+    const item = {
+      url: "https://canaltech.com.br/ia/ia-para-emprego",
+      title: "Inteligência artificial para emprego: passo a passo de IA",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    // HOWTO_BR_SIGNAL_RE matches "passo a passo" + "IA"
+    assert.equal(classifyAudienceClass(item), "casual",
+      "howto_br_source with HOWTO_BR_SIGNAL_RE match → casual");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2354 — RE_CASUAL: empreendedoras (feminine plural)
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass — #2354.2: RE_CASUAL empreendedoras (feminine plural)", () => {
+  it("[#2354.2] 'IA para empreendedoras' (feminine plural) → casual", () => {
+    // Bug: `empreende(?:dor(?:es?|a)?|r)?` matched empreendedor/empreendedora/empreendedores
+    // but NOT empreendedoras (feminine plural — trailing `s` after `empreendedora`).
+    // Fix: `empreende(?:dor(?:e?s|as?)?|r)?` covers all four forms.
+    const item = {
+      url: "https://example.com/ia-empreendedoras",
+      title: "IA para empreendedoras: como escalar sua empresa com ChatGPT",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedoras' (feminine plural) must classify as casual");
+  });
+
+  it("[#2354.2] 'empreendedoras' in summary also triggers casual", () => {
+    const item = {
+      url: "https://example.com/post",
+      title: "Ferramentas de IA para negócios",
+      summary: "Guia prático de IA para empreendedoras brasileiras que querem crescer.",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'empreendedoras' in summary must trigger casual classification");
+  });
+
+  it("[#2354.2] all four forms match: empreendedor/empreendedores/empreendedora/empreendedoras", () => {
+    const forms = ["empreendedor", "empreendedores", "empreendedora", "empreendedoras"];
+    for (const form of forms) {
+      const item = {
+        url: `https://example.com/ia-${form}`,
+        title: `IA para ${form}: guia prático de produtividade no trabalho`,
+      };
+      assert.equal(classifyAudienceClass(item), "casual",
+        `'IA para ${form}' must classify as casual`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2354 — RE_ADVANCED_DEV: multi-agents / multiagents (plural)
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass — #2354.3: RE_ADVANCED_DEV multi-agents plural", () => {
+  it("[#2354.3] 'multi-agents' (hyphenated plural) → dev-avancado", () => {
+    // Bug: `multi[- ]?agent` didn't match `multi-agents` (plural s).
+    // Fix: `multi[- ]?agents?` allows optional trailing s.
+    const item = {
+      url: "https://blog.langchain.dev/multi-agents",
+      title: "Building Robust Multi-Agents Systems with LangGraph",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "'multi-agents' (plural hyphenated) must classify as dev-avancado");
+  });
+
+  it("[#2354.3] 'multiagents' (no separator, plural) → dev-avancado", () => {
+    const item = {
+      url: "https://arxiv.org/abs/multiagents-paper",
+      title: "Coordination in Multiagents Frameworks for Complex Tasks",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "'multiagents' (no separator plural) must classify as dev-avancado");
+  });
+
+  it("[#2354.3] 'multi agent' (space singular) still works (regression guard)", () => {
+    const item = {
+      url: "https://blog.example.com/multi-agent",
+      title: "Multi agent orchestration with LangGraph",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "singular 'multi agent' must still classify as dev-avancado");
+  });
+
+  it("[#2354.3] 'multi-agent' (hyphenated singular) still works (regression guard)", () => {
+    const item = {
+      url: "https://blog.example.com/multi-agent",
+      title: "Multi-agent deployment at scale with LangChain",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "singular 'multi-agent' must still classify as dev-avancado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2353 — selectUseMelhorSplit: targetDev guard for small targets
+// ---------------------------------------------------------------------------
+
+describe("selectUseMelhorSplit — #2353: targetDev guard for target <= 2", () => {
+  const makeCasual = (n: number) => ({
+    url: `https://canaltech.com.br/ia/chatgpt-${n}`,
+    title: `Como usar ChatGPT para produtividade passo a passo ${n}`,
+    audience_affinity: { matched: ["howto_br:true"] },
+  });
+  const makeDevBeginner = (n: number) => ({
+    url: `https://learn.deeplearning.ai/course-${n}`,
+    title: `Prompt Engineering for Developers ${n}`,
+    audience_affinity: { matched: ["academy:true"] },
+  });
+
+  it("target=2 with both classes: each gets 1 slot (balanced 1+1)", () => {
+    // Bug: target=2 → targetCasual=2, targetDev=min(2,2-2)=0 → dev-iniciante starved.
+    // Fix: when target>=2 and dev pool exists, targetDev=max(1, min(2, target-targetCasual)).
+    const items = [
+      makeCasual(1),
+      makeCasual(2),
+      makeDevBeginner(1),
+      makeDevBeginner(2),
+    ];
+    const result = selectUseMelhorSplit(items, 2);
+    assert.equal(result.length, 2, "target=2 must return 2 items");
+    const casual = result.filter((r) => classifyAudienceClass(r) === "casual");
+    const beginner = result.filter((r) => classifyAudienceClass(r) === "dev-iniciante");
+    // With the fix: targetCasual=min(2,2)=2, targetDev=max(1,min(2,2-2))=max(1,0)=1
+    // → 1 casual + 1 beginner (balanced)
+    assert.ok(casual.length >= 1, "must have at least 1 casual with target=2");
+    assert.ok(beginner.length >= 1, "must have at least 1 dev-iniciante with target=2 (not starved)");
+  });
+
+  it("target=3 includes dev-iniciante when pool has both classes", () => {
+    const items = [
+      makeCasual(1),
+      makeCasual(2),
+      makeDevBeginner(1),
+      makeDevBeginner(2),
+    ];
+    const result = selectUseMelhorSplit(items, 3);
+    assert.equal(result.length, 3);
+    const beginner = result.filter((r) => classifyAudienceClass(r) === "dev-iniciante");
+    assert.ok(beginner.length >= 1, "target=3 must include at least 1 dev-iniciante");
+  });
+
+  it("target=2 with only casual pool: fills without crash", () => {
+    // If only casual items exist, no beginner to promote — returns 2 casual gracefully.
+    const items = [makeCasual(1), makeCasual(2), makeCasual(3)];
+    const result = selectUseMelhorSplit(items, 2);
+    assert.equal(result.length, 2);
+    const casual = result.filter((r) => classifyAudienceClass(r) === "casual");
+    assert.equal(casual.length, 2, "all 2 slots go to casual when no dev-iniciante available");
+  });
+});

@@ -388,7 +388,7 @@ export type UseMelhorAudienceClass = "casual" | "dev-iniciante" | "dev-avancado"
  * é qualificado por termos de infra/framework ao redor.
  */
 const RE_ADVANCED_DEV =
-  /\b(fine[- ]?tun(ing|e|ed?)|rlhf|distillat(ion|ing)|deployment\s+(?:pipeline|infra|at\s+scale)|tpu\s+stack|langgraph|langchain\s+(?:agent|graph|multi)|multi[- ]?agent|rag\s+pipeline|vector\s+(?:store|index|search|database)\s+(?:optim|scal|build|archit)|sentiment[- ]?analysis\s+pipeline|scikit[- ]?llm|verifier\s+(?:model|agent|chain|pipeline|module|framework)|llm[- ]?verifier|reward[- ]?verifier|legal\s+agent|end[- ]?to[- ]?end\s+pipeline|mlops|kubeflow|sagemaker\s+(?:training|pipeline|endpoint)|bedrock\s+(?:agent|fine|runtime))\b/i;
+  /\b(fine[- ]?tun(ing|e|ed?)|rlhf|distillat(ion|ing)|deployment\s+(?:pipeline|infra|at\s+scale)|tpu\s+stack|langgraph|langchain\s+(?:agent|graph|multi)|multi[- ]?agents?|rag\s+pipeline|vector\s+(?:store|index|search|database)\s+(?:optim|scal|build|archit)|sentiment[- ]?analysis\s+pipeline|scikit[- ]?llm|verifier\s+(?:model|agent|chain|pipeline|module|framework)|llm[- ]?verifier|reward[- ]?verifier|legal\s+agent|end[- ]?to[- ]?end\s+pipeline|mlops|kubeflow|sagemaker\s+(?:training|pipeline|endpoint)|bedrock\s+(?:agent|fine|runtime))\b/i;
 
 /**
  * Regex de sinal "dev iniciante" — termos de onboarding técnico sem infra avançada.
@@ -403,7 +403,7 @@ const RE_DEV_BEGINNER =
  * tópicos de produtividade/carreira/vida, sem setup técnico.
  */
 const RE_CASUAL =
-  /\b(chatgpt\s+(?:para|no|na|no\s+trabalho|gratis|gratuito)|gemini\s+(?:para|no|na)|copilot\s+(?:para|no)|notebooklm|como\s+usar\s+(?:ia|intelig[eê]ncia|chatgpt|gemini|claude|copilot)\s+(?:para|no|na|em)\b|passo\s+a\s+passo\s+(?:para|com|de)\b|IA\s+para\s+(?:emprego|trabalho|curriculo|currículo|entrevista|concurso|produtividade|redes\s+sociais|financ|planilha|autonomo|autônomo|freelanc|peque\w+\s+empresa|empreende(?:dor(?:es?|a)?|r)?|atendimento|ingles|inglês|estudos?)\b|tutorial[^\w]*(?:chatgpt|gemini|copilot|ia\s+para)|guia\s+(?:completo|prático|pratico)\s+(?:para|de)\s+(?:iniciantes|leigos|qualquer\s+um)|sem\s+(?:código|programar|saber\s+(?:programar|código))|sem\s+precisar\s+(?:programar|saber|código))\b/i;
+  /\b(chatgpt\s+(?:para|no|na|no\s+trabalho|gratis|gratuito)|gemini\s+(?:para|no|na)|copilot\s+(?:para|no)|notebooklm|como\s+usar\s+(?:ia|intelig[eê]ncia|chatgpt|gemini|claude|copilot)\s+(?:para|no|na|em)\b|passo\s+a\s+passo\s+(?:para|com|de)\b|IA\s+para\s+(?:emprego|trabalho|curriculo|currículo|entrevista|concurso|produtividade|redes\s+sociais|financ|planilha|autonomo|autônomo|freelanc|peque\w+\s+empresa|empreende(?:dor(?:e?s|as?)?|r)?|atendimento|ingles|inglês|estudos?)\b|tutorial[^\w]*(?:chatgpt|gemini|copilot|ia\s+para)|guia\s+(?:completo|prático|pratico)\s+(?:para|de)\s+(?:iniciantes|leigos|qualquer\s+um)|sem\s+(?:código|programar|saber\s+(?:programar|código))|sem\s+precisar\s+(?:programar|saber|código))\b/i;
 
 /**
  * #2339: Classifica um item USE MELHOR como "casual", "dev-iniciante" ou "dev-avancado".
@@ -443,8 +443,13 @@ export function classifyAudienceClass(
     return "casual";
   }
 
-  // 3. howto_br_source:true (weaker domain-only signal) + no advanced → casual
-  if (matched.includes("howto_br_source:true")) {
+  // 3. howto_br_source:true (weaker domain-only signal) + casual text content → casual.
+  //    #2354 fix: domain origin alone is not enough — a clearly-technical BR article
+  //    (e.g. fine-tuning tutorial on canaltech.com.br) should not be labeled casual just
+  //    because the domain is in the allowlist. Require a casual TEXT signal (RE_CASUAL or
+  //    HOWTO_BR_SIGNAL_RE) to confirm the content is genuinely non-technical.
+  //    (RE_ADVANCED_DEV already handles the strongest technical override in step 1.)
+  if (matched.includes("howto_br_source:true") && (RE_CASUAL.test(hay) || HOWTO_BR_SIGNAL_RE.test(hay))) {
     return "casual";
   }
 
@@ -495,8 +500,33 @@ export function selectUseMelhorSplit(
   }
 
   // Quota: up to 2 casual + 2 dev-beginner; fill remaining from opposite class or advanced.
-  const targetCasual = Math.min(2, target);
-  const targetDev = Math.min(2, target - targetCasual);
+  //
+  // #2353 guard: with target <= 2, the naive formula targetDev=min(2, target-2) yields 0,
+  // silently giving dev-iniciante zero quota. When both classes exist and target >= 2,
+  // guarantee dev-iniciante at least 1 slot (balanced split for small targets):
+  //   - target=1: casual gets the slot (single slot → most accessible audience).
+  //   - target=2 with both classes: 1 casual + 1 dev-iniciante (balanced 1+1).
+  //   - target=3 with both: 2 casual + 1 dev-iniciante (or 1+2 via leftover fill).
+  //   - target>=4: standard 2+2 quota.
+  // The key invariant: targetCasual + targetDev <= target always.
+  const bothClassesExist = casual.length > 0 && devBeginner.length > 0;
+  let targetCasual: number;
+  let targetDev: number;
+  if (bothClassesExist && target >= 2 && target < 4) {
+    // Small target with both classes: split evenly so neither is starved.
+    // floor(target/2) for casual, ceil(target/2) for dev keeps total = target.
+    targetDev = Math.ceil(target / 2);
+    targetCasual = target - targetDev;
+  } else {
+    targetCasual = Math.min(2, target);
+    targetDev = Math.min(2, target - targetCasual);
+  }
+  if (targetDev === 0 && target >= 2 && devBeginner.length > 0) {
+    // Should be unreachable after the fix above; warn if logic drifts.
+    console.warn(
+      `[selectUseMelhorSplit] targetDev computed to 0 with target=${target} and ${devBeginner.length} dev-iniciante candidates — check quota logic`,
+    );
+  }
 
   const selected: typeof items = [];
 

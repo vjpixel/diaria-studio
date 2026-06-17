@@ -932,3 +932,155 @@ describe("applyStage2Caps — 2+2 split wired (#2345 CRITICAL)", () => {
     assert.ok(report.use_melhor.truncated >= 0, "truncated is reported");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2353 — promotion dedup by rootDomain
+// ---------------------------------------------------------------------------
+
+describe("promoteUseMelhorToMinimum — dedup by rootDomain (#2353)", () => {
+  it("não promove runner-up do mesmo rootDomain que já está em kept", () => {
+    // Bug: promoção deduplicava só por canonical URL, não por rootDomain.
+    // Se finalize-stage1 removeu aws.amazon.com/bedrock-rag do bucket por cap=1,
+    // ele pode ter virado runner-up — e a promoção o traria de volta, violando o cap.
+    const r = promoteUseMelhorToMinimum(
+      [{ url: "https://aws.amazon.com/bedrock/intro" }], // já tem amazon.com no bucket
+      [
+        { url: "https://aws.amazon.com/bedrock/agents", bucket: "use_melhor", score: 90 }, // mesmo rootDomain
+        { url: "https://learn.deeplearning.ai/course-1", bucket: "use_melhor", score: 80 }, // domínio diferente
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.promoted, 1);
+    // Deve ter promovido o deeplearning.ai, não o aws runner-up
+    assert.ok(
+      (r.kept[1] as { url: string }).url.includes("deeplearning.ai"),
+      "deve promover runner-up de domínio diferente, não o mesmo rootDomain",
+    );
+  });
+
+  it("runners-up de domínios distintos são promovidos normalmente", () => {
+    const r = promoteUseMelhorToMinimum(
+      [],
+      [
+        { url: "https://learn.deeplearning.ai/course-1", bucket: "use_melhor", score: 90 },
+        { url: "https://kaggle.com/learn/intro", bucket: "use_melhor", score: 80 },
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.promoted, 2);
+    assert.equal(r.shortfall, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2353 — umTruncated warn distinguishes split-quota vs cap
+// ---------------------------------------------------------------------------
+
+describe("applyStage2Caps — warn reason split vs cap (#2353)", () => {
+  it("warn só pela cota 2+2 quando kept.length <= MAX (sem sobreposição com cap)", () => {
+    // kept.length=3 <= STAGE_2_MAX_USE_MELHOR=4; split seleciona 2 → droppedByCap=0
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (msg: string) => { warns.push(msg); };
+    try {
+      const approved = {
+        highlights: [],
+        lancamento: [],
+        radar: [],
+        use_melhor: [
+          // 2 casual + 1 dev-avancado (only 2 fit in 2+2 split: 2 casual + 0 iniciante)
+          { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
+          { url: "https://blog.langchain.dev/lg-1", title: "LangGraph multi-agent deployment pipeline 1" },
+        ],
+        runners_up: [],
+      };
+      const { report } = applyStage2Caps(approved);
+      // 3 kept → split picks 2 (2 casual, 0 beginner) → truncated=1
+      // droppedByCap = max(0, 3 - 4) = 0 → split-only warn
+      if (report.use_melhor.truncated > 0) {
+        const warn = warns.find((w) => w.includes("USE MELHOR"));
+        assert.ok(warn !== undefined, "deve emitir warn de USE MELHOR");
+        assert.ok(warn!.includes("cota 2+2"), `warn deve mencionar 'cota 2+2', foi: "${warn}"`);
+        assert.ok(!warn!.includes("cap máximo"), `warn NÃO deve mencionar 'cap máximo' quando cap não aplicado`);
+      }
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  it("warn só pelo cap quando split não reduz (kept.length > MAX, todos da mesma classe)", () => {
+    // 8 items dev-avancado: split NÃO reduz (não há casual/iniciante pra rebalancear),
+    // mas cap (4) aplica → droppedByCap=4, droppedBySplit=0
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (msg: string) => { warns.push(msg); };
+    try {
+      const approved = {
+        highlights: [],
+        lancamento: [],
+        radar: [],
+        use_melhor: Array.from({ length: 8 }, (_, i) => ({
+          url: `https://blog.langchain.dev/langgraph-${i}`,
+          title: `LangGraph multi-agent deployment pipeline ${i}`,
+        })),
+        runners_up: [],
+      };
+      const { report } = applyStage2Caps(approved);
+      assert.ok(report.use_melhor.truncated > 0, "deve ter truncamento");
+      const warn = warns.find((w) => w.includes("USE MELHOR"));
+      assert.ok(warn !== undefined, "deve emitir warn");
+      // 8 items: droppedByCap=4, droppedBySplit=0 → cap-only warn
+      assert.ok(warn!.includes("cap máximo"), `warn deve mencionar 'cap máximo', foi: "${warn}"`);
+    } finally {
+      console.warn = orig;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2353 — report.use_melhor.composition
+// ---------------------------------------------------------------------------
+
+describe("applyStage2Caps — report.use_melhor.composition (#2353)", () => {
+  it("composition conta casual/dev_iniciante/dev_avancado corretamente", async () => {
+    const { classifyAudienceClass: classify } = await import("../scripts/lib/use-melhor-curation.ts");
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        { url: "https://canaltech.com.br/ia/c1", title: "Como usar ChatGPT para produtividade passo a passo 1", audience_affinity: { matched: ["howto_br:true"] } },
+        { url: "https://canaltech.com.br/ia/c2", title: "Como usar ChatGPT para produtividade passo a passo 2", audience_affinity: { matched: ["howto_br:true"] } },
+        { url: "https://learn.deeplearning.ai/course-1", title: "Prompt Engineering for Developers 1", audience_affinity: { matched: ["academy:true"] } },
+        { url: "https://learn.deeplearning.ai/course-2", title: "Prompt Engineering for Developers 2", audience_affinity: { matched: ["academy:true"] } },
+      ],
+      runners_up: [],
+    };
+    const { report } = applyStage2Caps(approved);
+    assert.equal(report.use_melhor.composition.casual, 2, "2 casual");
+    assert.equal(report.use_melhor.composition.dev_iniciante, 2, "2 dev-iniciante");
+    assert.equal(report.use_melhor.composition.dev_avancado, 0, "0 dev-avancado");
+  });
+
+  it("composition com só dev-avancado no output", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [],
+      radar: [],
+      use_melhor: Array.from({ length: 3 }, (_, i) => ({
+        url: `https://blog.langchain.dev/langgraph-${i}`,
+        title: `LangGraph multi-agent deployment pipeline ${i}`,
+      })),
+      runners_up: [],
+    };
+    const { report } = applyStage2Caps(approved);
+    assert.equal(report.use_melhor.composition.casual, 0);
+    assert.equal(report.use_melhor.composition.dev_iniciante, 0);
+    assert.equal(report.use_melhor.composition.dev_avancado, 3);
+  });
+});
