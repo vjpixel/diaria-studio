@@ -376,7 +376,7 @@ export type UseMelhorAudienceClass = "casual" | "dev-iniciante" | "dev-avancado"
  * é qualificado por termos de infra/framework ao redor.
  */
 const RE_ADVANCED_DEV =
-  /\b(fine[- ]?tun(ing|e|ed?)|rlhf|distillat(ion|ing)|deployment\s+(?:pipeline|infra|at\s+scale)|tpu\s+stack|langgraph|langchain\s+(?:agent|graph|multi)|multi[- ]?agent|rag\s+pipeline|vector\s+(?:store|index|search|database)\s+(?:optim|scal|build|archit)|sentiment[- ]?analysis\s+pipeline|scikit[- ]?llm|verifier|legal\s+agent|end[- ]?to[- ]?end\s+pipeline|mlops|kubeflow|sagemaker\s+(?:training|pipeline|endpoint)|bedrock\s+(?:agent|fine|runtime))\b/i;
+  /\b(fine[- ]?tun(ing|e|ed?)|rlhf|distillat(ion|ing)|deployment\s+(?:pipeline|infra|at\s+scale)|tpu\s+stack|langgraph|langchain\s+(?:agent|graph|multi)|multi[- ]?agent|rag\s+pipeline|vector\s+(?:store|index|search|database)\s+(?:optim|scal|build|archit)|sentiment[- ]?analysis\s+pipeline|scikit[- ]?llm|verifier\s+(?:model|agent|chain|pipeline|module|framework)|llm[- ]?verifier|reward[- ]?verifier|legal\s+agent|end[- ]?to[- ]?end\s+pipeline|mlops|kubeflow|sagemaker\s+(?:training|pipeline|endpoint)|bedrock\s+(?:agent|fine|runtime))\b/i;
 
 /**
  * Regex de sinal "dev iniciante" — termos de onboarding técnico sem infra avançada.
@@ -391,19 +391,20 @@ const RE_DEV_BEGINNER =
  * tópicos de produtividade/carreira/vida, sem setup técnico.
  */
 const RE_CASUAL =
-  /\b(chatgpt\s+(?:para|no|na|no\s+trabalho|gratis|gratuito)|gemini\s+(?:para|no|na)|copilot\s+(?:para|no)|notebooklm|como\s+usar\s+(?:ia|intelig[eê]ncia|chatgpt|gemini|claude|copilot)\s+(?:para|no|na|em)\b|passo\s+a\s+passo\s+(?:para|com|de)\b|IA\s+para\s+(?:emprego|trabalho|curriculo|currículo|entrevista|concurso|produtividade|redes\s+sociais|financ|planilha|autonomo|autônomo|freelanc|peque\w+\s+empresa|empreende|atendimento|ingles|inglês|estudos?)\b|tutorial[^\w]*(?:chatgpt|gemini|copilot|ia\s+para)|guia\s+(?:completo|prático|pratico)\s+(?:para|de)\s+(?:iniciantes|leigos|qualquer\s+um)|sem\s+(?:código|programar|saber\s+(?:programar|código))|sem\s+precisar\s+(?:programar|saber|código))\b/i;
+  /\b(chatgpt\s+(?:para|no|na|no\s+trabalho|gratis|gratuito)|gemini\s+(?:para|no|na)|copilot\s+(?:para|no)|notebooklm|como\s+usar\s+(?:ia|intelig[eê]ncia|chatgpt|gemini|claude|copilot)\s+(?:para|no|na|em)\b|passo\s+a\s+passo\s+(?:para|com|de)\b|IA\s+para\s+(?:emprego|trabalho|curriculo|currículo|entrevista|concurso|produtividade|redes\s+sociais|financ|planilha|autonomo|autônomo|freelanc|peque\w+\s+empresa|empreende(?:dor(?:es?|a)?|r)?|atendimento|ingles|inglês|estudos?)\b|tutorial[^\w]*(?:chatgpt|gemini|copilot|ia\s+para)|guia\s+(?:completo|prático|pratico)\s+(?:para|de)\s+(?:iniciantes|leigos|qualquer\s+um)|sem\s+(?:código|programar|saber\s+(?:programar|código))|sem\s+precisar\s+(?:programar|saber|código))\b/i;
 
 /**
  * #2339: Classifica um item USE MELHOR como "casual", "dev-iniciante" ou "dev-avancado".
  *
  * Algoritmo (em ordem de precedência):
- *   1. Se tem sinal `"howto_br:true"` ou `"howto_br_source:true"` no audience_affinity.matched
- *      → forte indicador casual (tutorial PT-BR para leigos).
- *   2. Se título/summary/URL tem sinal avançado (RE_ADVANCED_DEV)
- *      → dev-avancado (sem cota).
- *   3. Se tem sinal casual no texto (RE_CASUAL) → casual.
- *   4. Se tem sinal de dev-iniciante (RE_DEV_BEGINNER) ou academy (matched contém "academy:true") → dev-iniciante.
- *   5. Default: dev-avancado (conservador — não promover pro-novato sem sinal).
+ *   1. Se título/summary tem sinal avançado (RE_ADVANCED_DEV) → dev-avancado (vence qualquer sinal PT-BR).
+ *      Garante que artigo técnico avançado de fonte BR (ex: fine-tuning no canaltech) não caia em "casual"
+ *      por causa de `howto_br_source:true`.
+ *   2. Se tem sinal `"howto_br:true"` (slug URL) no audience_affinity.matched → casual.
+ *   3. Se tem sinal `"howto_br_source:true"` (domínio BR, sinal mais fraco) → casual.
+ *   4. Se tem sinal casual no texto (RE_CASUAL) → casual.
+ *   5. Se tem sinal de dev-iniciante (RE_DEV_BEGINNER) ou academy (matched contém "academy:true") → dev-iniciante.
+ *   6. Default: dev-avancado (conservador — não promover pro-novato sem sinal).
  *
  * @param item  Artigo com url, title, summary opcionais e audience_affinity opcionalmente anotado.
  */
@@ -418,27 +419,34 @@ export function classifyAudienceClass(
   const matched = item.audience_affinity?.matched ?? [];
   const hay = [item.title ?? "", item.summary ?? ""].join(" ");
 
-  // 1. howto_br signal → casual (tutorial PT-BR para leigos é o sinal mais confiável)
-  if (matched.includes("howto_br:true") || matched.includes("howto_br_source:true")) {
-    return "casual";
-  }
-
-  // 2. Advanced dev signal → dev-avancado (skip casual/iniciante cotas)
+  // 1. Advanced dev signal always wins — even from a PT-BR tech source (fix: priority inversion)
+  //    A fine-tuning/RAG article from canaltech.com.br gets howto_br_source:true annotated,
+  //    but the content is dev-avancado. Strongest signal wins first.
   if (RE_ADVANCED_DEV.test(hay)) {
     return "dev-avancado";
   }
 
-  // 3. Casual signal in text
+  // 2. howto_br:true (URL slug signal) → casual (strong PT-BR how-to indicator)
+  if (matched.includes("howto_br:true")) {
+    return "casual";
+  }
+
+  // 3. howto_br_source:true (weaker domain-only signal) + no advanced → casual
+  if (matched.includes("howto_br_source:true")) {
+    return "casual";
+  }
+
+  // 4. Casual signal in text
   if (RE_CASUAL.test(hay)) {
     return "casual";
   }
 
-  // 4. Dev-beginner signal in text OR academy:true annotation
+  // 5. Dev-beginner signal in text OR academy:true annotation
   if (RE_DEV_BEGINNER.test(hay) || matched.includes("academy:true")) {
     return "dev-iniciante";
   }
 
-  // 5. Default: dev-avancado (conservador)
+  // 6. Default: dev-avancado (conservador)
   return "dev-avancado";
 }
 

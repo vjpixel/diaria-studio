@@ -1153,3 +1153,129 @@ describe("HOWTO_BR_DISCOVERY_TOPICS — queries how-to reescritas (#2339)", () =
     assert.equal(unique.size, 12, "sem duplicatas no pool");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2345 self-review findings — classifier regression tests
+// ---------------------------------------------------------------------------
+
+describe("classifyAudienceClass — finding 2: priority inversion (RE_ADVANCED_DEV before howto_br)", () => {
+  it("[finding 2] canaltech fine-tuning/RAG article → dev-avancado (NOT casual via howto_br_source)", () => {
+    // Bug: howto_br_source:true (domain signal) fired before RE_ADVANCED_DEV check.
+    // A fine-tuning article from canaltech.com.br would wrongly classify as "casual".
+    // Fix: RE_ADVANCED_DEV check is now FIRST, overriding any howto_br signal.
+    const item = {
+      url: "https://canaltech.com.br/ia/fine-tuning-llama",
+      title: "Como fazer fine-tuning do LLaMA: guia passo a passo de RAG pipeline",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "fine-tuning/RAG from canaltech must be dev-avancado despite howto_br_source:true");
+  });
+
+  it("[finding 2] howto_br:true (slug signal) also loses to RE_ADVANCED_DEV", () => {
+    // Even the stronger slug signal must lose to an explicit advanced-dev keyword.
+    const item = {
+      url: "https://example.com/ia/langgraph-passo-a-passo",
+      title: "LangGraph multi-agent fine-tuning pipeline passo a passo",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "fine-tuning/LangGraph content must be dev-avancado even with howto_br:true");
+  });
+
+  it("[finding 2] casual canaltech article without advanced signal → still casual", () => {
+    // Regression guard: normal howto_br_source articles without advanced keywords stay casual.
+    const item = {
+      url: "https://canaltech.com.br/ia/chatgpt-curriculo",
+      title: "Como usar ChatGPT para fazer currículo passo a passo",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "regular howto_br_source article without advanced signal must remain casual");
+  });
+});
+
+describe("classifyAudienceClass — finding 3: RE_ADVANCED_DEV bare verifier FP", () => {
+  it("[finding 3] casual item mentioning 'email verifier' → casual (not bumped to dev-avancado)", () => {
+    // Bug: bare `verifier\b` matched "email verifier" in titles that were otherwise casual,
+    // incorrectly bumping them to dev-avancado and shrinking the casual pool.
+    // Fix: require ML-specific collocation. Items with casual signals + "verifier" stay casual.
+    const item = {
+      url: "https://canaltech.com.br/ia/email-verifier-leads",
+      title: "Como usar um email verifier para limpar sua lista de leads passo a passo",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "casual item mentioning 'email verifier' must NOT be bumped to dev-avancado");
+  });
+
+  it("[finding 3] item with howto_br_source and 'link verifier' → casual (not bumped to dev-avancado)", () => {
+    const item = {
+      url: "https://exame.com/ia/link-verifier-seo",
+      title: "Link verifier para SEO: como usar IA para verificar links quebrados",
+      audience_affinity: { matched: ["howto_br_source:true"] },
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "casual item mentioning 'link verifier' must NOT be bumped to dev-avancado");
+  });
+
+  it("[finding 3] 'verifier model' (ML collocate) → dev-avancado (qualified form still works)", () => {
+    const item = {
+      url: "https://arxiv.org/abs/verifier-model",
+      title: "Training a Verifier Model to Evaluate LLM Reasoning",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "ML-specific 'verifier model' must still classify as dev-avancado");
+  });
+
+  it("[finding 3] 'reward verifier' (ML collocate) → dev-avancado", () => {
+    const item = {
+      url: "https://blog.example.com/reward-verifier",
+      title: "Reward Verifier Architectures for RLHF Training",
+    };
+    assert.equal(classifyAudienceClass(item), "dev-avancado",
+      "reward-verifier must still classify as dev-avancado");
+  });
+});
+
+describe("classifyAudienceClass — finding 4: RE_CASUAL misses empreendedor/empreendedores", () => {
+  it("[finding 4] 'IA para empreendedores' → casual (noun plural form previously missed)", () => {
+    // Bug: regex had `empreende\b` (verb stem only), missing noun forms like empreendedores.
+    // Fix: `empreende(?:dor(?:es?|a)?|r)?` covers empreendedor/empreendedores/empreendedora/empreender.
+    const item = {
+      url: "https://example.com/ia-empreendedores",
+      title: "IA para empreendedores: como escalar seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedores' (plural) must classify as casual");
+  });
+
+  it("[finding 4] 'IA para empreendedor' (singular) → casual", () => {
+    // Singular form "empreendedor" also must match the pattern.
+    const item = {
+      url: "https://example.com/ia-empreendedor",
+      title: "IA para empreendedor: guia prático para seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedor' (singular) must classify as casual");
+  });
+
+  it("[finding 4] 'empreender' (infinitive) still matches → casual (regression guard)", () => {
+    // The infinitive form `empreender` matched before the fix too — must still work.
+    const item = {
+      url: "https://example.com/ia-empreender",
+      title: "IA para empreender: ferramentas essenciais para começar",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreender' (infinitive) must still classify as casual");
+  });
+
+  it("[finding 4] 'empreendedora' (feminine) → casual", () => {
+    const item = {
+      url: "https://example.com/ia-empreendedora",
+      title: "IA para empreendedora: como usar ChatGPT no seu negócio",
+    };
+    assert.equal(classifyAudienceClass(item), "casual",
+      "'IA para empreendedora' must classify as casual");
+  });
+});
