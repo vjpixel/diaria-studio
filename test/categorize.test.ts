@@ -1127,16 +1127,18 @@ describe("categorize() — #2334: isTutorialByKeyword guarda !isNewsNotTutorial"
   // de L1093/1094/1116/1164. Anúncio com keyword how-to no TÍTULO (não no slug) em domínio
   // genérico batia no keyword check e retornava "tutorial" antes do check de lançamento.
 
-  it("regressão #2334: 'Introducing Gemma 4 — how to get started' em domínio genérico NÃO é tutorial", () => {
-    // Slug tem "introducing-" → isLaunchSlug=true → isNewsNotTutorial=true
-    // Sem o fix, isTutorialByKeyword batia em "how to get started" (TUTORIAL_KEYWORDS_RE "how-to + verb")
-    // e retornava "tutorial" antes de chegar em qualquer check de lançamento.
-    // Com o fix, !isNewsNotTutorial(article) bloqueia o retorno "tutorial" na L1154.
+  it("regressão #2334: anúncio 'Introducing Gemma 4 — how to deploy' em domínio genérico NÃO é tutorial", () => {
+    // Slug "introducing-*" → isLaunchSlug=true → isNewsNotTutorial=true.
+    // Título tem "how to deploy" que DISPARA TUTORIAL_KEYWORDS_RE (verbo 'deploy' listado).
+    // Sem o fix, isTutorialByKeyword retornava "tutorial" na L1154 (domínio genérico
+    // não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS, então L1093/1094 não acionavam;
+    // tampouco usa_melhor seed, então L1116 não acionava; L1154 era o primeiro match).
+    // Com o fix, !isNewsNotTutorial(article) bloqueia via isLaunchSlug → não é tutorial.
     const art: Article = {
-      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
-      title: "Introducing Gemma 4 — how to get started",
+      url: "https://someblog.example.com/introducing-gemma-4-on-bedrock/",
+      title: "Introducing Gemma 4 — how to deploy",
     };
-    // Deve ser lancamento ou noticias, nunca tutorial.
+    // Deve ser noticias (domínio genérico, slug introducing-*, sem LANCAMENTO_DOMAINS match).
     assert.notEqual(
       categorize(art),
       "tutorial",
@@ -1144,22 +1146,18 @@ describe("categorize() — #2334: isTutorialByKeyword guarda !isNewsNotTutorial"
     );
   });
 
-  it("#2334: sem fix, keyword path era exercido (exercita L1154, não L1164)", () => {
-    // Este teste verifica que o caminho L1154 (isTutorialByKeyword) é o que seria
-    // atingido sem o fix — o slug genérico não está em TUTORIAL_DOMAIN_EXTRA_PATTERNS,
-    // então L1164 (isTutorialByDomainExtra) não seria o bloqueio; seria L1154.
-    // O domínio "someblog.example.com" não está em TUTORIAL_DOMAINS nem TUTORIAL_PATTERNS
-    // (L1093/1094), e não é use_melhor (L1116). Portanto o bug estava em L1154.
-    // Com o fix: isNewsNotTutorial bloqueia a classificação via L1154 → cai pro fluxo normal.
+  it("#2334: sem fix, keyword path (L1154) era o vetor — domínio genérico não aciona L1093/L1094/L1116", () => {
+    // Confirma que "someblog.example.com" não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS
+    // (L1093/1094 passam) e não é use_melhor seed (L1116 passa) — portanto o bug
+    // estava em L1154 (isTutorialByKeyword), e NÃO em L1164 (isTutorialByDomainExtra).
+    // O TUTORIAL_KEYWORDS_RE bate em "how to deploy" (verbo 'deploy' listado).
+    // Com o fix: isNewsNotTutorial via isLaunchSlug bloqueia na L1154 antes de L1164.
     const art: Article = {
-      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
-      title: "Introducing Gemma 4 — how to get started",
+      url: "https://someblog.example.com/introducing-gemma-4-on-bedrock/",
+      title: "Introducing Gemma 4 — how to deploy",
     };
-    // Verifica que o domínio genérico NÃO aciona L1093/L1094 (TUTORIAL_DOMAINS/TUTORIAL_PATTERNS)
-    // para confirmar que o vetor de bug era L1154, não L1164.
-    // A afirmação principal é: resultado final não é "tutorial".
     const result = categorize(art);
-    assert.notEqual(result, "tutorial", "L1154 keyword path com guard corretamente bloqueia tutorial");
+    assert.notEqual(result, "tutorial", "L1154 keyword path com guard !isNewsNotTutorial bloqueia tutorial");
   });
 
   it("#2334: 'how to build X' em domínio genérico SEM slug de lançamento ainda é tutorial", () => {
