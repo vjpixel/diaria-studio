@@ -237,11 +237,12 @@ export function dedupeUseMelhorBucket(
   // seenTokens: unified fingerprint pool for ALL items that "claim" a topic slot —
   // both KEPT items and DOMAIN-CAPPED items (#2309 item 2, self-review findings 1-3).
   //
-  // Threshold for near-dup check is adaptive per fingerprint size:
-  //   Math.min(minSharedTokens, fingerprint.size)
+  // Threshold for near-dup check is adaptive per fingerprint size, with a floor of 2 (#2336):
+  //   Math.max(2, Math.min(minSharedTokens, fingerprint.size))
   // This means:
-  //   • 1-token fingerprint (e.g. {"bedrock"}) → threshold 1: any candidate sharing that
-  //     specific token is a near-dup. Preserves #2309 intent.
+  //   • 1-token fingerprint (e.g. {bedrock}) → threshold = max(2,1) = 2 (floor #2336):
+  //     never blocks candidates. A 1-token fingerprint is too ambiguous to gate on.
+  //     Domain cap already handles same-domain duplicates for this case.
   //   • ≥2-token fingerprint → threshold minSharedTokens (default 2): candidate must
   //     share ≥2 tokens. Prevents a generic token like "open" from a multi-token
   //     fingerprint {"open","bedrock"} from blocking unrelated articles (finding 1 fix).

@@ -1309,14 +1309,13 @@ describe("dedupeUseMelhorBucket — 1-token fingerprint floor (#2336)", () => {
       mkItem("https://pricing.example.com/bedrock-costs", "Bedrock pricing and cost optimization"),
     ];
     const result = dedupeUseMelhorBucket(items);
-    // O segundo item tem token "bedrock" em comum com o primeiro (1-token fingerprint case),
-    // mas NÃO deve ser bloqueado — floor garante threshold=2, inatingível com fingerprint de 1 token.
-    // Na prática "Getting started with Bedrock" → topicTokens → {"bedrock"} (apenas 1 token não-stopword).
-    // Se a fixture não tiver exatamente 1 token, o teste ainda vale como smoke (≥2 tokens → threshold=2).
-    assert.ok(result.length >= 1, "pelo menos o primeiro item deve passar");
-    // Resultado depende de quantos tokens topicTokens extrai dos títulos.
-    // O invariante forte: se só 1 token em comum, NÃO deve ser bloqueado.
-    // Teste mais preciso abaixo com títulos controlados.
+    // Títulos são determinísticos: topicTokens("Getting started with Bedrock") → {"bedrock"} (1 token).
+    // topicTokens("Bedrock pricing and cost optimization") → {"bedrock","pricing","cost","optimization"} (≥2 tokens).
+    // Com floor: threshold=max(2,min(2,1))=2 > intersection=1 → segundo item NÃO é bloqueado.
+    // assert.equal (não >= 1) garante que o teste falha sem o floor.
+    assert.equal(result.length, 2, "ambos itens devem passar com floor ≥2 (#2336)");
+    assert.ok(result.some((r) => r.url.includes("aws.amazon.com")), "primeiro kept");
+    assert.ok(result.some((r) => r.url.includes("pricing.example.com")), "segundo NÃO bloqueado");
   });
 
   it("item bloqueado por fingerprint 1-token NÃO propaga bloqueio para itens unrelated (#2325 sem under-block)", () => {
