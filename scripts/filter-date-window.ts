@@ -156,9 +156,16 @@ export function bucketWindowDays(bucket: string, defaultDays: number): number {
     case "pesquisa":
       return Math.max(defaultDays, 5);
     case "tutorial":
+    case "use_melhor":
       // #2312: tutoriais são evergreen — janela de 60 dias, isolada dos
       // demais buckets. Math.max garante que window-days grande do caller
       // (ex: --window-days 90 pra backfill) não seja truncado.
+      // #2336: "use_melhor" adicionado como alias defensivo — artigos no bucket
+      // use_melhor com category não definida caem no fallback
+      // `articleCategory = bucket` que retorna "use_melhor", não "tutorial".
+      // Isso ocorre em: (a) legacy inputs sem campo category, (b) qualquer
+      // caminho que bypassa categorize.ts. Todos os itens use_melhor devem ter
+      // janela 60d; o alias garante isso.
       return Math.max(defaultDays, TUTORIAL_WINDOW_DAYS);
     case "noticias":
     case "video":

@@ -859,3 +859,59 @@ describe("#1642 — unwrapCategorizedInput (perda silenciosa de artigos)", () =>
     assert.throws(() => unwrapCategorizedInput("foo"), /não é objeto/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2336 — use_melhor domain cap usa rootDomain (colapsa subdomínios)
+// ---------------------------------------------------------------------------
+
+describe("finalizeStage1 — use_melhor domain cap usa rootDomain (#2336)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>): ScoredOutput {
+    return {
+      highlights: [],
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("subdomínios distintos do mesmo root-domain contam juntos (cap=1)", () => {
+    // Antes do fix: aws.amazon.com e docs.aws.amazon.com eram tratados como
+    // domínios distintos (hostname strip www) → ambos passavam cap=1.
+    // Após fix: rootDomain colapsa pra amazon.com → só o primeiro (score mais alto) passa.
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        { url: "https://aws.amazon.com/bedrock/getting-started", title: "Getting started with Bedrock", score: 80 },
+        { url: "https://docs.aws.amazon.com/bedrock/user-guide", title: "Bedrock User Guide", score: 70 },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://aws.amazon.com/bedrock/getting-started", score: 80 },
+      { url: "https://docs.aws.amazon.com/bedrock/user-guide", score: 70 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.use_melhor.length, 1, "só 1 URL de amazon.com deve passar o cap");
+    assert.equal(domain_capped.length, 1, "o segundo URL de amazon.com deve ser capped");
+    assert.equal(domain_capped[0].domain, "amazon.com", "domain no log deve ser rootDomain");
+  });
+
+  it("URLs de domínios root distintos não competem pelo cap", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        { url: "https://aws.amazon.com/bedrock", title: "AWS Bedrock", score: 80 },
+        { url: "https://platform.openai.com/docs/guides", title: "OpenAI Guide", score: 75 },
+        { url: "https://docs.anthropic.com/tutorial", title: "Anthropic Tutorial", score: 70 },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://aws.amazon.com/bedrock", score: 80 },
+      { url: "https://platform.openai.com/docs/guides", score: 75 },
+      { url: "https://docs.anthropic.com/tutorial", score: 70 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.use_melhor.length, 3, "3 root-domains distintos = 3 passam");
+    assert.equal(domain_capped.length, 0);
+  });
+});

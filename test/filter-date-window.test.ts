@@ -687,3 +687,72 @@ describe("filterDateWindow — tutorial 45 dias aceito, notícia 45 dias rejeita
     assert.equal(removed.length, 1, "deve remover por date_window");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2336 — bucketWindowDays: use_melhor como alias de tutorial (janela 60d)
+// ---------------------------------------------------------------------------
+
+describe("bucketWindowDays — 'use_melhor' como alias de 'tutorial' (#2336)", () => {
+  it("'use_melhor' como string retorna 60d (alias defensivo)", () => {
+    // Sem o alias, artigos no bucket use_melhor com category=undefined
+    // caem no fallback articleCategory=bucket="use_melhor", que não era
+    // handled → default 3d em vez de 60d.
+    assert.equal(bucketWindowDays("use_melhor", 3), 60);
+  });
+
+  it("'use_melhor' usa max(defaultDays, 60) quando defaultDays > 60", () => {
+    assert.equal(bucketWindowDays("use_melhor", 90), 90);
+  });
+});
+
+describe("filterDateWindow — use_melhor sem category explícita recebe janela 60d (#2336)", () => {
+  // Regressão: item no bucket use_melhor sem campo category definido caia no fallback
+  // articleCategory = bucket = "use_melhor", que não era coberto por bucketWindowDays →
+  // recebia janela default de 3d em vez dos 60d garantidos por #2312.
+
+  it("item use_melhor SEM campo category é mantido com janela 60d (não truncado pela janela default)", () => {
+    // anchor = 2026-06-15, window_days = 3
+    // 45 dias atrás = 2026-05-01
+    // Com bucket fallback "use_melhor" → antes do fix: 3d → cutoff 2026-06-12 → REJEITADO.
+    // Com bucket alias "use_melhor" → após o fix: 60d → cutoff 2026-04-16 → ACEITO.
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://huggingface.co/learn/nlp-course/chapter1",
+          title: "NLP Course Chapter 1",
+          date: "2026-05-01",
+          // category AUSENTE — simula legacy input ou qualquer bypass do categorize.ts
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-06-15", 3);
+    assert.equal(kept.use_melhor.length, 1,
+      "item use_melhor sem category deve usar janela 60d e ser aceito");
+    assert.equal(removed.length, 0,
+      "sem remoções — o item está dentro da janela de 60d");
+  });
+
+  it("item use_melhor com category='use_melhor' explícito também recebe 60d", () => {
+    // Cobre o caso de pipeline que setou category="use_melhor" em vez de "tutorial".
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://huggingface.co/learn/nlp-course/chapter2",
+          title: "NLP Course Chapter 2",
+          date: "2026-05-01",
+          category: "use_melhor", // categoria setada como nome do bucket (não "tutorial")
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-06-15", 3);
+    assert.equal(kept.use_melhor.length, 1,
+      "category='use_melhor' deve ser tratada como tutorial (60d)");
+    assert.equal(removed.length, 0);
+  });
+});
