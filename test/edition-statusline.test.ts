@@ -26,6 +26,8 @@ import {
   readCurrentEditionDoc,
   renderOvernightBar,
   readTodayPlan,
+  renderIdleBar,
+  findMostRecentEditionId,
   type Plan,
 } from "../scripts/overnight-statusline.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
@@ -526,7 +528,7 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
     }
   });
 
-  it("sem edição nem overnight: barra é string vazia (idle)", () => {
+  it("sem edição nem overnight: fallback para idle bar (#2255, nunca string vazia)", () => {
     const idleRoot = join(tmpdir(), `edition-overnight-idle-${Date.now()}`);
     mkdirSync(join(idleRoot, "data", "editions"), { recursive: true });
     mkdirSync(join(idleRoot, "data", "overnight"), { recursive: true });
@@ -536,12 +538,15 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
       const editionBar = renderEditionBar(editionDoc);
       const plan = readTodayPlan(idleRoot);
       const overnightBar = renderOvernightBar(plan);
-
-      const bar = editionBar || overnightBar;
+      // Source 3: idle bar — mirrors the CLI logic (bar = editionBar || overnightBar || renderIdleBar(...))
+      const bar = editionBar || overnightBar || renderIdleBar(findMostRecentEditionId(idleRoot));
 
       assert.equal(editionDoc, null, "sem edição: deve retornar null");
       assert.equal(plan, null, "sem overnight: deve retornar null");
-      assert.equal(bar, "", "idle: barra deve ser string vazia");
+      // #2255: idle bar is ALWAYS present — never empty string
+      assert.notEqual(bar, "", "idle: barra NUNCA deve ser string vazia (#2255)");
+      assert.ok(bar.includes("████████████"), `idle: barra deve estar cheia: ${bar}`);
+      assert.ok(bar.includes("Diar.ia"), `idle: barra deve ter label Diar.ia: ${bar}`);
     } finally {
       rmSync(idleRoot, { recursive: true, force: true });
     }
@@ -570,4 +575,156 @@ describe("renderEditionBar — label por stage (#2301)", () => {
       assert.ok(result.includes(expectedLabel), `stage ${stageIdx} deve mostrar '${expectedLabel}': ${result}`);
     });
   }
+});
+
+// ─── #2255: idle bar — SEMPRE presente ────────────────────────────────────────
+// Testa a source 3 (idle) do statusline: barra visível mesmo sem edição nem overnight.
+// A pure function renderIdleBar() é testável independentemente do I/O.
+
+describe("renderIdleBar — pure function (#2255)", () => {
+  it("retorna barra cheia com label quando edição passada existe", () => {
+    const result = renderIdleBar("260617");
+    assert.ok(result.length > 0, `idle bar deve ser não-vazia: ${result}`);
+    assert.ok(result.includes("████████████"), `idle bar deve ter barra cheia: ${result}`);
+    assert.ok(result.includes("Diar.ia"), `idle bar deve ter label 'Diar.ia': ${result}`);
+    assert.ok(result.includes("260617"), `idle bar deve incluir edição ID: ${result}`);
+    assert.ok(result.includes("pronto"), `idle bar deve incluir 'pronto': ${result}`);
+  });
+
+  it("retorna barra cheia com label sem edição quando mostRecentEditionId é null", () => {
+    const result = renderIdleBar(null);
+    assert.ok(result.length > 0, `idle bar deve ser não-vazia para null: ${result}`);
+    assert.ok(result.includes("████████████"), `idle bar deve ter barra cheia: ${result}`);
+    assert.ok(result.includes("Diar.ia"), `idle bar deve ter label 'Diar.ia': ${result}`);
+    assert.ok(result.includes("sem rodada ativa"), `idle bar deve incluir 'sem rodada ativa': ${result}`);
+  });
+
+  it("formato canônico com edição: '[████████████] Diar.ia · AAMMDD · pronto'", () => {
+    const result = renderIdleBar("260617");
+    assert.match(result, /^\[█{12}\] Diar\.ia · \d{6} · pronto$/);
+  });
+
+  it("formato canônico sem edição: '[████████████] Diar.ia · sem rodada ativa'", () => {
+    const result = renderIdleBar(null);
+    assert.match(result, /^\[█{12}\] Diar\.ia · sem rodada ativa$/);
+  });
+
+  it("nunca retorna string vazia — nem para null, nem para ID vazio", () => {
+    assert.notEqual(renderIdleBar(null), "");
+    assert.notEqual(renderIdleBar("260617"), "");
+    assert.notEqual(renderIdleBar(""), ""); // empty string ID → falls back gracefully
+  });
+});
+
+describe("findMostRecentEditionId — I/O helper (#2255)", () => {
+  it("retorna null quando data/editions não existe", () => {
+    const emptyRoot = join(tmpdir(), `idle-test-nodir-${Date.now()}`);
+    mkdirSync(emptyRoot, { recursive: true });
+    try {
+      const id = findMostRecentEditionId(emptyRoot);
+      assert.equal(id, null, "sem data/editions deve retornar null");
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando data/editions existe mas está vazia", () => {
+    const root = join(tmpdir(), `idle-test-empty-${Date.now()}`);
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    try {
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, null, "data/editions vazia deve retornar null");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna AAMMDD mais recente quando existem múltiplas edições", () => {
+    const root = join(tmpdir(), `idle-test-multi-${Date.now()}`);
+    mkdirSync(join(root, "data", "editions", "260613"), { recursive: true });
+    mkdirSync(join(root, "data", "editions", "260615"), { recursive: true });
+    mkdirSync(join(root, "data", "editions", "260614"), { recursive: true });
+    try {
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, "260615", `deve retornar 260615 (mais recente), got ${id}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignora dirs não-AAMMDD (arquivos, dirs com nomes fora do padrão)", () => {
+    const root = join(tmpdir(), `idle-test-ignore-${Date.now()}`);
+    mkdirSync(join(root, "data", "editions", "260613"), { recursive: true });
+    mkdirSync(join(root, "data", "editions", "archive"), { recursive: true });
+    mkdirSync(join(root, "data", "editions", "_internal"), { recursive: true });
+    try {
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, "260613", `deve ignorar dirs não-AAMMDD e retornar 260613, got ${id}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null sem throw quando data/ não existe", () => {
+    const root = join(tmpdir(), `idle-test-no-data-${Date.now()}`);
+    mkdirSync(root, { recursive: true });
+    try {
+      assert.doesNotThrow(() => findMostRecentEditionId(root));
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, null, "sem data/ deve retornar null");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("precedência completa: edição > overnight > idle (#2255)", () => {
+  it("idle bar é usada como fallback final quando edição e overnight são vazios", () => {
+    // Mirrors exact CLI logic: bar = editionBar || overnightBar || renderIdleBar(...)
+    const editionBar = renderEditionBar(null);        // null → ""
+    const overnightBar = renderOvernightBar(null);    // null → ""
+    const idleBar = renderIdleBar(null);              // always non-empty
+
+    const bar = editionBar || overnightBar || idleBar;
+
+    assert.equal(editionBar, "", "editionBar null → vazio");
+    assert.equal(overnightBar, "", "overnightBar null → vazio");
+    assert.notEqual(idleBar, "", "idleBar nunca vazio");
+    assert.equal(bar, idleBar, "idle bar deve ser o fallback final");
+  });
+
+  it("idle bar nunca aparece quando overnight está ativo (barra não-vazia)", () => {
+    const editionBar = renderEditionBar(null);
+    const overnightPlan: Plan = { issues: [{ status: "elegivel" }] };
+    const overnightBar = renderOvernightBar(overnightPlan);
+    const idleBar = renderIdleBar(null);
+
+    const bar = editionBar || overnightBar || idleBar;
+
+    assert.notEqual(overnightBar, "", "overnight bar deve estar presente");
+    assert.equal(bar, overnightBar, "overnight bar deve ter prioridade sobre idle");
+    assert.ok(!bar.includes("Diar.ia"), `idle label não deve aparecer quando overnight ativo: ${bar}`);
+  });
+
+  it("idle bar nunca aparece quando edição está ativa", () => {
+    const editionDoc = makeDoc("260617", ["done", "running", "pending", "pending", "pending", "pending", "pending"]);
+    const editionBar = renderEditionBar(editionDoc);
+    const overnightBar = renderOvernightBar(null);
+    const idleBar = renderIdleBar("260617");
+
+    const bar = editionBar || overnightBar || idleBar;
+
+    assert.notEqual(editionBar, "", "edition bar deve estar presente");
+    assert.equal(bar, editionBar, "edition bar deve ter prioridade sobre idle");
+    assert.ok(!bar.includes("sem rodada ativa"), `idle label não deve aparecer: ${bar}`);
+  });
+
+  it("degradação: qualquer falha de leitura resulta em idle bar (nunca vazia, nunca throw)", () => {
+    // Simulate corruption — renderIdleBar(null) is the ultimate fallback
+    // Tests that the pure function chain never throws even with all-null inputs
+    assert.doesNotThrow(() => {
+      const bar = renderEditionBar(null) || renderOvernightBar(null) || renderIdleBar(null);
+      assert.notEqual(bar, "", "barra nunca deve ser vazia mesmo com todos os inputs null");
+    });
+  });
 });

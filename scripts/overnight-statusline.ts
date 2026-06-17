@@ -1,9 +1,9 @@
 #!/usr/bin/env npx tsx
 /**
- * overnight-statusline.ts (#2184, #2250)
+ * overnight-statusline.ts (#2184, #2250, #2255)
  *
  * Barra de progresso horizontal para a statusLine do Claude Code.
- * Suporta dois modos, com precedência definida:
+ * Suporta três modos, com precedência definida:
  *
  *   1. Edição em curso (PRIORIDADE ALTA — #2250):
  *      "{branch}  edição 260615  [██████░░░░░░] 3/7  Imagens"
@@ -13,10 +13,12 @@
  *      "{branch}  [████████░░░░] 67%  (4/6)"
  *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
  *
- * Precedência: edição em curso > overnight. Enquanto a edição está rodando,
- * a edição toma prioridade na statusLine pois é o foco do editor.
- * Quando a edição encerra (todos stages done/failed), a barra overnight retoma
- * o display automaticamente — sem dependência de relógio.
+ *   3. IDLE — barra SEMPRE presente mesmo sem edição nem overnight (#2255):
+ *      Com edição passada: "{branch}  [████████████] Diar.ia · 260617 · pronto"
+ *      Sem edição alguma:  "{branch}  [████████████] Diar.ia · sem rodada ativa"
+ *
+ * Precedência: edição em curso > overnight > idle. A barra é SEMPRE presente —
+ * nunca retorna string vazia para o statusLine.
  *
  * Critério de "rodada encerrada" overnight: TODAS as entradas de `issues` têm status
  * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando encerrada,
@@ -29,9 +31,10 @@
  * Degrada graciosamente:
  *   - stage-status.json ausente/malformado → ignora (fallback overnight)
  *   - rows ausente/vazio                   → ignora (fallback overnight)
- *   - plan.json ausente                    → string vazia (fora de rodada overnight)
- *   - plan.json malformado                 → string vazia (sem throw)
- *   - total de issues = 0                  → string vazia
+ *   - plan.json ausente                    → idle bar (fora de rodada overnight)
+ *   - plan.json malformado                 → idle bar (sem throw)
+ *   - total de issues = 0                  → idle bar
+ *   - qualquer read failure                → idle bar, nunca string vazia
  *
  * Uso (Claude Code statusLine):
  *   npx tsx scripts/overnight-statusline.ts
@@ -106,6 +109,20 @@ const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
 
 /** Total number of stages (0–6) in an edition — derived from STAGES to stay in sync. */
 const TOTAL_STAGES = STAGES.length;
+
+/**
+ * IDLE bar default label — shown when there is NO active edition AND no overnight round.
+ * (#2255) This is the "rescued product decision" — the editor confirmed the bar should
+ * ALWAYS be present but did not specify idle content. The default below is pending
+ * editor confirmation (flagged in PR body).
+ *
+ * To customize idle appearance: change IDLE_BAR_NO_EDITION_LABEL or renderIdleBar().
+ * The bar is always full (12 × █) in idle mode — signals "nada em andamento, sistema OK".
+ */
+const IDLE_BAR_NO_EDITION_LABEL = "Diar.ia · sem rodada ativa";
+/** Prefix for idle bar when a past edition exists: "Diar.ia · {AAMMDD} · pronto". */
+const IDLE_BAR_EDITION_PREFIX = "Diar.ia";
+const IDLE_BAR_EDITION_SUFFIX = "pronto";
 
 // ─── função pura testável ─────────────────────────────────────────────────────
 
@@ -472,28 +489,77 @@ export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
   }
 }
 
+// ─── idle bar (#2255) ────────────────────────────────────────────────────────
+
+/**
+ * Renderiza a barra IDLE — mostrada quando não há edição ativa nem rodada overnight.
+ * (#2255) Barra SEMPRE visível: nunca retorna string vazia.
+ *
+ * @param mostRecentEditionId  AAMMDD da edição mais recente no disco, ou null se nenhuma existe.
+ * @returns  String da barra idle (nunca vazia).
+ *
+ * Formato com edição passada:  "[████████████] Diar.ia · 260617 · pronto"
+ * Formato sem edição alguma:   "[████████████] Diar.ia · sem rodada ativa"
+ *
+ * A barra é sempre 100% cheia em modo idle — sinaliza "sistema OK, nada em andamento".
+ * O label é um único bloco claramente comentado (constantes IDLE_BAR_*) — trivialmente
+ * alterável pelo editor sem tocar na lógica.
+ */
+export function renderIdleBar(mostRecentEditionId: string | null): string {
+  const fullBar = "█".repeat(BAR_WIDTH);
+  const label = mostRecentEditionId
+    ? `${IDLE_BAR_EDITION_PREFIX} · ${mostRecentEditionId} · ${IDLE_BAR_EDITION_SUFFIX}`
+    : IDLE_BAR_NO_EDITION_LABEL;
+  return `[${fullBar}] ${label}`;
+}
+
+/**
+ * Encontra o AAMMDD da edição mais recente em data/editions/, independentemente de
+ * estar em curso ou encerrada. Usado exclusivamente para o rótulo idle.
+ *
+ * Retorna null se o dir data/editions/ não existe ou não contém dirs AAMMDD válidos.
+ * Nunca lança exceção.
+ */
+export function findMostRecentEditionId(cwd: string): string | null {
+  try {
+    const editionsDir = join(cwd, "data", "editions");
+    if (!existsSync(editionsDir)) return null;
+
+    const entries = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse(); // most recent first (lexicographic desc)
+
+    return entries[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── CLI (entrypoint) ─────────────────────────────────────────────────────────
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cwd = process.cwd();
   const branch = currentBranch(cwd);
 
-  // #2250: Edition bar has priority over overnight bar.
+  // Precedência (#2255): edição em curso > overnight > idle.
+  // Barra SEMPRE presente — nunca retorna string vazia para o statusLine.
+
+  // Source 1: Edition in progress (#2250).
   // readCurrentEditionDoc returns non-null only for IN-PROGRESS editions (started but not encerrada).
   // When edition is fully encerrada (all terminal), readCurrentEditionDoc returns null → overnight resumes.
-  // When no edition has started → fall back to overnight bar.
   const editionDoc = readCurrentEditionDoc(cwd);
   const editionBar = renderEditionBar(editionDoc);
 
-  // Only compute overnight bar when there's no active edition bar to show.
-  // (Avoids misleading dual-bar scenario during morning handoff.)
-  const bar = editionBar || renderOvernightBar(readTodayPlan(cwd));
+  // Source 2: Active/finished overnight round (only checked when no active edition bar).
+  const overnightBar = editionBar ? "" : renderOvernightBar(readTodayPlan(cwd));
+
+  // Source 3: Idle — always present (#2255). Shows most recent edition date if one exists.
+  // renderIdleBar always returns a non-empty string — it is the guaranteed fallback.
+  const bar = editionBar || overnightBar || renderIdleBar(findMostRecentEditionId(cwd));
 
   // Fix #4: only include separator when branch is non-empty
-  const output = bar
-    ? branch
-      ? `${branch}  ${bar}`
-      : bar
-    : branch;
+  const output = branch ? `${branch}  ${bar}` : bar;
   process.stdout.write(output + "\n");
 }
