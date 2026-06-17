@@ -63,11 +63,11 @@ Exit code handling:
 
 **Em uma única mensagem**, disparar os agents simultaneamente:
 
-### Modo padrão: writer-destaque × 3 paralelo (#1158, #1451)
+### Modo padrão: writer-destaque paralelo (#1158, #1451, #2343)
 
 **INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
 
-**Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. Verificar que `highlights.length === 3` (fallback condition). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
+**Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. **#2343: range válido é {2,3}** — `highlights.length < 2 || highlights.length > 3` → fallback (edge case). Para 2 destaques, dispatch writer-destaque × 2 (D1 + D2). Para 3, dispatch × 3 (D1 + D2 + D3). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
 
 `category_label` é a **Category editorial do destaque** — o tema que aparece no header `DESTAQUE N | {emoji} {CATEGORY}` (ex.: EDUCAÇÃO, MERCADO, REGULAÇÃO). Derive de `highlights[N-1].article.category` e **refine pelo tema do artigo** quando a category interna for genérica:
 - `lancamento` → "LANÇAMENTO"
@@ -85,9 +85,9 @@ fonte correta. (O mapping bucket→seção da newsletter acontece no render laye
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
-**Dispatch paralelo (uma única mensagem com 5 chamadas Agent — 3 writer + 2 social):**
+**Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):**
 
-1. `Agent` → `writer-destaque` × 3 — uma instância por destaque (n=1, n=2, n=3). Cada uma recebe:
+1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
    - `peer_titles` (titles dos outros 2 — preserva voice diversity)
    - `edition_date`
@@ -101,7 +101,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
 3. `Agent` → `social-facebook` (mesmo input que social-linkedin, exceto `outros_count` que não se aplica ao Facebook).
 
-**Aguardar os 3 writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
+**Aguardar os N writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
 **Pós:** rodar `scripts/stitch-newsletter.ts` (#1463) que produz `02-draft.md` determinístico unificando os 3 destaque drafts + seções secundárias + blocos fixos:
 
@@ -116,7 +116,7 @@ O script é determinístico, sem LLM. Ordem canonical:
 - DESTAQUE 1 block (lê `_internal/02-d1-draft.md`)
 - DESTAQUE 2 block (lê `_internal/02-d2-draft.md`)
 - É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML)
-- DESTAQUE 3 block (lê `_internal/02-d3-draft.md`)
+- DESTAQUE 3 block (lê `_internal/02-d3-draft.md`) — **omitido em edições de 2 destaques (#2343)**
 - **LANÇAMENTOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324)
 - **PESQUISAS**, **OUTRAS NOTÍCIAS**, **VÍDEOS** (idem; omite seção vazia)
 - **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
@@ -126,15 +126,16 @@ Lint pós-stitch valida overlap de hook entre destaques; se overlap detectado, r
 
 ### Modo fallback: writer único (legacy, casos edge)
 
-Usar quando `highlights.length ≠ 3` (edge case sem 3 destaques aprovados). Coordenador detecta isso lendo JSON antes do dispatch:
+Usar quando `highlights.length < 2 || highlights.length > 3` (corrupção do gate — fora do range {2,3}). Coordenador detecta isso lendo JSON antes do dispatch:
 
 ```typescript
 // Pseudo: top-level lê via Read tool, parsea, branch:
 const approved = JSON.parse(read("_internal/01-approved-capped.json"));
-if (approved.highlights.length !== 3) {
-  // fallback pro writer único legacy (abaixo)
+const n = approved.highlights.length;
+if (n < 2 || n > 3) {
+  // fallback pro writer único legacy (abaixo) — corrupção do gate
 } else {
-  // dispatch paralelo writer-destaque × 3 (acima)
+  // dispatch paralelo writer-destaque × n (2 ou 3 instâncias, acima)
 }
 ```
 

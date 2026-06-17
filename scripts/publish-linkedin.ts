@@ -139,6 +139,27 @@ function extractDestaqueBlock(socialMd: string, destaque: string): string {
 }
 
 /**
+ * #2343: Extrai a lista de destaques presentes na seção LinkedIn do 03-social.md.
+ * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição.
+ * Fallback para [] se a seção não for encontrada (caller usa ["d1","d2","d3"]).
+ */
+export function extractDestaquesFromLinkedInMd(socialMd: string): string[] {
+  const platRe = /(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)/i;
+  const platMatch = socialMd.replace(/\r\n/g, "\n").match(platRe);
+  if (!platMatch) return [];
+  const section = platMatch[1];
+  const destaques: string[] = [];
+  const headerRe = /(?:^|\n)## (d\d+)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = headerRe.exec(section)) !== null) {
+    const d = m[1].toLowerCase();
+    if (!destaques.includes(d)) destaques.push(d);
+  }
+  // Only accept d1..d3 in order
+  return ["d1", "d2", "d3"].filter((d) => destaques.includes(d));
+}
+
+/**
  * Extrai o texto do **post principal** (sem `### comment_*` subsections — #595).
  * Backward-compat: se o destaque não tem subseções, retorna o bloco inteiro.
  */
@@ -555,17 +576,22 @@ async function main(): Promise<void> {
   const editionUrlFlag = args["edition-url"] as string | undefined;
 
   // Subset de destaques (--only d1,d2 → ["d1","d2"])
+  // #2343: quando --only não fornecido, derivar da seção LinkedIn do 03-social.md
+  // para suportar edições com 2 destaques (sem D3).
   const onlyArg = args["only"] as string | undefined;
-  const destaques: string[] = onlyArg
-    ? onlyArg
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => /^d[123]$/.test(s))
-    : ["d1", "d2", "d3"];
-
-  if (destaques.length === 0) {
-    console.error("Erro: --only deve conter d1, d2 e/ou d3 (ex: --only d1,d2).");
-    process.exit(1);
+  let destaques: string[];
+  if (onlyArg) {
+    destaques = onlyArg
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => /^d[123]$/.test(s));
+    if (destaques.length === 0) {
+      console.error("Erro: --only deve conter d1, d2 e/ou d3 (ex: --only d1,d2).");
+      process.exit(1);
+    }
+  } else {
+    // Derive from social MD after it's loaded (set to default for now; refined below after load).
+    destaques = ["d1", "d2", "d3"]; // placeholder — overridden after socialMd is loaded
   }
 
   // Resolver webhook URL: env tem precedência
@@ -644,6 +670,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
+
+  // #2343: override destaques list from actual social MD when --only not supplied.
+  if (!onlyArg) {
+    destaques = extractDestaquesFromLinkedInMd(socialMd);
+    if (destaques.length === 0) {
+      destaques = ["d1", "d2", "d3"]; // fallback
+    }
+  }
 
   // #595 — Resolver edition_url pra substituir {edition_url} em comment_diaria.
   // Ordem: --edition-url flag > _internal/05-edition-url.txt > fallback raiz.
