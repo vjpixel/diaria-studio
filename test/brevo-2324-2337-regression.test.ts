@@ -372,6 +372,166 @@ describe("lsPending:true previne KV-write churn (#2337 fix 2)", async () => {
   });
 });
 
+// ─── #2355 fix 3: lsPending sentinel survives when gs ALSO expired ────────────
+// Regression: when cachedGs=null (expired) AND cachedLsWasPending=true (both
+// gs and ls expired/aged out), the early-return guard (cachedGs && ...) doesn't
+// fire. gs is re-fetched. Then in the ls branch, since cachedLsWasPending=true
+// the ls-fetch is suppressed (correct). But the old code set ls = cachedLs (null),
+// then `null !== undefined` → payload { gs, ls: null } → sentinel destroyed.
+// Fix: cachedLsWasPending falls through without setting ls (leaves undefined)
+// → payload { gs, lsPending: true } → sentinel preserved.
+
+describe("lsPending sentinel sobrevive quando gs TAMBÉM expirou (#2355 fix 3)", async () => {
+  const { fetchRecentCampaigns } = await import("../workers/brevo-dashboard/src/index.ts");
+
+  function makeKVMock(initialData: Record<string, unknown> = {}) {
+    const store = new Map(
+      Object.entries(initialData).map(([k, v]) => [k, JSON.stringify(v)])
+    );
+    const putCalls: Array<{ key: string; value: string; opts: unknown }> = [];
+    return {
+      store,
+      putCalls,
+      kv: {
+        get: async (key: string, type?: string) => {
+          const val = store.get(key);
+          if (!val) return null;
+          if (type === "json") return JSON.parse(val);
+          return val;
+        },
+        put: async (key: string, value: string, opts?: unknown) => {
+          putCalls.push({ key, value, opts: opts ?? null });
+          store.set(key, value);
+        },
+        delete: async () => {},
+        list: async () => ({ keys: [], cursor: "", list_complete: true }),
+        getWithMetadata: async () => ({ value: null, metadata: null }),
+      } as unknown as KVNamespace,
+    };
+  }
+
+  const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+  const fakeGs = {
+    sent: 100, delivered: 95, hardBounces: 2, softBounces: 1,
+    uniqueViews: 40, viewed: 45, trackableViews: 35, uniqueClicks: 10,
+    clickers: 9, unsubscriptions: 1, complaints: 0, appleMppOpens: 5,
+  };
+  const fakeList = { id: 5, name: "Lista 2355", totalSubscribers: 200 };
+  const fakeCampaign = {
+    id: 42, name: "Campaign 2355", subject: "2355", status: "sent",
+    sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+    recipients: { lists: [5] },
+    statistics: { campaignStats: [] },
+  };
+
+  function makeMockFetch(lsFetchCount: { n: number }, gsFetchCount: { n: number }) {
+    return async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (/emailCampaigns\/42\?statistics=globalStats/.test(path)) {
+        gsFetchCount.n++;
+        return { ...fakeCampaign, statistics: { globalStats: fakeGs } } as T;
+      }
+      if (/emailCampaigns\/42\?statistics=linksStats/.test(path)) {
+        lsFetchCount.n++;
+        throw new Error("ls-fetch 429 simulado");
+      }
+      if (/contacts\/lists\/5/.test(path)) return fakeList as T;
+      throw new Error("path inesperado: " + path);
+    };
+  }
+
+  test("#2355 fix 3: gs expirado + lsPending:true no KV → sentinel gravado novamente (não { gs, ls:null })", async () => {
+    // Scenario: both gs and ls have aged out (KV evicted stats:42).
+    // KV has lsPending:true from a previous cycle where ls-fetch failed.
+    // After gs is re-fetched, the sentinel must be written again (not overwritten
+    // with { gs, ls: null }).
+
+    const lsFetchCount = { n: 0 };
+    const gsFetchCount = { n: 0 };
+    const mockFetch = makeMockFetch(lsFetchCount, gsFetchCount);
+
+    // Simulate: KV has `stats:42` with lsPending:true (gs also aged out — no gs)
+    // This represents the "both expired" state: the entry has lsPending but no gs.
+    // In practice this happens when RECENT_STATS_TTL fires for an entry that had lsPending.
+    // After TTL: KV miss → gs is fetched, lsPending was present before expiry.
+    //
+    // Actual fix scenario: KV miss (both expired) → gs re-fetch occurs → ls must stay
+    // undefined → payload = { gs, lsPending: true }.
+    const { kv, putCalls } = makeKVMock({
+      "list:5": fakeList,
+      // NO stats:42 in KV (simulates TTL expiry of the lsPending entry)
+    });
+
+    // First, simulate the "gs expired + lsPending was true" scenario by creating
+    // a KV entry with lsPending:true (no gs), then re-running fetchRecentCampaigns.
+    // Actually, the cleanest way to test fix 3 is to write lsPending:true WITH gs
+    // into KV (both expired → gs null, lsPending true from prior cycle).
+    //
+    // The real bug: cachedGs=null, cachedLsWasPending=true → ls set to null (old) vs
+    // ls stays undefined (fix). We simulate this by having a fresh KV (no stats entry)
+    // but with lsPending pre-seeded. Since TTL expired, the entry is gone — KV miss →
+    // cachedGs=null, cachedLsWasPending=false → normal first render. So instead we
+    // plant a stats entry that has lsPending:true but NO gs field, simulating the
+    // edge case where only the lsPending signal survived.
+    //
+    // Plant: { lsPending: true } without gs — cachedGs=null, cachedLsWasPending=true
+    kv.put("stats:42", JSON.stringify({ lsPending: true }));
+    // Reset putCalls tracking after plant
+    putCalls.length = 0;
+
+    await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
+      20, false, mockFetch as any,
+    );
+
+    // gs must have been re-fetched (cachedGs was null)
+    assert.strictEqual(gsFetchCount.n, 1, "gs deve ter sido re-fetchado quando cachedGs=null");
+    // ls-fetch must NOT have been attempted (cachedLsWasPending=true)
+    assert.strictEqual(lsFetchCount.n, 0, "ls-fetch NÃO deve ter sido tentado com lsPending:true");
+
+    // The KV write must preserve lsPending (not write ls:null)
+    const statsPut = putCalls.find(p => p.key === "stats:42");
+    assert.ok(statsPut, "deve ter gravado stats:42 após re-fetch do gs");
+    const stored = JSON.parse(statsPut!.value);
+    assert.strictEqual(stored.lsPending, true,
+      "REGRESSÃO #2355: lsPending deve ser preservado quando gs expirou — NÃO deve escrever { gs, ls:null }");
+    assert.ok(!("ls" in stored),
+      "campo ls NÃO deve aparecer no payload quando lsPending estava ativo");
+  });
+
+  test("#2355 fix 3: 2ª render após re-plant do sentinel → ls-fetch continua suprimido", async () => {
+    const lsFetchCount = { n: 0 };
+    const gsFetchCount = { n: 0 };
+    const mockFetch = makeMockFetch(lsFetchCount, gsFetchCount);
+    const { kv, putCalls } = makeKVMock({ "list:5": fakeList });
+
+    // Plant lsPending without gs (both-expired state)
+    kv.put("stats:42", JSON.stringify({ lsPending: true }));
+    putCalls.length = 0;
+
+    // Render 1: gs re-fetched, lsPending preserved in write
+    await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
+      20, false, mockFetch as any,
+    );
+    assert.strictEqual(gsFetchCount.n, 1);
+    assert.strictEqual(lsFetchCount.n, 0);
+
+    const writesAfter1st = putCalls.length;
+
+    // Render 2: KV now has { gs, lsPending:true } — both gs and lsPending present
+    // → early-return guard fires (cachedGs && cachedLsWasPending) → 0 new writes, 0 fetches
+    await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
+      20, false, mockFetch as any,
+    );
+    assert.strictEqual(gsFetchCount.n, 1, "2ª render: gs NÃO deve ser re-fetchado (cachedGs presente)");
+    assert.strictEqual(lsFetchCount.n, 0, "2ª render: ls-fetch continua suprimido pelo sentinel");
+    const newWrites = putCalls.slice(writesAfter1st).filter(p => p.key === "stats:42");
+    assert.strictEqual(newWrites.length, 0, "2ª render: zero novos writes (churn parado)");
+  });
+});
+
 // ─── #2324: clarice-build-waves importa o helper compartilhado ───────────────
 // Verificação de integração: brevoGet em clarice-build-waves usa parseRetryAfterMs
 // importado de brevo-client. Comportamento esperado: retry-after:0 → wait 0ms.

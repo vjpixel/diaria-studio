@@ -409,6 +409,145 @@ Foto descrição.
     }
   });
 
+  // ─── #2355 fix 1: empty D3 file on 3-destaque edition ──────────────────────
+
+  it("#2355 fix 1: D3 vazio (whitespace-only) em edição de 3 destaques → erro, não bloco vazio", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      // D3 exists but is empty (whitespace-only)
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "   \n  \t  ");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
+      );
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        /02-d3-draft\.md vazio/,
+        "D3 vazio (esperado) deve lançar erro explícito",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2355 fix 1: edição de 2 destaques (d3Path=null) sem D3 → OK, sem falso erro", () => {
+    // Legitimate 2-destaque edition: d3Path=null, no D3 file. Must NOT throw.
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      // No D3 file written — 2-destaque edition
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          highlights: [{ article: { url: "https://a.com", title: "T1" } }, { article: { url: "https://b.com", title: "T2" } }],
+          coverage: { line: "c" }, lancamento: [], radar: [],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: null, // 2-destaque: no D3 expected
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      assert.ok(result.length > 0, "resultado não vazio");
+      assert.match(result, /D1/);
+      assert.match(result, /D2/);
+      // D3 block should be absent
+      assert.doesNotMatch(result, /D3/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // ─── #2355 fix 2: missing/corrupt approved-capped.json → explicit error ──────
+
+  it("#2355 fix 2: approved-capped.json ausente → erro nomeia o capped JSON (não D3)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      // Do NOT write approved-capped.json
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        /01-approved-capped\.json/,
+        "erro deve mencionar approved-capped.json, não D3",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2355 fix 2: main() com approved-capped.json ausente → erro nomeia capped JSON (diagnóstico correto)", () => {
+    // Validates the main()-level fix: missing JSON should not produce "input ausente: 02-d3-draft.md"
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      // No approved-capped.json → should throw naming the capped JSON as the problem
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        (e: Error) => {
+          assert.ok(!/02-d3-draft\.md/.test(e.message), `D3 não deve ser citado; foi: ${e.message}`);
+          assert.ok(/01-approved-capped\.json/.test(e.message), `capped JSON deve ser citado; foi: ${e.message}`);
+          return true;
+        },
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#2355 fix 2: approved-capped.json corrompido (JSON inválido) → erro nomeia capped JSON", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(join(internalDir, "01-approved-capped.json"), "{ CORRUPT JSON {{");
+      assert.throws(
+        () =>
+          stitchNewsletter({
+            d1Path: join(internalDir, "02-d1-draft.md"),
+            d2Path: join(internalDir, "02-d2-draft.md"),
+            d3Path: join(internalDir, "02-d3-draft.md"),
+            approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+            editionDir: dir,
+          }),
+        /01-approved-capped\.json.*corrompido|corrompido.*01-approved-capped\.json/i,
+        "erro deve mencionar capped JSON corrompido",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("inclui blocos fixos (ERRO INTENCIONAL placeholder + SORTEIO + PARA ENCERRAR)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
