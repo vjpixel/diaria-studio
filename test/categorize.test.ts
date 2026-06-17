@@ -1168,6 +1168,24 @@ describe("categorize() — #2334: isTutorialByKeyword guarda !isNewsNotTutorial"
     };
     assert.equal(categorize(art), "tutorial", "tutorial legítimo com how-to keyword sem lançamento deve continuar tutorial");
   });
+
+  it("regressão #2334 (titleExtra path): anúncio com 'step-by-step' no título em domínio genérico com slug de lançamento NÃO é tutorial", () => {
+    // TUTORIAL_TITLE_EXTRA_RE bate em "step-by-step" no título → isTutorialByTitleExtra=true.
+    // Slug "introducing-*" → isLaunchSlug=true → isNewsNotTutorial=true.
+    // Domínio genérico: não está em TUTORIAL_DOMAINS/TUTORIAL_PATTERNS (L1093/L1094 passam),
+    // nem em use_melhor seed (L1116 passa), nem em isTutorialByKeyword (L1154 — sem how-to keyword).
+    // Sem o fix em L1168, isTutorialByTitleExtra retornava "tutorial" aqui.
+    // Com o fix, !isNewsNotTutorial(article) bloqueia via isLaunchSlug → não é tutorial.
+    const art: Article = {
+      url: "https://someblog.example.com/introducing-gemma-4-step-by-step/",
+      title: "Introducing Gemma 4: a step-by-step overview",
+    };
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio com 'step-by-step' no título e slug introducing-* não deve virar tutorial via isTutorialByTitleExtra (#2334)",
+    );
+  });
 });
 
 describe("categorize() — UPDATE_PATTERNS aniversário e expansão incremental (#486)", () => {

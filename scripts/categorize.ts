@@ -1165,7 +1165,7 @@ export function categorize(article: Article): Category {
   // domínio era tutorial (aws ML blog), mas o slug e o tipo revelam lançamento.
   // Antes: `isTutorialByDomainExtra` retornava "tutorial" sem olhar o conteúdo.
   if (isTutorialByDomainExtra(article.url) && !isNewsNotTutorial(article)) return "tutorial";
-  if (isTutorialByTitleExtra(article) && !_isMarkCase) return "tutorial";
+  if (isTutorialByTitleExtra(article) && !_isMarkCase && !isNewsNotTutorial(article)) return "tutorial";
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
