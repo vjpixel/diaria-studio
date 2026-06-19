@@ -523,10 +523,13 @@ export function selectUseMelhorSplit(
     targetCasual = Math.min(2, target);
     targetDev = Math.min(2, target - targetCasual);
   }
-  if (targetDev === 0 && target >= 2 && devBeginner.length > 0) {
-    // Should be unreachable after the fix above; warn if logic drifts.
+  if (targetDev === 0 && target >= 2 && devBeginner.length > 0 && bothClassesExist) {
+    // #2366: this IS reachable when the pool is all-dev (no casual) — bothClassesExist
+    // is false in that case, so we fall into the else branch and targetDev = min(2, 0) = 0.
+    // Warn only when BOTH classes exist but targetDev still came out 0 (indicates
+    // a logic drift in the quota formula above), not for the all-dev-beginner pool case.
     console.warn(
-      `[selectUseMelhorSplit] targetDev computed to 0 with target=${target} and ${devBeginner.length} dev-iniciante candidates — check quota logic`,
+      `[selectUseMelhorSplit] targetDev computed to 0 with target=${target} and ${devBeginner.length} dev-iniciante candidates despite both classes existing — check quota logic`,
     );
   }
 

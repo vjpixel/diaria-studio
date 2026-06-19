@@ -36,7 +36,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
       makeJpg(join(dir, "04-d1-1x1.jpg"));
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2133/#2141/#2366: hero D2
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2133/#2141: hero D3
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"), "# eia");
@@ -56,7 +58,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-ia.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
       makeJpg(join(dir, "04-d1-1x1.jpg"));
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"));
@@ -75,7 +79,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       // Sem nenhuma imagem È IA?
       makeJpg(join(dir, "04-d1-2x1.jpg"));
       makeJpg(join(dir, "04-d1-1x1.jpg"));
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
@@ -97,7 +103,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
       // Falta 04-d1-1x1.jpg
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
@@ -119,7 +127,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-B.jpg"));
       writeFileSync(join(dir, "04-d1-2x1.jpg"), ""); // vazia!
       makeJpg(join(dir, "04-d1-1x1.jpg"));
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
@@ -140,7 +150,9 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
       makeJpg(join(dir, "04-d1-1x1.jpg"));
+      makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
       makeJpg(join(dir, "04-d3-1x1.jpg"));
       // Sem _internal/01-eia-meta.json, sem 01-eia.md
 
@@ -149,6 +161,70 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       const mdMiss = missing.find((m) => m.category === "eia-md");
       assert.ok(metaMiss);
       assert.ok(mdMiss);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2366 — 04-d2-2x1.jpg regressão (hero D2 estava ausente da lista)
+// ---------------------------------------------------------------------------
+
+describe("findMissingStage3Outputs — 04-d2-2x1.jpg regressão (#2366)", () => {
+  it("FALHA quando 04-d2-2x1.jpg ausente em edição 3-destaque", () => {
+    // Antes do fix #2366, validate-stage-3 não requeria 04-d2-2x1.jpg
+    // apesar de stage-3.ts REQUIRED_IMAGES_BASE incluí-la (#2133/#2141).
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      makeJpg(join(dir, "01-eia-A.jpg"));
+      makeJpg(join(dir, "01-eia-B.jpg"));
+      makeJpg(join(dir, "04-d1-2x1.jpg"));
+      makeJpg(join(dir, "04-d1-1x1.jpg"));
+      // 04-d2-2x1.jpg AUSENTE — deve ser detectada como missing
+      makeJpg(join(dir, "04-d2-1x1.jpg"));
+      makeJpg(join(dir, "04-d3-2x1.jpg"));
+      makeJpg(join(dir, "04-d3-1x1.jpg"));
+      touch(join(dir, "_internal/01-eia-meta.json"), "{}");
+      touch(join(dir, "01-eia.md"), "# eia");
+
+      const missing = findMissingStage3Outputs(dir);
+      assert.ok(
+        missing.some((m) => m.file === "04-d2-2x1.jpg"),
+        `Deve reportar 04-d2-2x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FALHA quando 04-d2-2x1.jpg ausente em edição 2-destaque", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+      );
+      makeJpg(join(dir, "01-eia-A.jpg"));
+      makeJpg(join(dir, "01-eia-B.jpg"));
+      makeJpg(join(dir, "04-d1-2x1.jpg"));
+      makeJpg(join(dir, "04-d1-1x1.jpg"));
+      // 04-d2-2x1.jpg AUSENTE — deve ser detectada como missing em 2-destaque
+      makeJpg(join(dir, "04-d2-1x1.jpg"));
+      touch(join(dir, "_internal/01-eia-meta.json"), "{}");
+      touch(join(dir, "01-eia.md"), "# eia");
+
+      const missing = findMissingStage3Outputs(dir);
+      assert.ok(
+        missing.some((m) => m.file === "04-d2-2x1.jpg"),
+        `Deve reportar 04-d2-2x1.jpg ausente em edição 2-destaque. Achei: ${JSON.stringify(missing)}`,
+      );
+      assert.ok(
+        !missing.some((m) => m.file.includes("d3")),
+        `d3 NÃO deve aparecer em violações de edição 2-destaque. Achei: ${JSON.stringify(missing)}`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -173,6 +249,7 @@ describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d2-2x1.jpg"), "JPEG-FAKE"); // #2133/#2141/#2366: hero D2 requerido
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
       writeFileSync(join(dir, "01-eia.md"), "# eia");
@@ -227,8 +304,9 @@ describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
+      writeFileSync(join(dir, "04-d2-2x1.jpg"), "JPEG-FAKE"); // #2366
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
-      // 04-d3-1x1.jpg ausente
+      // 04-d3-2x1.jpg e 04-d3-1x1.jpg ausentes
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
       writeFileSync(join(dir, "01-eia.md"), "# eia");
 

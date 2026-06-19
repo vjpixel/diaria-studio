@@ -203,7 +203,16 @@ export function updateIntentionalErrorLocation(
       const oldNum = parseInt(oldN, 10);
       if (![1, 2, 3].includes(oldNum)) return full;
       const newIdx = newOrder.indexOf(oldNum);
-      if (newIdx < 0) return full;
+      if (newIdx < 0) {
+        // #2366: DESTAQUE N referenciado na location não existe no newOrder
+        // (ex: location='DESTAQUE 3' num reorder 3→2 destaques). Sem este
+        // tratamento a location ficaria stale silenciosamente apontando pro
+        // destaque eliminado. Emitir warn + limpar pra string vazia.
+        console.warn(
+          `[updateIntentionalErrorLocation] location aponta para DESTAQUE ${oldNum} que não existe em newOrder=[${newOrder.join(",")}] — limpando location para evitar stale`,
+        );
+        return `${pre}${post ?? ""}`;
+      }
       const newN = newIdx + 1;
       return `${pre}DESTAQUE ${newN}${rest ?? ""}${post ?? ""}`;
     },

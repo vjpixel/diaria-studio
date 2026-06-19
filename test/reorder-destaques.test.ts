@@ -228,6 +228,40 @@ intentional_error:
 x`;
     assert.equal(updateIntentionalErrorLocation(md, [2, 1, 3]), md);
   });
+
+  it("#2366: location 'DESTAQUE 3' + newOrder=[2,1] (3→2 rebase) → limpa location (não fica stale)", () => {
+    // Caso de reorder numa edição rebaixada de 3 para 2 destaques:
+    // o frontmatter ainda guarda location='DESTAQUE 3', mas DESTAQUE 3
+    // não existe mais em newOrder=[2,1]. Antes do fix #2366, retornava
+    // full (location stale silenciosa). Após o fix, limpa a location.
+    const md = `---
+intentional_error:
+  location: "DESTAQUE 3, parágrafo 1"
+  category: factual
+---
+
+Body...`;
+    const result = updateIntentionalErrorLocation(md, [2, 1]);
+    // Location deve ter sido limpa (sem 'DESTAQUE 3')
+    assert.ok(
+      !result.includes("DESTAQUE 3"),
+      `location 'DESTAQUE 3' deveria ter sido limpa. Resultado: ${result}`,
+    );
+  });
+
+  it("#2366: location 'DESTAQUE 2' + newOrder=[1] (reduz a 1 destaque hipotético) → limpa location", () => {
+    // Mesmo padrão: destaque referenciado não existe em newOrder
+    const md = `---
+intentional_error:
+  location: "DESTAQUE 2"
+---
+x`;
+    const result = updateIntentionalErrorLocation(md, [1]);
+    assert.ok(
+      !result.includes("DESTAQUE 2"),
+      `location 'DESTAQUE 2' deveria ter sido limpa. Resultado: ${result}`,
+    );
+  });
 });
 
 describe("reorderSocialMd (#1585)", () => {

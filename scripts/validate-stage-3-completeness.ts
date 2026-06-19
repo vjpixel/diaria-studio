@@ -8,8 +8,9 @@
  * Cobre:
  *   1. È IA? images (`01-eia-A.jpg` + `01-eia-B.jpg`) — pre-#192 fallback
  *      pra `01-eia-real.jpg` + `01-eia-ia.jpg` aceito
- *   2. Destaque images (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`,
- *      `04-d3-1x1.jpg`) — D3 obrigatório só em edições 3-destaque (#2352)
+ *   2. Destaque images (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`,
+ *      `04-d2-1x1.jpg`, `04-d3-2x1.jpg`, `04-d3-1x1.jpg`) — D3 obrigatório
+ *      só em edições 3-destaque (#2352); D2 2x1 hero adicionado (#2133/#2141/#2366)
  *   3. EIA metadata (`_internal/01-eia-meta.json`) — produzido pelo eia-compose
  *   4. EIA markdown (`01-eia.md`) — produzido pelo eia-compose
  *
@@ -76,11 +77,13 @@ export function findMissingStage3Outputs(editionDir: string): Missing[] {
   }
 
   // 2. Destaque images — D3 apenas requerida em edições 3-destaque (#2352)
+  // #2366: 04-d2-2x1.jpg (hero D2, #2133/#2141) incluído — estava ausente desta lista
+  // apesar de constar em REQUIRED_IMAGES_BASE em scripts/lib/invariant-checks/stage-3.ts.
   const destaqueCount = readDestaqueCount(editionDir);
   const destaques =
     destaqueCount === 2
-      ? ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-1x1.jpg"]
-      : ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"];
+      ? ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-2x1.jpg", "04-d2-1x1.jpg"]
+      : ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-2x1.jpg", "04-d2-1x1.jpg", "04-d3-2x1.jpg", "04-d3-1x1.jpg"];
   for (const name of destaques) {
     const p = resolve(editionDir, name);
     if (!existsSync(p)) {

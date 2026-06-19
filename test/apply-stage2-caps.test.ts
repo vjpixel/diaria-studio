@@ -706,30 +706,38 @@ describe("#1445 — defense-in-depth warn quando highlights non-empty + URLs zer
     }
   });
 
-  it("NÃO emite warn quando highlights vazio (zero é normal, não regressão)", () => {
+  it("NÃO emite warn de shape quando highlights vazio (zero é normal, não regressão)", () => {
+    // This test covers the shape-warn: highlights non-empty + 0 URLs extracted → shape changed.
+    // highlights=[] is a valid state (no highlights yet), so shape warn must NOT fire.
     const original = console.warn;
-    let warned = "";
+    const warns: string[] = [];
     console.warn = (msg: string) => {
-      warned += msg;
+      warns.push(msg);
     };
     try {
       const approved = {
         highlights: [],
         lancamento: [{ url: "https://x.com/l1" }],
         radar: [],
+        // #2366: include use_melhor to avoid triggering the shortfall warn
+        use_melhor: [
+          { url: "https://a.com/1" },
+          { url: "https://b.com/2" },
+        ],
       };
       applyStage2Caps(approved);
-      assert.equal(warned, "");
+      const shapeWarn = warns.find((w) => /shape mudou/.test(w));
+      assert.equal(shapeWarn, undefined, "NÃO deve emitir warn de shape quando highlights=[]");
     } finally {
       console.warn = original;
     }
   });
 
-  it("NÃO emite warn quando ao menos 1 highlight tem URL extraída", () => {
+  it("NÃO emite warn de shape quando ao menos 1 highlight tem URL extraída", () => {
     const original = console.warn;
-    let warned = "";
+    const warns: string[] = [];
     console.warn = (msg: string) => {
-      warned += msg;
+      warns.push(msg);
     };
     try {
       const approved = {
@@ -739,9 +747,16 @@ describe("#1445 — defense-in-depth warn quando highlights non-empty + URLs zer
         ],
         lancamento: [],
         radar: [],
+        // use_melhor com 2 itens pra não disparar shortfall warn (#2366)
+        use_melhor: [
+          { url: "https://a.com/1" },
+          { url: "https://b.com/2" },
+        ],
       };
       applyStage2Caps(approved);
-      assert.equal(warned, "");
+      // NÃO deve emitir warn sobre shape de highlights (o que este teste cobre)
+      const shapeWarn = warns.find((w) => /shape mudou/.test(w));
+      assert.equal(shapeWarn, undefined, "NÃO deve emitir warn de shape quando URL extraída");
     } finally {
       console.warn = original;
     }
