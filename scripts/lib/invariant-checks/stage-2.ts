@@ -62,6 +62,12 @@ function runCheck(
  * Cada check é invocado individualmente pra produzir mensagens específicas.
  * Não chamamos o modo "default" (que exige `--approved` JSON) porque o
  * approved.json já foi consumido upstream.
+ *
+ * Nota (#2372): `use-melhor-tempo` NÃO entra aqui — `check-invariants --stage 2`
+ * roda PRÉ-gate, e `stitch-newsletter.ts` renderiza a descrição do USE MELHOR a
+ * partir do `summary` (sem injetar `(N min)`). O editor adiciona o tempo no gate.
+ * O check é blocking no CLI (exit 1) e roda no Stage 4 (pós-gate), onde a
+ * descrição já tem o tempo. Wirar aqui quebraria toda edição do fluxo default.
  */
 function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "02-reviewed.md");

@@ -2,27 +2,35 @@
  * lint-checks/use-melhor-tempo.ts (#2372)
  *
  * Verifica que cada item da seção USE MELHOR inclui estimativa de tempo de
- * leitura na linha de descrição, no formato `— N min` (em dash + número +
- * "min", com variantes: "— 5 min", "— 8 min de leitura", "— 15 min").
+ * leitura na linha de descrição. Aceita os dois formatos editoriais usados em
+ * produção:
+ *   - parênteses (formato canônico do writer.md): `(15 min)`, `(30 min)`
+ *   - em/en dash (atalho aprovado 260612):         `— 5 min`, `– 8 min de leitura`
  *
- * Check BLOQUEANTE (igual a `destaque-min-chars`) — forçar inclusão do tempo
- * antes do gate humano, pois é padrão editorial desde 260612.
+ * Check BLOQUEANTE — forçar inclusão do tempo, padrão editorial desde 260612.
+ * Roda no Stage 4 (PÓS-gate, via STAGE_4_RULES) — NÃO no Stage 2 pré-gate: o
+ * `stitch-newsletter.ts` renderiza a descrição a partir do `summary` (sem tempo),
+ * e é o editor quem adiciona "(N min)" ao curar a seção USE MELHOR no gate.
+ * Também exposto via CLI `--check use-melhor-tempo` (exit 1) p/ writer fallback.
  *
- * Regex: /—\s*\d+\s*min/ na linha de descrição de cada item.
+ * Regex: `/(\(\s*\d+\s*min\b|[–—]\s*\d+\s*min\b)/` na linha de descrição.
  *
  * Estrutura esperada de item USE MELHOR (uma das formas aceitas):
  *   **[Título](URL)**
- *   Descrição em 1 frase plain text — X min
+ *   Descrição em 1 frase plain text (15 min)
+ *   ou
+ *   Descrição em 1 frase plain text — 15 min
  *
  * Algoritmo:
  *   1. Detectar início da seção USE MELHOR (header regex).
  *   2. Para cada inline-link-only line (title line do item), olhar a próxima
  *      linha não-vazia como a linha de descrição.
- *   3. Verificar que a descrição contém /—\s*\d+\s*min/.
+ *   3. Verificar que a descrição contém a estimativa de tempo.
  *   4. Acumular erros; retornar { ok, errors[], checked }.
  */
 
 import { sectionHeaderRegex } from "../section-naming.ts";
+import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
 
 /** Regex que casa o header da seção USE MELHOR (com ou sem emoji, com ou sem bold). */
 const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, {
@@ -30,18 +38,15 @@ const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, {
   flags: "u",
 });
 
-/** Linha com um inline link bem-formado (título do item — com ou sem bold). */
-const INLINE_LINK_ONLY_RE =
-  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*{0,2}\s*$/;
-
 /**
- * Padrão de tempo de leitura: `— N min` (en dash ou em dash, espaços opcionais,
- * número inteiro, "min" com texto opcional a seguir).
+ * Padrão de estimativa de tempo. Aceita os dois formatos de produção:
+ *   - `(15 min)` — parênteses, formato canônico documentado em writer.md:106
+ *   - `— 5 min` / `– 8 min de leitura` — em/en dash, atalho aprovado 260612
  *
- * Casa: "— 5 min", "— 8 min de leitura", "— 15 min.", "—5min"
- * Não casa: "- 5 min" (hyphen — intencionalmente rejeitado; padrão é em dash)
+ * Casa: "(15 min)", "(30 min)", "— 5 min", "– 8 min de leitura", "—5min", "(2 min de leitura)"
+ * Não casa: "- 5 min" (hyphen sem parênteses), descrição sem estimativa, "(min)" sem número.
  */
-export const USE_MELHOR_TEMPO_RE = /[–—]\s*\d+\s*min/;
+export const USE_MELHOR_TEMPO_RE = /(\(\s*\d+\s*min\b|[–—]\s*\d+\s*min\b)/;
 
 export interface UseMelhorTempoError {
   /** Número sequencial do item na seção (1-based). */
@@ -117,13 +122,14 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
 
         const descLine = lines[j];
         const descLineNum = j + 1;
+        // nextNonEmpty é garantidamente não-vazio: o while-loop acima pula
+        // linhas em branco e o guard `j >= lines.length` trata o caso EOF.
         const nextNonEmpty = descLine.trim();
 
         // Se a próxima linha é outro link, header ou separador → sem descrição
         if (
           INLINE_LINK_ONLY_RE.test(descLine) ||
           nextNonEmpty === "---" ||
-          nextNonEmpty === "" ||
           // Outro header bold (seção, destaque)
           (/^\*\*[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÚÜÇ]/.test(nextNonEmpty) &&
             !INLINE_LINK_ONLY_RE.test(descLine))

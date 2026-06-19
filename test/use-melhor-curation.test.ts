@@ -1734,4 +1734,45 @@ describe("isOpinionOrStudy (#2368 item 2)", () => {
       ),
     );
   });
+
+  // #2368 self-review: how-to vence sinal de estudo em TODAS as vias (não só domínio)
+  it("how-to override: 'Hands-on analysis of GPT-4' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Hands-on analysis of GPT-4 performance"));
+  });
+  it("how-to override: 'step-by-step survey of RAG' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "A step-by-step survey of RAG approaches"));
+  });
+  it("how-to override: 'How to Benchmark Your Models' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "How to Benchmark Your AI Models"));
+  });
+
+  // #2368 self-review: benchmark exige qualificador
+  it("'Benchmark: GPT vs Claude' (colon) é estudo", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Benchmark: GPT-4 vs Claude 3 on Coding"));
+  });
+  it("'Benchmark of LLMs' (of) é estudo", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Benchmark of LLMs on Reasoning"));
+  });
+  it("'Benchmark your models' (sem qualificador) NÃO é estudo", () => {
+    // Sem how-to e sem qualificador (`:`/of/on/between/comparing) — não casa benchmark
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Benchmark your models with this library"));
+  });
+
+  // #2368 self-review: 'analysis of' removido — não over-matcha tutoriais
+  it("'Analysis of GPT-5' isolado NÃO é estudo (analysis-of removido)", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Analysis of GPT-5 Capabilities"));
+  });
+
+  // #2368 self-review: 'Opinion:' (colon) é detectado
+  it("'Opinion: AI is overhyped' (colon) é opinião", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Opinion: AI is overhyped"));
+  });
+  it("'My opinion: this is wrong' é opinião", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "My opinion: this is wrong"));
+  });
+
+  it("URL inválida não crasha", () => {
+    assert.equal(isOpinionOrStudy("not-a-url", "Reflections on AI"), true);
+    assert.equal(isOpinionOrStudy("not-a-url", "Build a chatbot tutorial"), false);
+  });
 });

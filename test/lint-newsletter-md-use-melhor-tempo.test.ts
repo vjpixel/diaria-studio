@@ -37,6 +37,17 @@ function wrapInUseMelhor(items: string): string {
 // ---------------------------------------------------------------------------
 
 describe("USE_MELHOR_TEMPO_RE (#2372)", () => {
+  // Formato canônico do writer.md:106 — parênteses (default flow / stitch)
+  it("casa '(15 min)' (parênteses — formato canônico writer.md)", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Guia prático de ChatGPT (15 min)"));
+  });
+  it("casa '(30 min)'", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Tutorial de RAG do zero (30 min)"));
+  });
+  it("casa '(2 min de leitura)'", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Resumo rápido (2 min de leitura)"));
+  });
+  // Atalho aprovado 260612 — em/en dash
   it("casa '— 5 min'", () => {
     assert.ok(USE_MELHOR_TEMPO_RE.test("Guia prático de ChatGPT — 5 min"));
   });
@@ -52,7 +63,7 @@ describe("USE_MELHOR_TEMPO_RE (#2372)", () => {
   it("casa en-dash '– 10 min'", () => {
     assert.ok(USE_MELHOR_TEMPO_RE.test("Curso rápido – 10 min"));
   });
-  it("NÃO casa '- 5 min' (hyphen, não dash)", () => {
+  it("NÃO casa '- 5 min' (hyphen sem parênteses)", () => {
     assert.ok(!USE_MELHOR_TEMPO_RE.test("Tutorial - 5 min"));
   });
   it("NÃO casa descrição sem qualquer estimativa", () => {
@@ -60,6 +71,9 @@ describe("USE_MELHOR_TEMPO_RE (#2372)", () => {
   });
   it("NÃO casa '— minutos' sem número", () => {
     assert.ok(!USE_MELHOR_TEMPO_RE.test("Leva alguns — minutos para completar"));
+  });
+  it("NÃO casa '(min)' sem número", () => {
+    assert.ok(!USE_MELHOR_TEMPO_RE.test("Tempo variável (min) por capítulo"));
   });
 });
 
@@ -170,6 +184,27 @@ describe("checkUseMelhorTempo (#2372) — helper puro", () => {
     const r = checkUseMelhorTempo(md);
     assert.equal(r.ok, false);
     assert.equal(r.checked, 1);
+  });
+
+  it("ok=true com formato parênteses '(N min)' (output real do stitch + editor)", () => {
+    // O writer.md:106 documenta parênteses como formato canônico — o check
+    // deve aceitar para não quebrar toda edição do fluxo default.
+    const md = wrapInUseMelhor(
+      makeUseMelhorItem(
+        "Tutorial RAG",
+        "https://example.com/rag",
+        "Tutorial completo de RAG do zero com LangChain (30 min)",
+      ) +
+        "\n" +
+        makeUseMelhorItem(
+          "ChatGPT no trabalho",
+          "https://example.com/cg",
+          "Como usar ChatGPT para produtividade (5 min de leitura)",
+        ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.checked, 2);
   });
 });
 

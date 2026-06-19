@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
+import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
   extractDestaqueUrls,
   extractPromptUrl,
@@ -384,6 +385,35 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/**
+ * #2372: cada item de USE MELHOR precisa de estimativa de tempo na descrição
+ * (`(15 min)` ou `— 15 min`). Roda no Stage 4 (PÓS-gate) — pré-gate (Stage 2) o
+ * `stitch-newsletter.ts` ainda não tem o tempo no `summary`, e é o editor quem
+ * o adiciona ao curar a seção USE MELHOR no gate. Aqui, pós-gate, é blocking:
+ * sem tempo, o item não deve publicar.
+ */
+function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkUseMelhorTempo(md);
+  if (result.ok) return [];
+  const items = result.errors
+    .map((e) => `item ${e.item} (linha ${e.titleLine}): "${e.excerpt}"`)
+    .join("; ");
+  return [
+    {
+      rule: "use-melhor-tempo",
+      message:
+        `${result.errors.length} item(ns) de USE MELHOR sem estimativa de tempo: ${items}. ` +
+        `Fix manual: adicionar "(X min)" ou "— X min" ao fim de cada descrição em ${path}.`,
+      source_issue: "#2372",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -412,6 +442,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#1578",
     stage: 4,
     run: checkIntroCountConsistent,
+  },
+  {
+    id: "use-melhor-tempo",
+    description: "cada item USE MELHOR tem estimativa de tempo na descrição (#2372)",
+    source_issue: "#2372",
+    stage: 4,
+    run: checkUseMelhorTempoConsistent,
   },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem

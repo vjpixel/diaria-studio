@@ -699,8 +699,11 @@ export const OPINION_ESSAY_DOMAINS = new Set<string>([
  *   - "Working with AI: A Framework for Thought Leadership" (hamel.dev)
  *   - "Reflections on AI in 2025"
  */
+// Nota (#2368 self-review): `opinion\b` (não `opinion[:\s]`) — o `\b` final do
+// grupo externo mata `opinion[:\s]` quando casa `:` ou espaço (dois não-word
+// chars consecutivos). `opinion\b` casa "Opinion:" e "opinion on" corretamente.
 const OPINION_ESSAY_TITLE_RE =
-  /\b(reflect(?:ions?|ing)\s+on\b|thoughts?\s+on\b|opinion[:\s]|perspectiv(?:a|e)\s+(?:sobre|on)\b|ponto\s+de\s+vista\b|minha\s+(?:vis[aã]o|opini[aã]o|perspectiva)\b|my\s+(?:take|view|thoughts?)\s+on\b|framework\s+for\s+(?:thought|think|understand)|manifesto\b|what\s+i(?:'ve)?\s+learned\s+(?:from|about|after)\b|lessons?\s+(?:from|after|learned)\b|why\s+(?:i|we)\s+(?:think|believe|decided|chose|moved|stopped|gave\s+up)\b|state\s+of\s+(?:ai|ml|llm|rag|the\s+art)(?:\s+\w+){0,3}(?:\s+in\s+\d{4}|\s+\d{4}|\s+report|\s+survey)\b|year\s+in\s+review\b|\d{4}\s+(?:year\s+in|in)\s+review\b|predictions?\s+for\s+\d{4}\b|(?:ai|ml|llm)\s+(?:trends?|predictions?)\s+\d{4}\b)\b/i;
+  /\b(reflect(?:ions?|ing)\s+on\b|thoughts?\s+on\b|opinion\b|perspectiv(?:a|e)\s+(?:sobre|on)\b|ponto\s+de\s+vista\b|minha\s+(?:vis[aã]o|opini[aã]o|perspectiva)\b|my\s+(?:take|view|thoughts?)\s+on\b|framework\s+for\s+(?:thought|think|understand)|manifesto\b|what\s+i(?:'ve)?\s+learned\s+(?:from|about|after)\b|lessons?\s+(?:from|after|learned)\b|why\s+(?:i|we)\s+(?:think|believe|decided|chose|moved|stopped|gave\s+up)\b|state\s+of\s+(?:ai|ml|llm|rag|the\s+art)(?:\s+\w+){0,3}(?:\s+in\s+\d{4}|\s+\d{4}|\s+report|\s+survey)\b|year\s+in\s+review\b|\d{4}\s+(?:year\s+in|in)\s+review\b|predictions?\s+for\s+\d{4}\b|(?:ai|ml|llm)\s+(?:trends?|predictions?)\s+\d{4}\b)\b/i;
 
 /**
  * Padrões de título que indicam estudo de pesquisa / paper / benchmark —
@@ -708,8 +711,27 @@ const OPINION_ESSAY_TITLE_RE =
  *
  * Exemplos: "LangChain Research Study on LLM Adoption", "Benchmark: GPT vs Claude"
  */
+// Nota (#2368 self-review):
+//   - `analysis\s+of\b` REMOVIDO — over-match em tutoriais ("Hands-on analysis
+//     of GPT-4", "sentiment analysis of data"). Os outros sinais já são específicos.
+//   - `benchmark` agora EXIGE qualificador (`:`, `of`, `on`, `between`, `comparing`) —
+//     sem ele, "How to Benchmark Your Models" casava por engano.
+// Nota: o grupo NÃO tem `\b` final (cada alternativa ancora a si própria) — um
+// `\b` externo após o `:` da forma "Benchmark:" falharia (`:` e espaço são ambos
+// não-word, sem boundary). A forma colon (`benchmark(...):`) e a forma com
+// qualificador-word (`benchmark of`) são alternativas separadas.
 const RESEARCH_STUDY_TITLE_RE =
-  /\b(research\s+(?:study|paper|report|findings?|survey)\b|estudo\s+(?:de\s+pesquisa|sobre|de\s+caso)\b|survey\s+(?:of|on|about)\b|benchmark(?:ing|s?)(?:\s*:|\s+of|\s+on|\s+between|\s+comparing)?\b|whitepaper\b|white\s+paper\b|literature\s+review\b|systematic\s+review\b|meta[- ]?analysis\b|ablation\s+(?:study|test)\b|empirical\s+(?:study|analysis|evaluation|evidence)\b|analysis\s+of\b|estat[íi]sticas?\s+(?:de|sobre)\b|relat[óo]rio\s+(?:de|sobre|anual)\b|annual\s+report\b)\b/i;
+  /\b(research\s+(?:study|paper|report|findings?|survey)\b|estudo\s+(?:de\s+pesquisa|sobre|de\s+caso)\b|survey\s+(?:of|on|about)\b|benchmark(?:ing|s?)\s*:|benchmark(?:ing|s?)\s+(?:of|on|between|comparing)\b|whitepaper\b|white\s+paper\b|literature\s+review\b|systematic\s+review\b|meta[- ]?analysis\b|ablation\s+(?:study|test)\b|empirical\s+(?:study|analysis|evaluation|evidence)\b|estat[íi]sticas?\s+(?:de|sobre)\b|relat[óo]rio\s+(?:de|sobre|anual)\b|annual\s+report\b)/i;
+
+/**
+ * Guard de sinal how-to/tutorial. Se presente, o artigo é tutorial acionável
+ * mesmo que o título também tenha sinal de opinião/estudo. Módulo-level
+ * (#2368 self-review) — antes vivia inline dentro do branch de domínio, então
+ * só guardava a via de domínio: "Hands-on analysis of GPT-4" e "step-by-step
+ * survey of RAG" caíam como estudo apesar do sinal how-to explícito.
+ */
+const HOW_TO_GUARD_RE =
+  /\b(how[- ]?to\b|tutorial\b|guia\b|passo\s+a\s+passo\b|como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar)\b|getting[- ]?started\b|walkthrough\b|hands[- ]?on\b|step[- ]?by[- ]?step\b|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course\b)\b/i;
 
 /**
  * #2368 item 2: retorna true se o artigo parece ser um ensaio de opinião ou
@@ -718,42 +740,39 @@ const RESEARCH_STUDY_TITLE_RE =
  * Uso: no categorizador/scorer, checar antes de classificar como `use_melhor`.
  * Se retornar true, rebaixar para `radar` (ou excluir do bucket use_melhor).
  *
- * Nota: hasTutorialSignal do review-use-melhor.ts deve ser verificado PRIMEIRO;
- * se o artigo TEM sinal de tutorial (verbo how-to/guia no título), não está
- * mis-bucketado mesmo sendo de domínio de opinião.
+ * Precedência: sinal how-to explícito (HOW_TO_GUARD_RE) VENCE qualquer sinal de
+ * opinião/estudo — um tutorial "Hands-on analysis of X" não é estudo. Depois
+ * checamos domínio de opinião → título de opinião → título de estudo.
  *
  * @param url     URL do artigo.
  * @param title   Título do artigo.
  * @param summary Sumário/descrição opcional.
  */
 export function isOpinionOrStudy(url: string, title: string, summary = ""): boolean {
-  // Verifica domínio de opinião (sinal fraco — requer reforço de título)
+  const hay = title + " " + summary;
+
+  // 0. Sinal how-to explícito vence tudo — tutorial acionável, não opinião/estudo.
+  if (HOW_TO_GUARD_RE.test(hay)) {
+    return false;
+  }
+
+  // 1. Domínio de opinião conhecida (sem how-to, já garantido acima).
   let host = "";
   try {
     host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
   } catch {
     // URL inválida
   }
-  const hay = title + " " + summary;
-
-  // Domínio de opinião conhecida (hamel.dev, eugeneyan.com): sinal fraco,
-  // mas combinado com ausência de how-to = classifica como opinião.
   if (OPINION_ESSAY_DOMAINS.has(host)) {
-    // Se tem sinal de tutorial explícito, não é opinião (ex: "how to build X")
-    // Reutilizamos o RE_HOWTO como guard: se o título tem verbo how-to, deixa passar.
-    const HOW_TO_GUARD_RE =
-      /\b(how[- ]?to\b|tutorial\b|guia\b|passo\s+a\s+passo\b|como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar)\b|getting[- ]?started\b|walkthrough\b|hands[- ]?on\b|step[- ]?by[- ]?step\b|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course\b)\b/i;
-    if (!HOW_TO_GUARD_RE.test(hay)) {
-      return true;
-    }
+    return true;
   }
 
-  // Títulos com padrão de opinião: rebaixar independente do domínio
+  // 2. Título com padrão de opinião — rebaixar independente do domínio.
   if (OPINION_ESSAY_TITLE_RE.test(hay)) {
     return true;
   }
 
-  // Títulos de estudo/pesquisa/benchmark: rebaixar independente do domínio
+  // 3. Título de estudo/pesquisa/benchmark — rebaixar independente do domínio.
   if (RESEARCH_STUDY_TITLE_RE.test(hay)) {
     return true;
   }
