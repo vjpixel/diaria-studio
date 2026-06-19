@@ -115,8 +115,11 @@ export function computeCohorts(
 
   for (const c of contacts) {
     const isExit = c.bounced || c.optedOut;
-    // Fora do universo: nunca recebeu e não teve saída → não conta.
-    if (c.received <= 0 && !isExit) continue;
+    // Fora do universo: nunca recebeu, nunca abriu e não teve saída → não conta.
+    // (opened>0 com received=0 é anomalia rara da Brevo — open de e-mail
+    // encaminhado / campanha deletada do histórico. Contamos o engajamento em
+    // vez de descartar silenciosamente.)
+    if (c.received <= 0 && c.opened <= 0 && !isExit) continue;
     r.universe++;
     if (c.received > r.maxReceived) r.maxReceived = c.received;
 
@@ -201,6 +204,16 @@ async function fetchAllContactIds(
     if (cs.length < 500) break;
     offset += 500;
   }
+  // Anti-clobber (#2426 review): brevoGet devolve {status:404, body:{}} pra QUALQUER
+  // 404 — inclusive escopo/validade da API key surfaceando como 404 no /contacts.
+  // Sem este guard, 0 contatos → universo 0 → upload sobrescreveria o snapshot bom
+  // do KV com zeros e o dashboard renderizaria tabela zerada sem erro. Falha alto.
+  if (base.length === 0) {
+    throw new Error(
+      "Brevo /contacts retornou 0 contatos — abortando para não sobrescrever o KV " +
+        "com zeros (verifique escopo/validade da BREVO_CLARICE_API_KEY).",
+    );
+  }
   return base;
 }
 
@@ -221,7 +234,15 @@ export async function buildCohorts(
   await pool(ids, concurrency, async (c) => {
     const { status, body } = await brevoGet(apiKey, `/contacts/${c.id}`);
     if (status === 404) return; // contato sumiu entre listar e buscar — não-fatal
-    engagements.push(normalizeContact({ emailBlacklisted: c.blacklisted, statistics: body?.statistics }));
+    // Blacklist fresca (#2426 review): o GET per-contato traz emailBlacklisted
+    // atualizado; o snapshot da paginação (c.blacklisted) pode estar horas velho.
+    // OR-merge é conservador — se qualquer fonte diz blacklisted, vale.
+    engagements.push(
+      normalizeContact({
+        emailBlacklisted: c.blacklisted || body?.emailBlacklisted === true,
+        statistics: body?.statistics,
+      }),
+    );
     if (++done % 500 === 0) console.error(`  …${done}/${ids.length}`);
   });
 
@@ -241,6 +262,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Fail-fast (#2426 review): validar creds CF ANTES do crawl per-contato (~40k
+  // GETs, dezenas de minutos). Sem isso, a falta de credencial só seria detectada
+  // depois de gastar toda a quota da Brevo. --dry-run não grava, então não exige.
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
+  if (!dryRun && (!accountId || !token)) {
+    console.error(
+      "CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_WORKERS_TOKEN não definidos — necessários " +
+        "para gravar no KV. Configure as credenciais (ou rode com --dry-run) antes do crawl.",
+    );
+    process.exit(1);
+  }
+
   const generatedAt = new Date().toISOString();
   const cohorts = await buildCohorts(apiKey, concurrency, generatedAt);
 
@@ -254,12 +288,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
-  if (!accountId || !token) {
+  // Anti-clobber (#2426 review): nunca sobrescrever o snapshot bom do KV com zeros.
+  // fetchAllContactIds já falha alto em 0 contatos; este é defesa em profundidade.
+  if (cohorts.universe === 0) {
     console.error(
-      "\nCLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_WORKERS_TOKEN não definidos — pulei o upload KV. " +
-        "Rode com --dry-run ou configure as credenciais.",
+      "\n⚠️  Universo 0 — não gravando no KV (evita sobrescrever dado bom com zeros).",
     );
     process.exit(1);
   }

@@ -2178,14 +2178,16 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
 
   const u = cohorts.universe;
   const genBRT = fmtTimeBRT(cohorts.generatedAt);
-  // Rótulo "2+" só quando algum contato de fato recebeu ≥3; senão "2" literal.
-  const recvLabel = cohorts.maxReceived >= 3 ? "2+" : "2";
+  // Rótulo "2+" (#2426 review): os buckets são definidos como ≥2 (abriu ≥2 /
+  // recebeu ≥2), então "2+" é sempre exato — não acoplar ao maxReceived, que
+  // descreve o máximo recebido e podia rotular errado o bucket de OPENS (open
+  // pode exceder received em anomalias de tracking da Brevo).
 
   const defs: Array<{ label: string; title: string; n: number }> = [
-    { label: `Abriu ${recvLabel} e-mails`, title: "Contatos que abriram 2 ou mais e-mails (e não saíram).", n: cohorts.opened2plus },
+    { label: "Abriu 2+ e-mails", title: "Contatos que abriram 2 ou mais e-mails (e não saíram).", n: cohorts.opened2plus },
     { label: "Abriu 1 e-mail", title: "Contatos que abriram exatamente 1 e-mail (e não saíram).", n: cohorts.opened1 },
     { label: "Recebeu 1, não abriu", title: "Recebeu 1 e-mail e não abriu nenhum (e não saiu).", n: cohorts.received1_opened0 },
-    { label: `Recebeu ${recvLabel}, não abriu`, title: "Recebeu 2 ou mais e-mails e não abriu nenhum (e não saiu).", n: cohorts.received2_opened0 },
+    { label: "Recebeu 2+, não abriu", title: "Recebeu 2 ou mais e-mails e não abriu nenhum (e não saiu).", n: cohorts.received2_opened0 },
     {
       label: "Saídas (bounce/descadastro)",
       title: `Contatos com bounce ou descadastro — precedência sobre tudo (não importa se abriram). Bounce: ${cohorts.exitsBreakdown.bounced.toLocaleString("pt-BR")} · descadastro/suprimido: ${cohorts.exitsBreakdown.optedOut.toLocaleString("pt-BR")}.`,

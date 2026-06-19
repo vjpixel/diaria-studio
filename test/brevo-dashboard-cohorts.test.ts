@@ -89,13 +89,23 @@ test("computeCohorts: partição completa — cada contato em exatamente uma coo
   assert.equal(r.universe, contacts.length);
 });
 
-test("computeCohorts: contatos fora do universo (received 0, sem saída) são ignorados", () => {
+test("computeCohorts: contatos fora do universo (received 0, opened 0, sem saída) são ignorados", () => {
   const r = computeCohorts(
     [eng({ received: 0, opened: 0 }), eng({ received: 1, opened: 0 })],
     GEN,
   );
   assert.equal(r.universe, 1);
   assert.equal(r.received1_opened0, 1);
+});
+
+test("computeCohorts: opened>0 com received=0 (anomalia Brevo) é contado, não descartado", () => {
+  const r = computeCohorts(
+    [eng({ received: 0, opened: 2 }), eng({ received: 0, opened: 1 })],
+    GEN,
+  );
+  assert.equal(r.universe, 2);
+  assert.equal(r.opened2plus, 1);
+  assert.equal(r.opened1, 1);
 });
 
 test("normalizeContact: bounce (hard/soft) detectado; unsubscriptions é objeto", () => {
@@ -164,8 +174,10 @@ test("renderEngagementCohortsSection: renderiza contagens e universo", () => {
   assert.match(html, /exatamente uma/); // explica exclusividade
 });
 
-test("renderEngagementCohortsSection: rótulo '2' quando maxReceived<3, '2+' quando >=3", () => {
-  assert.match(renderEngagementCohortsSection(SAMPLE), /Abriu 2 e-mails/);
+test("renderEngagementCohortsSection: rótulos dos buckets ≥2 são sempre '2+' (independente de maxReceived)", () => {
+  // O bucket é definido como ≥2, então "2+" é sempre exato — não acopla a maxReceived.
+  assert.match(renderEngagementCohortsSection(SAMPLE), /Abriu 2\+ e-mails/);
+  assert.match(renderEngagementCohortsSection(SAMPLE), /Recebeu 2\+, não abriu/);
   const big = { ...SAMPLE, maxReceived: 4 };
   assert.match(renderEngagementCohortsSection(big), /Abriu 2\+ e-mails/);
 });
