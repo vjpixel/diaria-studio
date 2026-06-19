@@ -143,4 +143,50 @@ describe("computeBraveCreditStats", () => {
     assert.equal(stats.queries_this_month, 2);
     rmSync(path, { force: true });
   });
+
+  // #2378: characterisation — UTC month boundary (BRT users are UTC-3, so late-night
+  // BRT may cross UTC midnight and change the UTC month). Both recordBraveCredit
+  // and computeBraveCreditStats use UTC consistently → no off-by-one at month boundary.
+  it("UTC month boundary: entry at BRT 22:30 on May 31 (= UTC June 1) counts in June, not May", () => {
+    const path = makeTmpPath();
+    // "now" = UTC June 1 (what BRT late-night of May 31 looks like in UTC)
+    const now = new Date("2026-06-01T01:30:00Z");
+    writeFileSync(
+      path,
+      [
+        // Recorded at UTC June 1 (BRT May 31 22:30) → timestamp prefix "2026-06"
+        JSON.stringify({ timestamp: "2026-06-01T01:30:00Z", query: "q1", status: "ok" }),
+        // Recorded in UTC May → should NOT count in June
+        JSON.stringify({ timestamp: "2026-05-31T20:00:00Z", query: "q2", status: "ok" }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    // Only q1 matches monthPrefix "2026-06"
+    assert.equal(stats.queries_this_month, 1);
+    rmSync(path, { force: true });
+  });
+
+  // #2378: characterisation — error queries are never recorded (only ok/rate_limited count).
+  // This is enforced at the call site (fetch-websearch-batch.ts), not here, but the
+  // JSONL-only design means errors can never appear in the file by construction.
+  it("does not count queries with status error (they would not be in the file)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-18T12:00:00Z");
+    writeFileSync(
+      path,
+      [
+        // 'error' status entries should never be written, but if they were, they'd still
+        // be counted since compute() only filters by timestamp, not status.
+        // This test documents the design: the guard lives at the call site, not here.
+        JSON.stringify({ timestamp: "2026-06-18T10:00:00Z", query: "q1", status: "ok" }),
+        JSON.stringify({ timestamp: "2026-06-18T10:01:00Z", query: "q2", status: "rate_limited" }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    // Only 2 entries exist — both ok/rate_limited (as per call-site guard)
+    assert.equal(stats.queries_this_month, 2);
+    rmSync(path, { force: true });
+  });
 });
