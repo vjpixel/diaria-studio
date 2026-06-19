@@ -571,7 +571,39 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 })()
 ```
 
-**Aguardar autosave**: após `insertContent`, esperar ~8s (via `computer.wait`, não dentro do `javascript_tool`) para Beehiiv autosave persistir. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
+**Aguardar autosave e verificar persistência antes de navegar (#2375)**: após `insertContent`, **NÃO navegar imediatamente para `?step=review` ou qualquer outra URL**. O TipTap autosalva via `onChange` após debounce — se `navigate()` ocorre antes do debounce/fetch de autosave completar, o servidor não tem o conteúdo atualizado e o test email é enviado do conteúdo anterior, causando fix-loops desnecessários (incidente 260619: 4 iterações + 2 sem email = ~90min no Stage 5).
+
+**Passo obrigatório antes de qualquer navigate pós-insertContent:**
+
+1. Aguardar debounce do autosave (2s fora do `javascript_tool`):
+   ```
+   computer.wait({ seconds: 2 })
+   ```
+
+2. Verificar via JS que o conteúdo esperado está no editor (varredura direcionada #1766 — NÃO getJSON):
+   ```js
+   // Verificar que o conteúdo foi inserido corretamente no ProseMirror state
+   const editor = document.querySelector('.tiptap.ProseMirror')?.editor;
+   let hasPollA = false;
+   editor?.state.doc.descendants((n) => {
+     if (n.isText && n.text?.includes('{{poll_a_url}}')) hasPollA = true;
+   });
+   ({ hasPollA, docSize: editor?.state.doc.content.size });
+   ```
+   Se `hasPollA: false` ou `docSize` for muito pequeno, o insertContent não persistiu — **não prosseguir** antes de re-paste.
+
+3. Forçar flush do autosave via blur do editor:
+   ```js
+   document.querySelector('.tiptap.ProseMirror')?.blur();
+   ```
+   Aguardar mais 1.5s (fora do `javascript_tool`) para o autosave terminar o fetch ao servidor:
+   ```
+   computer.wait({ seconds: 1.5 })
+   ```
+
+4. **Somente após os passos 1–3** navegar para `?step=review` ou salvar o draft.
+
+**Resumo**: debounce (2s) → JS verify → blur → flush wait (1.5s) → navigate. Total ~3.5s garantidos pós-insertContent antes de qualquer navigate. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
 
 ⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
 
@@ -614,7 +646,7 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 **#1766 — wait fora do `javascript_tool`.** NÃO colocar `await new Promise(r=>setTimeout(r,8000))` DENTRO de uma chamada `javascript_tool` — o wait conta pro orçamento dos 45s do CDP. Faça o wait via `computer.wait` (ou esperar entre chamadas MCP) e mantenha cada `javascript_tool` curto e numa chamada separada.
 
-**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s (via `computer.wait`, não dentro do `javascript_tool`) antes de prosseguir. Validação opcional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
+**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. **Antes de navegar para `?step=review` ou salvar o draft, executar OBRIGATORIAMENTE o "Passo obrigatório antes de qualquer navigate pós-insertContent" da §5.2 Fase 3 (#2375)** — debounce 2s → JS verify (`doc.descendants`) → `blur()` → flush 1.5s. O blur força o flush do autosave ao servidor; pular o blur torna o wait de tempo fixo insuficiente em conexões lentas. Validação opcional adicional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
 **⚠️ #2283 — CDP timeout no editor trava o autosave.** Se qualquer `javascript_tool` retornar `CDP Runtime.evaluate timed out after 45000ms` (ou equivalente) **enquanto o editor está aberto**, o autosave do Beehiiv pode congelar: `updated_at` fica fixo e campos setados **após** o timeout (Subtitle, Subject) param de persistir mesmo com retry. Sintomas:
 
@@ -716,6 +748,86 @@ if (decision.level === "warn") {
 recordSend(edition_dir, true);
 ```
 
+**⚠️ Limite de test emails por post (#2376)**: além do rate limit por hora, o Beehiiv tem um limite de test emails **por post**. Ao atingir, "Send test email" retorna "Test send limit exceeded" sem aviso visual proativo — popover de sucesso pode aparecer mas o email NÃO chega. Incidente 260619: 4 iterações + 2 sem email = ~90min no Stage 5 por não detectar o limite.
+
+Antes de cada "Send test email", verificar o contador por post:
+
+```typescript
+import {
+  readTestEmailCount,
+  incrementTestEmailCount,
+  setTestEmailCount,
+  markDraftVerified,
+  decideTestSendAction,
+} from "scripts/lib/beehiiv-test-send-limit.ts";
+import { logEvent } from "scripts/lib/run-log.ts";
+
+// Checar contador antes do send
+const currentCount = readTestEmailCount(edition_dir);
+const limitDecision = decideTestSendAction(currentCount);
+
+if (limitDecision.action === "use_draft_fallback") {
+  // Limite possivelmente atingido — não tentar send; verificar via draft link
+  logEvent({
+    edition: AAMMDD,
+    stage: 5,
+    agent: "beehiiv-playbook",
+    level: "warn",
+    message: "test_send_limit_reached",
+    details: { test_email_count: currentCount, draft_url, edition_dir },
+  });
+  // markDraftVerified só funciona se 05-published.json já existe (modo fix).
+  // Em modo create, draft_verified é gravado no passo 8 (ver abaixo).
+  const marked = markDraftVerified(edition_dir);
+  if (!marked) log_warn("draft_verified não persistido — 05-published.json ainda não gravado (modo create); setar no passo 8");
+  // NÃO executar o click "Send test email" — pular pro fallback de draft link abaixo.
+}
+
+if (limitDecision.action === "alert") {
+  log_warn(limitDecision.message);
+  // Avisar o editor mas ainda tentar o send
+}
+
+// ... (só se action !== "use_draft_fallback") click Send test email ...
+recordSend(edition_dir, true); // rate-limit por hora (#1419)
+
+// ⚠️ ORDERING (#2376 review): em modo CREATE, 05-published.json ainda NÃO existe
+// neste ponto (é gravado no passo 8). Portanto:
+//  - NÃO chamar incrementTestEmailCount aqui em modo create — ela retorna null
+//    (increment perdido) porque o arquivo não existe.
+//  - Em vez disso, rastrear o nº de sends numa variável local (sends_done++) e
+//    gravar test_email_count: sends_done no passo 8 via setTestEmailCount OU no
+//    próprio objeto JSON do passo 8.
+//  - Em modo FIX (Passo fix-3), 05-published.json JÁ existe da run de create →
+//    chamar incrementTestEmailCount(edition_dir) e checar o retorno:
+//      const newCount = incrementTestEmailCount(edition_dir);
+//      if (newCount === null) log_warn("increment de test_email_count perdido — verificar 05-published.json");
+```
+
+**Fallback de verificação via draft link (quando limite por post atingido):**
+
+Quando `use_draft_fallback`, verificar o conteúdo diretamente no draft do Beehiiv com checklist explícita:
+
+1. Abrir `draft_url` no Beehiiv.
+2. Usar "Preview" do Beehiiv (aba "Preview" ou botão "Preview email") para ver o render HTML.
+3. Verificar manualmente com a seguinte checklist (substitui o `review-test-email` via Gmail):
+   - [ ] Título e subtítulo corretos
+   - [ ] Imagens de destaque carregam (D1, D2, D3)
+   - [ ] Imagens É IA? carregam (A e B)
+   - [ ] Botões de voto do É IA? têm URLs de voto (mesmo que `{{poll_a_url}}` — são merge tags)
+   - [ ] 3 destaques presentes (ou 2 se edição com 2 destaques)
+   - [ ] Seção USE MELHOR presente
+   - [ ] Seção RADAR presente
+   - [ ] Seção OUTRAS NOTÍCIAS não está truncada
+   - [ ] Nenhum placeholder `[TODO]` ou `[FALTA]` visível
+4. Registrar `draft_verified: true` em `05-published.json`:
+   - **Modo fix** (arquivo já existe): `markDraftVerified(edition_dir)` — checar o retorno `true`; se `false`, logar warn (write falhou).
+   - **Modo create** (arquivo ainda não gravado): incluir `"draft_verified": true` diretamente no objeto JSON do passo 8.
+5. **Marcar o loop como concluído** para o invariant de Stage 5 (#1577 — `checkStage4ReviewCompleted` em `scripts/lib/invariant-checks/stage-5.ts` exige um estado terminal). Setar **`review_completed: true`** (a verificação via draft checklist É a conclusão do loop neste caminho). **Sem isso, o invariant pós-Stage-5 dispara `severity: error` espúrio** porque `draft_verified` sozinho não é reconhecido como terminal. Registrar também em `unfixed_issues[]`: `{ reason: "verified_via_draft_link", section: "test-email", details: "limite de test email por post atingido — verificado via draft checklist" }`.
+6. Prosseguir para o passo 8 (gravar `05-published.json`) com `draft_verified: true`, `review_completed: true` e `test_email_count` = nº de sends já tentados.
+
+**⚠️ Wiring do skip (#2376 review):** o campo `draft_verified: true` **registra** que a verificação foi via draft, mas o pulo do `review-test-email` loop NÃO está automatizado no `orchestrator-stage-5.md` (que mantém a regra "este loop nunca deve ser pulado") nem no agente `review-test-email`. Em modo `use_draft_fallback`, o top-level que lê este playbook deve tratar a checklist de draft (passos 1–6 acima) como o resultado do loop — não despachar `review-test-email` de novo só pra ver "nenhum email" (o email nunca chegou; o limite por post foi atingido). Isso é decisão do top-level, não enforcement determinístico — documentado aqui de propósito (evita editar o orchestrator e disparar o snapshot test #634). O `review_completed: true` setado no passo 5 garante que o invariant `checkStage4ReviewCompleted` (#1577) reconhece o estado terminal.
+
 - Abrir menu de testes → enviar para `test_email` → confirmar.
 - Capturar timestamp:
   ```bash
@@ -733,9 +845,15 @@ recordSend(edition_dir, true);
   "test_email_sent_to": "vjpixel@gmail.com",
   "test_email_sent_at": "2026-04-18T12:34:56.789Z",
   "status": "draft",
-  "unfixed_issues": []
+  "unfixed_issues": [],
+  "test_email_count": 1,
+  "draft_verified": false
 }
 ```
+
+`test_email_count` (#2376): número de test emails enviados para este post neste pipeline (não reseta com janela de 1h como o counter de #1419 — este é por post). **Em modo create**, este passo 8 grava o nº de sends feitos no passo 7 diretamente no objeto JSON (o arquivo não existia durante o passo 7). **Em modo fix**, `incrementTestEmailCount()` de `scripts/lib/beehiiv-test-send-limit.ts` incrementa a cada send (o arquivo já existe). Quando o valor lido por `readTestEmailCount()` >= `TEST_SEND_ALERT_THRESHOLD` (3), o playbook alerta; quando > 3, cai no fallback de draft link. `incrementTestEmailCount`/`setTestEmailCount`/`markDraftVerified` persistem via `writeFileAtomic` (#1132) — `05-published.json` é output crítico, write não-atômico corromperia o resume detector.
+
+`draft_verified` (#2376): `true` indica que a verificação final foi feita via draft link + checklist explícita (não via test email recebido no Gmail). Setado por `markDraftVerified()` quando o limite de test emails por post é atingido. O `review-test-email` loop deve pular a verificação de Gmail se `draft_verified: true` e considerar o draft como verificado.
 
 `subject_set` (#610): valor que o agent setou no campo Subject. **Não inclui** o prefix `[TEST] ` mesmo em test mode (#1215) — Beehiiv auto-adiciona o prefixo no envio. Se passo 6.5 falhou, registrar `subject_set: null` e adicionar entry em `unfixed_issues[]`.
 
