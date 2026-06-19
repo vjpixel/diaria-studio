@@ -1801,6 +1801,159 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2398 (não dispara com fr
   });
 });
 
+// ── #2410 discriminants: bugs 1-3 de extractNarrativeFromFrontmatter ─────────────────────────
+//
+// Cada teste abaixo FALHARIA com o parser hand-rolled original (pre-fix) e PASSA após
+// a migração para extractFrontmatter canônico (#2398 fix).
+//
+// (a) Bug 1 (quote-stripping): description com aspas duplas retornava o valor SEM aspas
+//     no caso normal — mas single-quotes retornavam `'valor'` COM as aspas.
+// (b) Bug 2 (placeholder + fallback): narrative={PREENCHER} + description=real → antes
+//     retornava null inteiro (return null saía da função); agora retorna description real.
+// (c) Bug 3 (ordem): description é o campo real; narrative é alias. Verificar precedência.
+// (d) Bug 1 variante: description com aspas simples → valor sem aspas.
+// (e) Bug 4: description: (vazio) + prosa válida no corpo → fallback pro corpo funciona.
+
+describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)", () => {
+  // (a) Bug 1: aspas duplas ao redor do valor não devem vazar no resultado
+  it("(a) description com aspas duplas → valor extraído SEM aspas (260617/260618 shaped)", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+      '  location: "DESTAQUE 2"',
+      '  category: "factual"',
+      '  correct_value: "Perplexity"',
+      "---",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = extractNarrativeFromFrontmatter(md);
+    // Valor deve ser limpo — sem aspas iniciais ou finais
+    assert.equal(r, "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      "aspas duplas do YAML não devem vazar no valor extraído");
+    assert.ok(!r!.startsWith('"'), 'valor não deve começar com "');
+    assert.ok(!r!.endsWith('"'), 'valor não deve terminar com "');
+  });
+
+  // (b) Bug 2: narrative={PREENCHER} + description real → deve retornar description, não null
+  it("(b) narrative={PREENCHER} + description real → usa description (não retorna null)", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 3 diz que a Meta foi fundada em 1994"',
+      '  narrative: "{PREENCHER — o que o assinante deve identificar}"',
+      '  location: "DESTAQUE 3"',
+      '  category: "factual"',
+      '  correct_value: "2004"',
+      "---",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = extractNarrativeFromFrontmatter(md);
+    assert.ok(r !== null,
+      "narrative={PREENCHER} não deve causar return null quando description está preenchida");
+    assert.equal(r, "DESTAQUE 3 diz que a Meta foi fundada em 1994",
+      "deve retornar description real, não null nem o placeholder");
+  });
+
+  // (c) Bug 3 (precedência): description é o campo primário; narrative é alias
+  //     Quando ambos estão preenchidos, description deve ganhar
+  it("(c) precedência: description > narrative quando ambos preenchidos", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "campo description real do editor"',
+      '  narrative: "alias narrative alternativo"',
+      '  location: "D1"',
+      '  category: "ortografico"',
+      '  correct_value: "correto"',
+      "---",
+    ].join("\n");
+    const r = extractNarrativeFromFrontmatter(md);
+    assert.equal(r, "campo description real do editor",
+      "description deve ter precedência sobre narrative (hábito real do editor)");
+  });
+
+  // (d) Bug 1 variante: aspas simples também devem ser stripped
+  it("(d) description com aspas simples → valor sem aspas simples", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: 'escrevi GPT-4 onde deveria ser GPT-5'",
+      "  location: 'DESTAQUE 1'",
+      "  category: 'version_inconsistency'",
+      "  correct_value: 'GPT-5'",
+      "---",
+    ].join("\n");
+    const r = extractNarrativeFromFrontmatter(md);
+    assert.ok(r !== null, "deve extrair valor com aspas simples");
+    assert.equal(r, "escrevi GPT-4 onde deveria ser GPT-5",
+      "aspas simples do YAML não devem vazar no valor extraído");
+    assert.ok(!r!.startsWith("'"), "valor não deve começar com aspas simples");
+    assert.ok(!r!.endsWith("'"), "valor não deve terminar com aspas simples");
+  });
+
+  // (e) Bug 4: description vazia → frontmatter retorna null → fallback pro corpo funciona
+  it("(e) description vazia + prosa 'Nessa edição,' → extractIntentionalErrorFromMd usa corpo", () => {
+    // Sem description/narrative preenchidos no frontmatter → extractNarrativeFromFrontmatter=null
+    // → extractIntentionalErrorFromMd deve cair no fallback do corpo.
+    const md = [
+      "---",
+      "intentional_error:",
+      "  location: 'DESTAQUE 2'",
+      "  category: 'factual'",
+      "  correct_value: '2014'",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Nessa edição, escrevi que a OpenAI foi fundada em 1904, o correto é 2015.",
+      "",
+    ].join("\n");
+    // extractNarrativeFromFrontmatter deve retornar null (sem description/narrative)
+    const fm = extractNarrativeFromFrontmatter(md);
+    assert.equal(fm, null, "frontmatter sem description/narrative deve retornar null");
+    // extractIntentionalErrorFromMd deve pegar o corpo como fallback
+    const full = extractIntentionalErrorFromMd(md);
+    assert.ok(full !== null, "fallback pro corpo deve funcionar");
+    assert.ok(
+      full!.narrative.includes("fundada em 1904"),
+      "narrative deve vir do corpo quando frontmatter não tem description",
+    );
+  });
+
+  // Teste integrado: (a)+(b) juntos com shape real 260618 — description com aspas duplas
+  // + corpo genérico → reveal não deve ter " solta, narrativeIsGenericPlaceholder=false
+  it("integrado: description=aspas duplas + corpo genérico → reveal sem aspas soltas, não placeholder", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 1 usa o número 42 onde o correto é 24"',
+      '  location: "DESTAQUE 1, parágrafo 2"',
+      '  category: "numeric"',
+      '  correct_value: "24"',
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, houve um reveal anterior.",
+      "",
+      "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
+      "",
+    ].join("\n");
+    const r = extractIntentionalErrorFromMd(md);
+    assert.ok(r !== null, "deve retornar resultado");
+    assert.equal(r!.narrative, 'DESTAQUE 1 usa o número 42 onde o correto é 24',
+      "narrative não deve ter aspas vazando");
+    // Sem " solta no início
+    assert.ok(!r!.narrative.startsWith('"'), "narrative não deve iniciar com aspas");
+    // Não é placeholder genérico
+    assert.equal(narrativeIsGenericPlaceholder(r!.narrative), false,
+      "description real não deve ser sinalizada como placeholder genérico");
+  });
+});
+
 // ── Regressão #2304: CRLF round-trip ─────────────────────────────────────────────────────────
 //
 // Máquina do editor é Windows (OneDrive/VS Code usam CRLF). O caminho

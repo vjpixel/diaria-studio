@@ -35,6 +35,7 @@ import {
   loadIntentionalErrors,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
+import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // #2398: parser canônico (CRLF-safe, #2304)
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -102,41 +103,41 @@ export function findPreviousIntentionalError(
  * (não depende de YAML parser externo).
  */
 export function extractNarrativeFromFrontmatter(md: string): string | null {
-  const lines = md.split("\n").slice(0, 60);
-  let start = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      start = i;
-      break;
-    }
-  }
-  if (start === -1) return null;
-  let end = -1;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return null;
-  const fm = lines.slice(start + 1, end).join("\n");
+  // #2398 fix: reusa o extractFrontmatter canônico (CRLF-safe, #2304) em vez do
+  // parser hand-rolled que tinha 3 bugs: (1) quote-stripping quebrado com aspas
+  // simples, (2) return null no primeiro {PREENCHER} saía da função inteira antes
+  // de checar campos alternativos, (3) ordem `narrative` antes de `description`
+  // invertia a prioridade declarada no docstring.
+  const fm = extractFrontmatter(md);
+  if (!fm) return null;
+
   const ieBlock = fm.match(
     /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
   );
   if (!ieBlock) return null;
-  // Aceitar tanto `narrative:` (futuro) quanto `description:` (hábito real do editor)
-  for (const field of ["narrative", "description"]) {
+
+  // Helper: extrai e limpa o valor de um campo do bloco intentional_error.
+  // Strip aspas duplas E simples (o parser canônico de intentional-error.ts só
+  // lida com duplas; aqui precisamos de ambas pra back-compat com edições legadas).
+  const extractField = (field: string): string | null => {
     for (const line of ieBlock[1].split("\n")) {
-      const m = line.match(new RegExp(`^[ \\t]+${field}\\s*:\\s*"?(.*?)"?\\s*$`));
-      if (m && m[1].trim().length > 0) {
-        const val = m[1].trim();
-        // Pular placeholder não preenchido.
-        if (/^\{PREENCHER/i.test(val)) return null;
-        return val;
-      }
+      // Aceita valor com ou sem aspas (duplas ou simples).
+      const m = line.match(
+        new RegExp(`^[ \\t]+${field}\\s*:\\s*(['"]?)(.*?)\\1\\s*$`),
+      );
+      if (!m) continue;
+      const val = m[2].trim();
+      if (val.length === 0) continue;
+      // Pular placeholder não preenchido — skip pra tentar campo seguinte.
+      if (/^\{PREENCHER/i.test(val)) return null;
+      return val;
     }
-  }
-  return null;
+    return null;
+  };
+
+  // Prioridade: `description` (campo real do editor, hábito 260617/260618) →
+  // `narrative` (alias futuro por compatibilidade). Ordem corrigida em #2398.
+  return extractField("description") ?? extractField("narrative") ?? null;
 }
 
 /**
