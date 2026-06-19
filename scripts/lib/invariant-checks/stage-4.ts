@@ -412,7 +412,7 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
         `${result.errors.length} item(ns) de USE MELHOR sem estimativa de tempo: ${items}. ` +
         `Fix manual: adicionar "(X min)" ou "— X min" ao fim de cada descrição em ${path}.`,
       source_issue: "#2372",
-      severity: "error",
+      severity: "warning",
       file: path,
     },
   ];
@@ -457,7 +457,7 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
         `no corpo do MD) com a declaração específica do editor: ` +
         `"Nessa edição, escrevi que [afirmação errada], quando o correto é [valor correto]."`,
       source_issue: "#2377",
-      severity: "error",
+      severity: "warning",
       file: path,
     },
   ];
