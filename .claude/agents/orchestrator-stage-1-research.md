@@ -488,6 +488,16 @@ Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis che
 
 Salvar `data/editions/{AAMMDD}/_internal/01-categorized.json`.
 
+### 1u-bis. Dedup intra-edição (#2367)
+
+Após salvar `01-categorized.json`, remover dos buckets secundários itens que cobrem o mesmo evento que um destaque:
+```bash
+npx tsx scripts/dedup-intra-edition.ts \
+  --in data/editions/{AAMMDD}/_internal/01-categorized.json \
+  --out data/editions/{AAMMDD}/_internal/01-categorized.json
+```
+Compara `radar`/`lancamento`/`use_melhor`/`video` contra `highlights[]` por Jaccard ≥0.45 ou ≥2 entidades compartilhadas. Remoções logadas em stderr. `01-categorized.json` reescrito in-place.
+
 ### 1v. Renderizar 01-categorized.md
 
 **Nunca gerar o MD livre-forma** — o formato é responsabilidade do script, não do LLM:

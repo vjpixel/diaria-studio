@@ -1,5 +1,5 @@
 /**
- * test/pipeline-sentinel-stage-status.test.ts (#1563, #1694)
+ * test/pipeline-sentinel-stage-status.test.ts (#1563, #1694, #2374)
  *
  * Regressão: orchestrator esquece `update-stage-status --status done` no fim
  * do stage, mas escreve sentinel `.step-N-done.json` (invariante do gate).
@@ -8,6 +8,12 @@
  *
  * #1694: guards de edition-report.html movidos de Stage 4 → Stage 5 após split
  * Revisão (Stage 4) + Publicação (Stage 5).
+ *
+ * #2374: session interruption: stages que ficam com status "pending" (o
+ * orchestrator nunca chegou a chamar --status running antes da interrupção)
+ * mas têm sentinel escrito devem ser reparados na retomada (assert path) e
+ * pelo backfill. autoUpdateStageStatusOnSentinel deve tratar "pending" da
+ * mesma forma que "running".
  */
 
 import { describe, it } from "node:test";
@@ -29,6 +35,7 @@ import {
   saveDoc,
 } from "../scripts/update-stage-status.ts";
 import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
+
 
 describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
   it("stage em running com start → marca done com end + duration_ms", () => {
@@ -255,9 +262,160 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  // #2374: resume scenario — stage was "pending" at interruption (orchestrator
+  // never called --status running), sentinel exists from prior session.
+  it("#2374: stage pending com sentinel → marca done com end setado (backfill de start)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-status-pending-"));
+    try {
+      // Stage 1 has previous stage (0) with a known end time for start backfill.
+      let doc = makeInitialDoc("260619");
+      doc = applyUpdate(doc, {
+        stage: 0,
+        status: "done",
+        start: "2026-06-18T20:00:00Z",
+        end: "2026-06-18T20:05:00Z",
+      });
+      // Stage 1 remains "pending" — interrupted before orchestrator marked it running.
+      saveDoc(dir, doc);
+
+      const nowMs = new Date("2026-06-18T21:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 1, nowMs);
+      assert.equal(updated, true, "pending + sentinel deve virar done");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage1 = reloaded.rows.find((r) => r.stage === 1);
+      assert.ok(stage1);
+      assert.equal(stage1!.status, "done");
+      assert.ok(stage1!.end, "end deve estar setado");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#2374: stage pending sem start-backfill possível → ainda marca done (sem crash)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-status-pending-nostart-"));
+    try {
+      // Stage 0 is "pending" — no previous stage exists to backfill start from.
+      const doc = makeInitialDoc("260619");
+      saveDoc(dir, doc);
+
+      const nowMs = new Date("2026-06-18T21:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 0, nowMs);
+      assert.equal(updated, true, "pending stage 0 sem backfill possível ainda vira done");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage0 = reloaded.rows.find((r) => r.stage === 0);
+      assert.equal(stage0!.status, "done");
+      assert.ok(stage0!.end, "end deve estar setado via auto-carimbo");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#2374: idempotência — stage já done + re-chamar com pending→done é no-op", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-status-pend-idem-"));
+    try {
+      let doc = makeInitialDoc("260619");
+      doc = applyUpdate(doc, {
+        stage: 3,
+        status: "done",
+        start: "2026-06-18T18:00:00Z",
+        end: "2026-06-18T18:30:00Z",
+        duration_ms: 30 * 60 * 1000,
+      });
+      saveDoc(dir, doc);
+
+      const nowMs = new Date("2026-06-18T22:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 3, nowMs);
+      assert.equal(updated, false, "no-op se já done");
+
+      // end original não foi alterado
+      const reloaded = loadDoc(dir, "260619");
+      const stage3 = reloaded.rows.find((r) => r.stage === 3);
+      assert.equal(stage3!.end, "2026-06-18T18:30:00Z", "end original preservado");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });
 
-describe("backfill-stage-status helper logic (#1563, #1694)", () => {
+describe("#2374: assert subcommand — repara status no caminho de resume", () => {
+  // On resume: orchestrator calls `assert --step N` to check if stage is done.
+  // The sentinel exists (exit 0) but stage-status.json may still be "running"
+  // or "pending". The assert path should trigger autoUpdateStageStatusOnSentinel.
+
+  it("assert com stage running → status vira done após assert (unit-level)", () => {
+    // The assert CLI path calls autoUpdateStageStatusOnSentinel when sentinel ok.
+    // This test exercises that path via the exported function directly.
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-assert-running-"));
+    try {
+      let doc = makeInitialDoc("260619");
+      doc = applyUpdate(doc, {
+        stage: 2,
+        status: "running",
+        start: "2026-06-18T20:00:00Z",
+      });
+      saveDoc(dir, doc);
+
+      // Write sentinel to simulate a prior session completing the stage.
+      writeSentinel(dir, 2, []);
+
+      // Simulate what the assert path does: sentinel found → autoUpdate.
+      const nowMs = new Date("2026-06-18T21:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 2, nowMs);
+      assert.equal(updated, true, "running → done via assert resume path");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage2 = reloaded.rows.find((row) => row.stage === 2);
+      assert.equal(stage2!.status, "done", "running → done após assert com sentinel");
+      assert.ok(stage2!.end, "end deve estar setado");
+      // duration = 21:00 - 20:00 = 60 min
+      assert.equal(stage2!.duration_ms, 60 * 60 * 1000);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#2374: assert com stage pending → status vira done após assert", () => {
+    // Reproduced from 260619: stages 3+4 were "pending" with sentinels written.
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-assert-pending-"));
+    try {
+      let doc = makeInitialDoc("260619");
+      // Stage 2 done (prior stage for backfill).
+      doc = applyUpdate(doc, {
+        stage: 2,
+        status: "done",
+        start: "2026-06-18T18:00:00Z",
+        end: "2026-06-18T18:30:00Z",
+      });
+      // Stage 3 remains "pending" — orchestrator never marked it running.
+      saveDoc(dir, doc);
+
+      // Sentinel exists — the stage actually completed in a prior session.
+      writeSentinel(dir, 3, []);
+
+      // autoUpdateStageStatusOnSentinel is what assert calls internally.
+      // Call it with sentinel's completed_at as nowMs.
+      const nowMs = new Date("2026-06-18T19:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 3, nowMs);
+      assert.equal(updated, true, "pending → done via assert resume path");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage3 = reloaded.rows.find((r) => r.stage === 3);
+      assert.equal(stage3!.status, "done");
+      assert.ok(stage3!.end, "end deve estar setado");
+      // start backfilled from stage 2's end (18:30)
+      assert.equal(stage3!.start, "2026-06-18T18:30:00Z", "start backfillado do end do stage 2");
+      // duration = 19:00 - 18:30 = 30 min
+      assert.equal(stage3!.duration_ms, 30 * 60 * 1000);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("backfill-stage-status helper logic (#1563, #1694, #2374)", () => {
   // Backfill CLI uses spawnSync internally; for direct unit testing,
   // we exercise the same logic — load + detect + apply.
   it("Stage 5 running com sentinel + edition-report → backfill com completed_at", () => {
@@ -304,6 +462,56 @@ describe("backfill-stage-status helper logic (#1563, #1694)", () => {
       assert.equal(stage5!.end, "2026-05-27T22:00:00.000Z");
       // 22:00 - 20:51 = 69 minutes
       assert.equal(stage5!.duration_ms, 69 * 60 * 1000);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#2374: Stage pending com sentinel → backfill marca done (cenário 260619, stages 3+4)", () => {
+    // Reprodução do bug 260619: stages 3 e 4 ficaram "pending" no stage-status.json
+    // após retomada — orchestrator nunca chamou --status running antes da interrupção.
+    // backfill-stage-status deve detectar e corrigir esses stages.
+    const dir = mkdtempSync(join(tmpdir(), "backfill-pending-"));
+    try {
+      let doc = makeInitialDoc("260619");
+      // Stage 2 done (prior stage, provides start backfill for stage 3)
+      doc = applyUpdate(doc, {
+        stage: 2,
+        status: "done",
+        start: "2026-06-18T18:00:00Z",
+        end: "2026-06-18T18:30:00Z",
+      });
+      // Stage 3 is "pending" — interrupted before --status running was called.
+      // (status stays at the initial makeInitialDoc value: "pending")
+      saveDoc(dir, doc);
+
+      // Sentinel from prior session — stage completed but status not updated.
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", ".step-3-done.json"),
+        JSON.stringify({
+          step: 3,
+          completed_at: "2026-06-18T19:00:00Z",
+          outputs: [],
+        }),
+      );
+
+      // Backfill uses completed_at from sentinel as end timestamp.
+      const sentinel = JSON.parse(
+        readFileSync(join(dir, "_internal", ".step-3-done.json"), "utf8"),
+      );
+      const completedAtMs = new Date(sentinel.completed_at).getTime();
+      const ok = autoUpdateStageStatusOnSentinel(dir, "260619", 3, completedAtMs);
+      assert.equal(ok, true, "pending + sentinel → backfill deve retornar true");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage3 = reloaded.rows.find((r) => r.stage === 3);
+      assert.ok(stage3);
+      assert.equal(stage3!.status, "done");
+      assert.equal(stage3!.end, "2026-06-18T19:00:00.000Z");
+      // start backfilled from stage 2's end (18:30); duration = 30 min
+      assert.equal(stage3!.start, "2026-06-18T18:30:00Z");
+      assert.equal(stage3!.duration_ms, 30 * 60 * 1000);
     } finally {
       rmSync(dir, { recursive: true });
     }

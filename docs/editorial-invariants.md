@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 42 invariants.
+**Total**: 43 invariants.
 
 ## Static (estrutura do repo)
 
@@ -58,6 +58,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 |---|---|---|
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
+| `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `use-melhor-tempo` | cada item USE MELHOR tem estimativa de tempo na descrição (#2372) | #2372 |

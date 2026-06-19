@@ -66,13 +66,17 @@ function scanEdition(editionDir: string, editionId: string): Fix[] {
   const doc = loadDoc(editionDir, editionId);
   for (const stage of STAGES) {
     const row = doc.rows.find((r) => r.stage === stage);
-    if (!row || row.status !== "running") continue;
+    // #2374: also detect "pending" stages — a stage interrupted before the
+    // orchestrator called update-stage-status --status running leaves the row as
+    // "pending" even though the sentinel exists (reproduced in 260619: stages 3+4
+    // appeared as "pending" while 2+5 were "running").
+    if (!row || (row.status !== "running" && row.status !== "pending")) continue;
     const sentinel = readSentinel(editionDir, stage);
     if (!sentinel) continue;
     fixes.push({
       edition: editionId,
       stage,
-      reason: `sentinel .step-${stage}-done.json presente mas row 'running'`,
+      reason: `sentinel .step-${stage}-done.json presente mas row '${row.status}'`,
       endMs: new Date(sentinel.completed_at).getTime(),
     });
   }

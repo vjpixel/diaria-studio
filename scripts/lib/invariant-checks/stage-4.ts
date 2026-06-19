@@ -17,6 +17,10 @@ import {
 } from "../../match-prompts-to-destaques.ts";
 import { urlsMatch } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
+import {
+  extractIntentionalErrorFromMd,
+  narrativeIsGenericPlaceholder,
+} from "../../render-erro-intencional.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -414,6 +418,51 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
   ];
 }
 
+/**
+ * #2377 (root cause fix): detecta quando a narrativa "Nessa edição, …" no bloco
+ * ERRO INTENCIONAL é um placeholder genérico copiado do bloco de convite ao
+ * sorteio (ex: "há um erro proposital escondido em um dos destaques. Responda
+ * este e-mail com a correção para concorrer ao sorteio") em vez de uma
+ * declaração específica de primeira pessoa do editor.
+ *
+ * Quando isso acontece, `composeRevealText` da edição SEGUINTE vai formatar
+ * verbatim o texto genérico — resultado: reveal publica "Na última edição, há
+ * um erro proposital escondido em um dos destaques. Responda este e-mail..., o
+ * correto é Microsoft" (exatamente o output ruim do incidente).
+ *
+ * Pega no gate do Stage 4 — antes da publicação — quando o editor ainda pode
+ * corrigir o narrative sem impacto em edições já publicadas.
+ *
+ * Bloqueante: severity "error". Editor precisa substituir pela declaração real
+ * de primeira pessoa: "Nessa edição, escrevi que [afirmação], quando o correto
+ * é [valor]."
+ */
+function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const extracted = extractIntentionalErrorFromMd(md);
+  if (!extracted || !extracted.narrative) return []; // sem narrative = outro check cobre
+  if (!narrativeIsGenericPlaceholder(extracted.narrative)) return [];
+  return [
+    {
+      rule: "narrative-not-generic-placeholder",
+      message:
+        `ERRO INTENCIONAL: a narrativa "Nessa edição, ${extracted.narrative}." ` +
+        `é um placeholder genérico (contém frases do bloco de convite ao sorteio: ` +
+        `"há um erro proposital", "responda este e-mail", "concorrer ao sorteio"). ` +
+        `O reveal da PRÓXIMA edição vai publicar esse texto genérico em vez do erro real — ` +
+        `incidente 2377 exatamente. ` +
+        `Corrija o frontmatter intentional_error.narrative (ou a linha "Nessa edição, …" ` +
+        `no corpo do MD) com a declaração específica do editor: ` +
+        `"Nessa edição, escrevi que [afirmação errada], quando o correto é [valor correto]."`,
+      source_issue: "#2377",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -450,6 +499,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkUseMelhorTempoConsistent,
   },
+  {
+    id: "narrative-not-generic-placeholder",
+    description: "narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377)",
+    source_issue: "#2377",
+    stage: 4,
+    run: checkNarrativeNotGenericPlaceholder,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -467,4 +523,5 @@ export {
   checkSocialHashFresh,
   checkImageContentFresh,
   checkIntroCountConsistent,
+  checkNarrativeNotGenericPlaceholder,
 };
