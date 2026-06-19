@@ -139,10 +139,11 @@ describe("orchestrator-prompt (#634)", () => {
     // #1694: split Stage 4 (Publicação) → Stage 4 (Revisão) + Stage 5 (Publicação).
     // stage-5.md herda o conteúdo pesado do antigo stage-4.md. Budget mantido
     // em 745 por arquivo — stage-4.md (Revisão) é muito menor (~130 linhas).
+    // 745→755 quando #2367 adicionou step 1u-bis (dedup-intra-edition).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 745,
-        `${file} tem ${lines[file]} linhas (target ≤745)`,
+        lines[file] <= 755,
+        `${file} tem ${lines[file]} linhas (target ≤755)`,
       );
     }
   });

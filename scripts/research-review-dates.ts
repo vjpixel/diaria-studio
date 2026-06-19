@@ -108,6 +108,12 @@ export interface ReviewStats {
  * mutando `target.date` quando `changed && !fetch_failed`, e copiando
  * `date_unverified` direto do output do script (#226 — não recalcula).
  *
+ * #2371: se `verified_date` é null (fetch falhou OU fetch ok mas data não
+ * encontrada) E o artigo não tem `published_at` nem `published_date` como
+ * fallback, força `date_unverified: true`. Garante que NUNCA haja artigo com
+ * `published_at: null` sem o flag — independente da semântica do campo
+ * `date_unverified` em `verify-dates.ts` (que era `alias de fetch_failed`).
+ *
  * Exportado pra teste — testa a lógica de apply sem precisar fazer fetch real.
  */
 export function applyVerifyResults(
@@ -125,7 +131,14 @@ export function applyVerifyResults(
     if (!Array.isArray(arr)) continue;
     for (const article of arr) {
       const result = byUrl.get(article.url);
-      if (!result) continue;
+      if (!result) {
+        // #2371: artigo sem resultado de verificação (não foi pro fetch nem pre-skip).
+        // Se não tem data de nenhuma fonte, garantir date_unverified.
+        if (!article.date && !article.published_at && !article.published_date) {
+          article.date_unverified = true;
+        }
+        continue;
+      }
       if (result.changed && !result.fetch_failed && result.verified_date) {
         article.date = result.verified_date;
         dateCorrected++;
@@ -133,8 +146,14 @@ export function applyVerifyResults(
       if (result.fetch_failed) {
         fetchFailed++;
       }
-      // #226: copia direto, não recalcula. Só true quando fetch_failed.
-      article.date_unverified = result.date_unverified;
+      // #226: copia direto, não recalcula.
+      // #2371: estende pra cobrir o caso fetch-ok-but-no-date: quando
+      // verified_date é null (fetch não falhou mas data não foi encontrada),
+      // o artigo também é date_unverified — independente de fetch_failed.
+      // Sem este guard, `date_unverified = false` mesmo sem data, e o artigo
+      // passava sem flag quando published_at também era null.
+      const hasNoDateAfterVerify = !result.verified_date && !article.published_at && !article.published_date;
+      article.date_unverified = result.date_unverified || hasNoDateAfterVerify;
     }
   }
   return { dateCorrected, fetchFailed };
