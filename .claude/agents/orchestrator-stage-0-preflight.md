@@ -98,6 +98,21 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
+- **Pre-flight unificado de travas externas (#2358) — rodar ANTES dos checks individuais.** Agrega todos os checks de autenticação externos num único resumo de prontidão antes de gastar tokens em pesquisa. Travas que vencem silenciosamente (OAuth expirado, token CF inválido, API key ausente) são detectadas aqui, não no meio do stage que as usa:
+  ```bash
+  npx tsx scripts/lib/preflight-external-locks.ts
+  ```
+  Exit 0 = todas as travas ok ou unchecked. Exit 1 = trava(s) bloqueante(s) detectada(s) → stderr imprime o resumo `✅/ℹ️/❌` por dependência com `blocks_stages` e ação de reauth. Se exit 1:
+  1. Imprimir o resumo de prontidão.
+  2. Para cada trava bloqueante: renderizar halt banner:
+     ```bash
+     npx tsx scripts/render-halt-banner.ts \
+       --stage "0 — Preflight" \
+       --reason "{dependency} — {state}" \
+       --action "{reauth_action}"
+     ```
+  3. Aguardar o editor resolver a trava (reauth) ou confirmar que quer continuar (aceitando que os stages afetados falharão).
+  Conectores MCP (Gmail, Beehiiv) são reportados como `unchecked` — verificados em runtime pelo orchestrator (#738), não neste preflight TS.
 - **Pre-flight token OAuth Google (#1973) — CONSOLIDADO, rodar PRIMEIRO.** O mesmo refresh token cobre Drive + Gmail (inbox-drain) + upload de imagens sociais; quando expira, os 3 caem juntos e submissões do editor se perdem silenciosamente. Checar a validade ANTES de qualquer passo Drive/Gmail:
   ```bash
   npx tsx scripts/check-google-token.ts
