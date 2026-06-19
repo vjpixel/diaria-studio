@@ -54,6 +54,14 @@ export const PublishedNewsletterSchema = z.object({
   body_paste: BodyPasteSchema.optional(),
   title_persisted: z.boolean().optional(),
   fix_attempts: z.number().int().nonnegative().optional(),
+  /**
+   * #2376 — Tracking de test emails enviados por post (limite Beehiiv por post,
+   * diferente do rate limit por hora de #1419). Quando >= 3 exige alerta proativo;
+   * ao atingir o limite, draft_verified=true registra que a verificação foi via
+   * draft link (não via test email recebido no Gmail).
+   */
+  test_email_count: z.number().int().nonnegative().optional(),
+  draft_verified: z.boolean().optional(),
 }).passthrough();
 
 export type PublishedNewsletter = z.infer<typeof PublishedNewsletterSchema>;
