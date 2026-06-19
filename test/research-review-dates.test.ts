@@ -161,3 +161,108 @@ describe("applyVerifyResults (#1112)", () => {
     assert.equal(stats.dateCorrected, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2371 — published_at=null deve sempre resultar em date_unverified=true
+// Regressão: TPU Developer Hub entrou com published_at: null sem flag.
+// ---------------------------------------------------------------------------
+
+describe("applyVerifyResults — #2371 date_unverified para null-date articles", () => {
+  it("artigo com date=null, published_at=null, fetch ok mas sem data → date_unverified=true", () => {
+    // Caso real: TPU Developer Hub. Fetch não falhou, mas data não foi encontrada.
+    // Antes do fix: date_unverified=false (era alias de fetch_failed apenas).
+    // Após fix: date_unverified=true quando verified_date=null e sem fallback.
+    const cat = {
+      radar: [{
+        url: "https://developers.googleblog.com/tpu-dev-hub",
+        date: null,
+        published_at: null,
+        title: "TPU Developer Hub",
+      }] as Array<{ url: string; date: null | string; published_at: null | string; title: string; date_unverified?: boolean }>,
+    };
+    // fetch_failed=false, verified_date=null → o bug: date_unverified era false
+    const results: DateVerifyResult[] = [{
+      url: "https://developers.googleblog.com/tpu-dev-hub",
+      original_date: "",
+      verified_date: null,
+      changed: false,
+      fetch_failed: false,
+      date_unverified: false, // ← como verify-dates.ts produzia antes do fix
+    }];
+    applyVerifyResults(cat, results);
+    assert.equal(
+      cat.radar[0].date_unverified,
+      true,
+      "artigo com published_at=null deve ter date_unverified=true após verify sem data",
+    );
+  });
+
+  it("artigo com date=null, published_at=null, sem resultado de verify → date_unverified=true", () => {
+    // Caso defensivo: artigo não entrou no batch de verify (edge case de dedup/skip).
+    const cat = {
+      lancamento: [{
+        url: "https://example.com/no-verify",
+        date: null,
+        published_at: null,
+        title: "No verify result",
+      }] as Array<{ url: string; date: null | string; published_at: null | string; title: string; date_unverified?: boolean }>,
+    };
+    applyVerifyResults(cat, []); // sem resultado
+    assert.equal(
+      cat.lancamento[0].date_unverified,
+      true,
+      "artigo sem resultado de verify e sem data deve ter date_unverified=true",
+    );
+  });
+
+  it("artigo com date=null mas published_at preenchido → NÃO recebe date_unverified forçado", () => {
+    // published_at é um fallback válido — não forçar date_unverified só pelo date=null
+    const cat = {
+      radar: [{
+        url: "https://example.com/has-published-at",
+        date: null,
+        published_at: "2026-06-15",
+        title: "Has published_at",
+      }] as Array<{ url: string; date: null | string; published_at: null | string; title: string; date_unverified?: boolean }>,
+    };
+    const results: DateVerifyResult[] = [{
+      url: "https://example.com/has-published-at",
+      original_date: "",
+      verified_date: null,
+      changed: false,
+      fetch_failed: false,
+      date_unverified: false,
+    }];
+    applyVerifyResults(cat, results);
+    // Com published_at preenchido, date_unverified NÃO deve ser forçado a true.
+    // filterDateWindow ainda vai marcar como unverified (fallback não-verificado),
+    // mas não é responsabilidade de applyVerifyResults.
+    assert.equal(
+      cat.radar[0].date_unverified,
+      false,
+      "published_at preenchido → date_unverified não deve ser forçado pelo applyVerifyResults",
+    );
+  });
+
+  it("artigo com verified_date preenchido → date_unverified respeita o resultado de verify", () => {
+    // Quando verify encontrou a data, não forçar date_unverified.
+    const cat = {
+      radar: [{
+        url: "https://example.com/verified",
+        date: null,
+        published_at: null,
+        title: "Verified article",
+      }] as Array<{ url: string; date: null | string; published_at: null | string; title: string; date_unverified?: boolean }>,
+    };
+    const results: DateVerifyResult[] = [{
+      url: "https://example.com/verified",
+      original_date: "",
+      verified_date: "2026-06-15",
+      changed: true,
+      fetch_failed: false,
+      date_unverified: false,
+    }];
+    applyVerifyResults(cat, results);
+    assert.equal(cat.radar[0].date_unverified, false, "data verificada → date_unverified=false");
+  });
+});
