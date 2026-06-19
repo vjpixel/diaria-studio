@@ -841,3 +841,53 @@ describe("#2277 regression — findings code-review (fixer)", () => {
     assert.ok(isVerifiedTool(url, title));
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2370 — claude.com como domínio de produto da Anthropic
+// ---------------------------------------------------------------------------
+
+describe("#2370 — claude.com como domínio oficial de lançamento Anthropic", () => {
+  it("isOfficialLancamentoUrl: claude.com/blog/ → oficial (caso real 260618)", () => {
+    // Caso real 260618: claude.com/blog/claude-design-stays-on-brand-for-daily-work
+    // era rejeitado por validate-lancamentos e categorizado como RADAR.
+    assert.ok(
+      isOfficialLancamentoUrl("https://claude.com/blog/claude-design-stays-on-brand-for-daily-work"),
+      "claude.com/blog/ deve ser oficial",
+    );
+  });
+
+  it("isOfficialLancamentoUrl: claude.com/news/ → oficial", () => {
+    assert.ok(isOfficialLancamentoUrl("https://claude.com/news/some-feature-release/"));
+  });
+
+  it("isOfficialLancamentoUrl: claude.com/login NÃO é oficial", () => {
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/login"), "claude.com/login NÃO deve ser lancamento");
+  });
+
+  it("isOfficialLancamentoUrl: claude.com/pricing NÃO é oficial", () => {
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/pricing"), "claude.com/pricing NÃO deve ser lancamento");
+  });
+
+  it("isOfficialLancamentoUrl: claude.com/signup NÃO é oficial", () => {
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/signup"), "claude.com/signup NÃO deve ser lancamento");
+  });
+
+  it("isOfficialLancamentoUrl: anthropic.com/news/ ainda reconhecido (não regrediu)", () => {
+    assert.ok(isOfficialLancamentoUrl("https://www.anthropic.com/news/claude-opus-4-5"));
+  });
+
+  it("validateLancamentos: claude.com/blog com sinal de produto → ok (caso real 260618)", () => {
+    // "claude-design" tem PRODUCT_SIGNAL via 'design' não, mas 'claude' sim +
+    // hasProductSignal via URL com 'claude' no título + isOfficialLancamentoUrl = true.
+    const md = [
+      "LANÇAMENTOS",
+      "**[Claude Design Overhaul](https://claude.com/blog/claude-design-stays-on-brand-for-daily-work)**",
+      "Nova identidade visual do Claude.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.invalid_urls.length, 0, "claude.com/blog/ deve ser URL oficial");
+    assert.equal(r.status, "ok");
+  });
+});

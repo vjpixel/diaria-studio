@@ -100,6 +100,42 @@ describe("official-domains registry (#566)", () => {
       );
       assert.ok(matches, "blog.google/products/ deve continuar sendo lancamento");
     });
+
+    // #2370: claude.com como domínio de produto da Anthropic
+    it("#2370 — claude.com/blog/ reconhecido como lançamento oficial Anthropic", () => {
+      const matches = patterns.some(
+        (p) => p.test("claude.com/blog/claude-design-stays-on-brand-for-daily-work"),
+      );
+      assert.ok(matches, "claude.com/blog/ deve ser lancamento");
+    });
+
+    it("#2370 — claude.com/news/ reconhecido como lançamento oficial Anthropic", () => {
+      const matches = patterns.some(
+        (p) => p.test("claude.com/news/some-announcement/"),
+      );
+      assert.ok(matches, "claude.com/news/ deve ser lancamento");
+    });
+
+    it("#2370 — claude.com/login NÃO é lançamento", () => {
+      const matches = patterns.some(
+        (p) => p.test("claude.com/login"),
+      );
+      assert.ok(!matches, "claude.com/login NÃO deve ser lancamento");
+    });
+
+    it("#2370 — claude.com/pricing NÃO é lançamento", () => {
+      const matches = patterns.some(
+        (p) => p.test("claude.com/pricing"),
+      );
+      assert.ok(!matches, "claude.com/pricing NÃO deve ser lancamento");
+    });
+
+    it("#2370 — anthropic.com/news/ continua reconhecido (não regrediu)", () => {
+      const matches = patterns.some(
+        (p) => p.test("anthropic.com/news/claude-opus-4-5"),
+      );
+      assert.ok(matches, "anthropic.com/news/ não deve regredir");
+    });
   });
 
   describe("companyToDomain()", () => {
