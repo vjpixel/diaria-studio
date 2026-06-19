@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * dedup-intra-edition.ts (#2367)
+ * dedup-intra-edition.ts (#2367, #2397)
  *
  * Dedup INTRA-EDIÇÃO: remove itens de buckets secundários (radar, lancamento,
  * use_melhor, video) que cobrem o mesmo evento que um destaque aprovado.
@@ -11,19 +11,24 @@
  * (exame) — mesmo evento, URLs diferentes → passou todas as guards existentes.
  *
  * Algoritmo:
- *   1. Para cada destaque em `highlights[]`, extrair título canônico.
+ *   1. Para cada destaque nos top-`destaqueCount` de `highlights[]` (por rank),
+ *      extrair título canônico. (#2397: usar só os destaques que de fato
+ *      renderizarão — top N por rank, não todos os 6 candidatos do scorer.)
  *   2. Para cada item em radar/lancamento/use_melhor/video:
  *      a. Jaccard similarity sobre tokens normalizados (threshold 0.45 — mais
  *         permissivo que dedup.ts pois é intra-edição onde divergência de
  *         vocabulário entre fontes é maior).
  *      b. Entity overlap: ≥2 entidades nomeadas compartilhadas (empresa +
  *         produto / empresa + número / produto + número).
+ *         (#2397: usa `extractNamedEntitiesIntra` — variante local que strip
+ *         sufixo de veículo "- Publisher" e NÃO pula index-0.)
  *   3. Se match encontrado: remover do bucket secundário (destaque preservado).
  *
  * Uso:
  *   npx tsx scripts/dedup-intra-edition.ts \
  *     --in data/editions/{AAMMDD}/_internal/01-categorized.json \
- *     --out data/editions/{AAMMDD}/_internal/01-categorized.json
+ *     --out data/editions/{AAMMDD}/_internal/01-categorized.json \
+ *     [--destaque-count 3]
  *
  * Input:  JSON com `{ highlights, runners_up?, lancamento, radar, use_melhor, video, ... }`
  *         (output do passo 1u do orchestrator).
@@ -35,8 +40,110 @@ import { resolve } from "node:path";
 import {
   tokenizeForJaccard,
   jaccardSimilarity,
-  extractNamedEntities,
 } from "./dedup.ts";
+
+// ---------------------------------------------------------------------------
+// #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
+//
+// Dois defeitos do helper compartilhado causavam falsos positivos no contexto
+// intra-edição:
+//
+// 1. Sufixo de veículo tratado como entidade: títulos como
+//    "Nubank prepara... - Finsiders Brasil" produzem {finsiders, brasil},
+//    que match qualquer outro título "X - Finsiders Brasil" → remoção incorreta.
+//
+// 2. Skip de index-0 derrubava a 1ª palavra: "SpaceX compra Cursor..." tem
+//    SpaceX em index-0 → skip → entities={cursor} → shared=1 < 2 → FP neg.
+//
+// Fix local: strip " - PublisherSuffix" antes de tokenizar; não pular index-0.
+// Preservar o shared `extractNamedEntities` do dedup.ts intacto (cross-edition
+// dedup não tem o mesmo problema de sufixo e testa títulos de newsletters, não
+// de artigos individuais).
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex para strip de sufixo de veículo em títulos de artigos.
+ * Padrão: " - Finsiders Brasil", " - Exame", " - Brazil Journal", etc.
+ * Captura o ÚLTIMO " - " seguido de 1–3 palavras (a primeira capitalizada),
+ * ancorado no fim da string.
+ *
+ * Restrições deliberadas pra evitar over-strip (review #2406):
+ *  - O segmento do sufixo NÃO pode conter outro " - " (`(?:(?! - ).)`),
+ *    então "Governo - OpenAI e Meta - Exame" só perde "- Exame", não o meio.
+ *  - Máximo 3 palavras no nome do veículo (`(?:\s+[\p{L}\p{N}&]+){0,2}`),
+ *    cobrindo "Finsiders Brasil", "Brazil Journal", "MIT Technology Review"
+ *    sem engolir orações longas tipo "- Por que isso importa demais agora".
+ *  - 1ª palavra do sufixo deve começar com maiúscula (`[\p{Lu}]`) — nomes de
+ *    veículo são próprios.
+ *
+ * Exemplos:
+ *   "Nubank prepara IA - Finsiders Brasil" → "Nubank prepara IA"
+ *   "SpaceX compra Cursor - Exame" → "SpaceX compra Cursor"
+ *   "Governo - OpenAI e Meta - Exame" → "Governo - OpenAI e Meta"
+ *   "Título sem sufixo" → inalterado
+ */
+export const VEHICLE_SUFFIX_RE = /\s+-\s+[\p{Lu}][\p{L}\p{N}&]*(?:\s+[\p{L}\p{N}&]+){0,2}\s*$/u;
+
+/** Strip sufixo de veículo de um título de artigo (intra-edition only). */
+export function stripVehicleSuffix(title: string): string {
+  return title.replace(VEHICLE_SUFFIX_RE, "");
+}
+
+/** Termos comuns no domínio IA que NÃO contam como entidade discriminante.
+ *  #2406: inclui big-tech de alta frequência (microsoft, google, meta, etc.)
+ *  além dos nomes de IA — em edições com 2+ itens da mesma empresa, "Microsoft"
+ *  sozinho não deve disparar entity-match entre histórias diferentes (o evento
+ *  específico precisa de uma 2ª entidade discriminante). Mantém paridade com o
+ *  espírito do GENERIC_THEME_WORDS de dedup.ts. */
+const ENTITY_STOPWORDS_INTRA = new Set([
+  "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini", "openai",
+  "inteligencia", "artificial", "machine", "learning",
+  "diaria", "newsletter", "edicao",
+  // big-tech de alta frequência — bloquear por nome só não discrimina evento
+  "microsoft", "google", "apple", "amazon", "meta", "nvidia",
+  "anthropic", "deepmind", "deepseek", "mistral", "cohere",
+  "copilot", "alexa", "siri", "grok", "perplexity",
+  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
+  "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]);
+
+/**
+ * Extrai entidades nomeadas para dedup INTRA-edição.
+ *
+ * Diferenças vs `extractNamedEntities` do dedup.ts (#2397):
+ *  - Strip de sufixo de veículo "- Publisher" antes de tokenizar.
+ *    Evita que "Finsiders"/"Brasil" do sufixo virem entidades compartilhadas
+ *    por todos os artigos do mesmo veículo.
+ *  - NÃO pula index-0. Artigos com empresa no início do título
+ *    ("SpaceX compra Cursor") têm a entidade capturada.
+ *    Em dedup.ts o skip de index-0 evita capitalizações de início de sentença
+ *    em títulos de newsletters; aqui os inputs são títulos de artigos onde
+ *    a primeira palavra frequentemente é a entidade principal.
+ *
+ * Não altera `extractNamedEntities` do dedup.ts (cross-edition dedup).
+ */
+export function extractNamedEntitiesIntra(title: string): Set<string> {
+  const cleaned = stripVehicleSuffix(title);
+  const entities = new Set<string>();
+  const words = cleaned.split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].replace(/[^\p{L}\p{N}]/gu, "");
+    if (word.length < 4) continue;
+    // #2397: NÃO pular index-0 — em títulos de artigos a empresa principal
+    // frequentemente é a primeira palavra (ex: "SpaceX compra Cursor").
+    const firstChar = word.charAt(0);
+    if (firstChar !== firstChar.toUpperCase()) continue;
+    if (firstChar === firstChar.toLowerCase()) continue;
+    const normalized = word
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+    if (ENTITY_STOPWORDS_INTRA.has(normalized)) continue;
+    entities.add(normalized);
+  }
+  return entities;
+}
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -117,6 +224,9 @@ export function highlightUrl(h: HighlightEntry): string | null {
 /**
  * Checa se um artigo é duplicata intra-edição de qualquer destaque.
  *
+ * #2397: usa `extractNamedEntitiesIntra` (local) em vez de `extractNamedEntities`
+ * do dedup.ts — strip de sufixo de veículo + não pula index-0.
+ *
  * @returns match info se duplicata, null caso contrário.
  */
 export function isIntraEditionDuplicate(
@@ -137,8 +247,15 @@ export function isIntraEditionDuplicate(
   const artTitle = article.title;
   if (!artTitle) return null;
 
-  const artTokens = tokenizeForJaccard(artTitle);
-  const artEntities = extractNamedEntities(artTitle);
+  // #2397/#2406: stripVehicleSuffix ANTES de tokenizar para Jaccard também —
+  // não só para o entity-check. Sem isso, os tokens do sufixo de veículo
+  // ("finsiders", "brasil", "exame", "journal") participam do Jaccard, e dois
+  // títulos curtos do mesmo veículo podem cruzar o threshold só pelo sufixo
+  // compartilhado (ex: "OpenAI - Brazil Journal" vs "Anthropic - Brazil
+  // Journal" → 0.5 ≥ 0.45). Stripping em ambos os lados mantém o sinal Jaccard
+  // alinhado com o entity-check.
+  const artTokens = tokenizeForJaccard(stripVehicleSuffix(artTitle));
+  const artEntities = extractNamedEntitiesIntra(artTitle);
 
   for (const h of highlights) {
     const hTitle = highlightTitle(h);
@@ -148,8 +265,8 @@ export function isIntraEditionDuplicate(
     const hUrl = highlightUrl(h);
     if (hUrl && article.url === hUrl) continue;
 
-    // (a) Jaccard sobre tokens normalizados
-    const hTokens = tokenizeForJaccard(hTitle);
+    // (a) Jaccard sobre tokens normalizados (sufixo de veículo já stripado)
+    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
     const jaccard = jaccardSimilarity(artTokens, hTokens);
     if (jaccard >= jThreshold) {
       return {
@@ -160,7 +277,8 @@ export function isIntraEditionDuplicate(
     }
 
     // (b) Entity overlap: contar entidades compartilhadas
-    const hEntities = extractNamedEntities(hTitle);
+    // #2397: usa variante local que strip sufixo de veículo e não pula index-0
+    const hEntities = extractNamedEntitiesIntra(hTitle);
     let sharedCount = 0;
     const sharedNames: string[] = [];
     for (const e of artEntities) {
@@ -188,8 +306,21 @@ export function isIntraEditionDuplicate(
 const SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"] as const;
 
 /**
+ * Default number of top highlights to compare against in intra-edition dedup.
+ * #2397: scorer returns 6 candidates; editor selects top 3 at Stage 1 gate.
+ * Comparing against all 6 removes items that match rank-4..6 candidates
+ * (which the editor will NOT promote), causing false removals pre-gate.
+ * Default: 3 (standard edition). Can be overridden via --destaque-count N.
+ */
+export const DEFAULT_INTRA_DESTAQUE_COUNT = 3;
+
+/**
  * Aplica dedup intra-edição ao JSON de categorized.
  * Remove dos buckets secundários itens que duplicam um destaque.
+ *
+ * #2397: compara contra top-`destaqueCount` highlights por rank (default 3),
+ * não contra todos os 6 candidatos do scorer. Evita remoção pré-gate de itens
+ * que seriam legítimos se o editor não promover o candidato rank 4–6.
  *
  * Pure function — não muta input.
  */
@@ -198,9 +329,22 @@ export function dedupIntraEdition(
   options: {
     jaccardThreshold?: number;
     entityMinShared?: number;
+    /** #2397: quantos highlights (top-N por rank) usar para comparação.
+     *  Default: DEFAULT_INTRA_DESTAQUE_COUNT (3). */
+    destaqueCount?: number;
   } = {},
 ): IntraEditionDedupResult {
-  const highlights = input.highlights ?? [];
+  const allHighlights = input.highlights ?? [];
+  // #2397: limitar aos top-destaqueCount por rank. Highlights do scorer têm
+  // campo `rank` (1-based). Ordenar por rank ascendente e pegar top-N.
+  const n = options.destaqueCount ?? DEFAULT_INTRA_DESTAQUE_COUNT;
+  const highlights = [...allHighlights]
+    .sort((a, b) => {
+      const ra = typeof a.rank === "number" ? a.rank : 999;
+      const rb = typeof b.rank === "number" ? b.rank : 999;
+      return ra - rb;
+    })
+    .slice(0, n);
   const removed: IntraEditionDedupResult["removed"] = [];
 
   const keptBuckets: Record<string, Article[]> = {};
@@ -238,17 +382,22 @@ export function dedupIntraEdition(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): { in: string; out: string } {
+function parseArgs(argv: string[]): { in: string; out: string; destaqueCount: number } {
   let inPath = "";
   let outPath = "";
+  let destaqueCount = DEFAULT_INTRA_DESTAQUE_COUNT;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--in") inPath = argv[++i];
     else if (argv[i] === "--out") outPath = argv[++i];
+    else if (argv[i] === "--destaque-count") destaqueCount = parseInt(argv[++i], 10);
   }
   if (!inPath || !outPath) {
-    throw new Error("Uso: dedup-intra-edition.ts --in <categorized.json> --out <out.json>");
+    throw new Error("Uso: dedup-intra-edition.ts --in <categorized.json> --out <out.json> [--destaque-count N]");
   }
-  return { in: inPath, out: outPath };
+  if (!Number.isFinite(destaqueCount) || destaqueCount < 1) {
+    throw new Error(`--destaque-count deve ser inteiro >= 1, recebido: ${destaqueCount}`);
+  }
+  return { in: inPath, out: outPath, destaqueCount };
 }
 
 function main(): void {
@@ -258,7 +407,7 @@ function main(): void {
   );
 
   const highlightCount = input.highlights?.length ?? 0;
-  const { kept, removed } = dedupIntraEdition(input);
+  const { kept, removed } = dedupIntraEdition(input, { destaqueCount: args.destaqueCount });
 
   const totalSecondary = SECONDARY_BUCKETS.reduce(
     (sum, b) => sum + (input[b]?.length ?? 0),
@@ -270,8 +419,8 @@ function main(): void {
   );
 
   process.stderr.write(
-    `[dedup-intra-edition] highlights=${highlightCount}, secondary_input=${totalSecondary}, ` +
-    `removed=${removed.length}, secondary_output=${totalKept}\n`,
+    `[dedup-intra-edition] highlights_total=${highlightCount}, destaque_count=${args.destaqueCount}, ` +
+    `secondary_input=${totalSecondary}, removed=${removed.length}, secondary_output=${totalKept}\n`,
   );
 
   if (removed.length > 0) {
