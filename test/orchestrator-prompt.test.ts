@@ -212,6 +212,46 @@ describe("orchestrator-prompt (#634)", () => {
     );
   });
 
+  it("#2365: stage-3 lint/image-gen/drive-sync/gate são condicionais a destaque_count (não hardcoded d1/d2/d3)", () => {
+    const stage3 = contents["orchestrator-stage-3.md"];
+
+    // P2 fix: lint loop NÃO deve instruir "Para cada destaque d1, d2, d3" sem condicional
+    assert.ok(
+      !stage3.includes("Para cada destaque d1, d2, d3"),
+      "stage-3 ainda contém loop hardcoded 'Para cada destaque d1, d2, d3' — deve ser condicional a destaque_count",
+    );
+
+    // Condicional presente nos 3 pontos afetados (lint, drive-sync, gate)
+    const conditionalMatches = (stage3.match(/destaque_count/g) ?? []).length;
+    assert.ok(
+      conditionalMatches >= 5,
+      `stage-3 deve referenciar destaque_count ≥5× (lint+gen+drive-pull+drive-push+gate+sentinel) — encontrado: ${conditionalMatches}`,
+    );
+
+    // P3 fix: drive-sync push NÃO deve ter linha única hardcoded com 04-d3 sem condicional
+    // (verificar que 04-d3-2x1.jpg e 04-d3-1x1.jpg aparecem sob comentário "destaque_count=3:")
+    const d3Push = stage3.indexOf("04-d3-2x1.jpg");
+    assert.ok(d3Push !== -1, "04-d3-2x1.jpg ausente no stage-3 — deve estar no bloco condicional destaque_count=3");
+    const contextBefore = stage3.slice(Math.max(0, d3Push - 200), d3Push);
+    assert.ok(
+      contextBefore.includes("destaque_count=3"),
+      "04-d3-2x1.jpg deve aparecer apenas sob comentário '# destaque_count=3:' — sem condicional encontrado no contexto",
+    );
+
+    // P3 fix: gate humano NÃO deve listar 6 imagens fixas — deve conter a condicional
+    const gateIdx = stage3.indexOf("GATE HUMANO");
+    assert.ok(gateIdx !== -1, "GATE HUMANO ausente em stage-3");
+    const gateSection = stage3.slice(gateIdx, gateIdx + 600);
+    assert.ok(
+      gateSection.includes("destaque_count"),
+      "GATE HUMANO deve referenciar destaque_count para listar imagens condicionalmente",
+    );
+    assert.ok(
+      !gateSection.includes("8 imagens"),
+      "GATE HUMANO não deve mais mencionar '8 imagens' de forma fixa",
+    );
+  });
+
   it("snapshot hash — detecta mudanças não-intencionais", () => {
     const hash = computeHash(contents);
     const fileSizes = Object.fromEntries(
