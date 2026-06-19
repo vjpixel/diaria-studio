@@ -3,8 +3,8 @@
  *
  * Pré-computa a tabela de COORTES DE ENGAJAMENTO por contato da base Clarice
  * (Brevo) e grava o resultado no KV do worker `clarice-dashboard`. O dashboard
- * (workers/brevo-dashboard) só RENDERIZA o JSON cacheado — nunca faz os ~40k
- * GETs per-contato no render (custo proibitivo + rate-limit). Roda como script,
+ * (workers/brevo-dashboard) só RENDERIZA o JSON cacheado — nunca faz os GETs
+ * per-contato no render (custo proibitivo + rate-limit). Roda como script,
  * análogo ao fetch per-contato de `clarice-build-waves.ts`.
  *
  * As 5 coortes são MUTUAMENTE EXCLUSIVAS (cada contato em exatamente uma):
@@ -17,9 +17,18 @@
  *       received2_opened0 — recebeu 2+, não abriu nenhum
  *
  * Universo = contatos que receberam ≥1 e-mail OU tiveram saída (bounce/unsub).
- * "Recebeu" = messagesSent (entregue) per-contato. Escopo = toda a conta Brevo
- * da Clarice (todas as campanhas/edições), que é o que o `statistics` per-contato
- * agrega nativamente.
+ * "Recebeu" = messagesSent (entregue) per-contato.
+ *
+ * ESCOPO (default "emailed"): só contatos que JÁ RECEBERAM campanha — derivados da
+ * origem (campanhas status=sent → recipients.lists → membros dessas listas). A base
+ * importada (~40k) é muito maior que o enviado; contato received=0 sem saída nem
+ * entra no universo, então buscá-lo seria GET desperdiçado. `--all` força o crawl da
+ * conta inteira (fallback).
+ *
+ * ROBUSTEZ a rate-limit (Brevo ~100 req/min): CHECKPOINT incremental em
+ * data/clarice-subscribers/cohorts/checkpoint.json — um run interrompido (rate-limit
+ * sustentado após os retries do brevoGet) é RETOMADO sem re-gastar GETs. STATUS em
+ * status.json (success|partial|failed + contagens + duração) e LOG append em run.log.
  *
  * O quirk de open agregado-zerado da Brevo não afeta este script: o evento
  * per-contato (`statistics.opened`) sobrevive — mesmo motivo do GET individual
@@ -31,19 +40,35 @@
  *   CLOUDFLARE_WORKERS_TOKEN  obrigatório p/ upload KV (permissão Workers KV)
  *
  * Uso CLI:
- *   npx tsx scripts/clarice-engagement-cohorts.ts [--dry-run] [--concurrency N]
+ *   npx tsx scripts/clarice-engagement-cohorts.ts [--dry-run] [--all] [--fresh] [--concurrency N]
  *
  *   --dry-run     computa e imprime o JSON, mas NÃO grava no KV.
- *   --concurrency concorrência dos GETs per-contato (default 6, igual ao
- *                 clarice-build-waves — bem abaixo de 100 reqs/min da Brevo).
+ *   --all         crawla a conta inteira (default: só quem já recebeu e-mail).
+ *   --fresh       ignora checkpoint existente e recomeça do zero.
+ *   --concurrency concorrência dos GETs per-contato (default 6 — bem abaixo de
+ *                 100 reqs/min da Brevo).
  */
 
+import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { brevoGet } from "./clarice-build-waves.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg } from "./lib/cli-args.ts";
 
 loadProjectEnv();
+
+/** Diretório de estado do crawl (checkpoint + status + log). data/ é gitignored. */
+export const COHORTS_STATE_DIR = resolve(CLARICE_BASE, "cohorts");
+export const CHECKPOINT_PATH = resolve(COHORTS_STATE_DIR, "checkpoint.json");
+export const STATUS_PATH = resolve(COHORTS_STATE_DIR, "status.json");
+export const LOG_PATH = resolve(COHORTS_STATE_DIR, "run.log");
+/** Idade máxima (h) de um checkpoint para ser retomado; acima disso, recomeça do zero. */
+export const MAX_RESUME_AGE_H = 18;
+/** A cada N contatos buscados, persiste o checkpoint (resiliência a rate-limit). */
+const CHECKPOINT_FLUSH_EVERY = 500;
 
 /** Namespace KV do worker clarice-dashboard (workers/brevo-dashboard/wrangler.toml). */
 export const DASHBOARD_KV_NAMESPACE_ID = "2f87d65d735c499ab8f465774d0167e2";
@@ -180,22 +205,97 @@ export function normalizeContact(raw: {
   };
 }
 
-// ─── Fetch da Brevo (paginação + per-id) ─────────────────────────────────────
+// ─── Escopo do crawl: só contatos que JÁ RECEBERAM e-mail ────────────────────
+//
+// A base importada na Brevo (~40k) é muito maior do que quem de fato recebeu
+// campanha. Contato com received=0 e sem saída nem entra no universo das coortes
+// (computeCohorts o ignora) — buscar o status dele é GET desperdiçado e pressão de
+// rate-limit à toa. Em vez de paginar TODA a conta, derivamos o conjunto da
+// ORIGEM: campanhas enviadas → recipients.lists → membros dessas listas. Isso é
+// exatamente "quem já recebeu e-mail" e encolhe o crawl para o tamanho enviado.
+// (bounce/unsub também são membros das listas enviadas, então a coorte de saídas
+// continua coberta.)  `--all` força o crawl da conta inteira (fallback).
 
-/** Pool de concorrência limitada (idêntico em forma ao de clarice-build-waves). */
-async function pool<T>(items: T[], n: number, worker: (item: T) => Promise<void>): Promise<void> {
+export interface ContactRef {
+  id: number;
+  blacklisted: boolean;
+}
+
+/** Pool de concorrência limitada (forma idêntica ao de clarice-build-waves). */
+async function pool<T>(items: T[], n: number, worker: (item: T, idx: number) => Promise<void>): Promise<void> {
   let i = 0;
   const run = async (): Promise<void> => {
-    while (i < items.length) await worker(items[i++]);
+    while (i < items.length) {
+      const idx = i++;
+      await worker(items[idx], idx);
+    }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, run));
 }
 
-/** Pagina TODOS os contatos da conta → id + emailBlacklisted. */
-async function fetchAllContactIds(
-  apiKey: string,
-): Promise<{ id: number; blacklisted: boolean }[]> {
-  const base: { id: number; blacklisted: boolean }[] = [];
+/** União dos list IDs de todas as campanhas enviadas (status=sent). */
+async function fetchSentListIds(apiKey: string): Promise<number[]> {
+  const set = new Set<number>();
+  let offset = 0;
+  for (;;) {
+    const { body } = await brevoGet(
+      apiKey,
+      `/emailCampaigns?status=sent&limit=100&offset=${offset}&sort=desc`,
+    );
+    const cs: any[] = body?.campaigns ?? [];
+    for (const c of cs) for (const l of c?.recipients?.lists ?? []) set.add(l);
+    if (cs.length < 100) break;
+    offset += 100;
+  }
+  return [...set];
+}
+
+/** Membros (id + emailBlacklisted) das listas dadas, dedup por id. */
+async function fetchListMembers(apiKey: string, listIds: number[]): Promise<Map<number, ContactRef>> {
+  const map = new Map<number, ContactRef>();
+  for (const listId of listIds) {
+    let offset = 0;
+    for (;;) {
+      const { status, body } = await brevoGet(
+        apiKey,
+        `/contacts/lists/${listId}/contacts?limit=500&offset=${offset}`,
+      );
+      if (status === 404) break; // lista apagada — pula
+      const cs: any[] = body?.contacts ?? [];
+      for (const c of cs) {
+        // OR-merge do blacklist: 2 listas podem trazer o mesmo contato.
+        const prev = map.get(c.id);
+        map.set(c.id, { id: c.id, blacklisted: !!c.emailBlacklisted || !!prev?.blacklisted });
+      }
+      if (cs.length < 500) break;
+      offset += 500;
+    }
+  }
+  return map;
+}
+
+/** Conjunto "já recebeu e-mail" = membros das listas que receberam campanha. */
+async function fetchEmailedContactIds(apiKey: string): Promise<ContactRef[]> {
+  const listIds = await fetchSentListIds(apiKey);
+  if (listIds.length === 0) {
+    throw new Error(
+      "Nenhuma campanha enviada encontrada (status=sent) — abortando para não " +
+        "sobrescrever o KV com zeros (verifique escopo/validade da BREVO_CLARICE_API_KEY).",
+    );
+  }
+  const members = await fetchListMembers(apiKey, listIds);
+  const refs = [...members.values()];
+  if (refs.length === 0) {
+    throw new Error(
+      `Listas enviadas (${listIds.length}) sem membros — abortando para não sobrescrever o KV com zeros.`,
+    );
+  }
+  return refs;
+}
+
+/** Pagina TODOS os contatos da conta (fallback --all). */
+async function fetchAllContactIds(apiKey: string): Promise<ContactRef[]> {
+  const base: ContactRef[] = [];
   let offset = 0;
   for (;;) {
     const { body } = await brevoGet(apiKey, `/contacts?limit=500&offset=${offset}`);
@@ -204,49 +304,162 @@ async function fetchAllContactIds(
     if (cs.length < 500) break;
     offset += 500;
   }
-  // Anti-clobber (#2426 review): brevoGet devolve {status:404, body:{}} pra QUALQUER
-  // 404 — inclusive escopo/validade da API key surfaceando como 404 no /contacts.
-  // Sem este guard, 0 contatos → universo 0 → upload sobrescreveria o snapshot bom
-  // do KV com zeros e o dashboard renderizaria tabela zerada sem erro. Falha alto.
   if (base.length === 0) {
     throw new Error(
-      "Brevo /contacts retornou 0 contatos — abortando para não sobrescrever o KV " +
-        "com zeros (verifique escopo/validade da BREVO_CLARICE_API_KEY).",
+      "Brevo /contacts retornou 0 contatos — abortando para não sobrescrever o KV com zeros.",
     );
   }
   return base;
 }
 
+// ─── Checkpoint + status + logs ──────────────────────────────────────────────
+
+export interface Checkpoint {
+  startedAt: string;
+  scope: "emailed" | "all";
+  refs: ContactRef[];
+  /** id → engajamento já buscado (resiliência a rate-limit; resume pula estes). */
+  done: Record<string, ContactEngagement>;
+}
+
+/** IDs ainda não buscados (puro — testável). */
+export function remainingRefs(refs: ContactRef[], done: Record<string, ContactEngagement>): ContactRef[] {
+  return refs.filter((r) => done[String(r.id)] === undefined);
+}
+
+/** Decide se um checkpoint pode ser retomado (puro — testável). */
+export function shouldResume(
+  cp: Checkpoint | null,
+  nowMs: number,
+  scope: "emailed" | "all",
+  maxAgeH = MAX_RESUME_AGE_H,
+): boolean {
+  if (!cp || cp.scope !== scope) return false;
+  const started = Date.parse(cp.startedAt);
+  if (isNaN(started)) return false;
+  const ageH = (nowMs - started) / 3_600_000;
+  return ageH >= 0 && ageH < maxAgeH;
+}
+
+function ensureStateDir(): void {
+  if (!existsSync(COHORTS_STATE_DIR)) mkdirSync(COHORTS_STATE_DIR, { recursive: true });
+}
+
+function logLine(msg: string): void {
+  const line = `${new Date().toISOString()} ${msg}`;
+  console.error(line);
+  try {
+    ensureStateDir();
+    appendFileSync(LOG_PATH, line + "\n");
+  } catch {
+    /* log nunca bloqueia o crawl */
+  }
+}
+
+function loadCheckpoint(): Checkpoint | null {
+  try {
+    if (!existsSync(CHECKPOINT_PATH)) return null;
+    return JSON.parse(readFileSync(CHECKPOINT_PATH, "utf8")) as Checkpoint;
+  } catch {
+    return null; // checkpoint corrompido → recomeça do zero
+  }
+}
+
+function saveCheckpoint(cp: Checkpoint): void {
+  ensureStateDir();
+  writeFileAtomic(CHECKPOINT_PATH, JSON.stringify(cp), { fsync: false });
+}
+
+function clearCheckpoint(): void {
+  try {
+    if (existsSync(CHECKPOINT_PATH)) writeFileAtomic(CHECKPOINT_PATH, "", { fsync: false });
+  } catch {
+    /* não-fatal */
+  }
+}
+
+export interface RunStatus {
+  status: "success" | "partial" | "failed";
+  finishedAt: string;
+  scope: "emailed" | "all";
+  total: number;
+  fetched: number;
+  universe?: number;
+  durationMs: number;
+  error?: string;
+}
+
+function writeStatus(s: RunStatus): void {
+  try {
+    ensureStateDir();
+    writeFileAtomic(STATUS_PATH, JSON.stringify(s, null, 2), { fsync: false });
+  } catch {
+    /* não-fatal */
+  }
+}
+
 /**
- * Busca o engajamento per-contato da conta Brevo inteira e computa as coortes.
- * Exportada p/ permitir um runner alternativo; o CLI abaixo é o caminho normal.
+ * Busca o engajamento per-contato (só de quem recebeu, por default) com
+ * checkpoint incremental — um run rate-limitado pode ser retomado sem re-gastar.
+ * Em falha (ex: rate-limit sustentado após os retries do brevoGet), persiste o
+ * checkpoint e re-lança; o próximo run continua de onde parou.
  */
 export async function buildCohorts(
   apiKey: string,
   concurrency: number,
   generatedAt: string,
+  opts: { scope?: "emailed" | "all"; fresh?: boolean; nowMs?: number } = {},
 ): Promise<EngagementCohorts> {
-  const ids = await fetchAllContactIds(apiKey);
-  console.error(`📇 Brevo: ${ids.length} contatos — buscando statistics per-id…`);
+  const scope = opts.scope ?? "emailed";
+  const nowMs = opts.nowMs ?? Date.now();
 
-  const engagements: ContactEngagement[] = [];
-  let done = 0;
-  await pool(ids, concurrency, async (c) => {
-    const { status, body } = await brevoGet(apiKey, `/contacts/${c.id}`);
-    if (status === 404) return; // contato sumiu entre listar e buscar — não-fatal
-    // Blacklist fresca (#2426 review): o GET per-contato traz emailBlacklisted
-    // atualizado; o snapshot da paginação (c.blacklisted) pode estar horas velho.
-    // OR-merge é conservador — se qualquer fonte diz blacklisted, vale.
-    engagements.push(
-      normalizeContact({
-        emailBlacklisted: c.blacklisted || body?.emailBlacklisted === true,
-        statistics: body?.statistics,
-      }),
-    );
-    if (++done % 500 === 0) console.error(`  …${done}/${ids.length}`);
-  });
+  // Resume de checkpoint recente do mesmo escopo, salvo --fresh.
+  let cp = opts.fresh ? null : loadCheckpoint();
+  if (!shouldResume(cp, nowMs, scope)) cp = null;
 
-  return computeCohorts(engagements, generatedAt);
+  let refs: ContactRef[];
+  const done: Record<string, ContactEngagement> = cp?.done ?? {};
+  if (cp) {
+    refs = cp.refs;
+    logLine(`▶️  Retomando checkpoint (${Object.keys(done).length}/${refs.length} já buscados, escopo ${scope}).`);
+  } else {
+    logLine(`🔎 Resolvendo conjunto (escopo: ${scope})…`);
+    refs = scope === "all" ? await fetchAllContactIds(apiKey) : await fetchEmailedContactIds(apiKey);
+    cp = { startedAt: new Date(nowMs).toISOString(), scope, refs, done };
+    saveCheckpoint(cp);
+    logLine(`📇 ${refs.length} contatos ${scope === "all" ? "na conta" : "que já receberam e-mail"} — buscando statistics per-id…`);
+  }
+
+  const todo = remainingRefs(refs, done);
+  let since = 0;
+  try {
+    await pool(todo, concurrency, async (c) => {
+      const { status, body } = await brevoGet(apiKey, `/contacts/${c.id}`);
+      if (status !== 404) {
+        // Blacklist fresca: GET per-contato é mais novo que o snapshot da lista.
+        done[String(c.id)] = normalizeContact({
+          emailBlacklisted: c.blacklisted || body?.emailBlacklisted === true,
+          statistics: body?.statistics,
+        });
+      } else {
+        // contato sumiu entre listar e buscar — marca como vazio p/ não re-tentar no resume
+        done[String(c.id)] = { received: 0, opened: 0, bounced: false, optedOut: false };
+      }
+      const n = Object.keys(done).length;
+      if (++since >= CHECKPOINT_FLUSH_EVERY) {
+        since = 0;
+        saveCheckpoint(cp!);
+        logLine(`  …${n}/${refs.length}`);
+      }
+    });
+  } catch (e) {
+    saveCheckpoint(cp!); // preserva progresso p/ o próximo run retomar
+    logLine(`⛔ crawl interrompido (${Object.keys(done).length}/${refs.length}): ${(e as Error).message}`);
+    throw e;
+  }
+
+  saveCheckpoint(cp!);
+  return computeCohorts(Object.values(done), generatedAt);
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -254,6 +467,8 @@ export async function buildCohorts(
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
+  const fresh = hasFlag(argv, "fresh");
+  const scope: "emailed" | "all" = hasFlag(argv, "all") ? "all" : "emailed";
   const concurrency = Number(getArg(argv, "concurrency") || "6") || 6;
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
@@ -262,9 +477,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Fail-fast (#2426 review): validar creds CF ANTES do crawl per-contato (~40k
-  // GETs, dezenas de minutos). Sem isso, a falta de credencial só seria detectada
-  // depois de gastar toda a quota da Brevo. --dry-run não grava, então não exige.
+  // Fail-fast: validar creds CF ANTES do crawl per-contato. Sem isso, a falta de
+  // credencial só seria detectada depois de gastar quota da Brevo. --dry-run não grava.
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
   if (!dryRun && (!accountId || !token)) {
@@ -275,25 +489,49 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const generatedAt = new Date().toISOString();
-  const cohorts = await buildCohorts(apiKey, concurrency, generatedAt);
+  const startMs = Date.now();
+  const generatedAt = new Date(startMs).toISOString();
+  logLine(`🚀 Crawl de coortes iniciado (escopo: ${scope}, concorrência ${concurrency}${fresh ? ", --fresh" : ""}${dryRun ? ", --dry-run" : ""}).`);
 
-  console.error(
-    `\n✅ Coortes (universo ${cohorts.universe}, maxRecebido ${cohorts.maxReceived}):`,
-  );
+  let cohorts: EngagementCohorts;
+  try {
+    cohorts = await buildCohorts(apiKey, concurrency, generatedAt, { scope, fresh });
+  } catch (e) {
+    // Falha (ex: rate-limit sustentado) — checkpoint já foi persistido por buildCohorts.
+    writeStatus({
+      status: "partial",
+      finishedAt: new Date().toISOString(),
+      scope,
+      total: 0,
+      fetched: 0,
+      durationMs: Date.now() - startMs,
+      error: (e as Error).message,
+    });
+    logLine(`❌ Falhou — checkpoint preservado, re-rode para retomar.`);
+    process.exit(1);
+  }
+
+  console.error(`\n✅ Coortes (universo ${cohorts.universe}, maxRecebido ${cohorts.maxReceived}):`);
   console.log(JSON.stringify(cohorts, null, 2));
 
   if (dryRun) {
-    console.error("\n(--dry-run) KV não atualizado.");
+    logLine("(--dry-run) KV não atualizado.");
     return;
   }
 
-  // Anti-clobber (#2426 review): nunca sobrescrever o snapshot bom do KV com zeros.
-  // fetchAllContactIds já falha alto em 0 contatos; este é defesa em profundidade.
+  // Anti-clobber: nunca sobrescrever o snapshot bom do KV com zeros.
   if (cohorts.universe === 0) {
-    console.error(
-      "\n⚠️  Universo 0 — não gravando no KV (evita sobrescrever dado bom com zeros).",
-    );
+    writeStatus({
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      scope,
+      total: cohorts.universe,
+      fetched: cohorts.universe,
+      universe: cohorts.universe,
+      durationMs: Date.now() - startMs,
+      error: "universe 0 — upload abortado",
+    });
+    logLine("⚠️  Universo 0 — não gravando no KV (evita sobrescrever dado bom com zeros).");
     process.exit(1);
   }
 
@@ -303,7 +541,20 @@ async function main(): Promise<void> {
     token,
     contentType: "application/json",
   });
-  console.error(`\n📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
+  logLine(`📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
+
+  // Sucesso: status + limpa checkpoint (próximo run começa fresco).
+  writeStatus({
+    status: "success",
+    finishedAt: new Date().toISOString(),
+    scope,
+    total: cohorts.universe,
+    fetched: cohorts.universe,
+    universe: cohorts.universe,
+    durationMs: Date.now() - startMs,
+  });
+  clearCheckpoint();
+  logLine(`🏁 Concluído em ${Math.round((Date.now() - startMs) / 1000)}s.`);
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

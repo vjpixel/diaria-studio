@@ -15,7 +15,12 @@ import assert from "node:assert/strict";
 import {
   computeCohorts,
   normalizeContact,
+  remainingRefs,
+  shouldResume,
+  MAX_RESUME_AGE_H,
   type ContactEngagement,
+  type ContactRef,
+  type Checkpoint,
 } from "../scripts/clarice-engagement-cohorts.ts";
 import {
   renderEngagementCohortsSection,
@@ -146,6 +151,48 @@ test("normalizeContact: bounce + blacklist → bounced, optedOut false (sem dupl
   });
   assert.equal(c.bounced, true);
   assert.equal(c.optedOut, false);
+});
+
+// ─── Checkpoint / resume (resiliência a rate-limit) ──────────────────────────
+
+const REF = (id: number): ContactRef => ({ id, blacklisted: false });
+const ENG = (): ContactEngagement => ({ received: 1, opened: 0, bounced: false, optedOut: false });
+
+test("remainingRefs: filtra ids já buscados (resume não re-gasta GETs)", () => {
+  const refs = [REF(1), REF(2), REF(3)];
+  const done = { "1": ENG(), "3": ENG() };
+  const rem = remainingRefs(refs, done);
+  assert.deepEqual(rem.map((r) => r.id), [2]);
+});
+
+test("remainingRefs: nada feito → todos pendentes; tudo feito → vazio", () => {
+  const refs = [REF(1), REF(2)];
+  assert.equal(remainingRefs(refs, {}).length, 2);
+  assert.equal(remainingRefs(refs, { "1": ENG(), "2": ENG() }).length, 0);
+});
+
+const NOW = Date.parse("2026-06-19T12:00:00Z");
+function cp(startedAt: string, scope: "emailed" | "all" = "emailed"): Checkpoint {
+  return { startedAt, scope, refs: [REF(1)], done: {} };
+}
+
+test("shouldResume: null ou escopo diferente → false", () => {
+  assert.equal(shouldResume(null, NOW, "emailed"), false);
+  assert.equal(shouldResume(cp("2026-06-19T11:00:00Z", "all"), NOW, "emailed"), false);
+});
+
+test("shouldResume: checkpoint recente do mesmo escopo → true", () => {
+  assert.equal(shouldResume(cp("2026-06-19T11:00:00Z"), NOW, "emailed"), true);
+});
+
+test("shouldResume: checkpoint antigo (> MAX_RESUME_AGE_H) → false (recomeça)", () => {
+  const old = new Date(NOW - (MAX_RESUME_AGE_H + 1) * 3_600_000).toISOString();
+  assert.equal(shouldResume(cp(old), NOW, "emailed"), false);
+});
+
+test("shouldResume: startedAt inválido ou no futuro → false", () => {
+  assert.equal(shouldResume(cp("não-é-data"), NOW, "emailed"), false);
+  assert.equal(shouldResume(cp("2026-06-20T12:00:00Z"), NOW, "emailed"), false);
 });
 
 const SAMPLE: EngagementCohorts = {
