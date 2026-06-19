@@ -227,6 +227,8 @@ test("renderDashboardHtml: layout SEM MPP é simples — taxa única + count ún
 test("renderDashboardHtml: não renderiza botão de refresh (redundante com F5)", () => {
   // Página tem Cache-Control no-store + F5/Ctrl+R faz o mesmo que
   // o botão fazia. Removido em PR de polimento.
+  // Nota: botões de paginação (#2423) são permitidos — o assert abaixo verifica
+  // ausência de botão de "Recarregar" / refresh, não de qualquer <button>.
   const campaigns = [{
     ...baseCampaign,
     statistics: {
@@ -241,10 +243,11 @@ test("renderDashboardHtml: não renderiza botão de refresh (redundante com F5)"
 
   const html = renderDashboardHtml(campaigns);
 
-  assert.ok(!/<button/.test(html), "não deve ter <button> na página");
   assert.ok(!/Recarregar/.test(html), "não deve ter texto 'Recarregar'");
   assert.ok(!/onclick=/.test(html), "não deve ter inline onclick");
   assert.ok(!/class="actions"/.test(html), "não deve ter div .actions");
+  // Botões de paginação são legítimos (#2423); o que não pode existir é botão de refresh.
+  assert.ok(!/<button[^>]*>.*[Rr]ecarregar/.test(html), "não deve ter botão de Recarregar");
 });
 
 test("renderDashboardHtml: Unsub e Spam têm taxa em cima + count embaixo (como as outras métricas)", () => {

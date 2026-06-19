@@ -990,17 +990,50 @@ export function aggregateLinksAcrossCampaigns(
 }
 
 /**
- * Renderiza a seção "Links mais clicados do período" com links agregados de TODAS as campanhas.
+ * #2421: Deriva o label da edição para o título da seção de links.
+ * Formato: `${cycle}-${sendMonthBRT}` (ex: "2605-06").
+ * - cycle: de parseClariceCampaignKey(nome) da campanha enviada mais recente.
+ * - sendMonthBRT: mês de sentDate em BRT (zero-padded), via monthKeyBRT.
+ * Retorna null quando: lista vazia, nenhuma campanha enviada, ou nome não parseável.
+ * Exportado pra teste unitário.
+ */
+export function deriveLinksSectionTitle(
+  campaigns: Array<Pick<BrevoCampaign, "name" | "sentDate">>,
+): string | null {
+  // Filtrar campanhas enviadas (sentDate não-nulo) e ordenar desc por sentDate.
+  const sent = campaigns
+    .filter((c): c is typeof c & { sentDate: string } => Boolean(c.sentDate))
+    .sort((a, b) => Date.parse(b.sentDate) - Date.parse(a.sentDate));
+  if (sent.length === 0) return null;
+
+  const latest = sent[0];
+  const parsed = parseClariceCampaignKey(latest.name);
+  if (!parsed || !parsed.cycle) return null;
+
+  const sendMonthKey = monthKeyBRT(latest.sentDate); // "YYYY-MM" em BRT
+  if (!sendMonthKey) return null;
+
+  const sendMonthBRT = sendMonthKey.slice(5); // "MM" (últimos 2 chars de "YYYY-MM")
+  return `${parsed.cycle}-${sendMonthBRT}`; // ex: "2605-06"
+}
+
+/**
+ * Renderiza a seção "Links mais clicados do período/da edição" com links agregados de TODAS as campanhas.
  * Sempre visível (seção presente mesmo sem dados — graceful stub).
  * Exportado pra teste unitário.
  *
  * @param rows - resultado de aggregateLinksAcrossCampaigns()
+ * @param edicaoLabel - label da edição ex: "2605-06"; se null, usa "do período"
  */
-export function renderAggregatedLinksSection(rows: AggregatedLinkRow[]): string {
+export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLabel?: string | null): string {
+  const sectionTitle = edicaoLabel
+    ? `Links mais clicados da edição ${edicaoLabel}`
+    : "Links mais clicados do período";
+
   if (rows.length === 0) {
     return `
 <section class="phase2-section" id="links-agregados">
-  <h2 class="section-title">Links mais clicados do período</h2>
+  <h2 class="section-title">${sectionTitle}</h2>
   <p class="section-note">Sem dados de links disponíveis para o período.</p>
 </section>`;
   }
@@ -1023,16 +1056,16 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[]): string 
 
   return `
 <section class="phase2-section" id="links-agregados">
-  <h2 class="section-title">Links mais clicados do período</h2>
-  <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across campanhas). Links de sistema excluídos.</p>
+  <h2 class="section-title">${sectionTitle}</h2>
+  <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across envios). Links de sistema excluídos.</p>
   <div class="table-wrap">
   <table class="links-table">
     <thead>
       <tr>
         <th class="link-url-th" title="URL do link (links de sistema e descadastramento excluídos)">Link</th>
-        <th title="Total de cliques somados entre todas as campanhas do período">Clicks</th>
+        <th title="Total de cliques somados entre todos os envios do período">Clicks</th>
         <th title="Participação percentual no total de clicks editoriais do período">%</th>
-        <th title="Número de campanhas onde este link apareceu">Campanhas</th>
+        <th title="Número de envios onde este link apareceu">Envios</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -1195,8 +1228,10 @@ export function renderDashboardHtml(
   const weekdayRows = aggregateByWeekday(campaigns, null);
   const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel) : "";
   // #2212: seção de links agregados do período
+  // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
-  const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks);
+  const edicaoLabel = deriveLinksSectionTitle(campaigns);
+  const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks, edicaoLabel);
   // #2251: seção de campanhas agendadas (status queued) — só sobre `scheduled`,
   // nunca polui os agregadores de enviadas (A/B/C, volume, weekday).
   const scheduledSection = renderScheduledSection(scheduled);
@@ -1285,12 +1320,12 @@ ${abcSection}
 ${weekdaySection}
 ${monthlyTotalsSection}
 <section class="phase2-section" id="campaigns-table">
-  <h2 class="section-title">Campanhas enviadas</h2>
+  <h2 class="section-title">Envios</h2>
 <div class="table-wrap">
-<table>
+<table id="envios-table">
 <thead>
 <tr>
-<th title="ID da campanha no Brevo.">ID</th>
+<th title="ID do envio no Brevo.">ID</th>
 <th title="Lista de destinatários no Brevo.">Lista</th>
 <th title="Data e hora do envio (horário de Brasília).">Enviado</th>
 <th title="Total de emails enviados (inclui bounces).">Sent</th>
@@ -1303,11 +1338,60 @@ ${monthlyTotalsSection}
 <th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
 </tr>
 </thead>
-<tbody>
+<tbody id="envios-tbody">
 ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
 </tbody>
 </table>
 </div>
+<div id="envios-pagination" style="display:none;margin-top:12px;display:flex;align-items:center;gap:12px;font-size:0.85rem;color:var(--ink);">
+  <button id="envios-prev" aria-label="Página anterior" disabled
+    style="padding:4px 12px;border:1px solid var(--rule);border-radius:4px;background:var(--paper-alt);color:var(--ink);cursor:pointer;">‹ Anterior</button>
+  <span id="envios-page-info" style="opacity:0.75;"></span>
+  <button id="envios-next" aria-label="Próxima página"
+    style="padding:4px 12px;border:1px solid var(--rule);border-radius:4px;background:var(--paper-alt);color:var(--ink);cursor:pointer;">Próxima ›</button>
+</div>
+<script>
+(function() {
+  var PER_PAGE = 10;
+  var tbody = document.getElementById('envios-tbody');
+  var pagination = document.getElementById('envios-pagination');
+  var prevBtn = document.getElementById('envios-prev');
+  var nextBtn = document.getElementById('envios-next');
+  var pageInfo = document.getElementById('envios-page-info');
+  if (!tbody || !pagination || !prevBtn || !nextBtn || !pageInfo) return;
+
+  // Collect top-level <tr> rows (skip nested rows inside links-row cells)
+  var allRows = Array.prototype.filter.call(tbody.children, function(el) {
+    return el.tagName === 'TR';
+  });
+  var totalRows = allRows.length;
+  var totalPages = Math.max(1, Math.ceil(totalRows / PER_PAGE));
+
+  if (totalRows <= PER_PAGE) return; // hide controls — ≤ N rows
+
+  pagination.style.display = 'flex';
+  var currentPage = 1;
+
+  function showPage(page) {
+    currentPage = page;
+    var start = (page - 1) * PER_PAGE;
+    var end = start + PER_PAGE;
+    for (var i = 0; i < allRows.length; i++) {
+      allRows[i].style.display = (i >= start && i < end) ? '' : 'none';
+    }
+    pageInfo.textContent = 'Página ' + page + ' de ' + totalPages;
+    prevBtn.disabled = page <= 1;
+    prevBtn.setAttribute('aria-disabled', page <= 1 ? 'true' : 'false');
+    nextBtn.disabled = page >= totalPages;
+    nextBtn.setAttribute('aria-disabled', page >= totalPages ? 'true' : 'false');
+  }
+
+  prevBtn.addEventListener('click', function() { if (currentPage > 1) showPage(currentPage - 1); });
+  nextBtn.addEventListener('click', function() { if (currentPage < totalPages) showPage(currentPage + 1); });
+
+  showPage(1);
+})();
+</script>
 </section>
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
@@ -1723,7 +1807,7 @@ export function renderWeekdaySection(
     <thead>
       <tr>
         <th title="Dia da semana do envio (horário de Brasília)">Dia</th>
-        <th title="Número de campanhas enviadas neste dia">Campanhas</th>
+        <th title="Número de envios realizados neste dia">Envios</th>
         <th title="Total entregue">Delivered</th>
         <th title="Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia.">Opens</th>
         <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
@@ -1777,8 +1861,8 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
       const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
       return `<tr>
         <td><strong>Célula ${r.cell}</strong></td>
-        <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
         <td>${r.campaignCount > 0 ? r.totalDelivered : "—"}</td>
+        <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
         <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${organicInline}${winnerTag}</td>
         <td>${r.campaignCount}</td>
       </tr>`;
@@ -1806,8 +1890,8 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
     <thead>
       <tr>
         <th title="Célula do teste A/B/C">Célula</th>
-        <th title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
         <th title="Soma de entregues dos dias enviados">Delivered (total)</th>
+        <th title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
         <th title="Open rate agregado com Apple MPP (opens ÷ delivered) — base do vencedor; entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
         <th title="Dias enviados contabilizados">Dias</th>
       </tr>
@@ -1852,13 +1936,13 @@ export function renderScheduledSection(
 
   return `
 <section class="phase2-section" id="scheduled-campaigns">
-  <h2 class="section-title">Campanhas agendadas</h2>
-  <p class="section-note">${ordered.length} agendada(s) — próximo envio primeiro. Tamanho = snapshot esperado da lista no envio.</p>
+  <h2 class="section-title">Envios agendados</h2>
+  <p class="section-note">${ordered.length} agendado(s) — próximo envio primeiro. Tamanho = snapshot esperado da lista no envio.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th title="Nome da campanha no Brevo">Campanha</th>
+        <th title="Nome do envio no Brevo">Envio</th>
         <th title="Horário agendado (horário de Brasília)">Agendado (BRT)</th>
         <th title="Tamanho atual da lista (destinatários esperados)">Tamanho</th>
       </tr>
@@ -2008,13 +2092,13 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
   return `
 <section class="phase2-section" id="monthly-totals">
   <h2 class="section-title">Totais por mês</h2>
-  <p class="section-note">1 linha por mês — agrega todas as campanhas enviadas naquele mês. Veja a lista detalhada na seção Campanhas enviadas abaixo.</p>
+  <p class="section-note">1 linha por mês — agrega todos os envios realizados naquele mês. Veja a lista detalhada na seção Envios abaixo.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Mês do envio">Mês</th>
-        <th title="Número de campanhas enviadas no mês">Campanhas</th>
+        <th title="Número de envios realizados no mês">Envios</th>
         <th title="Total enviado (sent) no mês">Sent</th>
         <th title="Total entregue (delivered) no mês">Delivered</th>
         <th title="Soma de aberturas únicas (uniqueViews, MPP-inclusivo)">Opens</th>
