@@ -1,12 +1,16 @@
 /**
- * test/writer-prompt.test.ts (#1208)
+ * test/writer-prompt.test.ts (#1208, #2377)
  *
  * Grep tests pra garantir que instruções críticas estão presentes em
- * `.claude/agents/writer.md`. Não testa comportamento (LLM); testa
- * presença de strings que o prompt-tuning depende.
+ * `.claude/agents/writer.md` e `.claude/agents/writer-destaque.md`.
+ * Não testa comportamento (LLM); testa presença de strings que o
+ * prompt-tuning depende.
  *
  * Equivalente a snapshot test do orchestrator-prompt.test.ts mas com
  * focus em invariantes editoriais que merecem teste de regressão.
+ *
+ * #2377: adicionado sync-check dos dois arquivos para o formato do reveal
+ * do ERRO INTENCIONAL — ambos devem conter a instrução de primeira pessoa.
  */
 
 import { describe, it } from "node:test";
@@ -17,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WRITER_MD = resolve(ROOT, ".claude/agents/writer.md");
+const WRITER_DESTAQUE_MD = resolve(ROOT, ".claude/agents/writer-destaque.md");
 
 describe("writer.md invariants (#1208)", () => {
   const content = readFileSync(WRITER_MD, "utf8");
@@ -41,5 +46,43 @@ describe("writer.md invariants (#1208)", () => {
   it("'Por que isso importa' tem instrução de mínimo 2 frases (#1208)", () => {
     assert.match(content, /M[íi]nimo 2 frases|2 frases/i,
       "writer prompt deve exigir mínimo 2 frases em 'Por que isso importa'");
+  });
+});
+
+// #2377 — formato do reveal do ERRO INTENCIONAL em ambos os agents
+describe("ERRO INTENCIONAL reveal format (#2377)", () => {
+  const writerContent = readFileSync(WRITER_MD, "utf8");
+  const writerDestaqueContent = readFileSync(WRITER_DESTAQUE_MD, "utf8");
+
+  it("writer.md contém formato obrigatório de primeira pessoa no reveal", () => {
+    assert.match(
+      writerContent,
+      /Na última edição, escrevi que/i,
+      "writer.md deve conter o formato de reveal em primeira pessoa",
+    );
+  });
+
+  it("writer.md lista formatos proibidos do reveal", () => {
+    assert.match(
+      writerContent,
+      /NÃO usar|NÃO usar.*há um erro proposital/i,
+      "writer.md deve listar os formatos proibidos do reveal",
+    );
+  });
+
+  it("writer-destaque.md contém formato obrigatório de primeira pessoa no reveal", () => {
+    assert.match(
+      writerDestaqueContent,
+      /Na última edição, escrevi que/i,
+      "writer-destaque.md deve conter o formato de reveal em primeira pessoa",
+    );
+  });
+
+  it("writer-destaque.md lista formatos proibidos do reveal", () => {
+    assert.match(
+      writerDestaqueContent,
+      /NÃO usar|NÃO usar.*há um erro proposital/i,
+      "writer-destaque.md deve listar os formatos proibidos do reveal",
+    );
   });
 });

@@ -17,7 +17,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
 - **"Por que isso importa:"** em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem").
 - **Todo texto em PT-BR** (#1473). Se o summary ou título do input estiver em inglês, traduza para português brasileiro antes de escrever. Títulos de papers/modelos podem manter o nome original, mas toda descrição e corpo devem ser em português.
-- **Erro intencional só humano** — você nunca decide nem sugere.
+- **Erro intencional só humano** — você nunca decide nem sugere. O reveal da edição anterior usa formato obrigatório de primeira pessoa: "Na última edição, escrevi que [afirmação errada], quando o correto é [valor correto]." **NÃO usar** "há um erro proposital...", "o correto é...", "a resposta é...".
 - **Char limits** (#964, #1208):
   - **D1** entre **1000-1200 chars** (excluindo URL e títulos)
   - **D2 e D3** entre **900-1000 chars**
@@ -120,7 +120,7 @@ Retorne JSON:
 
 - Pré: cobertura line + extract destaques metadata
 - Paralelo: 3× dispatch writer-destaque
-- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL + ASSINE
+- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL (placeholder; `render-erro-intencional.ts` substitui pós-Clarice com reveal "Na última edição, escrevi que [X], quando o correto é [Y]." — NÃO "há um erro proposital...") + ASSINE
 
 Trade-off: voice consistency pode sofrer (cada agente vê só seu destaque + peer_titles). Lint pós-stitch valida overlap; se detectar, o coordenador re-dispatcha o destaque com peer_titles atualizado.
 

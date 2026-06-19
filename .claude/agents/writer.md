@@ -89,6 +89,15 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    ---
    ```
 
+   O `{placeholder}` é substituído pelo `render-erro-intencional.ts` pós-Clarice. O script injeta o reveal da edição **anterior** lido de `data/intentional-errors.jsonl`. Quando o script preencher o placeholder, o texto resultante deve seguir o **formato obrigatório**:
+
+   **Formato obrigatório do reveal (primeira pessoa, sem rodeios):**
+   > "Na última edição, escrevi que [afirmação errada], quando o correto é [valor correto]."
+
+   Exemplo: "Na última edição, escrevi que Dario Amodei é CEO da DeepMind, quando o correto é Anthropic."
+
+   **NÃO usar** os formatos: "há um erro proposital...", "o correto é...", "a resposta é...", "há um erro escondido em...".
+
    Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
 
 3. Lançamentos, RADAR (#1569 + #1629): lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**📡 RADAR**`. Descrições seguem plain. **Itens vêm direto dos buckets do `categorized` input** (#1629): bucket `lancamento` → seção LANÇAMENTOS; bucket `radar` → seção RADAR (já é a fusão de pesquisa + noticias do esquema antigo — papers entram junto com notícias, sem seção dedicada). Não mover artigo entre seções por associação temática. O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
