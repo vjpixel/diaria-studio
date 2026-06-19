@@ -30,8 +30,7 @@
  *   2 — erro inesperado ao rodar o preflight (não bloqueia — warn)
  *
  * Uso CLI:
- *   npx tsx scripts/lib/preflight-external-locks.ts
- *   NODE_ENV=test ... (PREFLIGHT_SKIP_OAUTH=1 para pular OAuth em testes)
+ *   npx tsx scripts/lib/preflight-external-locks.ts [--skip-oauth]
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -40,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { checkTokenHealth } from "../google-auth.ts";
 import { checkCloudflareToken } from "../check-cloudflare-token.ts";
 import { loadProjectEnv } from "./env-loader.ts";
+import { hasFlag } from "./cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -66,16 +66,22 @@ export interface LockCheckResult {
  * Verifica o token OAuth Google. Reutiliza `checkTokenHealth` de google-auth.ts
  * para cobrir o mesmo token que cobre Drive + Gmail + imagens sociais.
  *
- * @param fetchImpl  Injetável para testes (mock fetch).
- * @param now        Timestamp injetável para testes (ms epoch).
+ * @param fetchImpl      Injetável para testes (mock fetch).
+ * @param _now           Reservado para testes futuros (timestamp ms epoch).
+ * @param tokenHealthFn  Injetável para testes — substitui checkTokenHealth por mock.
+ *                       Útil para exercer o ramo "expired" sem precisar de
+ *                       data/.credentials.json no disco (#633).
  */
 export async function checkOAuthLock(
   fetchImpl: typeof fetch = fetch,
-  _now?: number, // reservado para testes futuros se necessário
+  _now?: number,
+  tokenHealthFn?: (f: typeof fetch) => ReturnType<typeof checkTokenHealth>,
 ): Promise<LockCheckResult> {
   const credentialsPath = resolve(ROOT, "data", ".credentials.json");
 
-  if (!existsSync(credentialsPath)) {
+  // Quando o tokenHealthFn é injetado (testes), pular o existsSync — o mock
+  // simula o comportamento pós-credentials, incluindo expirado.
+  if (tokenHealthFn === undefined && !existsSync(credentialsPath)) {
     return {
       dependency: "OAuth Google (Drive + Gmail + imagens)",
       state: "missing",
@@ -86,17 +92,20 @@ export async function checkOAuthLock(
     };
   }
 
+  const healthFn = tokenHealthFn ?? checkTokenHealth;
   let health: Awaited<ReturnType<typeof checkTokenHealth>>;
   try {
-    health = await checkTokenHealth(fetchImpl);
+    health = await healthFn(fetchImpl);
   } catch (e) {
-    // Erro inesperado ao chamar checkTokenHealth — não bloqueia
+    // Exceção inesperada ao chamar checkTokenHealth (ex: saveCredentials falhou,
+    // AbortSignal propagado como throw) — não assumir ok; reportar como unchecked
+    // com warn para não mascarar credentials quebrados nem bloquear por transitório.
     return {
       dependency: "OAuth Google (Drive + Gmail + imagens)",
-      state: "ok",
+      state: "unchecked",
       blocks_stages: [],
       reauth_action: "",
-      detail: `checkTokenHealth lançou exceção inesperada: ${(e as Error).message} — assumindo ok`,
+      detail: `checkTokenHealth lançou exceção inesperada: ${(e as Error).message} — verificar manualmente`,
     };
   }
 
@@ -111,7 +120,19 @@ export async function checkOAuthLock(
     };
   }
 
-  // no_credentials, invalid_grant ou error não-ok
+  // Erro de rede transitório (ex: timeout no endpoint Google, 5xx) — não bloqueia.
+  // Consistente com checkCloudflareToken que também trata "error" como não-bloqueante.
+  if (health.status === "error") {
+    return {
+      dependency: "OAuth Google (Drive + Gmail + imagens)",
+      state: "unchecked",
+      blocks_stages: [],
+      reauth_action: "",
+      detail: `erro de rede ao verificar OAuth (transitório) — ${health.detail}`,
+    };
+  }
+
+  // no_credentials ou invalid_grant → bloqueante
   return {
     dependency: "OAuth Google (Drive + Gmail + imagens)",
     state: health.status === "no_credentials" ? "missing" : "expired",
@@ -244,7 +265,7 @@ export function checkMcpConnectors(): LockCheckResult[] {
     {
       dependency: "MCP Gmail (claude.ai)",
       state: "unchecked",
-      blocks_stages: [0, 1],
+      blocks_stages: [0, 1, 6],
       reauth_action: "Verificado em runtime pelo orchestrator (#738)",
       detail: "não verificável deterministicamente a partir do Node",
     },
@@ -315,7 +336,7 @@ function formatRow(r: LockCheckResult): string {
 }
 
 async function main(): Promise<number> {
-  const skipOauth = process.env.PREFLIGHT_SKIP_OAUTH === "1";
+  const skipOauth = hasFlag(process.argv.slice(2), "skip-oauth");
 
   let results: LockCheckResult[];
   try {

@@ -5,7 +5,7 @@
  *
  * HARD CONSTRAINTS:
  *   - Nunca faz I/O real de rede (fetch mockado em todos os casos)
- *   - Nunca lê `data/.credentials.json` real (usa PREFLIGHT_SKIP_OAUTH=1 ou mock)
+ *   - Nunca lê `data/.credentials.json` real (usa skipOauth:true ou mock)
  *   - Nunca executa wrangler CLI
  *
  * Cenários cobertos:
@@ -35,6 +35,7 @@ import {
   preflightExternalLocks,
   type LockCheckResult,
 } from "../scripts/lib/preflight-external-locks.ts";
+import type { TokenHealth } from "../scripts/google-auth.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -63,7 +64,8 @@ function throwingFetch(message: string): FetchFn {
 
 // ── Helpers de env ────────────────────────────────────────────────────────────
 
-/** Salva e restaura process.env pra testes não vazarem */
+/** Salva e restaura process.env completo para que vars injetadas por loadProjectEnv()
+ * (CLOUDFLARE_WORKERS_TOKEN, CLARICE_API_KEY, etc.) não vazem entre testes. */
 let savedEnv: NodeJS.ProcessEnv;
 
 before(() => {
@@ -71,12 +73,16 @@ before(() => {
 });
 
 after(() => {
-  // Restaurar vars que mudamos
-  for (const key of ["GEMINI_API_KEY", "CLOUDFLARE_API_TOKEN", "PREFLIGHT_SKIP_OAUTH"]) {
-    if (savedEnv[key] !== undefined) {
-      process.env[key] = savedEnv[key];
-    } else {
+  // Remover qualquer var adicionada pelos testes (ou por loadProjectEnv)
+  for (const key of Object.keys(process.env)) {
+    if (savedEnv[key] === undefined) {
       delete process.env[key];
+    }
+  }
+  // Restaurar vars que existiam antes e podem ter sido alteradas
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value !== undefined) {
+      process.env[key] = value;
     }
   }
 });
@@ -85,47 +91,32 @@ after(() => {
 
 describe("checkOAuthLock (#2358)", () => {
   it("1. OAuth expirado → state: expired, blocks_stages inclui 0,1,3,4,5", async () => {
-    // Simula checkTokenHealth retornando invalid_grant via um refresh que falha
-    // Usamos um fetch que simula token inválido no endpoint de refresh do Google
-    const expiredFetch: FetchFn = async (url, _opts) => {
-      // Google token refresh endpoint
-      if (typeof url === "string" && url.includes("oauth2.googleapis.com")) {
-        return {
-          ok: false,
-          status: 400,
-          statusText: "Bad Request",
-          json: async () => ({ error: "invalid_grant" }),
-          text: async () => JSON.stringify({ error: "invalid_grant" }),
-        } as Response;
-      }
-      throw new Error("unexpected fetch");
-    };
+    // Injeta um mock de tokenHealthFn que simula invalid_grant (token expirado/revogado).
+    // Isso exercita o ramo expired (linhas ~128-136) sem precisar de
+    // data/.credentials.json no disco — regressão #633 para a issue #2358.
+    const expiredHealthFn = async (_f: FetchFn): Promise<TokenHealth> => ({
+      ok: false,
+      status: "invalid_grant",
+      detail: "token expirado ou revogado (invalid_grant)",
+    });
 
-    // Para este teste precisamos que data/.credentials.json pareça existir
-    // mas a leitura retorne um token que vai falhar no refresh.
-    // A forma mais segura é usar skipOauth=false mas injetar um fetch que falha.
-    // checkOAuthLock verifica existsSync antes de chamar checkTokenHealth.
-    // Como data/.credentials.json não existe no worktree, o estado será "missing".
-    // Testamos o comportamento de "expired" via checkOAuthLock com um wrapper.
-
-    // Já que não temos data/.credentials.json no worktree, testamos diretamente
-    // o comportamento de "missing" e verificamos as propriedades corretas.
-    const result = await checkOAuthLock(expiredFetch);
-
-    // Sem data/.credentials.json, retorna missing (cobertura de missing via ausência de arquivo)
-    assert.ok(
-      result.state === "missing" || result.state === "expired",
-      `state deve ser missing ou expired, got: ${result.state}`,
+    const result = await checkOAuthLock(
+      throwingFetch("never called"),
+      undefined,
+      expiredHealthFn,
     );
-    if (result.state === "missing" || result.state === "expired") {
-      assert.ok(result.blocks_stages.includes(0), "deve bloquear stage 0");
-      assert.ok(result.blocks_stages.includes(1), "deve bloquear stage 1");
-      assert.ok(result.blocks_stages.includes(3), "deve bloquear stage 3");
-      assert.ok(
-        result.reauth_action.includes("oauth-setup.ts"),
-        "ação deve mencionar oauth-setup.ts",
-      );
-    }
+
+    // Deve retornar ESPECIFICAMENTE expired — não missing nem unchecked
+    assert.equal(result.state, "expired", `state deve ser exatamente 'expired', got: ${result.state}`);
+    assert.ok(result.blocks_stages.includes(0), "deve bloquear stage 0");
+    assert.ok(result.blocks_stages.includes(1), "deve bloquear stage 1");
+    assert.ok(result.blocks_stages.includes(3), "deve bloquear stage 3");
+    assert.ok(result.blocks_stages.includes(4), "deve bloquear stage 4");
+    assert.ok(result.blocks_stages.includes(5), "deve bloquear stage 5");
+    assert.ok(
+      result.reauth_action.includes("oauth-setup.ts"),
+      "ação deve mencionar oauth-setup.ts",
+    );
   });
 
   it("2. OAuth ok (mock fetch de refresh bem-sucedido)", async () => {
