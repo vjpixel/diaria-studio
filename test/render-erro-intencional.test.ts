@@ -1514,7 +1514,7 @@ describe("checkNarrativeNotGenericPlaceholder — invariant Stage 4 (#2377)", ()
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       assert.equal(violations.length, 1, "deve retornar 1 violation para o narrative genérico");
       assert.equal(violations[0].rule, "narrative-not-generic-placeholder");
-      assert.equal(violations[0].severity, "error");
+      assert.equal(violations[0].severity, "warning"); // hotfix: rebaixado error→warning (#2403)
       assert.match(
         violations[0].message,
         /placeholder genérico|há um erro proposital/i,

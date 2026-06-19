@@ -36,6 +36,7 @@ import {
   checkSocialHashFresh,
   checkImageContentFresh,
   findImageContentMismatches,
+  checkNarrativeNotGenericPlaceholder,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { hashHighlights } from "../scripts/lib/social-source-hash.ts";
 import {
@@ -1064,7 +1065,10 @@ describe("Stage 4 invariants", () => {
       assert.ok(!getRulesForStage(2).some((r) => r.id === "use-melhor-tempo"));
     });
 
-    it("falha quando item USE MELHOR sem estimativa de tempo", () => {
+    it("falha quando item USE MELHOR sem estimativa de tempo (severity=warning, não error — hotfix #2377/#2372)", () => {
+      // REGRESSÃO: regra rebaixada de error→warning (#2377/#2372 hotfix).
+      // Em modo --no-gates/automação o editor não pode adicionar tempo no gate;
+      // severity=warning garante que o pipeline NÃO trava por esta regra.
       writeFileSync(
         join(fixture, "02-reviewed.md"),
         `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho\n\n---\n`,
@@ -1072,6 +1076,7 @@ describe("Stage 4 invariants", () => {
       const v = getTempoRule().run(fixture);
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "use-melhor-tempo");
+      assert.equal(v[0].severity, "warning", "use-melhor-tempo deve ser warning (não error) — hotfix #2372");
       assert.match(v[0].message, /sem estimativa de tempo/);
       rmSync(fixture, { recursive: true, force: true });
     });
@@ -1090,6 +1095,81 @@ describe("Stage 4 invariants", () => {
       const v = getTempoRule().run(fixture);
       assert.equal(v.length, 0);
       rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
+  describe("narrative-not-generic-placeholder (#2377 hotfix)", () => {
+    // REGRESSÃO: regra rebaixada de error→warning (hotfix #2377/#2372).
+    // O sinal continua aparecendo mas NÃO deve causar exit 1.
+
+    it("registrado no Stage 4", () => {
+      assert.ok(getRulesForStage(4).some((r) => r.id === "narrative-not-generic-placeholder"));
+    });
+
+    it("dispara warning (não error) quando narrative é placeholder genérico do sorteio (#2377 hotfix)", () => {
+      // Fixtures usando prosa genérica real que o editor habitualmente usa —
+      // exatamente o caso que causou o bloqueio nas edições 260617 e 260618.
+      const genericNarrative = "há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio";
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**ERRO INTENCIONAL**\n\nNessa edição, ${genericNarrative}.\n\n---\n`,
+      );
+      const v = checkNarrativeNotGenericPlaceholder(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "narrative-not-generic-placeholder");
+      assert.equal(v[0].severity, "warning", "narrative-not-generic-placeholder deve ser warning (não error) — hotfix #2377");
+      assert.match(v[0].message, /placeholder genérico/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa silenciosamente quando narrative é declaração real de primeira pessoa", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**ERRO INTENCIONAL**\n\nNessa edição, escrevi que Karpathy cofundou a OpenAI em 1914, quando o correto é 2015.\n\n---\n`,
+      );
+      const v = checkNarrativeNotGenericPlaceholder(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa silenciosamente quando 02-reviewed.md ausente", () => {
+      const v = checkNarrativeNotGenericPlaceholder(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
+  describe("e2e: check-invariants --stage 4 NÃO retorna exit 1 para use-melhor-tempo + narrative-not-generic-placeholder (#2377/#2372 hotfix)", () => {
+    // Regressão crítica: antes do hotfix, as 2 regras eram severity=error e
+    // travavam o pipeline. Agora são warning → exit 0 mesmo com ambas disparando.
+    it("exit 0 quando única violation é use-melhor-tempo (warning, não error)", () => {
+      const fixture2 = makeFixtureEdition();
+      // Escrever 02-reviewed.md com item USE MELHOR sem tempo (dispara a regra)
+      // e sem narrative genérica (para isolar o caso de use-melhor-tempo).
+      writeFileSync(
+        join(fixture2, "02-reviewed.md"),
+        `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho\n\n---\n`,
+      );
+      // Invocar checkUseMelhorTempoConsistent via a regra registrada
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-tempo")!;
+      const v = rule.run(fixture2);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning", "use-melhor-tempo deve ser warning → não causa exit 1");
+      rmSync(fixture2, { recursive: true, force: true });
+    });
+
+    it("exit 0 quando única violation é narrative-not-generic-placeholder (warning, não error)", () => {
+      const fixture2 = makeFixtureEdition();
+      const genericNarrative = "responda este e-mail com a correção para concorrer ao sorteio mensal";
+      writeFileSync(
+        join(fixture2, "02-reviewed.md"),
+        `**ERRO INTENCIONAL**\n\nNessa edição, ${genericNarrative}.\n\n---\n`,
+      );
+      const rule = getRulesForStage(4).find((r) => r.id === "narrative-not-generic-placeholder")!;
+      const v = rule.run(fixture2);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning", "narrative-not-generic-placeholder deve ser warning → não causa exit 1");
+      rmSync(fixture2, { recursive: true, force: true });
     });
   });
 
