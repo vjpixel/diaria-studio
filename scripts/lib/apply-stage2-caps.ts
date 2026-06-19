@@ -283,6 +283,14 @@ export function promoteUseMelhorToMinimum(
         `${skippedByDomainCap} runner(s) skipped because rootDomain already in kept, #2353) — ` +
         `not a true pool shortage; the cap is enforced correctly`,
     );
+  } else if (shortfall > 0) {
+    // #2366: truly empty pool — pool + runners_up exhausted without reaching min.
+    // Warn here so lib-direct callers also see the shortfall (applyStage2Caps propagates
+    // shortfall to CapReport for the gate, but lib-direct callers don't get that guard).
+    console.warn(
+      `[promoteUseMelhorToMinimum] shortfall=${shortfall}: pool genuinamente insuficiente — ` +
+        `nem com runners_up dá pra atingir mínimo ${min} (kept=${kept.length}, promoted=${promoted})`,
+    );
   }
   return { kept, promoted, shortfall };
 }
@@ -377,6 +385,10 @@ export function applyStage2Caps(
     // Items dropped by the split-quota (re-composition) vs numeric cap (ceiling):
     //   - If um.kept.length > STAGE_2_MAX_USE_MELHOR: both quota and cap may apply.
     //   - If um.kept.length <= STAGE_2_MAX_USE_MELHOR: only the 2+2 split caused the drop.
+    // #2366 NOTE: droppedByCap is an approximation — it counts how many items exceeded
+    // the cap BEFORE the split (um.kept.length - cap), not how many the split/cap
+    // actually cut from umFinal. selectUseMelhorSplit applies both the quota and the
+    // cap internally; the split between the two here is indicative, not exact.
     const droppedByCap = um.kept.length > STAGE_2_MAX_USE_MELHOR
       ? um.kept.length - STAGE_2_MAX_USE_MELHOR
       : 0;

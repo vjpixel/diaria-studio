@@ -25,6 +25,7 @@ import {
   renameDestaqueImages,
   renameDestaquePrompts,
 } from "../scripts/reorder-destaques.ts";
+import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 
 describe("reorderHighlightsInJson (#1585)", () => {
   it("swap 1↔2: highlights[0]=original[1], highlights[1]=original[0]", () => {
@@ -227,6 +228,84 @@ intentional_error:
 
 x`;
     assert.equal(updateIntentionalErrorLocation(md, [2, 1, 3]), md);
+  });
+
+  it("#2366: location 'DESTAQUE 3' + newOrder=[2,1] (3→2 rebase) → marca REVISAR (não fica stale)", () => {
+    // Caso de reorder numa edição rebaixada de 3 para 2 destaques:
+    // o frontmatter ainda guarda location='DESTAQUE 3', mas DESTAQUE 3
+    // não existe mais em newOrder=[2,1]. Antes do fix #2366, retornava
+    // full (location stale silenciosa). Após o fix, marca um sentinel REVISAR.
+    const md = `---
+intentional_error:
+  location: "DESTAQUE 3, parágrafo 1"
+  category: factual
+---
+
+Body...`;
+    const result = updateIntentionalErrorLocation(md, [2, 1]);
+    // Stale 'DESTAQUE 3' removido + sentinel REVISAR escrito
+    assert.ok(
+      !result.includes("DESTAQUE 3"),
+      `location 'DESTAQUE 3' stale deveria ter sido removida. Resultado: ${result}`,
+    );
+    assert.match(
+      result,
+      /location:\s*"\[REVISAR/,
+      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result}`,
+    );
+  });
+
+  it("#2366: location REVISAR NÃO é vazia — passa o lint intentional-error (não bloqueia Stage 5)", () => {
+    // Guard de regressão crítico (code-review #2395): se o fix limpasse a
+    // location pra string vazia, checkIntentionalError reportaria
+    // "intentional_error_incomplete: campos faltando — location" → ok:false
+    // → BLOQUEIA publicação no Stage 5. O sentinel não-vazio passa o lint.
+    const md = `---
+intentional_error:
+  description: "Erro de data"
+  location: "DESTAQUE 3, parágrafo 1"
+  category: "factual_synthetic"
+  correct_value: "2026"
+---
+
+Body...`;
+    const result = updateIntentionalErrorLocation(md, [2, 1]);
+    const dir = mkdtempSync(join(tmpdir(), "reorder-lint-"));
+    try {
+      const p = join(dir, "02-reviewed.md");
+      writeFileSync(p, result);
+      const lint = checkIntentionalError(p);
+      assert.equal(
+        lint.ok,
+        true,
+        `lint deveria passar com sentinel não-vazio. Label: ${lint.label ?? "(none)"}`,
+      );
+      assert.ok(
+        !/campos faltando/.test(lint.label ?? ""),
+        `location não deveria ser reportada como faltando. Label: ${lint.label}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2366: location 'DESTAQUE 2' + newOrder=[1] (reduz a 1 destaque hipotético) → marca REVISAR", () => {
+    // Mesmo padrão: destaque referenciado não existe em newOrder
+    const md = `---
+intentional_error:
+  location: "DESTAQUE 2"
+---
+x`;
+    const result = updateIntentionalErrorLocation(md, [1]);
+    assert.ok(
+      !result.includes("DESTAQUE 2"),
+      `location 'DESTAQUE 2' stale deveria ter sido removida. Resultado: ${result}`,
+    );
+    assert.match(
+      result,
+      /\[REVISAR/,
+      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result}`,
+    );
   });
 });
 

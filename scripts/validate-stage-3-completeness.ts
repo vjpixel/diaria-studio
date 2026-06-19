@@ -8,8 +8,9 @@
  * Cobre:
  *   1. È IA? images (`01-eia-A.jpg` + `01-eia-B.jpg`) — pre-#192 fallback
  *      pra `01-eia-real.jpg` + `01-eia-ia.jpg` aceito
- *   2. Destaque images (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`,
- *      `04-d3-1x1.jpg`) — D3 obrigatório só em edições 3-destaque (#2352)
+ *   2. Destaque images (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`,
+ *      `04-d2-1x1.jpg`, `04-d3-2x1.jpg`, `04-d3-1x1.jpg`) — D3 obrigatório
+ *      só em edições 3-destaque (#2352); D2 2x1 hero adicionado (#2133/#2141/#2366)
  *   3. EIA metadata (`_internal/01-eia-meta.json`) — produzido pelo eia-compose
  *   4. EIA markdown (`01-eia.md`) — produzido pelo eia-compose
  *
@@ -27,7 +28,19 @@
 
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
+import {
+  readDestaqueCount,
+  REQUIRED_IMAGES_BASE,
+  REQUIRED_IMAGES_D3,
+} from "./lib/invariant-checks/stage-3.ts";
+
+// #2366: deriva a lista de imagens de destaque da fonte canônica
+// (REQUIRED_IMAGES_BASE/D3 em stage-3.ts) em vez de re-listar inline — sem isso,
+// adicionar uma imagem em REQUIRED_IMAGES_BASE (como 04-d2-2x1.jpg em #2133/#2141)
+// silenciosamente divergia desta validação. As imagens È IA? (01-eia-*) são
+// checadas separadamente na seção 1; aqui só interessa os destaques `04-*`.
+const DESTAQUE_IMAGES_BASE = REQUIRED_IMAGES_BASE.filter((f) => f.startsWith("04-"));
+const DESTAQUE_IMAGES_D3 = REQUIRED_IMAGES_D3.filter((f) => f.startsWith("04-"));
 
 interface Missing {
   file: string;
@@ -75,12 +88,15 @@ export function findMissingStage3Outputs(editionDir: string): Missing[] {
     }
   }
 
-  // 2. Destaque images — D3 apenas requerida em edições 3-destaque (#2352)
+  // 2. Destaque images — D3 apenas requerida em edições 3-destaque (#2352).
+  // #2366: lista derivada de REQUIRED_IMAGES_BASE/D3 (stage-3.ts) em vez de
+  // re-listada inline, para não divergir de novo (04-d2-2x1.jpg hero D2 estava
+  // ausente desta validação apesar de constar na fonte canônica).
   const destaqueCount = readDestaqueCount(editionDir);
   const destaques =
     destaqueCount === 2
-      ? ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-1x1.jpg"]
-      : ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"];
+      ? DESTAQUE_IMAGES_BASE
+      : [...DESTAQUE_IMAGES_BASE, ...DESTAQUE_IMAGES_D3];
   for (const name of destaques) {
     const p = resolve(editionDir, name);
     if (!existsSync(p)) {

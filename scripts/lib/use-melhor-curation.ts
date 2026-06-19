@@ -523,10 +523,17 @@ export function selectUseMelhorSplit(
     targetCasual = Math.min(2, target);
     targetDev = Math.min(2, target - targetCasual);
   }
-  if (targetDev === 0 && target >= 2 && devBeginner.length > 0) {
-    // Should be unreachable after the fix above; warn if logic drifts.
+  // #2366: drift-detection guard (not a routine warn). O warn original disparava
+  // falso-alarme no caso legítimo de pool all-dev (sem casual): aí bothClassesExist
+  // é false e caímos no else com targetDev=min(2, target-targetCasual)=0 — comportamento
+  // correto, não merece warn. Adicionando `&& bothClassesExist` o warn só dispara se,
+  // COM as duas classes presentes, a fórmula de quota acima produzir targetDev=0 — o que
+  // hoje é estruturalmente impossível (target∈[2,4) → branch small dá targetDev≥1;
+  // target≥4 → else dá targetDev=min(2,target-2)≥2). Fica como armadilha de regressão:
+  // se a fórmula derivar no futuro e voltar a zerar dev com ambas as classes, o warn pega.
+  if (targetDev === 0 && target >= 2 && devBeginner.length > 0 && bothClassesExist) {
     console.warn(
-      `[selectUseMelhorSplit] targetDev computed to 0 with target=${target} and ${devBeginner.length} dev-iniciante candidates — check quota logic`,
+      `[selectUseMelhorSplit] targetDev computed to 0 with target=${target} and ${devBeginner.length} dev-iniciante candidates despite both classes existing — check quota logic`,
     );
   }
 

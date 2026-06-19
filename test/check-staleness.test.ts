@@ -8,6 +8,7 @@ import {
   lagMinutes,
   evaluateStaleness,
   STAGE_CHECKS,
+  getStageChecksForEdition,
   extractReviewedUrls,
   extractPromptUrlLocal,
   imageUrlsMatch,
@@ -760,5 +761,103 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
   it("Stage 3 checa só 03-social.md", () => {
     assert.equal(STAGE_CHECKS["3"].length, 1);
     assert.equal(STAGE_CHECKS["3"][0].downstream, "03-social.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2366 — getStageChecksForEdition: d3 condicional ao destaque_count
+// ---------------------------------------------------------------------------
+
+describe("getStageChecksForEdition #2366 — 2-destaque sem d3 FP", () => {
+  function makeEditionDir(destaqueCount: 2 | 3): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-2d-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    if (destaqueCount === 2) {
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+      );
+    } else {
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }, { rank: 3 }] }),
+      );
+    }
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("edição 2-destaque: checks de Stage 4 não incluem d3", () => {
+    const { dir, cleanup } = makeEditionDir(2);
+    try {
+      const checks = getStageChecksForEdition("4", dir);
+      const d3Entries = checks.filter(
+        (c) => c.downstream.includes("d3") || c.upstreams.some((u) => u.includes("d3")),
+      );
+      assert.equal(
+        d3Entries.length,
+        0,
+        `edição 2-destaque não deve ter checks de d3 em Stage 4. Encontrei: ${JSON.stringify(d3Entries)}`,
+      );
+      // Mas d1 e d2 ainda devem estar
+      const d1 = checks.find((c) => c.downstream.includes("d1"));
+      const d2 = checks.find((c) => c.downstream.includes("d2"));
+      assert.ok(d1, "d1 check deve estar presente em edição 2-destaque");
+      assert.ok(d2, "d2 check deve estar presente em edição 2-destaque");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edição 2-destaque: checks de Stage 6 não incluem d3", () => {
+    const { dir, cleanup } = makeEditionDir(2);
+    try {
+      const checks = getStageChecksForEdition("6", dir);
+      const d3Entries = checks.filter(
+        (c) => c.downstream.includes("d3") || c.upstreams.some((u) => u.includes("d3")),
+      );
+      assert.equal(d3Entries.length, 0, `Stage 6 2-destaque não deve ter checks de d3`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edição 3-destaque: checks de Stage 4 ainda incluem d3", () => {
+    const { dir, cleanup } = makeEditionDir(3);
+    try {
+      const checks = getStageChecksForEdition("4", dir);
+      const d3 = checks.find((c) => c.downstream.includes("d3"));
+      assert.ok(d3, "edição 3-destaque deve ter checks de d3 em Stage 4");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edição 2-destaque: d3 residual NÃO dispara falso-positivo de staleness", () => {
+    // Cenário: edição 2-destaque, mas um 04-d3-1x1.jpg de run anterior sobrou no dir.
+    // Antes do fix #2366, o check de d3 existia → mtime do d3 residual seria comparado
+    // com _internal/02-d3-prompt.md (ausente → getMtime null → skip). Mas com um
+    // prompt presente (de uma run anterior), dispararia FP.
+    // Com getStageChecksForEdition, o check de d3 é filtrado → nunca dispara.
+    const { dir, cleanup } = makeEditionDir(2);
+    try {
+      const checks = getStageChecksForEdition("4", dir);
+      // Simular getMtime que retorna tempos para d3 (como se sobrassem arquivos antigos)
+      function getMtime(relPath: string): number | null {
+        if (relPath === "04-d3-1x1.jpg") return Date.parse("2026-04-24T18:00:00Z"); // d3 residual
+        if (relPath === "_internal/02-d3-prompt.md") return Date.parse("2026-04-24T22:00:00Z"); // prompt "novo"
+        if (relPath === "03-social.md") return Date.parse("2026-04-24T23:00:00Z"); // fresco
+        if (relPath === "02-reviewed.md") return Date.parse("2026-04-24T22:00:00Z");
+        return null;
+      }
+      const stale = evaluateStaleness(checks, getMtime);
+      const d3Stale = stale.filter((s) => s.downstream.includes("d3"));
+      assert.equal(
+        d3Stale.length,
+        0,
+        `d3 residual NÃO deve disparar staleness em edição 2-destaque. Encontrei: ${JSON.stringify(d3Stale)}`,
+      );
+    } finally {
+      cleanup();
+    }
   });
 });

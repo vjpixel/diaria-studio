@@ -46,6 +46,7 @@ import {
   extractDestaqueUrls,
   extractPromptUrl,
 } from "./match-prompts-to-destaques.ts";
+import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 
 // ---------------------------------------------------------------------------
 // Params de tracking que a versão local (normalizeUrl pré-#2308) stripava
@@ -91,6 +92,42 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
   // Stage 3 (social) deriva de 02-reviewed.md.
   "3": [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }],
 };
+
+/**
+ * #2366: retorna os STAGE_CHECKS filtrados pelo destaque_count da edição.
+ * Em edições 2-destaque, remove entradas que referenciam d3 (04-d3-*.jpg,
+ * _internal/02-d3-prompt.md) — sem isso, um arquivo d3 residual de run
+ * 3-destaque anterior pode disparar falso-positivo de staleness.
+ *
+ * Os STAGE_CHECKS estáticos são preservados para compatibilidade com testes.
+ * Esta função é usada pelo CLI em vez de STAGE_CHECKS[stage] diretamente.
+ */
+export function getStageChecksForEdition(
+  stage: string,
+  editionDir: string,
+): StageCheck[] {
+  const checks = STAGE_CHECKS[stage] ?? [];
+  const destaqueCount = readDestaqueCount(editionDir);
+  // 3-destaque: nada a filtrar — retorna uma cópia (não a referência viva de
+  // STAGE_CHECKS) para que um caller que mute o array não corrompa a constante
+  // compartilhada. Espelha a postura defensiva do branch 2-destaque (.filter()).
+  if (destaqueCount === 3) return [...checks];
+  // 2-destaque: remover entradas cujo downstream ou upstream referenciam o slot d3.
+  // Match por segmento (`-d3-`, `02-d3-`, etc) via isD3Path, não substring solto,
+  // para não filtrar por engano um caminho futuro com "d3" fora de um slot.
+  return checks.filter(
+    (c) => !isD3Path(c.downstream) && !c.upstreams.some(isD3Path),
+  );
+}
+
+/**
+ * True se o caminho referencia o slot de destaque d3 — match por segmento
+ * (`d3` delimitado por início/fim, `/`, `_`, `-`, `.`), não substring solto.
+ * Evita falso-positivo com caminhos hipotéticos como `02-d30-...` ou `index3d`.
+ */
+function isD3Path(relPath: string): boolean {
+  return /(^|[/_-])d3([-.]|$)/.test(relPath);
+}
 
 // ---------------------------------------------------------------------------
 // image-content-fresh helpers (#2287)
@@ -349,7 +386,8 @@ function main(): void {
     process.exit(2);
   }
 
-  const checks = STAGE_CHECKS[parsed.stage] ?? [];
+  // #2366: use edition-aware checks (d3 entries filtered for 2-destaque editions)
+  const checks = getStageChecksForEdition(parsed.stage, editionDir);
   const getMtime = (relPath: string): number | null => {
     const full = resolve(editionDir, relPath);
     if (!existsSync(full)) return null;
