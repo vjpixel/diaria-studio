@@ -101,3 +101,72 @@ export async function uploadImageToWorkerKV(
 
   return `${workerUrl}/img/${encodeURIComponent(key)}`;
 }
+
+/**
+ * #2426: grava um VALOR DE TEXTO (string) numa chave KV via Cloudflare API.
+ * Análogo a uploadImageToWorkerKV, mas pra payloads de texto (ex: JSON de
+ * coortes lido pelo worker clarice-dashboard) em vez de arquivo binário.
+ *
+ * Diferente de uploadImageToWorkerKV: o `key` aqui é a própria chave KV lida
+ * pelo Worker via binding (`env.STATS_CACHE.get(key)`), não um path `/img/{key}`.
+ * Não retorna URL — o consumo é server-side (binding), não hotlink HTTP.
+ *
+ * @param value          conteúdo (string já serializada, ex: JSON.stringify(...))
+ * @param key            chave KV (ex: "cohorts:engagement")
+ * @param cfg            credenciais + namespace + contentType opcional
+ * @throws Error se credenciais faltam, ou se o PUT retorna status != 2xx
+ */
+export async function uploadTextToWorkerKV(
+  value: string,
+  key: string,
+  cfg: CloudflareKVConfig & { contentType?: string },
+): Promise<void> {
+  const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
+
+  if (!accountId || !token) {
+    throw new Error(
+      "uploadTextToWorkerKV: CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos. " +
+        "Passar via cfg ou env.",
+    );
+  }
+  if (!cfg.kvNamespaceId) {
+    throw new Error("uploadTextToWorkerKV: cfg.kvNamespaceId obrigatório");
+  }
+
+  const buf = Buffer.from(value, "utf-8");
+  const contentType = cfg.contentType ?? "text/plain; charset=utf-8";
+
+  await new Promise<void>((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "api.cloudflare.com",
+        path: `/client/v4/accounts/${accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(key)}`,
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": contentType,
+          "Content-Length": buf.length,
+        },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        res.on("end", () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                `Cloudflare KV upload de '${key}' falhou (${res.statusCode}): ${body}`,
+              ),
+            );
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(buf);
+    req.end();
+  });
+}

@@ -136,6 +136,28 @@ interface BrevoList {
   totalSubscribers: number;
 }
 
+/**
+ * #2426: coortes de engajamento por contato. Pré-computadas pelo script
+ * `scripts/clarice-engagement-cohorts.ts` (que faz os ~40k GETs per-contato
+ * fora do Worker) e gravadas no KV sob `cohorts:engagement`. O Worker só lê e
+ * renderiza — nunca recomputa no render. As 5 coortes são mutuamente exclusivas
+ * (cada contato em exatamente uma); "saídas" (bounce/unsub) têm precedência.
+ *
+ * Mantido em sincronia com a interface homônima em
+ * scripts/clarice-engagement-cohorts.ts (bundles separados não compartilham tipos).
+ */
+export interface EngagementCohorts {
+  generatedAt: string;
+  universe: number;
+  opened2plus: number;
+  opened1: number;
+  received1_opened0: number;
+  received2_opened0: number;
+  exits: number;
+  exitsBreakdown: { bounced: number; optedOut: number };
+  maxReceived: number;
+}
+
 
 // ─── #2144: helpers de controle de concorrência e cache ──────────────────────
 
@@ -235,6 +257,11 @@ export const RECENT_STATS_TTL = 1800; // segundos (30min) — #2282
 // #2280: "último render bom" — HTML do `/` renderizado com sucesso é gravado no KV.
 // Em 429 (após retry), servimos este fallback (200 + banner) em vez de 503, pra que
 // uma janela de rate-limit não esconda dado correto nem regrida pra cache poisoned.
+// #2426: chave KV das coortes de engajamento, gravada por
+// scripts/clarice-engagement-cohorts.ts. Mantida em sincronia com COHORTS_KV_KEY
+// daquele script (bundles separados não compartilham constantes).
+export const COHORTS_KV_KEY = "cohorts:engagement";
+
 export const LASTGOOD_KEY = "dash:lastgood:html";
 export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
 
@@ -1111,6 +1138,7 @@ function fmtTimeBRT(iso: string | null): string {
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
+  cohorts: EngagementCohorts | null = null, // #2426: pré-computado via KV
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -1241,6 +1269,8 @@ export function renderDashboardHtml(
   // #2369: tabela de totais por mês — à parte da lista detalhada de campanhas.
   const monthlyTotalsRows = aggregateByMonth(campaigns);
   const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
+  // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
+  const cohortsSection = renderEngagementCohortsSection(cohorts);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -1316,6 +1346,7 @@ export function renderDashboardHtml(
 <body>
 <h1>📧 Clarice News Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+${cohortsSection}
 ${aggregatedLinksSection}
 ${scheduledSection}
 ${volumeSection}
@@ -2127,6 +2158,69 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
 }
 
 /**
+ * #2426: renderiza a tabela de coortes de engajamento por contato.
+ * Cada contato cai em EXATAMENTE uma coorte (partição mutuamente exclusiva);
+ * "saídas" (bounce/descadastro) têm precedência sobre engajamento. O dado é
+ * pré-computado por scripts/clarice-engagement-cohorts.ts → KV.
+ *
+ * Graceful: quando `cohorts` é null (KV ainda não populado), renderiza um stub
+ * com a instrução de como gerar — seção presente, nunca quebra o render.
+ * Exportado pra teste unitário.
+ */
+export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null): string {
+  if (!cohorts) {
+    return `
+<section class="phase2-section" id="engagement-cohorts">
+  <h2 class="section-title">Coortes de engajamento</h2>
+  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-engagement-cohorts.ts</code> para popular (faz os GETs per-contato e grava no KV).</p>
+</section>`;
+  }
+
+  const u = cohorts.universe;
+  const genBRT = fmtTimeBRT(cohorts.generatedAt);
+  // Rótulo "2+" (#2426 review): os buckets são definidos como ≥2 (abriu ≥2 /
+  // recebeu ≥2), então "2+" é sempre exato — não acoplar ao maxReceived, que
+  // descreve o máximo recebido e podia rotular errado o bucket de OPENS (open
+  // pode exceder received em anomalias de tracking da Brevo).
+
+  const defs: Array<{ label: string; title: string; n: number }> = [
+    { label: "Abriu 2+ e-mails", title: "Contatos que abriram 2 ou mais e-mails (e não saíram).", n: cohorts.opened2plus },
+    { label: "Abriu 1 e-mail", title: "Contatos que abriram exatamente 1 e-mail (e não saíram).", n: cohorts.opened1 },
+    { label: "Recebeu 1, não abriu", title: "Recebeu 1 e-mail e não abriu nenhum (e não saiu).", n: cohorts.received1_opened0 },
+    { label: "Recebeu 2+, não abriu", title: "Recebeu 2 ou mais e-mails e não abriu nenhum (e não saiu).", n: cohorts.received2_opened0 },
+    {
+      label: "Saídas (bounce/descadastro)",
+      title: `Contatos com bounce ou descadastro — precedência sobre tudo (não importa se abriram). Bounce: ${cohorts.exitsBreakdown.bounced.toLocaleString("pt-BR")} · descadastro/suprimido: ${cohorts.exitsBreakdown.optedOut.toLocaleString("pt-BR")}.`,
+      n: cohorts.exits,
+    },
+  ];
+
+  const tableRows = defs.map((d) => `<tr>
+      <td title="${escHtml(d.title)}"><strong>${escHtml(d.label)}</strong></td>
+      <td class="metric">${d.n.toLocaleString("pt-BR")}</td>
+      <td>${pct(d.n, u)}</td>
+    </tr>`).join("\n");
+
+  return `
+<section class="phase2-section" id="engagement-cohorts">
+  <h2 class="section-title">Coortes de engajamento</h2>
+  <p class="section-note">${u.toLocaleString("pt-BR")} contatos no universo (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Coorte de engajamento (mutuamente exclusivas).">Coorte</th>
+        <th title="Número de contatos nesta coorte.">Pessoas</th>
+        <th title="Participação no universo.">% do universo</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
  * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
  * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
@@ -2254,7 +2348,12 @@ export default {
           return [];
         });
         const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
-        const html = renderDashboardHtml(campaigns, scheduled);
+        // #2426: coortes de engajamento (pré-computadas pelo script → KV). Leitura
+        // barata (1 KV get); null degrada pra stub na seção (nunca quebra o render).
+        const cohorts = env.STATS_CACHE
+          ? ((await env.STATS_CACHE.get(COHORTS_KV_KEY, "json").catch(() => null)) as EngagementCohorts | null)
+          : null;
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
