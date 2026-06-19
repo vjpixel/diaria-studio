@@ -731,12 +731,14 @@ Fim do texto.`;
 });
 
 describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
-  it("Stage 6 cobre 03-social.md + 4 imagens", () => {
+  it("Stage 6 cobre 03-social.md + 6 imagens (incl. heroes 2x1 de d2/d3 — #2400)", () => {
     const downstreams = STAGE_CHECKS["6"].map((c) => c.downstream);
     assert.ok(downstreams.includes("03-social.md"));
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
     assert.ok(downstreams.includes("04-d1-1x1.jpg"));
+    assert.ok(downstreams.includes("04-d2-2x1.jpg"), "#2400: hero 2x1 D2 deve estar em Stage 6");
     assert.ok(downstreams.includes("04-d2-1x1.jpg"));
+    assert.ok(downstreams.includes("04-d3-2x1.jpg"), "#2400: hero 2x1 D3 deve estar em Stage 6");
     assert.ok(downstreams.includes("04-d3-1x1.jpg"));
   });
 
@@ -747,20 +749,145 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     assert.deepEqual(byDown["03-social.md"], ["02-reviewed.md"]);
     assert.deepEqual(byDown["04-d1-2x1.jpg"], ["_internal/02-d1-prompt.md"]);
     assert.deepEqual(byDown["04-d1-1x1.jpg"], ["_internal/02-d1-prompt.md"]);
+    assert.deepEqual(byDown["04-d2-2x1.jpg"], ["_internal/02-d2-prompt.md"], "#2400: hero D2 → d2-prompt");
     assert.deepEqual(byDown["04-d2-1x1.jpg"], ["_internal/02-d2-prompt.md"]);
+    assert.deepEqual(byDown["04-d3-2x1.jpg"], ["_internal/02-d3-prompt.md"], "#2400: hero D3 → d3-prompt");
     assert.deepEqual(byDown["04-d3-1x1.jpg"], ["_internal/02-d3-prompt.md"]);
   });
 
-  it("#1413: Stage 4 cobre imagens + 03-social.md", () => {
+  it("#1413: Stage 4 cobre imagens + 03-social.md (incl. heroes 2x1 D2/D3 — #2400)", () => {
     const downstreams = STAGE_CHECKS["4"].map((c) => c.downstream);
     assert.ok(downstreams.includes("03-social.md"), "social staleness deve estar coberto em S4");
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
+    assert.ok(downstreams.includes("04-d2-2x1.jpg"), "#2400: hero 2x1 D2 deve estar em Stage 4");
     assert.ok(downstreams.includes("04-d2-1x1.jpg"));
+    assert.ok(downstreams.includes("04-d3-2x1.jpg"), "#2400: hero 2x1 D3 deve estar em Stage 4");
   });
 
   it("Stage 3 checa só 03-social.md", () => {
     assert.equal(STAGE_CHECKS["3"].length, 1);
     assert.equal(STAGE_CHECKS["3"][0].downstream, "03-social.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2400 — heroes 2x1 D2/D3 detectados como stale (regressão)
+// ---------------------------------------------------------------------------
+
+describe("#2400 — check-staleness detecta heroes 04-d2-2x1 / 04-d3-2x1 stale", () => {
+  function mkGetter(mtimes: Record<string, number | null>) {
+    return (path: string) => mtimes[path] ?? null;
+  }
+
+  const imgOld = Date.parse("2026-06-15T08:00:00Z"); // imagem gerada antes do prompt ser editado
+  const promptNew = Date.parse("2026-06-15T09:30:00Z"); // prompt editado depois
+
+  it("Stage 4: 04-d2-2x1.jpg stale vs _internal/02-d2-prompt.md → flag (#2400)", () => {
+    const get = mkGetter({
+      "04-d2-2x1.jpg": imgOld,
+      "_internal/02-d2-prompt.md": promptNew,
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["4"], get);
+    const entry = stale.find((s) => s.downstream === "04-d2-2x1.jpg");
+    assert.ok(
+      entry,
+      "#2400: 04-d2-2x1.jpg stale deve ser detectado em Stage 4 (antes passava silencioso)",
+    );
+    assert.equal(entry!.upstream, "_internal/02-d2-prompt.md");
+  });
+
+  it("Stage 6: 04-d2-2x1.jpg stale vs _internal/02-d2-prompt.md → flag (#2400)", () => {
+    const get = mkGetter({
+      "04-d2-2x1.jpg": imgOld,
+      "_internal/02-d2-prompt.md": promptNew,
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
+    const entry = stale.find((s) => s.downstream === "04-d2-2x1.jpg");
+    assert.ok(
+      entry,
+      "#2400: 04-d2-2x1.jpg stale deve ser detectado em Stage 6 (antes passava silencioso)",
+    );
+    assert.equal(entry!.upstream, "_internal/02-d2-prompt.md");
+  });
+
+  it("Stage 4: 04-d3-2x1.jpg stale vs _internal/02-d3-prompt.md → flag (#2400)", () => {
+    const get = mkGetter({
+      "04-d3-2x1.jpg": imgOld,
+      "_internal/02-d3-prompt.md": promptNew,
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["4"], get);
+    const entry = stale.find((s) => s.downstream === "04-d3-2x1.jpg");
+    assert.ok(
+      entry,
+      "#2400: 04-d3-2x1.jpg stale deve ser detectado em Stage 4 (antes passava silencioso)",
+    );
+    assert.equal(entry!.upstream, "_internal/02-d3-prompt.md");
+  });
+
+  it("Stage 6: 04-d3-2x1.jpg stale vs _internal/02-d3-prompt.md → flag (#2400)", () => {
+    const get = mkGetter({
+      "04-d3-2x1.jpg": imgOld,
+      "_internal/02-d3-prompt.md": promptNew,
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
+    const entry = stale.find((s) => s.downstream === "04-d3-2x1.jpg");
+    assert.ok(
+      entry,
+      "#2400: 04-d3-2x1.jpg stale deve ser detectado em Stage 6 (antes passava silencioso)",
+    );
+    assert.equal(entry!.upstream, "_internal/02-d3-prompt.md");
+  });
+
+  it("Stage 4: edição 2-destaque — 04-d2-2x1.jpg stale detectado (destaque_count=2 inclui D2)", () => {
+    // D2 é obrigatório em edições 2-destaque — hero stale deve ser detectado.
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-2400-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "_internal", "01-approved-capped.json"),
+      JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+    );
+    try {
+      const checks = getStageChecksForEdition("4", dir);
+      const get = mkGetter({
+        "04-d2-2x1.jpg": imgOld,
+        "_internal/02-d2-prompt.md": promptNew,
+      });
+      const stale = evaluateStaleness(checks, get);
+      const entry = stale.find((s) => s.downstream === "04-d2-2x1.jpg");
+      assert.ok(
+        entry,
+        "#2400: 04-d2-2x1.jpg stale deve ser detectado em edição 2-destaque",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("Stage 4: edição 2-destaque — 04-d3-2x1.jpg residual NÃO dispara FP (filtrado pelo #2366)", () => {
+    // D3 é opcional em edições 2-destaque; um 04-d3-2x1.jpg residual de run anterior
+    // não deve disparar staleness.
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-2400-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "_internal", "01-approved-capped.json"),
+      JSON.stringify({ highlights: [{ rank: 1 }, { rank: 2 }] }),
+    );
+    try {
+      const checks = getStageChecksForEdition("4", dir);
+      const get = mkGetter({
+        "04-d3-2x1.jpg": imgOld,           // residual de run 3-destaque
+        "_internal/02-d3-prompt.md": promptNew, // prompt residual
+      });
+      const stale = evaluateStaleness(checks, get);
+      const d3Stale = stale.filter((s) => s.downstream.includes("d3"));
+      assert.equal(
+        d3Stale.length,
+        0,
+        "#2400+#2366: 04-d3-2x1.jpg residual NÃO deve disparar staleness em edição 2-destaque",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

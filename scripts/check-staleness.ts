@@ -46,7 +46,11 @@ import {
   extractDestaqueUrls,
   extractPromptUrl,
 } from "./match-prompts-to-destaques.ts";
-import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
+import {
+  readDestaqueCount,
+  REQUIRED_IMAGES_BASE,
+  REQUIRED_IMAGES_D3,
+} from "./lib/invariant-checks/stage-3.ts";
 
 // ---------------------------------------------------------------------------
 // Params de tracking que a versão local (normalizeUrl pré-#2308) stripava
@@ -66,27 +70,64 @@ interface StageCheck {
   upstreams: string[];
 }
 
+/**
+ * Mapeia um filename de imagem de destaque (ex: `04-d2-2x1.jpg`) para o
+ * caminho do prompt que a gerou (ex: `_internal/02-d2-prompt.md`).
+ * Extrai o slot (d1/d2/d3) via regex — invariante: imagens de destaque
+ * seguem o padrão `04-d{N}-*.jpg` definido em stage-3.ts.
+ */
+function imageToPromptPath(filename: string): string | null {
+  const m = filename.match(/^04-(d\d+)-/);
+  if (!m) return null;
+  return `_internal/02-${m[1]}-prompt.md`;
+}
+
+/**
+ * Deriva as entradas de check de imagem de destaque da fonte canônica
+ * (REQUIRED_IMAGES_BASE / REQUIRED_IMAGES_D3 de stage-3.ts), filtrando
+ * para apenas imagens `04-*`. Analogia direta com o que #2366 fez no
+ * validate-stage-3-completeness.ts — evita divergência quando REQUIRED_IMAGES_*
+ * ganhar novos heroes (como 04-d2-2x1.jpg em #2133/#2141, 04-d3-2x1.jpg).
+ * #2400: corrige omissão de 04-d2-2x1.jpg / 04-d3-2x1.jpg nos STAGE_CHECKS.
+ */
+function deriveImageChecks(images: string[]): StageCheck[] {
+  const checks: StageCheck[] = [];
+  for (const img of images) {
+    if (!img.startsWith("04-")) continue; // skip eia-* images
+    const promptPath = imageToPromptPath(img);
+    if (!promptPath) continue;
+    checks.push({ downstream: img, upstreams: [promptPath] });
+  }
+  return checks;
+}
+
+// Imagens de destaque base (d1 + d2 — todas as edições) e d3 (só 3-destaque).
+// Deriva de REQUIRED_IMAGES_BASE/D3 (stage-3.ts) para manter sincronismo.
+// #2400: inclui 04-d2-2x1.jpg e 04-d3-2x1.jpg que faltavam nos STAGE_CHECKS.
+const IMAGE_CHECKS_BASE: StageCheck[] = deriveImageChecks(REQUIRED_IMAGES_BASE);
+const IMAGE_CHECKS_D3: StageCheck[] = deriveImageChecks(REQUIRED_IMAGES_D3);
+
 export const STAGE_CHECKS: Record<string, StageCheck[]> = {
   // Stage 6 (publish social): 03-social.md (texto, deriva do corpo 02-reviewed.md)
   // + 04-d{1,2,3}*.jpg (imagens). #1710: as imagens derivam do PROMPT editorial
   // (_internal/02-d{N}-prompt.md), que é o que image-generate.ts lê — NÃO do
   // 02-reviewed.md. Comparar vs reviewed dava falso-positivo toda vez que o
   // editor ajustava texto pós-imagem (ou o sync pull tocava o mtime do MD).
+  // #2400: IMAGE_CHECKS_BASE/D3 derivados de stage-3.ts para incluir todos os
+  // heroes (04-d2-2x1.jpg + 04-d3-2x1.jpg) sem re-listar inline.
   "6": [
     { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
-    { downstream: "04-d1-1x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
-    { downstream: "04-d2-1x1.jpg", upstreams: ["_internal/02-d2-prompt.md"] },
-    { downstream: "04-d3-1x1.jpg", upstreams: ["_internal/02-d3-prompt.md"] },
+    ...IMAGE_CHECKS_BASE,
+    ...IMAGE_CHECKS_D3,
   ],
   // Stage 4 (publicação): imagens + social. #1710: imagens vs seu prompt
   // (_internal/02-d{N}-prompt.md), não 02-reviewed.md. #1413: 03-social.md
   // vs 02-reviewed.md (catch editor reestruturando destaques pós-Stage 2).
+  // #2400: IMAGE_CHECKS_BASE/D3 derivados de stage-3.ts para incluir todos os
+  // heroes (04-d2-2x1.jpg + 04-d3-2x1.jpg) sem re-listar inline.
   "4": [
-    { downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
-    { downstream: "04-d1-1x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
-    { downstream: "04-d2-1x1.jpg", upstreams: ["_internal/02-d2-prompt.md"] },
-    { downstream: "04-d3-1x1.jpg", upstreams: ["_internal/02-d3-prompt.md"] },
+    ...IMAGE_CHECKS_BASE,
+    ...IMAGE_CHECKS_D3,
     { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
   ],
   // Stage 3 (social) deriva de 02-reviewed.md.
