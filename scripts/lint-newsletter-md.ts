@@ -707,11 +707,11 @@ intentional_error:
       );
       for (const e of result.errors) {
         console.error(
-          `  item ${e.item} (linha ${e.titleLine}): descrição "${e.excerpt}" não contém "— N min"`,
+          `  item ${e.item} (linha ${e.titleLine}): descrição "${e.excerpt}" não contém "(N min)" ou "— N min"`,
         );
       }
       console.error(
-        `\nFix: adicione "— X min" ao final da descrição de cada item (ex: "— 5 min de leitura").`,
+        `\nFix: adicione "(X min)" ou "— X min" à descrição de cada item (ex: "(5 min)" ou "— 5 min de leitura").`,
       );
       process.exit(1);
     }

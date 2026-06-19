@@ -28,6 +28,15 @@ function makeUseMelhorItem(title: string, url: string, desc: string): string {
   return `**[${title}](${url})**\n${desc}\n`;
 }
 
+/**
+ * Formato CANÔNICO de produção (#2396): link + descrição na MESMA linha.
+ * Ex: `**[Título](URL)** Descrição... (5 min)`
+ * Validado em 260615–260619 como o formato real de produção.
+ */
+function makeUseMelhorItemInline(title: string, url: string, desc: string): string {
+  return `**[${title}](${url})** ${desc}\n`;
+}
+
 function wrapInUseMelhor(items: string): string {
   return `${SECTION_HEADER}\n\n${items}\n---\n`;
 }
@@ -74,6 +83,22 @@ describe("USE_MELHOR_TEMPO_RE (#2372)", () => {
   });
   it("NÃO casa '(min)' sem número", () => {
     assert.ok(!USE_MELHOR_TEMPO_RE.test("Tempo variável (min) por capítulo"));
+  });
+  // Formatos com tilde — validados em 260616 e 260617/260618 como produção real (#2396)
+  it("casa '(~15 min)' (parênteses com tilde — 260616)", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Prompts prontos para e-mail (~15 min)"));
+  });
+  it("casa '(~20 min)'", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Tutorial completo (~20 min)"));
+  });
+  it("casa '~10 min' inline (sem parênteses — 260617/260618)", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Casual, ~10 min. Do acesso básico a truques de prompt."));
+  });
+  it("casa '~40 min' inline", () => {
+    assert.ok(USE_MELHOR_TEMPO_RE.test("Tutorial passo a passo para montar um classificador, ~40 min."));
+  });
+  it("NÃO casa 'Módulos curtos, no seu ritmo.' (sem qualquer estimativa — 260617 item 2)", () => {
+    assert.ok(!USE_MELHOR_TEMPO_RE.test("Formação online gratuita de Google, Sebrae, Itaú e Tera. Módulos curtos, no seu ritmo."));
   });
 });
 
@@ -206,6 +231,170 @@ describe("checkUseMelhorTempo (#2372) — helper puro", () => {
     assert.equal(r.ok, true, JSON.stringify(r.errors));
     assert.equal(r.checked, 2);
   });
+
+  // -------------------------------------------------------------------------
+  // Formato CANÔNICO de produção: link+descrição na MESMA linha (#2396)
+  // -------------------------------------------------------------------------
+
+  it("formato inline: item COM tempo passa — checked=1 ok=true (#2396 fix)", () => {
+    // Linha real de 260619: `**[Título](URL)** desc... (8 min)`
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "The Art of Loop Engineering",
+        "https://www.langchain.com/blog/the-art-of-loop-engineering",
+        "O post explora o loop central de agentes de IA, como empilhar e estender loops torna os agentes mais eficazes e como monitorar cada nível com primitivas do LangChain (8 min).",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "deve contar o item inline (was: checked=0 no-op)");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("formato inline: item SEM tempo é detectado — checked=1 ok=false (#2396 fix)", () => {
+    // Linha real de 260617: `**[...Inteligência artificial...]** Formação online... Módulos curtos, no seu ritmo.`
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Inteligência artificial nos pequenos negócios",
+        "https://www.seudinheiro.com/2026/seu-negocio/ia-pequenos-negocios/",
+        "Formação online gratuita de Google, Sebrae, Itaú e Tera para empreendedores. Módulos curtos, no seu ritmo.",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "deve contar o item sem tempo");
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].item, 1);
+    assert.match(r.errors[0].excerpt, /Formação online gratuita/);
+  });
+
+  it("formato inline misto: 3 itens, 1 sem tempo — checked=3 errors=1 (#2396)", () => {
+    // Simula mix real: 2 com tempo + 1 sem tempo
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Tutorial A",
+        "https://example.com/a",
+        "Descrição com tempo (5 min).",
+      ) +
+        "\n" +
+        makeUseMelhorItemInline(
+          "Tutorial B",
+          "https://example.com/b",
+          "Descrição sem estimativa de leitura aqui.",
+        ) +
+        "\n" +
+        makeUseMelhorItemInline(
+          "Tutorial C",
+          "https://example.com/c",
+          "Outro com tempo — 10 min.",
+        ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 3, "deve contar todos os 3 itens inline");
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].item, 2);
+  });
+
+  it("formato inline: descrição com bold-leading NÃO é FP (#2396 fix #2)", () => {
+    // FP anterior: `**OpenAI** lança... (5 min)` na MESMA linha era tratado como header-bold
+    // → "(sem descrição)". Agora: o bold na descrição inline não é FP.
+    // No formato 2-linhas: `**[Título](URL)**\n**OpenAI** lança algo (5 min)\n`
+    const md = wrapInUseMelhor(
+      makeUseMelhorItem(
+        "OpenAI Academy",
+        "https://openai.com/academy",
+        "**OpenAI** lança cursos gratuitos para aplicar IA no trabalho. (5 min)",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "deve contar o item");
+    assert.equal(r.ok, true, `FP: bold-leading na descrição não deve ser '(sem descrição)': ${JSON.stringify(r.errors)}`);
+  });
+
+  it("formato inline: (~15 min) e ~10 min inline são aceitos (#2396)", () => {
+    // Validado em 260616 e 260617/260618
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "ChatGPT no trabalho",
+        "https://example.com/cg",
+        "Prompts prontos para e-mail, resumo de documentos. (~15 min)",
+      ) +
+        "\n" +
+        makeUseMelhorItemInline(
+          "Cursor AI",
+          "https://example.com/cursor",
+          "Dev iniciante, ~8 min. Como usar o modo Agent do Cursor para editar código em linguagem natural.",
+        ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 2);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  // -------------------------------------------------------------------------
+  // Boundary: section termination + URLs com parênteses (#2396 review)
+  // -------------------------------------------------------------------------
+
+  it("não vaza para a próxima seção quando falta '---' separador (#2396 section-bleed)", () => {
+    // Input malformado: USE MELHOR seguido de LANÇAMENTOS SEM `---` entre eles.
+    // O scan deve parar no header de LANÇAMENTOS — sem isso, o item de
+    // LANÇAMENTOS (sem tempo) seria contado como item USE MELHOR e gerar erro.
+    const md = `**🛠️ USE MELHOR**
+
+**[Item A](https://example.com/a)** Descrição com tempo (5 min).
+
+**🚀 LANÇAMENTOS**
+
+**[Lançamento X](https://example.com/x)** Novo modelo lançado sem nenhum tempo.
+`;
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "só o item USE MELHOR deve ser contado");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("para no header RADAR mesmo sem '---' (#2396 section-bleed, outra seção)", () => {
+    const md = `**🛠️ USE MELHOR**
+
+**[Item A](https://example.com/a)** Descrição com tempo (5 min).
+
+**📡 RADAR**
+
+**[Notícia Y](https://example.com/y)** Resumo de uma notícia sem tempo de leitura.
+`;
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "só o item USE MELHOR deve ser contado");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("conta item com URL contendo parênteses no slug (#2396 paren-URL no-op)", () => {
+    // URL como Wikipedia/MDN com `(...)` no path quebrava `[^\\s)]+` → item
+    // silenciosamente pulado (checked não incrementava). Agora é contado.
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Descrição sem nenhuma estimativa de tempo aqui.",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "item com paren-URL deve ser contado (was: pulado/no-op)");
+    assert.equal(r.ok, false, "item sem tempo deve ser pego");
+    assert.equal(r.errors.length, 1);
+  });
+
+  it("aceita item com paren-URL + tempo (#2396 paren-URL)", () => {
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Descrição completa com estimativa (5 min).",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -259,7 +448,7 @@ describe("--check use-melhor-tempo CLI (#2372)", () => {
       const r = runCli(["--check", "use-melhor-tempo", "--md", mdPath]);
       assert.equal(r.status, 1, "deve falhar com exit 1");
       assert.match(r.stderr, /use-melhor-tempo/);
-      assert.match(r.stderr, /— N min/);
+      assert.match(r.stderr, /N min/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
