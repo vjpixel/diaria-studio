@@ -27,6 +27,9 @@ import {
   HOWTO_BR_SIGNAL_RE,
   classifyAudienceClass,
   selectUseMelhorSplit,
+  normalizeUseMelhorUrl,
+  checkAndNormalizeUrl,
+  isOpinionOrStudy,
 } from "../scripts/lib/use-melhor-curation.ts";
 
 // ---------------------------------------------------------------------------
@@ -1555,5 +1558,221 @@ describe("selectUseMelhorSplit — #2353: targetDev guard for target <= 2", () =
     assert.equal(result.length, 2);
     const casual = result.filter((r) => classifyAudienceClass(r) === "casual");
     assert.equal(casual.length, 2, "all 2 slots go to casual when no dev-iniciante available");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeUseMelhorUrl (#2368 item 1)
+// ---------------------------------------------------------------------------
+
+describe("normalizeUseMelhorUrl (#2368 item 1)", () => {
+  it("normaliza barra dupla no path (caso real 260618: eugeneyan.com//writing/...)", () => {
+    const url = "https://eugeneyan.com//writing/working-with-ai/";
+    const normalized = normalizeUseMelhorUrl(url);
+    assert.equal(normalized, "https://eugeneyan.com/writing/working-with-ai/");
+  });
+
+  it("NÃO modifica 'https://' (protocolo preservado)", () => {
+    const url = "https://example.com/path/to/page";
+    assert.equal(normalizeUseMelhorUrl(url), url);
+  });
+
+  it("NÃO modifica URL sem barra dupla no path", () => {
+    const url = "https://cookbook.openai.com/examples/structured_outputs_intro";
+    assert.equal(normalizeUseMelhorUrl(url), url);
+  });
+
+  it("normaliza múltiplas barras duplas no path", () => {
+    const url = "https://example.com//a//b//c";
+    assert.equal(normalizeUseMelhorUrl(url), "https://example.com/a/b/c");
+  });
+
+  it("normaliza barra dupla no meio do path + query string", () => {
+    const url = "https://example.com//path?q=1";
+    assert.equal(normalizeUseMelhorUrl(url), "https://example.com/path?q=1");
+  });
+
+  it("URL http:// também é normalizada", () => {
+    const url = "http://example.com//foo/bar";
+    assert.equal(normalizeUseMelhorUrl(url), "http://example.com/foo/bar");
+  });
+
+  it("URL inválida (sem protocolo): retorna como está", () => {
+    const url = "not-a-url";
+    assert.equal(normalizeUseMelhorUrl(url), url);
+  });
+});
+
+describe("checkAndNormalizeUrl (#2368 item 1)", () => {
+  it("changed=true quando URL tem // no path", () => {
+    const r = checkAndNormalizeUrl("https://eugeneyan.com//writing/working-with-ai/");
+    assert.equal(r.changed, true);
+    assert.equal(r.normalized, "https://eugeneyan.com/writing/working-with-ai/");
+  });
+
+  it("changed=false quando URL é normal", () => {
+    const r = checkAndNormalizeUrl("https://example.com/writing/page");
+    assert.equal(r.changed, false);
+    assert.equal(r.normalized, "https://example.com/writing/page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isOpinionOrStudy (#2368 item 2)
+// ---------------------------------------------------------------------------
+
+describe("isOpinionOrStudy (#2368 item 2)", () => {
+  // Casos reais mis-bucketados em 260618
+  it("classifica hamel.dev com título de opinião (my take on) como opinião", () => {
+    // Caso real 260618: hamel.dev com ensaio de opinião sobre evals/AI engineering
+    // Detectado pelo título (my take on / my view on / thoughts on) — não pelo domínio
+    assert.ok(
+      isOpinionOrStudy(
+        "https://hamel.dev/blog/posts/evals-opinion",
+        "My Take on AI Evals: What Actually Works",
+      ),
+    );
+  });
+
+  it("classifica langchain research study como estudo (pelo título)", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://blog.langchain.dev/langchain-state-of-ai-agents",
+        "LangChain Research Study: State of LLM Adoption in 2025",
+      ),
+    );
+  });
+
+  it("classifica hamel.dev opinion essay sem how-to como opinião", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://hamel.dev/blog/posts/working-with-ai",
+        "Reflections on Working with AI: My Perspective",
+      ),
+    );
+  });
+
+  it("NÃO classifica hamel.dev COM sinal how-to como opinião", () => {
+    // Se o título tem verbo how-to, não é opinião mesmo sendo de domínio de ensaio
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://hamel.dev/blog/posts/how-to-evals",
+        "How to Build AI Evals: A Step-by-Step Guide",
+      ),
+    );
+  });
+
+  it("classifica título 'Reflections on X' como opinião", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://example.com/blog/reflections",
+        "Reflections on AI in 2025",
+      ),
+    );
+  });
+
+  it("classifica 'Benchmark: GPT vs Claude' como estudo", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://example.com/benchmarks",
+        "Benchmark: GPT-4 vs Claude 3 on Coding Tasks",
+      ),
+    );
+  });
+
+  it("classifica 'whitepaper on RAG' como estudo", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://example.com/whitepaper",
+        "Whitepaper: RAG Best Practices for Enterprise",
+      ),
+    );
+  });
+
+  it("NÃO classifica tutorial real de cookbook.openai.com como opinião", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://cookbook.openai.com/examples/structured_outputs_intro",
+        "Structured Outputs: Getting Started",
+      ),
+    );
+  });
+
+  it("NÃO classifica 'como usar ChatGPT' como opinião (tutorial PT-BR)", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://canaltech.com.br/chatgpt/como-usar-chatgpt",
+        "Como usar ChatGPT no trabalho — guia prático",
+      ),
+    );
+  });
+
+  it("classifica 'State of AI Engineering 2025' da latent.space como overview/tendência", () => {
+    // "state of X in YYYY" padrão deve ser detectado como overview/tendência, não tutorial
+    assert.ok(
+      isOpinionOrStudy(
+        "https://www.latent.space/p/2025-ai-engineering",
+        "The State of AI Engineering 2025",
+      ),
+    );
+  });
+
+  it("classifica eugeneyan.com ensaio longo como opinião", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://eugeneyan.com/writing/llm-patterns",
+        "LLM Patterns and My Perspective on What Works",
+      ),
+    );
+  });
+
+  it("NÃO classifica eugeneyan.com tutorial com how-to como opinião", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://eugeneyan.com/writing/getting-started-llm",
+        "Getting Started with LLMs: A Practical Tutorial",
+      ),
+    );
+  });
+
+  // #2368 self-review: how-to vence sinal de estudo em TODAS as vias (não só domínio)
+  it("how-to override: 'Hands-on analysis of GPT-4' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Hands-on analysis of GPT-4 performance"));
+  });
+  it("how-to override: 'step-by-step survey of RAG' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "A step-by-step survey of RAG approaches"));
+  });
+  it("how-to override: 'How to Benchmark Your Models' NÃO é estudo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "How to Benchmark Your AI Models"));
+  });
+
+  // #2368 self-review: benchmark exige qualificador
+  it("'Benchmark: GPT vs Claude' (colon) é estudo", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Benchmark: GPT-4 vs Claude 3 on Coding"));
+  });
+  it("'Benchmark of LLMs' (of) é estudo", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Benchmark of LLMs on Reasoning"));
+  });
+  it("'Benchmark your models' (sem qualificador) NÃO é estudo", () => {
+    // Sem how-to e sem qualificador (`:`/of/on/between/comparing) — não casa benchmark
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Benchmark your models with this library"));
+  });
+
+  // #2368 self-review: 'analysis of' removido — não over-matcha tutoriais
+  it("'Analysis of GPT-5' isolado NÃO é estudo (analysis-of removido)", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Analysis of GPT-5 Capabilities"));
+  });
+
+  // #2368 self-review: 'Opinion:' (colon) é detectado
+  it("'Opinion: AI is overhyped' (colon) é opinião", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Opinion: AI is overhyped"));
+  });
+  it("'My opinion: this is wrong' é opinião", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "My opinion: this is wrong"));
+  });
+
+  it("URL inválida não crasha", () => {
+    assert.equal(isOpinionOrStudy("not-a-url", "Reflections on AI"), true);
+    assert.equal(isOpinionOrStudy("not-a-url", "Build a chatbot tutorial"), false);
   });
 });

@@ -77,6 +77,37 @@ describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
     assert.equal(total, 2);
     assert.equal(suspicious.length, 0);
   });
+
+  // #2368: integração isOpinionOrStudy → reviewUseMelhor (warn-only)
+  it("flaga estudo de pesquisa (research study, domínio neutro) como suspeito (#2368)", () => {
+    // Domínio neutro (não newsletter, não corporate-blog) → cai no branch isOpinionOrStudy
+    const items = [
+      {
+        url: "https://example.org/reports/llm-adoption",
+        title: "Research Study: State of LLM Adoption in 2025",
+      },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "research study deve ser flagado");
+    assert.match(suspicious[0].reasons.join(" "), /ensaio de opinião ou estudo/);
+  });
+
+  it("flaga ensaio de opinião (hamel.dev my-take) como suspeito (#2368)", () => {
+    const items = [
+      { url: "https://hamel.dev/blog/posts/evals", title: "My Take on AI Evals: What Actually Works" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "ensaio de opinião deve ser flagado");
+    assert.match(suspicious[0].reasons.join(" "), /#2368/);
+  });
+
+  it("NÃO flaga tutorial how-to mesmo com palavra de estudo no título (#2368)", () => {
+    const items = [
+      { url: "https://blog.exemplo.com/p", title: "How to Benchmark Your AI Models step by step" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 0, "how-to vence sinal de estudo");
+  });
 });
 
 describe("helpers puros (#1798)", () => {

@@ -1052,6 +1052,47 @@ describe("Stage 4 invariants", () => {
     });
   });
 
+  describe("use-melhor-tempo (#2372)", () => {
+    function getTempoRule() {
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-tempo");
+      assert.ok(rule, "use-melhor-tempo deve estar registrado no Stage 4");
+      return rule!;
+    }
+
+    it("registrado no Stage 4 (não Stage 2 — roda pós-gate)", () => {
+      assert.ok(getRulesForStage(4).some((r) => r.id === "use-melhor-tempo"));
+      assert.ok(!getRulesForStage(2).some((r) => r.id === "use-melhor-tempo"));
+    });
+
+    it("falha quando item USE MELHOR sem estimativa de tempo", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho\n\n---\n`,
+      );
+      const v = getTempoRule().run(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "use-melhor-tempo");
+      assert.match(v[0].message, /sem estimativa de tempo/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa com tempo em parênteses '(N min)' (formato canônico)", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho (5 min)\n\n---\n`,
+      );
+      const v = getTempoRule().run(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa quando 02-reviewed.md ausente (não bloqueia setup parcial)", () => {
+      const v = getTempoRule().run(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
 });
 
 describe("Stage 5 invariants (pós-publicação)", () => {

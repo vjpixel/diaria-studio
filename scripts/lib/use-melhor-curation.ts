@@ -619,3 +619,163 @@ export function getHowToDiscoveryQueries(
   }
   return queries;
 }
+
+// ---------------------------------------------------------------------------
+// #2368 item 1 — Normalização de URL (barra dupla no path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normaliza barras duplas no path de uma URL, preservando `https://`.
+ *
+ * Caso real (260618): `https://eugeneyan.com//writing/working-with-ai/`
+ * → `https://eugeneyan.com/writing/working-with-ai/`
+ *
+ * Regra: substituir `//` por `/` em toda a URL EXCETO imediatamente após
+ * o protocolo (`https://` ou `http://`).
+ *
+ * @returns URL normalizada (string). Se a URL for inválida, retorna o input.
+ */
+export function normalizeUseMelhorUrl(url: string): string {
+  // Only normalize the path+search+hash (preserve protocol's `://`).
+  // Strategy: split on `://` (protocol separator), normalize the rest.
+  const protocolMatch = url.match(/^(https?:\/\/)(.*)/s);
+  if (!protocolMatch) {
+    // Not a http/https URL or totally malformed — return as-is.
+    return url;
+  }
+  const [, protocol, rest] = protocolMatch;
+  // Replace all occurrences of `//` with `/` in everything after `https://`.
+  const normalized = rest.replace(/\/\//g, "/");
+  return protocol + normalized;
+}
+
+export interface UrlNormalizationResult {
+  /** URL normalizada (igual à original se não havia `//` no path). */
+  normalized: string;
+  /** true se a URL foi modificada. */
+  changed: boolean;
+}
+
+/**
+ * #2368: Verifica e normaliza a URL de um item USE MELHOR.
+ * Retorna `{ normalized, changed }` — o caller deve substituir item.url
+ * se `changed === true` e sinalizar no gate.
+ */
+export function checkAndNormalizeUrl(url: string): UrlNormalizationResult {
+  const normalized = normalizeUseMelhorUrl(url);
+  return { normalized, changed: normalized !== url };
+}
+
+// ---------------------------------------------------------------------------
+// #2368 item 2 — Classificador de ensaio de opinião / estudo de pesquisa
+// ---------------------------------------------------------------------------
+
+/**
+ * Domínios EXCLUSIVAMENTE de ensaio de opinião ou análise — sem how-to acionável.
+ * Artigos desses domínios sem sinal how-to explícito no título devem ser
+ * rebaixados (classified as "non-tutorial") pra não entrar no bucket use_melhor.
+ *
+ * Conservador: incluir apenas domínios onde >90% do conteúdo é opinião/análise.
+ * Domínios mistos (hamel.dev, eugeneyan.com — que publicam tutoriais e ensaios)
+ * são detectados pelo título via OPINION_ESSAY_TITLE_RE, não por domínio.
+ *
+ * Casos reais 260618:
+ *   - hamel.dev opinion essay detectado por título ("Reflections on...", "My take on...")
+ *   - langchain research study detectado por título ("Research Study: State of...")
+ */
+export const OPINION_ESSAY_DOMAINS = new Set<string>([
+  // Newsletters/substack de opinião pura (nunca tutoriais hands-on):
+  "garymarcus.substack.com",
+  "thealgorithmicbridge.substack.com",
+  // Nota: hamel.dev e eugeneyan.com NÃO estão aqui — ambos publicam tutoriais legítimos
+  // e devem ser detectados pelo título (OPINION_ESSAY_TITLE_RE), não pelo domínio.
+]);
+
+/**
+ * Padrões de título que indicam ensaio de opinião / perspectiva pessoal —
+ * sem how-to acionável.
+ *
+ * Exemplos mis-bucketados em 260618:
+ *   - "Working with AI: A Framework for Thought Leadership" (hamel.dev)
+ *   - "Reflections on AI in 2025"
+ */
+// Nota (#2368 self-review): `opinion\b` (não `opinion[:\s]`) — o `\b` final do
+// grupo externo mata `opinion[:\s]` quando casa `:` ou espaço (dois não-word
+// chars consecutivos). `opinion\b` casa "Opinion:" e "opinion on" corretamente.
+const OPINION_ESSAY_TITLE_RE =
+  /\b(reflect(?:ions?|ing)\s+on\b|thoughts?\s+on\b|opinion\b|perspectiv(?:a|e)\s+(?:sobre|on)\b|ponto\s+de\s+vista\b|minha\s+(?:vis[aã]o|opini[aã]o|perspectiva)\b|my\s+(?:take|view|thoughts?)\s+on\b|framework\s+for\s+(?:thought|think|understand)|manifesto\b|what\s+i(?:'ve)?\s+learned\s+(?:from|about|after)\b|lessons?\s+(?:from|after|learned)\b|why\s+(?:i|we)\s+(?:think|believe|decided|chose|moved|stopped|gave\s+up)\b|state\s+of\s+(?:ai|ml|llm|rag|the\s+art)(?:\s+\w+){0,3}(?:\s+in\s+\d{4}|\s+\d{4}|\s+report|\s+survey)\b|year\s+in\s+review\b|\d{4}\s+(?:year\s+in|in)\s+review\b|predictions?\s+for\s+\d{4}\b|(?:ai|ml|llm)\s+(?:trends?|predictions?)\s+\d{4}\b)\b/i;
+
+/**
+ * Padrões de título que indicam estudo de pesquisa / paper / benchmark —
+ * análise descritiva, não how-to acionável.
+ *
+ * Exemplos: "LangChain Research Study on LLM Adoption", "Benchmark: GPT vs Claude"
+ */
+// Nota (#2368 self-review):
+//   - `analysis\s+of\b` REMOVIDO — over-match em tutoriais ("Hands-on analysis
+//     of GPT-4", "sentiment analysis of data"). Os outros sinais já são específicos.
+//   - `benchmark` agora EXIGE qualificador (`:`, `of`, `on`, `between`, `comparing`) —
+//     sem ele, "How to Benchmark Your Models" casava por engano.
+// Nota: o grupo NÃO tem `\b` final (cada alternativa ancora a si própria) — um
+// `\b` externo após o `:` da forma "Benchmark:" falharia (`:` e espaço são ambos
+// não-word, sem boundary). A forma colon (`benchmark(...):`) e a forma com
+// qualificador-word (`benchmark of`) são alternativas separadas.
+const RESEARCH_STUDY_TITLE_RE =
+  /\b(research\s+(?:study|paper|report|findings?|survey)\b|estudo\s+(?:de\s+pesquisa|sobre|de\s+caso)\b|survey\s+(?:of|on|about)\b|benchmark(?:ing|s?)\s*:|benchmark(?:ing|s?)\s+(?:of|on|between|comparing)\b|whitepaper\b|white\s+paper\b|literature\s+review\b|systematic\s+review\b|meta[- ]?analysis\b|ablation\s+(?:study|test)\b|empirical\s+(?:study|analysis|evaluation|evidence)\b|estat[íi]sticas?\s+(?:de|sobre)\b|relat[óo]rio\s+(?:de|sobre|anual)\b|annual\s+report\b)/i;
+
+/**
+ * Guard de sinal how-to/tutorial. Se presente, o artigo é tutorial acionável
+ * mesmo que o título também tenha sinal de opinião/estudo. Módulo-level
+ * (#2368 self-review) — antes vivia inline dentro do branch de domínio, então
+ * só guardava a via de domínio: "Hands-on analysis of GPT-4" e "step-by-step
+ * survey of RAG" caíam como estudo apesar do sinal how-to explícito.
+ */
+const HOW_TO_GUARD_RE =
+  /\b(how[- ]?to\b|tutorial\b|guia\b|passo\s+a\s+passo\b|como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar)\b|getting[- ]?started\b|walkthrough\b|hands[- ]?on\b|step[- ]?by[- ]?step\b|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course\b)\b/i;
+
+/**
+ * #2368 item 2: retorna true se o artigo parece ser um ensaio de opinião ou
+ * estudo de pesquisa — NÃO um tutorial hands-on acionável.
+ *
+ * Uso: no categorizador/scorer, checar antes de classificar como `use_melhor`.
+ * Se retornar true, rebaixar para `radar` (ou excluir do bucket use_melhor).
+ *
+ * Precedência: sinal how-to explícito (HOW_TO_GUARD_RE) VENCE qualquer sinal de
+ * opinião/estudo — um tutorial "Hands-on analysis of X" não é estudo. Depois
+ * checamos domínio de opinião → título de opinião → título de estudo.
+ *
+ * @param url     URL do artigo.
+ * @param title   Título do artigo.
+ * @param summary Sumário/descrição opcional.
+ */
+export function isOpinionOrStudy(url: string, title: string, summary = ""): boolean {
+  const hay = title + " " + summary;
+
+  // 0. Sinal how-to explícito vence tudo — tutorial acionável, não opinião/estudo.
+  if (HOW_TO_GUARD_RE.test(hay)) {
+    return false;
+  }
+
+  // 1. Domínio de opinião conhecida (sem how-to, já garantido acima).
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    // URL inválida
+  }
+  if (OPINION_ESSAY_DOMAINS.has(host)) {
+    return true;
+  }
+
+  // 2. Título com padrão de opinião — rebaixar independente do domínio.
+  if (OPINION_ESSAY_TITLE_RE.test(hay)) {
+    return true;
+  }
+
+  // 3. Título de estudo/pesquisa/benchmark — rebaixar independente do domínio.
+  if (RESEARCH_STUDY_TITLE_RE.test(hay)) {
+    return true;
+  }
+
+  return false;
+}

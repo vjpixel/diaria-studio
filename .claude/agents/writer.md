@@ -112,7 +112,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    Frase descritiva em 1 linha — ferramenta/técnica, tempo estimado entre parênteses.
    ```
 
-   Tempo estimado é obrigatório no fim da descrição entre parênteses, ex: `(15 min)`, `(30 min)`. Sem subscription paga obrigatória; se houver, sinalizar no fim da descrição: `(requer plano pago)`.
+   Tempo estimado é obrigatório no fim da descrição entre parênteses, ex: `(15 min)`, `(30 min)`. Sem subscription paga obrigatória; se houver, sinalizar no fim da descrição: `(requer plano pago)`. **Enforçado pelo lint `--check use-melhor-tempo` (#2372)** — bloqueante no Stage 4: cada item USE MELHOR precisa de `(N min)` (ou `— N min`) na descrição.
 
    **Exemplo literal (#909) — copiar formato exato:**
 

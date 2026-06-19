@@ -49,7 +49,8 @@ const SECTION_ITEM_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
 
 // Linha contendo APENAS um inline link bem-formado (com **bold** opcional
 // e trailing spaces opcionais). Segura pra detectar item title-line.
-const INLINE_LINK_ONLY_RE =
+// Exportado (#2372) — reutilizado por use-melhor-tempo.ts (era duplicado).
+export const INLINE_LINK_ONLY_RE =
   /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*{0,2}\s*$/;
 
 // Linha com inline link + texto extra (descrição colada). Match conservador.
