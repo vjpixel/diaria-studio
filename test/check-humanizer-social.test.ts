@@ -282,3 +282,118 @@ describe("CLI — check-humanizer-social.ts (#2279 #2290)", () => {
     }
   });
 });
+
+describe("--bypass-reason guard (#2373) — writeSentinel library", () => {
+  it("primeiro --write (sem sentinel anterior) não exige bypass-reason", () => {
+    // Cenário legítimo Stage 2: humanizador acaba de rodar, sem sentinel anterior.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      // Não deve lançar erro — primeiro write é sempre livre
+      const path = writeSentinel(dir);
+      assert.ok(existsSync(path), "sentinel deve existir");
+      const data = JSON.parse(readFileSync(path, "utf8"));
+      assert.ok(!data.bypass_reason, "bypass_reason deve estar ausente no write inicial");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--write com hash idêntico ao sentinel anterior NÃO exige bypass-reason (sem mudança)", () => {
+    // Social não mudou — re-gravar sentinel sem bypass é OK (caso: re-rodar Stage 2).
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // escreve sentinel com hash de CONTENT_A
+      // Re-gravar com mesmo conteúdo: não deve lançar
+      const path = writeSentinel(dir);
+      assert.ok(existsSync(path));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--write sem bypass-reason FALHA quando hash diverge (social editado pós-humanização)", () => {
+    // Cenário Stage 4 bug #2373: editor edita social no gate, orchestrator chama
+    // --write sem re-humanizar → deve falhar.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // sentinel com hash de CONTENT_A
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição pós-gate
+      assert.throws(
+        () => writeSentinel(dir), // sem bypassReason
+        /bypass-reason/i,
+        "deve exigir --bypass-reason quando hash diverge",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--write COM bypass-reason PASSA quando hash diverge e registra motivo", () => {
+    // Fluxo correto Stage 4: humanizador re-rodou após ajuste, --bypass-reason documenta isso.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // sentinel com hash de CONTENT_A
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição
+      const path = writeSentinel(dir, "humanizador re-rodou após swap D1↔D2 no Stage 4");
+      assert.ok(existsSync(path), "sentinel deve existir após write com bypass");
+      const data = JSON.parse(readFileSync(path, "utf8"));
+      assert.ok(typeof data.bypass_reason === "string" && data.bypass_reason.length > 0,
+        "bypass_reason deve estar registrado no sentinel");
+      assert.ok(data.bypass_reason.includes("D1↔D2"), "bypass_reason deve conter o motivo passado");
+      // Hash deve ter sido atualizado para CONTENT_B
+      const expected = computeSocialHash(join(dir, "03-social.md"));
+      assert.equal(data.social_sha256, expected, "sentinel deve refletir o hash atual do social");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("--bypass-reason guard (#2373) — CLI subprocess", () => {
+  function runScript(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", SCRIPT_PATH, ...args],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  it("--write exits 3 (bypass required) when hash diverges without --bypass-reason", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // sentinel com hash de CONTENT_A
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição pós-gate
+      const result = runScript(["--write", "--edition-dir", dir]);
+      assert.equal(result.status, 3,
+        `expected exit 3 (bypass required), got ${result.status}\nstderr: ${result.stderr}`);
+      assert.ok(
+        result.stderr.toLowerCase().includes("bypass"),
+        "stderr deve mencionar bypass",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--write --bypass-reason exits 0 and stores reason when hash diverges", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir); // sentinel com hash de CONTENT_A
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição pós-gate
+      const result = runScript([
+        "--write",
+        "--bypass-reason", "humanizador re-rodou após ajuste Stage 4",
+        "--edition-dir", dir,
+      ]);
+      assert.equal(result.status, 0,
+        `expected exit 0, got ${result.status}\nstderr: ${result.stderr}`);
+      const sentinelPath = join(dir, "_internal", ".humanizer-social-done.json");
+      const data = JSON.parse(readFileSync(sentinelPath, "utf8"));
+      assert.ok(data.bypass_reason && data.bypass_reason.includes("Stage 4"),
+        "bypass_reason deve estar no sentinel");
+    } finally {
+      cleanup();
+    }
+  });
+});

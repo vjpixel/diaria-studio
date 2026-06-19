@@ -291,11 +291,28 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
      --message "gate revisao: ajustar inline aplicado ({descrição curta})"
    ```
 
-6. **Re-verificar sentinel humanizador se `03-social.md` foi tocado (#2279/#2290):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) deve re-rodar o guard antes de voltar ao gate:
-   ```bash
-   npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
-   ```
-   Se exit 2 (hash diverge por causa do ajuste): re-humanizar + re-rodar lints + `--write` + re-check (mesmo fluxo do exit-2 em §4c.2b acima). Só então voltar ao §4d.
+6. **Re-humanizar e gravar sentinel se `03-social.md` foi tocado (#2279/#2290/#2373):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) OBRIGATORIAMENTE:
+   1. **Rodar o humanizador** em `03-social.md` (passagem completa via Skill humanizador).
+   2. **Rodar `mcp__clarice__correct_text`** no `## post_pixel` (revisão ortográfica).
+   3. **Só então gravar o sentinel** com `--bypass-reason` descritivo:
+      ```bash
+      npx tsx scripts/check-humanizer-social.ts --write \
+        --bypass-reason "humanizador re-rodou após ajuste {descrição} no Stage 4" \
+        --edition-dir data/editions/{AAMMDD}/
+      ```
+      O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar.
+   4. Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b):
+      ```bash
+      npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
+        --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
+        --md data/editions/{AAMMDD}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+      ```
+   5. Re-rodar check para confirmar exit 0 antes de voltar ao gate:
+      ```bash
+      npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
+      ```
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
