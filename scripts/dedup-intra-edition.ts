@@ -36,7 +36,6 @@ import {
   tokenizeForJaccard,
   jaccardSimilarity,
   extractNamedEntities,
-  normalizeTitle,
 } from "./dedup.ts";
 
 // ---------------------------------------------------------------------------
