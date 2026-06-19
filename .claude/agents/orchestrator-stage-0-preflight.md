@@ -98,11 +98,26 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
-- **Pre-flight token OAuth Google (#1973) — CONSOLIDADO, rodar PRIMEIRO.** O mesmo refresh token cobre Drive + Gmail (inbox-drain) + upload de imagens sociais; quando expira, os 3 caem juntos e submissões do editor se perdem silenciosamente. Checar a validade ANTES de qualquer passo Drive/Gmail:
+- **Pre-flight unificado de travas externas (#2358) — rodar ANTES dos checks individuais.** Agrega todos os checks de autenticação externos num único resumo de prontidão antes de gastar tokens em pesquisa. Travas que vencem silenciosamente (OAuth expirado, token CF inválido, API key ausente) são detectadas aqui, não no meio do stage que as usa:
+  ```bash
+  npx tsx scripts/lib/preflight-external-locks.ts
+  ```
+  Exit 0 = todas as travas ok ou unchecked. Exit 1 = trava(s) bloqueante(s) detectada(s) → stderr imprime o resumo `✅/ℹ️/❌` por dependência com `blocks_stages` e ação de reauth. Se exit 1:
+  1. Imprimir o resumo de prontidão.
+  2. Para cada trava bloqueante: renderizar halt banner:
+     ```bash
+     npx tsx scripts/render-halt-banner.ts \
+       --stage "0 — Preflight" \
+       --reason "{dependency} — {state}" \
+       --action "{reauth_action}"
+     ```
+  3. Aguardar o editor resolver a trava (reauth) ou confirmar que quer continuar (aceitando que os stages afetados falharão).
+  Conectores MCP (Gmail, Beehiiv) são reportados como `unchecked` — verificados em runtime pelo orchestrator (#738), não neste preflight TS.
+- **Pre-flight token OAuth Google (#1973) — coberto pelo preflight unificado acima.** O check individual `check-google-token.ts` NÃO deve ser executado aqui — o preflight unificado (#2358) já chama `checkOAuthLock` → `checkTokenHealth` e emite o halt banner se o token estiver expirado/ausente. Rodar os dois causaria double-halt: o editor seria parado pelo preflight unificado, confirmaria continuar, e seria parado novamente pelo check individual. Se o preflight unificado não estiver disponível (ex: worktree antigo sem o arquivo), rodar como fallback:
   ```bash
   npx tsx scripts/check-google-token.ts
   ```
-  Exit 0 = válido (ou `expiring_soon` — funciona, mas imprime aviso de idade perto do limite de 7d). Exit 1 = expirado/inválido/ausente → o stderr traz **1 banner consolidado** com a ação (`oauth-setup.ts` + `/diaria-inbox` depois). Se exit 1, **alertar o editor com o banner e perguntar** se re-autentica agora (`npx tsx scripts/oauth-setup.ts`) antes de seguir, ou continua sem Drive/Gmail (submissões do editor desta edição não entrarão — ver `docs/google-oauth-production.md` pra causa raiz dos 7d). Isso substitui descobrir a expiração via 3 falhas espalhadas no meio do pipeline.
+  Exit 0 = válido. Exit 1 = expirado/inválido/ausente → alertar o editor e perguntar se re-autentica (`npx tsx scripts/oauth-setup.ts`). Ver `docs/google-oauth-production.md` pra causa raiz dos 7d.
 - **Pre-flight token Cloudflare/wrangler (#2286).** O `CLOUDFLARE_API_TOKEN` expirado só estoura em `maintain-valid-editions` (§0d.bis) — depois de gastar tokens em dedup e CTR. Checar ANTES, análogo ao check-google-token:
   ```bash
   npx tsx scripts/check-cloudflare-token.ts
