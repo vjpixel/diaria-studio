@@ -207,11 +207,18 @@ export function updateIntentionalErrorLocation(
         // #2366: DESTAQUE N referenciado na location não existe no newOrder
         // (ex: location='DESTAQUE 3' num reorder 3→2 destaques). Sem este
         // tratamento a location ficaria stale silenciosamente apontando pro
-        // destaque eliminado. Emitir warn + limpar pra string vazia.
+        // destaque eliminado.
+        //
+        // NÃO limpar pra string vazia: o lint de intentional-error (Stage 5,
+        // scripts/lib/lint-checks/intentional-error.ts) trata location vazia
+        // como campo faltando → "intentional_error_incomplete: campos faltando
+        // — location" → BLOQUEIA publicação. Em vez disso, escrever um sentinel
+        // não-vazio que (a) passa a checagem de completude e (b) sinaliza ao
+        // editor que precisa redeclarar o erro manualmente.
         console.warn(
-          `[updateIntentionalErrorLocation] location aponta para DESTAQUE ${oldNum} que não existe em newOrder=[${newOrder.join(",")}] — limpando location para evitar stale`,
+          `[updateIntentionalErrorLocation] location aponta para DESTAQUE ${oldNum} que não existe em newOrder=[${newOrder.join(",")}] — marcando location como REVISAR (destaque removido no reorder)`,
         );
-        return `${pre}${post ?? ""}`;
+        return `${pre}[REVISAR — destaque removido no reorder]${post ?? ""}`;
       }
       const newN = newIdx + 1;
       return `${pre}DESTAQUE ${newN}${rest ?? ""}${post ?? ""}`;

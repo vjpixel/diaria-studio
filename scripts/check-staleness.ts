@@ -108,13 +108,25 @@ export function getStageChecksForEdition(
 ): StageCheck[] {
   const checks = STAGE_CHECKS[stage] ?? [];
   const destaqueCount = readDestaqueCount(editionDir);
-  if (destaqueCount === 3) return checks; // 3-destaque: nada a filtrar
-  // 2-destaque: remover entradas cujo downstream ou upstream mencionam d3
+  // 3-destaque: nada a filtrar — retorna uma cópia (não a referência viva de
+  // STAGE_CHECKS) para que um caller que mute o array não corrompa a constante
+  // compartilhada. Espelha a postura defensiva do branch 2-destaque (.filter()).
+  if (destaqueCount === 3) return [...checks];
+  // 2-destaque: remover entradas cujo downstream ou upstream referenciam o slot d3.
+  // Match por segmento (`-d3-`, `02-d3-`, etc) via isD3Path, não substring solto,
+  // para não filtrar por engano um caminho futuro com "d3" fora de um slot.
   return checks.filter(
-    (c) =>
-      !c.downstream.includes("d3") &&
-      !c.upstreams.some((u) => u.includes("d3")),
+    (c) => !isD3Path(c.downstream) && !c.upstreams.some(isD3Path),
   );
+}
+
+/**
+ * True se o caminho referencia o slot de destaque d3 — match por segmento
+ * (`d3` delimitado por início/fim, `/`, `_`, `-`, `.`), não substring solto.
+ * Evita falso-positivo com caminhos hipotéticos como `02-d30-...` ou `index3d`.
+ */
+function isD3Path(relPath: string): boolean {
+  return /(^|[/_-])d3([-.]|$)/.test(relPath);
 }
 
 // ---------------------------------------------------------------------------
