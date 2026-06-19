@@ -632,28 +632,40 @@ export function getHowToDiscoveryQueries(
 // ---------------------------------------------------------------------------
 
 /**
- * Normaliza barras duplas no path de uma URL, preservando `https://`.
+ * Normaliza barras duplas no path de uma URL, preservando `https://` e
+ * os componentes query (search) e fragment (hash) intactos.
  *
  * Caso real (260618): `https://eugeneyan.com//writing/working-with-ai/`
  * → `https://eugeneyan.com/writing/working-with-ai/`
  *
- * Regra: substituir `//` por `/` em toda a URL EXCETO imediatamente após
- * o protocolo (`https://` ou `http://`).
+ * Regra: substituir `//` por `/` APENAS no pathname — query e fragment
+ * podem conter URLs embutidas (ex: `?u=https://outro.com/post`) que não
+ * devem ser tocadas.
  *
- * @returns URL normalizada (string). Se a URL for inválida, retorna o input.
+ * Implementação: usa `new URL()` para parsear e reconstruir com pathname
+ * normalizado; query/hash permanecem byte-idênticos.
+ *
+ * @returns URL normalizada (string). Se a URL for malformada, retorna o input.
  */
 export function normalizeUseMelhorUrl(url: string): string {
-  // Only normalize the path+search+hash (preserve protocol's `://`).
-  // Strategy: split on `://` (protocol separator), normalize the rest.
-  const protocolMatch = url.match(/^(https?:\/\/)(.*)/s);
-  if (!protocolMatch) {
-    // Not a http/https URL or totally malformed — return as-is.
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // URL malformada (ex: sem protocolo, ftp://, etc.) — retornar como está.
     return url;
   }
-  const [, protocol, rest] = protocolMatch;
-  // Replace all occurrences of `//` with `/` in everything after `https://`.
-  const normalized = rest.replace(/\/\//g, "/");
-  return protocol + normalized;
+
+  // Normalizar // → / apenas no pathname; search e hash ficam intactos.
+  const normalizedPathname = parsed.pathname.replace(/\/\//g, "/");
+  if (normalizedPathname === parsed.pathname) {
+    // Sem alteração no path — retornar original para preservar representação byte-a-byte.
+    return url;
+  }
+
+  parsed.pathname = normalizedPathname;
+  // URL.toString() reconstrói origin + pathname + search + hash.
+  return parsed.toString();
 }
 
 export interface UrlNormalizationResult {
