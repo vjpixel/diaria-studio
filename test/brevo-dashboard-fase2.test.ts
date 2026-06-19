@@ -1578,6 +1578,16 @@ describe("deriveLinksSectionTitle (#2421)", () => {
     assert.equal(deriveLinksSectionTitle(campaigns), null);
   });
 
+  test("campanha não-Clarice mais recente não obscurece Clarice mais antiga (#2421 bug3)", () => {
+    // Bug: sem o filtro de parseClariceCampaignKey, "T1-W1 digest" (enviado depois)
+    // tornava-se o top-1 e retornava null mesmo com Clarice disponível.
+    const campaigns = [
+      makeSentCampaign("T1-W1 digest", "2026-06-15T09:00:00Z"), // mais recente, não-Clarice
+      makeSentCampaign("Clarice News 2605 d05-A (seg)", "2026-06-12T09:00:00Z"), // Clarice
+    ];
+    assert.equal(deriveLinksSectionTitle(campaigns), "2605-06", "Clarice mais antiga deve ganhar sobre não-Clarice mais recente");
+  });
+
   test("renderAggregatedLinksSection com edicaoLabel mostra edição no título", () => {
     const html = renderAggregatedLinksSection([], "2605-06");
     assert.match(html, /Links mais clicados da edição 2605-06/);

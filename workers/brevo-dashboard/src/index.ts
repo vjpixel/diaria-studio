@@ -1002,7 +1002,10 @@ export function deriveLinksSectionTitle(
 ): string | null {
   // Filtrar campanhas enviadas (sentDate não-nulo) e ordenar desc por sentDate.
   const sent = campaigns
-    .filter((c): c is typeof c & { sentDate: string } => Boolean(c.sentDate))
+    .filter(
+      (c): c is typeof c & { sentDate: string } =>
+        Boolean(c.sentDate) && parseClariceCampaignKey(c.name) !== null,
+    )
     .sort((a, b) => Date.parse(b.sentDate) - Date.parse(a.sentDate));
   if (sent.length === 0) return null;
 
@@ -1343,7 +1346,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </tbody>
 </table>
 </div>
-<div id="envios-pagination" style="display:none;margin-top:12px;display:flex;align-items:center;gap:12px;font-size:0.85rem;color:var(--ink);">
+<div id="envios-pagination" style="display:none;margin-top:12px;align-items:center;gap:12px;font-size:0.85rem;color:var(--ink);">
   <button id="envios-prev" aria-label="Página anterior" disabled
     style="padding:4px 12px;border:1px solid var(--rule);border-radius:4px;background:var(--paper-alt);color:var(--ink);cursor:pointer;">‹ Anterior</button>
   <span id="envios-page-info" style="opacity:0.75;"></span>
@@ -1360,14 +1363,18 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
   var pageInfo = document.getElementById('envios-page-info');
   if (!tbody || !pagination || !prevBtn || !nextBtn || !pageInfo) return;
 
-  // Collect top-level <tr> rows (skip nested rows inside links-row cells)
+  // Collect data rows only (exclude .links-row accordion TRs — each data row is
+  // paired with an immediately-following .links-row sibling that must travel with it).
   var allRows = Array.prototype.filter.call(tbody.children, function(el) {
-    return el.tagName === 'TR';
+    return el.tagName === 'TR' && !el.classList.contains('links-row');
   });
   var totalRows = allRows.length;
   var totalPages = Math.max(1, Math.ceil(totalRows / PER_PAGE));
 
-  if (totalRows <= PER_PAGE) return; // hide controls — ≤ N rows
+  if (totalRows <= PER_PAGE) {
+    pagination.style.display = 'none';
+    return; // hide controls — ≤ PER_PAGE campaigns
+  }
 
   pagination.style.display = 'flex';
   var currentPage = 1;
@@ -1377,7 +1384,13 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
     var start = (page - 1) * PER_PAGE;
     var end = start + PER_PAGE;
     for (var i = 0; i < allRows.length; i++) {
-      allRows[i].style.display = (i >= start && i < end) ? '' : 'none';
+      var visible = (i >= start && i < end);
+      allRows[i].style.display = visible ? '' : 'none';
+      // Also show/hide the paired .links-row sibling that follows each data row.
+      var next = allRows[i].nextElementSibling;
+      if (next && next.classList.contains('links-row')) {
+        next.style.display = visible ? '' : 'none';
+      }
     }
     pageInfo.textContent = 'Página ' + page + ' de ' + totalPages;
     prevBtn.disabled = page <= 1;
