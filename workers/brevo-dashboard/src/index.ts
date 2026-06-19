@@ -28,9 +28,9 @@
  *
  * #2086 Fase 2 mínima:
  *   - Resumo A/B/C da S1 (checkpoint 17/jun)
- *   - Tendência entre waves (open+bounce cronológico)
  *   - trackableViewsRate por campanha (coluna na tabela)
  *   - Volume cumulativo vs plano 40k
+ *   - Tabela de totais por mês (#2369)
  */
 
 /**
@@ -1185,8 +1185,6 @@ export function renderDashboardHtml(
   const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
   const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
   const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
-  const trendRows = buildTrendRows(campaigns);
-  const trendSection = renderTrendSection(trendRows);
   // #2134: tabela de open rate por dia da semana (ciclo ativo).
   // Escopo: ciclo ativo quando detectado; fallback "todas as campanhas" quando
   // não há campanha Clarice News (activeCycle=null). Linha all-time separada
@@ -1200,8 +1198,11 @@ export function renderDashboardHtml(
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
   const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks);
   // #2251: seção de campanhas agendadas (status queued) — só sobre `scheduled`,
-  // nunca polui os agregadores de enviadas (A/B/C, volume, weekday, tendência).
+  // nunca polui os agregadores de enviadas (A/B/C, volume, weekday).
   const scheduledSection = renderScheduledSection(scheduled);
+  // #2369: tabela de totais por mês — à parte da lista detalhada de campanhas.
+  const monthlyTotalsRows = aggregateByMonth(campaigns);
+  const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -1282,6 +1283,7 @@ ${scheduledSection}
 ${volumeSection}
 ${abcSection}
 ${weekdaySection}
+${monthlyTotalsSection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Campanhas enviadas</h2>
 <div class="table-wrap">
@@ -1307,7 +1309,6 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </table>
 </div>
 </section>
-${trendSection}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
@@ -1337,24 +1338,29 @@ export const CLARICE_PLAN_S1 = 5_600;
 /**
  * Extrai o ciclo e o número do dia de uma campanha Clarice News.
  * ex: "Clarice News 2605 d02-C (qui)" → { cycle: "2605", dayNum: 2, cell: "C" }
+ * ex: "Clarice News 2605 d08 (qua)"  → { cycle: "2605", dayNum: 8, cell: null }
  * Retorna null para campanhas que não seguem o padrão.
+ *
+ * #2360: sufixo de célula (-A/-B/-C) é OPCIONAL. Envios únicos (sem A/B/C) têm
+ * cell: null e são incluídos em calcCumulativeSent / detectActiveCycle. Não
+ * participam do resumo A/B/C (aggregateAbcSummary filtra cell === null).
  */
 export function parseClariceCampaignKey(campaignName: string): {
   cycle: string;
   dayNum: number;
-  cell: "A" | "B" | "C";
+  cell: "A" | "B" | "C" | null;
 } | null {
-  const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})-([ABC])(?=\s|$)/i);
+  const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})(?:-([ABC]))?(?=\s|$)/i);
   if (!m) return null;
-  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell: m[3].toUpperCase() as "A" | "B" | "C" };
+  const cell = m[3] ? (m[3].toUpperCase() as "A" | "B" | "C") : null;
+  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell };
 }
 
 /**
  * #2254: fonte única da escolha de stats reais de uma campanha — globalStats
  * (primário, bate com a UI da Brevo) quando `sent > 0`, senão campaignStats[0].
- * Centraliza o padrão `gsIsReal ? gs : cs` que estava duplicado em 5 lugares
- * (renderDashboardHtml, aggregateByWeekday, buildTrendRows, calcCumulativeSent,
- * aggregateAbcSummary). Retorna `null` quando não há stats reais (sent>0).
+ * Centraliza o padrão `gsIsReal ? gs : cs` que estava duplicado em vários lugares
+ * (renderDashboardHtml, aggregateByWeekday, calcCumulativeSent, aggregateAbcSummary). Retorna `null` quando não há stats reais (sent>0).
  * `!(... .sent > 0)` cobre sent=0, undefined e null sem NaN.
  *
  * #2258 (semântica de MPP, verificada empiricamente 2026-06-14 contra a API
@@ -1415,6 +1421,8 @@ export function aggregateAbcSummary(
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || parsed.cycle !== cycle) continue;
+    // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
+    if (parsed.cell === null) continue;
     // S1 = d01–d07
     if (parsed.dayNum > 7) continue;
 
@@ -1705,69 +1713,6 @@ export function renderWeekdaySection(
 </section>`;
 }
 
-export interface WaveTrendRow {
-  label: string;
-  sentDate: string | null;
-  openRate: number;
-  bounceRate: number;
-  sent: number;
-  delivered: number;
-}
-
-/**
- * Monta tabela de tendência cronológica para todas as campanhas com stats reais.
- * Ordenada por sentDate ASC. Cada linha: label reduzido, data, open%, bounce%.
- * Exportado pra teste unitário.
- */
-export function buildTrendRows(
-  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
-): WaveTrendRow[] {
-  const rows: WaveTrendRow[] = [];
-
-  // Ordenar por sentDate DESC — mais recente NO TOPO (pedido do editor 2026-06-11);
-  // a mais antiga fica embaixo.
-  const sorted = [...campaigns].sort((a, b) => {
-    const da = a.sentDate ? Date.parse(a.sentDate) : 0;
-    const db = b.sentDate ? Date.parse(b.sentDate) : 0;
-    return db - da;
-  });
-
-  for (const c of sorted) {
-    if (!c.sentDate) continue;
-    const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
-    if (!picked) continue;
-    const s = picked.stats;
-
-    // Label compacto: extrair a parte mais informativa do nome
-    // "Diar.ia Mensal 2604 — 2026-05-17 14:45" → "Mensal 2604 W7"
-    // "Clarice News 2605 d01-A (qua)" → "2605 d01-A"
-    let label = c.name;
-    const clariceMatch = c.name.match(/Clarice News (\d{4}) (d\d{2}-[ABC])/i);
-    const mensalMatch = c.name.match(/Diar\.ia Mensal (\d{4})/i);
-    const listNameMatch = (c.listName ?? "").match(/T1-(W\d+)/i);
-    if (clariceMatch) {
-      label = `${clariceMatch[1]} ${clariceMatch[2]}`;
-    } else if (mensalMatch && listNameMatch) {
-      label = `Mensal ${mensalMatch[1]} ${listNameMatch[1]}`;
-    } else if (mensalMatch) {
-      label = `Mensal ${mensalMatch[1]}`;
-    }
-
-    const openRate = s.delivered > 0 ? (s.uniqueViews / s.delivered) * 100 : 0;
-    const bounceRate = s.sent > 0 ? ((s.hardBounces + s.softBounces) / s.sent) * 100 : 0;
-
-    rows.push({
-      label,
-      sentDate: c.sentDate,
-      openRate,
-      bounceRate,
-      sent: s.sent,
-      delivered: s.delivered,
-    });
-  }
-
-  return rows;
-}
 
 /**
  * Renderiza a seção de resumo A/B/C da S1.
@@ -1922,48 +1867,138 @@ export function renderVolumeSection(cumulativeSent: number): string {
 </section>`;
 }
 
+
+// ─── #2369: tabela de totais por mês ─────────────────────────────────────────
+
 /**
- * Renderiza a seção de tendência entre waves (mini-tabela cronológica).
+ * Linha de totalização mensal de campanhas enviadas.
+ */
+export interface MonthlyTotalRow {
+  /** Mês no formato YYYY-MM (ex: "2026-06") */
+  month: string;
+  /** Rótulo legível (ex: "Jun/2026") */
+  label: string;
+  /** Número de campanhas enviadas no mês */
+  campaignCount: number;
+  /** Soma de enviados (sent) no mês */
+  totalSent: number;
+  /** Soma de entregues (delivered) no mês */
+  totalDelivered: number;
+  /** Soma de aberturas únicas (uniqueViews) no mês */
+  totalViews: number;
+  /** Soma de cliques únicos (uniqueClicks) no mês */
+  totalClicks: number;
+  /** Open rate agregado = totalViews / totalDelivered (0 quando delivered=0) */
+  openRate: number;
+  /** CTR agregado = totalClicks / totalDelivered (0 quando delivered=0) */
+  ctr: number;
+}
+
+/**
+ * Agrega campanhas por mês de envio (sentDate). Usa as mesmas stats que o
+ * render principal (globalStats primário → campaignStats fallback via pickStats).
+ * Só inclui campanhas com stats reais (sent > 0). Ordena do mês mais recente
+ * para o mais antigo.
  * Exportado pra teste unitário.
  */
-export function renderTrendSection(rows: WaveTrendRow[]): string {
+export function aggregateByMonth(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): MonthlyTotalRow[] {
+  type Acc = {
+    campaignCount: number;
+    totalSent: number;
+    totalDelivered: number;
+    totalViews: number;
+    totalClicks: number;
+  };
+  const acc = new Map<string, Acc>();
+
+  for (const c of campaigns) {
+    if (!c.sentDate) continue;
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const s = picked.stats;
+
+    // Extrair YYYY-MM do sentDate em UTC (sentDate é sempre ISO com fuso).
+    // Usamos os primeiros 7 chars ("YYYY-MM") — conservador, sem Intl.
+    const month = c.sentDate.slice(0, 7); // "2026-06"
+    if (!acc.has(month)) {
+      acc.set(month, { campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0 });
+    }
+    const row = acc.get(month)!;
+    row.campaignCount += 1;
+    row.totalSent += s.sent ?? 0;
+    row.totalDelivered += s.delivered ?? 0;
+    row.totalViews += s.uniqueViews ?? 0;
+    row.totalClicks += s.uniqueClicks ?? 0;
+  }
+
+  if (acc.size === 0) return [];
+
+  return Array.from(acc.entries())
+    .sort(([a], [b]) => b.localeCompare(a)) // mais recente primeiro
+    .map(([month, d]) => {
+      // "2026-06" → "Jun/2026"
+      const [year, mon] = month.split("-");
+      const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+      const label = `${monthNames[parseInt(mon, 10) - 1] ?? mon}/${year}`;
+      return {
+        month,
+        label,
+        campaignCount: d.campaignCount,
+        totalSent: d.totalSent,
+        totalDelivered: d.totalDelivered,
+        totalViews: d.totalViews,
+        totalClicks: d.totalClicks,
+        openRate: d.totalDelivered > 0 ? (d.totalViews / d.totalDelivered) * 100 : 0,
+        ctr: d.totalDelivered > 0 ? (d.totalClicks / d.totalDelivered) * 100 : 0,
+      };
+    });
+}
+
+/**
+ * Renderiza a tabela de totais por mês — 1 linha por mês, agregando campanhas
+ * enviadas naquele mês. Tabela À PARTE da lista detalhada de campanhas.
+ * Oculta ("") quando sem dados.
+ * Exportado pra teste unitário.
+ */
+export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
   if (rows.length === 0) return "";
 
-  const trendRows = rows
-    .map((r) => {
-      const openAlert = r.openRate > 0 && r.openRate < 15;
-      const bounceAlert = r.bounceRate >= 3;
-      // Sparkline ASCII simples: █ = 10pp, escala 0–50%
-      const openTicks = Math.min(10, Math.round(r.openRate / 5));
-      const spark = "█".repeat(openTicks) + "░".repeat(10 - openTicks);
-      return `<tr>
-        <td>${escHtml(r.label)}</td>
-        <td>${fmtTimeBRT(r.sentDate)}</td>
-        <td${openAlert ? ` class="alert"` : ""}>${r.openRate.toFixed(1)}%</td>
-        <td${bounceAlert ? ` class="alert"` : ""}>${r.bounceRate.toFixed(1)}%</td>
-        <td class="spark">${spark}</td>
-        <td>${r.sent.toLocaleString("pt-BR")}</td>
-      </tr>`;
-    })
-    .join("\n");
+  const tableRows = rows.map((r) => {
+    const openRateFmt = r.totalDelivered > 0 ? r.openRate.toFixed(1) + "%" : "—";
+    const ctrFmt = r.totalDelivered > 0 ? r.ctr.toFixed(1) + "%" : "—";
+    return `<tr>
+      <td><strong>${escHtml(r.label)}</strong></td>
+      <td>${r.campaignCount}</td>
+      <td>${r.totalSent.toLocaleString("pt-BR")}</td>
+      <td>${r.totalDelivered.toLocaleString("pt-BR")}</td>
+      <td>${r.totalViews.toLocaleString("pt-BR")}</td>
+      <td class="metric">${openRateFmt}</td>
+      <td>${r.totalClicks.toLocaleString("pt-BR")}</td>
+      <td class="metric">${ctrFmt}</td>
+    </tr>`;
+  }).join("\n");
 
   return `
-<section class="phase2-section" id="wave-trend">
-  <h2 class="section-title">Tendência entre waves</h2>
-  <p class="section-note">Open rate e bounce rate por envio — do mais recente (topo) ao mais antigo.</p>
+<section class="phase2-section" id="monthly-totals">
+  <h2 class="section-title">Totais por mês</h2>
+  <p class="section-note">1 linha por mês — agrega todas as campanhas enviadas naquele mês. Veja a lista detalhada na seção Campanhas enviadas abaixo.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th title="Campanha">Campanha</th>
-        <th title="Data/hora do envio (BRT)">Enviado</th>
-        <th title="Open rate (uniqueViews ÷ delivered). Alerta < 15%.">Open%</th>
-        <th title="Bounce rate ((hard+soft) ÷ sent). Alerta ≥ 3%.">Bounce%</th>
-        <th title="Sparkline de open rate (cada █ = ~5pp, escala 0–50%)">Open ▏</th>
-        <th title="Total enviado">Sent</th>
+        <th title="Mês do envio">Mês</th>
+        <th title="Número de campanhas enviadas no mês">Campanhas</th>
+        <th title="Total enviado (sent) no mês">Sent</th>
+        <th title="Total entregue (delivered) no mês">Delivered</th>
+        <th title="Soma de aberturas únicas (uniqueViews, MPP-inclusivo)">Opens</th>
+        <th title="Open rate agregado: opens ÷ delivered">Open rate</th>
+        <th title="Soma de cliques únicos (uniqueClicks)">Clicks</th>
+        <th title="CTR agregado: clicks ÷ delivered">CTR</th>
       </tr>
     </thead>
-    <tbody>${trendRows}</tbody>
+    <tbody>${tableRows}</tbody>
   </table>
   </div>
 </section>`;
