@@ -49,7 +49,7 @@
  *                 100 reqs/min da Brevo).
  */
 
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { brevoGet } from "./clarice-build-waves.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
@@ -211,23 +211,43 @@ export function normalizeContact(raw: {
 // campanha. Contato com received=0 e sem saída nem entra no universo das coortes
 // (computeCohorts o ignora) — buscar o status dele é GET desperdiçado e pressão de
 // rate-limit à toa. Em vez de paginar TODA a conta, derivamos o conjunto da
-// ORIGEM: campanhas enviadas → recipients.lists → membros dessas listas. Isso é
-// exatamente "quem já recebeu e-mail" e encolhe o crawl para o tamanho enviado.
-// (bounce/unsub também são membros das listas enviadas, então a coorte de saídas
-// continua coberta.)  `--all` força o crawl da conta inteira (fallback).
+// ORIGEM: campanhas enviadas → recipients.lists → membros ATUAIS dessas listas.
+// É uma APROXIMAÇÃO de "quem já recebeu e-mail" (não exata), com 2 vieses sabidos,
+// ambos sem afetar a corretude das contagens:
+//   - over-include: contato adicionado a uma lista DEPOIS do envio entra no crawl,
+//     mas tem received=0 → computeCohorts o descarta. Só custa GET.
+//   - DEPENDÊNCIA p/ a coorte de Saídas: assume que a Brevo MANTÉM contatos com
+//     bounce/descadastro como membros da lista (só seta emailBlacklisted), em vez
+//     de removê-los. Validado empiricamente nesta conta (2026-06-19: 211 saídas —
+//     103 bounce + 108 optedOut — apareceram na membership; total ≈ cumulativo
+//     enviado). SE a Brevo passar a auto-remover bounces das listas, a coorte de
+//     Saídas subcontaria → use `--all` (crawl da conta inteira) para reconciliar.
+// `--all` é também o fallback geral.
 
 export interface ContactRef {
   id: number;
   blacklisted: boolean;
 }
 
-/** Pool de concorrência limitada (forma idêntica ao de clarice-build-waves). */
-async function pool<T>(items: T[], n: number, worker: (item: T, idx: number) => Promise<void>): Promise<void> {
+/**
+ * Pool de concorrência limitada com ABORT no primeiro erro (#2426 review): ao
+ * primeiro throw, marca `aborted` e os demais workers param após o await em
+ * curso — sem isso, um rate-limit sustentado num worker deixava os outros 5
+ * martelando a Brevo (mais 429) e mutando `done` após o catch já ter salvo o
+ * snapshot. A rejeição do Promise.all propaga o erro original.
+ */
+async function pool<T>(items: T[], n: number, worker: (item: T) => Promise<void>): Promise<void> {
   let i = 0;
+  let aborted = false;
   const run = async (): Promise<void> => {
-    while (i < items.length) {
-      const idx = i++;
-      await worker(items[idx], idx);
+    while (i < items.length && !aborted) {
+      const item = items[i++];
+      try {
+        await worker(item);
+      } catch (e) {
+        aborted = true;
+        throw e;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, run));
@@ -238,10 +258,17 @@ async function fetchSentListIds(apiKey: string): Promise<number[]> {
   const set = new Set<number>();
   let offset = 0;
   for (;;) {
-    const { body } = await brevoGet(
+    const { status, body } = await brevoGet(
       apiKey,
       `/emailCampaigns?status=sent&limit=100&offset=${offset}&sort=desc`,
     );
+    // brevoGet coage QUALQUER 404 para {status:404, body:{}} — incluindo escopo/
+    // validade da API key. Falha alto em vez de truncar silenciosamente (#2426 review).
+    if (status === 404) {
+      throw new Error(
+        "Brevo /emailCampaigns retornou 404 — abortando (verifique escopo/validade da BREVO_CLARICE_API_KEY).",
+      );
+    }
     const cs: any[] = body?.campaigns ?? [];
     for (const c of cs) for (const l of c?.recipients?.lists ?? []) set.add(l);
     if (cs.length < 100) break;
@@ -372,7 +399,9 @@ function saveCheckpoint(cp: Checkpoint): void {
 
 function clearCheckpoint(): void {
   try {
-    if (existsSync(CHECKPOINT_PATH)) writeFileAtomic(CHECKPOINT_PATH, "", { fsync: false });
+    // unlink (não escrever "") — um arquivo de 0 bytes parece checkpoint pendente
+    // a inspeção manual; remover deixa o estado inequívoco (#2426 review).
+    if (existsSync(CHECKPOINT_PATH)) unlinkSync(CHECKPOINT_PATH);
   } catch {
     /* não-fatal */
   }
@@ -498,16 +527,19 @@ async function main(): Promise<void> {
     cohorts = await buildCohorts(apiKey, concurrency, generatedAt, { scope, fresh });
   } catch (e) {
     // Falha (ex: rate-limit sustentado) — checkpoint já foi persistido por buildCohorts.
+    // Lê o checkpoint p/ reportar progresso REAL (#2426 review: total:0/fetched:0
+    // mascarava milhares de GETs já feitos e salvos).
+    const cp = loadCheckpoint();
     writeStatus({
       status: "partial",
       finishedAt: new Date().toISOString(),
       scope,
-      total: 0,
-      fetched: 0,
+      total: cp?.refs.length ?? 0,
+      fetched: cp ? Object.keys(cp.done).length : 0,
       durationMs: Date.now() - startMs,
       error: (e as Error).message,
     });
-    logLine(`❌ Falhou — checkpoint preservado, re-rode para retomar.`);
+    logLine(`❌ Falhou — checkpoint preservado (${cp ? Object.keys(cp.done).length : 0}/${cp?.refs.length ?? 0}), re-rode para retomar.`);
     process.exit(1);
   }
 
@@ -531,7 +563,11 @@ async function main(): Promise<void> {
       durationMs: Date.now() - startMs,
       error: "universe 0 — upload abortado",
     });
-    logLine("⚠️  Universo 0 — não gravando no KV (evita sobrescrever dado bom com zeros).");
+    // Limpa o checkpoint (#2426 review): senão um run all-404/zero deixaria um
+    // checkpoint "completo" (remainingRefs=[]) que todo run subsequente <18h
+    // retomaria → recomputa universe=0 → exit(1) de novo, preso até --fresh.
+    clearCheckpoint();
+    logLine("⚠️  Universo 0 — não gravando no KV (checkpoint limpo; evita sobrescrever dado bom com zeros).");
     process.exit(1);
   }
 
