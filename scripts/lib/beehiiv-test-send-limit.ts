@@ -21,10 +21,54 @@
  * `05-published.json`. A contagem por hora (rate limit do Beehiiv) ainda vive
  * em `beehiiv-send-count.ts` (#1419) — ambas as guards devem ser consultadas
  * antes de cada "Send test email".
+ *
+ * Writes usam `writeFileAtomic` (#1132) — `05-published.json` é output crítico
+ * listado em `atomic-write.ts`; crash mid-write deixaria o resume detector lendo
+ * um arquivo truncado (exatamente o bug que #2376 tenta prevenir).
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
+
+/**
+ * Path do `05-published.json` da edição. Centralizado pra evitar 3 cópias
+ * do literal `_internal/05-published.json` espalhadas pelo módulo.
+ */
+function publishedJsonPath(editionDir: string): string {
+  return resolve(editionDir, "_internal", "05-published.json");
+}
+
+/**
+ * Lê + parseia `05-published.json` como objeto solto. Retorna `null` quando o
+ * arquivo não existe ou é JSON inválido (caller decide o fallback). Não usa o
+ * Zod schema de propósito: este helper precisa funcionar mesmo quando o arquivo
+ * está parcialmente preenchido durante o pipeline (ex: antes de `status` ser
+ * setado), o que falharia o parse strict.
+ */
+function readPublishedRaw(editionDir: string): Record<string, unknown> | null {
+  const path = publishedJsonPath(editionDir);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Coerção defensiva de `test_email_count` lido de disco para um inteiro >= 0.
+ * Valores não-numéricos, NaN, Infinity ou negativos viram 0 — um arquivo
+ * corrompido (ou editado à mão) com count negativo não pode neutralizar
+ * silenciosamente a guard (incrementar a partir de um negativo levaria muitos
+ * sends pra cruzar o threshold).
+ */
+function coerceCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  return 0;
+}
 
 /**
  * Limiar de alerta proativo: ao atingir ou superar esse número de test emails
@@ -43,69 +87,81 @@ export type TestSendLimitDecision =
  * Retorna 0 se arquivo não existe, campo ausente, ou count inválido.
  */
 export function readTestEmailCount(editionDir: string): number {
-  const path = resolve(editionDir, "_internal", "05-published.json");
-  if (!existsSync(path)) return 0;
-  try {
-    const data = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const count = data["test_email_count"];
-    if (typeof count === "number" && Number.isFinite(count) && count >= 0) {
-      return Math.floor(count);
-    }
-    return 0;
-  } catch {
-    return 0;
-  }
+  const data = readPublishedRaw(editionDir);
+  if (data === null) return 0;
+  return coerceCount(data["test_email_count"]);
 }
 
 /**
- * Incrementa `test_email_count` em `05-published.json` in-place.
- * Preserva todos os outros campos via merge. Idempotente se o arquivo não
- * existe (cria campo com count 1 se não havia campo antes).
+ * Incrementa `test_email_count` em `05-published.json` in-place e persiste
+ * atomicamente. Preserva todos os outros campos via merge.
  *
- * Retorna o novo valor do counter.
+ * Retorna o novo valor do counter, ou `null` se não conseguiu persistir
+ * (arquivo ausente ou JSON inválido) — o caller DEVE tratar `null` como
+ * "increment perdido" e logar aviso. Distinguir `null` de um número permite o
+ * orchestrator saber que o counter não avançou (vs. um `0` que era ambíguo na
+ * versão anterior — #2376 review).
  *
- * IMPORTANTE: esta função não cria `05-published.json` se ele não existir —
- * o playbook só deve chamar `incrementTestEmailCount` após o arquivo ter sido
- * gravado inicialmente (passo 8 do beehiiv-playbook.md).
+ * Em **modo create**, `05-published.json` ainda não existe quando o primeiro
+ * test email é enviado (passo 7 < passo 8). Use `setTestEmailCount` no passo 8
+ * para gravar a contagem inicial; `incrementTestEmailCount` é pro **modo fix**,
+ * onde o arquivo já existe da run de create anterior.
  */
-export function incrementTestEmailCount(editionDir: string): number {
-  const path = resolve(editionDir, "_internal", "05-published.json");
-  if (!existsSync(path)) {
-    // Arquivo não existe: não criar; o orchestrator deve gravar antes
-    // de chamar este helper. Retornar 0 para sinalizar que o increment não
-    // persistiu — o caller deve logar aviso.
-    return 0;
+export function incrementTestEmailCount(editionDir: string): number | null {
+  const data = readPublishedRaw(editionDir);
+  if (data === null) {
+    // Arquivo ausente ou corrompido: não criar do zero (faltariam draft_url,
+    // status, etc. — o passo 8 do playbook é o dono dessa criação). Sinalizar
+    // falha com null em vez de 0 ambíguo.
+    return null;
   }
+  const next = coerceCount(data["test_email_count"]) + 1;
+  data["test_email_count"] = next;
   try {
-    const raw = readFileSync(path, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    const prev =
-      typeof data["test_email_count"] === "number" ? Math.floor(data["test_email_count"]) : 0;
-    const next = prev + 1;
-    data["test_email_count"] = next;
-    writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
-    return next;
+    writeFileAtomic(publishedJsonPath(editionDir), JSON.stringify(data, null, 2) + "\n");
   } catch {
-    return 0;
+    return null;
   }
+  return next;
+}
+
+/**
+ * Seta `test_email_count` em `05-published.json` com um valor explícito,
+ * persistindo atomicamente. Usado no passo 8 do playbook (modo create) para
+ * gravar a contagem de sends feitos no passo 7 — quando o arquivo é criado pela
+ * primeira vez. Retorna `true` se persistiu, `false` se falhou.
+ */
+export function setTestEmailCount(editionDir: string, count: number): boolean {
+  const data = readPublishedRaw(editionDir);
+  if (data === null) return false;
+  data["test_email_count"] = coerceCount(count);
+  try {
+    writeFileAtomic(publishedJsonPath(editionDir), JSON.stringify(data, null, 2) + "\n");
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /**
  * Marca `draft_verified: true` em `05-published.json` para indicar que a
  * verificação final foi feita via draft link + checklist (não via test email).
- * Preserva todos os outros campos.
+ * Preserva todos os outros campos. Persiste atomicamente.
+ *
+ * Retorna `true` se persistiu, `false` se falhou (arquivo ausente/corrompido ou
+ * erro de escrita) — o caller deve logar aviso quando `false`, senão a flag fica
+ * inconsistente com o que foi reportado ao editor.
  */
-export function markDraftVerified(editionDir: string): void {
-  const path = resolve(editionDir, "_internal", "05-published.json");
-  if (!existsSync(path)) return;
+export function markDraftVerified(editionDir: string): boolean {
+  const data = readPublishedRaw(editionDir);
+  if (data === null) return false;
+  data["draft_verified"] = true;
   try {
-    const raw = readFileSync(path, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    data["draft_verified"] = true;
-    writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+    writeFileAtomic(publishedJsonPath(editionDir), JSON.stringify(data, null, 2) + "\n");
   } catch {
-    // swallow — não pode mascarar erro original
+    return false;
   }
+  return true;
 }
 
 /**
@@ -114,6 +170,10 @@ export function markDraftVerified(editionDir: string): void {
  * - count < ALERT_THRESHOLD: ok, seguir normal
  * - count === ALERT_THRESHOLD: alert, avisar que próximo pode atingir limite
  * - count > ALERT_THRESHOLD: use_draft_fallback — não enviar; usar draft link
+ *
+ * Sequência efetiva (increment ocorre APÓS cada send): sends com count
+ * pré-envio 0,1,2 são "ok"; o send com count 3 é "alert" (último permitido);
+ * a partir de count 4 a guard cai para `use_draft_fallback` e bloqueia o send.
  */
 export function decideTestSendAction(count: number): TestSendLimitDecision {
   if (count > TEST_SEND_ALERT_THRESHOLD) {

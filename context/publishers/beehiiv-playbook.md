@@ -646,7 +646,7 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 **#1766 — wait fora do `javascript_tool`.** NÃO colocar `await new Promise(r=>setTimeout(r,8000))` DENTRO de uma chamada `javascript_tool` — o wait conta pro orçamento dos 45s do CDP. Faça o wait via `computer.wait` (ou esperar entre chamadas MCP) e mantenha cada `javascript_tool` curto e numa chamada separada.
 
-**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s (via `computer.wait`, não dentro do `javascript_tool`) antes de prosseguir. Validação opcional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
+**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. **Antes de navegar para `?step=review` ou salvar o draft, executar OBRIGATORIAMENTE o "Passo obrigatório antes de qualquer navigate pós-insertContent" da §5.2 Fase 3 (#2375)** — debounce 2s → JS verify (`doc.descendants`) → `blur()` → flush 1.5s. O blur força o flush do autosave ao servidor; pular o blur torna o wait de tempo fixo insuficiente em conexões lentas. Validação opcional adicional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
 **⚠️ #2283 — CDP timeout no editor trava o autosave.** Se qualquer `javascript_tool` retornar `CDP Runtime.evaluate timed out after 45000ms` (ou equivalente) **enquanto o editor está aberto**, o autosave do Beehiiv pode congelar: `updated_at` fica fixo e campos setados **após** o timeout (Subtitle, Subject) param de persistir mesmo com retry. Sintomas:
 
@@ -756,6 +756,7 @@ Antes de cada "Send test email", verificar o contador por post:
 import {
   readTestEmailCount,
   incrementTestEmailCount,
+  setTestEmailCount,
   markDraftVerified,
   decideTestSendAction,
 } from "scripts/lib/beehiiv-test-send-limit.ts";
@@ -775,9 +776,11 @@ if (limitDecision.action === "use_draft_fallback") {
     message: "test_send_limit_reached",
     details: { test_email_count: currentCount, draft_url, edition_dir },
   });
-  markDraftVerified(edition_dir);
-  // Ver fallback de draft link abaixo
-  return; // não executar o click "Send test email"
+  // markDraftVerified só funciona se 05-published.json já existe (modo fix).
+  // Em modo create, draft_verified é gravado no passo 8 (ver abaixo).
+  const marked = markDraftVerified(edition_dir);
+  if (!marked) log_warn("draft_verified não persistido — 05-published.json ainda não gravado (modo create); setar no passo 8");
+  // NÃO executar o click "Send test email" — pular pro fallback de draft link abaixo.
 }
 
 if (limitDecision.action === "alert") {
@@ -785,10 +788,20 @@ if (limitDecision.action === "alert") {
   // Avisar o editor mas ainda tentar o send
 }
 
-// ... click Send test email ...
-// Após send bem-sucedido, incrementar contador
-incrementTestEmailCount(edition_dir);
+// ... (só se action !== "use_draft_fallback") click Send test email ...
 recordSend(edition_dir, true); // rate-limit por hora (#1419)
+
+// ⚠️ ORDERING (#2376 review): em modo CREATE, 05-published.json ainda NÃO existe
+// neste ponto (é gravado no passo 8). Portanto:
+//  - NÃO chamar incrementTestEmailCount aqui em modo create — ela retorna null
+//    (increment perdido) porque o arquivo não existe.
+//  - Em vez disso, rastrear o nº de sends numa variável local (sends_done++) e
+//    gravar test_email_count: sends_done no passo 8 via setTestEmailCount OU no
+//    próprio objeto JSON do passo 8.
+//  - Em modo FIX (Passo fix-3), 05-published.json JÁ existe da run de create →
+//    chamar incrementTestEmailCount(edition_dir) e checar o retorno:
+//      const newCount = incrementTestEmailCount(edition_dir);
+//      if (newCount === null) log_warn("increment de test_email_count perdido — verificar 05-published.json");
 ```
 
 **Fallback de verificação via draft link (quando limite por post atingido):**
@@ -807,10 +820,12 @@ Quando `use_draft_fallback`, verificar o conteúdo diretamente no draft do Beehi
    - [ ] Seção RADAR presente
    - [ ] Seção OUTRAS NOTÍCIAS não está truncada
    - [ ] Nenhum placeholder `[TODO]` ou `[FALTA]` visível
-4. Registrar `draft_verified: true` em `05-published.json` via `markDraftVerified(edition_dir)`.
-5. Prosseguir para o passo 8 (gravar `05-published.json`) com `draft_verified: true`.
+4. Registrar `draft_verified: true` em `05-published.json`:
+   - **Modo fix** (arquivo já existe): `markDraftVerified(edition_dir)` — checar o retorno `true`; se `false`, logar warn (write falhou).
+   - **Modo create** (arquivo ainda não gravado): incluir `"draft_verified": true` diretamente no objeto JSON do passo 8.
+5. Prosseguir para o passo 8 (gravar `05-published.json`) com `draft_verified: true` e `test_email_count` = nº de sends já tentados.
 
-O `review-test-email` loop pode ser pulado quando `draft_verified: true` (verificação já foi feita via draft). Registrar em `unfixed_issues[]` que a verificação foi via draft, não via email.
+**⚠️ Wiring do skip (#2376 review):** o campo `draft_verified: true` **registra** que a verificação foi via draft, mas o pulo do `review-test-email` loop NÃO está automatizado no `orchestrator-stage-5.md` (que mantém a regra "este loop nunca deve ser pulado"). Em modo `use_draft_fallback`, o top-level que lê este playbook deve: (a) marcar `draft_verified: true`, (b) registrar em `unfixed_issues[]` `{ reason: "verified_via_draft_link", section: "test-email", details: "limite de test email por post atingido" }`, e (c) tratar a checklist de draft acima como o resultado do loop (não despachar `review-test-email` de novo só pra ver "nenhum email"). Isso é decisão do top-level, não enforcement determinístico — documentado aqui de propósito (evita editar o orchestrator e disparar o snapshot test #634).
 
 - Abrir menu de testes → enviar para `test_email` → confirmar.
 - Capturar timestamp:
@@ -835,7 +850,7 @@ O `review-test-email` loop pode ser pulado quando `draft_verified: true` (verifi
 }
 ```
 
-`test_email_count` (#2376): número de test emails enviados para este post neste pipeline (não reseta com janela de 1h como o counter de #1419 — este é por post). Inicializa em 0 e é incrementado por `incrementTestEmailCount()` de `scripts/lib/beehiiv-test-send-limit.ts` a cada send bem-sucedido. Quando >= `TEST_SEND_ALERT_THRESHOLD` (3), o playbook alerta proativamente antes de tentar outro send.
+`test_email_count` (#2376): número de test emails enviados para este post neste pipeline (não reseta com janela de 1h como o counter de #1419 — este é por post). **Em modo create**, este passo 8 grava o nº de sends feitos no passo 7 diretamente no objeto JSON (o arquivo não existia durante o passo 7). **Em modo fix**, `incrementTestEmailCount()` de `scripts/lib/beehiiv-test-send-limit.ts` incrementa a cada send (o arquivo já existe). Quando o valor lido por `readTestEmailCount()` >= `TEST_SEND_ALERT_THRESHOLD` (3), o playbook alerta; quando > 3, cai no fallback de draft link. `incrementTestEmailCount`/`setTestEmailCount`/`markDraftVerified` persistem via `writeFileAtomic` (#1132) — `05-published.json` é output crítico, write não-atômico corromperia o resume detector.
 
 `draft_verified` (#2376): `true` indica que a verificação final foi feita via draft link + checklist explícita (não via test email recebido no Gmail). Setado por `markDraftVerified()` quando o limite de test emails por post é atingido. O `review-test-email` loop deve pular a verificação de Gmail se `draft_verified: true` e considerar o draft como verificado.
 
