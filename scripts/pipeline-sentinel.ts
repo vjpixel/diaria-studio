@@ -31,6 +31,7 @@ import { resolve } from "node:path";
 import {
   assertMarker,
   assertSentinel,
+  readSentinel,
   sentinelExists,
   writeMarker,
   writeSentinel,
@@ -173,7 +174,14 @@ function main(): void {
         // #2374: resume path — sentinel exists but stage-status may still be
         // "running" or "pending" from the interrupted session. Repair it here
         // so timing is recorded even when the orchestrator skips write.
-        if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step)) {
+        // #2401: use sentinel.completed_at as nowMs (not Date.now()) so the
+        // recorded `end` reflects when the stage actually completed, not the
+        // resume time.
+        const sentinel = readSentinel(editionDir, step);
+        const nowMs = sentinel
+          ? new Date(sentinel.completed_at).getTime()
+          : Date.now();
+        if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step, nowMs)) {
           console.log(`stage-status auto-updated on resume: stage ${step} → done`);
         }
         process.exit(0);
