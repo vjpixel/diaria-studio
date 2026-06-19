@@ -12,5 +12,8 @@ if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodej
 if not exist "data\clarice-subscribers\cohorts" mkdir "data\clarice-subscribers\cohorts"
 echo [%date% %time%] ^>^>^> iniciando crawl de coortes>> "data\clarice-subscribers\cohorts\task.log"
 "%NODE_EXE%" --import tsx scripts\clarice-engagement-cohorts.ts>> "data\clarice-subscribers\cohorts\task.log" 2>&1
-echo [%date% %time%] ^<^<^< fim (exit %ERRORLEVEL%)>> "data\clarice-subscribers\cohorts\task.log"
-endlocal
+REM captura o exit do node ANTES do echo (que reseta %ERRORLEVEL% p/ 0) e propaga
+REM via `endlocal & exit /b` — senão a Task Scheduler veria sempre "sucesso" (#2426 review).
+set "NODE_EXIT=%ERRORLEVEL%"
+echo [%date% %time%] ^<^<^< fim (exit %NODE_EXIT%)>> "data\clarice-subscribers\cohorts\task.log"
+endlocal & exit /b %NODE_EXIT%
