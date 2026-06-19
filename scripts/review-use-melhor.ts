@@ -23,7 +23,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { isAggregator } from "./lib/aggregators.ts";
-import { classifyAudienceClass } from "./lib/use-melhor-curation.ts";
+import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curation.ts";
 
 /**
  * Domínios primariamente newsletter/podcast/análise — só PARTE do conteúdo é
@@ -232,6 +232,16 @@ export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
         title: title || undefined,
         reasons: [
           "blog corporativo SEM verbo how-to/tutorial no título/slug — verificar se é case study ou anúncio de produto (#2313)",
+        ],
+      });
+    } else if (isOpinionOrStudy(url, title, typeof item.summary === "string" ? item.summary : "") && !hasTutorial) {
+      // #2368 item 2: ensaio de opinião ou estudo de pesquisa sem sinal how-to.
+      // Casos reais: hamel.dev opinion essay, langchain research study.
+      suspicious.push({
+        url,
+        title: title || undefined,
+        reasons: [
+          "ensaio de opinião ou estudo de pesquisa SEM sinal how-to — não é tutorial hands-on (#2368)",
         ],
       });
     }

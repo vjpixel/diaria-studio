@@ -53,6 +53,9 @@ import {
 import { checkEiaAnswer } from "./lib/lint-checks/eia-answer-check.ts";
 import { checkIntentionalError, checkIntentionalErrorSafety } from "./lib/lint-checks/intentional-error.ts";
 import { checkSectionItemFormat } from "./lib/lint-checks/section-item-format.ts";
+import {
+  checkUseMelhorTempo,
+} from "./lib/lint-checks/use-melhor-tempo.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -116,6 +119,12 @@ export {
   type SectionItemFormatError,
   type SectionItemFormatReport,
 } from "./lib/lint-checks/section-item-format.ts";
+export {
+  checkUseMelhorTempo,
+  USE_MELHOR_TEMPO_RE,
+  type UseMelhorTempoError,
+  type UseMelhorTempoReport,
+} from "./lib/lint-checks/use-melhor-tempo.ts";
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -625,6 +634,38 @@ intentional_error:
     return;
   }
 
+  // Modo --check use-melhor-tempo (#2372) — cada item USE MELHOR precisa de
+  // estimativa de tempo "— N min" na linha de descrição.
+  if (args.check === "use-melhor-tempo") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkUseMelhorTempo(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ use-melhor-tempo: ${result.errors.length} item(ns) USE MELHOR sem estimativa de tempo:`,
+      );
+      for (const e of result.errors) {
+        console.error(
+          `  item ${e.item} (linha ${e.titleLine}): descrição "${e.excerpt}" não contém "— N min"`,
+        );
+      }
+      console.error(
+        `\nFix: adicione "— X min" ao final da descrição de cada item (ex: "— 5 min de leitura").`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -669,7 +710,8 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>",
     );
     process.exit(2);
   }
