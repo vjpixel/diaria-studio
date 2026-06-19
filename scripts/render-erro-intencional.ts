@@ -35,6 +35,7 @@ import {
   loadIntentionalErrors,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
+import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // #2398: parser canônico (CRLF-safe, #2304)
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -90,18 +91,69 @@ export function findPreviousIntentionalError(
 }
 
 /**
- * Pure (#961 / #1079): extrai o erro intencional declarado na linha "Nessa
- * edição, {narrativa}." de um `02-reviewed.md` publicado.
+ * Pure (#2398): extrai `intentional_error.description` (ou `.narrative`) do
+ * frontmatter YAML como a declaração real do editor. O campo `description` é o
+ * que o editor de fato preenche no Drive (ver hábito real em 260617/260618); o
+ * campo `narrative` é um alias aceito por compatibilidade futura.
  *
- * O novo formato (#1079) usa narrativa livre — o autor escreve a frase
- * inteira, sem placeholders fixos. Exemplos válidos:
- *   - "Nessa edição, eu disse que a OpenAI lançou 4 modelos, mas listei 3."
- *   - "Nessa edição, escrevi 'X' onde deveria ser 'Y'." (formato legado)
- *   - "Nessa edição, coloquei junho onde deveria ser maio."
+ * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
+ * `description`/`narrative`, ou valor é um placeholder `{PREENCHER}`.
  *
- * Captura tudo após "Nessa edição," até o primeiro ponto final no início
- * de espaço/quebra (não pega parágrafos seguintes). Caso a linha não
- * exista, retorna null — o caller decide o fallback (JSONL).
+ * Reutiliza o mesmo parser regex-leve de `extractCorrectValueFromFrontmatter`
+ * (não depende de YAML parser externo).
+ */
+export function extractNarrativeFromFrontmatter(md: string): string | null {
+  // #2398 fix: reusa o extractFrontmatter canônico (CRLF-safe, #2304) em vez do
+  // parser hand-rolled que tinha 3 bugs: (1) quote-stripping quebrado com aspas
+  // simples, (2) return null no primeiro {PREENCHER} saía da função inteira antes
+  // de checar campos alternativos, (3) ordem `narrative` antes de `description`
+  // invertia a prioridade declarada no docstring.
+  const fm = extractFrontmatter(md);
+  if (!fm) return null;
+
+  const ieBlock = fm.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlock) return null;
+
+  // Helper: extrai e limpa o valor de um campo do bloco intentional_error.
+  // Strip aspas duplas E simples (o parser canônico de intentional-error.ts só
+  // lida com duplas; aqui precisamos de ambas pra back-compat com edições legadas).
+  const extractField = (field: string): string | null => {
+    for (const line of ieBlock[1].split("\n")) {
+      // Aceita valor com ou sem aspas (duplas ou simples).
+      const m = line.match(
+        new RegExp(`^[ \\t]+${field}\\s*:\\s*(['"]?)(.*?)\\1\\s*$`),
+      );
+      if (!m) continue;
+      const val = m[2].trim();
+      if (val.length === 0) continue;
+      // Pular placeholder não preenchido — skip pra tentar campo seguinte.
+      if (/^\{PREENCHER/i.test(val)) return null;
+      return val;
+    }
+    return null;
+  };
+
+  // Prioridade: `description` (campo real do editor, hábito 260617/260618) →
+  // `narrative` (alias futuro por compatibilidade). Ordem corrigida em #2398.
+  return extractField("description") ?? extractField("narrative") ?? null;
+}
+
+/**
+ * Pure (#961 / #1079 / #2398): extrai o erro intencional declarado em
+ * `02-reviewed.md` publicado.
+ *
+ * **Prioridade da fonte (#2398):** o frontmatter `intentional_error.description`
+ * (ou `.narrative`) é a declaração REAL do editor — o hábito documentado em
+ * 260617/260618 é preencher o frontmatter com a declaração específica e manter
+ * o corpo com o convite genérico ao sorteio. A prosa "Nessa edição, …" no corpo
+ * é um FALLBACK para edições mais antigas onde o frontmatter não foi preenchido.
+ *
+ * Estratégia:
+ *   1. Tentar frontmatter `intentional_error.description` / `.narrative`.
+ *   2. Se ausente, tentar a linha "Nessa edição, {narrativa}." no corpo.
+ *   3. Se nenhuma das duas, retornar null.
  *
  * Retorna `{ narrative }` no novo formato; campos `detail/gabarito` ficam
  * derivados pelos consumidores que ainda precisam deles (regex legado em
@@ -110,6 +162,30 @@ export function findPreviousIntentionalError(
 export function extractIntentionalErrorFromMd(
   md: string,
 ): { narrative: string; detail?: string; gabarito?: string; correct_value?: string } | null {
+  // #2398: PRIORIDADE 1 — declaração no frontmatter (hábito real do editor).
+  // `description` é o campo que o editor preenche no Drive; `narrative` é alias.
+  const fmNarrative = extractNarrativeFromFrontmatter(md);
+  const correctValue = extractCorrectValueFromFrontmatter(md);
+
+  if (fmNarrative) {
+    // Back-compat: tenta extrair detail/gabarito do formato legado quando a
+    // description usa "escrevi 'X' onde deveria ser 'Y'".
+    const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
+    const lm = fmNarrative.match(legacyRe);
+    if (lm) {
+      return {
+        narrative: fmNarrative,
+        detail: lm[2],
+        gabarito: lm[4],
+        ...(correctValue ? { correct_value: correctValue } : {}),
+      };
+    }
+    return { narrative: fmNarrative, ...(correctValue ? { correct_value: correctValue } : {}) };
+  }
+
+  // #2398: PRIORIDADE 2 — prosa "Nessa edição, …" no corpo (fallback para
+  // edições sem frontmatter preenchido / publicações manuais antigas).
+  //
   // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
   // dentro do bloco. Caso contrário, busca global (back-compat com testes
   // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
@@ -137,11 +213,7 @@ export function extractIntentionalErrorFromMd(
   if (/^\{PREENCHER/i.test(narrative)) return null;
 
   // #1443: pull `correct_value` do frontmatter pra que o reveal da próxima
-  // edição possa enforçar "o correto é Y". Frontmatter shape esperada (validada
-  // pelo lint-newsletter-md `intentional-error-flagged`):
-  //   intentional_error:
-  //     correct_value: "..."
-  const correctValue = extractCorrectValueFromFrontmatter(md);
+  // edição possa enforçar "o correto é Y". (correctValue já foi extraído acima)
 
   // Back-compat: tenta extrair detail/gabarito do formato legado
   // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
