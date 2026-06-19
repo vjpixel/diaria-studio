@@ -49,7 +49,19 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   // -----------------------------------------------------------------------
   {
     company: "Anthropic",
-    path_patterns: [/^anthropic\.com\/(news|blog|claude|research)\//],
+    // #2370: claude.com é domínio de produto da Anthropic e publica anúncios
+    // oficiais em /blog/ (ex: claude.com/blog/claude-design-stays-on-brand-for-daily-work,
+    // categoria "Product announcements"). Restrito a /blog/ de propósito —
+    // verificado contra dado real em 2026-06-18:
+    //   - claude.com/news e /release-notes redirecionam (302) pra claude.ai
+    //     (não são paths de conteúdo de claude.com)
+    //   - claude.com/product/* são páginas de marketing evergreen (sem data de
+    //     publicação), não lançamentos
+    //   - /pricing, /login, /signup, /upgrade, /settings = account/e-commerce
+    path_patterns: [
+      /^anthropic\.com\/(news|blog|claude|research)\//,
+      /^claude\.com\/blog\//,
+    ],
     detection_keywords: /\b(anthropic|claude)\b/i,
     primary_domain: "anthropic.com",
   },
