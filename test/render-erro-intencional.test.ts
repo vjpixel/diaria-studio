@@ -25,6 +25,7 @@ import {
   extractCorrectValueFromFrontmatter,
   findPreviousIntentionalErrorFromMd,
   narrativeHasCorrection,
+  narrativeIsCatalogShaped,
   resolvePreviousError,
   ensureIntentionalErrorFrontmatter,
 } from "../scripts/render-erro-intencional.ts";
@@ -287,6 +288,79 @@ describe("narrativeHasCorrection (#1443)", () => {
   });
 });
 
+describe("narrativeIsCatalogShaped (#2411 — guard contra label interno no reveal)", () => {
+  it("detecta 'DESTAQUE 2 lista o Spotify...' (formato catálogo)", () => {
+    assert.equal(narrativeIsCatalogShaped("DESTAQUE 2 lista o Spotify entre os assistentes de IA"), true);
+  });
+
+  it("detecta 'DESTAQUE 3 (Microsoft/DeepSeek): no primeiro parágrafo...' (formato real 260618)", () => {
+    assert.equal(
+      narrativeIsCatalogShaped("DESTAQUE 3 (Microsoft/DeepSeek): no primeiro parágrafo a empresa aparece como 'Macrosoft'"),
+      true,
+    );
+  });
+
+  it("retorna false para prosa first-person típica", () => {
+    assert.equal(narrativeIsCatalogShaped("escrevi que GPT-5 foi lançado em 2024, o correto é 2025"), false);
+  });
+
+  it("retorna false para texto que menciona DESTAQUE mas não começa com ele", () => {
+    assert.equal(narrativeIsCatalogShaped("listei o Spotify como assistente de IA no DESTAQUE 2"), false);
+  });
+
+  it("retorna false para texto genérico", () => {
+    assert.equal(narrativeIsCatalogShaped("contei que Karpathy cofundou a OpenAI em 1914"), false);
+  });
+});
+
+describe("composeRevealText (#2411 — guard contra copy quebrada/catalog-shaped)", () => {
+  it("#2411: narrative catálogo (começa com DESTAQUE N) → fallback seguro + sem label interno no reveal", () => {
+    // Regressão: #2398 passava description catálogo como narrative; #2411 bloqueia.
+    // Fixture: narrative = description catálogo com label interno "DESTAQUE 2".
+    const prev = {
+      edition: "260618",
+      error_type: "factual",
+      is_feature: true,
+      narrative: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      correct_value: "Perplexity ou Copilot",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    // NÃO deve conter o label interno "DESTAQUE N" no reveal público
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/, "label interno não deve vazar para o reveal público");
+    // Deve usar fallback seguro com correct_value
+    assert.match(text, /Na última edição, houve um erro proposital; o correto era Perplexity ou Copilot\./);
+  });
+
+  it("#2411: detail catálogo (DESTAQUE N) → fallback seguro com correct_value", () => {
+    // Caso JSONL: detail = description copiada do frontmatter (catálogo).
+    // Fixture shaped como o JSONL entry de 260618.
+    const prev: IntentionalError = {
+      edition: "260618",
+      error_type: "ortografico",
+      is_feature: true,
+      detail: "DESTAQUE 3 (Microsoft/DeepSeek): no primeiro parágrafo a empresa aparece como 'Macrosoft', mas o nome correto é Microsoft",
+      correct_value: "Microsoft",
+    };
+    const text = composeRevealText(prev);
+    // NÃO deve conter "DESTAQUE 3" no reveal público
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/, "label interno não deve vazar para o reveal público");
+    // Fallback seguro: gramatical, menciona o correto
+    assert.match(text, /Na última edição, houve um erro proposital; o correto era Microsoft\./);
+  });
+
+  it("#2411: narrative catalog sem correct_value → fallback genérico (sem correct_value)", () => {
+    const prev = {
+      edition: "260618",
+      error_type: "factual",
+      is_feature: true,
+      narrative: "DESTAQUE 1 afirma que o sistema médico empatou com dentistas",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/);
+    assert.match(text, /Na última edição, houve um erro proposital\./);
+  });
+});
+
 describe("extractCorrectValueFromFrontmatter (#1443)", () => {
   it("extrai correct_value do frontmatter (aspas duplas)", () => {
     const md = [
@@ -362,9 +436,10 @@ describe("extractCorrectValueFromFrontmatter (#1443)", () => {
 });
 
 describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value", () => {
-  it("#2398: PRIORIDADE frontmatter — description vira narrative (hábito real 260617/260618)", () => {
-    // Caso real: editor preenche description no frontmatter + corpo tem genérico.
-    // Antes do fix: retornava o genérico do corpo. Após: retorna description.
+  it("#2411 fix — description catálogo + corpo genérico → null (não vaza label interno)", () => {
+    // Regressão #2411: #2398 fazia description catálogo virar narrative do reveal.
+    // Após o fix: body genérico é filtrado, frontmatter sem `narrative` → null.
+    // (correct_value ainda está no frontmatter, mas não há fonte válida de reveal.)
     const md = [
       "---",
       "intentional_error:",
@@ -380,8 +455,33 @@ describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value"
       "",
     ].join("\n");
     const r = extractIntentionalErrorFromMd(md);
-    // #2398: frontmatter description é a fonte real — não o genérico do corpo
-    assert.equal(r?.narrative, "DESTAQUE 2 lista o Spotify entre os assistentes de IA");
+    // description é catálogo → NÃO deve ser retornada como narrative
+    assert.equal(r, null, "deve retornar null — description é catálogo, body é genérico");
+  });
+
+  it("#2411 fix — description catálogo + body first-person específico → usa body", () => {
+    // Quando o editor escreveu a prosa first-person no corpo, ela é retornada
+    // (mesmo que description seja catálogo no frontmatter).
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+      '  location: "DESTAQUE 2"',
+      '  category: "factual"',
+      '  correct_value: "Perplexity ou Copilot"',
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, foo.",
+      "",
+      "Nessa edição, listei o Spotify como assistente de IA no DESTAQUE 2, mas o Spotify é um serviço de streaming.",
+      "",
+    ].join("\n");
+    const r = extractIntentionalErrorFromMd(md);
+    // Body first-person é a fonte primária (#2411)
+    assert.ok(r !== null, "deve retornar resultado válido");
+    assert.equal(r?.narrative, "listei o Spotify como assistente de IA no DESTAQUE 2, mas o Spotify é um serviço de streaming");
     assert.equal(r?.correct_value, "Perplexity ou Copilot");
   });
 
@@ -404,6 +504,29 @@ describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value"
     const r = extractIntentionalErrorFromMd(md);
     assert.equal(r?.narrative, "contei que Karpathy cofundou a OpenAI em 1914");
     assert.equal(r?.correct_value, "2014");
+  });
+
+  it("#2411 fix — frontmatter narrative field (first-person) é usada como fallback quando body ausente", () => {
+    // Edição com `narrative` (alias first-person) no frontmatter + sem prosa no corpo.
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 3: empresa aparece como Macrosoft"',
+      '  narrative: "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft"',
+      '  location: "DESTAQUE 3"',
+      '  category: "ortografico"',
+      '  correct_value: "Microsoft"',
+      "---",
+      "",
+      "Body sem linha Nessa edição específica.",
+    ].join("\n");
+    const r = extractIntentionalErrorFromMd(md);
+    // `narrative` do frontmatter é a fonte fallback (#2411)
+    assert.ok(r !== null, "deve retornar resultado com narrative do frontmatter");
+    assert.equal(r?.narrative, "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft");
+    assert.equal(r?.correct_value, "Microsoft");
+    // description NÃO deve aparecer como narrative
+    assert.doesNotMatch(r?.narrative ?? "", /^DESTAQUE/);
   });
 
   it("correct_value undefined quando frontmatter ausente", () => {
@@ -1139,25 +1262,24 @@ describe("render-erro-intencional CLI (#911)", () => {
     }
   });
 
-  it("#1443/#2398: integração — auto-append 'o correto é Y' lendo prev MD com frontmatter description sem correção", () => {
-    // #2398: o reveal vem do frontmatter description (não mais do corpo).
-    // Fixture 260617/260618-shaped: description no frontmatter, corpo genérico.
-    // O description "listou o Spotify..." não tem fraseologia de correção →
-    // correct_value "Perplexity ou Copilot" é auto-appended pelo #1443.
-    const dir = mkdtempSync(join(tmpdir(), "render-erro-int-1443-"));
+  it("#2411 fix: integração — prev MD tem description catálogo + corpo genérico → sem reveal válido (fallback neutro)", () => {
+    // Regressão #2411: antes, description catálogo virava reveal público quebrado.
+    // Após o fix: body genérico é filtrado, sem `narrative` no frontmatter → prev_revealed=false.
+    // Reveal na próxima edição: "A edição anterior não trazia erro intencional declarado."
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-int-2411-"));
     try {
       const editionsRoot = join(dir, "editions");
       mkdirSync(join(editionsRoot, "260520"), { recursive: true });
       mkdirSync(join(editionsRoot, "260521"), { recursive: true });
 
-      // Edição anterior 260520: frontmatter description específica + corpo genérico
-      // (padrão real observado em 260617/260618)
+      // Edição anterior 260520: frontmatter description catálogo + corpo genérico
+      // (padrão real observado em 260617/260618 — descrição com "DESTAQUE N")
       writeFileSync(
         join(editionsRoot, "260520", "02-reviewed.md"),
         [
           "---",
           "intentional_error:",
-          '  description: "listou o Spotify entre os assistentes de IA"',
+          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
           '  location: "DESTAQUE 2"',
           '  category: "factual"',
           '  correct_value: "Perplexity ou Copilot"',
@@ -1195,12 +1317,77 @@ describe("render-erro-intencional CLI (#911)", () => {
       ]);
       assert.equal(r.status, 0, r.stderr);
       const out = JSON.parse(r.stdout);
-      assert.equal(out.prev_source, "md");
-      assert.equal(out.prev_edition, "260520");
-      assert.equal(out.prev_revealed, true);
+      // Sem fonte válida de reveal (body genérico + sem narrative no frontmatter)
+      assert.equal(out.prev_revealed, false, "sem fonte first-person → sem reveal válido");
       const updated = readFileSync(mdPath, "utf8");
-      // #2398: reveal vem do frontmatter description, com correct_value auto-appended (#1443)
-      assert.match(updated, /Na última edição, listou o Spotify[^\n]*, o correto é Perplexity ou Copilot\./);
+      // A linha "Na última edição, ..." não deve conter label interno "DESTAQUE N"
+      const revealLine = updated.split("\n").find((l) => l.startsWith("Na última edição,")) ?? "";
+      assert.doesNotMatch(revealLine, /DESTAQUE\s+\d/, "reveal não deve vazar label interno DESTAQUE N");
+      // Fallback neutro correto
+      assert.match(updated, /não trazia erro intencional declarado/, "deve usar fallback neutro");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2411 fix: integração — prev MD com body first-person → reveal correto, sem label interno", () => {
+    // Caso onde o editor escreveu a prosa first-person no corpo (como deveria):
+    // o reveal deve usar essa prosa e NÃO vazar labels internos.
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-int-2411-fp-"));
+    try {
+      const editionsRoot = join(dir, "editions");
+      mkdirSync(join(editionsRoot, "260520"), { recursive: true });
+      mkdirSync(join(editionsRoot, "260521"), { recursive: true });
+
+      // Edição anterior 260520: frontmatter description catálogo + corpo first-person
+      writeFileSync(
+        join(editionsRoot, "260520", "02-reviewed.md"),
+        [
+          "---",
+          "intentional_error:",
+          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "Perplexity ou Copilot"',
+          "---",
+          "",
+          "Body.",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, listei o Spotify como assistente de IA no DESTAQUE 2, mas o correto é Perplexity.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const mdPath = join(editionsRoot, "260521", "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        ["OUTRAS NOTÍCIAS", "", "Item.", "", "---", "", "**ASSINE**", "X"].join("\n"),
+        "utf8",
+      );
+
+      const r = runCli([
+        "--edition",
+        "260521",
+        "--md",
+        mdPath,
+        "--editions-dir",
+        editionsRoot,
+        "--errors",
+        join(dir, "ghost.jsonl"),
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.prev_revealed, true, "body first-person → reveal válido");
+      const updated = readFileSync(mdPath, "utf8");
+      // Reveal usa a prosa first-person do corpo
+      assert.match(updated, /Na última edição, listei o Spotify/);
+      // O reveal é gramatical e não vaza label "DESTAQUE N" como prefixo
+      assert.doesNotMatch(updated, /Na última edição, DESTAQUE/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1607,12 +1794,13 @@ describe("checkNarrativeNotGenericPlaceholder — invariant Stage 4 (#2377)", ()
 
 // ── #2398: extractNarrativeFromFrontmatter + fix de fonte ────────────────────────────────────
 //
-// O hábito real do editor (260617/260618): declaração específica no frontmatter
-// `description`, corpo com convite genérico ao sorteio. Antes do fix, o corpo genérico
-// era extraído e o lint disparava (falso-positivo). Após o fix, frontmatter é prioridade.
+// #2411 reverteu a prioridade do fix #2398: `description` é catálogo (lint/catalog),
+// NÃO é mais fonte do reveal. Apenas o campo `narrative` do frontmatter é aceito
+// como fonte do reveal pelo `extractNarrativeFromFrontmatter`.
 
-describe("extractNarrativeFromFrontmatter (#2398)", () => {
-  it("extrai description do frontmatter como narrative (padrão real 260617/260618)", () => {
+describe("extractNarrativeFromFrontmatter (#2398 + #2411)", () => {
+  it("#2411: só description no frontmatter → null (description é catálogo, não fonte do reveal)", () => {
+    // #2398 retornava description; #2411 reverte: description é catálogo, não reveal.
     const md = [
       "---",
       "intentional_error:",
@@ -1626,10 +1814,11 @@ describe("extractNarrativeFromFrontmatter (#2398)", () => {
       "",
     ].join("\n");
     const r = extractNarrativeFromFrontmatter(md);
-    assert.equal(r, "DESTAQUE 2 lista o Spotify entre os assistentes de IA que teriam evoluído");
+    // #2411: description é catálogo → null (não é fonte do reveal)
+    assert.equal(r, null, "#2411: description é catálogo, não deve ser retornada como narrative do reveal");
   });
 
-  it("aceita alias `narrative:` no frontmatter", () => {
+  it("aceita alias `narrative:` no frontmatter (fonte do reveal)", () => {
     const md = [
       "---",
       "intentional_error:",
@@ -1649,7 +1838,7 @@ describe("extractNarrativeFromFrontmatter (#2398)", () => {
     assert.equal(extractNarrativeFromFrontmatter("Corpo sem frontmatter."), null);
   });
 
-  it("retorna null quando intentional_error sem description/narrative", () => {
+  it("retorna null quando intentional_error sem narrative", () => {
     const md = [
       "---",
       "intentional_error:",
@@ -1661,11 +1850,12 @@ describe("extractNarrativeFromFrontmatter (#2398)", () => {
     assert.equal(extractNarrativeFromFrontmatter(md), null);
   });
 
-  it("retorna null quando description é placeholder {PREENCHER}", () => {
+  it("retorna null quando narrative é placeholder {PREENCHER}", () => {
     const md = [
       "---",
       "intentional_error:",
-      '  description: "{PREENCHER — o que o assinante deve identificar}"',
+      '  description: "DESTAQUE X usa Y"',
+      '  narrative: "{PREENCHER — o que o assinante deve identificar}"',
       '  location: "{PREENCHER}"',
       "---",
     ].join("\n");
@@ -1673,11 +1863,10 @@ describe("extractNarrativeFromFrontmatter (#2398)", () => {
   });
 });
 
-describe("extractIntentionalErrorFromMd — prioridade frontmatter (#2398)", () => {
-  it("(a) frontmatter description específica + corpo genérico → narrative vem do frontmatter, lint OK", () => {
-    // Fixture 260617/260618: editor declara no frontmatter, corpo tem convite genérico.
-    // ANTES do fix: retornava o genérico do corpo → narrativeIsGenericPlaceholder=true.
-    // APÓS o fix: retorna frontmatter description → narrativeIsGenericPlaceholder=false.
+describe("extractIntentionalErrorFromMd — prioridade frontmatter (#2398 + #2411)", () => {
+  it("(a) #2411: frontmatter description catálogo + corpo genérico → null (não vaza label)", () => {
+    // #2398 retornava description catálogo como narrative; #2411 reverte.
+    // Com o fix: body genérico é filtrado, description catálogo não é fonte → null.
     const md = [
       "---",
       "intentional_error:",
@@ -1695,11 +1884,8 @@ describe("extractIntentionalErrorFromMd — prioridade frontmatter (#2398)", () 
       "",
     ].join("\n");
     const r = extractIntentionalErrorFromMd(md);
-    assert.ok(r !== null, "deve retornar resultado não-nulo");
-    assert.equal(r!.narrative, "DESTAQUE 3 usa Macrosoft em vez de Microsoft no primeiro parágrafo");
-    assert.equal(r!.correct_value, "Microsoft");
-    // Narrative real NÃO é genérico → lint não deve disparar
-    assert.equal(narrativeIsGenericPlaceholder(r!.narrative), false);
+    // #2411: description é catálogo + body é genérico → null
+    assert.equal(r, null, "#2411: description catálogo + body genérico → null");
   });
 
   it("(b) sem frontmatter description, corpo específico → fallback funciona (back-compat)", () => {
@@ -1724,8 +1910,9 @@ describe("extractIntentionalErrorFromMd — prioridade frontmatter (#2398)", () 
     assert.equal(narrativeIsGenericPlaceholder(r!.narrative), false);
   });
 
-  it("(c) sem frontmatter, corpo genérico → lint sinaliza (warning)", () => {
-    // Sem frontmatter description E corpo genérico → deve sinalizar.
+  it("(c) #2411: sem frontmatter narrative, corpo genérico → extractIntentionalErrorFromMd=null", () => {
+    // #2411: corpo genérico é filtrado pelo extractIntentionalErrorFromMd (não retornado).
+    // (O lint Stage 4 checkNarrativeNotGenericPlaceholder detecta isso diretamente.)
     const md = [
       "**ERRO INTENCIONAL**",
       "",
@@ -1735,24 +1922,60 @@ describe("extractIntentionalErrorFromMd — prioridade frontmatter (#2398)", () 
       "",
     ].join("\n");
     const r = extractIntentionalErrorFromMd(md);
-    assert.ok(r !== null, "deve extrair a prosa genérica do corpo");
-    // Prosa genérica → lint deve sinalizar
-    assert.equal(narrativeIsGenericPlaceholder(r!.narrative), true);
+    // #2411: genérico filtrado → null (o lint acessa o corpo diretamente)
+    assert.equal(r, null, "#2411: corpo genérico filtrado → null");
   });
 });
 
-describe("checkNarrativeNotGenericPlaceholder — fix #2398 (não dispara com frontmatter preenchido)", () => {
-  it("#2398: 0 violations quando frontmatter description específica + corpo genérico (hábito real 260617/260618)", () => {
-    // Este é o caso que BLOQUEAVA o editor antes do fix.
-    const dir = mkdtempSync(join(tmpdir(), "stage4-2398-frontmatter-ok-"));
+describe("checkNarrativeNotGenericPlaceholder — fix #2411 (guard Stage 4)", () => {
+  it("#2411: 1 violation (warning) quando frontmatter só tem description catálogo + corpo genérico", () => {
+    // Este é o caso real 260617/260618: editor preencheu description (catálogo) mas
+    // não preencheu narrative first-person. O lint deve sinalizar que falta a declaração.
+    const dir = mkdtempSync(join(tmpdir(), "stage4-2411-description-catalog-"));
     try {
       const md = [
         "---",
         "intentional_error:",
-        '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA que teriam evoluído (Claude, Gemini e Spotify). O Spotify é um serviço de streaming de música, não um chatbot de IA."',
-        '  location: "DESTAQUE 2, parágrafo dos motivos (Claude, Gemini e Spotify)"',
+        '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+        '  location: "DESTAQUE 2, parágrafo dos motivos"',
         '  category: "factual"',
-        '  correct_value: "No lugar de Spotify, um assistente de IA real é por exemplo, Perplexity ou Copilot."',
+        '  correct_value: "Perplexity ou Copilot"',
+        "---",
+        "",
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, X.",
+        "",
+        "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "Texto.",
+      ].join("\n");
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      // #2411: sem narrative first-person → lint deve sinalizar (warning)
+      assert.equal(violations.length, 1,
+        `description catálogo + corpo genérico deve gerar 1 violation (falta narrative first-person). Got: ${JSON.stringify(violations)}`);
+      assert.equal(violations[0].severity, "warning");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2411: 0 violations quando frontmatter narrative específico + corpo genérico", () => {
+    // Editor preencheu `narrative` first-person no frontmatter → lint OK.
+    const dir = mkdtempSync(join(tmpdir(), "stage4-2411-narrative-ok-"));
+    try {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+        '  narrative: "listei o Spotify como assistente de IA, mas o correto é Perplexity"',
+        '  location: "DESTAQUE 2"',
+        '  category: "factual"',
+        '  correct_value: "Perplexity ou Copilot"',
         "---",
         "",
         "**ERRO INTENCIONAL**",
@@ -1769,14 +1992,14 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2398 (não dispara com fr
       writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       assert.equal(violations.length, 0,
-        `Frontmatter preenchido deve suprimir falso-positivo do corpo genérico. Got: ${JSON.stringify(violations)}`);
+        `frontmatter narrative first-person OK → sem violation. Got: ${JSON.stringify(violations)}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("#2398: 1 violation (warning) quando frontmatter ausente E corpo genérico", () => {
-    // Sem frontmatter description: o corpo genérico ainda deve sinalizar.
+  it("#2411: 1 violation (warning) quando frontmatter ausente E corpo genérico", () => {
+    // Sem frontmatter description E sem narrative: o corpo genérico deve sinalizar.
     const dir = mkdtempSync(join(tmpdir(), "stage4-2398-no-fm-generic-"));
     try {
       const md = [
@@ -1803,24 +2026,26 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2398 (não dispara com fr
 
 // ── #2410 discriminants: bugs 1-3 de extractNarrativeFromFrontmatter ─────────────────────────
 //
-// Cada teste abaixo FALHARIA com o parser hand-rolled original (pre-fix) e PASSA após
-// a migração para extractFrontmatter canônico (#2398 fix).
+// Estes testes foram escritos para o fix #2398 (que priorizava description).
+// O fix #2411 reverteu a prioridade: `description` é catálogo (lint/catalog),
+// `narrative` é o campo para o reveal (primeira pessoa). Os testes foram atualizados
+// para refletir o novo contrato.
 //
-// (a) Bug 1 (quote-stripping): description com aspas duplas retornava o valor SEM aspas
-//     no caso normal — mas single-quotes retornavam `'valor'` COM as aspas.
-// (b) Bug 2 (placeholder + fallback): narrative={PREENCHER} + description=real → antes
-//     retornava null inteiro (return null saía da função); agora retorna description real.
-// (c) Bug 3 (ordem): description é o campo real; narrative é alias. Verificar precedência.
-// (d) Bug 1 variante: description com aspas simples → valor sem aspas.
-// (e) Bug 4: description: (vazio) + prosa válida no corpo → fallback pro corpo funciona.
+// (a) Bug 1: agora irrelevante para description (não é mais lida pelo reveal).
+//     Mantido para documentar que `narrative` com aspas duplas é lido corretamente.
+// (b) narrative={PREENCHER} → null (sem campo narrative válido → null).
+// (c) Precedência: agora `narrative` tem precedência (campo do reveal); description é ignorado.
+// (d) `narrative` com aspas simples → valor sem aspas.
+// (e) description vazia + prosa válida no corpo → fallback pro corpo (inalterado).
 
-describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)", () => {
-  // (a) Bug 1: aspas duplas ao redor do valor não devem vazar no resultado
-  it("(a) description com aspas duplas → valor extraído SEM aspas (260617/260618 shaped)", () => {
+describe("extractNarrativeFromFrontmatter — discriminants (#2410/#2411)", () => {
+  // (a) narrative com aspas duplas → valor extraído SEM aspas
+  it("(a) narrative com aspas duplas → valor extraído SEM aspas", () => {
     const md = [
       "---",
       "intentional_error:",
       '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+      '  narrative: "escrevi que o Spotify era um assistente de IA no DESTAQUE 2"',
       '  location: "DESTAQUE 2"',
       '  category: "factual"',
       '  correct_value: "Perplexity"',
@@ -1829,15 +2054,34 @@ describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)
       "Corpo.",
     ].join("\n");
     const r = extractNarrativeFromFrontmatter(md);
-    // Valor deve ser limpo — sem aspas iniciais ou finais
-    assert.equal(r, "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
-      "aspas duplas do YAML não devem vazar no valor extraído");
+    // #2411: apenas o campo `narrative` é fonte do reveal
+    assert.equal(r, "escrevi que o Spotify era um assistente de IA no DESTAQUE 2",
+      "narrative sem aspas duplas vazando");
     assert.ok(!r!.startsWith('"'), 'valor não deve começar com "');
     assert.ok(!r!.endsWith('"'), 'valor não deve terminar com "');
   });
 
-  // (b) Bug 2: narrative={PREENCHER} + description real → deve retornar description, não null
-  it("(b) narrative={PREENCHER} + description real → usa description (não retorna null)", () => {
+  // (b) #2411: sem campo `narrative` (só description) → null
+  it("(b) sem campo narrative (só description) → retorna null (#2411)", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 3 diz que a Meta foi fundada em 1994"',
+      '  location: "DESTAQUE 3"',
+      '  category: "factual"',
+      '  correct_value: "2004"',
+      "---",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = extractNarrativeFromFrontmatter(md);
+    // description é catálogo → NÃO é fonte do reveal → null
+    assert.equal(r, null,
+      "#2411: description é catálogo, não deve ser retornada por extractNarrativeFromFrontmatter");
+  });
+
+  // (b2) narrative={PREENCHER} → null (placeholder não preenchido)
+  it("(b2) narrative={PREENCHER} → null (placeholder)", () => {
     const md = [
       "---",
       "intentional_error:",
@@ -1851,36 +2095,35 @@ describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)
       "Corpo.",
     ].join("\n");
     const r = extractNarrativeFromFrontmatter(md);
-    assert.ok(r !== null,
-      "narrative={PREENCHER} não deve causar return null quando description está preenchida");
-    assert.equal(r, "DESTAQUE 3 diz que a Meta foi fundada em 1994",
-      "deve retornar description real, não null nem o placeholder");
+    // narrative placeholder → null (description não é fallback para o reveal)
+    assert.equal(r, null,
+      "narrative={PREENCHER} deve retornar null — description não é fonte do reveal (#2411)");
   });
 
-  // (c) Bug 3 (precedência): description é o campo primário; narrative é alias
-  //     Quando ambos estão preenchidos, description deve ganhar
-  it("(c) precedência: description > narrative quando ambos preenchidos", () => {
+  // (c) #2411: quando narrative está preenchido, é retornado (description é ignorado)
+  it("(c) narrative preenchido → retorna narrative (description ignorada, #2411)", () => {
     const md = [
       "---",
       "intentional_error:",
-      '  description: "campo description real do editor"',
-      '  narrative: "alias narrative alternativo"',
+      '  description: "campo description catálogo (ignorado)"',
+      '  narrative: "escrevi X onde deveria ser Y (primeira pessoa)"',
       '  location: "D1"',
       '  category: "ortografico"',
       '  correct_value: "correto"',
       "---",
     ].join("\n");
     const r = extractNarrativeFromFrontmatter(md);
-    assert.equal(r, "campo description real do editor",
-      "description deve ter precedência sobre narrative (hábito real do editor)");
+    assert.equal(r, "escrevi X onde deveria ser Y (primeira pessoa)",
+      "#2411: narrative (primeira pessoa) tem precedência; description catálogo é ignorada");
   });
 
-  // (d) Bug 1 variante: aspas simples também devem ser stripped
-  it("(d) description com aspas simples → valor sem aspas simples", () => {
+  // (d) narrative com aspas simples → valor sem aspas simples
+  it("(d) narrative com aspas simples → valor sem aspas simples", () => {
     const md = [
       "---",
       "intentional_error:",
-      "  description: 'escrevi GPT-4 onde deveria ser GPT-5'",
+      "  description: 'DESTAQUE 1: campo catálogo'",
+      "  narrative: 'escrevi GPT-4 onde deveria ser GPT-5'",
       "  location: 'DESTAQUE 1'",
       "  category: 'version_inconsistency'",
       "  correct_value: 'GPT-5'",
@@ -1894,7 +2137,7 @@ describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)
     assert.ok(!r!.endsWith("'"), "valor não deve terminar com aspas simples");
   });
 
-  // (e) Bug 4: description vazia → frontmatter retorna null → fallback pro corpo funciona
+  // (e) description vazia + prosa válida no corpo → fallback pro corpo funciona (inalterado)
   it("(e) description vazia + prosa 'Nessa edição,' → extractIntentionalErrorFromMd usa corpo", () => {
     // Sem description/narrative preenchidos no frontmatter → extractNarrativeFromFrontmatter=null
     // → extractIntentionalErrorFromMd deve cair no fallback do corpo.
@@ -1913,19 +2156,20 @@ describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)
     ].join("\n");
     // extractNarrativeFromFrontmatter deve retornar null (sem description/narrative)
     const fm = extractNarrativeFromFrontmatter(md);
-    assert.equal(fm, null, "frontmatter sem description/narrative deve retornar null");
+    assert.equal(fm, null, "frontmatter sem narrative deve retornar null");
     // extractIntentionalErrorFromMd deve pegar o corpo como fallback
     const full = extractIntentionalErrorFromMd(md);
     assert.ok(full !== null, "fallback pro corpo deve funcionar");
     assert.ok(
       full!.narrative.includes("fundada em 1904"),
-      "narrative deve vir do corpo quando frontmatter não tem description",
+      "narrative deve vir do corpo quando frontmatter não tem narrative",
     );
   });
 
-  // Teste integrado: (a)+(b) juntos com shape real 260618 — description com aspas duplas
-  // + corpo genérico → reveal não deve ter " solta, narrativeIsGenericPlaceholder=false
-  it("integrado: description=aspas duplas + corpo genérico → reveal sem aspas soltas, não placeholder", () => {
+  // Teste integrado: description catálogo + corpo genérico → null (não vaza label interno)
+  it("integrado: description catálogo + corpo genérico → extractIntentionalErrorFromMd=null (#2411)", () => {
+    // Com o fix #2411: description é catálogo (não fonte do reveal), corpo é genérico
+    // (filtrado por narrativeIsGenericPlaceholder) → null.
     const md = [
       "---",
       "intentional_error:",
@@ -1943,14 +2187,9 @@ describe("extractNarrativeFromFrontmatter — discriminants fix #2410 (bugs 1-3)
       "",
     ].join("\n");
     const r = extractIntentionalErrorFromMd(md);
-    assert.ok(r !== null, "deve retornar resultado");
-    assert.equal(r!.narrative, 'DESTAQUE 1 usa o número 42 onde o correto é 24',
-      "narrative não deve ter aspas vazando");
-    // Sem " solta no início
-    assert.ok(!r!.narrative.startsWith('"'), "narrative não deve iniciar com aspas");
-    // Não é placeholder genérico
-    assert.equal(narrativeIsGenericPlaceholder(r!.narrative), false,
-      "description real não deve ser sinalizada como placeholder genérico");
+    // description é catálogo (ignorada), corpo é genérico (filtrado) → null
+    assert.equal(r, null,
+      "#2411: description catálogo + corpo genérico → null (não vaza label interno)");
   });
 });
 
