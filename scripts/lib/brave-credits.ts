@@ -7,6 +7,36 @@
  *
  * Free tier: 2000 queries/mês. Counter local dá visibilidade imediata —
  * dashboard Brave tem ~1h de delay.
+ *
+ * ## Semântica de query (#2378)
+ *
+ * - **1 entrada = 1 query cobrada.** Cada chamada `braveSearch()` que retorna
+ *   `ok` ou `rate_limited` gera exactamente 1 entrada via `recordBraveCredit`.
+ *   Não há batching — `count` (nº de resultados por query) não afeta o crédito.
+ *
+ * - **Retries de falha NÃO contam duplo.** Um retry após `status: "error"` não
+ *   chama `recordBraveCredit` (o guard `if (ok || rate_limited)` em
+ *   `fetch-websearch-batch.ts:201` exclui erros). Se o retry subsequente
+ *   retornar `ok`, conta 1 crédito — comportamento correto (Brave cobra o
+ *   retry como query nova). Não existe retry automático dentro de `braveSearch`
+ *   nem de `fetch-websearch-batch.ts` — um retry é sempre uma nova invocação
+ *   externa ao script, não um loop interno que duplicaria o counter.
+ *
+ * - **Escopo mensal usa UTC de ponta a ponta.** `timestamp` é gravado como
+ *   `new Date().toISOString()` (UTC). `monthPrefix` é `now.toISOString()
+ *   .slice(0,7)` (UTC). Ambos usam UTC → filtro de mês é consistente
+ *   independentemente do timezone da máquina (BRT ou qualquer outro).
+ *   O ciclo de 2000 queries/mês do Brave é também UTC-calendário, então
+ *   a escolha de UTC é correta (não introduz desvio de 3h vs BRT).
+ *
+ * - **`daysInMonth` para projeção.** Calculado como
+ *   `new Date(getUTCFullYear(), getUTCMonth() + 1, 0).getDate()` — correto:
+ *   `Date(year, month+1, 0)` retorna o último dia do mês corrente UTC
+ *   independentemente do timezone local da máquina.
+ *
+ * - **Fonte dos dados:** exclusivamente `data/brave-credits.jsonl` (append-only,
+ *   gravado em runtime por `fetch-websearch-batch.ts`). Não há leitura de
+ *   Beehiiv, run-log ou qualquer API externa — o counter é 100% local.
  */
 
 import { appendFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
