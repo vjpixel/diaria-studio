@@ -202,6 +202,29 @@ describe("isIntraEditionDuplicate", () => {
     const result = isIntraEditionDuplicate(article, []);
     assert.equal(result, null, "lista vazia = sem duplicata");
   });
+
+  it("#2406: Jaccard não dispara por sufixo de veículo compartilhado (títulos distintos, mesmo veículo)", () => {
+    // Antes do #2406: tokens "finsiders"/"brasil"/"tecnologia" do sufixo
+    // participavam do Jaccard → 2 títulos curtos do mesmo veículo cruzavam 0.45
+    // só pelo sufixo. Após strip antes de tokenizar, o sinal é só do conteúdo.
+    const article = {
+      url: "https://fb.com/cripto",
+      title: "Cripto despenca - Finsiders Brasil Tecnologia",
+    };
+    const highlights = [
+      {
+        rank: 1,
+        url: "https://fb.com/robotica",
+        title: "Robótica avança - Finsiders Brasil Tecnologia",
+      },
+    ];
+    const result = isIntraEditionDuplicate(article, highlights);
+    assert.equal(
+      result,
+      null,
+      "títulos com conteúdo distinto não devem casar só pelo sufixo de veículo compartilhado",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -401,6 +424,30 @@ describe("stripVehicleSuffix (#2397)", () => {
       "Open Assets: o plano do BC",
     );
   });
+
+  it("#2406: NÃO over-strip — preserva ' - CapWord' do meio quando há sufixo de veículo no fim", () => {
+    // O sufixo só pode pegar o ÚLTIMO ' - ' (sem ' - ' interno), então
+    // "- OpenAI e Meta" do meio é preservado; só "- Exame" é removido.
+    assert.equal(
+      stripVehicleSuffix("Governo lança IA - OpenAI e Meta - Exame"),
+      "Governo lança IA - OpenAI e Meta",
+    );
+  });
+
+  it("#2406: strip sufixo de 3 palavras (MIT Technology Review)", () => {
+    assert.equal(
+      stripVehicleSuffix("MIT cria robô - MIT Technology Review"),
+      "MIT cria robô",
+    );
+  });
+
+  it("#2406: NÃO strip oração longa capitalizada (>3 palavras após ' - ')", () => {
+    // Sufixos de veículo têm ≤3 palavras; uma oração longa não é veículo.
+    assert.equal(
+      stripVehicleSuffix("Empresa cresce - Por Que Isso Importa Demais"),
+      "Empresa cresce - Por Que Isso Importa Demais",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -439,6 +486,21 @@ describe("extractNamedEntitiesIntra (#2397)", () => {
     const ents = extractNamedEntitiesIntra("SpaceX compra Cursor em aposta de US$ 60 bilhões na IA");
     assert.ok(ents.has("spacex"), "spacex (index-0) deve ser capturado");
     assert.ok(ents.has("cursor"), "cursor deve ser capturado");
+  });
+
+  it("#2406: big-tech de alta frequência não conta como entidade discriminante", () => {
+    // "Microsoft" sozinho não deve disparar entity-match entre histórias
+    // diferentes da mesma empresa — o evento precisa de 2ª entidade.
+    const ents = extractNamedEntitiesIntra("Microsoft anuncia parceria com Anthropic");
+    assert.ok(!ents.has("microsoft"), "microsoft é stopword (alta frequência)");
+    assert.ok(!ents.has("anthropic"), "anthropic é stopword (alta frequência)");
+  });
+
+  it("#2406: 2 itens distintos da mesma big-tech NÃO casam por entity só pelo nome da empresa", () => {
+    const h = extractNamedEntitiesIntra("Microsoft lança Copilot para Excel");
+    const a = extractNamedEntitiesIntra("Microsoft processada por antitruste na Europa");
+    const shared = [...a].filter(e => h.has(e));
+    assert.ok(shared.length < 2, `não deve compartilhar ≥2 entidades, got: [${shared.join(", ")}]`);
   });
 
   it("detecta entidades do par SpaceX/Cursor para entity-match", () => {
@@ -498,8 +560,16 @@ describe("dedupIntraEdition — destaqueCount (#2397)", () => {
     assert.equal(kept.radar?.length, 3, "todos os 3 itens Finsiders preservados");
   });
 
-  it("com destaqueCount=6 (bug original): remove incorretamente os itens Finsiders", () => {
-    // Documenta o comportamento pré-fix para validar que a regressão está coberta
+  it("defense-in-depth: strip de sufixo preserva Finsiders mesmo com destaqueCount=6 (rank-4 Nubank incluído)", () => {
+    // Os 2 fixes do #2397 são independentes e complementares:
+    //  (1) top-N por rank exclui o candidato Nubank (rank-4) da comparação;
+    //  (2) strip de sufixo de veículo evita o falso-match mesmo se Nubank for
+    //      comparado. Este teste isola o fix (2): força destaqueCount=6 (Nubank
+    //      ENTRA na comparação) e confirma que os itens Finsiders AINDA são
+    //      preservados — porque o sufixo "- Finsiders Brasil" é stripado em ambos
+    //      os lados. Nubank (rank-4) após strip = {nubank}; itens Finsiders após
+    //      strip = {mercado, saas, america, latina, acorn} / {assets} /
+    //      {fintechs, picpay} → shared < 2 → NÃO removidos.
     const input = {
       highlights: finsidersHighlights,
       radar: [...finsidersRadar],
@@ -507,16 +577,13 @@ describe("dedupIntraEdition — destaqueCount (#2397)", () => {
       use_melhor: [],
       video: [],
     };
-    // destaqueCount=6 inclui rank-4 (Nubank) na comparação
-    // Com a entidade compartilhada "finsiders"/"brasil" (antes do fix),
-    // os 3 itens seriam removidos. Com o fix do extractNamedEntitiesIntra,
-    // mesmo com destaqueCount=6 eles NÃO devem ser removidos pois o sufixo
-    // de veículo é stripped.
-    const { kept } = dedupIntraEdition(input, { destaqueCount: 6 });
-    // Com o fix de extractNamedEntitiesIntra, sufixo é stripped em ambos lados:
-    // Nubank (rank-4) após strip tem só {nubank}; itens Finsiders após strip
-    // têm {mercado, saas, america, latina, acorn} / {assets} / {fintechs, picpay}
-    // → shared < 2 → NÃO removidos mesmo com destaqueCount=6
+    const { kept, removed } = dedupIntraEdition(input, { destaqueCount: 6 });
+    const finsidersRemoved = removed.filter(r => (r.title ?? "").includes("Finsiders"));
+    assert.equal(
+      finsidersRemoved.length,
+      0,
+      `fix de sufixo: nenhum item Finsiders removido mesmo com destaqueCount=6, mas removidos: ${finsidersRemoved.map(r => r.title).join(", ")}`,
+    );
     assert.equal(kept.radar?.length, 3, "com fix de sufixo: itens Finsiders preservados mesmo com destaqueCount=6");
   });
 

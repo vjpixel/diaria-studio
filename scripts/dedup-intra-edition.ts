@@ -64,26 +64,45 @@ import {
 /**
  * Regex para strip de sufixo de veículo em títulos de artigos.
  * Padrão: " - Finsiders Brasil", " - Exame", " - Brazil Journal", etc.
- * Captura " - " seguido de um ou mais palavras capitalizadas.
- * Posicionado no final da string (após possível espaço trailing).
+ * Captura o ÚLTIMO " - " seguido de 1–3 palavras (a primeira capitalizada),
+ * ancorado no fim da string.
+ *
+ * Restrições deliberadas pra evitar over-strip (review #2406):
+ *  - O segmento do sufixo NÃO pode conter outro " - " (`(?:(?! - ).)`),
+ *    então "Governo - OpenAI e Meta - Exame" só perde "- Exame", não o meio.
+ *  - Máximo 3 palavras no nome do veículo (`(?:\s+[\p{L}\p{N}&]+){0,2}`),
+ *    cobrindo "Finsiders Brasil", "Brazil Journal", "MIT Technology Review"
+ *    sem engolir orações longas tipo "- Por que isso importa demais agora".
+ *  - 1ª palavra do sufixo deve começar com maiúscula (`[\p{Lu}]`) — nomes de
+ *    veículo são próprios.
  *
  * Exemplos:
  *   "Nubank prepara IA - Finsiders Brasil" → "Nubank prepara IA"
  *   "SpaceX compra Cursor - Exame" → "SpaceX compra Cursor"
+ *   "Governo - OpenAI e Meta - Exame" → "Governo - OpenAI e Meta"
  *   "Título sem sufixo" → inalterado
  */
-export const VEHICLE_SUFFIX_RE = /\s+-\s+[\p{Lu}][\w\s]*$/u;
+export const VEHICLE_SUFFIX_RE = /\s+-\s+[\p{Lu}][\p{L}\p{N}&]*(?:\s+[\p{L}\p{N}&]+){0,2}\s*$/u;
 
 /** Strip sufixo de veículo de um título de artigo (intra-edition only). */
 export function stripVehicleSuffix(title: string): string {
   return title.replace(VEHICLE_SUFFIX_RE, "");
 }
 
-/** Termos comuns no domínio IA que NÃO contam como entidade discriminante. */
+/** Termos comuns no domínio IA que NÃO contam como entidade discriminante.
+ *  #2406: inclui big-tech de alta frequência (microsoft, google, meta, etc.)
+ *  além dos nomes de IA — em edições com 2+ itens da mesma empresa, "Microsoft"
+ *  sozinho não deve disparar entity-match entre histórias diferentes (o evento
+ *  específico precisa de uma 2ª entidade discriminante). Mantém paridade com o
+ *  espírito do GENERIC_THEME_WORDS de dedup.ts. */
 const ENTITY_STOPWORDS_INTRA = new Set([
   "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini", "openai",
   "inteligencia", "artificial", "machine", "learning",
   "diaria", "newsletter", "edicao",
+  // big-tech de alta frequência — bloquear por nome só não discrimina evento
+  "microsoft", "google", "apple", "amazon", "meta", "nvidia",
+  "anthropic", "deepmind", "deepseek", "mistral", "cohere",
+  "copilot", "alexa", "siri", "grok", "perplexity",
   "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
   "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
@@ -228,8 +247,14 @@ export function isIntraEditionDuplicate(
   const artTitle = article.title;
   if (!artTitle) return null;
 
-  const artTokens = tokenizeForJaccard(artTitle);
-  // #2397: usa variante local que strip sufixo de veículo e não pula index-0
+  // #2397/#2406: stripVehicleSuffix ANTES de tokenizar para Jaccard também —
+  // não só para o entity-check. Sem isso, os tokens do sufixo de veículo
+  // ("finsiders", "brasil", "exame", "journal") participam do Jaccard, e dois
+  // títulos curtos do mesmo veículo podem cruzar o threshold só pelo sufixo
+  // compartilhado (ex: "OpenAI - Brazil Journal" vs "Anthropic - Brazil
+  // Journal" → 0.5 ≥ 0.45). Stripping em ambos os lados mantém o sinal Jaccard
+  // alinhado com o entity-check.
+  const artTokens = tokenizeForJaccard(stripVehicleSuffix(artTitle));
   const artEntities = extractNamedEntitiesIntra(artTitle);
 
   for (const h of highlights) {
@@ -240,8 +265,8 @@ export function isIntraEditionDuplicate(
     const hUrl = highlightUrl(h);
     if (hUrl && article.url === hUrl) continue;
 
-    // (a) Jaccard sobre tokens normalizados
-    const hTokens = tokenizeForJaccard(hTitle);
+    // (a) Jaccard sobre tokens normalizados (sufixo de veículo já stripado)
+    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
     const jaccard = jaccardSimilarity(artTokens, hTokens);
     if (jaccard >= jThreshold) {
       return {
