@@ -1569,6 +1569,28 @@ export function weekdayKeyBRT(iso: string): number | null {
 }
 
 /**
+ * Retorna a chave "YYYY-MM" do sentDate em BRT (America/Sao_Paulo).
+ * Exportado pra teste unitário.
+ *
+ * Necessário porque `sentDate.slice(0,7)` usa UTC — campanha enviada
+ * 2026-07-01T00:00:00Z (= 30/jun 21:00 BRT) produziria "2026-07" via slice,
+ * mas deve ser "2026-06" para ser consistente com fmtTimeBRT / weekdayKeyBRT.
+ * (#2402)
+ */
+export function monthKeyBRT(iso: string): string | null {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(d);
+  const year = parts.find((p) => p.type === "year")?.value ?? "";
+  const month = parts.find((p) => p.type === "month")?.value ?? "";
+  return `${year}-${month}`; // "2026-06"
+}
+
+/**
  * Agrega open rate por dia da semana (seg–dom, BRT) para as campanhas do
  * ciclo ativo. Inclui apenas campanhas com stats reais (mesmo fallback do
  * render principal: globalStats primário, campaignStats[0] como fallback, ?? 0
@@ -1919,9 +1941,12 @@ export function aggregateByMonth(
     if (!picked) continue;
     const s = picked.stats;
 
-    // Extrair YYYY-MM do sentDate em UTC (sentDate é sempre ISO com fuso).
-    // Usamos os primeiros 7 chars ("YYYY-MM") — conservador, sem Intl.
-    const month = c.sentDate.slice(0, 7); // "2026-06"
+    // Extrair YYYY-MM em BRT (America/Sao_Paulo), consistente com fmtTimeBRT e
+    // weekdayKeyBRT. Campanha enviada 2026-07-01T00:00:00Z = 30/jun 21:00 BRT
+    // deve bucketizar em "2026-06", não "2026-07". (#2402)
+    // monthKeyBRT retorna null para sentDate malformado — pular a campanha. (#2407)
+    const month = monthKeyBRT(c.sentDate);
+    if (month === null) continue;
     if (!acc.has(month)) {
       acc.set(month, { campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0 });
     }

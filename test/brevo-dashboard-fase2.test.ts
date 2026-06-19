@@ -35,6 +35,7 @@ import {
   aggregateByWeekday,
   renderWeekdaySection,
   WEEKDAY_LABELS,
+  monthKeyBRT,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -669,6 +670,133 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.match(html, /30\.[0-9]%/, "deve exibir open rate ~30.6%");
     // ctr = 8/196*100 ≈ 4.1%
     assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
+  });
+});
+
+// ─── #2402: monthKeyBRT + aggregateByMonth usa BRT, não UTC ─────────────────
+
+describe("#2402 monthKeyBRT", () => {
+  test("campanha 2026-07-01T00:00:00Z (= 30/jun 21:00 BRT) → '2026-06'", () => {
+    // Virada de mês: UTC avançou para julho, mas BRT ainda é junho.
+    assert.equal(monthKeyBRT("2026-07-01T00:00:00Z"), "2026-06");
+  });
+
+  test("campanha claramente em julho BRT → '2026-07'", () => {
+    // 2026-07-10T12:00:00Z = 10/jul 09:00 BRT — inequivocamente julho
+    assert.equal(monthKeyBRT("2026-07-10T12:00:00Z"), "2026-07");
+  });
+
+  test("campanha no meio do mês não é afetada pela conversão BRT", () => {
+    // 2026-06-10T09:00:00Z = 10/jun 06:00 BRT — claramente junho em ambos fusos
+    assert.equal(monthKeyBRT("2026-06-10T09:00:00Z"), "2026-06");
+  });
+
+  test("virada de mês: 2026-05-31T03:00:00Z (= 31/mai 00:00 BRT) → '2026-05'", () => {
+    // BRT é UTC-3; meia-noite BRT = 03:00 UTC — ainda maio BRT
+    assert.equal(monthKeyBRT("2026-05-31T03:00:00Z"), "2026-05");
+  });
+
+  test("segundo após meia-noite UTC no 1º do mês mas BRT ainda no mês anterior", () => {
+    // 2026-08-01T01:00:00Z = 31/jul 22:00 BRT — julho BRT
+    assert.equal(monthKeyBRT("2026-08-01T01:00:00Z"), "2026-07");
+  });
+});
+
+describe("#2402 aggregateByMonth usa BRT para bucketizar", () => {
+  test("campanha 2026-07-01T00:00:00Z (UTC) cai em '2026-06' (BRT)", () => {
+    // Regressão: bug original bucketizava como '2026-07' via slice(0,7)
+    const campaign = makeCampaign(
+      99,
+      "Clarice News virada",
+      "2026-07-01T00:00:00Z",
+      { sent: 150, delivered: 145, uniqueViews: 40, uniqueClicks: 5 },
+    );
+    const rows = aggregateByMonth([campaign]);
+    assert.equal(rows.length, 1, "deve ter 1 linha");
+    assert.equal(rows[0].month, "2026-06", "bucket deve ser '2026-06' (BRT), não '2026-07' (UTC)");
+    assert.equal(rows[0].label, "Jun/2026");
+  });
+
+  test("campanha claramente em julho BRT fica em '2026-07'", () => {
+    const campaign = makeCampaign(
+      100,
+      "Clarice News julho",
+      "2026-07-10T12:00:00Z",
+      { sent: 150, delivered: 145, uniqueViews: 40, uniqueClicks: 5 },
+    );
+    const rows = aggregateByMonth([campaign]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].month, "2026-07");
+  });
+
+  test("virada + campanha normal em julho ficam em meses separados", () => {
+    const virada = makeCampaign(
+      101,
+      "Clarice News virada jun",
+      "2026-07-01T00:00:00Z", // 30/jun 21:00 BRT
+      { sent: 100, delivered: 97, uniqueViews: 30, uniqueClicks: 4 },
+    );
+    const julho = makeCampaign(
+      102,
+      "Clarice News julho normal",
+      "2026-07-10T12:00:00Z", // 10/jul 09:00 BRT
+      { sent: 150, delivered: 145, uniqueViews: 40, uniqueClicks: 5 },
+    );
+    const rows = aggregateByMonth([virada, julho]);
+    assert.equal(rows.length, 2, "deve ter 2 meses: jun e jul");
+    const meses = rows.map((r) => r.month).sort();
+    assert.deepEqual(meses, ["2026-06", "2026-07"]);
+  });
+});
+
+// ─── #2407: monthKeyBRT NaN guard + aggregateByMonth pula data malformada ─────
+
+describe("#2407 monthKeyBRT NaN guard", () => {
+  test("string vazia → null (não lança)", () => {
+    assert.equal(monthKeyBRT(""), null);
+  });
+
+  test("string inválida → null (não lança)", () => {
+    assert.equal(monthKeyBRT("not-a-date"), null);
+  });
+
+  test("data válida ainda funciona", () => {
+    assert.equal(monthKeyBRT("2026-07-01T00:00:00Z"), "2026-06");
+  });
+});
+
+describe("#2407 aggregateByMonth pula sentDate malformado", () => {
+  test("campanha com sentDate malformado é pulada — não crasha, não aparece no resultado", () => {
+    const malformed = makeCampaign(
+      200,
+      "Campanha malformada",
+      "invalid-date",
+      { sent: 100, delivered: 95, uniqueViews: 30, uniqueClicks: 5 },
+    );
+    // Não deve lançar
+    assert.doesNotThrow(() => aggregateByMonth([malformed]));
+    // monthKeyBRT retorna null para date inválida → campanha pulada, resultado vazio
+    const rows = aggregateByMonth([malformed]);
+    assert.equal(rows.length, 0, "campanha malformada deve ser pulada");
+  });
+
+  test("campanha malformada + campanha válida: agrega só a válida", () => {
+    const malformed = makeCampaign(
+      201,
+      "Campanha malformada",
+      "not-a-date",
+      { sent: 100, delivered: 95, uniqueViews: 30, uniqueClicks: 5 },
+    );
+    const valid = makeCampaign(
+      202,
+      "Campanha válida",
+      "2026-06-15T12:00:00Z",
+      { sent: 150, delivered: 145, uniqueViews: 40, uniqueClicks: 8 },
+    );
+    const rows = aggregateByMonth([malformed, valid]);
+    assert.equal(rows.length, 1, "só 1 mês (da campanha válida)");
+    assert.equal(rows[0].month, "2026-06");
+    assert.equal(rows[0].campaignCount, 1, "só 1 campanha agregada");
   });
 });
 
