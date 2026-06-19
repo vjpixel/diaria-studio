@@ -29,14 +29,31 @@
  *       extrair o texto após o link e checar presença de tempo nele.
  *   2b. Linha com link sozinho (formato legado 2 linhas):
  *       olhar a próxima linha não-vazia como a linha de descrição e checar.
- *   3. Acumular erros; retornar { ok, errors[], checked }.
+ *   3. Encerrar a seção em `---` OU em qualquer header de seção seguinte
+ *      (cobre input malformado sem `---`, evitando section-bleed).
+ *   4. Acumular erros; retornar { ok, errors[], checked }.
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
+import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "../section-naming.ts";
 import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
 
 /** Regex que casa o header da seção USE MELHOR (com ou sem emoji, com ou sem bold). */
 const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, {
+  capture: "none",
+  flags: "u",
+});
+
+/**
+ * Regex que casa QUALQUER header de seção (LANÇAMENTOS, RADAR, VÍDEOS, etc.).
+ * Usado para encerrar o scan da seção USE MELHOR ao bater no próximo header,
+ * mesmo quando o `---` separador está ausente (input malformado).
+ *
+ * Substitui o guard removido `t.startsWith("**") && !INLINE_LINK_ONLY_RE` que
+ * encerrava em QUALQUER linha bold — esse guard tinha FP em descrições com
+ * bold-leading (`**OpenAI** lança...`). Este só casa nomes de seção canônicos,
+ * então não confunde uma descrição bold com um header (#2396 finding section-bleed).
+ */
+const ANY_SECTION_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
   capture: "none",
   flags: "u",
 });
@@ -58,6 +75,15 @@ export const USE_MELHOR_TEMPO_RE =
   /(\(\s*~?\s*\d+\s*min\b|[–—]\s*~?\s*\d+\s*min\b|~\s*\d+\s*min\b)/;
 
 /**
+ * Sub-pattern de URL que tolera UM nível de parênteses balanceados no path —
+ * ex: `https://en.wikipedia.org/wiki/GPT-4_(model)`. Sem isso, `[^\s)]+` para
+ * no primeiro `)` e a linha inteira falha o match → item silenciosamente
+ * pulado (mesma classe de no-op de #2396). URLs de Wikipedia/MDN com `(...)`
+ * no slug são comuns na curadoria de USE MELHOR.
+ */
+const URL_WITH_BALANCED_PARENS = String.raw`https?:\/\/[^\s)]*(?:\([^\s)]*\)[^\s)]*)*`;
+
+/**
  * Formato CANÔNICO de produção (#2396): link **bold** seguido de descrição inline
  * na mesma linha. Ex: `**[Título](URL)** Descrição... (5 min)`
  *
@@ -66,8 +92,9 @@ export const USE_MELHOR_TEMPO_RE =
  *
  * Grupo de captura 1: texto da descrição (tudo após o link bold).
  */
-const INLINE_LINK_WITH_DESC_RE =
-  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+(\S.*)$/;
+const INLINE_LINK_WITH_DESC_RE = new RegExp(
+  String.raw`^\s*\*{0,2}\s*\[[^\]]+\]\(${URL_WITH_BALANCED_PARENS}\)\*{0,2}\s+(\S.*)$`,
+);
 
 export interface UseMelhorTempoError {
   /** Número sequencial do item na seção (1-based). */
@@ -114,8 +141,10 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
 
     if (!inUseMelhor) continue;
 
-    // Fim da seção: `---` separator
-    if (t === "---") {
+    // Fim da seção: `---` separator OU próximo header de seção (#2396).
+    // O check de header cobre input malformado sem `---` entre seções — sem
+    // ele, itens de LANÇAMENTOS/RADAR vazariam para a contagem de USE MELHOR.
+    if (t === "---" || ANY_SECTION_HEADER_RE.test(t)) {
       inUseMelhor = false;
       continue;
     }

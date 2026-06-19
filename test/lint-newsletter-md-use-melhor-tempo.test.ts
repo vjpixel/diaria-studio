@@ -331,6 +331,70 @@ describe("checkUseMelhorTempo (#2372) — helper puro", () => {
     assert.equal(r.checked, 2);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
+
+  // -------------------------------------------------------------------------
+  // Boundary: section termination + URLs com parênteses (#2396 review)
+  // -------------------------------------------------------------------------
+
+  it("não vaza para a próxima seção quando falta '---' separador (#2396 section-bleed)", () => {
+    // Input malformado: USE MELHOR seguido de LANÇAMENTOS SEM `---` entre eles.
+    // O scan deve parar no header de LANÇAMENTOS — sem isso, o item de
+    // LANÇAMENTOS (sem tempo) seria contado como item USE MELHOR e gerar erro.
+    const md = `**🛠️ USE MELHOR**
+
+**[Item A](https://example.com/a)** Descrição com tempo (5 min).
+
+**🚀 LANÇAMENTOS**
+
+**[Lançamento X](https://example.com/x)** Novo modelo lançado sem nenhum tempo.
+`;
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "só o item USE MELHOR deve ser contado");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("para no header RADAR mesmo sem '---' (#2396 section-bleed, outra seção)", () => {
+    const md = `**🛠️ USE MELHOR**
+
+**[Item A](https://example.com/a)** Descrição com tempo (5 min).
+
+**📡 RADAR**
+
+**[Notícia Y](https://example.com/y)** Resumo de uma notícia sem tempo de leitura.
+`;
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "só o item USE MELHOR deve ser contado");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("conta item com URL contendo parênteses no slug (#2396 paren-URL no-op)", () => {
+    // URL como Wikipedia/MDN com `(...)` no path quebrava `[^\\s)]+` → item
+    // silenciosamente pulado (checked não incrementava). Agora é contado.
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Descrição sem nenhuma estimativa de tempo aqui.",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "item com paren-URL deve ser contado (was: pulado/no-op)");
+    assert.equal(r.ok, false, "item sem tempo deve ser pego");
+    assert.equal(r.errors.length, 1);
+  });
+
+  it("aceita item com paren-URL + tempo (#2396 paren-URL)", () => {
+    const md = wrapInUseMelhor(
+      makeUseMelhorItemInline(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Descrição completa com estimativa (5 min).",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
 });
 
 // ---------------------------------------------------------------------------
