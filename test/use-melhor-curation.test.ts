@@ -1618,6 +1618,58 @@ describe("checkAndNormalizeUrl (#2368 item 1)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2399 — normalizeUseMelhorUrl: query/fragment com URL embutida preservados
+// ---------------------------------------------------------------------------
+
+describe("normalizeUseMelhorUrl (#2399) — query/fragment com URL embutida", () => {
+  it("URL embutida no query string permanece intacta (#2399)", () => {
+    // Bug: rest.replace(/\/\//g, '/') colapsava https://outro.com → https:/outro.com
+    const url = "https://site.com/go?u=https://outro.com/post";
+    assert.equal(
+      normalizeUseMelhorUrl(url),
+      url,
+      "query com URL embutida não deve ser modificada",
+    );
+  });
+
+  it("URL embutida no fragment permanece intacta (#2399)", () => {
+    const url = "https://site.com/p#https://x.com/post";
+    assert.equal(
+      normalizeUseMelhorUrl(url),
+      url,
+      "fragment com URL embutida não deve ser modificada",
+    );
+  });
+
+  it("path com // é normalizado mesmo quando query tem URL embutida (#2399)", () => {
+    // Caso combinado: path duplo + query com URL
+    const url = "https://site.com//learn//x?ref=https://outro.com/post";
+    const result = normalizeUseMelhorUrl(url);
+    // Path normalizado, query preservada
+    assert.ok(result.includes("/learn/x"), "path deve ser normalizado");
+    assert.ok(result.includes("ref=https://outro.com/post"), "query com URL deve ser preservada");
+  });
+
+  it("caso original #2368 (eugeneyan.com) continua normalizado", () => {
+    // Regressão: garantir que o fix do path duplo ainda funciona após #2399
+    assert.equal(
+      normalizeUseMelhorUrl("https://eugeneyan.com//writing/working-with-ai/"),
+      "https://eugeneyan.com/writing/working-with-ai/",
+    );
+  });
+
+  it("múltiplos // no path normalizados, query com // preservada (#2399)", () => {
+    const url = "https://site.com//learn//x";
+    assert.equal(normalizeUseMelhorUrl(url), "https://site.com/learn/x");
+  });
+
+  it("URL malformada (sem protocolo) retorna input (#2399 graceful)", () => {
+    const url = "nao-e-url-valida";
+    assert.equal(normalizeUseMelhorUrl(url), url);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // isOpinionOrStudy (#2368 item 2)
 // ---------------------------------------------------------------------------
 
