@@ -38,6 +38,25 @@ describe("categorize() — regras de domínio", () => {
     assert.equal(categorize(art), "lancamento");
   });
 
+  it("#2370: classifica blog da Anthropic em claude.com como lancamento (via pattern)", () => {
+    // Caso real 260618: claude.com/blog/ (categoria "Product announcements")
+    // era categorizado como RADAR/noticias porque claude.com não era oficial.
+    const art: Article = {
+      url: "https://claude.com/blog/claude-design-stays-on-brand-for-daily-work",
+      title: "Claude design stays on brand for daily work",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+
+  it("#2370: claude.com/product/* (marketing estático) NÃO é lancamento", () => {
+    // /product/claude-code é página de marketing evergreen sem data — não anúncio.
+    const art: Article = {
+      url: "https://claude.com/product/claude-code",
+      title: "Claude Code",
+    };
+    assert.notEqual(categorize(art), "lancamento");
+  });
+
   it("classifica blog da Hugging Face como lancamento", () => {
     const art: Article = { url: "https://huggingface.co/blog/cool-model" };
     assert.equal(categorize(art), "lancamento");

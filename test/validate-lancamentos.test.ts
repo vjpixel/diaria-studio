@@ -856,29 +856,33 @@ describe("#2370 — claude.com como domínio oficial de lançamento Anthropic", 
     );
   });
 
-  it("isOfficialLancamentoUrl: claude.com/news/ → oficial", () => {
-    assert.ok(isOfficialLancamentoUrl("https://claude.com/news/some-feature-release/"));
+  it("isOfficialLancamentoUrl: claude.com/product/* (marketing estático) NÃO é oficial", () => {
+    // /product/claude-code, /product/design etc. são páginas evergreen sem data.
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/product/claude-code"));
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/product/design"));
   });
 
-  it("isOfficialLancamentoUrl: claude.com/login NÃO é oficial", () => {
-    assert.ok(!isOfficialLancamentoUrl("https://claude.com/login"), "claude.com/login NÃO deve ser lancamento");
+  it("isOfficialLancamentoUrl: claude.com/news e /release-notes (redirecionam) NÃO são oficiais", () => {
+    // Verificado: claude.com/news e /release-notes dão 302 → claude.ai (não são
+    // paths de conteúdo de claude.com).
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/news/some-feature-release/"));
+    assert.ok(!isOfficialLancamentoUrl("https://claude.com/release-notes/x"));
   });
 
-  it("isOfficialLancamentoUrl: claude.com/pricing NÃO é oficial", () => {
-    assert.ok(!isOfficialLancamentoUrl("https://claude.com/pricing"), "claude.com/pricing NÃO deve ser lancamento");
-  });
-
-  it("isOfficialLancamentoUrl: claude.com/signup NÃO é oficial", () => {
-    assert.ok(!isOfficialLancamentoUrl("https://claude.com/signup"), "claude.com/signup NÃO deve ser lancamento");
+  it("isOfficialLancamentoUrl: claude.com/login, /pricing, /signup, /upgrade, /settings NÃO são oficiais", () => {
+    for (const path of ["login", "pricing", "signup", "upgrade", "settings"]) {
+      assert.ok(!isOfficialLancamentoUrl(`https://claude.com/${path}`), `claude.com/${path} NÃO deve ser lancamento`);
+    }
   });
 
   it("isOfficialLancamentoUrl: anthropic.com/news/ ainda reconhecido (não regrediu)", () => {
     assert.ok(isOfficialLancamentoUrl("https://www.anthropic.com/news/claude-opus-4-5"));
   });
 
-  it("validateLancamentos: claude.com/blog com sinal de produto → ok (caso real 260618)", () => {
-    // "claude-design" tem PRODUCT_SIGNAL via 'design' não, mas 'claude' sim +
-    // hasProductSignal via URL com 'claude' no título + isOfficialLancamentoUrl = true.
+  it("validateLancamentos: claude.com/blog com sinal de produto → verified_product + ok (caso real 260618)", () => {
+    // hasProductSignal pega via 'claude' no título (marca = PRODUCT_SIGNAL) +
+    // isOfficialLancamentoUrl = true (claude.com/blog/). Asserção explícita de
+    // verified_product pra detectar regressão futura no product-signal de marca.
     const md = [
       "LANÇAMENTOS",
       "**[Claude Design Overhaul](https://claude.com/blog/claude-design-stays-on-brand-for-daily-work)**",
@@ -888,6 +892,8 @@ describe("#2370 — claude.com como domínio oficial de lançamento Anthropic", 
     ].join("\n");
     const r = validateLancamentos(md);
     assert.equal(r.invalid_urls.length, 0, "claude.com/blog/ deve ser URL oficial");
+    assert.equal(r.verified_product.length, 1, "título com 'claude' (marca) → produto verificado");
+    assert.equal(r.not_a_tool.length, 0);
     assert.equal(r.status, "ok");
   });
 });

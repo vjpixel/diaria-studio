@@ -101,7 +101,9 @@ describe("official-domains registry (#566)", () => {
       assert.ok(matches, "blog.google/products/ deve continuar sendo lancamento");
     });
 
-    // #2370: claude.com como domínio de produto da Anthropic
+    // #2370: claude.com/blog/ como caminho de anúncio oficial da Anthropic.
+    // Restrito a /blog/ — verificado contra dado real: /news e /release-notes
+    // redirecionam pra claude.ai; /product/* são marketing estático evergreen.
     it("#2370 — claude.com/blog/ reconhecido como lançamento oficial Anthropic", () => {
       const matches = patterns.some(
         (p) => p.test("claude.com/blog/claude-design-stays-on-brand-for-daily-work"),
@@ -109,25 +111,25 @@ describe("official-domains registry (#566)", () => {
       assert.ok(matches, "claude.com/blog/ deve ser lancamento");
     });
 
-    it("#2370 — claude.com/news/ reconhecido como lançamento oficial Anthropic", () => {
-      const matches = patterns.some(
-        (p) => p.test("claude.com/news/some-announcement/"),
-      );
-      assert.ok(matches, "claude.com/news/ deve ser lancamento");
+    it("#2370 — claude.com/product/* (marketing estático) NÃO é lançamento", () => {
+      // claude.com/product/claude-code, /product/design etc. são páginas de
+      // marketing evergreen sem data — não anúncios.
+      assert.ok(!patterns.some((p) => p.test("claude.com/product/claude-code")), "/product/claude-code NÃO é lancamento");
+      assert.ok(!patterns.some((p) => p.test("claude.com/product/design")), "/product/design NÃO é lancamento");
     });
 
-    it("#2370 — claude.com/login NÃO é lançamento", () => {
-      const matches = patterns.some(
-        (p) => p.test("claude.com/login"),
-      );
-      assert.ok(!matches, "claude.com/login NÃO deve ser lancamento");
+    it("#2370 — claude.com/news e /release-notes (redirecionam pra claude.ai) NÃO são lançamento", () => {
+      assert.ok(!patterns.some((p) => p.test("claude.com/news/x")), "claude.com/news NÃO é path de conteúdo");
+      assert.ok(!patterns.some((p) => p.test("claude.com/release-notes/x")), "claude.com/release-notes NÃO é path de conteúdo");
     });
 
-    it("#2370 — claude.com/pricing NÃO é lançamento", () => {
-      const matches = patterns.some(
-        (p) => p.test("claude.com/pricing"),
-      );
-      assert.ok(!matches, "claude.com/pricing NÃO deve ser lancamento");
+    it("#2370 — claude.com/login, /pricing, /signup, /upgrade, /settings NÃO são lançamento", () => {
+      for (const path of ["login", "pricing", "signup", "upgrade", "settings"]) {
+        assert.ok(
+          !patterns.some((p) => p.test(`claude.com/${path}`)),
+          `claude.com/${path} NÃO deve ser lancamento`,
+        );
+      }
     });
 
     it("#2370 — anthropic.com/news/ continua reconhecido (não regrediu)", () => {
