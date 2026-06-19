@@ -68,7 +68,13 @@ export function autoUpdateStageStatusOnSentinel(
   try {
     const doc = loadDoc(editionDir, editionId);
     const row = doc.rows.find((r) => r.stage === step);
-    if (!row || row.status !== "running") return false;
+    // #2374: handle both "running" and "pending" — a stage interrupted before
+    // the orchestrator called update-stage-status --status running stays "pending"
+    // even though its sentinel is written. On resume, assert detects the sentinel
+    // and skips the stage, but the status is never repaired. Treat pending+sentinel
+    // the same as running+sentinel: transition to done using the sentinel's
+    // completed_at as the end timestamp.
+    if (!row || (row.status !== "running" && row.status !== "pending")) return false;
     // Same transition gates as the CLI (#1530 — Stage 4 needs report). If
     // we can't safely mark this stage done, leave it for the editor /
     // explicit update-stage-status call instead of silently flipping.
@@ -164,6 +170,12 @@ function main(): void {
     case "assert": {
       const result = assertSentinel(editionDir, step);
       if (result.ok) {
+        // #2374: resume path — sentinel exists but stage-status may still be
+        // "running" or "pending" from the interrupted session. Repair it here
+        // so timing is recorded even when the orchestrator skips write.
+        if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step)) {
+          console.log(`stage-status auto-updated on resume: stage ${step} → done`);
+        }
         process.exit(0);
       }
       if (result.reason === "sentinel_missing") {
