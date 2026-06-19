@@ -2,8 +2,7 @@
  * lint-checks/use-melhor-tempo.ts (#2372)
  *
  * Verifica que cada item da seção USE MELHOR inclui estimativa de tempo de
- * leitura na linha de descrição. Aceita os dois formatos editoriais usados em
- * produção:
+ * leitura. Aceita os dois formatos editoriais usados em produção:
  *   - parênteses (formato canônico do writer.md): `(15 min)`, `(30 min)`
  *   - em/en dash (atalho aprovado 260612):         `— 5 min`, `– 8 min de leitura`
  *
@@ -15,18 +14,22 @@
  *
  * Regex: `/(\(\s*\d+\s*min\b|[–—]\s*\d+\s*min\b)/` na linha de descrição.
  *
- * Estrutura esperada de item USE MELHOR (uma das formas aceitas):
- *   **[Título](URL)**
- *   Descrição em 1 frase plain text (15 min)
- *   ou
- *   Descrição em 1 frase plain text — 15 min
+ * Formatos aceitos de item USE MELHOR (ambos suportados):
  *
- * Algoritmo:
+ *   Formato canônico de produção (mesma linha — validado em 260615–260619):
+ *     **[Título](URL)** Descrição em 1 frase plain text (15 min)
+ *
+ *   Formato legado de 2 linhas (ainda suportado para compat):
+ *     **[Título](URL)**
+ *     Descrição em 1 frase plain text (15 min)
+ *
+ * Algoritmo (#2396 — fix do no-op no formato real):
  *   1. Detectar início da seção USE MELHOR (header regex).
- *   2. Para cada inline-link-only line (title line do item), olhar a próxima
- *      linha não-vazia como a linha de descrição.
- *   3. Verificar que a descrição contém a estimativa de tempo.
- *   4. Acumular erros; retornar { ok, errors[], checked }.
+ *   2a. Linha com link + descrição inline (formato canônico produção):
+ *       extrair o texto após o link e checar presença de tempo nele.
+ *   2b. Linha com link sozinho (formato legado 2 linhas):
+ *       olhar a próxima linha não-vazia como a linha de descrição e checar.
+ *   3. Acumular erros; retornar { ok, errors[], checked }.
  */
 
 import { sectionHeaderRegex } from "../section-naming.ts";
@@ -39,21 +42,39 @@ const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, {
 });
 
 /**
- * Padrão de estimativa de tempo. Aceita os dois formatos de produção:
+ * Padrão de estimativa de tempo. Aceita os formatos usados em produção real
+ * (validado em 260615–260619):
  *   - `(15 min)` — parênteses, formato canônico documentado em writer.md:106
+ *   - `(~15 min)` — parênteses com tilde aproximado (260616)
  *   - `— 5 min` / `– 8 min de leitura` — em/en dash, atalho aprovado 260612
+ *   - `~10 min` / `~40 min` inline — tilde sem parênteses (260617, 260618)
  *
- * Casa: "(15 min)", "(30 min)", "— 5 min", "– 8 min de leitura", "—5min", "(2 min de leitura)"
- * Não casa: "- 5 min" (hyphen sem parênteses), descrição sem estimativa, "(min)" sem número.
+ * Casa: "(15 min)", "(~30 min)", "— 5 min", "– 8 min de leitura", "—5min",
+ *        "(2 min de leitura)", "~10 min", "~40 min"
+ * Não casa: "- 5 min" (hyphen sem parênteses), descrição sem estimativa, "(min)" sem número,
+ *            "Módulos curtos, no seu ritmo." (sem nenhuma estimativa).
  */
-export const USE_MELHOR_TEMPO_RE = /(\(\s*\d+\s*min\b|[–—]\s*\d+\s*min\b)/;
+export const USE_MELHOR_TEMPO_RE =
+  /(\(\s*~?\s*\d+\s*min\b|[–—]\s*~?\s*\d+\s*min\b|~\s*\d+\s*min\b)/;
+
+/**
+ * Formato CANÔNICO de produção (#2396): link **bold** seguido de descrição inline
+ * na mesma linha. Ex: `**[Título](URL)** Descrição... (5 min)`
+ *
+ * Casa: `**[Foo](https://x.com)** Desc...`
+ * Não casa: `**[Foo](https://x.com)**` (sem texto após — isso é INLINE_LINK_ONLY_RE)
+ *
+ * Grupo de captura 1: texto da descrição (tudo após o link bold).
+ */
+const INLINE_LINK_WITH_DESC_RE =
+  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+(\S.*)$/;
 
 export interface UseMelhorTempoError {
   /** Número sequencial do item na seção (1-based). */
   item: number;
-  /** Linha de título (1-based). */
+  /** Número de linha do item (título ou linha combinada), 1-based. */
   titleLine: number;
-  /** Linha de descrição (1-based), ou -1 se não encontrada. */
+  /** Linha de descrição (1-based), ou -1 se não encontrada (formato 2-linhas). */
   descLine: number;
   /** Trecho da linha de descrição (até 80 chars), ou "(sem descrição)". */
   excerpt: string;
@@ -67,8 +88,12 @@ export interface UseMelhorTempoReport {
 }
 
 /**
- * #2372: Verifica que cada item da seção USE MELHOR inclui estimativa de tempo
- * (`— N min`) na linha de descrição. Retorna erros para os itens que não têm.
+ * #2372/#2396: Verifica que cada item da seção USE MELHOR inclui estimativa de
+ * tempo (`(N min)` ou `— N min`) na descrição. Retorna erros para os itens que
+ * não têm.
+ *
+ * Suporta o formato CANÔNICO de produção (link+descrição na mesma linha) e o
+ * formato legado de 2 linhas (título em linha, descrição na seguinte).
  */
 export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -77,7 +102,8 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
   let itemNum = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
+    const raw = lines[i];
+    const t = raw.trim();
 
     // Detectar início da seção USE MELHOR
     if (USE_MELHOR_HEADER_RE.test(t)) {
@@ -86,72 +112,86 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
       continue;
     }
 
-    // Fim da seção: `---` separator ou novo header de seção
-    if (inUseMelhor) {
-      if (t === "---") {
-        inUseMelhor = false;
+    if (!inUseMelhor) continue;
+
+    // Fim da seção: `---` separator
+    if (t === "---") {
+      inUseMelhor = false;
+      continue;
+    }
+
+    // Formato CANÔNICO de produção (#2396): link + descrição na MESMA linha
+    // Ex: `**[Título](URL)** Descrição... (5 min)`
+    // Verificado em 260615–260619: este é o formato real de 100% das edições.
+    const inlineMatch = INLINE_LINK_WITH_DESC_RE.exec(raw);
+    if (inlineMatch) {
+      itemNum++;
+      const desc = inlineMatch[1]; // texto após o link bold
+      if (!USE_MELHOR_TEMPO_RE.test(desc)) {
+        errors.push({
+          item: itemNum,
+          titleLine: i + 1,
+          descLine: i + 1, // mesma linha
+          excerpt: desc.slice(0, 80),
+        });
+      }
+      continue;
+    }
+
+    // Formato LEGADO de 2 linhas: título (link sozinho) numa linha,
+    // descrição na próxima linha não-vazia.
+    if (INLINE_LINK_ONLY_RE.test(raw)) {
+      itemNum++;
+      const titleLineNum = i + 1;
+
+      // Encontrar próxima linha não-vazia como descrição
+      let j = i + 1;
+      while (j < lines.length && lines[j].trim() === "") j++;
+
+      if (j >= lines.length) {
+        // EOF sem descrição
+        errors.push({
+          item: itemNum,
+          titleLine: titleLineNum,
+          descLine: -1,
+          excerpt: "(sem descrição)",
+        });
         continue;
       }
-      // Novo header (qualquer linha **BOLD** que não é um inline-link)
-      if (t.startsWith("**") && !INLINE_LINK_ONLY_RE.test(lines[i])) {
-        // Se parece outro header de seção, sair
-        // (sectionHeaderRegex já cobre isso no caller, mas defensivamente)
-        inUseMelhor = false;
+
+      const descLine = lines[j];
+      const descLineNum = j + 1;
+      const nextNonEmpty = descLine.trim();
+
+      // Se a próxima linha é outro link (novo item) ou separador → sem descrição
+      if (
+        INLINE_LINK_ONLY_RE.test(descLine) ||
+        INLINE_LINK_WITH_DESC_RE.test(descLine) ||
+        nextNonEmpty === "---"
+      ) {
+        errors.push({
+          item: itemNum,
+          titleLine: titleLineNum,
+          descLine: descLineNum,
+          excerpt: "(sem descrição)",
+        });
         continue;
       }
 
-      // Linha de título de item (inline link)
-      if (INLINE_LINK_ONLY_RE.test(lines[i])) {
-        itemNum++;
-        const titleLineNum = i + 1;
+      // FP fix (#2396 finding #2): descrição que começa com bold (`**OpenAI** lança...`)
+      // NÃO deve ser tratada como header de seção. A verificação anterior usava
+      // `/^\*\*[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÚÜÇ]/` que casava bold-leading legítimo. Agora só
+      // consideramos fim de seção se for `---` ou outro `INLINE_LINK_*` — ambos
+      // já tratados acima. Uma linha de descrição pode começar com bold sem ser header.
 
-        // Encontrar próxima linha não-vazia como descrição
-        let j = i + 1;
-        while (j < lines.length && lines[j].trim() === "") j++;
-
-        if (j >= lines.length) {
-          // Sem descrição
-          errors.push({
-            item: itemNum,
-            titleLine: titleLineNum,
-            descLine: -1,
-            excerpt: "(sem descrição)",
-          });
-          continue;
-        }
-
-        const descLine = lines[j];
-        const descLineNum = j + 1;
-        // nextNonEmpty é garantidamente não-vazio: o while-loop acima pula
-        // linhas em branco e o guard `j >= lines.length` trata o caso EOF.
-        const nextNonEmpty = descLine.trim();
-
-        // Se a próxima linha é outro link, header ou separador → sem descrição
-        if (
-          INLINE_LINK_ONLY_RE.test(descLine) ||
-          nextNonEmpty === "---" ||
-          // Outro header bold (seção, destaque)
-          (/^\*\*[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÚÜÇ]/.test(nextNonEmpty) &&
-            !INLINE_LINK_ONLY_RE.test(descLine))
-        ) {
-          errors.push({
-            item: itemNum,
-            titleLine: titleLineNum,
-            descLine: descLineNum,
-            excerpt: "(sem descrição)",
-          });
-          continue;
-        }
-
-        // Verificar presença de `— N min`
-        if (!USE_MELHOR_TEMPO_RE.test(descLine)) {
-          errors.push({
-            item: itemNum,
-            titleLine: titleLineNum,
-            descLine: descLineNum,
-            excerpt: descLine.trim().slice(0, 80),
-          });
-        }
+      // Verificar presença de tempo na descrição
+      if (!USE_MELHOR_TEMPO_RE.test(descLine)) {
+        errors.push({
+          item: itemNum,
+          titleLine: titleLineNum,
+          descLine: descLineNum,
+          excerpt: nextNonEmpty.slice(0, 80),
+        });
       }
     }
   }
