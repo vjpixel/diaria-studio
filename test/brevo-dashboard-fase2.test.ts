@@ -749,6 +749,57 @@ describe("#2402 aggregateByMonth usa BRT para bucketizar", () => {
   });
 });
 
+// ─── #2407: monthKeyBRT NaN guard + aggregateByMonth pula data malformada ─────
+
+describe("#2407 monthKeyBRT NaN guard", () => {
+  test("string vazia → null (não lança)", () => {
+    assert.equal(monthKeyBRT(""), null);
+  });
+
+  test("string inválida → null (não lança)", () => {
+    assert.equal(monthKeyBRT("not-a-date"), null);
+  });
+
+  test("data válida ainda funciona", () => {
+    assert.equal(monthKeyBRT("2026-07-01T00:00:00Z"), "2026-06");
+  });
+});
+
+describe("#2407 aggregateByMonth pula sentDate malformado", () => {
+  test("campanha com sentDate malformado é pulada — não crasha, não aparece no resultado", () => {
+    const malformed = makeCampaign(
+      200,
+      "Campanha malformada",
+      "invalid-date",
+      { sent: 100, delivered: 95, uniqueViews: 30, uniqueClicks: 5 },
+    );
+    // Não deve lançar
+    assert.doesNotThrow(() => aggregateByMonth([malformed]));
+    // monthKeyBRT retorna null para date inválida → campanha pulada, resultado vazio
+    const rows = aggregateByMonth([malformed]);
+    assert.equal(rows.length, 0, "campanha malformada deve ser pulada");
+  });
+
+  test("campanha malformada + campanha válida: agrega só a válida", () => {
+    const malformed = makeCampaign(
+      201,
+      "Campanha malformada",
+      "not-a-date",
+      { sent: 100, delivered: 95, uniqueViews: 30, uniqueClicks: 5 },
+    );
+    const valid = makeCampaign(
+      202,
+      "Campanha válida",
+      "2026-06-15T12:00:00Z",
+      { sent: 150, delivered: 145, uniqueViews: 40, uniqueClicks: 8 },
+    );
+    const rows = aggregateByMonth([malformed, valid]);
+    assert.equal(rows.length, 1, "só 1 mês (da campanha válida)");
+    assert.equal(rows[0].month, "2026-06");
+    assert.equal(rows[0].campaignCount, 1, "só 1 campanha agregada");
+  });
+});
+
 // ─── renderDashboardHtml: integração das novas seções ────────────────────────
 
 describe("renderDashboardHtml: integração fase 2 (#2086)", () => {

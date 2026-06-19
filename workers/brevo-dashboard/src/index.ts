@@ -1577,8 +1577,9 @@ export function weekdayKeyBRT(iso: string): number | null {
  * mas deve ser "2026-06" para ser consistente com fmtTimeBRT / weekdayKeyBRT.
  * (#2402)
  */
-export function monthKeyBRT(iso: string): string {
+export function monthKeyBRT(iso: string): string | null {
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
     year: "numeric",
@@ -1943,7 +1944,9 @@ export function aggregateByMonth(
     // Extrair YYYY-MM em BRT (America/Sao_Paulo), consistente com fmtTimeBRT e
     // weekdayKeyBRT. Campanha enviada 2026-07-01T00:00:00Z = 30/jun 21:00 BRT
     // deve bucketizar em "2026-06", não "2026-07". (#2402)
+    // monthKeyBRT retorna null para sentDate malformado — pular a campanha. (#2407)
     const month = monthKeyBRT(c.sentDate);
+    if (month === null) continue;
     if (!acc.has(month)) {
       acc.set(month, { campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0 });
     }
