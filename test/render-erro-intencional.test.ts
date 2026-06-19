@@ -1368,6 +1368,213 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
   });
 });
 
+// ── Regressão #2377: narrativeIsGenericPlaceholder ──────────────────────────────────────────
+//
+// Root cause fix: o bug foi causado por um `narrative` genérico (copiado do bloco de convite
+// ao sorteio) que acabou sendo formatado por composeRevealText como reveal real. O guard
+// detecta esse texto genérico e bloqueia no Stage 4 antes da publicação.
+
+import { narrativeIsGenericPlaceholder } from "../scripts/render-erro-intencional.ts";
+import {
+  checkNarrativeNotGenericPlaceholder,
+} from "../scripts/lib/invariant-checks/stage-4.ts";
+
+describe("narrativeIsGenericPlaceholder (#2377 root cause fix)", () => {
+  // ── Input exato do bug — regressão obrigatória (#633) ──────────────────────────────────────
+  it("detecta EXATAMENTE o input do bug #2377 como genérico", () => {
+    // Este é o narrative que causou o incidente: extraído do bloco de convite ao sorteio
+    // em vez de uma declaração real do editor. Causou publish:
+    // "Na última edição, há um erro proposital escondido em um dos destaques. Responda este
+    //  e-mail com a correção para concorrer ao sorteio, o correto é Microsoft"
+    const bugNarrative =
+      "há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio";
+    assert.equal(
+      narrativeIsGenericPlaceholder(bugNarrative),
+      true,
+      "o narrative exato do bug #2377 deve ser detectado como genérico",
+    );
+  });
+
+  it("detecta 'há um erro proposital' (variante simples)", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder("há um erro proposital em algum dos destaques"),
+      true,
+    );
+  });
+
+  it("detecta 'esta edição tem um erro proposital'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder("esta edição tem um erro proposital escondido"),
+      true,
+    );
+  });
+
+  it("detecta 'responda este e-mail'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder("responda este e-mail com a correção"),
+      true,
+    );
+  });
+
+  it("detecta 'concorrer ao sorteio'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder("para concorrer ao sorteio mensal"),
+      true,
+    );
+  });
+
+  it("detecta 'um erro escondido em'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder("há um erro escondido em um dos destaques"),
+      true,
+    );
+  });
+
+  // ── Declarações reais de primeira pessoa devem passar (false) ──────────────────────────────
+  it("passa (false) em declaração real de primeira pessoa — 'escrevi que'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder(
+        "escrevi que a empresa parceira da DeepSeek se chamava Macrosoft, quando o correto é Microsoft",
+      ),
+      false,
+    );
+  });
+
+  it("passa (false) em declaração real — 'contei que'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder(
+        "contei que Karpathy cofundou a OpenAI em 1914, depois liderou a IA da Tesla",
+      ),
+      false,
+    );
+  });
+
+  it("passa (false) em declaração real — 'coloquei X onde deveria ser Y'", () => {
+    assert.equal(
+      narrativeIsGenericPlaceholder(
+        "coloquei junho onde deveria ser maio na data de lançamento",
+      ),
+      false,
+    );
+  });
+
+  it("passa (false) em texto vazio", () => {
+    assert.equal(narrativeIsGenericPlaceholder(""), false);
+  });
+});
+
+describe("composeRevealText com narrativeIsGenericPlaceholder — warn de defense-in-depth (#2377)", () => {
+  it("emite warn quando narrative é o placeholder genérico exato do bug", () => {
+    // Este é o cenário exato do bug: narrative genérico chegou até composeRevealText
+    // e seria formatado verbatim. O warn é a defense-in-depth (o blocker primário
+    // é o lint do Stage 4).
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      const bugNarrative =
+        "há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio";
+      const prev = {
+        edition: "260601",
+        error_type: "factual",
+        is_feature: true,
+        narrative: bugNarrative,
+        correct_value: "Microsoft",
+      } as IntentionalError & { narrative: string };
+      const text = composeRevealText(prev);
+      // Deve ter emitido o warn sobre narrative genérico
+      const warnFound = warnings.some((w) => w.includes("#2377") || w.includes("placeholder genérico"));
+      assert.ok(warnFound, `Nenhum warn sobre placeholder genérico. Warns: ${JSON.stringify(warnings)}`);
+      // Ainda produz output (não bloqueia — o blocker é o lint)
+      assert.match(text, /^Na última edição,/);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+describe("checkNarrativeNotGenericPlaceholder — invariant Stage 4 (#2377)", () => {
+  it("retorna violation quando narrative é o placeholder genérico exato do bug", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-narrative-generic-"));
+    try {
+      const md = [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, X.",
+        "",
+        // Este é o narrative genérico exato que causou o incidente
+        "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "Texto.",
+      ].join("\n");
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 1, "deve retornar 1 violation para o narrative genérico");
+      assert.equal(violations[0].rule, "narrative-not-generic-placeholder");
+      assert.equal(violations[0].severity, "error");
+      assert.match(
+        violations[0].message,
+        /placeholder genérico|há um erro proposital/i,
+        "mensagem deve mencionar o problema (placeholder genérico ou a frase que causou o bug)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna 0 violations quando narrative é declaração real de primeira pessoa", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-narrative-ok-"));
+    try {
+      const md = [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, X.",
+        "",
+        "Nessa edição, escrevi que a empresa parceira da DeepSeek se chamava Macrosoft, quando o correto é Microsoft.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "Texto.",
+      ].join("\n");
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 0, "narrative real não deve gerar violation");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna 0 violations quando 02-reviewed.md não tem seção ERRO INTENCIONAL", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-narrative-noblock-"));
+    try {
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        ["**ASSINE**", "", "Texto."].join("\n"),
+        "utf8",
+      );
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 0, "sem bloco ERRO INTENCIONAL — sem violation");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna 0 violations quando 02-reviewed.md não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-narrative-nofile-"));
+    try {
+      // não criar o arquivo
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── Regressão #2304: CRLF round-trip ─────────────────────────────────────────────────────────
 //
 // Máquina do editor é Windows (OneDrive/VS Code usam CRLF). O caminho
