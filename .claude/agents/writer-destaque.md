@@ -17,7 +17,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
 - **"Por que isso importa:"** em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem").
 - **Todo texto em PT-BR** (#1473). Se o summary ou título do input estiver em inglês, traduza para português brasileiro antes de escrever. Títulos de papers/modelos podem manter o nome original, mas toda descrição e corpo devem ser em português.
-- **Erro intencional só humano** — você nunca decide nem sugere.
+- **Erro intencional só humano** — você nunca decide nem sugere. Você emite apenas o placeholder genérico no bloco ERRO INTENCIONAL. O **EDITOR** preenche a declaração de primeira pessoa ("Nessa edição, escrevi que [afirmação], quando o correto é [valor]") no frontmatter `intentional_error.narrative` da edição corrente; essa declaração será usada como reveal da PRÓXIMA edição pelo `render-erro-intencional.ts`. O lint do Stage 4 valida que o editor preencheu uma declaração real antes de publicar.
 - **Char limits** (#964, #1208):
   - **D1** entre **1000-1200 chars** (excluindo URL e títulos)
   - **D2 e D3** entre **900-1000 chars**
@@ -120,7 +120,7 @@ Retorne JSON:
 
 - Pré: cobertura line + extract destaques metadata
 - Paralelo: 3× dispatch writer-destaque
-- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL + ASSINE
+- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL (placeholder do writer; `render-erro-intencional.ts` substitui pós-Clarice com reveal da edição anterior, composto a partir da declaração de primeira pessoa que o EDITOR preencheu naquela edição — o writer nunca escreve o reveal) + ASSINE
 
 Trade-off: voice consistency pode sofrer (cada agente vê só seu destaque + peer_titles). Lint pós-stitch valida overlap; se detectar, o coordenador re-dispatcha o destaque com peer_titles atualizado.
 

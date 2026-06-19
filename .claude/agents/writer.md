@@ -89,7 +89,16 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    ---
    ```
 
-   Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
+   O `{placeholder}` é substituído pelo `render-erro-intencional.ts` pós-Clarice. O script lê a declaração de primeira pessoa que o **EDITOR** (não o writer) escreveu na edição anterior — no frontmatter `intentional_error.narrative` (ou na prosa "Nessa edição, …") do `02-reviewed.md` daquela edição — e compõe o reveal.
+
+   **Responsabilidade do EDITOR (não do writer):** o editor preenche, no `02-reviewed.md` da edição corrente, a declaração de primeira pessoa que descreve o erro real desta edição. Essa declaração será usada pela PRÓXIMA edição como reveal. O formato correto é:
+   > "Nessa edição, escrevi que [afirmação errada], quando o correto é [valor correto]."
+
+   Exemplo: "Nessa edição, escrevi que Dario Amodei é CEO da DeepMind, quando o correto é Anthropic."
+
+   O lint do Stage 4 (`narrative-not-generic-placeholder`) valida essa declaração antes da publicação — bloqueando se o editor deixou o texto genérico do convite ao sorteio no lugar da declaração real.
+
+   Writer: não tentar derivar o gabarito da edição anterior — o script TS faz isso automaticamente. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
 
 3. Lançamentos, RADAR (#1569 + #1629): lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**📡 RADAR**`. Descrições seguem plain. **Itens vêm direto dos buckets do `categorized` input** (#1629): bucket `lancamento` → seção LANÇAMENTOS; bucket `radar` → seção RADAR (já é a fusão de pesquisa + noticias do esquema antigo — papers entram junto com notícias, sem seção dedicada). Não mover artigo entre seções por associação temática. O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 

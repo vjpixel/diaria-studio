@@ -307,6 +307,39 @@ export function narrativeHasCorrection(narrative: string): boolean {
 }
 
 /**
+ * Detecta se a narrativa do erro intencional é um placeholder genérico (#2377
+ * root-cause fix). O bug foi causado por um `narrative` genérico (copiado do
+ * bloco de convite ao sorteio — "há um erro proposital escondido em um dos
+ * destaques. Responda este e-mail com a correção para concorrer ao sorteio")
+ * que acabou sendo formatado pelo `composeRevealText` como se fosse a
+ * declaração específica do editor.
+ *
+ * Um narrative genérico é distinguível de um narrative real porque:
+ *   - fala sobre "há um erro proposital" (meta-instrução, não declaração do erro)
+ *   - fala sobre "responda este e-mail" (convite, não descrição do erro)
+ *   - fala sobre "concorrer ao sorteio" (convite, não descrição do erro)
+ *   - fala sobre "um erro escondido em" (meta-descrição)
+ *   - fala sobre "esta edição tem um erro" (placeholder do writer, não do editor)
+ *
+ * A declaração real do editor é sempre de primeira pessoa e específica:
+ *   - "escrevi que [afirmação concreta]..."
+ *   - "contei que [fato específico]..."
+ *   - "coloquei [valor errado] onde deveria ser [valor correto]"
+ *
+ * Retorna `true` quando o narrative é genérico/placeholder (deve bloquear).
+ * Retorna `false` quando parece uma declaração real de primeira pessoa.
+ *
+ * Exportada para uso no lint do Stage 4 (erro-intencional-narrative-generico)
+ * e no composeRevealText como defense-in-depth.
+ */
+const GENERIC_NARRATIVE_RE =
+  /há\s+um\s+erro\s+proposital|esta\s+edição\s+tem\s+um\s+erro\s+proposital|responda\s+este\s+e-?mail|concorrer\s+ao\s+sorteio|um\s+erro\s+(?:proposital\s+)?escondido\s+em/i;
+
+export function narrativeIsGenericPlaceholder(narrative: string): boolean {
+  return GENERIC_NARRATIVE_RE.test(narrative);
+}
+
+/**
  * Pure (#1079, #1443): compõe o texto de revelação do erro anterior no formato
  * "Na última edição, {narrative}, o correto é {correct_value}.".
  *
@@ -340,6 +373,22 @@ export function composeRevealText(
 
   let narrativeFinal: string;
   if (narrative) {
+    // Defense-in-depth (#2377): se a narrativa é um placeholder genérico (copiado
+    // do bloco de convite ao sorteio em vez de uma declaração real do editor),
+    // emitir warn visível. O bloqueio primário é o lint Stage 4
+    // (--check erro-intencional-narrative-generico), mas esta warn garante que
+    // edições legadas sem esse lint não geram reveal silenciosamente corrompido.
+    if (narrativeIsGenericPlaceholder(narrative)) {
+      console.warn(
+        "[render-erro-intencional] WARN (#2377): narrative do erro intencional parece ser " +
+          "um placeholder genérico (contém frases como \"há um erro proposital\", " +
+          "\"responda este e-mail\", \"concorrer ao sorteio\") em vez de uma declaração " +
+          "específica de primeira pessoa do editor. " +
+          "O reveal sairá com o texto genérico em vez da descrição real do erro. " +
+          "Corrija o narrative no frontmatter intentional_error.narrative (ou na prosa " +
+          "\"Nessa edição, …\") antes de publicar.",
+      );
+    }
     if (narrativeHasCorrection(narrative)) {
       narrativeFinal = narrative;
     } else if (correctValue) {

@@ -21,14 +21,14 @@ import {
   aggregateAbcSummary,
   calcCumulativeSent,
   detectActiveCycle,
-  buildTrendRows,
   renderAbcSection,
   renderVolumeSection,
-  renderTrendSection,
   renderDashboardHtml,
   renderScheduledSection,
   pickStats,
   aggregateLinksAcrossCampaigns,
+  aggregateByMonth,
+  renderMonthlyTotalsSection,
   CLARICE_PLAN_TOTAL,
   CLARICE_PLAN_S1,
   weekdayKeyBRT,
@@ -399,63 +399,17 @@ describe("detectActiveCycle", () => {
   });
 });
 
-// ─── buildTrendRows ───────────────────────────────────────────────────────────
+// ─── #2359: seção wave-trend removida ────────────────────────────────────────
 
-describe("buildTrendRows", () => {
-  test("ordena por sentDate DESC — mais recente no topo (editor 2026-06-11)", () => {
-    const rows = buildTrendRows(allCampaigns);
-    // Primeira linha = envio mais RECENTE; última = mais antiga (T1-W1).
-    assert.ok(rows.length >= 2);
-    const first = rows[0];
-    const last = rows[rows.length - 1];
-    const firstDate = first.sentDate ? Date.parse(first.sentDate) : 0;
-    const lastDate = last.sentDate ? Date.parse(last.sentDate) : 0;
-    assert.ok(firstDate >= lastDate, "primeira linha deve ser a mais recente");
+describe("#2359 renderTrendSection removida", () => {
+  test("HTML do dashboard NÃO contém id='wave-trend' (seção removida)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.doesNotMatch(html, /id="wave-trend"/, "seção wave-trend não deve existir no HTML (#2359)");
   });
 
-  test("label de Clarice News é compacto (ex: '2605 d01-A')", () => {
-    const rows = buildTrendRows(cycle2605Campaigns);
-    const clariceRows = rows.filter((r) => r.label.startsWith("2605"));
-    assert.ok(clariceRows.length > 0, "deve ter rows com label 2605 dXX-Y");
-    for (const r of clariceRows) {
-      assert.match(r.label, /2605 d\d{2}-[ABC]/, `label '${r.label}' deve ter formato '2605 dNN-Y'`);
-    }
-  });
-
-  test("label de Mensal inclui 'Mensal' e o ciclo", () => {
-    const rows = buildTrendRows(t1Campaigns);
-    assert.ok(rows.length > 0);
-    for (const r of rows) {
-      assert.match(r.label, /Mensal 2604/, `label '${r.label}' deve conter 'Mensal 2604'`);
-    }
-  });
-
-  test("calcula openRate e bounceRate corretamente", () => {
-    const campaign = makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
-      { sent: 100, delivered: 98, uniqueViews: 30, hardBounces: 2, softBounces: 1 });
-    const rows = buildTrendRows([campaign]);
-    assert.equal(rows.length, 1);
-    // openRate = 30/98 * 100 ≈ 30.61%
-    assert.ok(Math.abs(rows[0].openRate - (30 / 98) * 100) < 0.01);
-    // bounceRate = 3/100 * 100 = 3%
-    assert.ok(Math.abs(rows[0].bounceRate - 3.0) < 0.01);
-  });
-
-  test("exclui campanhas sem sentDate", () => {
-    const noDate = { ...makeCampaign(99, "Clarice News 2605 d05-A (seg)", ""), sentDate: null };
-    const rows = buildTrendRows([...cycle2605Campaigns, noDate]);
-    const noDateRow = rows.find((r) => r.label === "2605 d05-A");
-    assert.equal(noDateRow, undefined, "campanha sem sentDate não deve aparecer na trend");
-  });
-
-  test("exclui campanhas sem stats reais (sent=0)", () => {
-    const zeroStats = {
-      ...makeCampaign(99, "Clarice News 2605 d05-A (seg)", "2026-06-15T09:00:00Z"),
-      statistics: { globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0 }) },
-    };
-    const rows = buildTrendRows([...cycle2605Campaigns, zeroStats]);
-    const zeroRow = rows.find((r) => r.label === "2605 d05-A");
-    assert.equal(zeroRow, undefined, "campanha com sent=0 não deve aparecer na trend");
+  test("HTML do dashboard NÃO contém 'Tendência entre waves'", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.doesNotMatch(html, /Tend.ncia entre waves/, "título da seção removida não deve aparecer (#2359)");
   });
 });
 
@@ -562,41 +516,159 @@ describe("renderAbcSection", () => {
   });
 });
 
-// ─── renderTrendSection ───────────────────────────────────────────────────────
+// ─── #2360: parseClariceCampaignKey — sufixo de célula opcional ──────────────
 
-describe("renderTrendSection", () => {
+describe("#2360 parseClariceCampaignKey — sufixo opcional", () => {
+  test("campanha sem sufixo de célula retorna cell: null", () => {
+    const r = parseClariceCampaignKey("Clarice News 2605 d08 (qua)");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null });
+  });
+
+  test("campanha sem sufixo e sem parênteses retorna cell: null", () => {
+    const r = parseClariceCampaignKey("Clarice News 2605 d08");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null });
+  });
+
+  test("campanha com sufixo de célula ainda retorna cell correto", () => {
+    const r = parseClariceCampaignKey("Clarice News 2605 d01-A (qua)");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 1, cell: "A" });
+  });
+
+  test("calcCumulativeSent soma campanha sem sufixo de célula (#2360)", () => {
+    // d08 sem sufixo tem sent=1449 → total deve incluí-la
+    const d08 = makeCampaign(99, "Clarice News 2605 d08 (qua)", "2026-06-18T09:00:00Z",
+      { sent: 1449, delivered: 1400, uniqueViews: 350 });
+    const total = calcCumulativeSent([...cycle2605Campaigns, d08], "2605");
+    // cycle2605Campaigns: 117+117+116+184+183+183 = 900
+    assert.equal(total, 900 + 1449, "campanha d08 sem sufixo deve ser incluída no cumulativo");
+  });
+
+  test("aggregateAbcSummary NÃO quebra com cell: null presente (ignora silenciosamente)", () => {
+    const d08 = makeCampaign(99, "Clarice News 2605 d08 (qua)", "2026-06-18T09:00:00Z",
+      { sent: 1449, delivered: 1400, uniqueViews: 350 });
+    // Não deve lançar exceção; não deve duplicar células
+    const result = aggregateAbcSummary([...cycle2605Campaigns, d08], "2605");
+    assert.equal(result.length, 3, "deve ter exatamente 3 células A/B/C");
+    // d08 sem célula NÃO deve ter entrado em nenhuma célula A/B/C
+    const totalCampaignCount = result.reduce((s, r) => s + r.campaignCount, 0);
+    // cycle2605Campaigns tem 2 campanhas por célula (d01+d02) = 6 total
+    assert.equal(totalCampaignCount, 6, "d08 sem célula não deve entrar no ABC (cell: null ignorado)");
+  });
+
+  test("detectActiveCycle detecta ciclo com campanha sem sufixo (#2360)", () => {
+    const d08 = makeCampaign(99, "Clarice News 2605 d08 (qua)", "2026-06-18T09:00:00Z");
+    assert.equal(detectActiveCycle([d08]), "2605", "campanha sem sufixo de célula deve ser detectada");
+  });
+});
+
+// ─── #2369: aggregateByMonth / renderMonthlyTotalsSection ────────────────────
+
+describe("#2369 aggregateByMonth", () => {
+  test("agrega 2 campanhas no mesmo mês em 1 linha", () => {
+    // d01 e d02 da célula A — ambas em junho/2026
+    const junioCampaigns = [
+      makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+        { sent: 100, delivered: 98, uniqueViews: 25, uniqueClicks: 3 }),
+      makeCampaign(2, "Clarice News 2605 d02-A (qui)", "2026-06-11T09:00:00Z",
+        { sent: 200, delivered: 196, uniqueViews: 50, uniqueClicks: 6 }),
+    ];
+    const rows = aggregateByMonth(junioCampaigns);
+    assert.equal(rows.length, 1, "deve ter 1 linha para junho");
+    const jun = rows[0];
+    assert.equal(jun.month, "2026-06");
+    assert.equal(jun.label, "Jun/2026");
+    assert.equal(jun.campaignCount, 2);
+    assert.equal(jun.totalSent, 300);
+    assert.equal(jun.totalDelivered, 294);
+    assert.equal(jun.totalViews, 75);
+    assert.equal(jun.totalClicks, 9);
+    assert.ok(Math.abs(jun.openRate - (75 / 294) * 100) < 0.01, `openRate deve ser ~25.5% mas foi ${jun.openRate}`);
+    assert.ok(Math.abs(jun.ctr - (9 / 294) * 100) < 0.01, `ctr deve ser ~3.06% mas foi ${jun.ctr}`);
+  });
+
+  test("campanhas em meses diferentes geram linhas separadas", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    // allCampaigns: cycle2605 (jun/2026) + t1Campaigns (mai/2026)
+    const meses = rows.map((r) => r.month);
+    assert.ok(meses.includes("2026-06"), "deve ter junho");
+    assert.ok(meses.includes("2026-05"), "deve ter maio");
+    assert.equal(rows.length, 2, "deve ter 2 meses distintos");
+  });
+
+  test("ordena do mês mais recente para o mais antigo", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    assert.equal(rows[0].month, "2026-06", "mês mais recente primeiro");
+    assert.equal(rows[1].month, "2026-05", "mês mais antigo segundo");
+  });
+
+  test("retorna [] quando não há campanhas com stats reais", () => {
+    const zeroStats = {
+      ...makeCampaign(99, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z"),
+      statistics: { globalStats: makeGlobalStats({ sent: 0 }) },
+    };
+    assert.deepEqual(aggregateByMonth([zeroStats]), []);
+  });
+
+  test("retorna [] quando lista vazia", () => {
+    assert.deepEqual(aggregateByMonth([]), []);
+  });
+
+  test("exclui campanhas sem sentDate", () => {
+    const noDate = { ...makeCampaign(1, "Clarice News 2605 d01-A", ""), sentDate: null };
+    assert.deepEqual(aggregateByMonth([noDate]), []);
+  });
+
+  test("fixture allCampaigns: junho tem 6 campanhas e maio tem 2", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const jun = rows.find((r) => r.month === "2026-06")!;
+    const mai = rows.find((r) => r.month === "2026-05")!;
+    assert.equal(jun.campaignCount, 6, "junho: 6 campanhas Clarice d01/d02 A/B/C");
+    assert.equal(mai.campaignCount, 2, "maio: 2 campanhas T1");
+  });
+});
+
+describe("#2369 renderMonthlyTotalsSection", () => {
   test("retorna string vazia quando rows está vazio", () => {
-    assert.equal(renderTrendSection([]), "");
+    assert.equal(renderMonthlyTotalsSection([]), "");
   });
 
-  test("contém id='wave-trend' para âncora", () => {
-    const rows = buildTrendRows(allCampaigns);
-    const html = renderTrendSection(rows);
-    assert.match(html, /id="wave-trend"/);
+  test("contém id='monthly-totals' para âncora", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /id="monthly-totals"/, "deve ter âncora monthly-totals");
   });
 
-  test("usa class 'alert' para open rate < 15%", () => {
-    const rows: Parameters<typeof renderTrendSection>[0] = [
-      { label: "Test", sentDate: "2026-06-10T09:00:00Z", openRate: 8, bounceRate: 1, sent: 100, delivered: 98 },
-    ];
-    const html = renderTrendSection(rows);
-    assert.match(html, /class="alert"/, "open 8% deve gerar class alert");
+  test("contém 1 linha por mês (2 linhas para allCampaigns)", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    // 2 linhas de dados = 2 <tr> no tbody (excluindo o <tr> do thead)
+    const trCount = (html.match(/<tr>/g) ?? []).length;
+    // 1 <tr> no thead + 2 no tbody = 3 total (ou pode ser tbody sem <tr> extra)
+    assert.ok(trCount >= 2, `deve ter ao menos 2 <tr> (1/mês) mas encontrou ${trCount}`);
+    assert.match(html, /Jun\/2026/, "deve ter linha Jun/2026");
+    assert.match(html, /Mai\/2026/, "deve ter linha Mai/2026");
   });
 
-  test("usa class 'alert' para bounce rate ≥ 3%", () => {
-    const rows: Parameters<typeof renderTrendSection>[0] = [
-      { label: "Test", sentDate: "2026-06-10T09:00:00Z", openRate: 25, bounceRate: 3.5, sent: 100, delivered: 96 },
-    ];
-    const html = renderTrendSection(rows);
-    assert.match(html, /class="alert"/, "bounce 3.5% deve gerar class alert");
+  test("lista detalhada de campanhas NÃO é substituída (ambas presentes no dashboard)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.match(html, /id="monthly-totals"/, "tabela mensal deve existir");
+    assert.match(html, /id="campaigns-table"/, "lista detalhada deve existir");
+    // A lista detalhada vem DEPOIS da tabela mensal
+    const posMonthly = html.indexOf('id="monthly-totals"');
+    const posCampaigns = html.indexOf('id="campaigns-table"');
+    assert.ok(posMonthly < posCampaigns, "tabela mensal deve vir antes da lista detalhada");
   });
 
-  test("NÃO usa class alert quando métricas saudáveis", () => {
-    const rows: Parameters<typeof renderTrendSection>[0] = [
-      { label: "Test", sentDate: "2026-06-10T09:00:00Z", openRate: 25, bounceRate: 1, sent: 100, delivered: 99 },
-    ];
-    const html = renderTrendSection(rows);
-    assert.doesNotMatch(html, /class="alert"/, "métricas saudáveis não devem gerar alerta");
+  test("exibe open rate e CTR agregados corretos para fixture de 1 mês", () => {
+    const rows = aggregateByMonth([
+      makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+        { sent: 200, delivered: 196, uniqueViews: 60, uniqueClicks: 8 }),
+    ]);
+    const html = renderMonthlyTotalsSection(rows);
+    // openRate = 60/196*100 ≈ 30.6%
+    assert.match(html, /30\.[0-9]%/, "deve exibir open rate ~30.6%");
+    // ctr = 8/196*100 ≈ 4.1%
+    assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
   });
 });
 
@@ -647,11 +719,10 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.ok(posVolume < posAbc, "volume deve vir antes do resumo A/B/C");
   });
 
-  test("seção wave-trend aparece com campanhas", () => {
+  test("seção wave-trend NÃO aparece no dashboard (removida em #2359)", () => {
     const html = renderDashboardHtml(allCampaigns);
-    // #2208 (item 4): ancorando em id= para não casar substring em outro contexto.
-    assert.match(html, /id="wave-trend"/, "deve conter a seção wave-trend com id=");
-    assert.match(html, /Tend.ncia entre waves/, "deve ter título da seção");
+    assert.doesNotMatch(html, /id="wave-trend"/, "seção wave-trend foi removida (#2359)");
+    assert.doesNotMatch(html, /Tend.ncia entre waves/, "título da seção removida não deve aparecer");
   });
 
   test("sem campanhas Clarice News: seção abc-summary ausente", () => {
