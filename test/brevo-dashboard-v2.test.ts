@@ -562,12 +562,12 @@ describe("#2212: renderAggregatedLinksSection", () => {
     assert.match(html, /id="links-agregados"/, "deve ter id links-agregados para âncora");
   });
 
-  test("tabela contém colunas Link, Clicks, %, Campanhas", () => {
+  test("tabela contém colunas Link, Clicks, %, Envios", () => {
     const rows = makeRows();
     const html = renderAggregatedLinksSection(rows);
     assert.match(html, /<table/, "deve ter tabela");
     assert.match(html, /Clicks/, "deve ter coluna Clicks");
-    assert.match(html, /Campanhas/, "deve ter coluna Campanhas");
+    assert.match(html, /Envios/, "deve ter coluna Envios (#2422)");
   });
 
   test("links editoriais aparecem na tabela", () => {

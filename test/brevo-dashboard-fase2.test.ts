@@ -27,6 +27,8 @@ import {
   renderScheduledSection,
   pickStats,
   aggregateLinksAcrossCampaigns,
+  renderAggregatedLinksSection,
+  deriveLinksSectionTitle,
   aggregateByMonth,
   renderMonthlyTotalsSection,
   CLARICE_PLAN_TOTAL,
@@ -1493,7 +1495,7 @@ describe("renderScheduledSection (#2251)", () => {
       queued(48, "Clarice News 2605 d04-B (sab)", "2026-06-13T09:05:00Z", "lista-B", 426),
     ]);
     assert.match(html, /id="scheduled-campaigns"/);
-    assert.match(html, /Campanhas agendadas/);
+    assert.match(html, /Envios agendados/);
     assert.match(html, /d04-B/);
     assert.match(html, /d07-B/);
     assert.match(html, /575/);
@@ -1528,5 +1530,124 @@ describe("renderScheduledSection (#2251)", () => {
     const sent = [{ ...makeCampaign(40, "Clarice News 2605 d01-C (qua)", "2026-06-10T09:00:00Z"), statistics: { globalStats: makeGlobalStats({ sent: 100 }) } }];
     const html = renderDashboardHtml(sent);
     assert.ok(!/id="scheduled-campaigns"/.test(html), "sem agendadas → seção ausente");
+  });
+});
+
+// ─── #2421: deriveLinksSectionTitle ─────────────────────────────────────────
+
+describe("deriveLinksSectionTitle (#2421)", () => {
+  function makeSentCampaign(name: string, sentDate: string) {
+    return { name, sentDate };
+  }
+
+  test("retorna cycle-sendMonthBRT da campanha mais recente", () => {
+    const campaigns = [
+      makeSentCampaign("Clarice News 2605 d03-A (sex)", "2026-06-13T09:00:00Z"),
+      makeSentCampaign("Clarice News 2605 d01-B (qua)", "2026-06-10T09:00:00Z"),
+    ];
+    assert.equal(deriveLinksSectionTitle(campaigns), "2605-06");
+  });
+
+  test("usa a campanha de maior sentDate (mais recente)", () => {
+    const campaigns = [
+      makeSentCampaign("Clarice News 2604 d07-C (seg)", "2026-05-31T09:00:00Z"), // mais antiga
+      makeSentCampaign("Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"), // mais recente
+    ];
+    assert.equal(deriveLinksSectionTitle(campaigns), "2605-06");
+  });
+
+  test("virada de mês BRT: sentDate 2026-07-01T00:00:00Z = 30/jun BRT → mês 06", () => {
+    // 2026-07-01T00:00:00Z = 2026-06-30T21:00:00 BRT (UTC-3)
+    const campaigns = [
+      makeSentCampaign("Clarice News 2605 d07-B (ter)", "2026-07-01T00:00:00Z"),
+    ];
+    assert.equal(deriveLinksSectionTitle(campaigns), "2605-06", "mês deve ser 06 (BRT), não 07 (UTC)");
+  });
+
+  test("lista vazia → null (fallback 'do período')", () => {
+    assert.equal(deriveLinksSectionTitle([]), null);
+  });
+
+  test("campanha sem sentDate → null", () => {
+    const campaigns = [{ name: "Clarice News 2605 d01-A (qua)", sentDate: null }];
+    assert.equal(deriveLinksSectionTitle(campaigns as any), null);
+  });
+
+  test("nome não parseável → null (fallback 'do período')", () => {
+    const campaigns = [makeSentCampaign("T1-W1 digest", "2026-06-10T09:00:00Z")];
+    assert.equal(deriveLinksSectionTitle(campaigns), null);
+  });
+
+  test("campanha não-Clarice mais recente não obscurece Clarice mais antiga (#2421 bug3)", () => {
+    // Bug: sem o filtro de parseClariceCampaignKey, "T1-W1 digest" (enviado depois)
+    // tornava-se o top-1 e retornava null mesmo com Clarice disponível.
+    const campaigns = [
+      makeSentCampaign("T1-W1 digest", "2026-06-15T09:00:00Z"), // mais recente, não-Clarice
+      makeSentCampaign("Clarice News 2605 d05-A (seg)", "2026-06-12T09:00:00Z"), // Clarice
+    ];
+    assert.equal(deriveLinksSectionTitle(campaigns), "2605-06", "Clarice mais antiga deve ganhar sobre não-Clarice mais recente");
+  });
+
+  test("renderAggregatedLinksSection com edicaoLabel mostra edição no título", () => {
+    const html = renderAggregatedLinksSection([], "2605-06");
+    assert.match(html, /Links mais clicados da edição 2605-06/);
+  });
+
+  test("renderAggregatedLinksSection sem edicaoLabel usa fallback 'do período'", () => {
+    const html = renderAggregatedLinksSection([]);
+    assert.match(html, /Links mais clicados do período/);
+  });
+});
+
+// ─── #2422: rótulos 'Campanhas' → 'Envios' ──────────────────────────────────
+
+describe("rótulos Campanhas→Envios (#2422)", () => {
+  test("renderScheduledSection usa 'Envios agendados'", () => {
+    const queued = [{
+      id: 1, name: "Clarice News 2605 d04-A (sab)", status: "queued" as const,
+      sentDate: null, scheduledAt: "2026-06-13T09:05:00Z",
+      createdAt: "2026-06-12T00:00:00Z", recipients: { lists: [1] },
+      subject: "s", listName: "lista-A", listSize: 400,
+    }];
+    const html = renderScheduledSection(queued);
+    assert.match(html, /Envios agendados/, "seção deve usar 'Envios agendados'");
+    assert.doesNotMatch(html, /Campanhas agendadas/, "não deve conter 'Campanhas agendadas'");
+  });
+
+  test("renderDashboardHtml não contém 'Campanhas enviadas' como título de seção", () => {
+    const sent = [{ ...makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"), statistics: { globalStats: makeGlobalStats({ sent: 100 }) } }];
+    const html = renderDashboardHtml(sent);
+    assert.doesNotMatch(html, /Campanhas enviadas/, "título 'Campanhas enviadas' deve ter sido renomeado para 'Envios'");
+    assert.match(html, /<h2[^>]*>Envios<\/h2>/, "seção deve ter título 'Envios'");
+  });
+});
+
+// ─── #2424: ordem Delivered antes de Opens no Resumo A/B/C ─────────────────
+
+describe("ordem colunas ABC (#2424)", () => {
+  test("Delivered (total) aparece antes de Opens (total) no header", () => {
+    const rows = [
+      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2, organicOpenRate: null },
+    ];
+    const html = renderAbcSection(rows);
+    const posDelivered = html.indexOf("Delivered (total)");
+    const posOpens = html.indexOf("Opens (total)");
+    assert.ok(posDelivered > -1, "deve ter 'Delivered (total)'");
+    assert.ok(posOpens > -1, "deve ter 'Opens (total)'");
+    assert.ok(posDelivered < posOpens, "Delivered deve aparecer antes de Opens no header");
+  });
+
+  test("células: totalDelivered aparece antes de totalViews na linha de dados", () => {
+    const rows = [
+      { cell: "A" as const, totalViews: 55, totalDelivered: 200, openRate: 27.5, campaignCount: 1, organicOpenRate: null },
+    ];
+    const html = renderAbcSection(rows);
+    const pos200 = html.indexOf(">200<"); // totalDelivered
+    const pos55 = html.indexOf(">55<");   // totalViews
+    assert.ok(pos200 > -1, "deve ter valor 200 (totalDelivered)");
+    assert.ok(pos55 > -1, "deve ter valor 55 (totalViews)");
+    assert.ok(pos200 < pos55, "totalDelivered (200) deve aparecer antes de totalViews (55) na linha");
   });
 });
