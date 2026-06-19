@@ -658,8 +658,8 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
   }
 
   it("N fetches paralelos: tempo total ≈ 1 fetch (não N fetches sequenciais)", async () => {
-    const DELAY = 50; // ms por fetch
-    const N = 5;      // 5 URLs distintas
+    const DELAY = 100; // ms por fetch — 100ms dá margem suficiente pra CI com spikes
+    const N = 5;       // 5 URLs distintas
     const statusMap: Record<string, number> = {};
     const issues: string[] = [];
     for (let i = 1; i <= N; i++) {
@@ -674,10 +674,11 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
     const elapsed = Date.now() - start;
 
     // Paralelo: deve terminar bem abaixo de N×DELAY (sequencial).
-    // Threshold: N×DELAY×0.8 = 200ms (sequencial seria 250ms, paralelo ideal ~50ms).
-    // Usando 0.8× do sequencial como threshold: CI com spikes de 100-150ms ainda passa.
-    const sequentialMs = N * DELAY;   // 250ms se fosse sequencial
-    const threshold = Math.floor(sequentialMs * 0.8);  // 200ms — claramente abaixo do sequencial
+    // Threshold: N×DELAY×0.6 = 300ms (sequencial seria 500ms, paralelo ideal ~100ms).
+    // 0.6× do sequencial — CI com spikes de 200-250ms ainda passa (era 0.8× com DELAY=50ms
+    // causando flakiness quando spike atingia 218ms; separação agora é 300ms vs 500ms).
+    const sequentialMs = N * DELAY;   // 500ms se fosse sequencial
+    const threshold = Math.floor(sequentialMs * 0.6);  // 300ms — claramente abaixo do sequencial
     assert.ok(
       elapsed < threshold,
       `fetches devem ser paralelos: elapsed ${elapsed}ms, esperado < ${threshold}ms (sequencial seria ${sequentialMs}ms)`,

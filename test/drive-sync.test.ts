@@ -1188,6 +1188,10 @@ describe("invalid_grant dedup guard (#2318) — alerta único via pullFile", () 
     } catch (err) {
       caught1 = err instanceof Error ? err.message : String(err);
     }
+    // Re-escreve creds expirados antes do segundo pullFile — guard contra race
+    // entre workers paralelos (outro test file pode ter sobrescrito o arquivo
+    // com creds válidos durante o backoff de ~6s do primeiro pullFile).
+    writeFileSync(CREDS_PATH, JSON.stringify({ ...FAKE_CREDS, expiry_ms: 1 }), "utf8");
     try {
       await pullFile(tmpDir, "03-social.md", YYMMDD, cache, result);
     } catch (err) {
