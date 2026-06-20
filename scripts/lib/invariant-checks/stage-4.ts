@@ -19,6 +19,7 @@ import { urlsMatch } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
 import {
   extractIntentionalErrorFromMd,
+  extractRevealFromFrontmatter,
   narrativeIsGenericPlaceholder,
   narrativeIsCatalogShaped,
 } from "../../render-erro-intencional.ts";
@@ -535,6 +536,44 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
           ];
         }
       }
+    }
+  }
+
+  // F3 (#633): verifica o campo `reveal` do frontmatter quanto a conteúdo catalog-shaped.
+  // Se o editor copiar `description` (catálogo, ex: 'DESTAQUE 2 lista...') para dentro de
+  // `reveal`, o Stage 4 ficaria silencioso sem esta checagem.
+  // severity: warning (decisão editorial 260619 — lints ficam warning).
+  const reveal = extractRevealFromFrontmatter(md);
+  if (reveal) {
+    if (narrativeIsCatalogShaped(reveal)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: o campo \`intentional_error.reveal\` contém texto catálogo ` +
+            `de terceira pessoa (label interno "DESTAQUE N" ou similar): "${reveal.slice(0, 80)}". ` +
+            `O reveal da PRÓXIMA edição usará o fallback seguro genérico em vez do erro real. ` +
+            REMEDIATION,
+          source_issue: "#2419",
+          severity: "warning",
+          file: path,
+        },
+      ];
+    }
+    if (narrativeIsGenericPlaceholder(reveal)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: o campo \`intentional_error.reveal\` contém texto genérico ` +
+            `(placeholder do convite ao sorteio): "${reveal.slice(0, 80)}". ` +
+            `O reveal da PRÓXIMA edição usará o fallback seguro genérico em vez do erro real. ` +
+            REMEDIATION,
+          source_issue: "#2419",
+          severity: "warning",
+          file: path,
+        },
+      ];
     }
   }
 

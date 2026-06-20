@@ -494,9 +494,10 @@ export function narrativeIsCatalogShaped(narrative: string): boolean {
  *
  * Prioridade:
  *   1. Campo `reveal` do entry/JSONL (propagado do frontmatter `intentional_error.reveal`).
- *      Usado VERBATIM — é prosa first-person, gramatical, pública, escrita pelo editor.
+ *      Usado verbatim, exceto a formatação boldQuotedStrings (aspas → negrito, convenção
+ *      da newsletter). É prosa first-person, gramatical, pública, escrita pelo editor.
  *      Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
- *      NUNCA aplicar regex, síntese ou transformação sobre este campo.
+ *      NUNCA aplicar regex, síntese ou transformação além de boldQuotedStrings.
  *   2. Campo `narrative` legado (edições pré-#2419 sem `reveal`).
  *      Se presente e não for catálogo/genérico, aplicar lógica de correção (#1443).
  *   3. Campo `detail` legado (JSONL entries antigos sem `narrative`).
@@ -520,14 +521,16 @@ export function composeRevealText(
   const correctValue = (prev.correct_value ?? "").trim();
 
   // PRIORIDADE 1: campo `reveal` dedicado (#2419).
-  // Usado VERBATIM — prosa first-person escrita pelo editor. Não transformar.
+  // Usado VERBATIM — prosa first-person escrita pelo editor. Não transformar,
+  // exceto a formatação boldQuotedStrings (aspas → negrito, convenção da newsletter).
   // Guard de sanidade: não publicar catalog-shaped ou genérico mesmo que alguém
   // preencheu o campo `reveal` erroneamente com catálogo.
   if (reveal) {
     if (!narrativeIsCatalogShaped(reveal) && !narrativeIsGenericPlaceholder(reveal)) {
       // Verbatim: o `reveal` já é a frase completa (ex: "Na última edição, escrevi X.")
       // NÃO prefixar com "Na última edição" — o editor já escreveu a frase completa.
-      return boldQuotedStrings(reveal.endsWith(".") ? reveal : `${reveal}.`);
+      // F1: guard de pontuação terminal — aceita ., ! ou ? para evitar "viu?." duplo.
+      return boldQuotedStrings(/[.!?]$/.test(reveal.trim()) ? reveal : `${reveal}.`);
     }
     // reveal é catalog-shaped ou genérico — warn e cair para fallback
     console.warn(
@@ -609,8 +612,12 @@ export function composeRevealText(
   }
 
   // PRIORIDADE 4: fallback SEGURO genérico.
-  // NUNCA sintetizar a partir de `description` ou catálogo.
-  return boldQuotedStrings(`Na última edição, houve um erro intencional.`);
+  // F2: string unificada com os outros caminhos de fallback — NUNCA sintetizar
+  // a partir de `description` ou catálogo. Nenhum caminho de fallback vaza
+  // catálogo/description.
+  return boldQuotedStrings(
+    `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+  );
 }
 
 /**

@@ -31,6 +31,10 @@ import {
   ensureIntentionalErrorFrontmatter,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
+import {
+  frontmatterToEntry,
+  parseIntentionalErrorsJsonl,
+} from "../scripts/lib/intentional-errors.ts";
 
 describe("findPreviousIntentionalError (#911)", () => {
   it("retorna o erro mais recente anterior à edição atual", () => {
@@ -101,14 +105,15 @@ describe("composeRevealText (#1079)", () => {
     assert.match(text, /V4/);
   });
 
-  it("fallback genérico quando detail/gabarito/narrative todos ausentes", () => {
+  it("fallback genérico quando detail/gabarito/narrative todos ausentes (F2: string unificada)", () => {
     const prev: IntentionalError = {
       edition: "260504",
       error_type: "factual",
       is_feature: true,
     };
     const text = composeRevealText(prev);
-    assert.match(text, /^Na última edição, houve um erro intencional/);
+    // F2: fallback unificado — mesma string em todos os caminhos de fallback
+    assert.match(text, /^Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando\./);
   });
 
   it("#915: strings entre aspas duplas saem em negrito", () => {
@@ -2606,6 +2611,279 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
     // extractRevealFromFrontmatter também deve encontrar
     const reveal = extractRevealFromFrontmatter(md);
     assert.equal(reveal, "Na última edição, escrevi que X. O correto é Y.");
+  });
+});
+
+// ── Fixtures obrigatórias do self-review #2431 ──────────────────────────────────────────────────
+
+describe("#2431 self-review — F1: guard de pontuação terminal", () => {
+  it("F1: reveal terminando em '?' não recebe ponto extra (evita 'viu?.')", () => {
+    // Reveal que termina DIRETAMENTE em '?' (sem texto após a pontuação)
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, isso era realmente verdade?",
+    };
+    const text = composeRevealText(prev);
+    // Termina em ? → NÃO deve anexar ponto → sem "?."
+    assert.doesNotMatch(text, /\?\./);
+    assert.ok(text.endsWith("?"), `deve terminar em ? (got: ${text.slice(-5)})`);
+  });
+
+  it("F1: reveal terminando em '!' não recebe ponto extra", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, errei feio!",
+    };
+    const text = composeRevealText(prev);
+    assert.doesNotMatch(text, /!\./);
+    assert.ok(text.endsWith("!"), `deve terminar em ! (got: ${text.slice(-5)})`);
+  });
+
+  it("F1: reveal terminando em '.' não duplica ponto", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, escrevi 1990 onde o correto é 1998.",
+    };
+    const text = composeRevealText(prev);
+    assert.doesNotMatch(text, /\.\./);
+    assert.ok(text.endsWith("."), `deve terminar em . (got: ${text.slice(-5)})`);
+  });
+
+  it("F1: reveal sem pontuação terminal recebe ponto", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, escrevi 1990 onde o correto é 1998",
+    };
+    const text = composeRevealText(prev);
+    assert.ok(text.endsWith("."), `deve receber ponto terminal (got: ${text.slice(-5)})`);
+  });
+});
+
+describe("#2431 self-review — F2: fallback genérico unificado (prioridade 4)", () => {
+  it("F2: entry sem reveal/narrative/detail → fallback unificado (não 'houve um erro intencional')", () => {
+    const prev: IntentionalError = {
+      edition: "260504",
+      error_type: "factual",
+      is_feature: true,
+      // sem reveal, narrative, detail, gabarito — apenas campos mínimos
+    };
+    const text = composeRevealText(prev);
+    // F2: string unificada com outros caminhos de fallback
+    assert.match(text, /escondemos um erro proposital — obrigado a quem respondeu apontando/);
+    // Não deve usar a frase rasa antiga
+    assert.doesNotMatch(text, /houve um erro intencional/);
+  });
+
+  it("F2: entry com detail catalog-shaped → mesmo fallback unificado", () => {
+    const prev: IntentionalError = {
+      edition: "260617",
+      error_type: "factual",
+      is_feature: true,
+      detail: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /escondemos um erro proposital — obrigado a quem respondeu apontando/);
+  });
+});
+
+describe("#2431 self-review — F3: stage-4 lint inspeciona campo reveal", () => {
+  it("F3: reveal catalog-shaped ('DESTAQUE N...') no frontmatter → 1 warning do stage-4 lint", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-reveal-catalog-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        [
+          "---",
+          "intentional_error:",
+          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "Perplexity ou Copilot"',
+          // Editor copiou description para reveal por engano
+          '  reveal: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+          "---",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+          "",
+          "---",
+          "",
+          "**ASSINE**",
+          "X",
+        ].join("\n"),
+        "utf8",
+      );
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 1, "reveal catalog-shaped deve gerar 1 warning");
+      assert.equal(violations[0].severity, "warning", "decisão editorial 260619 — lints ficam warning");
+      assert.match(violations[0].message, /reveal/, "mensagem deve mencionar campo reveal");
+      assert.match(violations[0].message, /catálogo|DESTAQUE/i, "mensagem deve descrever o problema");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("F3: reveal correto (first-person) → 0 violations do stage-4 lint", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-reveal-ok-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        [
+          "---",
+          "intentional_error:",
+          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "Perplexity ou Copilot"',
+          '  reveal: "Na última edição, listei o Spotify como assistente de IA, mas o Spotify é um serviço de streaming."',
+          "---",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+          "",
+          "---",
+          "",
+          "**ASSINE**",
+          "X",
+        ].join("\n"),
+        "utf8",
+      );
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 0, "reveal first-person correto não deve gerar violation");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#2431 self-review — F4: boldQuotedStrings aplicado ao campo reveal", () => {
+  it("F4: reveal com string entre aspas duplas → boldQuotedStrings aplicado corretamente", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: 'Na última edição, escrevi "iPhone 5" onde o correto é "iPhone 15".',
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /\*\*"iPhone 5"\*\*/, "aspas duplas devem virar negrito");
+    assert.match(text, /\*\*"iPhone 15"\*\*/, "aspas duplas devem virar negrito");
+    // Não deve duplicar negrito
+    assert.doesNotMatch(text, /\*\*\*\*/, "não deve duplicar negrito");
+  });
+
+  it("F4: reveal com aspas simples → boldQuotedStrings aplicado corretamente", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, escrevi 'V4' onde o correto é 'V8'.",
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /\*\*'V4'\*\*/, "aspas simples devem virar negrito");
+    assert.match(text, /\*\*'V8'\*\*/, "aspas simples devem virar negrito");
+  });
+
+  it("F4: reveal sem aspas → boldQuotedStrings não altera o texto (preserva verbatim)", () => {
+    const reveal = "Na última edição, escrevi 1990 onde o correto é 1998.";
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal,
+    };
+    const text = composeRevealText(prev);
+    assert.equal(text, reveal, "reveal sem aspas deve sair verbatim (boldQuotedStrings não altera)");
+  });
+});
+
+describe("#2431 self-review — F5: round-trip JSONL (frontmatterToEntry → serialize → parse → find → resolve → compose)", () => {
+  it("F5: frontmatter com reveal → serializa pro JSONL → parseia → resolve da edição anterior → composeRevealText retorna o reveal correto (não-genérico)", () => {
+    // Simula o caminho completo que produziria um reveal em produção:
+    // 1. Editor preenche frontmatter com campo `reveal`
+    // 2. sync-intentional-error.ts chama frontmatterToEntry → escreve no JSONL
+    // 3. render-erro-intencional chama loadIntentionalErrors → findPreviousIntentionalError
+    //    → resolvePreviousError → composeRevealText
+
+    const revealText = "Na última edição, escrevi que a empresa foi fundada em 1990. O correto é 1998.";
+
+    // Passo 1: frontmatter → entry
+    const entry = frontmatterToEntry(
+      {
+        description: "DESTAQUE 1: ano de fundação errado",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "1998",
+        reveal: revealText,
+      },
+      "260619",
+    );
+
+    // Verifica que frontmatterToEntry preserva o campo reveal
+    assert.equal(entry.reveal, revealText, "frontmatterToEntry deve propagar campo reveal");
+    assert.equal(entry.edition, "260619");
+
+    // Passo 2: serializa pro JSONL
+    const jsonlLine = JSON.stringify(entry);
+
+    // Passo 3: parseia do JSONL
+    const parsed = parseIntentionalErrorsJsonl(jsonlLine);
+    assert.equal(parsed.length, 1, "deve parsear 1 entry do JSONL");
+    assert.equal(parsed[0].reveal, revealText, "campo reveal deve sobreviver ao round-trip JSONL");
+
+    // Passo 4: findPreviousIntentionalError encontra a entry (edição 260619 < 260620)
+    const found = findPreviousIntentionalError(parsed, "260620");
+    assert.ok(found !== null, "findPreviousIntentionalError deve encontrar a entry");
+    assert.equal(found!.reveal, revealText, "entry encontrada deve ter o campo reveal");
+
+    // Passo 5: resolvePreviousError (sem MD — só JSONL)
+    const { prev } = resolvePreviousError(found, null);
+    assert.ok(prev !== null, "resolvePreviousError deve retornar entry");
+    assert.equal(prev!.reveal, revealText, "entry resolvida deve ter o campo reveal");
+
+    // Passo 6: composeRevealText retorna o reveal correto (não-genérico, não fallback)
+    const text = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
+    assert.equal(text, revealText, "composeRevealText deve retornar o reveal verbatim (não fallback)");
+    assert.doesNotMatch(text, /escondemos um erro proposital/, "não deve usar fallback genérico");
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/, "não deve vazar label interno");
+  });
+
+  it("F5b: frontmatterToEntry sem reveal → composeRevealText cai no fallback (regressão: frontmatterToEntry não silencia reveal)", () => {
+    // Se frontmatterToEntry descartasse o campo reveal, o round-trip retornaria
+    // fallback genérico mesmo quando o editor preencheu o campo — essa regressão
+    // deve ser detectada.
+    const entry = frontmatterToEntry(
+      {
+        description: "DESTAQUE 2 lista o Spotify",
+        location: "DESTAQUE 2",
+        category: "factual",
+        correct_value: "Perplexity",
+        // sem `reveal` — editor não preencheu
+      },
+      "260619",
+    );
+
+    assert.equal(entry.reveal, undefined, "sem reveal no frontmatter → entry sem reveal");
+
+    // composeRevealText deve usar fallback (detail é catalog-shaped)
+    const text = composeRevealText(entry as IntentionalError & { narrative?: string; gabarito?: string });
+    assert.match(text, /escondemos um erro proposital/, "sem reveal + detail catalog → fallback genérico");
+    assert.doesNotMatch(text, /Perplexity/, "correct_value não deve vazar em fallback catalog");
   });
 });
 
