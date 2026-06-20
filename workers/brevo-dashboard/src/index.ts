@@ -1362,7 +1362,7 @@ ${monthlyTotalsSection}
 <th title="ID do envio no Brevo.">ID</th>
 <th title="Lista de destinatários no Brevo.">Lista</th>
 <th title="Data e hora do envio (horário de Brasília).">Enviado</th>
-<th title="Total de emails enviados (inclui bounces).">Sent</th>
+<th title="${escHtml(ENVIOS_TOOLTIP)}">Envios (eventos)</th>
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
 <th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
@@ -1462,6 +1462,14 @@ function escHtml(s: string): string {
  */
 export const CLARICE_PLAN_TOTAL = 40_000;
 export const CLARICE_PLAN_S1 = 5_600;
+
+/**
+ * Tooltip compartilhado para a coluna "Envios (eventos)" — usado na tabela
+ * por-campanha, na tabela mensal e na seção Volume. DRY: alterar aqui propaga
+ * para todos os pontos de uso. (#2429 self-review)
+ */
+export const ENVIOS_TOOLTIP =
+  "Eventos de envio acumulados; uma pessoa em N campanhas conta N vezes; inclui bounces.";
 
 /**
  * Extrai o ciclo e o número do dia de uma campanha Clarice News.
@@ -2008,13 +2016,13 @@ export function renderVolumeSection(cumulativeSent: number): string {
   const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
   const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
   // #2429: rótulo "Envios (eventos)" deixa explícito que este número conta eventos
-  // de envio (uma pessoa em 2 campanhas conta 2×; inclui bounces), não pessoas únicas.
-  const eventsTooltip = "Eventos de envio acumulados; uma pessoa em N campanhas conta N×; inclui bounces.";
+  // de envio (uma pessoa em 2 campanhas conta 2 vezes; inclui bounces), não pessoas únicas.
+  // Tooltip compartilhado via ENVIOS_TOOLTIP — mesma cópia usada na tabela por-campanha e mensal.
   return `
 <section class="phase2-section" id="volume-ciclo">
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
-    <strong title="${escHtml(eventsTooltip)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
+    <strong title="${escHtml(ENVIOS_TOOLTIP)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
     <span class="spark-bar" title="${pctLabel}% do plano total">${bar}</span>
   </p>
 </section>`;
@@ -2146,7 +2154,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
       <tr>
         <th title="Mês do envio">Mês</th>
         <th title="Número de envios realizados no mês">Envios</th>
-        <th title="Eventos de envio acumulados no mês; uma pessoa em N campanhas conta N×; inclui bounces.">Envios (eventos)</th>
+        <th title="${escHtml(ENVIOS_TOOLTIP)}">Envios (eventos)</th>
         <th title="Total entregue (delivered) no mês">Delivered</th>
         <th title="Soma de aberturas únicas (uniqueViews, MPP-inclusivo)">Opens</th>
         <th title="Open rate agregado: opens ÷ delivered">Open rate</th>
@@ -2207,8 +2215,6 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <!-- #2429: "Pessoas únicas alcançadas" em vez de "contatos no universo" — deixa claro que este número
-       conta contatos únicos dedupados (≠ eventos de envio exibidos na seção Volume). -->
   <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
   <div class="table-wrap">
   <table>

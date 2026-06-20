@@ -98,7 +98,7 @@ export interface ContactEngagement {
 export interface EngagementCohorts {
   /** ISO timestamp da geração (dado é pré-computado, não live) */
   generatedAt: string;
-  /** total de contatos no universo (recebeu ≥1 OU teve saída) */
+  /** total de pessoas únicas alcançadas (recebeu ≥1 OU teve saída) — cada contato conta 1× (≠ eventos de envio) */
   universe: number;
   /** abriu 2+ e-mails (sem saída) */
   opened2plus: number;
