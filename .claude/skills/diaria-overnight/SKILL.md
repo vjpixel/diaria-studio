@@ -22,7 +22,7 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
 
 > **REGRA INVARIÁVEL — ZERO PERGUNTAS PÓS-BRIEFING:** Toda interação com o editor acontece **exclusivamente** nesta Fase 0. Depois do briefing, nenhum `AskUserQuestion` em nenhuma fase (Fase 1, re-scans, mini-rodadas, reviews). Issue ou finding ambíguo surgido mid-round → status `pulada` + comentário na issue explicando exatamente qual decisão falta (vira pergunta do briefing da **próxima** rodada). Vale mesmo que o editor pareça online: a rodada não pode depender de presença. Única exceção: o editor intervém por iniciativa própria (mensagem no terminal) — responder a ele não é "fazer pergunta", mas a rodada segue sem aguardar follow-up.
 
-0. **Resume**: se `data/overnight/{AAMMDD}/plan.json` de hoje já existe, **pular o briefing** — retomar a partir dos status do próprio `plan.json` usando a tabela de estados abaixo:
+0. **Resume**: se `data/overnight/{AAMMDD}/plan.json` de hoje já existe, **pular o briefing** — retomar a partir dos status do próprio `plan.json` usando a tabela de estados abaixo. Se `plan.json` contém `resume_state` estruturado (ver passo 7), usar seus campos para retomada determinística (phase + pending_issues + next_action) em vez de parsing de texto livre, confirmando ao editor o que falta antes de prosseguir:
 
    | `findings_depth` | `review` do nível atual | Próxima ação |
    |---|---|---|
@@ -65,6 +65,11 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    {
      "started_at": "ISO", "base_sha": "a67520a3f...", "review": null,
      "rescans_done": 0, "findings_depth": 0, "review_1_5b_has_p2": false, "loop_estendido": false,
+     "stall_events": [],
+     "resume_state": null,
+     "preempted_by": null,
+     "preempted_at": null,
+     "preempted_pending": null,
      "issues": [{
        "number": 123, "priority": "P1", "status": "elegivel",
        "batch": "ds-email | null (solo)", "pr": null,
@@ -84,13 +89,35 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    }
    ```
    `base_sha` = o hash REAL capturado no passo 1 (nunca texto descritivo). `review` é atualizado pela Fase 1.5 (`null` → `"done (depth {N})"` / `"skipped: {motivo} (depth {N})"`); plan.json legado pode conter `"done"` (sem depth) — ver tabela do Resume. `review_1_5b_has_p2` é gravado pela Fase 1.5 ao finalizar o review 1.5b (`findings_depth == 1`): `true` se ≥1 finding de severidade P2 ou superior foi identificado; `false` caso contrário. É o guard da tabela do Resume para mini-rodada 2 — ver Regra 2. `pr` recebe o número do PR no desfecho da issue (Fase 1 passo 5) — é a fonte pós-compaction do relatório. `rescans_done` conta quantos re-scans de issues novas já ocorreram após esgotar a fila principal (escopo: fila principal apenas — mini-rodadas da Fase 1.5 rodam com o guard K desligado e nunca incrementam este contador; capped em K=2). `findings_depth` registra o nível atual da cadeia de re-entrada de findings (0 = fila principal, 1 = mini-rodada 1 pós-1.5, 2 = mini-rodada 2 pós-1.5b; nunca excede o depth limit da tabela do passo 0). `source` indica a origem de cada issue no plano: `initial` (varredura Fase 0), `mid-round` (nova durante a Fase 1), `finding-depth-1` ou `finding-depth-2` (criada como `overnight-finding` e re-entrou). Status possíveis: `elegivel`, `pulada` (motivo: `sem-resposta` | `bloqueio-externo` | `ambigua` | `not-this-week` | `fora-do-escopo` | `rescan-limit`), e os terminais da Fase 1: `mergeada`, `draft-ci-vermelho`. `timeline` registra os timestamps ISO por transição de cada unidade — os marcos omitidos ficam ausentes (não null); campo ausente = transição não ocorreu ou rodada anterior ao #2099. Lotes de N issues compartilham o mesmo `timeline` (o coordenador grava no objeto da issue representante — a que tem `dispatch`).
+
+   **Campos de instrumentação adicionais do plan.json (#2379, #2380, #2382):**
+
+   - **`stall_events`** (array, #2379): lista de eventos de stall passivo detectados durante a rodada. Cada entrada tem a forma `{ "at": "ISO", "reason": "rate_limit | context_exhaustion | standby | ci_timeout | unknown", "resumed_at": "ISO | null" }`. O coordenador acrescenta uma entrada sempre que detecta >60 min sem progresso em unidade em andamento, **antes** de emitir o halt banner. Começar a rodada com `stall_events: []`. Gravidar `resumed_at` quando a rodada é retomada após o stall.
+
+   - **`resume_state`** (objeto ou null, #2380): gravado toda vez que a rodada é interrompida (PC desligado, colisão editorial, deadline). Estrutura:
+     ```json
+     {
+       "phase": "fila_principal | mini_rodada_N | review_1_5x | relatorio",
+       "pending_issues": [123, 456],
+       "next_action": "dispatch_mini_rodada_2 | iniciar_review_1_5b | ...",
+       "interrupted_reason": "pc_desligado | colisao_editorial | deadline | unknown"
+     }
+     ```
+     Valores de `phase`: `fila_principal` (Fase 1 em andamento), `mini_rodada_N` (mini-rodada N da Fase 1.5), `review_1_5x` (review consolidado da Fase 1.5), `relatorio` (Fase 2). `pending_issues` lista os números de issue sem status terminal ao momento da interrupção. Na retomada (passo 0 Resume), se `resume_state` não for null, usar seus campos para retomada determinística em vez de inferir do texto livre — confirmar ao editor `"Retomando: phase={phase}, pending={pending_issues}"` antes de prosseguir. Após concluir a rodada normalmente, gravar `resume_state: null`.
+
+   - **`preempted_by`**, **`preempted_at`**, **`preempted_pending`** (#2382): gravados quando a rodada é encerrada por precedência editorial (guard de colisão com a manhã, Fase 1 passo 1). `preempted_by` recebe `"edicao_editorial"` (único valor atual); `preempted_at` recebe o timestamp ISO do encerramento; `preempted_pending` recebe a lista de números de issue sem status terminal. Rodadas encerradas normalmente têm esses campos como `null`. A política de precedência editorial é: a edição matinal (agendada pelo Task Scheduler — ver #2089) tem prioridade sobre a rodada overnight; o guard de colisão (detecção via `find-current-edition.ts`) aplica esta política automaticamente.
 8. Confirmar o plano com o editor (a tabela completa já foi impressa no passo 4.5; aqui confirmar os lotes formados e pedir ok final antes de entrar na Fase 1). **Se 0 elegíveis, dizer isso agora e encerrar aqui** — é a última chance do editor destravar algo respondendo mais perguntas; não rodar uma noite vazia. Com `--dry-run`, parar aqui (sem comentários postados).
 
 ## Fase 1 — Loop de resolução
 
 Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de maior prioridade (P0 > P1 > P2 > P3 — prioridade do lote = a mais alta entre suas issues; empate → número menor = mais antiga). **No início de cada iteração, reler `plan.json`** — após compaction de contexto, ele é a única fonte confiável do briefing e dos status. A cada iteração:
 
-1. **Re-checar a fila**: `gh issue list --state open --limit 200 --json number,title,labels,state,createdAt` (sem `body` — corpo só de issues novas, via `gh issue view {N} --json body`; o coordenador precisa ficar enxuto). Issue fechada externamente → marcar `pulada` no plano e não trabalhar. **Issues novas criadas durante a rodada** (qualquer prioridade, qualquer autor — humano ou automação) com direção clara no corpo entram como `elegivel` com `source: "mid-round"`, com as seguintes exceções: (a) issue ambígua → **não** fazer pergunta ao editor; postar comentário explicando o que falta na direção + status `pulada` motivo `ambigua` (a questão vira pergunta do briefing da próxima rodada — Regra 1); (b) issue com label `bloqueio-externo` ou `not-this-week` → `pulada` com motivo correspondente; (c) issue com label `overnight-finding` **e `created_at >= started_at` do `plan.json`** (= gerada pela própria rodada) → **não entra agora** (fluxo da Fase 1.5 cuida da re-entrada controlada com depth limit); issue com label `overnight-finding` mas `created_at < started_at` (= finding de rodada anterior, pendente) → trata como `mid-round` normal. **Guard de convergência** (K=2 — escopo: fila principal apenas, mini-rodadas da Fase 1.5 não incrementam): cada vez que a fila elegível da fila principal é esgotada (sem itens pendentes), fazer um re-scan para capturar issues novas; **aceitar todas as novatas encontradas neste re-scan com direção clara antes de incrementar** `rescans_done`; só então incrementar `rescans_done` em `plan.json`. Quando `rescans_done >= 2` **antes de iniciar** um novo re-scan, não fazer o re-scan — encerrar a Fase 1 registrando motivo `rescan-limit` para novas issues e ir para Fase 1.5. **Só issues sem status terminal no `plan.json` são candidatas** — uma issue que já virou `draft-ci-vermelho` ou `pulada` nunca é re-escolhida na mesma rodada (anti-livelock). **Guard de colisão com a manhã**: se uma edição diária estiver em curso (`npx tsx scripts/lib/find-current-edition.ts` retorna candidato ou `data/editions/` de hoje/amanhã ganhou arquivos novos), encerrar a Fase 1 após a unidade corrente e ir pra 1.5/relatório — a pipeline editorial tem precedência.
+1. **Re-checar a fila**: `gh issue list --state open --limit 200 --json number,title,labels,state,createdAt` (sem `body` — corpo só de issues novas, via `gh issue view {N} --json body`; o coordenador precisa ficar enxuto). Issue fechada externamente → marcar `pulada` no plano e não trabalhar. **Issues novas criadas durante a rodada** (qualquer prioridade, qualquer autor — humano ou automação) com direção clara no corpo entram como `elegivel` com `source: "mid-round"`, com as seguintes exceções: (a) issue ambígua → **não** fazer pergunta ao editor; postar comentário explicando o que falta na direção + status `pulada` motivo `ambigua` (a questão vira pergunta do briefing da próxima rodada — Regra 1); (b) issue com label `bloqueio-externo` ou `not-this-week` → `pulada` com motivo correspondente; (c) issue com label `overnight-finding` **e `created_at >= started_at` do `plan.json`** (= gerada pela própria rodada) → **não entra agora** (fluxo da Fase 1.5 cuida da re-entrada controlada com depth limit); issue com label `overnight-finding` mas `created_at < started_at` (= finding de rodada anterior, pendente) → trata como `mid-round` normal. **Guard de convergência** (K=2 — escopo: fila principal apenas, mini-rodadas da Fase 1.5 não incrementam): cada vez que a fila elegível da fila principal é esgotada (sem itens pendentes), fazer um re-scan para capturar issues novas; **aceitar todas as novatas encontradas neste re-scan com direção clara antes de incrementar** `rescans_done`; só então incrementar `rescans_done` em `plan.json`. Quando `rescans_done >= 2` **antes de iniciar** um novo re-scan, não fazer o re-scan — encerrar a Fase 1 registrando motivo `rescan-limit` para novas issues e ir para Fase 1.5. **Só issues sem status terminal no `plan.json` são candidatas** — uma issue que já virou `draft-ci-vermelho` ou `pulada` nunca é re-escolhida na mesma rodada (anti-livelock). **Guard de colisão com a manhã**: se uma edição diária estiver em curso (`npx tsx scripts/lib/find-current-edition.ts` retorna candidato ou `data/editions/` de hoje/amanhã ganhou arquivos novos), encerrar a Fase 1 após a unidade corrente e ir pra 1.5/relatório — a pipeline editorial tem precedência. Quando este guard acionar, gravar `preempted_by: "edicao_editorial"`, `preempted_at: now()` e `preempted_pending: [lista de issues sem status terminal]` em `plan.json`, e emitir no run-log:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
+     --message "preempted" \
+     --details '{"preempted_by":"edicao_editorial","preempted_pending":[123,456]}'
+   ```
 2. **Dispatchar um subagente implementador por unidade de trabalho** — issue solo ou lote inteiro (#2024) — (`Agent`, `subagent_type: "general-purpose"`, `isolation: "worktree"` — nunca um agente especializado do repo: eles têm toolset restrito e não conseguem commitar/pushar). O prompt do subagente inclui, obrigatoriamente:
    - corpo de TODAS as issues da unidade + respostas do briefing (lidas de `plan.json`);
    - regras do repo: #633 (bugfix exige teste de regressão), convenções de commit/PR do CLAUDE.md;
@@ -121,6 +148,22 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
        --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}}'
      ```
    - Esperar CI com `gh pr checks {N} --watch` em background (`run_in_background: true`) — um acordar por PR, sem poll. Interpretar com cuidado: **exit 8 / checks pendentes / lista vazia = PENDENTE, nunca verde nem vermelho** (logo após o push os jobs podem nem estar registrados). Verde = os checks do CI **presentes E concluídos com sucesso**. **O gate é um passo SEPARADO do merge (#2031 — incidente 260610: merge encadeado com `&&` após o output dos buckets passou com check vermelho):** NUNCA encadear `gh pr merge` na mesma chamada Bash que imprime os checks.
+
+   **Timeout de CI (ci_timeout, #2381):** se o CI não transita para verde/vermelho em 45 min (a partir do `pr_opened`), emitir evento run-log e continuar aguardando — não tratar automaticamente como vermelho; o objetivo é distinguir "CI devagar" de "sessão dormiu":
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
+     --message "ci_timeout" \
+     --details '{"pr": {N}, "unidade": "#NNNN | lote {slug}", "elapsed_min": 47, "last_status": "pending"}'
+   ```
+   Após emitir `ci_timeout`, continuar aguardando; registrar `ci_timeout` no relatório. Se o CI demorar >30 min **adicionais** sem transição após o evento, tratar como CI vermelho (tentativa de fix ou draft) — o timeout de 30 min da regra de stall passivo se aplica.
+
+   **Retry de GitHub API (#2383):** qualquer chamada ao GitHub (graphql, REST, `gh pr merge`, `gh pr checks`) que retornar 401 ou 429 transitório **não deve ser tratada imediatamente como falha**. O coordenador tenta ao menos 3 vezes com backoff exponencial (30 s, 60 s, 120 s) antes de tratar como falha permanente ou emitir halt banner. Em cada tentativa, emitir:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
+     --message "github_api_error" \
+     --details '{"status": 401, "endpoint": "graphql/pullRequest", "retry_attempt": 1}'
+   ```
+   Após 3 tentativas sem sucesso → tratar como falha permanente (CI vermelho / halt banner). Este retry generaliza o padrão introduzido em #2060 para `check-pr-bugfix` para todo o gate da Fase 1. **Erros de gate** que envolvam a query GraphQL de resolução de threads seguem o mesmo retry: nunca tratar `errors[].type == "FORBIDDEN"` como erro transitório retentável — esse é estrutural (ver seção de resolução de threads abaixo).
 
    **Resolução das review threads** (passo obrigatório entre "fixer concluiu" e "gate determinístico"): após o fixer aplicar/decidir sobre os findings do self-review (#2038), o coordenador resolve as threads via GraphQL. **Guard de paginação (>100 threads — #2222)**: antes de iniciar o loop de resolução, a query já inclui `pageInfo { hasNextPage endCursor }`. Se `hasNextPage == true`, **abortar o gate automático imediatamente** (converter PR pra draft + comentar na issue explicando que >100 threads exigem resolução manual pelo editor) — não tentar paginar durante a resolução autônoma; o risco de false-green em páginas não percorridas supera qualquer conveniência. (a) Coletar resposta com guard de erro e de paginação, e extrair IDs não-resolvidas:
      ```bash
@@ -216,6 +259,22 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
 6. `git pull` em master após cada merge, antes da próxima issue.
 
 **Condições de parada:** fila elegível esgotada → **Fase 1.5**. Erro irrecuperável (auth do gh expirada, rede fora por > 30 min) → se houver PR em CI em voo, levá-lo até merge/draft se possível (senão, comentar o estado na issue); renderizar halt banner (`npx tsx scripts/render-halt-banner.ts --stage "overnight" --reason "..." --action "..."`) + relatório antecipado com o motivo, **pulando a Fase 1.5** (estado pode estar inconsistente).
+
+**Stall passivo — watchdog (#2379):** stall passivo (sessão parada sem sinal explícito) é a causa mais frequente de buracos no run-log (incidentes 260611, 260616b). O coordenador deve detectar stall e agir antes de aguardar passivamente:
+- Quando detectar >60 min sem progresso em unidade em andamento (sem novo evento de run-log, sem resposta do subagente, sem transição de CI): (1) gravar entrada em `stall_events` no `plan.json` com `at` e `reason` estimado; (2) emitir evento run-log:
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
+    --message "stall_detected" \
+    --details '{"reason": "rate_limit | context_exhaustion | standby | ci_timeout | unknown", "unidade": "#NNNN"}'
+  ```
+  (3) **imediatamente** renderizar halt banner:
+  ```bash
+  npx tsx scripts/render-halt-banner.ts \
+    --stage "overnight — Fase 1" \
+    --reason "stall passivo detectado: >60 min sem progresso em {unidade}" \
+    --action "reconecte e responda 'retry' para retomar, ou 'abort' para encerrar"
+  ```
+  Stall silencioso >60 s é inaceitável — regra derivada do CLAUDE.md (#738), aqui especializada para o loop overnight. Ao retomar após stall, gravar `resumed_at` na entrada correspondente de `stall_events`.
 
 ## Fase 1.5 — Code-review consolidado pós-rodada (#2039)
 
