@@ -392,11 +392,13 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #2372: cada item de USE MELHOR precisa de estimativa de tempo na descrição
+ * #2372/#2415: cada item de USE MELHOR precisa de estimativa de tempo na descrição
  * (`(15 min)` ou `— 15 min`). Roda no Stage 4 (PÓS-gate) — pré-gate (Stage 2) o
  * `stitch-newsletter.ts` ainda não tem o tempo no `summary`, e é o editor quem
- * o adiciona ao curar a seção USE MELHOR no gate. Aqui, pós-gate, é blocking:
- * sem tempo, o item não deve publicar.
+ * o adiciona ao curar a seção USE MELHOR no gate.
+ *
+ * severity: "warning" (pós-hotfix #2403 — não bloqueia Stage 4, avisa o editor).
+ * Re-block para error é follow-up quando houver cobertura maior.
  */
 function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");

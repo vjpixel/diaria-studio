@@ -395,6 +395,62 @@ describe("checkUseMelhorTempo (#2372) — helper puro", () => {
     assert.equal(r.checked, 1);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
+
+  // -------------------------------------------------------------------------
+  // #2413 — Formato LEGADO 2-linhas com URL contendo parênteses
+  // -------------------------------------------------------------------------
+
+  it("#2413: formato 2-linhas com paren-URL sem tempo é detectado (was: silenciosamente pulado)", () => {
+    // Regressão #2413: INLINE_LINK_ONLY_RE usava `[^\\s)]+` que para no 1º `)`.
+    // URL `/wiki/GPT-4_(model)` → linha não casava o regex → item pulado → checked=0.
+    // Fix: URL_WITH_BALANCED_PARENS_RE_PART tolera 1 nível de parênteses balanceados.
+    const md = wrapInUseMelhor(
+      makeUseMelhorItem(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Artigo introdutório sobre o modelo GPT-4, sem estimativa de tempo.",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "#2413: item 2-linhas com paren-URL deve ser contado (was: checked=0, pulado)");
+    assert.equal(r.ok, false, "item sem tempo deve gerar erro");
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].item, 1);
+  });
+
+  it("#2413: formato 2-linhas com paren-URL + tempo passa (#2413 paren-URL fix)", () => {
+    const md = wrapInUseMelhor(
+      makeUseMelhorItem(
+        "Guia GPT-4",
+        "https://en.wikipedia.org/wiki/GPT-4_(model)",
+        "Artigo introdutório sobre o modelo GPT-4 (10 min).",
+      ),
+    );
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "item 2-linhas com paren-URL deve ser contado");
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("#2413: formato 2-linhas sem separator — seção seguinte não vaza como descrição", () => {
+    // Regressão #2413 finding #10: sem `---` entre USE MELHOR e a próxima seção,
+    // o header "**🚀 LANÇAMENTOS**" era usado como linha de descrição pelo caminho legado.
+    // O check verificava a ausência de tempo no texto "🚀 LANÇAMENTOS" → excerpt confuso.
+    // Fix: `ANY_SECTION_HEADER_RE.test(nextNonEmpty)` trata o header como "sem descrição".
+    const md = `**🛠️ USE MELHOR**
+
+**[Tutorial GPT-4](https://en.wikipedia.org/wiki/GPT-4_(model))**
+
+**🚀 LANÇAMENTOS**
+
+**[Lançamento X](https://example.com/x)** Algo novo sem tempo de leitura.
+`;
+    const r = checkUseMelhorTempo(md);
+    assert.equal(r.checked, 1, "só o item USE MELHOR deve ser contado");
+    // O item USE MELHOR não tem descrição (próxima linha é LANÇAMENTOS header)
+    assert.equal(r.ok, false, "item sem descrição deve gerar erro");
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].excerpt, "(sem descrição)", "excerpt deve ser '(sem descrição)', não o texto do header");
+  });
 });
 
 // ---------------------------------------------------------------------------

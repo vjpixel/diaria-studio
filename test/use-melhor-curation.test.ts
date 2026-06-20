@@ -1670,6 +1670,47 @@ describe("normalizeUseMelhorUrl (#2399) — query/fragment com URL embutida", ()
 });
 
 // ---------------------------------------------------------------------------
+// #2414 — normalizeUseMelhorUrl: splice cirúrgico no pathname preserva
+// host casing, porta explícita e query/fragment byte-a-byte
+// ---------------------------------------------------------------------------
+
+describe("normalizeUseMelhorUrl (#2414) — host casing + porta + query preservados", () => {
+  it("host mixed-case preservado byte-a-byte (#2414)", () => {
+    // Bug: parsed.toString() lowercases host. Splice cirúrgico deve preservar.
+    const url = "https://Host.COM//path/to/page";
+    const result = normalizeUseMelhorUrl(url);
+    // Path normalizado, host byte-idêntico
+    assert.ok(result.startsWith("https://Host.COM/"), `host casing perdido: ${result}`);
+    assert.ok(result.includes("/path/to/page"), `path não normalizado: ${result}`);
+  });
+
+  it("porta explícita não-default preservada byte-a-byte (#2414)", () => {
+    // Bug: parsed.toString() remove porta default (443) mas mantém porta não-standard.
+    // Com splice cirúrgico, a porta explícita (8443, que não é default) deve permanecer.
+    const url = "https://example.com:8443//api/v1/endpoint";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes(":8443/"), `porta :8443 perdida: ${result}`);
+    assert.ok(result.includes("/api/v1/endpoint"), `path não normalizado: ${result}`);
+  });
+
+  it("query string byte-idêntica no caminho de mudança (#2414)", () => {
+    // Bug: parsed.toString() pode percent-encode chars literais na query.
+    const url = "https://Host.COM:443//a?Ref=X&foo=bar baz";
+    const result = normalizeUseMelhorUrl(url);
+    // Path normalizado
+    assert.ok(!result.includes("//a"), "path duplo deve sumir");
+    // Query deve ser byte-idêntica (mesmo encoding, incluindo espaço literal)
+    assert.ok(result.includes("?Ref=X&foo=bar baz"), `query alterada: ${result}`);
+  });
+
+  it("URL sem // no path: retorna original byte-a-byte (early return preservado)", () => {
+    // Caminho no-change: deve retornar o string original (não parsed.toString())
+    const url = "https://Host.COM:443/path?Ref=X";
+    assert.equal(normalizeUseMelhorUrl(url), url, "no-change path deve retornar original");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // isOpinionOrStudy (#2368 item 2)
 // ---------------------------------------------------------------------------
 
