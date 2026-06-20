@@ -91,24 +91,27 @@ export function findPreviousIntentionalError(
 }
 
 /**
- * Pure (#2398 / #2411): extrai `intentional_error.narrative` do frontmatter
- * YAML como a declaração de primeira pessoa do editor para uso no REVEAL público.
+ * Pure (#2419 rewrite): extrai campos do bloco `intentional_error` do frontmatter YAML.
  *
- * **Separação de concerns (#2411):**
- *   - `description` é o campo CATÁLOGO (terceira pessoa, "DESTAQUE N faz X") —
- *     usado pelo lint e pelo /diaria-mes-erros. NÃO é fonte do reveal.
- *   - `narrative` é o alias de primeira pessoa para o reveal. Edições que
- *     preencherem este campo explicitamente têm o reveal direto do frontmatter.
- *     Edições sem `narrative` caem no fallback body prose ("Nessa edição, …").
+ * **Separação de concerns (#2419):**
+ *   - `reveal` é o campo CANÔNICO do reveal — prosa FIRST-PERSON, gramatical,
+ *     pública. Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
+ *     É separado de `description` (catálogo 3ª pessoa, alimenta lint + /diaria-mes-erros).
+ *   - `narrative` é o alias legado de primeira pessoa (edições anteriores ao #2419).
+ *   - `description` NUNCA é fonte do reveal — é catálogo interno.
+ *
+ * Prioridade de leitura para reveal: (1) campo `reveal`; (2) campo `narrative` (legado).
  *
  * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
- * `narrative`, ou valor é um placeholder `{PREENCHER}`.
+ * `reveal` nem `narrative`, ou valor é um placeholder `{PREENCHER}`.
  *
- * Reutiliza o extractFrontmatter canônico (CRLF-safe, #2304).
+ * Reutiliza o extractFrontmatter canônico (CRLF-safe, #2304) com scanLines=60
+ * (#2417: consistente com extractCorrectValueFromFrontmatter — frontmatter pode
+ * estar além da linha 30 após insert-titulo-subtitulo.ts injetar TÍTULO/SUBTÍTULO).
  */
 export function extractNarrativeFromFrontmatter(md: string): string | null {
-  // Reusa o extractFrontmatter canônico (CRLF-safe, #2304).
-  const fm = extractFrontmatter(md);
+  // #2417: scanLines=60 consistente com extractCorrectValueFromFrontmatter.
+  const fm = extractFrontmatter(md, 60);
   if (!fm) return null;
 
   const ieBlock = fm.match(
@@ -135,40 +138,69 @@ export function extractNarrativeFromFrontmatter(md: string): string | null {
     return null;
   };
 
-  // #2411: fonte do REVEAL é SOMENTE o campo `narrative` (primeira pessoa).
-  // O campo `description` é catálogo (terceira pessoa, "DESTAQUE N faz X") —
-  // usado pelo lint/catalog, NUNCA pela composição do reveal público.
-  return extractField("narrative") ?? null;
+  // (#2419) Prioridade: campo `reveal` (novo, first-person explícito).
+  // Fallback: campo `narrative` (alias legado).
+  // NUNCA usa `description` — esse campo é catálogo (terceira pessoa).
+  return extractField("reveal") ?? extractField("narrative") ?? null;
 }
 
 /**
- * Pure (#961 / #1079 / #2411): extrai o erro intencional declarado em
+ * Pure (#2419): extrai APENAS o campo `reveal` do frontmatter YAML, sem fallback
+ * para `narrative`. Usado quando precisamos saber se o campo dedicado foi preenchido.
+ *
+ * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
+ * `reveal`, ou valor é um placeholder `{PREENCHER}`.
+ */
+export function extractRevealFromFrontmatter(md: string): string | null {
+  // #2417: scanLines=60 consistente.
+  const fm = extractFrontmatter(md, 60);
+  if (!fm) return null;
+
+  const ieBlock = fm.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlock) return null;
+
+  for (const line of ieBlock[1].split("\n")) {
+    const m = line.match(/^[ \t]+reveal\s*:\s*(['"]?)(.*?)\1\s*$/);
+    if (!m) continue;
+    const val = m[2].trim();
+    if (val.length === 0) continue;
+    if (/^\{PREENCHER/i.test(val)) return null;
+    return val;
+  }
+  return null;
+}
+
+/**
+ * Pure (#961 / #1079 / #2411 / #2419 rewrite): extrai o erro intencional declarado em
  * `02-reviewed.md` publicado.
  *
- * **Prioridade da fonte (#2411 — separação REVEAL × CATÁLOGO):**
- *   - O campo `description` do frontmatter é o CATÁLOGO (terceira pessoa,
- *     "DESTAQUE N faz X"). É usado pelo lint e pelo /diaria-mes-erros.
- *     NÃO é fonte do reveal público.
- *   - O campo `narrative` do frontmatter (quando presente) é primeira pessoa
- *     explícita — pode ser usado como fonte do reveal.
- *   - A prosa "Nessa edição, …" no corpo é a fonte primária do reveal —
- *     é o que o editor escreve para o assinante de forma first-person.
+ * **Separação REVEAL × CATÁLOGO (#2419):**
+ *   - `description` é CATÁLOGO (3ª pessoa, "DESTAQUE N faz X") — NÃO é fonte do reveal.
+ *   - `reveal` (#2419 NEW) é o campo dedicado first-person para o reveal público.
+ *   - `narrative` é o alias legado de primeira pessoa (edições pré-#2419).
+ *   - A prosa "Nessa edição, …" no corpo é fonte de reveal quando nenhum campo de
+ *     frontmatter first-person está disponível.
  *
- * Estratégia:
- *   1. Tentar a linha "Nessa edição, {narrativa}." no corpo (first-person, primário).
- *   2. Se ausente ou genérica, tentar frontmatter `intentional_error.narrative` (alias first-person).
+ * Estratégia de extração:
+ *   1. Prosa "Nessa edição, {narrativa}." no corpo (first-person, primário).
+ *      Filtros: placeholder {PREENCHER}, texto genérico de convite, texto catalog-shaped.
+ *   2. Frontmatter `reveal` (novo #2419) ou `narrative` (legado).
+ *      NUNCA usa `description` — catálogo 3ª pessoa.
  *   3. Se nenhuma das duas, retornar null.
  *
- * Retorna `{ narrative }` no novo formato; campos `detail/gabarito` ficam
- * derivados pelos consumidores que ainda precisam deles (regex legado em
- * fallback dentro desta mesma função pra back-compat).
+ * Retorna `{ narrative, reveal? }` no novo formato; campos `detail/gabarito` ficam
+ * derivados pelos consumidores que ainda precisam deles (back-compat).
  */
 export function extractIntentionalErrorFromMd(
   md: string,
-): { narrative: string; detail?: string; gabarito?: string; correct_value?: string } | null {
+): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
   const correctValue = extractCorrectValueFromFrontmatter(md);
+  // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
+  const revealFromFm = extractRevealFromFrontmatter(md);
 
-  // #2411: PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
+  // PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
   // primária do reveal). O hábito editorial é o editor escrever a frase de
   // primeira pessoa que vai aparecer como reveal na próxima edição.
   //
@@ -195,11 +227,17 @@ export function extractIntentionalErrorFromMd(
   const nm = block.match(narrativeRe);
   if (nm) {
     const narrative = nm[1].trim();
-    // Pular placeholder não preenchido.
-    // Pular também texto genérico do convite ("há um erro proposital", "concorrer ao
-    // sorteio" etc.) — quando o corpo tem só o convite genérico, o corpo NÃO é uma
-    // fonte válida de reveal; cai pro frontmatter narrative (prioridade 2).
-    if (!/^\{PREENCHER/i.test(narrative) && !narrativeIsGenericPlaceholder(narrative)) {
+    // Filtros de exclusão:
+    // - Placeholder não preenchido.
+    // - Texto genérico do convite ("há um erro proposital", "concorrer ao sorteio" etc.)
+    //   — quando o corpo tem só o convite genérico, NÃO é fonte válida de reveal.
+    // - (#2419 bug #9 fix) Texto catalog-shaped ("DESTAQUE N ...") — label interno
+    //   que vaza ao reveal público e é agramatical com "Nessa edição, DESTAQUE N...".
+    if (
+      !/^\{PREENCHER/i.test(narrative) &&
+      !narrativeIsGenericPlaceholder(narrative) &&
+      !narrativeIsCatalogShaped(narrative)
+    ) {
       // Back-compat: tenta extrair detail/gabarito do formato legado
       // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
       const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
@@ -210,15 +248,18 @@ export function extractIntentionalErrorFromMd(
           detail: lm[2],
           gabarito: lm[4],
           ...(correctValue ? { correct_value: correctValue } : {}),
+          ...(revealFromFm ? { reveal: revealFromFm } : {}),
         };
       }
-      return { narrative, ...(correctValue ? { correct_value: correctValue } : {}) };
+      return {
+        narrative,
+        ...(correctValue ? { correct_value: correctValue } : {}),
+        ...(revealFromFm ? { reveal: revealFromFm } : {}),
+      };
     }
   }
 
-  // #2411: PRIORIDADE 2 — frontmatter `intentional_error.narrative` (alias
-  // first-person explícito). Edições que preencherem este campo explicitamente
-  // têm o reveal direto do frontmatter.
+  // PRIORIDADE 2 — frontmatter `reveal` (novo #2419) ou `narrative` (legado alias).
   // NÃO usa `description` — esse campo é catálogo (terceira pessoa).
   const fmNarrative = extractNarrativeFromFrontmatter(md);
   if (fmNarrative) {
@@ -232,9 +273,14 @@ export function extractIntentionalErrorFromMd(
         detail: lm[2],
         gabarito: lm[4],
         ...(correctValue ? { correct_value: correctValue } : {}),
+        ...(revealFromFm ? { reveal: revealFromFm } : {}),
       };
     }
-    return { narrative: fmNarrative, ...(correctValue ? { correct_value: correctValue } : {}) };
+    return {
+      narrative: fmNarrative,
+      ...(correctValue ? { correct_value: correctValue } : {}),
+      ...(revealFromFm ? { reveal: revealFromFm } : {}),
+    };
   }
 
   return null;
@@ -293,7 +339,7 @@ export function extractCorrectValueFromFrontmatter(md: string): string | null {
 export function findPreviousIntentionalErrorFromMd(
   editionsRoot: string,
   currentEdition: string,
-): { edition: string; detail: string; gabarito: string; narrative: string; correct_value?: string } | null {
+): { edition: string; detail: string; gabarito: string; narrative: string; correct_value?: string; reveal?: string } | null {
   if (!existsSync(editionsRoot)) return null;
   let entries: string[];
   try {
@@ -321,6 +367,8 @@ export function findPreviousIntentionalErrorFromMd(
         gabarito: extracted.gabarito ?? "",
         narrative: extracted.narrative,
         ...(extracted.correct_value ? { correct_value: extracted.correct_value } : {}),
+        // (#2419) Propaga campo `reveal` quando disponível no MD
+        ...(extracted.reveal ? { reveal: extracted.reveal } : {}),
       };
     }
   }
@@ -440,84 +488,94 @@ export function narrativeIsCatalogShaped(narrative: string): boolean {
 }
 
 /**
- * Pure (#1079, #1443): compõe o texto de revelação do erro anterior no formato
- * "Na última edição, {narrative}, o correto é {correct_value}.".
+ * Pure (#1079, #1443, #2419 rewrite): compõe o texto de revelação do erro anterior.
  *
- * #1443: o reveal precisa SEMPRE incluir uma frase de correção explícita ("o
- * correto é Y") pra fechar o loop do concurso "ache o erro". Antes desse fix,
- * o autor podia escrever uma narrativa neutra ("contei que Karpathy cofundou
- * a OpenAI em 1914, depois liderou a IA da Tesla") sem dizer o que era o
- * erro — leitor que pulou a edição anterior ficava sem entender.
+ * **ARQUITETURA #2419 — campo `reveal` dedicado:**
  *
- * Estratégia:
- *   - Se narrative já tem fraseologia de correção (`o correto é`, `mas o
- *     correto era`, `na verdade é`, `deveria ser`, `onde deveria ser`) →
- *     preservar.
- *   - Senão e `correct_value` (do frontmatter) está presente → auto-append
- *     `, o correto é {correct_value}`.
- *   - Senão e há `detail + gabarito` legados → "{detail}, mas o correto era
- *     {gabarito}".
- *   - Senão e há só `detail` (sem correct_value/gabarito) → emitir warn
- *     e devolver narrative/detail crus (formato incompleto, mas não falha).
- *   - Fallback genérico final.
+ * Prioridade:
+ *   1. Campo `reveal` do entry/JSONL (propagado do frontmatter `intentional_error.reveal`).
+ *      Usado verbatim, exceto a formatação boldQuotedStrings (aspas → negrito, convenção
+ *      da newsletter). É prosa first-person, gramatical, pública, escrita pelo editor.
+ *      Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
+ *      NUNCA aplicar regex, síntese ou transformação além de boldQuotedStrings.
+ *   2. Campo `narrative` legado (edições pré-#2419 sem `reveal`).
+ *      Se presente e não for catálogo/genérico, aplicar lógica de correção (#1443).
+ *   3. Campo `detail` legado (JSONL entries antigos sem `narrative`).
+ *      Se não for catalog-shaped, usar com `gabarito` ou `correct_value`.
+ *   4. Fallback SEGURO genérico: texto fixo sem menção de conteúdo específico.
+ *      NUNCA sintetizar a partir de `description`/catálogo — isso vaza labels internos.
+ *
+ * Invariante de segurança: se NENHUMA fonte válida de reveal existir (reveal ausente,
+ * narrative ausente ou catalog-shaped/genérico, detail ausente ou catalog-shaped),
+ * o fallback SEGURO é retornado. NUNCA tenta construir reveal a partir de `description`.
  *
  * Strings entre aspas são envoltas em negrito (#915).
  */
 export function composeRevealText(
   prev: IntentionalError & { narrative?: string; gabarito?: string },
 ): string {
+  const reveal = (prev.reveal ?? "").trim();
   const narrative = (prev.narrative ?? "").trim();
   const detail = (prev.detail ?? "").trim();
   const gabarito = (prev.gabarito ?? "").trim();
   const correctValue = (prev.correct_value ?? "").trim();
 
-  let narrativeFinal: string;
+  // PRIORIDADE 1: campo `reveal` dedicado (#2419).
+  // Usado VERBATIM — prosa first-person escrita pelo editor. Não transformar,
+  // exceto a formatação boldQuotedStrings (aspas → negrito, convenção da newsletter).
+  // Guard de sanidade: não publicar catalog-shaped ou genérico mesmo que alguém
+  // preencheu o campo `reveal` erroneamente com catálogo.
+  if (reveal) {
+    if (!narrativeIsCatalogShaped(reveal) && !narrativeIsGenericPlaceholder(reveal)) {
+      // Verbatim: o `reveal` já é a frase completa (ex: "Na última edição, escrevi X.")
+      // NÃO prefixar com "Na última edição" — o editor já escreveu a frase completa.
+      // F1: guard de pontuação terminal — aceita ., ! ou ? para evitar "viu?." duplo.
+      return boldQuotedStrings(/[.!?]$/.test(reveal.trim()) ? reveal : `${reveal}.`);
+    }
+    // reveal é catalog-shaped ou genérico — warn e cair para fallback
+    console.warn(
+      "[render-erro-intencional] WARN (#2419): campo `reveal` parece catálogo ou placeholder. " +
+        "Usando fallback seguro. Corrija `intentional_error.reveal` no frontmatter.",
+    );
+    return boldQuotedStrings(
+      `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+    );
+  }
+
+  // PRIORIDADE 2: campo `narrative` legado.
+  // (edições pré-#2419 que preencheram o campo `narrative` ou a prosa "Nessa edição, …")
   if (narrative) {
-    // Defense-in-depth (#2377): se a narrativa é um placeholder genérico (copiado
-    // do bloco de convite ao sorteio em vez de uma declaração real do editor),
-    // emitir warn visível. O bloqueio primário é o lint Stage 4
-    // (--check erro-intencional-narrative-generico), mas esta warn garante que
-    // edições legadas sem esse lint não geram reveal silenciosamente corrompido.
+    // Guard: narrative genérico (placeholder do convite ao sorteio) → warn + fallback.
     if (narrativeIsGenericPlaceholder(narrative)) {
       console.warn(
         "[render-erro-intencional] WARN (#2377): narrative do erro intencional parece ser " +
-          "um placeholder genérico (contém frases como \"há um erro proposital\", " +
-          "\"responda este e-mail\", \"concorrer ao sorteio\") em vez de uma declaração " +
-          "específica de primeira pessoa do editor. " +
-          "O reveal sairá com o texto genérico em vez da descrição real do erro. " +
-          "Corrija o narrative no frontmatter intentional_error.narrative (ou na prosa " +
-          "\"Nessa edição, …\") antes de publicar.",
+          "um placeholder genérico (\"há um erro proposital\", \"responda este e-mail\", etc.). " +
+          "Usando fallback seguro. Preencha `intentional_error.reveal` no frontmatter.",
+      );
+      return boldQuotedStrings(
+        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
       );
     }
-    // Defense-in-depth (#2411): se a narrativa tem formato catálogo (terceira pessoa,
-    // começa com "DESTAQUE N" ou label interno), NÃO publicar como reveal — isso
-    // vaza label interno ao assinante e é gramaticalmente errado com o prefixo
-    // "Na última edição, DESTAQUE N...". Emitir fallback seguro + warn.
+    // Guard: narrative catalog-shaped (começa com "DESTAQUE N") → warn + fallback seguro.
+    // NÃO tenta "consertar" adicionando correct_value — um catalog-shaped é ilegível.
     if (narrativeIsCatalogShaped(narrative)) {
       console.warn(
-        "[render-erro-intencional] WARN (#2411): narrative do erro intencional parece ser " +
-          "texto catálogo de terceira pessoa (começa com label interno como \"DESTAQUE N\") " +
-          "em vez de prosa de primeira pessoa para o reveal público. " +
-          "Usando fallback seguro. Preencha a prosa \"Nessa edição, …\" no corpo do MD " +
-          "ou o campo `intentional_error.narrative` (primeira pessoa) no frontmatter.",
+        "[render-erro-intencional] WARN (#2411/#2419): narrative parece catálogo de terceira " +
+          "pessoa (label interno \"DESTAQUE N\" ou similar). Usando fallback seguro. " +
+          "Preencha `intentional_error.reveal` no frontmatter com texto first-person.",
       );
-      // Fallback seguro: gramatical + não vaza label interno.
-      // Strip trailing period from correctValue/detail to avoid double period in output.
-      const fallbackCorrection = correctValue
-        ? `houve um erro proposital; o correto era ${correctValue.replace(/\.$/, "")}`
-        : detail
-          ? `${detail.replace(/\.$/, "")}${gabarito ? `, mas o correto era ${gabarito}` : ""}`
-          : "houve um erro proposital";
-      return boldQuotedStrings(`Na última edição, ${fallbackCorrection}.`);
+      return boldQuotedStrings(
+        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+      );
     }
+    // Narrative válida — aplicar lógica de correção (#1443).
+    let narrativeFinal: string;
     if (narrativeHasCorrection(narrative)) {
       narrativeFinal = narrative;
     } else if (correctValue) {
       narrativeFinal = `${narrative.replace(/\.$/, "")}, o correto é ${correctValue}`;
     } else {
-      // Narrative sem correção e sem correct_value pra auto-completar — formato
-      // incompleto (leitor não sabe qual é o erro). Avisar pra ficar visível no
-      // log; ainda assim devolve o que tem (não bloqueia).
+      // Narrative sem correção e sem correct_value — formato incompleto, mas não bloqueia.
       console.warn(
         "[render-erro-intencional] WARN: narrativa do erro intencional sem frase " +
           "de correção (\"o correto é Y\") e sem `intentional_error.correct_value` " +
@@ -525,21 +583,24 @@ export function composeRevealText(
       );
       narrativeFinal = narrative;
     }
-  } else if (detail) {
-    // Defense-in-depth (#2411): detail também pode ser catálogo (sync-intentional-error.ts
-    // copia description → detail no JSONL; se description for catálogo, detail também é).
+    return boldQuotedStrings(`Na última edição, ${narrativeFinal}.`);
+  }
+
+  // PRIORIDADE 3: campo `detail` legado (JSONL entries antigos sem `narrative`/`reveal`).
+  if (detail) {
+    // Guard: detail catalog-shaped (sync-intentional-error.ts copia description → detail).
+    // (#2419) NÃO tenta "consertar" adicionando correct_value — catalog é ilegível.
     if (narrativeIsCatalogShaped(detail)) {
       console.warn(
-        "[render-erro-intencional] WARN (#2411): detail do erro intencional parece ser " +
-          "texto catálogo de terceira pessoa (começa com label interno como \"DESTAQUE N\"). " +
-          "Usando fallback seguro. O editor deve preencher a prosa \"Nessa edição, …\" " +
-          "no corpo do MD (primeira pessoa) para o reveal da próxima edição.",
+        "[render-erro-intencional] WARN (#2419): detail parece catálogo de terceira pessoa " +
+          "(label interno \"DESTAQUE N\" ou similar). Usando fallback seguro. " +
+          "Preencha `intentional_error.reveal` no frontmatter da edição anterior.",
       );
-      const fallbackCorrection = correctValue
-        ? `houve um erro proposital; o correto era ${correctValue.replace(/\.$/, "")}`
-        : "houve um erro proposital";
-      return boldQuotedStrings(`Na última edição, ${fallbackCorrection}.`);
+      return boldQuotedStrings(
+        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+      );
     }
+    let narrativeFinal: string;
     if (correctValue) {
       narrativeFinal = `${detail.replace(/\.$/, "")}, o correto é ${correctValue}`;
     } else if (gabarito) {
@@ -547,11 +608,16 @@ export function composeRevealText(
     } else {
       narrativeFinal = detail;
     }
-  } else {
-    narrativeFinal = "houve um erro intencional";
+    return boldQuotedStrings(`Na última edição, ${narrativeFinal}.`);
   }
 
-  return boldQuotedStrings(`Na última edição, ${narrativeFinal}.`);
+  // PRIORIDADE 4: fallback SEGURO genérico.
+  // F2: string unificada com os outros caminhos de fallback — NUNCA sintetizar
+  // a partir de `description` ou catálogo. Nenhum caminho de fallback vaza
+  // catálogo/description.
+  return boldQuotedStrings(
+    `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+  );
 }
 
 /**
@@ -743,10 +809,11 @@ export function ensureIntentionalErrorFrontmatter(
 
   const PLACEHOLDER_BLOCK = [
     "intentional_error:",
-    '  description: "{PREENCHER — o que o assinante deve identificar}"',
+    '  description: "{PREENCHER — o que o assinante deve identificar (catálogo 3ª pessoa, não vai pro reveal)}"',
     '  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"',
     '  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"',
     '  correct_value: "{PREENCHER — valor correto}"',
+    '  reveal: "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição, ex: Na última edição, escrevi X onde o correto é Y.}"',
   ].join(eol);
 
   // Frontmatter existente sem intentional_error → inserir chave dentro do bloco.
@@ -778,6 +845,8 @@ type MdPrevError = {
   gabarito: string;
   narrative: string;
   correct_value?: string;
+  /** (#2419) Campo reveal dedicado quando disponível no frontmatter do MD anterior. */
+  reveal?: string;
 };
 
 /** Entry enriquecida que composeRevealText consome (IntentionalError + narrativa/gabarito). */
@@ -812,6 +881,8 @@ export function resolvePreviousError(
     gabarito: md.gabarito,
     narrative: md.narrative,
     ...(md.correct_value ? { correct_value: md.correct_value } : {}),
+    // (#2419) Propaga campo `reveal` do MD quando disponível
+    ...(md.reveal ? { reveal: md.reveal } : {}),
   });
 
   if (fromJsonl && fromMd) {
@@ -823,12 +894,14 @@ export function resolvePreviousError(
       // re-sincroniza o JSONL, então o MD ao vivo é a verdade mais recente.
       // narrative/gabarito não existem no JSONL (frontmatterToEntry só grava
       // detail+correct_value), então sempre vêm do MD.
+      // (#2419) reveal também vem do MD (campo autoritativo para o reveal público).
       const enriched: RevealEntry = {
         ...fromJsonl,
         narrative: fromMd.narrative,
         gabarito: fromMd.gabarito,
         ...(fromMd.detail ? { detail: fromMd.detail } : {}),
         ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
+        ...(fromMd.reveal ? { reveal: fromMd.reveal } : {}),
       };
       return { prev: enriched, source: "jsonl+md", gap: false };
     }

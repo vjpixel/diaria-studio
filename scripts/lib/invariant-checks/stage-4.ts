@@ -19,7 +19,9 @@ import { urlsMatch } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
 import {
   extractIntentionalErrorFromMd,
+  extractRevealFromFrontmatter,
   narrativeIsGenericPlaceholder,
+  narrativeIsCatalogShaped,
 } from "../../render-erro-intencional.ts";
 
 interface PublicImageEntry {
@@ -419,64 +421,75 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
 }
 
 /**
- * #2377 (root cause fix): detecta quando a narrativa "Nessa edição, …" no bloco
- * ERRO INTENCIONAL é um placeholder genérico copiado do bloco de convite ao
- * sorteio (ex: "há um erro proposital escondido em um dos destaques. Responda
- * este e-mail com a correção para concorrer ao sorteio") em vez de uma
- * declaração específica de primeira pessoa do editor.
+ * #2377/#2411/#2419 (rewrite): detecta quando a fonte do reveal para a PRÓXIMA edição
+ * seria inválida — genérica, catalog-shaped (label interno "DESTAQUE N"), ou agramatical.
  *
- * Quando isso acontece, `composeRevealText` da edição SEGUINTE vai formatar
- * verbatim o texto genérico — resultado: reveal publica "Na última edição, há
- * um erro proposital escondido em um dos destaques. Responda este e-mail..., o
- * correto é Microsoft" (exatamente o output ruim do incidente).
+ * Casos detectados:
+ *   1. Narrativa "Nessa edição, …" no corpo é placeholder genérico (incidente #2377).
+ *   2. (#2419 bug #2 fix) Narrativa no corpo ou frontmatter é catalog-shaped
+ *      ("DESTAQUE N lista o Spotify…") — passa verde hoje, publica label interno.
+ *   3. (#2419) Sem campo `reveal` dedicado E sem fonte válida de narrative →
+ *      reveal da próxima edição seria o fallback genérico seguro.
  *
- * Pega no gate do Stage 4 — antes da publicação — quando o editor ainda pode
- * corrigir o narrative sem impacto em edições já publicadas.
+ * severity: "warning" (lints permanecem warning — re-block para error é follow-up).
  *
- * Bloqueante: severity "error". Editor precisa substituir pela declaração real
- * de primeira pessoa: "Nessa edição, escrevi que [afirmação], quando o correto
- * é [valor]."
+ * Remediação: preencher `intentional_error.reveal` no frontmatter com prosa first-person.
+ * Campo `narrative` (legado) também aceito para back-compat.
  */
 function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(path)) return [];
   const md = readFileSync(path, "utf8");
 
-  // #2411: extractIntentionalErrorFromMd agora filtra texto genérico (não o retorna como
-  // narrative) para que o reveal da próxima edição não publique copy quebrada.
-  // Mas o lint Stage 4 PRECISA continuar detectando quando o corpo tem texto genérico —
-  // é o sinal de que o editor não preencheu a declaração first-person.
-  // Estratégia: verificar diretamente o corpo do bloco ERRO INTENCIONAL por texto genérico,
-  // independentemente de `extractIntentionalErrorFromMd`.
+  const REMEDIATION =
+    `Preencha o campo \`intentional_error.reveal\` no frontmatter do MD com prosa ` +
+    `first-person completa para o reveal público da próxima edição. ` +
+    `Ex: "Na última edição, escrevi 1990 onde o correto é 1998."`;
 
-  // 1. Verificação via extractIntentionalErrorFromMd (casos normais — narrative real mas genérico)
+  // 1. Verificação via extractIntentionalErrorFromMd (casos: narrative real mas genérico
+  //    ou catalog-shaped que ainda escapou do filtro na extração do corpo).
   const extracted = extractIntentionalErrorFromMd(md);
-  if (extracted?.narrative && narrativeIsGenericPlaceholder(extracted.narrative)) {
-    return [
-      {
-        rule: "narrative-not-generic-placeholder",
-        message:
-          `ERRO INTENCIONAL: a narrativa "Nessa edição, ${extracted.narrative}." ` +
-          `é um placeholder genérico (contém frases do bloco de convite ao sorteio: ` +
-          `"há um erro proposital", "responda este e-mail", "concorrer ao sorteio"). ` +
-          `O reveal da PRÓXIMA edição vai publicar esse texto genérico em vez do erro real — ` +
-          `incidente 2377 exatamente. ` +
-          `Corrija o frontmatter intentional_error.narrative (ou a linha "Nessa edição, …" ` +
-          `no corpo do MD) com a declaração específica do editor: ` +
-          `"Nessa edição, escrevi que [afirmação errada], quando o correto é [valor correto]."`,
-        source_issue: "#2377",
-        severity: "warning",
-        file: path,
-      },
-    ];
+  if (extracted?.narrative) {
+    if (narrativeIsGenericPlaceholder(extracted.narrative)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: a narrativa "Nessa edição, ${extracted.narrative}." ` +
+            `é um placeholder genérico (contém frases do bloco de convite ao sorteio: ` +
+            `"há um erro proposital", "responda este e-mail", "concorrer ao sorteio"). ` +
+            `O reveal da PRÓXIMA edição vai publicar esse texto genérico — incidente #2377. ` +
+            REMEDIATION,
+          source_issue: "#2377",
+          severity: "warning",
+          file: path,
+        },
+      ];
+    }
+    // (#2419 bug #2 fix) catalog-shaped escape — extractIntentionalErrorFromMd filtra corpo
+    // catalog-shaped mas narrative pode vir do frontmatter `narrative` legado (bug #2).
+    if (narrativeIsCatalogShaped(extracted.narrative)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: a narrativa "${extracted.narrative}" parece texto catálogo ` +
+            `de terceira pessoa (label interno "DESTAQUE N"). ` +
+            `O reveal da PRÓXIMA edição vai publicar o fallback seguro genérico em vez do erro real. ` +
+            REMEDIATION,
+          source_issue: "#2419",
+          severity: "warning",
+          file: path,
+        },
+      ];
+    }
   }
 
-  // 2. #2411: quando extractIntentionalErrorFromMd retorna null (porque filtrou o texto genérico),
-  // verificar diretamente o corpo do bloco ERRO INTENCIONAL por texto genérico.
-  // Isso cobre o caso onde o editor escreveu só o convite genérico sem declaração first-person
-  // E sem frontmatter narrative preenchido.
+  // 2. Quando extractIntentionalErrorFromMd retorna null (filtrou texto genérico/catalog),
+  //    verificar diretamente o corpo do bloco ERRO INTENCIONAL.
+  //    Isso cobre: editor escreveu só o convite genérico OU catalog-shaped no corpo,
+  //    sem frontmatter `reveal`/`narrative` preenchido.
   if (!extracted) {
-    // Verificar corpo do bloco ERRO INTENCIONAL por texto genérico diretamente.
     const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
     let block = md;
     const headerIdx = md.indexOf("**ERRO INTENCIONAL**");
@@ -491,24 +504,76 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
     const nm = block.match(narrativeRe);
     if (nm) {
       const bodyNarrative = nm[1].trim();
-      if (narrativeIsGenericPlaceholder(bodyNarrative) && !/^\{PREENCHER/i.test(bodyNarrative)) {
-        return [
-          {
-            rule: "narrative-not-generic-placeholder",
-            message:
-              `ERRO INTENCIONAL: a linha do corpo "Nessa edição, ${bodyNarrative}." ` +
-              `é um placeholder genérico. Não há frontmatter intentional_error.narrative ` +
-              `que sirva como alternativa. ` +
-              `O reveal da PRÓXIMA edição não terá fonte válida de reveal. ` +
-              `Preencha a declaração first-person: ` +
-              `"Nessa edição, escrevi que [afirmação errada], quando o correto é [valor correto]." ` +
-              `(ou adicione intentional_error.narrative no frontmatter).`,
-            source_issue: "#2411",
-            severity: "warning",
-            file: path,
-          },
-        ];
+      if (!/^\{PREENCHER/i.test(bodyNarrative)) {
+        if (narrativeIsGenericPlaceholder(bodyNarrative)) {
+          return [
+            {
+              rule: "narrative-not-generic-placeholder",
+              message:
+                `ERRO INTENCIONAL: a linha do corpo "Nessa edição, ${bodyNarrative}." ` +
+                `é um placeholder genérico. O reveal da PRÓXIMA edição não terá fonte válida. ` +
+                REMEDIATION,
+              source_issue: "#2411",
+              severity: "warning",
+              file: path,
+            },
+          ];
+        }
+        // (#2419 bug #2 fix) catalog-shaped no corpo → emitir warning
+        if (narrativeIsCatalogShaped(bodyNarrative)) {
+          return [
+            {
+              rule: "narrative-not-generic-placeholder",
+              message:
+                `ERRO INTENCIONAL: a linha do corpo "Nessa edição, ${bodyNarrative}." ` +
+                `é texto catálogo de terceira pessoa (label interno "DESTAQUE N"). ` +
+                `O reveal da PRÓXIMA edição usará o fallback seguro genérico. ` +
+                REMEDIATION,
+              source_issue: "#2419",
+              severity: "warning",
+              file: path,
+            },
+          ];
+        }
       }
+    }
+  }
+
+  // F3 (#633): verifica o campo `reveal` do frontmatter quanto a conteúdo catalog-shaped.
+  // Se o editor copiar `description` (catálogo, ex: 'DESTAQUE 2 lista...') para dentro de
+  // `reveal`, o Stage 4 ficaria silencioso sem esta checagem.
+  // severity: warning (decisão editorial 260619 — lints ficam warning).
+  const reveal = extractRevealFromFrontmatter(md);
+  if (reveal) {
+    if (narrativeIsCatalogShaped(reveal)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: o campo \`intentional_error.reveal\` contém texto catálogo ` +
+            `de terceira pessoa (label interno "DESTAQUE N" ou similar): "${reveal.slice(0, 80)}". ` +
+            `O reveal da PRÓXIMA edição usará o fallback seguro genérico em vez do erro real. ` +
+            REMEDIATION,
+          source_issue: "#2419",
+          severity: "warning",
+          file: path,
+        },
+      ];
+    }
+    if (narrativeIsGenericPlaceholder(reveal)) {
+      return [
+        {
+          rule: "narrative-not-generic-placeholder",
+          message:
+            `ERRO INTENCIONAL: o campo \`intentional_error.reveal\` contém texto genérico ` +
+            `(placeholder do convite ao sorteio): "${reveal.slice(0, 80)}". ` +
+            `O reveal da PRÓXIMA edição usará o fallback seguro genérico em vez do erro real. ` +
+            REMEDIATION,
+          source_issue: "#2419",
+          severity: "warning",
+          file: path,
+        },
+      ];
     }
   }
 
