@@ -32,6 +32,7 @@ import {
   assertMarker,
   assertSentinel,
   readSentinel,
+  resolveSentinelEndMs,
   sentinelExists,
   writeMarker,
   writeSentinel,
@@ -178,25 +179,14 @@ function main(): void {
         // recorded `end` reflects when the stage actually completed, not the
         // resume time.
         const sentinel = readSentinel(editionDir, step);
-        // #2416: guard NaN — `new Date(malformed).getTime()` returns NaN, which
-        // flows to `new Date(NaN).toISOString()` in autoUpdateStageStatusOnSentinel
-        // and throws RangeError swallowed by try/catch → silent no-op (stage-status
-        // never flipped to done, no warning). Fall back to Date.now() with a warn
-        // so the repair still runs and the problem is surfaced in logs.
-        let nowMs: number;
-        if (sentinel) {
-          const t = new Date(sentinel.completed_at).getTime();
-          if (Number.isNaN(t)) {
-            console.warn(
-              `[pipeline-sentinel] sentinel step ${step} has malformed completed_at="${sentinel.completed_at}" — falling back to Date.now() for stage-status repair`,
-            );
-            nowMs = Date.now();
-          } else {
-            nowMs = t;
-          }
-        } else {
-          nowMs = Date.now();
-        }
+        // #2416: guard NaN via helper compartilhado (resolveSentinelEndMs) —
+        // `completed_at` malformado → NaN → new Date(NaN).toISOString() lança
+        // RangeError engolido por try/catch → no-op silencioso. O helper cai
+        // para Date.now() com warn. Sentinel ausente (não deveria após assert ok)
+        // também usa Date.now().
+        const nowMs = sentinel
+          ? resolveSentinelEndMs(sentinel, `pipeline-sentinel step ${step}`)
+          : Date.now();
         if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step, nowMs)) {
           console.log(`stage-status auto-updated on resume: stage ${step} → done`);
         }

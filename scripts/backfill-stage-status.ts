@@ -28,7 +28,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { loadDoc, STAGES } from "./update-stage-status.ts";
-import { readSentinel } from "./lib/pipeline-state.ts";
+import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
 
@@ -52,14 +52,14 @@ function parseArgs(argv: string[]): CliArgs {
   return out;
 }
 
-interface Fix {
+export interface Fix {
   edition: string;
   stage: number;
   reason: string;
   endMs: number;
 }
 
-function scanEdition(editionDir: string, editionId: string): Fix[] {
+export function scanEdition(editionDir: string, editionId: string): Fix[] {
   const fixes: Fix[] = [];
   const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
   if (!existsSync(jsonPath)) return fixes;
@@ -73,11 +73,16 @@ function scanEdition(editionDir: string, editionId: string): Fix[] {
     if (!row || (row.status !== "running" && row.status !== "pending")) continue;
     const sentinel = readSentinel(editionDir, stage);
     if (!sentinel) continue;
+    // #2416 sibling: guard NaN via helper compartilhado (resolveSentinelEndMs) —
+    // `completed_at` malformado → endMs=NaN → autoUpdateStageStatusOnSentinel
+    // recebe nowMs=NaN → new Date(NaN).toISOString() lança RangeError engolido
+    // → no-op silencioso. O helper detecta o NaN e cai para Date.now() com warn.
+    const endMs = resolveSentinelEndMs(sentinel, `backfill stage ${stage} (${editionId})`);
     fixes.push({
       edition: editionId,
       stage,
       reason: `sentinel .step-${stage}-done.json presente mas row '${row.status}'`,
-      endMs: new Date(sentinel.completed_at).getTime(),
+      endMs,
     });
   }
   return fixes;
