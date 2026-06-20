@@ -38,6 +38,7 @@ import {
   renderWeekdaySection,
   WEEKDAY_LABELS,
   monthKeyBRT,
+  ENVIOS_TOOLTIP,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -673,6 +674,34 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     // ctr = 8/196*100 ≈ 4.1%
     assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
   });
+
+  // #2429: rótulo "Envios (eventos)" na coluna Sent da tabela mensal
+  test("#2429 coluna Sent da tabela mensal tem rótulo 'Envios (eventos)' com tooltip", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    // Coluna deve ser rotulada como "Envios (eventos)", não apenas "Sent" (#2429)
+    assert.match(html, /Envios \(eventos\)/, "coluna deve ter rótulo 'Envios (eventos)'");
+    // Tooltip usa "N vezes" (PT-BR legível), não "N×" (#2429 self-review finding 3)
+    assert.match(html, /title="[^"]*uma pessoa em N campanhas conta N vezes[^"]*"/, "tooltip deve usar 'N vezes', não 'N×'");
+    // Tooltip compartilhado via ENVIOS_TOOLTIP — verifica que a constante está em uso
+    assert.ok(html.includes(ENVIOS_TOOLTIP), "deve usar a constante ENVIOS_TOOLTIP compartilhada");
+  });
+
+  // #2429 self-review: testes negativos — rótulos antigos sumiram
+  test("#2429 rótulo antigo 'Sent' crú não aparece em nenhuma tabela do dashboard", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    // Nenhum <th> ou cabeçalho de coluna deve mostrar "Sent" como rótulo ambíguo
+    assert.doesNotMatch(html, /<th[^>]*>Sent<\/th>/, "nenhum <th> deve conter 'Sent' cru como rótulo");
+  });
+
+  test("#2429 'contatos no universo' não aparece mais na seção de coortes", () => {
+    // Regressão: garantir que o rótulo antigo foi substituído por 'pessoas únicas alcançadas'
+    assert.doesNotMatch(
+      renderDashboardHtml(allCampaigns),
+      /contatos no universo/,
+      "rótulo antigo 'contatos no universo' não deve aparecer no dashboard",
+    );
+  });
 });
 
 // ─── #2402: monthKeyBRT + aggregateByMonth usa BRT, não UTC ─────────────────
@@ -1089,6 +1118,16 @@ describe("renderVolumeSection", () => {
     assert.match(html, /40.000/, "deve mostrar meta 40.000");
     assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
     assert.match(html, /Volume enviado no ciclo/);
+  });
+
+  // #2429: rótulo "Envios (eventos)" deixa claro que o número são eventos de envio,
+  // não pessoas únicas (≠ universo de coortes).
+  test("#2429 exibe rótulo 'envios (eventos)' com tooltip explicativo", () => {
+    const html = renderVolumeSection(10499);
+    // Rótulo deve incluir "envios (eventos)" (case-insensitive para robustez)
+    assert.match(html, /envios \(eventos\)/i, "deve rotular como 'envios (eventos)'");
+    // Tooltip deve mencionar que inclui bounces e conta por evento
+    assert.match(html, /title="[^"]*inclui bounces[^"]*"/, "tooltip deve mencionar bounces");
   });
 });
 
