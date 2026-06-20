@@ -52,14 +52,14 @@ function parseArgs(argv: string[]): CliArgs {
   return out;
 }
 
-interface Fix {
+export interface Fix {
   edition: string;
   stage: number;
   reason: string;
   endMs: number;
 }
 
-function scanEdition(editionDir: string, editionId: string): Fix[] {
+export function scanEdition(editionDir: string, editionId: string): Fix[] {
   const fixes: Fix[] = [];
   const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
   if (!existsSync(jsonPath)) return fixes;
@@ -73,11 +73,26 @@ function scanEdition(editionDir: string, editionId: string): Fix[] {
     if (!row || (row.status !== "running" && row.status !== "pending")) continue;
     const sentinel = readSentinel(editionDir, stage);
     if (!sentinel) continue;
+    // #2416 sibling: guard NaN — `new Date(malformed).getTime()` returns NaN,
+    // which flows into autoUpdateStageStatusOnSentinel as nowMs=NaN →
+    // `new Date(NaN).toISOString()` throws RangeError swallowed by try/catch →
+    // silent no-op (stage-status never flipped to done, no warning).
+    // Fall back to Date.now() with a warn so the repair still runs.
+    const rawEndMs = new Date(sentinel.completed_at).getTime();
+    let endMs: number;
+    if (Number.isNaN(rawEndMs)) {
+      console.warn(
+        `[backfill] sentinel stage ${stage} (${editionId}) has malformed completed_at="${sentinel.completed_at}" — falling back to Date.now() for stage-status repair`,
+      );
+      endMs = Date.now();
+    } else {
+      endMs = rawEndMs;
+    }
     fixes.push({
       edition: editionId,
       stage,
       reason: `sentinel .step-${stage}-done.json presente mas row '${row.status}'`,
-      endMs: new Date(sentinel.completed_at).getTime(),
+      endMs,
     });
   }
   return fixes;
