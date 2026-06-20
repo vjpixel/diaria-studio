@@ -171,6 +171,8 @@ function main(): number {
         // do #1443 ("o correto é Y") no reveal seguinte, em vez do detail cru.
         narrative: prose.narrative,
         ...(prose.correct_value ? { correct_value: prose.correct_value } : {}),
+        // (#2419) Propaga campo `reveal` quando disponível no MD
+        ...(prose.reveal ? { reveal: prose.reveal } : {}),
         source: "prose_block",
         detected_by: "sync-intentional-error.ts fallback de prosa (#1860)",
         resolution: "published_intentionally",

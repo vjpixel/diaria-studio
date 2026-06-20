@@ -43,6 +43,13 @@ export interface IntentionalError {
    * texto que o editor escreveu pra `composeRevealText` aplicar a lógica de
    * correção do #1443 ("o correto é Y") em vez de cair no `detail` cru. */
   narrative?: string;
+  /** (#2419) Campo de reveal dedicado — prosa FIRST-PERSON, gramatical, pública,
+   * que vira o texto do reveal publicado na edição SEGUINTE.
+   * Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
+   * Separado de `description` (catálogo 3ª pessoa) e de `narrative` (legado).
+   * Quando presente, composeRevealText usa este campo VERBATIM.
+   * Fonte: frontmatter `intentional_error.reveal`. */
+  reveal?: string;
   /** Valor correto (#1443) — vem do frontmatter `intentional_error.correct_value`
    * e é usado pelo render-erro-intencional pra garantir que o reveal da edição
    * seguinte inclui "o correto é Y". */
@@ -174,6 +181,11 @@ export interface IntentionalErrorFrontmatter {
   location?: string;
   category?: string;
   correct_value?: string;
+  /** (#2419) Campo de primeira pessoa, gramatical, público — fonte canônica do reveal.
+   * Separado de `description` (catálogo 3ª pessoa, alimenta /diaria-mes-erros + lint).
+   * Quando presente, o reveal usa este campo verbatim.
+   * Ex: "Na última edição, escrevi 1990 onde o correto é 1998." */
+  reveal?: string;
 }
 
 export function frontmatterToEntry(
@@ -188,6 +200,9 @@ export function frontmatterToEntry(
     is_feature: true,
     detail: fm.description ?? "",
     correct_value: fm.correct_value,
+    // (#2419) Campo reveal: quando presente no frontmatter, propagado para o JSONL
+    // para que composeRevealText use verbatim em vez de sintetizar a partir de catálogo.
+    ...(fm.reveal ? { reveal: fm.reveal } : {}),
     source: "frontmatter_02_reviewed",
     detected_by: "lint-newsletter-md.ts intentional-error-flagged",
     resolution: "published_intentionally",
@@ -208,7 +223,9 @@ export function entryDiffersFromFrontmatter(
     existing.error_type !== candidate.error_type ||
     String(existing.destaque ?? "") !== String(candidate.destaque ?? "") ||
     (existing.detail ?? "") !== (candidate.detail ?? "") ||
-    (existing.correct_value ?? "") !== (candidate.correct_value ?? "")
+    (existing.correct_value ?? "") !== (candidate.correct_value ?? "") ||
+    // (#2419) Campo reveal — detectar drift quando editor edita o reveal no frontmatter
+    (existing.reveal ?? "") !== (candidate.reveal ?? "")
   );
 }
 

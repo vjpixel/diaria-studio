@@ -22,6 +22,7 @@ import {
   boldQuotedStrings,
   extractIntentionalErrorFromMd,
   extractNarrativeFromFrontmatter,
+  extractRevealFromFrontmatter,
   extractCorrectValueFromFrontmatter,
   findPreviousIntentionalErrorFromMd,
   narrativeHasCorrection,
@@ -313,10 +314,12 @@ describe("narrativeIsCatalogShaped (#2411 — guard contra label interno no reve
   });
 });
 
-describe("composeRevealText (#2411 — guard contra copy quebrada/catalog-shaped)", () => {
-  it("#2411: narrative catálogo (começa com DESTAQUE N) → fallback seguro + sem label interno no reveal", () => {
+describe("composeRevealText (#2411/#2419 — guard contra copy quebrada/catalog-shaped)", () => {
+  it("#2411/#2419: narrative catálogo (começa com DESTAQUE N) → fallback SEGURO genérico, sem label e sem síntese de correct_value", () => {
     // Regressão: #2398 passava description catálogo como narrative; #2411 bloqueia.
-    // Fixture: narrative = description catálogo com label interno "DESTAQUE 2".
+    // #2419 rewrite: fallback seguro é SEMPRE a frase genérica fixa — NUNCA tenta sintetizar
+    // a partir de correct_value (pois catalog-shaped é ilegível, não pode ser "consertado").
+    // Editor deve preencher `intentional_error.reveal` no frontmatter.
     const prev = {
       edition: "260618",
       error_type: "factual",
@@ -327,13 +330,16 @@ describe("composeRevealText (#2411 — guard contra copy quebrada/catalog-shaped
     const text = composeRevealText(prev);
     // NÃO deve conter o label interno "DESTAQUE N" no reveal público
     assert.doesNotMatch(text, /DESTAQUE\s+\d/, "label interno não deve vazar para o reveal público");
-    // Deve usar fallback seguro com correct_value
-    assert.match(text, /Na última edição, houve um erro proposital; o correto era Perplexity ou Copilot\./);
+    // NÃO deve tentar sintetizar a partir de correct_value (bug #3 da spec)
+    assert.doesNotMatch(text, /Perplexity|Copilot/, "correct_value não deve vazar em fallback catalog-shaped");
+    // Deve usar fallback seguro genérico (#2419)
+    assert.match(text, /Na última edição, escondemos um erro proposital/);
   });
 
-  it("#2411: detail catálogo (DESTAQUE N) → fallback seguro com correct_value", () => {
+  it("#2411/#2419: detail catálogo (DESTAQUE N) → fallback SEGURO genérico, sem correct_value sintético", () => {
     // Caso JSONL: detail = description copiada do frontmatter (catálogo).
-    // Fixture shaped como o JSONL entry de 260618.
+    // #2419 rewrite: fallback seguro é frase fixa — não sintetiza "o correto era Microsoft"
+    // a partir de detail catalog-shaped (era o bug #3: "o correto era <cláusula>" agramatical).
     const prev: IntentionalError = {
       edition: "260618",
       error_type: "ortografico",
@@ -344,11 +350,14 @@ describe("composeRevealText (#2411 — guard contra copy quebrada/catalog-shaped
     const text = composeRevealText(prev);
     // NÃO deve conter "DESTAQUE 3" no reveal público
     assert.doesNotMatch(text, /DESTAQUE\s+\d/, "label interno não deve vazar para o reveal público");
-    // Fallback seguro: gramatical, menciona o correto
-    assert.match(text, /Na última edição, houve um erro proposital; o correto era Microsoft\./);
+    // NÃO deve sintetizar correct_value a partir de detail catalog-shaped
+    // (o correto: usar campo `reveal` no frontmatter)
+    assert.doesNotMatch(text, /o correto era Microsoft/, "correct_value não deve ser sintetizado de detail catalog");
+    // Fallback seguro genérico
+    assert.match(text, /Na última edição, escondemos um erro proposital/);
   });
 
-  it("#2411: narrative catalog sem correct_value → fallback genérico (sem correct_value)", () => {
+  it("#2411/#2419: narrative catalog sem correct_value → fallback genérico", () => {
     const prev = {
       edition: "260618",
       error_type: "factual",
@@ -357,7 +366,7 @@ describe("composeRevealText (#2411 — guard contra copy quebrada/catalog-shaped
     } as IntentionalError & { narrative: string };
     const text = composeRevealText(prev);
     assert.doesNotMatch(text, /DESTAQUE\s+\d/);
-    assert.match(text, /Na última edição, houve um erro proposital\./);
+    assert.match(text, /Na última edição, escondemos um erro proposital/);
   });
 });
 
@@ -2282,6 +2291,321 @@ describe("CRLF round-trip (#2304)", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Fixtures mandatórias da reescrita #2419.
+ * Cada teste corresponde a uma classe de bug confirmada contra dado real.
+ * Sem estes testes → NÃO mergear (#633).
+ */
+describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => {
+  /**
+   * Fixture 1 (bugs #1, #7): reveal numérico/data first-person ("Na última edição,
+   * escrevi 1990 onde o correto é 1998.") → campo `reveal` sai INTACTO, não-genérico.
+   *
+   * Bug #1: narrativeIsCatalogShaped 2ª alternativa `^[A-Z...]{4,}\s+\d` com /i
+   * casava QUALQUER palavra 4+ letras + número. "Nessa edição, escrevi 1990 onde..." →
+   * reveal substituído por genérico (regex matcha "escrevi" como WORD4+ + "1990").
+   *
+   * Bug #7: regex #2418 falso-positivo: "Nubank 1 bilhão...", "Meta 3 produtos..." →
+   * NUKED e substituído por genérico.
+   *
+   * Fix #2419: campo `reveal` dedicado usado verbatim. Não passa por narrativeIsCatalogShaped.
+   */
+  it("Fixture 1 (bugs #1, #7): reveal numérico/data first-person via campo `reveal` → INTACTO", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "numeric",
+      is_feature: true,
+      reveal: "Na última edição, escrevi 1990 onde o correto é 1998.",
+    };
+    const text = composeRevealText(prev);
+    // Deve sair verbatim — não genérico, não substituído por fallback
+    assert.equal(text, "Na última edição, escrevi 1990 onde o correto é 1998.");
+    assert.doesNotMatch(text, /escondemos um erro proposital/);
+  });
+
+  it("Fixture 1b (bug #7): reveal com marca+número first-person via campo `reveal` → INTACTO", () => {
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, escrevi que o Nubank tem 1 bilhão de clientes, o correto é 100 milhões.",
+    };
+    const text = composeRevealText(prev);
+    // Verbatim — não nuked por regex antigo
+    assert.match(text, /Nubank tem 1 bilhão de clientes/);
+    assert.doesNotMatch(text, /escondemos um erro proposital/);
+  });
+
+  /**
+   * Fixture 2 (bugs #2, #4, #5, #6, #8, #9, #10): frontmatter só com `description`
+   * catalog (sem `reveal`), corpo genérico → reveal = fallback genérico seguro,
+   * SEM vazar "DESTAQUE N" nem texto de catálogo.
+   *
+   * Bug #2: stage-4.ts checkNarrativeNotGenericPlaceholder só checava narrativeIsGenericPlaceholder,
+   * nunca catalog-shaped. Caso real 260617 ("Nessa edição, DESTAQUE 2 lista o Spotify...")
+   * passava o gate VERDE com 0 violations.
+   *
+   * Bug #4: insertOrUpdateSection montava "Nessa edição, ${narrative}." sem guard catalog →
+   * re-gravava label interno no corpo MD publicado.
+   *
+   * Bug #5: extractIntentionalErrorFromMd caminho corpo filtrava genérico mas NÃO catalog-shaped.
+   *
+   * Bug #6: composeRevealText ramo narrative, quando correctValue ausente, emitia `detail` VERBATIM
+   * sem re-checar catálogo → vazava label interno.
+   *
+   * Bug #8: regressão de cobertura #2418: hábito REAL (só `description` no frontmatter + corpo
+   * genérico) → extractIntentionalErrorFromMd retornava null → reveal perdia gancho.
+   *
+   * Bug #9: extractIntentionalErrorFromMd NÃO filtrava catalog-shaped no corpo.
+   *
+   * Bug #10: narrativeIsGenericPlaceholder SÓ fazia console.warn, não retornava fallback.
+   */
+  it("Fixture 2 (bugs #2, #4, #5, #6, #8, #9, #10): description catálogo + corpo genérico → fallback seguro, sem leak", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+      '  location: "DESTAQUE 2"',
+      '  category: "factual"',
+      '  correct_value: "Perplexity ou Copilot"',
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, foo.",
+      "",
+      "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail.",
+      "",
+    ].join("\n");
+
+    // extractIntentionalErrorFromMd deve retornar null (bug #5/#9 fix)
+    const extracted = extractIntentionalErrorFromMd(md);
+    assert.equal(extracted, null, "description catálogo + corpo genérico → null (bug #5 fix)");
+
+    // composeRevealText com entry JSONL que tem detail=description (catálogo):
+    // NÃO deve vazar "DESTAQUE N" no reveal (bugs #6, #10 fix)
+    const prev: IntentionalError = {
+      edition: "260617",
+      error_type: "factual",
+      is_feature: true,
+      detail: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      correct_value: "Perplexity ou Copilot",
+    };
+    const text = composeRevealText(prev);
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/, "label interno não deve vazar no reveal (bug #6/#10)");
+    assert.doesNotMatch(text, /Perplexity|Copilot/, "correct_value não deve sintetizar de detail catalog");
+    // Deve usar fallback seguro genérico (#2419)
+    assert.match(text, /escondemos um erro proposital/, "fallback seguro esperado");
+  });
+
+  it("Fixture 2b (bug #2 — stage-4 lint): corpo catalog-shaped → emite warning (não verde silencioso)", () => {
+    // Bug #2: stage-4.ts checkNarrativeNotGenericPlaceholder não detectava catalog-shaped.
+    // Caso real 260617: "Nessa edição, DESTAQUE 2 lista o Spotify..." passava sem violação.
+    // Fix #2419: checkNarrativeNotGenericPlaceholder detecta catalog-shaped e emite warning.
+    const dir = mkdtempSync(join(tmpdir(), "lint-catalog-2419-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        [
+          "---",
+          "intentional_error:",
+          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "Perplexity ou Copilot"',
+          "---",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, DESTAQUE 2 lista o Spotify como assistente de IA.",
+          "",
+          "---",
+          "",
+          "**ASSINE**",
+          "X",
+        ].join("\n"),
+        "utf8",
+      );
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 1, "deve emitir 1 violation para corpo catalog-shaped (bug #2 fix)");
+      assert.equal(violations[0].severity, "warning");
+      // Mensagem deve apontar para o campo `reveal`
+      assert.match(violations[0].message, /reveal/, "mensagem deve apontar para campo reveal");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Fixture 3 (bug #3): correct_value cláusula inteira ("No lugar de Spotify, um assistente
+   * de IA real...") → reveal gramatical, sem "o correto era <cláusula>" agramatical.
+   *
+   * Bug #3: render-erro-intencional.ts:507 — fallback catalog "o correto era ${correct_value}"
+   * assumia noun-phrase, mas correct_value real 260617 era cláusula inteira →
+   * "o correto era No lugar de Spotify, um assistente de IA real — por exemplo, Perplexity ou Copilot."
+   * (agramatical, chegava aos assinantes).
+   *
+   * Fix #2419: fallback catalog-shaped usa frase genérica fixa, NÃO sintetiza de correct_value.
+   */
+  it("Fixture 3 (bug #3): correct_value cláusula inteira + catalog detail → fallback seguro, sem cláusula agramatical", () => {
+    const prev: IntentionalError = {
+      edition: "260617",
+      error_type: "factual",
+      is_feature: true,
+      detail: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      correct_value: "No lugar de Spotify, um assistente de IA real — por exemplo, Perplexity ou Copilot",
+    };
+    const text = composeRevealText(prev);
+    // NÃO deve ter "o correto era <cláusula inteira>" (agramatical)
+    assert.doesNotMatch(text, /o correto era No lugar de/);
+    // NÃO deve ter label interno
+    assert.doesNotMatch(text, /DESTAQUE\s+\d/);
+    // Fallback seguro genérico
+    assert.match(text, /escondemos um erro proposital/);
+  });
+
+  /**
+   * Fixture 4 (bug #2417): frontmatter empurrado para ~linha 40 (após bloco TÍTULO/SUBTÍTULO)
+   * → campo `reveal` é lido corretamente (scanLines=60, #2417).
+   */
+  it("Fixture 4 (#2417): frontmatter em linha ~40 (após TÍTULO/SUBTÍTULO) → reveal lido via scanLines=60", () => {
+    // Simula o caso: insert-titulo-subtitulo.ts empurra o frontmatter além da linha 30.
+    const headerLines = Array.from({ length: 30 }, (_, i) => `Linha de conteúdo ${i + 1}.`);
+    const md = [
+      ...headerLines,
+      "---",
+      "intentional_error:",
+      '  description: "DESTAQUE 2 lista X"',
+      '  location: "DESTAQUE 2"',
+      '  category: "factual"',
+      '  correct_value: "Y"',
+      '  reveal: "Na última edição, escrevi X onde o correto é Y."',
+      "---",
+      "",
+      "Corpo.",
+    ].join("\n");
+
+    // extractNarrativeFromFrontmatter deve encontrar o campo reveal (scanLines=60)
+    const narrative = extractNarrativeFromFrontmatter(md);
+    assert.equal(
+      narrative,
+      "Na última edição, escrevi X onde o correto é Y.",
+      "extractNarrativeFromFrontmatter deve ler reveal em frontmatter após linha 30 (scanLines=60)",
+    );
+
+    // extractRevealFromFrontmatter também deve encontrar
+    const reveal = extractRevealFromFrontmatter(md);
+    assert.equal(reveal, "Na última edição, escrevi X onde o correto é Y.");
+
+    // composeRevealText com o `reveal` propagado deve retornar verbatim
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "factual",
+      is_feature: true,
+      reveal: "Na última edição, escrevi X onde o correto é Y.",
+    };
+    const text = composeRevealText(prev);
+    assert.equal(text, "Na última edição, escrevi X onde o correto é Y.");
+  });
+
+  /**
+   * Fixture 5 (bug #2 — stage-4 lint catalog-shaped): quando o campo `reveal` do
+   * frontmatter aponta para narrative que seria catalog-shaped (edge case) →
+   * stage-4 lint emite warning apontando para o campo correto.
+   */
+  it("Fixture 5 (bug #2 fix): stage-4 lint detecta narrative catalog-shaped no frontmatter narrative legado → warning com ref ao campo reveal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lint-fm-catalog-2419-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        [
+          "---",
+          "intentional_error:",
+          '  description: "DESTAQUE 3: empresa X aparece como Y"',
+          '  narrative: "DESTAQUE 3: empresa X aparece como Y"',
+          '  location: "DESTAQUE 3"',
+          '  category: "ortografico"',
+          '  correct_value: "Y"',
+          "---",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+          "",
+          "---",
+          "",
+          "**ASSINE**",
+          "X",
+        ].join("\n"),
+        "utf8",
+      );
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      // Deve emitir warning (não verde silencioso)
+      assert.equal(violations.length, 1, "deve detectar narrative catalog-shaped (bug #2 fix)");
+      assert.equal(violations[0].severity, "warning");
+      // Mensagem deve apontar para campo `reveal` (#2419)
+      assert.match(violations[0].message, /reveal/, "mensagem deve referenciar campo reveal");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Fixture 6: campo `reveal` preenchido corretamente no frontmatter →
+   * composeRevealText usa VERBATIM, sem transformações.
+   */
+  it("Fixture 6: campo `reveal` preenchido → composeRevealText usa verbatim (sem síntese)", () => {
+    // Caso feliz: editor preencheu `reveal` com frase completa first-person.
+    const prev: IntentionalError = {
+      edition: "260620",
+      error_type: "numeric",
+      is_feature: true,
+      detail: "DESTAQUE 1: ano de fundação errado",
+      correct_value: "1998",
+      reveal: "Na última edição, escrevi que a empresa foi fundada em 1990. O correto é 1998.",
+    };
+    const text = composeRevealText(prev);
+    // Usado verbatim — não transforma, não adiciona prefixo, não consulta detail/correct_value
+    assert.equal(
+      text,
+      "Na última edição, escrevi que a empresa foi fundada em 1990. O correto é 1998.",
+    );
+    // NÃO faz auto-append de "o correto é" (field já é completo)
+    assert.doesNotMatch(text, /o correto é 1998\..*o correto é/, "não deve duplicar correção");
+  });
+
+  it("Fixture 6b: campo `reveal` lido do frontmatter via extractNarrativeFromFrontmatter (prioridade sobre narrative legado)", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "Catalog description"',
+      '  narrative: "escrevi algo legado"',
+      '  reveal: "Na última edição, escrevi que X. O correto é Y."',
+      '  correct_value: "Y"',
+      "---",
+      "",
+      "Corpo.",
+    ].join("\n");
+    // extractNarrativeFromFrontmatter deve preferir `reveal` sobre `narrative`
+    const narrative = extractNarrativeFromFrontmatter(md);
+    assert.equal(
+      narrative,
+      "Na última edição, escrevi que X. O correto é Y.",
+      "deve preferir campo `reveal` sobre `narrative` legado",
+    );
+
+    // extractRevealFromFrontmatter também deve encontrar
+    const reveal = extractRevealFromFrontmatter(md);
+    assert.equal(reveal, "Na última edição, escrevi que X. O correto é Y.");
   });
 });
 
