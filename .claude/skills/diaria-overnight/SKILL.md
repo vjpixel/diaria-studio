@@ -92,7 +92,7 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
 
    **Campos de instrumentação adicionais do plan.json (#2379, #2380, #2382):**
 
-   - **`stall_events`** (array, #2379): lista de eventos de stall passivo detectados durante a rodada. Cada entrada tem a forma `{ "at": "ISO", "reason": "rate_limit | context_exhaustion | standby | ci_timeout | unknown", "resumed_at": "ISO | null" }`. O coordenador acrescenta uma entrada sempre que detecta >60 min sem progresso em unidade em andamento, **antes** de emitir o halt banner. Começar a rodada com `stall_events: []`. Gravidar `resumed_at` quando a rodada é retomada após o stall.
+   - **`stall_events`** (array, #2379): lista de eventos de stall passivo detectados durante a rodada. Cada entrada tem a forma `{ "at": "ISO", "reason": "rate_limit | context_exhaustion | standby | ci_timeout | unknown", "resumed_at": "ISO | null" }`. O coordenador acrescenta uma entrada sempre que detecta >60 min sem progresso em unidade em andamento, **antes** de emitir o halt banner. Começar a rodada com `stall_events: []`. Gravar `resumed_at` quando a rodada é retomada após o stall.
 
    - **`resume_state`** (objeto ou null, #2380): gravado toda vez que a rodada é interrompida (PC desligado, colisão editorial, deadline). Estrutura:
      ```json
@@ -149,21 +149,21 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
      ```
    - Esperar CI com `gh pr checks {N} --watch` em background (`run_in_background: true`) — um acordar por PR, sem poll. Interpretar com cuidado: **exit 8 / checks pendentes / lista vazia = PENDENTE, nunca verde nem vermelho** (logo após o push os jobs podem nem estar registrados). Verde = os checks do CI **presentes E concluídos com sucesso**. **O gate é um passo SEPARADO do merge (#2031 — incidente 260610: merge encadeado com `&&` após o output dos buckets passou com check vermelho):** NUNCA encadear `gh pr merge` na mesma chamada Bash que imprime os checks.
 
-   **Timeout de CI (ci_timeout, #2381):** se o CI não transita para verde/vermelho em 45 min (a partir do `pr_opened`), emitir evento run-log e continuar aguardando — não tratar automaticamente como vermelho; o objetivo é distinguir "CI devagar" de "sessão dormiu":
+   **Timeout de CI (ci_timeout, #2381):** se o CI não transita para verde/vermelho em **30 min** (a partir do `pr_opened`), emitir evento run-log **e imediatamente tratar como CI vermelho** (tentativa de fix ou draft) — 30 min é o único limite, conforme a regra hard da seção "Regras" ("Timeout por espera de CI = 30 min; estourou → tratar como CI vermelho"). O evento `ci_timeout` é a companhia de observabilidade desse limite: distingue "CI devagar" de "sessão dormiu" no run-log, registrando elapsed_min e last_status no momento do vencimento:
    ```bash
    npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
      --message "ci_timeout" \
-     --details '{"pr": {N}, "unidade": "#NNNN | lote {slug}", "elapsed_min": 47, "last_status": "pending"}'
+     --details '{"pr": {N}, "unidade": "#NNNN | lote {slug}", "elapsed_min": 30, "last_status": "pending"}'
    ```
-   Após emitir `ci_timeout`, continuar aguardando; registrar `ci_timeout` no relatório. Se o CI demorar >30 min **adicionais** sem transição após o evento, tratar como CI vermelho (tentativa de fix ou draft) — o timeout de 30 min da regra de stall passivo se aplica.
+   Emitir `ci_timeout` e aplicar a regra hard são a mesma ação — acontecem ao cruzar os 30 min. Registrar `ci_timeout` no relatório.
 
-   **Retry de GitHub API (#2383):** qualquer chamada ao GitHub (graphql, REST, `gh pr merge`, `gh pr checks`) que retornar 401 ou 429 transitório **não deve ser tratada imediatamente como falha**. O coordenador tenta ao menos 3 vezes com backoff exponencial (30 s, 60 s, 120 s) antes de tratar como falha permanente ou emitir halt banner. Em cada tentativa, emitir:
+   **Retry de GitHub API (#2383):** qualquer chamada ao GitHub (graphql, REST, `gh pr merge`, `gh pr checks`) que retornar **401 ou 429** (erros transitórios de autenticação ou rate-limit) **não deve ser tratada imediatamente como falha**. O coordenador tenta ao menos 3 vezes com backoff exponencial (30 s, 60 s, 120 s) antes de tratar como falha permanente ou emitir halt banner. Em cada tentativa, emitir:
    ```bash
    npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
      --message "github_api_error" \
      --details '{"status": 401, "endpoint": "graphql/pullRequest", "retry_attempt": 1}'
    ```
-   Após 3 tentativas sem sucesso → tratar como falha permanente (CI vermelho / halt banner). Este retry generaliza o padrão introduzido em #2060 para `check-pr-bugfix` para todo o gate da Fase 1. **Erros de gate** que envolvam a query GraphQL de resolução de threads seguem o mesmo retry: nunca tratar `errors[].type == "FORBIDDEN"` como erro transitório retentável — esse é estrutural (ver seção de resolução de threads abaixo).
+   Após 3 tentativas sem sucesso → tratar como falha permanente (CI vermelho / halt banner). Este retry generaliza o padrão introduzido em #2060 para `check-pr-bugfix` para todo o gate da Fase 1. **Caso distinto — FORBIDDEN:** `errors[].type == "FORBIDDEN"` em chamadas de resolução de thread é um erro **estrutural** (a thread foi criada por um revisor externo — o overnight não tem permissão para resolvê-la). FORBIDDEN **nunca é retentável** e **não conta no gate overnight** — é tratado separadamente pela lógica de carve-out FORBIDDEN na seção de resolução de threads abaixo (anotação no PR body para o editor). Não confundir com 401/429: são mecanismos distintos e mutuamente exclusivos.
 
    **Resolução das review threads** (passo obrigatório entre "fixer concluiu" e "gate determinístico"): após o fixer aplicar/decidir sobre os findings do self-review (#2038), o coordenador resolve as threads via GraphQL. **Guard de paginação (>100 threads — #2222)**: antes de iniciar o loop de resolução, a query já inclui `pageInfo { hasNextPage endCursor }`. Se `hasNextPage == true`, **abortar o gate automático imediatamente** (converter PR pra draft + comentar na issue explicando que >100 threads exigem resolução manual pelo editor) — não tentar paginar durante a resolução autônoma; o risco de false-green em páginas não percorridas supera qualquer conveniência. (a) Coletar resposta com guard de erro e de paginação, e extrair IDs não-resolvidas:
      ```bash
