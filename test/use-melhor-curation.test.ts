@@ -1708,6 +1708,77 @@ describe("normalizeUseMelhorUrl (#2414) — host casing + porta + query preserva
     const url = "https://Host.COM:443/path?Ref=X";
     assert.equal(normalizeUseMelhorUrl(url), url, "no-change path deve retornar original");
   });
+
+  // #2439 Item 1 + HIGH fix: testes que falham ANTES do fix e passam depois.
+  // O bug: parsed.pathname é percent-encoded; usá-lo para medir comprimento e
+  // indexar a string raw faz url.slice() começar cedo, engolindo a query.
+
+  it("HIGH: path acentuado + // + query — query sobrevive intacta (bug de encoding)", () => {
+    // URL PT-BR realista: path com caractere não-ASCII + double-slash + query.
+    // Antes do fix: parsed.pathname='/sa%C3%BAdee' (encoded, +3 bytes extra vs raw)
+    // → url.slice(pathStart + encoded.length) começa dentro de '?ref=email' → perdido.
+    const url = "https://host.com//artigo/saúde?ref=email";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?ref=email"), `query perdida: ${result}`);
+    assert.ok(!result.includes("//artigo"), `// no path não normalizado: ${result}`);
+    // O path acentuado NÃO deve ser re-encoded (preserva bytes do original)
+    assert.ok(result.includes("saúde"), `path acentuado re-encoded: ${result}`);
+  });
+
+  it("HIGH: path acentuado + /// + query — query sobrevive e triple-slash colapsado", () => {
+    const url = "https://host.com///artigo/ação?src=feed&v=2";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?src=feed&v=2"), `query perdida: ${result}`);
+    assert.ok(!result.includes("///"), `triple-slash não colapsado: ${result}`);
+    assert.ok(result.includes("ação"), `path acentuado re-encoded: ${result}`);
+  });
+
+  it("HIGH: userinfo + // no path — colapsa corretamente sem afetar userinfo", () => {
+    // Garante que o '/' em '://' e o '@' do userinfo não confundem a detecção de pathStart.
+    const url = "https://user:pass@host.com//article/path?ref=x";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?ref=x"), `query perdida: ${result}`);
+    assert.ok(!result.includes("//article"), `// no path não normalizado: ${result}`);
+    assert.ok(result.includes("user:pass@host.com"), `userinfo corrompido: ${result}`);
+  });
+
+  it("#2439 Item 1: URL sem // no path retorna original byte-a-byte (userinfo, sem change)", () => {
+    // pathname='/' aparece em '://' — indexOf('/') acharia o '/' em '://' antes do real.
+    // A busca estrutural (indexOf depois de '://') deve encontrar o pathname correto.
+    // Sem '//double' no path esta URL não é alterada.
+    const url = "https://user:pass@host.com/path";
+    assert.equal(normalizeUseMelhorUrl(url), url, "URL sem // no path deve retornar original");
+  });
+
+  it("#2439 Item 1: URL com // no path e query preserva query (caso ASCII básico)", () => {
+    // pathname='//': indexed via estrutura, não indexOf
+    const url = "https://host.com//path?key=val";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?key=val"), `query não preservada: ${result}`);
+    assert.ok(!result.includes("//path"), `// no path não normalizado: ${result}`);
+  });
+
+  // #2439 Item 2: /// → / (não deixa // residual após colapso de pares)
+  it("#2439 Item 2: triple slash '///' colapsado para '/' sem residual", () => {
+    // replace(/\/\//g, '/') colapsa /// → // (pares não-sobrepostos).
+    // /\/{2,}/g deve colapsar para '/' em uma passagem.
+    const url = "https://host.com///path/to/page";
+    const result = normalizeUseMelhorUrl(url);
+    // Verificar no pathname (não no scheme https://)
+    const parsedResult = new URL(result);
+    assert.ok(!parsedResult.pathname.includes("//"), `'//' residual no pathname: ${parsedResult.pathname}`);
+    assert.ok(result.includes("/path/to/page"), `path não normalizado: ${result}`);
+  });
+
+  it("#2439 Item 2: quatro barras '////' colapsadas para '/'", () => {
+    const url = "https://host.com////api/v1";
+    const result = normalizeUseMelhorUrl(url);
+    // Resultado esperado — sem // no pathname
+    assert.equal(result, "https://host.com/api/v1", "4 barras → 1 barra");
+    // Confirmar que o pathname não tem // (não contar o '//' de 'https://')
+    const parsedResult = new URL(result);
+    assert.ok(!parsedResult.pathname.includes("//"), `'//' residual no pathname: ${parsedResult.pathname}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -253,3 +253,33 @@ test("renderDashboardHtml: seção mostra stub quando cohorts ausente (default n
   assert.match(html, /id="engagement-cohorts"/);
   assert.match(html, /clarice-engagement-cohorts/);
 });
+
+// ─── #2441: tfoot de totalização nas Coortes de engajamento ──────────────────
+
+test("#2441 renderEngagementCohortsSection: tfoot presente com total = universe", () => {
+  const html = renderEngagementCohortsSection(SAMPLE);
+  // Deve ter <tfoot>
+  assert.match(html, /<tfoot>/, "deve ter <tfoot>");
+  // Linha de total deve exibir o universe formatado (1.000 para 1000 em pt-BR)
+  assert.match(html, /1\.000/, "deve exibir universe (1000) formatado em pt-BR no tfoot");
+  // Percentual deve ser 100%
+  assert.match(html, /100%/, "tfoot deve exibir 100% em % do universo");
+});
+
+test("#2441 renderEngagementCohortsSection: tfoot sem alerta quando soma == universe", () => {
+  // SAMPLE: 100+200+300+250+150 = 1000 = universe — sem mismatch
+  const html = renderEngagementCohortsSection(SAMPLE);
+  // Não deve ter o badge de alerta ⚠️
+  assert.doesNotMatch(html, /⚠️/, "não deve ter alerta ⚠️ quando soma == universe");
+});
+
+test("#2441 renderEngagementCohortsSection: tfoot com alerta quando soma != universe", () => {
+  // Criar cohorts com universe artificialmente maior (mismatch intencional)
+  const mismatch: EngagementCohorts = {
+    ...SAMPLE,
+    universe: 1001, // soma real = 1000, universe = 1001 → mismatch
+  };
+  const html = renderEngagementCohortsSection(mismatch);
+  // Deve ter badge de alerta ⚠️
+  assert.match(html, /⚠️/, "deve ter alerta ⚠️ quando soma != universe");
+});

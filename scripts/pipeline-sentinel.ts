@@ -82,9 +82,24 @@ export function autoUpdateStageStatusOnSentinel(
     // explicit update-stage-status call instead of silently flipping.
     if (blockReasonForMarkingStageDone(editionDir, step) !== null) return false;
     const nowIso = new Date(nowMs).toISOString();
-    const durationMs = row.start
-      ? nowMs - new Date(row.start).getTime()
-      : row.duration_ms;
+    // #2439 Item 3: guard NaN para row.start — `new Date(malformed).getTime()` retorna
+    // NaN, que propagaria para duration_ms silenciosamente. Usar o mesmo padrão de
+    // resolveSentinelEndMs: checar isNaN, cair para undefined (preserva row.duration_ms
+    // existente) com warn para que o problema fique visível nos logs.
+    let durationMs: number | undefined;
+    if (row.start) {
+      const startMs = new Date(row.start).getTime();
+      if (Number.isNaN(startMs)) {
+        console.warn(
+          `[autoUpdateStageStatusOnSentinel step ${step}] row.start malformado="${row.start}" — durationMs não calculado`,
+        );
+        durationMs = typeof row.duration_ms === "number" ? row.duration_ms : undefined;
+      } else {
+        durationMs = nowMs - startMs;
+      }
+    } else {
+      durationMs = typeof row.duration_ms === "number" ? row.duration_ms : undefined;
+    }
     const updated = applyUpdate(doc, {
       stage: step,
       status: "done",

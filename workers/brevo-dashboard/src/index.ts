@@ -2033,6 +2033,7 @@ export function renderVolumeSection(cumulativeSent: number): string {
 
 /**
  * Linha de totalização mensal de campanhas enviadas.
+ * #2442: campos extras para espelhar formato da tabela Envios (Bounces/Unsub/Spam + range de datas).
  */
 export interface MonthlyTotalRow {
   /** Mês no formato YYYY-MM (ex: "2026-06") */
@@ -2053,6 +2054,22 @@ export interface MonthlyTotalRow {
   openRate: number;
   /** CTR agregado = totalClicks / totalDelivered (0 quando delivered=0) */
   ctr: number;
+  /** #2442: Soma de hard+soft bounces no mês */
+  totalBounces: number;
+  /** #2442: Bounce rate agregado = totalBounces / totalSent (0 quando sent=0) */
+  bounceRate: number;
+  /** #2442: Soma de descadastros no mês */
+  totalUnsub: number;
+  /** #2442: Unsub rate = totalUnsub / totalSent (0 quando sent=0) */
+  unsubRate: number;
+  /** #2442: Soma de spam (complaints) no mês */
+  totalSpam: number;
+  /** #2442: Spam rate = totalSpam / totalSent (0 quando sent=0) */
+  spamRate: number;
+  /** #2442: ISO string do sentDate mais antigo do mês (1º envio) */
+  firstSentDate: string | null;
+  /** #2442: ISO string do sentDate mais recente do mês (último envio) */
+  lastSentDate: string | null;
 }
 
 /**
@@ -2071,6 +2088,12 @@ export function aggregateByMonth(
     totalDelivered: number;
     totalViews: number;
     totalClicks: number;
+    // #2442: novos campos para espelhar Envios
+    totalBounces: number;
+    totalUnsub: number;
+    totalSpam: number;
+    firstSentDate: string | null;
+    lastSentDate: string | null;
   };
   const acc = new Map<string, Acc>();
 
@@ -2087,7 +2110,11 @@ export function aggregateByMonth(
     const month = monthKeyBRT(c.sentDate);
     if (month === null) continue;
     if (!acc.has(month)) {
-      acc.set(month, { campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0 });
+      acc.set(month, {
+        campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0,
+        totalBounces: 0, totalUnsub: 0, totalSpam: 0,
+        firstSentDate: null, lastSentDate: null,
+      });
     }
     const row = acc.get(month)!;
     row.campaignCount += 1;
@@ -2095,6 +2122,14 @@ export function aggregateByMonth(
     row.totalDelivered += s.delivered ?? 0;
     row.totalViews += s.uniqueViews ?? 0;
     row.totalClicks += s.uniqueClicks ?? 0;
+    // #2442: bounces, unsub, spam
+    row.totalBounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
+    row.totalUnsub += s.unsubscriptions ?? 0;
+    row.totalSpam += s.complaints ?? 0;
+    // #2442: rastrear min/max sentDate do mês (1º e último envio).
+    // c.sentDate é garantido truthy pelo `if (!c.sentDate) continue` no topo do loop.
+    if (row.firstSentDate === null || c.sentDate < row.firstSentDate) row.firstSentDate = c.sentDate;
+    if (row.lastSentDate === null || c.sentDate > row.lastSentDate) row.lastSentDate = c.sentDate;
   }
 
   if (acc.size === 0) return [];
@@ -2116,6 +2151,15 @@ export function aggregateByMonth(
         totalClicks: d.totalClicks,
         openRate: d.totalDelivered > 0 ? (d.totalViews / d.totalDelivered) * 100 : 0,
         ctr: d.totalDelivered > 0 ? (d.totalClicks / d.totalDelivered) * 100 : 0,
+        // #2442
+        totalBounces: d.totalBounces,
+        bounceRate: d.totalSent > 0 ? (d.totalBounces / d.totalSent) * 100 : 0,
+        totalUnsub: d.totalUnsub,
+        unsubRate: d.totalSent > 0 ? (d.totalUnsub / d.totalSent) * 100 : 0,
+        totalSpam: d.totalSpam,
+        spamRate: d.totalSent > 0 ? (d.totalSpam / d.totalSent) * 100 : 0,
+        firstSentDate: d.firstSentDate,
+        lastSentDate: d.lastSentDate,
       };
     });
 }
@@ -2124,23 +2168,60 @@ export function aggregateByMonth(
  * Renderiza a tabela de totais por mês — 1 linha por mês, agregando campanhas
  * enviadas naquele mês. Tabela À PARTE da lista detalhada de campanhas.
  * Oculta ("") quando sem dados.
+ * #2442: espelha formato da tabela Envios (taxa+count, Bounces/Unsub/Spam, range de datas).
  * Exportado pra teste unitário.
  */
 export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
   if (rows.length === 0) return "";
 
+  // Formata célula com taxa em cima + contagem absoluta embaixo (igual ao row builder de Envios).
+  function metricCell(rate: string, count: number, alertClass?: boolean): string {
+    const cls = alertClass ? ' class="alert"' : ' class="metric"';
+    return `<td${cls}>${rate}<br><small>${count.toLocaleString("pt-BR")}</small></td>`;
+  }
+
+  // #2442: range de datas "1º – último" do mês, formatado em BRT data-apenas.
+  function fmtDateBRT(iso: string | null): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+    });
+  }
+
   const tableRows = rows.map((r) => {
     const openRateFmt = r.totalDelivered > 0 ? r.openRate.toFixed(1) + "%" : "—";
     const ctrFmt = r.totalDelivered > 0 ? r.ctr.toFixed(1) + "%" : "—";
+    const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
+    const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
+    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(1) + "%" : "—";
+    // Circuit breaker alerts (mesmos thresholds da tabela Envios)
+    const bounceAlert = r.totalSent > 0 && r.bounceRate >= 3;
+    const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;
+    const spamAlert = r.totalSent > 0 && r.spamRate >= 0.1;
+
+    const firstDate = fmtDateBRT(r.firstSentDate);
+    const lastDate = fmtDateBRT(r.lastSentDate);
+    // Comparar as datas formatadas (não os ISO datetimes raw) para que campanhas
+    // no mesmo dia-calendário BRT mas em horários distintos exibam data única.
+    const sentRange = firstDate === lastDate || r.campaignCount <= 1
+      ? firstDate
+      : `${firstDate} – ${lastDate}`;
+
     return `<tr>
       <td><strong>${escHtml(r.label)}</strong></td>
       <td>${r.campaignCount}</td>
+      <td>${sentRange}</td>
       <td>${r.totalSent.toLocaleString("pt-BR")}</td>
-      <td>${r.totalDelivered.toLocaleString("pt-BR")}</td>
-      <td>${r.totalViews.toLocaleString("pt-BR")}</td>
-      <td class="metric">${openRateFmt}</td>
-      <td>${r.totalClicks.toLocaleString("pt-BR")}</td>
-      <td class="metric">${ctrFmt}</td>
+      <td>${pct(r.totalDelivered, r.totalSent)}<br><small>${r.totalDelivered.toLocaleString("pt-BR")}</small></td>
+      ${metricCell(openRateFmt, r.totalViews)}
+      ${metricCell(ctrFmt, r.totalClicks)}
+      ${metricCell(bounceRateFmt, r.totalBounces, bounceAlert)}
+      ${metricCell(unsubRateFmt, r.totalUnsub, unsubAlert)}
+      ${metricCell(spamRateFmt, r.totalSpam, spamAlert)}
     </tr>`;
   }).join("\n");
 
@@ -2154,12 +2235,14 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
       <tr>
         <th title="Mês do envio">Mês</th>
         <th title="Número de envios realizados no mês">Envios</th>
+        <th title="Intervalo de datas: 1º envio – último envio do mês (horário de Brasília)">Enviado (1º – último)</th>
         <th title="${escHtml(ENVIOS_TOOLTIP)}">Envios (eventos)</th>
-        <th title="Total entregue (delivered) no mês">Delivered</th>
-        <th title="Soma de aberturas únicas (uniqueViews, MPP-inclusivo)">Opens</th>
-        <th title="Open rate agregado: opens ÷ delivered">Open rate</th>
-        <th title="Soma de cliques únicos (uniqueClicks)">Clicks</th>
-        <th title="CTR agregado: clicks ÷ delivered">CTR</th>
+        <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
+        <th title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
+        <th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
+        <th title="Hard bounces + soft bounces. Bench: &lt;2% saudável. ≥3% pausa o ramp.">Bounces</th>
+        <th title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
+        <th title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -2212,6 +2295,19 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
       <td>${pct(d.n, u)}</td>
     </tr>`).join("\n");
 
+  // #2441: validar que as 5 coortes somam o universo (partição completa).
+  const cohorteSum = cohorts.opened2plus + cohorts.opened1 + cohorts.received1_opened0 + cohorts.received2_opened0 + cohorts.exits;
+  const sumMismatch = cohorteSum !== u;
+  // Linha de totalização em <tfoot> — soma coluna "Pessoas únicas" = universe.
+  const sumMismatchTitle = sumMismatch
+    ? escHtml(`Atenção: soma das coortes (${cohorteSum.toLocaleString("pt-BR")}) ≠ universo (${u.toLocaleString("pt-BR")}) — verifique dados`)
+    : "";
+  const tfootRow = `<tr style="font-weight:700;border-top:2px solid var(--rule);">
+      <td>Total${sumMismatch ? ` <span style="color:var(--alert)" title="${sumMismatchTitle}">⚠️</span>` : ""}</td>
+      <td class="metric">${u.toLocaleString("pt-BR")}</td>
+      <td>100%</td>
+    </tr>`;
+
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
@@ -2226,6 +2322,7 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
+    <tfoot>${tfootRow}</tfoot>
   </table>
   </div>
 </section>`;

@@ -537,9 +537,12 @@ async function main(): Promise<void> {
       total: cp?.refs.length ?? 0,
       fetched: cp ? Object.keys(cp.done).length : 0,
       durationMs: Date.now() - startMs,
-      error: (e as Error).message,
+      error: e instanceof Error ? e.message : String(e),
     });
-    logLine(`❌ Falhou — checkpoint preservado (${cp ? Object.keys(cp.done).length : 0}/${cp?.refs.length ?? 0}), re-rode para retomar.`);
+    // #2440: incluir mensagem de erro no logLine para que a causa raiz apareça
+    // nos logs capturados pela Task agendada (run.log/task.log), não apenas no status.json.
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logLine(`❌ Falhou — ${errMsg} — checkpoint preservado (${cp ? Object.keys(cp.done).length : 0}/${cp?.refs.length ?? 0}), re-rode para retomar.`);
     process.exit(1);
   }
 

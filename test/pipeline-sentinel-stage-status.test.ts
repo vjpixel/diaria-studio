@@ -664,4 +664,39 @@ describe("backfill-stage-status helper logic (#1563, #1694, #2374)", () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  // #2439 Item 3: guard NaN para row.start malformado
+  it("#2439 row.start malformado → NaN guard → não propaga NaN como duration_ms", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-start-nan-"));
+    try {
+      let doc = makeInitialDoc("260620");
+      // Forçar row.start malformado diretamente no JSON (bypassa o applyUpdate que valida)
+      doc = applyUpdate(doc, { stage: 1, status: "running" });
+      saveDoc(dir, doc);
+      // Manipular o JSON para injetar start inválido
+      const jsonPath = join(dir, "_internal", "stage-status.json");
+      const raw = JSON.parse(readFileSync(jsonPath, "utf8"));
+      const row1 = raw.rows.find((r: { stage: number }) => r.stage === 1);
+      row1.start = "not-a-date"; // start malformado
+      writeFileSync(jsonPath, JSON.stringify(raw, null, 2));
+
+      const nowMs = new Date("2026-06-20T10:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260620", 1, nowMs);
+      assert.equal(updated, true, "deve retornar true mesmo com start malformado");
+
+      const reloaded = loadDoc(dir, "260620");
+      const stage1 = reloaded.rows.find((r) => r.stage === 1);
+      assert.ok(stage1, "stage1 deve existir");
+      assert.equal(stage1!.status, "done", "status deve ser done");
+      // duration_ms não deve ser NaN
+      if (stage1!.duration_ms !== undefined) {
+        assert.ok(!Number.isNaN(stage1!.duration_ms), `duration_ms não deve ser NaN mas foi ${stage1!.duration_ms}`);
+      }
+      // end deve ser definido e válido
+      assert.ok(stage1!.end, "end deve ser definido");
+      assert.ok(!isNaN(new Date(stage1!.end!).getTime()), "end deve ser data válida");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });
