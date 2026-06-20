@@ -811,6 +811,17 @@ describe("#2442 renderMonthlyTotalsSection novo formato", () => {
     assert.match(html, /<small>50<\/small>/, "totalViews (50) deve aparecer em <small>");
     assert.match(html, /<small>8<\/small>/, "totalClicks (8) deve aparecer em <small>");
   });
+
+  test("tabela mensal tem 10 colunas no header (#2442: +Bounces/Unsub/Spam)", () => {
+    // #2442 expandiu a tabela monthly-totals de 8 para 10 colunas (adicionou Bounces,
+    // Unsub, Spam). Testar contagem explícita para evitar regressão silenciosa.
+    // Colunas: Mês | Envios | Enviado (1º–último) | Envios (eventos) | Delivered
+    //          | Opens | Clicks | Bounces | Unsub | Spam = 10 th
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    const thCount = (html.match(/<th /g) || []).length;
+    assert.equal(thCount, 10, `tabela mensal deve ter 10 <th> mas encontrou ${thCount}`);
+  });
 });
 
 // ─── #2402: monthKeyBRT + aggregateByMonth usa BRT, não UTC ─────────────────

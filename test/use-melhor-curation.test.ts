@@ -1709,16 +1709,48 @@ describe("normalizeUseMelhorUrl (#2414) — host casing + porta + query preserva
     assert.equal(normalizeUseMelhorUrl(url), url, "no-change path deve retornar original");
   });
 
-  // #2439 Item 1: pathname '/' root não casa errado em '://' via indexOf
-  it("#2439 Item 1: URL com pathname root '/' e credenciais não corrompe (#2439)", () => {
+  // #2439 Item 1 + HIGH fix: testes que falham ANTES do fix e passam depois.
+  // O bug: parsed.pathname é percent-encoded; usá-lo para medir comprimento e
+  // indexar a string raw faz url.slice() começar cedo, engolindo a query.
+
+  it("HIGH: path acentuado + // + query — query sobrevive intacta (bug de encoding)", () => {
+    // URL PT-BR realista: path com caractere não-ASCII + double-slash + query.
+    // Antes do fix: parsed.pathname='/sa%C3%BAdee' (encoded, +3 bytes extra vs raw)
+    // → url.slice(pathStart + encoded.length) começa dentro de '?ref=email' → perdido.
+    const url = "https://host.com//artigo/saúde?ref=email";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?ref=email"), `query perdida: ${result}`);
+    assert.ok(!result.includes("//artigo"), `// no path não normalizado: ${result}`);
+    // O path acentuado NÃO deve ser re-encoded (preserva bytes do original)
+    assert.ok(result.includes("saúde"), `path acentuado re-encoded: ${result}`);
+  });
+
+  it("HIGH: path acentuado + /// + query — query sobrevive e triple-slash colapsado", () => {
+    const url = "https://host.com///artigo/ação?src=feed&v=2";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?src=feed&v=2"), `query perdida: ${result}`);
+    assert.ok(!result.includes("///"), `triple-slash não colapsado: ${result}`);
+    assert.ok(result.includes("ação"), `path acentuado re-encoded: ${result}`);
+  });
+
+  it("HIGH: userinfo + // no path — colapsa corretamente sem afetar userinfo", () => {
+    // Garante que o '/' em '://' e o '@' do userinfo não confundem a detecção de pathStart.
+    const url = "https://user:pass@host.com//article/path?ref=x";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?ref=x"), `query perdida: ${result}`);
+    assert.ok(!result.includes("//article"), `// no path não normalizado: ${result}`);
+    assert.ok(result.includes("user:pass@host.com"), `userinfo corrompido: ${result}`);
+  });
+
+  it("#2439 Item 1: URL sem // no path retorna original byte-a-byte (userinfo, sem change)", () => {
     // pathname='/' aparece em '://' — indexOf('/') acharia o '/' em '://' antes do real.
     // A busca estrutural (indexOf depois de '://') deve encontrar o pathname correto.
-    // Sem '//double' no path esta URL não é alterada, mas o early-return garante isso.
+    // Sem '//double' no path esta URL não é alterada.
     const url = "https://user:pass@host.com/path";
     assert.equal(normalizeUseMelhorUrl(url), url, "URL sem // no path deve retornar original");
   });
 
-  it("#2439 Item 1: URL com pathname root '/' duplo e query preserva query", () => {
+  it("#2439 Item 1: URL com // no path e query preserva query (caso ASCII básico)", () => {
     // pathname='//': indexed via estrutura, não indexOf
     const url = "https://host.com//path?key=val";
     const result = normalizeUseMelhorUrl(url);

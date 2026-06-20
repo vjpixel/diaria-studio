@@ -656,35 +656,54 @@ export function normalizeUseMelhorUrl(url: string): string {
     return url;
   }
 
-  // #2439 Item 2: usar /\/{2,}/g → '/' para colapsar ///+ (não apenas pares).
-  // replace(/\/\//g, '/') colapsa /// → // (pares não-sobrepostos), deixando
-  // um '//' residual. /\/{2,}/ captura 2 ou mais barras consecutivas de uma vez.
-  const normalizedPathname = parsed.pathname.replace(/\/{2,}/g, "/");
-  if (normalizedPathname === parsed.pathname) {
-    // Sem alteração no path — retornar original para preservar representação byte-a-byte.
-    return url;
-  }
-
-  // #2414: splice cirúrgico no pathname para preservar host casing, porta explícita,
-  // query e fragment byte-a-byte. `parsed.toString()` re-serializa a URL inteira:
-  // host → lowercase, porta default removida, chars → percent-encoded.
-  // Em vez disso, localizar o pathname pela posição estrutural.
+  // #2414 / #2439 / HIGH fix: splice cirúrgico operando INTEIRAMENTE na string raw.
   //
-  // #2439 Item 1: `url.indexOf(parsed.pathname)` pode casar errado quando
-  // pathname é '/' (root), pois '/' aparece em '://'. Substituímos por busca
-  // estrutural: o pathname começa no primeiro '/' DEPOIS da autoridade
-  // (scheme://[userinfo@]host[:port]). Encontrar a autoridade pulando '://'
-  // e depois encontrar o próximo '/'.
+  // Problema do código anterior: usava `parsed.pathname` (percent-encoded pelo
+  // construtor URL) para calcular comprimento e depois indexar a string original
+  // NÃO-encoded. Para URLs com caracteres não-ASCII no path (ex: /saúde, /ação)
+  // o pathname encoded tem MAIS bytes que o raw, causando:
+  //   - url.slice(pathStartIdx + parsed.pathname.length) começa cedo demais
+  //   - a query string (?ref=email) é incluída na fatia de path e depois perdida
+  //   - o path acentuado fica re-encoded no output (quebra byte-identidade do #2414)
+  //
+  // Fix: localizar o path na string raw estruturalmente (após '://'), depois
+  // localizar onde o path TERMINA na string raw (primeiro '?' ou '#', ou fim),
+  // e colapsar '//{2,}' APENAS dentro dessa fatia de path raw — nunca tocar
+  // query/fragment. Preserva bytes: não re-encoda nada.
   const schemeEnd = url.indexOf("://");
   // schemeEnd deve sempre existir (URL válida passou pelo constructor acima)
   const pathStartIdx = schemeEnd !== -1 ? url.indexOf("/", schemeEnd + 3) : -1;
   if (pathStartIdx === -1) {
     // Fallback improvável: URL sem path (ex: "https://host" sem '/')
     console.warn(`[normalizeUseMelhorUrl] pathname não localizado estruturalmente — fallback toString(): ${url}`);
-    parsed.pathname = normalizedPathname;
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
     return parsed.toString();
   }
-  return url.slice(0, pathStartIdx) + normalizedPathname + url.slice(pathStartIdx + parsed.pathname.length);
+
+  // Localizar onde o path termina na string raw: primeiro '?' ou '#' após o
+  // início do path, ou o fim da string se não houver query/fragment.
+  const qIdx = url.indexOf("?", pathStartIdx);
+  const fIdx = url.indexOf("#", pathStartIdx);
+  const pathEndIdx =
+    qIdx === -1 && fIdx === -1
+      ? url.length
+      : qIdx === -1
+        ? fIdx
+        : fIdx === -1
+          ? qIdx
+          : Math.min(qIdx, fIdx);
+
+  const rawPath = url.slice(pathStartIdx, pathEndIdx);
+  // #2439 Item 2: /\/{2,}/g captura 2+ barras em uma passagem (evita residual //
+  // que replace(/\/\//g,'/') deixaria de ///→//→/ em duas passagens).
+  const normalizedRawPath = rawPath.replace(/\/{2,}/g, "/");
+
+  if (normalizedRawPath === rawPath) {
+    // Sem alteração no path — retornar original para preservar representação byte-a-byte.
+    return url;
+  }
+
+  return url.slice(0, pathStartIdx) + normalizedRawPath + url.slice(pathEndIdx);
 }
 
 export interface UrlNormalizationResult {

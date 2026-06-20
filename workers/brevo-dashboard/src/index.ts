@@ -2126,12 +2126,10 @@ export function aggregateByMonth(
     row.totalBounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     row.totalUnsub += s.unsubscriptions ?? 0;
     row.totalSpam += s.complaints ?? 0;
-    // #2442: rastrear min/max sentDate do mês (1º e último envio)
-    const sd = c.sentDate;
-    if (sd) {
-      if (row.firstSentDate === null || sd < row.firstSentDate) row.firstSentDate = sd;
-      if (row.lastSentDate === null || sd > row.lastSentDate) row.lastSentDate = sd;
-    }
+    // #2442: rastrear min/max sentDate do mês (1º e último envio).
+    // c.sentDate é garantido truthy pelo `if (!c.sentDate) continue` no topo do loop.
+    if (row.firstSentDate === null || c.sentDate < row.firstSentDate) row.firstSentDate = c.sentDate;
+    if (row.lastSentDate === null || c.sentDate > row.lastSentDate) row.lastSentDate = c.sentDate;
   }
 
   if (acc.size === 0) return [];
@@ -2207,7 +2205,9 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
 
     const firstDate = fmtDateBRT(r.firstSentDate);
     const lastDate = fmtDateBRT(r.lastSentDate);
-    const sentRange = r.firstSentDate === r.lastSentDate || r.campaignCount <= 1
+    // Comparar as datas formatadas (não os ISO datetimes raw) para que campanhas
+    // no mesmo dia-calendário BRT mas em horários distintos exibam data única.
+    const sentRange = firstDate === lastDate || r.campaignCount <= 1
       ? firstDate
       : `${firstDate} – ${lastDate}`;
 
@@ -2299,8 +2299,11 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   const cohorteSum = cohorts.opened2plus + cohorts.opened1 + cohorts.received1_opened0 + cohorts.received2_opened0 + cohorts.exits;
   const sumMismatch = cohorteSum !== u;
   // Linha de totalização em <tfoot> — soma coluna "Pessoas únicas" = universe.
+  const sumMismatchTitle = sumMismatch
+    ? escHtml(`Atenção: soma das coortes (${cohorteSum.toLocaleString("pt-BR")}) ≠ universo (${u.toLocaleString("pt-BR")}) — verifique dados`)
+    : "";
   const tfootRow = `<tr style="font-weight:700;border-top:2px solid var(--rule);">
-      <td>Total${sumMismatch ? ` <span style="color:var(--alert)" title="Atenção: soma das coortes (${cohorteSum.toLocaleString("pt-BR")}) ≠ universo (${u.toLocaleString("pt-BR")}) — verifique dados">⚠️</span>` : ""}</td>
+      <td>Total${sumMismatch ? ` <span style="color:var(--alert)" title="${sumMismatchTitle}">⚠️</span>` : ""}</td>
       <td class="metric">${u.toLocaleString("pt-BR")}</td>
       <td>100%</td>
     </tr>`;
