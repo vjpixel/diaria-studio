@@ -215,10 +215,22 @@ test("renderEngagementCohortsSection: stub gracioso quando null", () => {
 
 test("renderEngagementCohortsSection: renderiza contagens e universo", () => {
   const html = renderEngagementCohortsSection(SAMPLE);
-  assert.match(html, /1\.000 contatos no universo/);
+  // #2429: rótulo atualizado para "pessoas únicas alcançadas" (≠ eventos de envio)
+  assert.match(html, /1\.000 pessoas únicas alcançadas/);
   assert.match(html, /100/); // opened2plus
   assert.match(html, /Saídas/);
   assert.match(html, /exatamente uma/); // explica exclusividade
+});
+
+// #2429: testa novos rótulos e tooltips que distinguem pessoas únicas de eventos de envio
+test("renderEngagementCohortsSection: #2429 rótulo 'Pessoas únicas alcançadas' e tooltip de dedupagem", () => {
+  const html = renderEngagementCohortsSection(SAMPLE);
+  // Rótulo principal do universo
+  assert.match(html, /pessoas únicas alcançadas/i, "deve usar rótulo 'pessoas únicas alcançadas'");
+  // Tooltip com explicação de dedupagem
+  assert.match(html, /title="[^"]*únicos dedupados[^"]*"/, "deve ter tooltip explicando deduplicação");
+  // Coluna da tabela deve ser "Pessoas únicas", não apenas "Pessoas"
+  assert.match(html, /Pessoas únicas<\/th>/, "coluna deve ser 'Pessoas únicas'");
 });
 
 test("renderEngagementCohortsSection: rótulos dos buckets ≥2 são sempre '2+' (independente de maxReceived)", () => {
@@ -232,7 +244,8 @@ test("renderEngagementCohortsSection: rótulos dos buckets ≥2 são sempre '2+'
 test("renderDashboardHtml: injeta a seção de coortes quando fornecida", () => {
   const html = renderDashboardHtml([], [], SAMPLE);
   assert.match(html, /id="engagement-cohorts"/);
-  assert.match(html, /1\.000 contatos no universo/);
+  // #2429: rótulo atualizado para "pessoas únicas alcançadas"
+  assert.match(html, /1\.000 pessoas únicas alcançadas/);
 });
 
 test("renderDashboardHtml: seção mostra stub quando cohorts ausente (default null)", () => {

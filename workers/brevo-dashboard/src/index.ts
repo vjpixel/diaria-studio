@@ -2007,11 +2007,14 @@ export function renderVolumeSection(cumulativeSent: number): string {
   const pctLabel = pctBar.toFixed(1);
   const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
   const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
+  // #2429: rótulo "Envios (eventos)" deixa explícito que este número conta eventos
+  // de envio (uma pessoa em 2 campanhas conta 2×; inclui bounces), não pessoas únicas.
+  const eventsTooltip = "Eventos de envio acumulados; uma pessoa em N campanhas conta N×; inclui bounces.";
   return `
 <section class="phase2-section" id="volume-ciclo">
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
-    <strong>${cumulativeSent.toLocaleString("pt-BR")}</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
+    <strong title="${escHtml(eventsTooltip)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
     <span class="spark-bar" title="${pctLabel}% do plano total">${bar}</span>
   </p>
 </section>`;
@@ -2143,7 +2146,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
       <tr>
         <th title="Mês do envio">Mês</th>
         <th title="Número de envios realizados no mês">Envios</th>
-        <th title="Total enviado (sent) no mês">Sent</th>
+        <th title="Eventos de envio acumulados no mês; uma pessoa em N campanhas conta N×; inclui bounces.">Envios (eventos)</th>
         <th title="Total entregue (delivered) no mês">Delivered</th>
         <th title="Soma de aberturas únicas (uniqueViews, MPP-inclusivo)">Opens</th>
         <th title="Open rate agregado: opens ÷ delivered">Open rate</th>
@@ -2204,14 +2207,16 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <p class="section-note">${u.toLocaleString("pt-BR")} contatos no universo (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
+  <!-- #2429: "Pessoas únicas alcançadas" em vez de "contatos no universo" — deixa claro que este número
+       conta contatos únicos dedupados (≠ eventos de envio exibidos na seção Volume). -->
+  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Coorte de engajamento (mutuamente exclusivas).">Coorte</th>
-        <th title="Número de contatos nesta coorte.">Pessoas</th>
-        <th title="Participação no universo.">% do universo</th>
+        <th title="Número de pessoas únicas nesta coorte.">Pessoas únicas</th>
+        <th title="Participação no universo de pessoas únicas alcançadas.">% do universo</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

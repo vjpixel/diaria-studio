@@ -673,6 +673,16 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     // ctr = 8/196*100 ≈ 4.1%
     assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
   });
+
+  // #2429: rótulo "Envios (eventos)" na coluna Sent da tabela mensal
+  test("#2429 coluna Sent da tabela mensal tem rótulo 'Envios (eventos)' com tooltip", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    // Coluna deve ser rotulada como "Envios (eventos)", não apenas "Sent" (#2429)
+    assert.match(html, /Envios \(eventos\)/, "coluna deve ter rótulo 'Envios (eventos)'");
+    // Tooltip deve explicar que inclui bounces e conta uma pessoa em N campanhas N× vezes
+    assert.match(html, /title="[^"]*uma pessoa em N campanhas conta N×[^"]*"/, "tooltip deve explicar contagem por evento");
+  });
 });
 
 // ─── #2402: monthKeyBRT + aggregateByMonth usa BRT, não UTC ─────────────────
@@ -1089,6 +1099,16 @@ describe("renderVolumeSection", () => {
     assert.match(html, /40.000/, "deve mostrar meta 40.000");
     assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
     assert.match(html, /Volume enviado no ciclo/);
+  });
+
+  // #2429: rótulo "Envios (eventos)" deixa claro que o número são eventos de envio,
+  // não pessoas únicas (≠ universo de coortes).
+  test("#2429 exibe rótulo 'envios (eventos)' com tooltip explicativo", () => {
+    const html = renderVolumeSection(10499);
+    // Rótulo deve incluir "envios (eventos)" (case-insensitive para robustez)
+    assert.match(html, /envios \(eventos\)/i, "deve rotular como 'envios (eventos)'");
+    // Tooltip deve mencionar que inclui bounces e conta por evento
+    assert.match(html, /title="[^"]*inclui bounces[^"]*"/, "tooltip deve mencionar bounces");
   });
 });
 
