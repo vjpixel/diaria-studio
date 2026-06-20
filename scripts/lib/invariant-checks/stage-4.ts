@@ -545,7 +545,13 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   // Se o editor copiar `description` (catálogo, ex: 'DESTAQUE 2 lista...') para dentro de
   // `reveal`, o Stage 4 ficaria silencioso sem esta checagem.
   // severity: warning (decisão editorial 260619 — lints ficam warning).
-  const reveal = extractRevealFromFrontmatter(md);
+  //
+  // (#2438 DRY) Quando extracted é não-nulo, reutiliza extracted.reveal (já computado
+  // por extractIntentionalErrorFromMd internamente via extractRevealFromFrontmatter)
+  // em vez de chamar extractRevealFromFrontmatter de novo. Só chama quando extracted
+  // é null, pois nesse caso o campo reveal ainda pode ter valor catalog/genérico que
+  // precisamos checar mesmo sem narrative válida.
+  const reveal = extracted?.reveal ?? extractRevealFromFrontmatter(md);
   if (reveal) {
     if (narrativeIsCatalogShaped(reveal)) {
       return [
@@ -577,6 +583,27 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
         },
       ];
     }
+  }
+
+  // (#2438 Item 2 — caso 3) Sem campo `reveal` dedicado E sem fonte válida de narrative
+  // (extracted=null) → o reveal da PRÓXIMA edição cairia no fallback seguro genérico.
+  // Emitir warning NÃO-BLOCKING quando o MD declara um bloco ERRO INTENCIONAL (o
+  // editor está usando o recurso) mas não preencheu nenhuma fonte válida de reveal.
+  // severity: warning — nunca blocking (decisão editorial, fora de escopo #2438).
+  if (!extracted && !reveal && md.includes("**ERRO INTENCIONAL**")) {
+    return [
+      {
+        rule: "narrative-not-generic-placeholder",
+        message:
+          `ERRO INTENCIONAL: sem campo \`reveal\` dedicado E sem fonte válida de narrative ` +
+          `no corpo ou frontmatter. O reveal da PRÓXIMA edição usará o fallback seguro genérico ` +
+          `("Na última edição, escondemos um erro proposital...") em vez de descrever o erro real. ` +
+          REMEDIATION,
+        source_issue: "#2438",
+        severity: "warning",
+        file: path,
+      },
+    ];
   }
 
   return [];
