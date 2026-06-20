@@ -106,9 +106,9 @@ describe("#2416 sibling: scanEdition — NaN guard em completed_at malformado", 
       // Sanity: fallback é Date.now(), que é > 0
       assert.ok(fixes[0].endMs > 0, "endMs deve ser um timestamp positivo");
 
-      // O warn de fallback deve ter sido emitido
+      // O warn de fallback deve ter sido emitido (via helper resolveSentinelEndMs)
       const warnEmitted = warnMessages.some(
-        (m) => m.includes("malformed completed_at") && m.includes("not-a-date"),
+        (m) => m.includes("malformado") && m.includes("not-a-date"),
       );
       assert.ok(warnEmitted, "#2416-sibling: warn de fallback deve ser emitido quando completed_at é malformado");
     } finally {

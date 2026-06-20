@@ -28,7 +28,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { loadDoc, STAGES } from "./update-stage-status.ts";
-import { readSentinel } from "./lib/pipeline-state.ts";
+import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
 
@@ -73,21 +73,11 @@ export function scanEdition(editionDir: string, editionId: string): Fix[] {
     if (!row || (row.status !== "running" && row.status !== "pending")) continue;
     const sentinel = readSentinel(editionDir, stage);
     if (!sentinel) continue;
-    // #2416 sibling: guard NaN — `new Date(malformed).getTime()` returns NaN,
-    // which flows into autoUpdateStageStatusOnSentinel as nowMs=NaN →
-    // `new Date(NaN).toISOString()` throws RangeError swallowed by try/catch →
-    // silent no-op (stage-status never flipped to done, no warning).
-    // Fall back to Date.now() with a warn so the repair still runs.
-    const rawEndMs = new Date(sentinel.completed_at).getTime();
-    let endMs: number;
-    if (Number.isNaN(rawEndMs)) {
-      console.warn(
-        `[backfill] sentinel stage ${stage} (${editionId}) has malformed completed_at="${sentinel.completed_at}" — falling back to Date.now() for stage-status repair`,
-      );
-      endMs = Date.now();
-    } else {
-      endMs = rawEndMs;
-    }
+    // #2416 sibling: guard NaN via helper compartilhado (resolveSentinelEndMs) —
+    // `completed_at` malformado → endMs=NaN → autoUpdateStageStatusOnSentinel
+    // recebe nowMs=NaN → new Date(NaN).toISOString() lança RangeError engolido
+    // → no-op silencioso. O helper detecta o NaN e cai para Date.now() com warn.
+    const endMs = resolveSentinelEndMs(sentinel, `backfill stage ${stage} (${editionId})`);
     fixes.push({
       edition: editionId,
       stage,

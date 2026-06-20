@@ -54,6 +54,35 @@ export function readSentinel(editionDir: string, step: number): StepSentinel | n
   }
 }
 
+/**
+ * #2416 (+ sibling): resolve `sentinel.completed_at` para um epoch ms seguro
+ * para usar como `nowMs`/`end` ao reparar stage-status.
+ *
+ * `new Date(malformed).getTime()` retorna NaN, que propaga para
+ * `new Date(NaN).toISOString()` (em autoUpdateStageStatusOnSentinel) e lança
+ * RangeError engolido por try/catch → no-op silencioso (stage nunca flipado
+ * para done, sem warning). Este helper detecta o NaN e cai para `Date.now()`
+ * emitindo um warn — o reparo ainda roda e o problema fica visível nos logs.
+ *
+ * Centraliza o guard que antes era duplicado em pipeline-sentinel.ts (#2416)
+ * e backfill-stage-status.ts (sibling) — ambos operam sobre o mesmo
+ * StepSentinel. `label` identifica o caller no warn (ex.: "pipeline-sentinel"
+ * ou "backfill stage 3 (260619)").
+ */
+export function resolveSentinelEndMs(
+  sentinel: StepSentinel,
+  label: string,
+): number {
+  const t = new Date(sentinel.completed_at).getTime();
+  if (Number.isNaN(t)) {
+    console.warn(
+      `[${label}] sentinel tem completed_at malformado="${sentinel.completed_at}" — caindo para Date.now() no reparo de stage-status`,
+    );
+    return Date.now();
+  }
+  return t;
+}
+
 export function assertSentinel(editionDir: string, step: number): AssertResult {
   const sentinel = readSentinel(editionDir, step);
   if (sentinel === null) {

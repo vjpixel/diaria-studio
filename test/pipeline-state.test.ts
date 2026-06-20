@@ -8,7 +8,9 @@ import {
   sentinelExists,
   readSentinel,
   assertSentinel,
+  resolveSentinelEndMs,
 } from "../scripts/lib/pipeline-state.ts";
+import type { StepSentinel } from "../scripts/lib/pipeline-state.ts";
 
 function mkEditionDir(): string {
   return mkdtempSync(join(tmpdir(), "diaria-sentinel-"));
@@ -126,5 +128,56 @@ describe("pipeline-state (#780)", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+describe("resolveSentinelEndMs (#2416 + sibling) — guard NaN compartilhado", () => {
+  // Centraliza o guard antes duplicado em pipeline-sentinel.ts e
+  // backfill-stage-status.ts. completed_at malformado → NaN → caller propagaria
+  // nowMs=NaN → new Date(NaN).toISOString() lança RangeError → no-op silencioso.
+  // O helper detecta NaN, cai para Date.now() e emite warn.
+
+  it("completed_at válido → epoch ms exato (sem fallback)", () => {
+    const completedAt = "2026-06-20T09:30:00.000Z";
+    const sentinel: StepSentinel = { step: 2, completed_at: completedAt, outputs: [] };
+    const ms = resolveSentinelEndMs(sentinel, "test");
+    assert.equal(ms, new Date(completedAt).getTime());
+    assert.ok(!Number.isNaN(ms));
+  });
+
+  it("completed_at malformado → fallback Date.now() (não NaN) + warn emitido", () => {
+    const sentinel: StepSentinel = { step: 2, completed_at: "not-a-date", outputs: [] };
+    const warnMessages: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnMessages.push(args.map(String).join(" "));
+    };
+    let ms: number;
+    try {
+      ms = resolveSentinelEndMs(sentinel, "backfill stage 3 (260619)");
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(!Number.isNaN(ms), "fallback não deve ser NaN");
+    assert.ok(ms > 0, "fallback Date.now() é timestamp positivo");
+    const warned = warnMessages.some(
+      (m) => m.includes("malformado") && m.includes("not-a-date") && m.includes("backfill stage 3"),
+    );
+    assert.ok(warned, "warn deve conter o label do caller e o valor malformado");
+  });
+
+  it("completed_at ausente (undefined) → fallback Date.now() (NaN guard cobre)", () => {
+    // Sentinel corrompido sem completed_at → new Date(undefined).getTime() = NaN
+    const sentinel = { step: 1, outputs: [] } as unknown as StepSentinel;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    let ms: number;
+    try {
+      ms = resolveSentinelEndMs(sentinel, "test");
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(!Number.isNaN(ms));
+    assert.ok(ms > 0);
   });
 });
