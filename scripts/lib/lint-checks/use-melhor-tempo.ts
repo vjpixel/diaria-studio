@@ -192,11 +192,16 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
       const descLineNum = j + 1;
       const nextNonEmpty = descLine.trim();
 
-      // Se a próxima linha é outro link (novo item) ou separador → sem descrição
+      // Se a próxima linha é outro link (novo item), separador, ou header de
+      // seção → sem descrição. O check de section header (#2413 finding #10)
+      // cobre input malformado sem `---` entre USE MELHOR e a próxima seção:
+      // sem ele, o header "**🚀 LANÇAMENTOS**" seria tratado como descrição e
+      // checar a ausência de tempo no texto do header (diagnostic confuso).
       if (
         INLINE_LINK_ONLY_RE.test(descLine) ||
         INLINE_LINK_WITH_DESC_RE.test(descLine) ||
-        nextNonEmpty === "---"
+        nextNonEmpty === "---" ||
+        ANY_SECTION_HEADER_RE.test(nextNonEmpty)
       ) {
         errors.push({
           item: itemNum,
@@ -210,8 +215,8 @@ export function checkUseMelhorTempo(md: string): UseMelhorTempoReport {
       // FP fix (#2396 finding #2): descrição que começa com bold (`**OpenAI** lança...`)
       // NÃO deve ser tratada como header de seção. A verificação anterior usava
       // `/^\*\*[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÚÜÇ]/` que casava bold-leading legítimo. Agora só
-      // consideramos fim de seção se for `---` ou outro `INLINE_LINK_*` — ambos
-      // já tratados acima. Uma linha de descrição pode começar com bold sem ser header.
+      // consideramos fim de seção se for `---`, INLINE_LINK_*, ou header canônico (#2413).
+      // Uma linha de descrição pode começar com bold sem ser header.
 
       // Verificar presença de tempo na descrição
       if (!USE_MELHOR_TEMPO_RE.test(descLine)) {

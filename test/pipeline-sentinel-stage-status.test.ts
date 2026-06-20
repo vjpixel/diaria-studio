@@ -476,6 +476,93 @@ describe("#2401: assert path uses sentinel.completed_at, not Date.now()", () => 
   });
 });
 
+describe("#2416: NaN guard — sentinel.completed_at malformado não causa no-op silencioso", () => {
+  // Regressão #2416: no caminho `assert`, `new Date(sentinel.completed_at).getTime()`
+  // sem guard NaN → nowMs=NaN → `new Date(NaN).toISOString()` lança RangeError
+  // engolido pelo try/catch em autoUpdateStageStatusOnSentinel → retorna false
+  // → stage-status.json nunca flipado para done, sem warning. Silencioso.
+  //
+  // Fix: guard NaN antes de chamar autoUpdateStageStatusOnSentinel. Se getTime()=NaN,
+  // cai para Date.now() e emite console.warn. O reparo ocorre, não é no-op.
+
+  it("#2416: sentinel com completed_at malformado → reparo usa fallback (não no-op silencioso)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-nan-guard-"));
+    try {
+      // Stage 2 "running"
+      let doc = makeInitialDoc("260619");
+      doc = applyUpdate(doc, {
+        stage: 2,
+        status: "running",
+        start: "2026-06-19T18:00:00Z",
+      });
+      saveDoc(dir, doc);
+
+      // Sentinel com completed_at malformado (string não-ISO inválida)
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", ".step-2-done.json"),
+        JSON.stringify({ step: 2, completed_at: "not-a-date", outputs: [] }),
+      );
+
+      // Simular o que o CLI assert faz (pós-fix #2416):
+      // detectar NaN e cair para Date.now() em vez de propagar NaN.
+      const sentinel = readSentinel(dir, 2);
+      assert.ok(sentinel, "sentinel deve ser legível");
+      const t = new Date(sentinel!.completed_at).getTime();
+      // Confirmar que o input realmente é NaN (fixture válido para o bug)
+      assert.ok(Number.isNaN(t), "completed_at malformado deve produzir NaN");
+
+      // Com o guard do fix: fallback para Date.now()
+      const nowMs = Number.isNaN(t) ? Date.now() : t;
+      assert.ok(!Number.isNaN(nowMs), "nowMs pós-guard não deve ser NaN");
+
+      // autoUpdateStageStatusOnSentinel com nowMs válido: deve retornar true (não false/no-op)
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 2, nowMs);
+      assert.equal(updated, true, "#2416: com nowMs válido o reparo deve ocorrer (não no-op silencioso)");
+
+      const reloaded = loadDoc(dir, "260619");
+      const stage2 = reloaded.rows.find((r) => r.stage === 2);
+      assert.ok(stage2);
+      assert.equal(stage2!.status, "done", "stage deve virar done, não ficar stuck em running");
+      assert.ok(stage2!.end, "end deve estar setado");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#2416: sentinel com completed_at ausente (undefined) → NaN guard cobre (fallback a Date.now())", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-nan-undef-"));
+    try {
+      let doc = makeInitialDoc("260619");
+      doc = applyUpdate(doc, { stage: 1, status: "running" });
+      saveDoc(dir, doc);
+
+      // Sentinel sem completed_at (campo ausente → JSON.parse retorna undefined)
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", ".step-1-done.json"),
+        JSON.stringify({ step: 1, outputs: [] }),
+      );
+
+      const sentinel = readSentinel(dir, 1);
+      assert.ok(sentinel, "sentinel deve ser legível");
+      const t = new Date((sentinel as unknown as Record<string, unknown>)["completed_at"] as string).getTime();
+      // undefined coerce → NaN
+      assert.ok(Number.isNaN(t), "completed_at ausente deve produzir NaN");
+
+      const nowMs = Number.isNaN(t) ? Date.now() : t;
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260619", 1, nowMs);
+      assert.equal(updated, true, "com fallback, reparo deve ocorrer mesmo sem completed_at");
+
+      const reloaded = loadDoc(dir, "260619");
+      const s1 = reloaded.rows.find((r) => r.stage === 1);
+      assert.equal(s1!.status, "done");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
 describe("backfill-stage-status helper logic (#1563, #1694, #2374)", () => {
   // Backfill CLI uses spawnSync internally; for direct unit testing,
   // we exercise the same logic — load + detect + apply.

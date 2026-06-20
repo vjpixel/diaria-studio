@@ -663,9 +663,22 @@ export function normalizeUseMelhorUrl(url: string): string {
     return url;
   }
 
-  parsed.pathname = normalizedPathname;
-  // URL.toString() reconstrói origin + pathname + search + hash.
-  return parsed.toString();
+  // #2414: splice cirúrgico no pathname para preservar host casing, porta explícita,
+  // query e fragment byte-a-byte. `parsed.toString()` re-serializa a URL inteira:
+  // host → lowercase, porta default removida, chars → percent-encoded.
+  // Em vez disso, localizar o pathname na string original e substituir apenas ele.
+  //
+  // O pathname original começa após "://host[:port]" e termina antes de "?" ou "#".
+  // `parsed.pathname` é o valor bruto (não re-encodado) — usamos como search term.
+  const pathnameStart = url.indexOf(parsed.pathname);
+  if (pathnameStart === -1) {
+    // Fallback improvável (URL com encoding incomum): usar toString() com aviso.
+    // Documentado: produz host lowercase + porta default removida, mas não corrompe path.
+    console.warn(`[normalizeUseMelhorUrl] pathname não localizado no original — fallback toString(): ${url}`);
+    parsed.pathname = normalizedPathname;
+    return parsed.toString();
+  }
+  return url.slice(0, pathnameStart) + normalizedPathname + url.slice(pathnameStart + parsed.pathname.length);
 }
 
 export interface UrlNormalizationResult {

@@ -50,8 +50,15 @@ const SECTION_ITEM_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
 // Linha contendo APENAS um inline link bem-formado (com **bold** opcional
 // e trailing spaces opcionais). Segura pra detectar item title-line.
 // Exportado (#2372) — reutilizado por use-melhor-tempo.ts (era duplicado).
-export const INLINE_LINK_ONLY_RE =
-  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*{0,2}\s*$/;
+//
+// #2413: sub-padrão URL_WITH_BALANCED_PARENS tolera UM nível de parênteses
+// balanceados no path (ex: Wikipedia `/wiki/GPT-4_(model)`). Sem isso, a
+// regex antiga `[^\s)]+` parava no primeiro `)` e a linha não casava → item
+// USE MELHOR 2-linhas com parens-URL era silenciosamente pulado.
+const URL_WITH_BALANCED_PARENS_RE_PART = String.raw`https?:\/\/[^\s)]*(?:\([^\s)]*\)[^\s)]*)*`;
+export const INLINE_LINK_ONLY_RE = new RegExp(
+  String.raw`^\s*\*{0,2}\s*\[[^\]]+\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\s*\*{0,2}\s*$`,
+);
 
 // Linha com inline link + texto extra (descrição colada). Match conservador.
 const INLINE_LINK_WITH_TEXT_RE =
