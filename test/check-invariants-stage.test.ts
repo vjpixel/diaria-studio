@@ -1144,32 +1144,35 @@ describe("Stage 4 invariants", () => {
       // reveal nem narrative — o reveal da próxima edição cairia no fallback genérico.
       // Deve emitir warning (não error) E a edição deve passar o gate (verde).
       const fixture2 = makeFixtureEdition();
-      writeFileSync(
-        join(fixture2, "02-reviewed.md"),
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
-          "",
-          "---",
-        ].join("\n"),
-      );
-      const v = checkNarrativeNotGenericPlaceholder(fixture2);
-      // Deve emitir warning (corpo genérico já dispara antes do caso 3 neste fixture)
-      assert.equal(v.length, 1);
-      assert.equal(v[0].severity, "warning",
-        "#2438 caso 3: violation deve ser warning, não error — edição passa o gate");
-      rmSync(fixture2, { recursive: true, force: true });
+      try {
+        writeFileSync(
+          join(fixture2, "02-reviewed.md"),
+          [
+            "---",
+            "intentional_error:",
+            '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
+            '  location: "DESTAQUE 2"',
+            '  category: "factual"',
+            '  correct_value: "Perplexity ou Copilot"',
+            "---",
+            "",
+            "**ERRO INTENCIONAL**",
+            "",
+            "Na última edição, foo.",
+            "",
+            "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
+            "",
+            "---",
+          ].join("\n"),
+        );
+        const v = checkNarrativeNotGenericPlaceholder(fixture2);
+        // Deve emitir warning (corpo genérico já dispara antes do caso 3 neste fixture)
+        assert.equal(v.length, 1);
+        assert.equal(v[0].severity, "warning",
+          "#2438 caso 3: violation deve ser warning, não error — edição passa o gate");
+      } finally {
+        rmSync(fixture2, { recursive: true, force: true });
+      }
     });
 
     it("#2438 caso 3: ERRO INTENCIONAL block sem qualquer fonte válida (sem narrative no corpo) → warning", () => {
@@ -1177,81 +1180,90 @@ describe("Stage 4 invariants", () => {
       // "Nessa edição," — e sem reveal/narrative no frontmatter.
       // O reveal da PRÓXIMA edição seria o fallback genérico seguro.
       const fixture3 = makeFixtureEdition();
-      writeFileSync(
-        join(fixture3, "02-reviewed.md"),
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "---",
-        ].join("\n"),
-      );
-      const v = checkNarrativeNotGenericPlaceholder(fixture3);
-      assert.equal(v.length, 1, "deve emitir 1 violation (caso 3 — fallback garantido)");
-      assert.equal(v[0].severity, "warning",
-        "#2438 caso 3: severity deve ser warning (não blocking)");
-      assert.match(v[0].message, /sem campo.*reveal.*sem fonte válida|fallback seguro/i,
-        "mensagem deve mencionar ausência de fonte de reveal");
-      assert.equal(v[0].source_issue, "#2438");
-      rmSync(fixture3, { recursive: true, force: true });
+      try {
+        writeFileSync(
+          join(fixture3, "02-reviewed.md"),
+          [
+            "---",
+            "intentional_error:",
+            '  description: "DESTAQUE 2 lista o Spotify"',
+            '  location: "DESTAQUE 2"',
+            '  category: "factual"',
+            '  correct_value: "Perplexity"',
+            "---",
+            "",
+            "**ERRO INTENCIONAL**",
+            "",
+            "Na última edição, foo.",
+            "",
+            "---",
+          ].join("\n"),
+        );
+        const v = checkNarrativeNotGenericPlaceholder(fixture3);
+        assert.equal(v.length, 1, "deve emitir 1 violation (caso 3 — fallback garantido)");
+        assert.equal(v[0].severity, "warning",
+          "#2438 caso 3: severity deve ser warning (não blocking)");
+        assert.match(v[0].message, /sem campo.*reveal.*sem fonte válida|fallback seguro/i,
+          "mensagem deve mencionar ausência de fonte de reveal");
+        assert.equal(v[0].source_issue, "#2438");
+      } finally {
+        rmSync(fixture3, { recursive: true, force: true });
+      }
     });
 
     it("#2438 caso 3: com reveal field preenchido → sem violation (não é caso 3)", () => {
       // Se o campo reveal está preenchido com prosa válida, não há caso 3.
       const fixture4 = makeFixtureEdition();
-      writeFileSync(
-        join(fixture4, "02-reviewed.md"),
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify"',
-          '  reveal: "Na última edição, listei o Spotify como assistente de IA, o correto é Perplexity."',
-          '  location: "DESTAQUE 2"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "---",
-        ].join("\n"),
-      );
-      const v = checkNarrativeNotGenericPlaceholder(fixture4);
-      assert.equal(v.length, 0,
-        "com reveal field válido não deve haver violation de caso 3");
-      rmSync(fixture4, { recursive: true, force: true });
+      try {
+        writeFileSync(
+          join(fixture4, "02-reviewed.md"),
+          [
+            "---",
+            "intentional_error:",
+            '  description: "DESTAQUE 2 lista o Spotify"',
+            '  reveal: "Na última edição, listei o Spotify como assistente de IA, o correto é Perplexity."',
+            '  location: "DESTAQUE 2"',
+            "---",
+            "",
+            "**ERRO INTENCIONAL**",
+            "",
+            "Na última edição, foo.",
+            "",
+            "---",
+          ].join("\n"),
+        );
+        const v = checkNarrativeNotGenericPlaceholder(fixture4);
+        assert.equal(v.length, 0,
+          "com reveal field válido não deve haver violation de caso 3");
+      } finally {
+        rmSync(fixture4, { recursive: true, force: true });
+      }
     });
 
     it("#2438 caso 3: sem ERRO INTENCIONAL block → sem violation (feature não declarada)", () => {
       // Se o MD não tem o bloco ERRO INTENCIONAL, o editor não está usando a feature
       // nessa edição → não emitir caso 3 warning.
       const fixture5 = makeFixtureEdition();
-      writeFileSync(
-        join(fixture5, "02-reviewed.md"),
-        [
-          "OUTRAS NOTÍCIAS",
-          "",
-          "Item sem ERRO INTENCIONAL.",
-          "",
-          "---",
-          "",
-          "**ASSINE**",
-          "",
-        ].join("\n"),
-      );
-      const v = checkNarrativeNotGenericPlaceholder(fixture5);
-      assert.equal(v.length, 0,
-        "sem bloco ERRO INTENCIONAL → sem violation de caso 3");
-      rmSync(fixture5, { recursive: true, force: true });
+      try {
+        writeFileSync(
+          join(fixture5, "02-reviewed.md"),
+          [
+            "OUTRAS NOTÍCIAS",
+            "",
+            "Item sem ERRO INTENCIONAL.",
+            "",
+            "---",
+            "",
+            "**ASSINE**",
+            "",
+          ].join("\n"),
+        );
+        const v = checkNarrativeNotGenericPlaceholder(fixture5);
+        assert.equal(v.length, 0,
+          "sem bloco ERRO INTENCIONAL → sem violation de caso 3");
+      } finally {
+        rmSync(fixture5, { recursive: true, force: true });
+      }
     });
   });
 

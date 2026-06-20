@@ -22,6 +22,7 @@ import {
   extractRevealFromFrontmatter,
   narrativeIsGenericPlaceholder,
   narrativeIsCatalogShaped,
+  SECTION_HEADER,
 } from "../../render-erro-intencional.ts";
 
 interface PublicImageEntry {
@@ -494,7 +495,7 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   if (!extracted) {
     const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
     let block = md;
-    const headerIdx = md.indexOf("**ERRO INTENCIONAL**");
+    const headerIdx = md.indexOf(SECTION_HEADER);
     if (headerIdx !== -1) {
       const afterHeader = md.slice(headerIdx);
       const nextSepRe = /\n---\s*\n|\n\*\*[🎁🙋📰🚀🔬🇧🇷🛠️📦📈💡🎭⚖️📊💬🏭🔐]/;
@@ -548,10 +549,12 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   //
   // (#2438 DRY) Quando extracted é não-nulo, reutiliza extracted.reveal (já computado
   // por extractIntentionalErrorFromMd internamente via extractRevealFromFrontmatter)
-  // em vez de chamar extractRevealFromFrontmatter de novo. Só chama quando extracted
-  // é null, pois nesse caso o campo reveal ainda pode ter valor catalog/genérico que
-  // precisamos checar mesmo sem narrative válida.
-  const reveal = extracted?.reveal ?? extractRevealFromFrontmatter(md);
+  // em vez de chamar extractRevealFromFrontmatter de novo — o `??` dispara tanto quando
+  // extracted é null quanto quando extracted.reveal é undefined (edições narrative-only
+  // sem campo reveal), causando double-parse residual. Usar condicional explícita:
+  // só parse o frontmatter quando extracted é null (o campo reveal pode ter valor
+  // catalog/genérico que precisamos checar mesmo sem narrative válida).
+  const reveal = extracted !== null ? extracted.reveal : extractRevealFromFrontmatter(md);
   if (reveal) {
     if (narrativeIsCatalogShaped(reveal)) {
       return [
@@ -590,7 +593,7 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   // Emitir warning NÃO-BLOCKING quando o MD declara um bloco ERRO INTENCIONAL (o
   // editor está usando o recurso) mas não preencheu nenhuma fonte válida de reveal.
   // severity: warning — nunca blocking (decisão editorial, fora de escopo #2438).
-  if (!extracted && !reveal && md.includes("**ERRO INTENCIONAL**")) {
+  if (!extracted && !reveal && md.includes(SECTION_HEADER)) {
     return [
       {
         rule: "narrative-not-generic-placeholder",

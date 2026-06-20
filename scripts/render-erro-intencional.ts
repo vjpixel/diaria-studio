@@ -49,7 +49,7 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-const SECTION_HEADER = "**ERRO INTENCIONAL**";
+export const SECTION_HEADER = "**ERRO INTENCIONAL**";
 
 const ASSINE_RE = /^(?:\*\*)?ASSINE(?:\*\*)?\s*$/m;
 const ENCERRAMENTO_RE = /^(?:Encerrando|Até amanhã|Até a próxima)/m;
@@ -103,7 +103,7 @@ const LEGACY_DETAIL_RE =
  * aparecem como valor isolado — significam que o valor real está em linhas
  * seguintes (não capturadas pelo regex de linha única). Tratar como ausente.
  */
-const BLOCK_SCALAR_RE = /^[|>][-+]?\d*$/;
+const BLOCK_SCALAR_RE = /^[|>](?:[-+]\d*|\d+[-+]?)?$/;
 
 /**
  * (#2438 DRY) Extrai o frontmatter YAML e o bloco `intentional_error` de um MD.
@@ -333,15 +333,11 @@ export function extractIntentionalErrorFromMd(
  */
 export function extractCorrectValueFromFrontmatter(md: string): string | null {
   // #2417: scanLines=60 para cobrir frontmatter após bloco TÍTULO/SUBTÍTULO (#1378).
-  // (#2438 DRY) Reutiliza extractIeFields para evitar re-parse do frontmatter.
+  // (#2438 DRY) Reutiliza extractIeFields.extractField para reusar os guards
+  // BLOCK_SCALAR_RE e {PREENCHER} — o loop manual anterior os bypassa.
   const parsed = extractIeFields(md);
   if (!parsed) return null;
-  const { ieBlock } = parsed;
-  for (const line of ieBlock[1].split("\n")) {
-    const m = line.match(/^[ \t]+correct_value\s*:\s*(['"]?)(.*?)\1\s*$/);
-    if (m && m[2].trim().length > 0) return m[2].trim();
-  }
-  return null;
+  return parsed.extractField("correct_value");
 }
 
 /**
@@ -641,9 +637,7 @@ export function composeRevealText(
   // F2: string unificada com os outros caminhos de fallback — NUNCA sintetizar
   // a partir de `description` ou catálogo. Nenhum caminho de fallback vaza
   // catálogo/description.
-  return boldQuotedStrings(
-    `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
-  );
+  return boldQuotedStrings(SAFE_FALLBACK_REVEAL);
 }
 
 /**
