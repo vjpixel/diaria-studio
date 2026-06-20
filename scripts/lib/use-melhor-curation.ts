@@ -656,8 +656,10 @@ export function normalizeUseMelhorUrl(url: string): string {
     return url;
   }
 
-  // Normalizar // → / apenas no pathname; search e hash ficam intactos.
-  const normalizedPathname = parsed.pathname.replace(/\/\//g, "/");
+  // #2439 Item 2: usar /\/{2,}/g → '/' para colapsar ///+ (não apenas pares).
+  // replace(/\/\//g, '/') colapsa /// → // (pares não-sobrepostos), deixando
+  // um '//' residual. /\/{2,}/ captura 2 ou mais barras consecutivas de uma vez.
+  const normalizedPathname = parsed.pathname.replace(/\/{2,}/g, "/");
   if (normalizedPathname === parsed.pathname) {
     // Sem alteração no path — retornar original para preservar representação byte-a-byte.
     return url;
@@ -666,19 +668,23 @@ export function normalizeUseMelhorUrl(url: string): string {
   // #2414: splice cirúrgico no pathname para preservar host casing, porta explícita,
   // query e fragment byte-a-byte. `parsed.toString()` re-serializa a URL inteira:
   // host → lowercase, porta default removida, chars → percent-encoded.
-  // Em vez disso, localizar o pathname na string original e substituir apenas ele.
+  // Em vez disso, localizar o pathname pela posição estrutural.
   //
-  // O pathname original começa após "://host[:port]" e termina antes de "?" ou "#".
-  // `parsed.pathname` é o valor bruto (não re-encodado) — usamos como search term.
-  const pathnameStart = url.indexOf(parsed.pathname);
-  if (pathnameStart === -1) {
-    // Fallback improvável (URL com encoding incomum): usar toString() com aviso.
-    // Documentado: produz host lowercase + porta default removida, mas não corrompe path.
-    console.warn(`[normalizeUseMelhorUrl] pathname não localizado no original — fallback toString(): ${url}`);
+  // #2439 Item 1: `url.indexOf(parsed.pathname)` pode casar errado quando
+  // pathname é '/' (root), pois '/' aparece em '://'. Substituímos por busca
+  // estrutural: o pathname começa no primeiro '/' DEPOIS da autoridade
+  // (scheme://[userinfo@]host[:port]). Encontrar a autoridade pulando '://'
+  // e depois encontrar o próximo '/'.
+  const schemeEnd = url.indexOf("://");
+  // schemeEnd deve sempre existir (URL válida passou pelo constructor acima)
+  const pathStartIdx = schemeEnd !== -1 ? url.indexOf("/", schemeEnd + 3) : -1;
+  if (pathStartIdx === -1) {
+    // Fallback improvável: URL sem path (ex: "https://host" sem '/')
+    console.warn(`[normalizeUseMelhorUrl] pathname não localizado estruturalmente — fallback toString(): ${url}`);
     parsed.pathname = normalizedPathname;
     return parsed.toString();
   }
-  return url.slice(0, pathnameStart) + normalizedPathname + url.slice(pathnameStart + parsed.pathname.length);
+  return url.slice(0, pathStartIdx) + normalizedPathname + url.slice(pathStartIdx + parsed.pathname.length);
 }
 
 export interface UrlNormalizationResult {

@@ -704,6 +704,115 @@ describe("#2369 renderMonthlyTotalsSection", () => {
   });
 });
 
+// ─── #2442: aggregateByMonth novos campos + renderMonthlyTotalsSection ────────
+
+describe("#2442 aggregateByMonth novos campos (bounces/unsub/spam/datas)", () => {
+  const bounceUnsub = makeCampaign(100, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z", {
+    sent: 200, delivered: 194,
+    hardBounces: 3, softBounces: 2, // totalBounces = 5
+    unsubscriptions: 1,
+    complaints: 0,
+    uniqueViews: 50, uniqueClicks: 5,
+  });
+  const spamLater = makeCampaign(101, "Clarice News 2605 d02-A (qui)", "2026-06-15T09:00:00Z", {
+    sent: 100, delivered: 98,
+    hardBounces: 0, softBounces: 0,
+    unsubscriptions: 0,
+    complaints: 1,
+    uniqueViews: 30, uniqueClicks: 3,
+  });
+
+  test("totalBounces, totalUnsub, totalSpam acumulados corretamente", () => {
+    const rows = aggregateByMonth([bounceUnsub, spamLater]);
+    assert.equal(rows.length, 1, "ambas em junho → 1 linha");
+    const jun = rows[0];
+    assert.equal(jun.totalBounces, 5, "totalBounces = 3+2");
+    assert.equal(jun.totalUnsub, 1, "totalUnsub = 1");
+    assert.equal(jun.totalSpam, 1, "totalSpam = 1");
+  });
+
+  test("bounceRate, unsubRate, spamRate calculados sobre totalSent", () => {
+    const rows = aggregateByMonth([bounceUnsub, spamLater]);
+    const jun = rows[0];
+    // bounceRate = 5 / 300 = 1.667%
+    assert.ok(Math.abs(jun.bounceRate - (5 / 300) * 100) < 0.01, `bounceRate esperado ~1.67% mas foi ${jun.bounceRate}`);
+    // unsubRate = 1 / 300 = 0.333%
+    assert.ok(Math.abs(jun.unsubRate - (1 / 300) * 100) < 0.01, `unsubRate esperado ~0.33% mas foi ${jun.unsubRate}`);
+    // spamRate = 1 / 300 = 0.333%
+    assert.ok(Math.abs(jun.spamRate - (1 / 300) * 100) < 0.01, `spamRate esperado ~0.33% mas foi ${jun.spamRate}`);
+  });
+
+  test("firstSentDate = min(sentDate) e lastSentDate = max(sentDate) do mês", () => {
+    const rows = aggregateByMonth([bounceUnsub, spamLater]);
+    const jun = rows[0];
+    assert.equal(jun.firstSentDate, "2026-06-10T09:00:00Z", "firstSentDate = data mais antiga");
+    assert.equal(jun.lastSentDate, "2026-06-15T09:00:00Z", "lastSentDate = data mais recente");
+  });
+
+  test("campanha única: firstSentDate == lastSentDate", () => {
+    const rows = aggregateByMonth([bounceUnsub]);
+    const jun = rows[0];
+    assert.equal(jun.firstSentDate, jun.lastSentDate, "1 campanha: first == last");
+  });
+});
+
+describe("#2442 renderMonthlyTotalsSection novo formato", () => {
+  test("colunas Bounces, Unsub, Spam presentes no header", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /Bounces/, "coluna Bounces deve existir");
+    assert.match(html, /Unsub/, "coluna Unsub deve existir");
+    assert.match(html, /Spam/, "coluna Spam deve existir");
+  });
+
+  test("coluna 'Trackable' ausente na tabela mensal (dispensada explicitamente)", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    // Trackable deve estar ausente APENAS da tabela mensal
+    assert.doesNotMatch(html, /Trackable/, "coluna Trackable não deve aparecer na tabela mensal");
+  });
+
+  test("coluna Enviado com range '1º – último' presente no header", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /Enviado.*1º.*último/s, "header deve ter coluna Enviado com range");
+  });
+
+  test("alerta de bounce (≥3%) renderiza class alert na célula mensal", () => {
+    // Criar campanha com bounceRate alto (≥3%)
+    const highBounce = makeCampaign(200, "High Bounce", "2026-06-20T09:00:00Z", {
+      sent: 100, delivered: 90,
+      hardBounces: 4, softBounces: 0, // bounceRate = 4% ≥ 3 → alert
+      unsubscriptions: 0, complaints: 0,
+      uniqueViews: 20, uniqueClicks: 2,
+    });
+    const rows = aggregateByMonth([highBounce]);
+    const html = renderMonthlyTotalsSection(rows);
+    // bounceRate = 4% ≥ 3 → class alert na célula de bounces
+    assert.match(html, /class="alert"/, "célula de bounces deve ter class alert quando bounceRate≥3%");
+  });
+
+  test("coluna Trackable ainda presente na tabela Envios (não removida desta)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    // Trackable na tabela Envios (id=campaigns-table) — NÃO deve sumir de lá
+    const campaignSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.match(campaignSection, /Trackable/, "Trackable deve permanecer na tabela Envios");
+  });
+
+  test("formato de célula: taxa em cima + count absoluto em <small> (espelha Envios)", () => {
+    const rows = aggregateByMonth([
+      makeCampaign(300, "Test", "2026-06-10T09:00:00Z", {
+        sent: 200, delivered: 196, uniqueViews: 50, uniqueClicks: 8,
+        hardBounces: 2, softBounces: 0, unsubscriptions: 1, complaints: 0,
+      }),
+    ]);
+    const html = renderMonthlyTotalsSection(rows);
+    // Células de Opens e Clicks devem ter <br><small>count</small> (mesmo formato Envios)
+    assert.match(html, /<small>50<\/small>/, "totalViews (50) deve aparecer em <small>");
+    assert.match(html, /<small>8<\/small>/, "totalClicks (8) deve aparecer em <small>");
+  });
+});
+
 // ─── #2402: monthKeyBRT + aggregateByMonth usa BRT, não UTC ─────────────────
 
 describe("#2402 monthKeyBRT", () => {

@@ -1708,6 +1708,45 @@ describe("normalizeUseMelhorUrl (#2414) — host casing + porta + query preserva
     const url = "https://Host.COM:443/path?Ref=X";
     assert.equal(normalizeUseMelhorUrl(url), url, "no-change path deve retornar original");
   });
+
+  // #2439 Item 1: pathname '/' root não casa errado em '://' via indexOf
+  it("#2439 Item 1: URL com pathname root '/' e credenciais não corrompe (#2439)", () => {
+    // pathname='/' aparece em '://' — indexOf('/') acharia o '/' em '://' antes do real.
+    // A busca estrutural (indexOf depois de '://') deve encontrar o pathname correto.
+    // Sem '//double' no path esta URL não é alterada, mas o early-return garante isso.
+    const url = "https://user:pass@host.com/path";
+    assert.equal(normalizeUseMelhorUrl(url), url, "URL sem // no path deve retornar original");
+  });
+
+  it("#2439 Item 1: URL com pathname root '/' duplo e query preserva query", () => {
+    // pathname='//': indexed via estrutura, não indexOf
+    const url = "https://host.com//path?key=val";
+    const result = normalizeUseMelhorUrl(url);
+    assert.ok(result.includes("?key=val"), `query não preservada: ${result}`);
+    assert.ok(!result.includes("//path"), `// no path não normalizado: ${result}`);
+  });
+
+  // #2439 Item 2: /// → / (não deixa // residual após colapso de pares)
+  it("#2439 Item 2: triple slash '///' colapsado para '/' sem residual", () => {
+    // replace(/\/\//g, '/') colapsa /// → // (pares não-sobrepostos).
+    // /\/{2,}/g deve colapsar para '/' em uma passagem.
+    const url = "https://host.com///path/to/page";
+    const result = normalizeUseMelhorUrl(url);
+    // Verificar no pathname (não no scheme https://)
+    const parsedResult = new URL(result);
+    assert.ok(!parsedResult.pathname.includes("//"), `'//' residual no pathname: ${parsedResult.pathname}`);
+    assert.ok(result.includes("/path/to/page"), `path não normalizado: ${result}`);
+  });
+
+  it("#2439 Item 2: quatro barras '////' colapsadas para '/'", () => {
+    const url = "https://host.com////api/v1";
+    const result = normalizeUseMelhorUrl(url);
+    // Resultado esperado — sem // no pathname
+    assert.equal(result, "https://host.com/api/v1", "4 barras → 1 barra");
+    // Confirmar que o pathname não tem // (não contar o '//' de 'https://')
+    const parsedResult = new URL(result);
+    assert.ok(!parsedResult.pathname.includes("//"), `'//' residual no pathname: ${parsedResult.pathname}`);
+  });
 });
 
 // ---------------------------------------------------------------------------
