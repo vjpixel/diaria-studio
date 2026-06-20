@@ -49,7 +49,7 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-const SECTION_HEADER = "**ERRO INTENCIONAL**";
+export const SECTION_HEADER = "**ERRO INTENCIONAL**";
 
 const ASSINE_RE = /^(?:\*\*)?ASSINE(?:\*\*)?\s*$/m;
 const ENCERRAMENTO_RE = /^(?:Encerrando|Até amanhã|Até a próxima)/m;
@@ -91,6 +91,79 @@ export function findPreviousIntentionalError(
 }
 
 /**
+ * (#2438 DRY) Regex legado para extrair detail/gabarito do formato
+ * "escrevi 'X' onde deveria ser 'Y'". Compartilhado por extractIntentionalErrorFromMd
+ * (onde aparecia duplicado em 2 lugares) para eliminar a duplicação.
+ */
+const LEGACY_DETAIL_RE =
+  /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
+
+/**
+ * (#2438 DRY) Indica marcadores de YAML block-scalar que — quando
+ * aparecem como valor isolado — significam que o valor real está em linhas
+ * seguintes (não capturadas pelo regex de linha única). Tratar como ausente.
+ */
+const BLOCK_SCALAR_RE = /^[|>](?:[-+]\d*|\d+[-+]?)?$/;
+
+/**
+ * (#2438 DRY) Extrai o frontmatter YAML e o bloco `intentional_error` de um MD.
+ *
+ * Reutilizável por extractNarrativeFromFrontmatter, extractRevealFromFrontmatter e
+ * extractCorrectValueFromFrontmatter — elimina os 3 parses independentes que
+ * existiam em extractIntentionalErrorFromMd.
+ *
+ * Retorna `{ fm, ieBlock, extractField }` ou `null` quando frontmatter/ieBlock ausentes.
+ * `extractField(field)` — extrai, limpa e valida 1 campo do bloco, retornando null para
+ * valores vazios, placeholders {PREENCHER} e indicadores de block-scalar YAML (|/>).
+ *
+ * #2417: scanLines=60 para cobrir frontmatter após bloco TÍTULO/SUBTÍTULO injetado
+ * por insert-titulo-subtitulo.ts (#1378).
+ */
+function extractIeFields(md: string): {
+  ieBlock: RegExpMatchArray;
+  extractField: (field: string) => string | null;
+} | null {
+  const fm = extractFrontmatter(md, 60);
+  if (!fm) return null;
+
+  // (#2438 Item 7 / #2304) Normalizar CRLF → LF antes de parsear o bloco YAML,
+  // para que o ieBlock regex (que usa \n) funcione mesmo em checkouts Windows.
+  // extractFrontmatter retorna o corpo do frontmatter com os line endings originais;
+  // sem normalização, `intentional_error:\r\n` não faz match em `\s*:\s*\n`.
+  const fmNormalized = fm.replace(/\r\n/g, "\n");
+
+  const ieBlock = fmNormalized.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlock) return null;
+
+  // Helper: extrai e limpa o valor de um campo do bloco intentional_error.
+  // Strip aspas duplas E simples (o parser canônico de intentional-error.ts só
+  // lida com duplas; aqui precisamos de ambas pra back-compat com edições legadas).
+  const extractField = (field: string): string | null => {
+    for (const line of ieBlock[1].split("\n")) {
+      // Aceita valor com ou sem aspas (duplas ou simples).
+      const m = line.match(
+        new RegExp(`^[ \\t]+${field}\\s*:\\s*(['"]?)(.*?)\\1\\s*$`),
+      );
+      if (!m) continue;
+      const val = m[2].trim();
+      if (val.length === 0) continue;
+      // Pular placeholder não preenchido.
+      if (/^\{PREENCHER/i.test(val)) return null;
+      // (#2438 Item 3) Pular indicadores de block-scalar YAML (`|`, `>`, `|-`, `>-`, etc.)
+      // — quando o editor escreve `reveal: |`, o valor capturado pelo regex é "|"
+      // (o conteúdo real está em linhas seguintes não capturadas). Tratar como ausente.
+      if (BLOCK_SCALAR_RE.test(val)) return null;
+      return val;
+    }
+    return null;
+  };
+
+  return { ieBlock, extractField };
+}
+
+/**
  * Pure (#2419 rewrite): extrai campos do bloco `intentional_error` do frontmatter YAML.
  *
  * **Separação de concerns (#2419):**
@@ -110,33 +183,9 @@ export function findPreviousIntentionalError(
  * estar além da linha 30 após insert-titulo-subtitulo.ts injetar TÍTULO/SUBTÍTULO).
  */
 export function extractNarrativeFromFrontmatter(md: string): string | null {
-  // #2417: scanLines=60 consistente com extractCorrectValueFromFrontmatter.
-  const fm = extractFrontmatter(md, 60);
-  if (!fm) return null;
-
-  const ieBlock = fm.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
-  );
-  if (!ieBlock) return null;
-
-  // Helper: extrai e limpa o valor de um campo do bloco intentional_error.
-  // Strip aspas duplas E simples (o parser canônico de intentional-error.ts só
-  // lida com duplas; aqui precisamos de ambas pra back-compat com edições legadas).
-  const extractField = (field: string): string | null => {
-    for (const line of ieBlock[1].split("\n")) {
-      // Aceita valor com ou sem aspas (duplas ou simples).
-      const m = line.match(
-        new RegExp(`^[ \\t]+${field}\\s*:\\s*(['"]?)(.*?)\\1\\s*$`),
-      );
-      if (!m) continue;
-      const val = m[2].trim();
-      if (val.length === 0) continue;
-      // Pular placeholder não preenchido — skip pra tentar campo seguinte.
-      if (/^\{PREENCHER/i.test(val)) return null;
-      return val;
-    }
-    return null;
-  };
+  const parsed = extractIeFields(md);
+  if (!parsed) return null;
+  const { extractField } = parsed;
 
   // (#2419) Prioridade: campo `reveal` (novo, first-person explícito).
   // Fallback: campo `narrative` (alias legado).
@@ -149,27 +198,13 @@ export function extractNarrativeFromFrontmatter(md: string): string | null {
  * para `narrative`. Usado quando precisamos saber se o campo dedicado foi preenchido.
  *
  * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
- * `reveal`, ou valor é um placeholder `{PREENCHER}`.
+ * `reveal`, valor é placeholder `{PREENCHER}`, ou valor é indicador de block-scalar
+ * YAML (`|`/`>` isolados — #2438 Item 3).
  */
 export function extractRevealFromFrontmatter(md: string): string | null {
-  // #2417: scanLines=60 consistente.
-  const fm = extractFrontmatter(md, 60);
-  if (!fm) return null;
-
-  const ieBlock = fm.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
-  );
-  if (!ieBlock) return null;
-
-  for (const line of ieBlock[1].split("\n")) {
-    const m = line.match(/^[ \t]+reveal\s*:\s*(['"]?)(.*?)\1\s*$/);
-    if (!m) continue;
-    const val = m[2].trim();
-    if (val.length === 0) continue;
-    if (/^\{PREENCHER/i.test(val)) return null;
-    return val;
-  }
-  return null;
+  const parsed = extractIeFields(md);
+  if (!parsed) return null;
+  return parsed.extractField("reveal");
 }
 
 /**
@@ -240,8 +275,8 @@ export function extractIntentionalErrorFromMd(
     ) {
       // Back-compat: tenta extrair detail/gabarito do formato legado
       // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
-      const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
-      const lm = narrative.match(legacyRe);
+      // (#2438 DRY) Usa LEGACY_DETAIL_RE compartilhado (eliminando duplicata abaixo).
+      const lm = narrative.match(LEGACY_DETAIL_RE);
       if (lm) {
         return {
           narrative,
@@ -265,8 +300,8 @@ export function extractIntentionalErrorFromMd(
   if (fmNarrative) {
     // Back-compat: tenta extrair detail/gabarito do formato legado quando a
     // narrative usa "escrevi 'X' onde deveria ser 'Y'".
-    const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
-    const lm = fmNarrative.match(legacyRe);
+    // (#2438 DRY) Usa LEGACY_DETAIL_RE compartilhado.
+    const lm = fmNarrative.match(LEGACY_DETAIL_RE);
     if (lm) {
       return {
         narrative: fmNarrative,
@@ -291,39 +326,18 @@ export function extractIntentionalErrorFromMd(
  * Reusa o mesmo regex leve do lint-newsletter-md.ts — não traz dependência
  * de YAML parser. Retorna `null` se frontmatter ausente, sem `intentional_error`,
  * ou sem `correct_value`.
+ *
+ * (#2438 Item 7) Reusa extractFrontmatter (CRLF-safe, #2304) em vez de
+ * split('\n') manual, que quebrava em checkout Windows com CRLF → correct_value
+ * podia virar null ao adicionar \r ao valor capturado.
  */
 export function extractCorrectValueFromFrontmatter(md: string): string | null {
-  // Frontmatter pode estar nas primeiras 60 linhas — espelhar `extractFrontmatter`
-  // de lint-newsletter-md.ts (default scanLines=30) e dar margem extra pro caso
-  // do bloco TÍTULO/SUBTÍTULO injetado por insert-titulo-subtitulo.ts antes do
-  // YAML (#1378).
-  const lines = md.split("\n").slice(0, 60);
-  let start = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      start = i;
-      break;
-    }
-  }
-  if (start === -1) return null;
-  let end = -1;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return null;
-  const fm = lines.slice(start + 1, end).join("\n");
-  const ieBlock = fm.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
-  );
-  if (!ieBlock) return null;
-  for (const line of ieBlock[1].split("\n")) {
-    const m = line.match(/^[ \t]+correct_value\s*:\s*"?(.*?)"?\s*$/);
-    if (m && m[1].trim().length > 0) return m[1].trim();
-  }
-  return null;
+  // #2417: scanLines=60 para cobrir frontmatter após bloco TÍTULO/SUBTÍTULO (#1378).
+  // (#2438 DRY) Reutiliza extractIeFields.extractField para reusar os guards
+  // BLOCK_SCALAR_RE e {PREENCHER} — o loop manual anterior os bypassa.
+  const parsed = extractIeFields(md);
+  if (!parsed) return null;
+  return parsed.extractField("correct_value");
 }
 
 /**
@@ -488,6 +502,14 @@ export function narrativeIsCatalogShaped(narrative: string): boolean {
 }
 
 /**
+ * (#2438 DRY) Texto de fallback seguro quando nenhuma fonte válida de reveal existe.
+ * Centralizado aqui para evitar as 5 ocorrências inline em composeRevealText — o texto
+ * é byte-idêntico ao original (refactor puro, sem mudança de comportamento).
+ */
+const SAFE_FALLBACK_REVEAL =
+  `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`;
+
+/**
  * Pure (#1079, #1443, #2419 rewrite): compõe o texto de revelação do erro anterior.
  *
  * **ARQUITETURA #2419 — campo `reveal` dedicado:**
@@ -538,7 +560,7 @@ export function composeRevealText(
         "Usando fallback seguro. Corrija `intentional_error.reveal` no frontmatter.",
     );
     return boldQuotedStrings(
-      `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+      SAFE_FALLBACK_REVEAL,
     );
   }
 
@@ -553,7 +575,7 @@ export function composeRevealText(
           "Usando fallback seguro. Preencha `intentional_error.reveal` no frontmatter.",
       );
       return boldQuotedStrings(
-        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+        SAFE_FALLBACK_REVEAL,
       );
     }
     // Guard: narrative catalog-shaped (começa com "DESTAQUE N") → warn + fallback seguro.
@@ -565,7 +587,7 @@ export function composeRevealText(
           "Preencha `intentional_error.reveal` no frontmatter com texto first-person.",
       );
       return boldQuotedStrings(
-        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+        SAFE_FALLBACK_REVEAL,
       );
     }
     // Narrative válida — aplicar lógica de correção (#1443).
@@ -597,7 +619,7 @@ export function composeRevealText(
           "Preencha `intentional_error.reveal` no frontmatter da edição anterior.",
       );
       return boldQuotedStrings(
-        `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
+        SAFE_FALLBACK_REVEAL,
       );
     }
     let narrativeFinal: string;
@@ -615,9 +637,7 @@ export function composeRevealText(
   // F2: string unificada com os outros caminhos de fallback — NUNCA sintetizar
   // a partir de `description` ou catálogo. Nenhum caminho de fallback vaza
   // catálogo/description.
-  return boldQuotedStrings(
-    `Na última edição, escondemos um erro proposital — obrigado a quem respondeu apontando.`,
-  );
+  return boldQuotedStrings(SAFE_FALLBACK_REVEAL);
 }
 
 /**

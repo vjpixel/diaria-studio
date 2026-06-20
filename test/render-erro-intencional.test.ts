@@ -2887,3 +2887,248 @@ describe("#2431 self-review — F5: round-trip JSONL (frontmatterToEntry → ser
   });
 });
 
+describe("#2438 — guards adicionais (block-scalar, CRLF, caso 3)", () => {
+  // Item 3: block-scalar YAML (`reveal: |`) deve ser tratado como campo AUSENTE.
+  describe("extractRevealFromFrontmatter — guard block-scalar (#2438 Item 3)", () => {
+    it("reveal: | (block-scalar isolado) → null (campo tratado como ausente)", () => {
+      // Bug: o regex de linha única captura "|" como valor literal, publicando "|."
+      // como texto de reveal. Após o guard, "|" isolado é tratado como ausente.
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "DESTAQUE 2 lista o Spotify"',
+        "  reveal: |",
+        "    Na última edição, escrevi algo errado.",
+        "---",
+        "",
+        "Body.",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: | deve retornar null (block-scalar não capturado pelo regex de linha única)");
+    });
+
+    it("reveal: > (folded block-scalar) → null (campo tratado como ausente)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "DESTAQUE 3"',
+        "  reveal: >",
+        "    Na última edição, a empresa era outra.",
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: > deve retornar null (block-scalar folded não capturado)");
+    });
+
+    it("reveal: |- (block-scalar com strip) → null", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  reveal: |-",
+        "    texto aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: |- deve retornar null");
+    });
+
+    it("reveal com texto real entre aspas → retorna o valor corretamente", () => {
+      // Guard não deve afetar valores legítimos.
+      const md = [
+        "---",
+        "intentional_error:",
+        '  reveal: "Na última edição, escrevi 1990 onde o correto é 1998."',
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), "Na última edição, escrevi 1990 onde o correto é 1998.",
+        "reveal com valor real não deve ser afetado pelo guard");
+    });
+  });
+
+  // Item 3: extractNarrativeFromFrontmatter também deve respeitar o guard de block-scalar
+  // (compartilhado via extractIeFields).
+  describe("extractNarrativeFromFrontmatter — guard block-scalar (#2438 Item 3)", () => {
+    it("narrative: | → null (block-scalar tratado como ausente)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  narrative: |",
+        "    Algum texto aqui.",
+        "---",
+      ].join("\n");
+      assert.equal(extractNarrativeFromFrontmatter(md), null,
+        "narrative: | deve retornar null");
+    });
+  });
+
+  // Finding 1 (#2438 self-review): block-scalar guard em extractCorrectValueFromFrontmatter.
+  // O loop manual anterior bypassa o guard BLOCK_SCALAR_RE — correct_value: |
+  // retornava "|" literal em vez de null.
+  describe("extractCorrectValueFromFrontmatter — guard block-scalar (#2438 finding 1)", () => {
+    it("correct_value: | (block-scalar) → null (não retorna '|' literal)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "Teste"',
+        "  correct_value: |",
+        "    valor real aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), null,
+        "correct_value: | deve retornar null (block-scalar, valor real em linhas seguintes não capturadas)");
+    });
+
+    it("correct_value: > (folded) → null", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "Teste"',
+        "  correct_value: >",
+        "    valor aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), null,
+        "correct_value: > deve retornar null (block-scalar folded)");
+    });
+
+    it("correct_value: |- → null", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  correct_value: |-",
+        "    valor aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), null,
+        "correct_value: |- deve retornar null");
+    });
+
+    it("correct_value com valor real → retorna corretamente (guard não afeta caso normal)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  correct_value: "1998"',
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), "1998",
+        "correct_value com valor normal não deve ser afetado pelo guard");
+    });
+
+    it("correct_value: {PREENCHER} → null (guard placeholder também via extractField)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  correct_value: "{PREENCHER — valor correto}"',
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), null,
+        "correct_value com placeholder {PREENCHER} deve retornar null");
+    });
+  });
+
+  // Finding 2 (#2438 self-review): BLOCK_SCALAR_RE não cobria indicadores
+  // combinados indent+chomping (|2-, >2+, |2-, >2+ são headers YAML válidos).
+  describe("BLOCK_SCALAR_RE — indicadores combinados indent+chomping (#2438 finding 2)", () => {
+    it("|2- (indent+chomping) → null em extractRevealFromFrontmatter", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  reveal: |2-",
+        "    texto aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: |2- deve retornar null (block-scalar com indent+chomping)");
+    });
+
+    it(">2+ (indent+chomping folded) → null em extractRevealFromFrontmatter", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  reveal: >2+",
+        "    texto aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: >2+ deve retornar null (block-scalar folded com indent+chomping)");
+    });
+
+    it("|2 (só indent, sem chomping) → null em extractRevealFromFrontmatter", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  reveal: |2",
+        "    texto aqui",
+        "---",
+      ].join("\n");
+      assert.equal(extractRevealFromFrontmatter(md), null,
+        "reveal: |2 deve retornar null (block-scalar com indicador de indent)");
+    });
+
+    it("|2- → null em extractCorrectValueFromFrontmatter (via extractField)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        "  correct_value: |2-",
+        "    1998",
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), null,
+        "correct_value: |2- deve retornar null");
+    });
+  });
+
+  // Item 7: CRLF-safety em extractCorrectValueFromFrontmatter.
+  describe("extractCorrectValueFromFrontmatter — CRLF-safety (#2438 Item 7)", () => {
+    it("CRLF no frontmatter → correct_value extraído corretamente (sem \\r trailing)", () => {
+      // Bug: split('\\n') em checkout Windows gerava correct_value com \\r trailing
+      // (ex: "2014\\r") → trim() resolve o \\r, mas com CRLF em certos casos o parser
+      // falhava. Usar extractFrontmatter (CRLF-safe) resolve.
+      const md = [
+        "---",
+        "intentional_error:",
+        '  description: "Teste"',
+        '  correct_value: "2014"',
+        "---",
+        "",
+        "Body.",
+      ].join("\r\n"); // Simula checkout Windows com CRLF
+      assert.equal(extractCorrectValueFromFrontmatter(md), "2014",
+        "CRLF no frontmatter deve retornar correct_value sem \\r trailing");
+    });
+
+    it("LF normal → correct_value extraído corretamente (regressão: não quebra case LF)", () => {
+      const md = [
+        "---",
+        "intentional_error:",
+        '  correct_value: "2025"',
+        "---",
+      ].join("\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), "2025");
+    });
+
+    it("CRLF com frontmatter após bloco TÍTULO (até linha 60) → ainda detectado", () => {
+      // #1378: frontmatter pode estar além da linha 30 quando TÍTULO/SUBTÍTULO injetados.
+      const lines = [
+        "**TÍTULO**",
+        "",
+        "Manchete",
+        "",
+        "**SUBTÍTULO**",
+        "",
+        "Sub",
+        "",
+        "---",
+        "intentional_error:",
+        '  correct_value: "42"',
+        "---",
+        "",
+        "Body.",
+      ];
+      const md = lines.join("\r\n");
+      assert.equal(extractCorrectValueFromFrontmatter(md), "42",
+        "CRLF com frontmatter após TÍTULO deve retornar correct_value");
+    });
+  });
+});
+
