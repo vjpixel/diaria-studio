@@ -11,7 +11,10 @@ set "NODE_EXE=node"
 if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodejs\node.exe"
 if not exist "data\dashboard-push" mkdir "data\dashboard-push"
 echo [%date% %time%] ^>^>^> iniciando push dashboard>> "data\dashboard-push\task.log"
-"%NODE_EXE%" --import tsx scripts\build-diaria-dashboard-data.ts --push --kv-namespace-id 4610c3016818483cab141f459a963de3>> "data\dashboard-push\task.log" 2>&1
+REM Espaço antes do >> é OBRIGATÓRIO: o namespace ID termina em dígito ("...de3"),
+REM e em CMD "3>>" é redirect do file-descriptor 3 (não append de stdout). Sem o
+REM espaço, stdout/stderr do node sumiriam (iriam pro fd 3, não pro task.log).
+"%NODE_EXE%" --import tsx scripts\build-diaria-dashboard-data.ts --push --kv-namespace-id 4610c3016818483cab141f459a963de3 >> "data\dashboard-push\task.log" 2>&1
 REM captura o exit do node ANTES do echo (que reseta %ERRORLEVEL% p/ 0) e propaga
 REM via `endlocal & exit /b` — senão a Task Scheduler veria sempre "sucesso" (#2426 review).
 set "NODE_EXIT=%ERRORLEVEL%"

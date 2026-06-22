@@ -57,7 +57,10 @@ As credenciais precisam estar no `.env` do repo (ou como variáveis de usuário)
 | `CLOUDFLARE_WORKERS_TOKEN` | Token da API Cloudflare com permissão de KV write |
 
 O namespace ID do KV está embutido no `.cmd` (`--kv-namespace-id 4610c3016818483cab141f459a963de3`).
-Alternativa: setar `DASHBOARD_KV_NAMESPACE_ID` no env e remover o `--kv-namespace-id` do `.cmd`.
+Alternativa (env-var): o script faz `--kv-namespace-id ?? process.env.DASHBOARD_KV_NAMESPACE_ID`,
+então o **flag tem precedência**. Para usar o env var é preciso **primeiro remover o
+`--kv-namespace-id` do `.cmd`** (senão o valor do env é silenciosamente ignorado) e
+então setar `DASHBOARD_KV_NAMESPACE_ID` no `.env`.
 
 ## Estado (data/ é gitignored)
 

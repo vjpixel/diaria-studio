@@ -8,9 +8,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, mkdtempSync, writeFileSync as fsTmpWrite, mkdirSync as fsTmpMkdir, rmSync } from "node:fs";
-import { resolve, join as pathJoin } from "node:path";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ─── Testes do agregador: fonte 1 (source health) ────────────────────────────
 
@@ -655,15 +654,6 @@ describe("isPushRequested (#2132 fix)", () => {
 // (campos `timeline` por issue, `stall_events`, `resume_state`, `preempted_*`)
 // produz linhas não-vazias e degrada bem com plan.json antigos sem `timeline`.
 
-/** Helper para os testes #2471: cria dir temporário com plan.json. */
-function makeTmpOvernight(edition: string, planContent: object): string {
-  const root = mkdtempSync(pathJoin(tmpdir(), "overnight-test-"));
-  const editionDir = pathJoin(root, edition);
-  fsTmpMkdir(editionDir, { recursive: true });
-  fsTmpWrite(pathJoin(editionDir, "plan.json"), JSON.stringify(planContent), "utf8");
-  return root;
-}
-
 describe("buildOvernightSummary + buildTimelineRows (#2471)", () => {
 
   test("plan.json com schema atual (timeline + stall_events + resume_state) → linhas não-vazias", async () => {
@@ -763,10 +753,11 @@ describe("buildOvernightSummary + buildTimelineRows (#2471)", () => {
     }
   });
 
-  test("buildOvernightSummary com mkdtemp: produz runs não-vazios para plan.json válido", async () => {
-    // Importa buildDashboardData para testar end-to-end com dir temporário
-    // Não podemos importar buildOvernightSummary diretamente (não exportado),
-    // então testamos via buildTimelineRows + verificamos o contrato da saída.
+  test("plan.json round-trip (JSON.stringify→parse) preserva o schema lido de disco e dá duração exata", async () => {
+    // buildOvernightSummary lê plan.json do disco com JSON.parse antes de chamar
+    // buildTimelineRows. Este teste exercita o round-trip stringify→parse (a forma
+    // exata que sai de disco) e ancora a duração EXATA (19min) — não só > 0 — pra
+    // pegar regressão que mudasse o ponto de partida (dispatch → pr_opened).
     const { buildTimelineRows } = await import("../scripts/render-overnight-timeline.ts");
 
     const plan = {
@@ -780,28 +771,19 @@ describe("buildOvernightSummary + buildTimelineRows (#2471)", () => {
           pr: 500,
           timeline: {
             dispatch: "2026-06-21T02:01:00Z",
-            merged: "2026-06-21T02:20:00Z",
+            merged: "2026-06-21T02:20:00Z", // dispatch+19min
           },
         },
       ],
     };
 
-    // Usa mkdtemp para não depender de data/ real
-    const overnightRoot = makeTmpOvernight("260621", plan);
-
-    // Valida que o plan foi gravado e é parseável
-    const planPath = pathJoin(overnightRoot, "260621", "plan.json");
-    assert.ok(existsSync(planPath), "plan.json deve existir no dir temporário");
-
-    const parsed = JSON.parse(readFileSync(planPath, "utf8"));
+    // Round-trip idêntico ao caminho de disco de buildOvernightSummary, sem I/O real.
+    const parsed = JSON.parse(JSON.stringify(plan));
     const rows = buildTimelineRows(parsed as Parameters<typeof buildTimelineRows>[0]);
 
     assert.equal(rows.length, 1, "deve ter 1 unidade para 1 issue");
     assert.equal(rows[0].unidade, "#9999");
-    assert.ok(rows[0].durationMs !== null && rows[0].durationMs > 0, "duração deve ser 19min em ms");
+    assert.equal(rows[0].durationMs, 19 * 60 * 1000, "duração exata = 19min (dispatch→merged)");
     assert.equal(rows[0].endLabel, "mergeado");
-
-    // Cleanup
-    rmSync(overnightRoot, { recursive: true, force: true });
   });
 });
