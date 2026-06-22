@@ -811,11 +811,12 @@ export function normalizeDashToParens(desc: string): string {
   if (/\(\s*~?\s*\d+\s*min\b/.test(desc)) return desc;
   // Normaliza `[–—] ~? N min [sufixo opcional como "de leitura"]` em QUALQUER
   // posição da string (not só no fim — finding 1 code-review #2464).
-  // O sufixo não-canônico ("de leitura", " de execução") é descartado;
-  // tudo antes do dash é preservado. Caracteres permitidos no sufixo:
-  // [^)–—\n] para não engolir outra ocorrência de dash-tempo ou fecha-parens.
+  // Só o sufixo não-canônico de DURAÇÃO ("de leitura", "de execução") é descartado.
+  // Toda outra prosa do editor após "min" é PRESERVADA — antes o `[^)–—\n]*` engolia
+  // QUALQUER texto após "min" (ex: "X — 15 min para concluir o módulo" perdia a prosa;
+  // perda de dado pega no code-review consolidado 260621). Agora só o allowlist explícito.
   return desc.replace(
-    /[–—]\s*~?\s*(\d+)\s*min\b[^)–—\n]*/g,
+    /[–—]\s*~?\s*(\d+)\s*min\b(?:\s+de\s+(?:leitura|execu[cç][aã]o))?/gi,
     (_match, minutes) => `(${minutes} min)`,
   );
 }
@@ -958,7 +959,7 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 // Substituído por `tutorial\s*:` (com dois-pontos — sinal de how-to) e
 // `tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)` (com contexto how-to explícito).
 const RADAR_HOWTO_PROMOTE_RE =
-  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)\b/i;
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)/i;
 
 /**
  * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to

@@ -284,3 +284,20 @@ describe("orchestrator-prompt (#634)", () => {
     }
   });
 });
+
+describe("orchestrator — sem `\\n` literal em comandos (hotfix 260621)", () => {
+  // O orchestrator é executado por um LLM que passa os comandos pro Bash. Um `\n`
+  // LITERAL (2 chars: barra-n) no meio de um comando (ex: `resolve-edition-url.ts \n
+  // --edition-dir`) chega ao shell como argumento literal e quebra o comando — pego
+  // no code-review consolidado (Stage 5). Guard: nenhum arquivo deve ter `\n` literal
+  // imediatamente antes de uma flag `--`.
+  for (const file of ORCHESTRATOR_FILES) {
+    it(`${file} não contém '\\n' literal antes de flag`, () => {
+      const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
+      assert.ok(
+        !/\\n\s+--/.test(content),
+        `${file} tem '\\n' literal antes de uma flag — use comando single-line ou continuação real`,
+      );
+    });
+  }
+});

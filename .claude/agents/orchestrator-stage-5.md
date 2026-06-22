@@ -185,14 +185,14 @@ npx tsx scripts/resolve-edition-url.ts \
 ```bash
 # Se ausente — gravar agora (ver passo 5c-1 acima):
 if [ ! -f data/editions/{AAMMDD}/_internal/05-edition-url.txt ]; then
-  npx tsx scripts/resolve-edition-url.ts \n    --edition-dir data/editions/{AAMMDD}/ \n    --title "{titulo_d1}"
+  npx tsx scripts/resolve-edition-url.ts --edition-dir data/editions/{AAMMDD}/ --title "{titulo_d1}"
 fi
 
 # Guard anti-placeholder: aborta (exit 3) se {edition_url}
 # sobreviveu em 03-social.md. Nao dispatchar social se exit != 0.
 # Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
 EDITION_URL="$(cat data/editions/{AAMMDD}/_internal/05-edition-url.txt)"
-npx tsx scripts/resolve-edition-url.ts \n  --edition-dir data/editions/{AAMMDD}/ \n  --edition-url "${EDITION_URL}" \n  --validate-social
+npx tsx scripts/resolve-edition-url.ts --edition-dir data/editions/{AAMMDD}/ --edition-url "${EDITION_URL}" --validate-social
 ```
 
 Exit code do guard:
