@@ -82,7 +82,12 @@ export const COHORTS_KV_KEY = "cohorts:engagement";
 export interface ContactEngagement {
   /** nº de campanhas entregues ao contato (statistics.messagesSent.length) */
   received: number;
-  /** nº de campanhas abertas pelo contato (statistics.opened.length) */
+  /**
+   * nº de campanhas abertas pelo contato — SOMA de aberturas diretas
+   * (statistics.opened) + aberturas MPP/machine (statistics.machineOpened).
+   * (#2446: inclui MPP pra que contatos com apenas abertura de máquina caiam
+   * nas coortes "Abriu 1" / "Abriu 2+" em vez de "não abriu nenhum".)
+   */
   opened: number;
   /** teve hard ou soft bounce em alguma campanha */
   bounced: boolean;
@@ -187,6 +192,12 @@ function hasUnsub(stats: any): boolean {
  * Converte o contato bruto da Brevo (list + statistics) em ContactEngagement.
  * `bounced` tem prioridade no breakdown: optedOut só conta blacklist/unsub que
  * NÃO seja consequência de bounce já contabilizado.
+ *
+ * #2446: `opened` soma aberturas diretas (statistics.opened) + aberturas
+ * MPP/machine (statistics.machineOpened). Apple Mail Privacy Protection pré-carrega
+ * o pixel de rastreamento em background — tecnicamente é abertura de máquina, mas
+ * indica que o e-mail chegou e foi processado. Somamos ao total para que contatos
+ * com apenas abertura MPP não caiam em "não abriu nenhum".
  */
 export function normalizeContact(raw: {
   emailBlacklisted?: boolean;
@@ -199,7 +210,8 @@ export function normalizeContact(raw: {
   const optedOut = !bounced && (hasUnsub(stats) || raw.emailBlacklisted === true);
   return {
     received: len(stats.messagesSent),
-    opened: len(stats.opened),
+    // #2446: soma aberturas diretas + aberturas MPP (statistics.machineOpened).
+    opened: len(stats.opened) + len(stats.machineOpened),
     bounced,
     optedOut,
   };

@@ -283,3 +283,88 @@ test("#2441 renderEngagementCohortsSection: tfoot com alerta quando soma != univ
   // Deve ter badge de alerta ⚠️
   assert.match(html, /⚠️/, "deve ter alerta ⚠️ quando soma != universe");
 });
+
+// ─── #2446: aberturas MPP somadas nas coortes de abertura ────────────────────
+
+test("#2446 normalizeContact: machineOpened soma a opened (contato só-MPP → opened=1)", () => {
+  // Contato com 0 aberturas diretas + 1 abertura MPP → opened deve ser 1.
+  const c = normalizeContact({
+    statistics: {
+      messagesSent: [{}],
+      opened: [],
+      machineOpened: [{ campaignId: 42 }],
+    },
+  });
+  assert.equal(c.received, 1);
+  assert.equal(c.opened, 1, "machineOpened deve ser somado a opened");
+  assert.equal(c.bounced, false);
+  assert.equal(c.optedOut, false);
+});
+
+test("#2446 normalizeContact: direto + MPP são somados", () => {
+  // 1 abertura direta + 2 aberturas MPP → opened = 3.
+  const c = normalizeContact({
+    statistics: {
+      messagesSent: [{}, {}, {}],
+      opened: [{ campaignId: 1 }],
+      machineOpened: [{ campaignId: 2 }, { campaignId: 3 }],
+    },
+  });
+  assert.equal(c.opened, 3, "opened direto + machineOpened devem ser somados");
+});
+
+test("#2446 normalizeContact: sem machineOpened → comportamento inalterado", () => {
+  // Campo ausente: não deve quebrar (len([]) = 0 → soma 0).
+  const c = normalizeContact({
+    statistics: {
+      messagesSent: [{}],
+      opened: [{}],
+      // machineOpened ausente
+    },
+  });
+  assert.equal(c.opened, 1, "sem machineOpened, opened vem só de statistics.opened");
+});
+
+test("#2446 computeCohorts: contato só-MPP (0 diretas + 1 MPP) cai em 'Abriu 1'", () => {
+  // Cenário real: contato que nunca clicou "abrir" mas teve MPP pré-carregado.
+  // Antes do #2446, opened=0 → "Recebeu 1, não abriu". Após: opened=1 → "Abriu 1".
+  const contacts: ContactEngagement[] = [
+    eng({ received: 1, opened: 1 }), // 0 diretas + 1 MPP (normalizado por normalizeContact)
+    eng({ received: 1, opened: 0 }), // realmente não abriu
+  ];
+  const r = computeCohorts(contacts, GEN);
+  assert.equal(r.opened1, 1, "contato com opened=1 (MPP) deve cair em opened1");
+  assert.equal(r.received1_opened0, 1, "contato com opened=0 deve cair em received1_opened0");
+});
+
+test("#2446 computeCohorts: contato só-MPP com 2+ aberturas cai em 'Abriu 2+'", () => {
+  const contacts: ContactEngagement[] = [
+    eng({ received: 3, opened: 2 }), // 2 aberturas MPP
+  ];
+  const r = computeCohorts(contacts, GEN);
+  assert.equal(r.opened2plus, 1, "contato com opened=2 (MPP) deve cair em opened2plus");
+  assert.equal(r.opened1, 0);
+  assert.equal(r.received1_opened0, 0);
+  assert.equal(r.received2_opened0, 0);
+});
+
+test("#2446 renderEngagementCohortsSection: tooltip menciona MPP em 'Abriu 2+' E 'Abriu 1'", () => {
+  const html = renderEngagementCohortsSection(SAMPLE);
+  assert.match(html, /MPP/, "tooltip deve mencionar MPP");
+  // Ambas as linhas de abertura ('Abriu 2+' e 'Abriu 1') tiveram o tooltip
+  // alterado — verificar as DUAS ocorrências, não só a primeira (self-review #2446).
+  const mppTooltips = html.match(/Inclui aberturas MPP\/machine/g) ?? [];
+  assert.ok(
+    mppTooltips.length >= 2,
+    `tooltips de 'Abriu 2+' E 'Abriu 1' devem mencionar MPP/machine (encontrado: ${mppTooltips.length})`,
+  );
+});
+
+test("#2446 renderEngagementCohortsSection: nota da seção menciona MPP", () => {
+  const html = renderEngagementCohortsSection(SAMPLE);
+  assert.match(
+    html,
+    /"Abriu".*inclui.*MPP/,
+    "nota da seção deve explicar que aberturas incluem MPP",
+  );
+});
