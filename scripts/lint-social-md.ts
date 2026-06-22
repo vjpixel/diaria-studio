@@ -477,6 +477,134 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
 }
 
 // ---------------------------------------------------------------------------
+// #2458: LinkedIn page link + no email CTA guards
+// ---------------------------------------------------------------------------
+
+/**
+ * #2458: padrões de CTA por e-mail que estão banidos dos posts do LinkedIn.
+ * O LinkedIn não é canal de aquisição de e-mail — o foco é seguir a página.
+ */
+const EMAIL_CTA_RE =
+  /\b(assine\s+grátis|receba\s+a\s+diar\.ia\s+todo\s+dia\s+por\s+e-mail|receba\s+por\s+e-mail|inscreva-se\s+por\s+e-mail|inscreva-se\s+grátis|assine\s+a\s+newsletter\s+por\s+e-mail)\b/gi;
+
+export interface LinkedinEmailCtaError {
+  section: string;
+  line: number;
+  phrase: string;
+}
+export interface LinkedinEmailCtaResult {
+  ok: boolean;
+  errors: LinkedinEmailCtaError[];
+}
+
+/**
+ * #2458: Detecta CTA de assinatura por e-mail na seção LinkedIn de 03-social.md.
+ * Esses CTAs foram banidos — o LinkedIn usa o CTA de seguir a página.
+ * Valida em TODOS os blocos: main, comment_diaria, comment_pixel, post_pixel.
+ */
+export function lintLinkedinEmailCTA(md: string): LinkedinEmailCtaResult {
+  const errors: LinkedinEmailCtaError[] = [];
+  const linkedinSection = extractPlatformSection(md, "linkedin");
+  if (!linkedinSection) return { ok: true, errors };
+
+  const lines = linkedinSection.split("\n");
+  let currentSection = "preamble";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Track current section header for error reporting
+    if (/^## (d\d+|post_pixel)\b/i.test(line)) {
+      currentSection = line.replace(/^## /, "").trim();
+    } else if (/^### (comment_diaria|comment_pixel)\b/i.test(line)) {
+      currentSection = line.replace(/^### /, "").trim();
+    }
+    EMAIL_CTA_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = EMAIL_CTA_RE.exec(line)) !== null) {
+      errors.push({
+        section: currentSection,
+        line: i + 1,
+        phrase: m[0],
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * URL canônica da página da Diar.ia no LinkedIn (sem https://, sem ponto final).
+ * Fonte autoritativa: platform.config.json#publishing.social.linkedin.diaria_linkedin_page_url
+ * (#2458 — centralizada aqui como constante pra o lint ser determinístico sem ler o config).
+ */
+export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diaria";
+
+export interface LinkedinPageLinkError {
+  section: string;
+  destaque?: string;
+  detail: string;
+}
+export interface LinkedinPageLinkResult {
+  ok: boolean;
+  errors: LinkedinPageLinkError[];
+}
+
+/**
+ * #2458: Valida que o link da página da Diar.ia no LinkedIn está presente em:
+ *   - Cada `### comment_diaria` (CTA de follow da página)
+ *   - O `## post_pixel` (CTA de follow no post pessoal)
+ *
+ * O link aceito: `linkedin.com/company/diaria` (sem https://, sem ponto).
+ * Posts principais `## d{N}` ficam 100% editoriais (sem URL, conforme #595).
+ */
+export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
+  const errors: LinkedinPageLinkError[] = [];
+  const linkedinSection = extractPlatformSection(md, "linkedin");
+  if (!linkedinSection) return { ok: true, errors };
+
+  const pageRe = /linkedin\.com\/company\/diaria/i;
+
+  // --- Checar cada comment_diaria ---
+  const chunks = linkedinSection.split(/\n## (d\d+)\n/);
+  for (let i = 1; i < chunks.length; i += 2) {
+    const destaque = chunks[i];
+    const body = chunks[i + 1] ?? "";
+    // Extrair texto do comment_diaria
+    const cdStart = body.search(/\n### comment_diaria\b/);
+    const cpStart = body.search(/\n### comment_pixel\b/);
+    if (cdStart === -1) continue; // sem comment_diaria → regra missing_comment_diaria já pega
+    const start = body.indexOf("\n", cdStart + 1) + 1;
+    const end = cpStart !== -1 ? cpStart : body.length;
+    const cdText = body.slice(start, end).replace(/<!--[\s\S]*?-->/g, "").trim();
+    if (!pageRe.test(cdText)) {
+      errors.push({
+        section: "comment_diaria",
+        destaque,
+        detail:
+          `${destaque}/comment_diaria: link da página da Diar.ia no LinkedIn ausente. ` +
+          `Adicionar "linkedin.com/company/diaria" no CTA (#2458).`,
+      });
+    }
+  }
+
+  // --- Checar post_pixel ---
+  const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
+  const ppMatch = text.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
+  if (ppMatch) {
+    const ppText = ppMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+    if (ppText.length > 0 && !pageRe.test(ppText)) {
+      errors.push({
+        section: "post_pixel",
+        detail:
+          `post_pixel: link da página da Diar.ia no LinkedIn ausente. ` +
+          `Adicionar "linkedin.com/company/diaria" ao final do post (#2458).`,
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -942,7 +1070,9 @@ function main(): void {
         "  ou: lint-social-md.ts --check linkedin-schema --md <path>\n" +
         "  ou: lint-social-md.ts --check post_pixel-matches-d1 --md <path>\n" +
         "  ou: lint-social-md.ts --check personal-post-no-newsletter-deixis --md <path>\n" +
-        "  ou: lint-social-md.ts --check humanizer-section-coverage --pre <path-pre> --md <path-post>",
+        "  ou: lint-social-md.ts --check humanizer-section-coverage --pre <path-pre> --md <path-post>\n" +
+        "  ou: lint-social-md.ts --check no-email-cta-linkedin --md <path>\n" +
+        "  ou: lint-social-md.ts --check linkedin-page-link --md <path>",
     );
     process.exit(2);
   }
@@ -1066,6 +1196,38 @@ function main(): void {
           console.error(`  ${s}: idêntica antes/depois do humanizador`);
         }
         console.error(`\n  Re-invocar humanizador mirando: ${result.untouched.join(", ")}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-email-cta-linkedin (#2458) — proibe CTA de assinatura por e-mail no LinkedIn
+  if (args.check === "no-email-cta-linkedin") {
+    const result = lintLinkedinEmailCTA(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} CTA(s) de e-mail encontrado(s) em posts LinkedIn (#2458 — use CTA de seguir a página, não assinatura por e-mail):`,
+      );
+      for (const e of result.errors) {
+        console.error(`  [${e.section}] linha ${e.line}: '${e.phrase}' — substituir pelo CTA da página`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check linkedin-page-link (#2458) — valida link da página em comment_diaria + post_pixel
+  if (args.check === "linkedin-page-link") {
+    const result = lintLinkedinPageLink(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} seção(ões) sem link da página da Diar.ia no LinkedIn (#2458):`,
+      );
+      for (const e of result.errors) {
+        console.error(`  [${e.section}${e.destaque ? `/${e.destaque}` : ""}]: ${e.detail}`);
       }
       process.exit(1);
     }

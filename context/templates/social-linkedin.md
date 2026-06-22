@@ -66,8 +66,10 @@ Postado **3 min após** o main post pela própria conta Diar.ia. Driver de tráf
 ```
 Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 ```
+
+**NÃO incluir CTA de assinatura por e-mail** (#2458) — "assine grátis", "receba por e-mail", "inscreva-se" e variações são vetados em posts do LinkedIn. O foco é seguir a página.
 
 ### Placeholder `{edition_url}` (#595)
 
@@ -96,7 +98,8 @@ Postado **8 min após** o main post pela conta pessoal `vjpixel`. Amplifica via 
 - 300–600 caracteres.
 - URL é opcional (geralmente não inclui — main post + comment Diar.ia já cobrem).
 - Sem hashtags.
-- Sem CTA pra newsletter (já está no comment Diar.ia).
+- Sem CTA pra newsletter por e-mail — não é o objetivo do LinkedIn (#2458).
+- Sem link da página aqui (já vai no comment_diaria).
 
 ### Exemplo (estilo Pixel)
 
