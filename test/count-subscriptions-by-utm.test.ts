@@ -16,6 +16,7 @@ import {
   normalizeUtmSource,
   aggregateByUtmSource,
   formatCountsTable,
+  fetchAndAggregate,
 } from "../scripts/count-subscriptions-by-utm.ts";
 
 // ---------------------------------------------------------------------------
@@ -217,5 +218,52 @@ describe("aggregateByUtmSource — mock resposta API Beehiiv (#2457)", () => {
     assert.equal(counts["mensal-brevo"], undefined, "mensal-brevo não deve aparecer se count=0");
     assert.equal(counts["__none__"] ?? 0, 1);
     assert.equal(counts["organic"] ?? 0, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchAndAggregate — paginação + guard anti-truncação (#2457 self-review fix)
+// ---------------------------------------------------------------------------
+describe("fetchAndAggregate — paginação (#2457 fix)", () => {
+  const mockFetchPages = (pages: Array<Record<string, unknown>>) => {
+    let call = 0;
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: async () => pages[call++],
+    })) as unknown as typeof fetch;
+    return { restore: () => { globalThis.fetch = orig; }, calls: () => call };
+  };
+
+  it("drena além da 1ª página usando o `limit` da API (sem total_results)", async () => {
+    // Página cheia (10 == limit da API) → há mais; página curta (3 < limit) → fim.
+    // Com o bug (PER_PAGE=100) pararia na 1ª página com 10. Com o fix: 13.
+    const m = mockFetchPages([
+      { data: Array.from({ length: 10 }, () => ({ utm_source: "organic" })), limit: 10 },
+      { data: Array.from({ length: 3 }, () => ({ utm_source: "organic" })), limit: 10 },
+    ]);
+    try {
+      const r = await fetchAndAggregate("pub_x", "key_x");
+      assert.equal(r.total, 13, "deve drenar 10+3=13 (não parar na 1ª página)");
+      assert.equal(r.counts["organic"], 13);
+      assert.equal(m.calls(), 2, "deve buscar exatamente 2 páginas");
+    } finally { m.restore(); }
+  });
+
+  it("guard anti-truncação: total_results não-drenado lança erro", async () => {
+    // 5 de 50 + página vazia mid-drain → truncamento silencioso → deve lançar.
+    const m = mockFetchPages([
+      { data: Array.from({ length: 5 }, () => ({ utm_source: "organic" })), total_results: 50, limit: 10 },
+      { data: [], total_results: 50, limit: 10 },
+    ]);
+    try {
+      await assert.rejects(
+        fetchAndAggregate("pub_x", "key_x"),
+        /truncado: 5\/50/,
+        "deve lançar quando total_results não foi totalmente drenado",
+      );
+    } finally { m.restore(); }
   });
 });

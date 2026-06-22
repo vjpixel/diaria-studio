@@ -218,13 +218,27 @@ export async function fetchAndAggregate(
     } else if (totalResults != null) {
       more = allSubs.length < totalResults;
     } else {
-      more = chunk.length >= PER_PAGE;
+      // #2457 fix: usar o `limit` REPORTADO pela API (Beehiiv capa ~10/página, #1897),
+      // não PER_PAGE — senão numa base sem total_results o loop para na 1ª página
+      // (undercount silencioso). Página cheia (== limit da API) → há mais.
+      const apiLimit =
+        typeof body.limit === "number" && body.limit > 0 ? body.limit : PER_PAGE;
+      more = chunk.length >= apiLimit;
     }
 
     process.stderr.write(
       `[count-subscriptions-by-utm] página ${page}: ${chunk.length} subscriptions (${allSubs.length}${totalResults != null ? `/${totalResults}` : ""} total)\n`,
     );
     page++;
+  }
+
+  // #2457 fix: guard anti-truncação pós-loop (como backup-beehiiv.ts) — se a API
+  // reportou total_results mas não drenamos tudo (página vazia mid-drain, hiccup),
+  // é truncamento silencioso → falhar em vez de retornar contagem parcial autoritativa.
+  if (totalResults != null && allSubs.length < totalResults) {
+    throw new Error(
+      `[count-subscriptions-by-utm] truncado: ${allSubs.length}/${totalResults} subscriptions drenadas — contagem incompleta, abortando.`,
+    );
   }
 
   return {
