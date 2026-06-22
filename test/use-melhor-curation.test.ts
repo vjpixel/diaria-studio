@@ -2079,6 +2079,17 @@ describe("normalizeDashToParens (#2450)", () => {
     assert.ok(!result.includes("— 15 min"), "não deve manter o formato dash");
   });
 
+  it("hotfix 260621: PRESERVA prosa do editor após o dash-tempo (não engole)", () => {
+    // O `[^)–—\n]*` antigo engolia QUALQUER texto após "min" → perda de dado (pego
+    // no code-review consolidado). Agora só o sufixo de duração explícito é dropado.
+    assert.equal(
+      normalizeDashToParens("Aprenda Python — 15 min para concluir cada módulo"),
+      "Aprenda Python (15 min) para concluir cada módulo",
+    );
+    // sufixo de duração canônico continua sendo dropado:
+    assert.equal(normalizeDashToParens("Setup rápido — 5 min de execução"), "Setup rápido (5 min)");
+  });
+
   it("#2464 finding 1: normaliza '— X min' independente de posição (no início após prefixo)", () => {
     // Dash-tempo após um prefixo curto (não só final da string)
     const result = normalizeDashToParens("[TRADUZIR] Guia completo — 10 min de execução");
@@ -2102,6 +2113,19 @@ describe("isRadarHowToEligible (#2448)", () => {
         "Como montar um PC para IA local",
       ),
       "título 'Como montar' com verbo acionável deve ser elegível para promoção",
+    );
+  });
+
+  it("hotfix 260621: 'Tutorial: X' (espaço após ':') é elegível — o \\b externo matava o branch", () => {
+    // Slug sem sinal how-to → o ÚNICO sinal é o prefixo "Tutorial:" do título.
+    // O `\b` externo da regex falhava após ':' seguido de espaço; o teste antigo
+    // mascarava o bug porque o título também casava 'tutorial passo a passo'.
+    assert.ok(
+      isRadarHowToEligible(
+        "https://blog.example.com/post-12345",
+        "Tutorial: Build Your First AI Agent",
+      ),
+      "'Tutorial: X' com espaço após ':' deve ser elegível para promoção",
     );
   });
 
