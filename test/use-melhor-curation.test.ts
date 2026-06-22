@@ -2166,6 +2166,53 @@ describe("isRadarHowToEligible (#2448)", () => {
       "estudo de pesquisa não deve ser elegível",
     );
   });
+
+  // #2469 (finding 3): testa o slug PT-BR via HOWTO_BR_SIGNAL_RE na URL
+  it("slug PT-BR 'como-usar-x' na URL é sinal how-to suficiente mesmo sem título how-to explícito (#2469 finding 3)", () => {
+    // Antes do fix: isRadarHowToEligible só testava RADAR_HOWTO_PROMOTE_RE no título —
+    // slug PT-BR na URL era prometido no docstring mas nunca chamado.
+    // Após fix: HOWTO_BR_SIGNAL_RE é testado no slug da URL.
+    assert.ok(
+      isRadarHowToEligible(
+        "https://canaltech.com.br/ia/como-usar-chatgpt-no-trabalho",
+        "ChatGPT no trabalho: guia para iniciantes", // título não casa RADAR_HOWTO_PROMOTE_RE por si só
+      ),
+      "slug PT-BR 'como-usar' deve tornar o artigo elegível para promoção",
+    );
+  });
+
+  it("slug PT-BR 'como-usar-ia' na URL promove artigo com título neutro (sem verbo how-to explícito)", () => {
+    // HOWTO_BR_SIGNAL_RE no slug: "como usar ia no trabalho" → match via `como\s+usar\s+ia`
+    assert.ok(
+      isRadarHowToEligible(
+        "https://tecnoblog.net/ia/como-usar-ia-no-trabalho",
+        "Inteligência artificial está mudando o mercado de trabalho",
+      ),
+      "slug 'como-usar-ia' deve tornar o artigo elegível via HOWTO_BR_SIGNAL_RE",
+    );
+  });
+
+  it("'tutorial' bare no título NÃO casa após tightening (#2469 finding 3)", () => {
+    // "tutorial" solto casava "New Tutorial Series on LLMs" — não é how-to acionável.
+    // Após fix: exige "tutorial:" (com dois-pontos) ou "tutorial passo/completo/prático/de X".
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://blog.example.com/new-tutorial-series",
+        "New Tutorial Series on LLM Adoption",
+      ),
+      "'tutorial' bare sem contexto how-to NÃO deve ser elegível",
+    );
+  });
+
+  it("'tutorial:' (com dois-pontos) CONTINUA sendo elegível após tightening", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://blog.example.com/tutorial-rag",
+        "Tutorial: como construir um RAG com Python",
+      ),
+      "'tutorial:' com dois-pontos deve ser elegível",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2245,5 +2292,82 @@ describe("promoteHowTosFromRadar (#2448)", () => {
     assert.equal(promoted, 1, "casual how-to deve ser promovido");
     assert.equal(newUseMelhor.length, 1);
     assert.equal(newUseMelhor[0].url, casualHowTo.url);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2469 (finding 6) — selectUseMelhorSplit: fim-a-fim 2 casual + 2 dev-iniciante
+// ---------------------------------------------------------------------------
+
+describe("selectUseMelhorSplit (#2469 finding 6) — fim-a-fim 2 casual + 2 dev-iniciante", () => {
+  // Fixtures com sinais claros de audience_affinity
+  const mkCasual = (n: number) => ({
+    url: `https://canaltech.com.br/ia/como-usar-chatgpt-${n}`,
+    title: `Como usar ChatGPT na vida cotidiana ${n}`,
+    audience_affinity: { matched: ["howto_br:true"] },
+  });
+  const mkDevBeginner = (n: number) => ({
+    url: `https://huggingface.co/blog/beginner-tutorial-${n}`,
+    title: `Build your first LLM app ${n}`,
+    audience_affinity: { matched: ["academy:true"] },
+  });
+  const mkDevAdvanced = (n: number) => ({
+    url: `https://arxiv.org/abs/2409.${1000 + n}`,
+    title: `Fine-tuning techniques for production LLMs ${n}`,
+    audience_affinity: { matched: [] },
+  });
+
+  it("distribui 2 casual + 2 dev-iniciante quando há suficientes candidatos", () => {
+    const items = [
+      mkCasual(1), mkCasual(2), mkCasual(3),
+      mkDevBeginner(1), mkDevBeginner(2), mkDevBeginner(3),
+      mkDevAdvanced(1),
+    ];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4, "deve retornar 4 itens");
+    const casualCount = result.filter((i) => {
+      const matched = (i.audience_affinity as { matched?: string[] } | null)?.matched ?? [];
+      return matched.includes("howto_br:true");
+    }).length;
+    const devCount = result.filter((i) => {
+      const matched = (i.audience_affinity as { matched?: string[] } | null)?.matched ?? [];
+      return matched.includes("academy:true");
+    }).length;
+    assert.equal(casualCount, 2, "deve ter exatamente 2 casual");
+    assert.equal(devCount, 2, "deve ter exatamente 2 dev-iniciante");
+  });
+
+  it("caso de borda: maxPromote=0 (promoteHowTosFromRadar não promove nenhum) → selectUseMelhorSplit opera no pool existente", () => {
+    // Simula o pipeline com maxPromote=0: apenas itens pré-existentes no pool.
+    const { newUseMelhor, promoted } = promoteHowTosFromRadar(
+      [mkCasual(99)], // radar com 1 how-to
+      [mkCasual(1), mkDevBeginner(1), mkDevBeginner(2), mkDevAdvanced(1)],
+      0, // maxPromote=0 → sem promoção
+    );
+    assert.equal(promoted, 0, "maxPromote=0 → nenhuma promoção");
+    const result = selectUseMelhorSplit(newUseMelhor);
+    assert.equal(result.length, 4, "pool de 4 → retorna 4");
+  });
+
+  it("caso de borda: maxPromote > radarItems.length (mais slots que candidatos no RADAR)", () => {
+    const { promoted, newRadar } = promoteHowTosFromRadar(
+      [mkCasual(1)], // só 1 no radar
+      [],
+      10, // maxPromote muito maior que o RADAR
+    );
+    assert.equal(promoted, 1, "promove tudo que há (1), sem crash");
+    assert.equal(newRadar.length, 0, "radar fica vazio");
+  });
+
+  it("degrada graciosamente quando só há itens casual (sem dev-iniciante)", () => {
+    const items = [mkCasual(1), mkCasual(2), mkCasual(3), mkCasual(4)];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4, "retorna 4 itens mesmo sem dev-iniciante");
+  });
+
+  it("degrada graciosamente quando só há itens dev-iniciante (sem casual)", () => {
+    const items = [mkDevBeginner(1), mkDevBeginner(2), mkDevBeginner(3), mkDevBeginner(4)];
+    const result = selectUseMelhorSplit(items);
+    assert.equal(result.length, 4, "retorna 4 itens mesmo sem casual");
   });
 });

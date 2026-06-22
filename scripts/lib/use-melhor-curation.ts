@@ -8,6 +8,12 @@
  * Todos os exports são funções puras, sem I/O, testáveis diretamente.
  */
 
+// #2469 (finding 4): isDevReleaseNote extraída para lib compartilhada (fonte única).
+// (Não pode importar categorize.ts — dependência circular.)
+import { isDevReleaseNote } from "./release-note-detect.ts";
+// #2469 (finding 5): canonicalize para dedup robusto (UTM/fragment/trailing-slash).
+import { canonicalize } from "./url-utils.ts";
+
 // ---------------------------------------------------------------------------
 // #2276 — Boost: tutorial/academy oficial
 // ---------------------------------------------------------------------------
@@ -947,8 +953,12 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
  * Não basta HOW_TO_GUARD_RE (que inclui "guide" genérico) — queremos
  * conteúdo genuinamente acionável, não apenas levemente tutorial.
  */
+// #2469 (finding 3): `tutorial\b` solto casava notícias SOBRE tutoriais
+// ("New Tutorial Series on LLMs", "The State of Tutorials in 2026").
+// Substituído por `tutorial\s*:` (com dois-pontos — sinal de how-to) e
+// `tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)` (com contexto how-to explícito).
 const RADAR_HOWTO_PROMOTE_RE =
-  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\b|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)\b/i;
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)\b/i;
 
 /**
  * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to
@@ -967,17 +977,24 @@ const RADAR_HOWTO_PROMOTE_RE =
  * @param summary Sumário/descrição opcional.
  */
 export function isRadarHowToEligible(url: string, title: string, summary = ""): boolean {
-  // Sem sinal how-to explícito → não promover.
-  if (!RADAR_HOWTO_PROMOTE_RE.test(title)) return false;
+  // Sem sinal how-to explícito no título nem no slug PT-BR da URL → não promover.
+  // #2469 (finding 3): checar também o slug da URL via HOWTO_BR_SIGNAL_RE —
+  // conforme prometido no docstring, mas que antes nunca era chamado.
+  let urlSlug = "";
+  try {
+    urlSlug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    // URL inválida — prossegue sem slug
+  }
+  if (!RADAR_HOWTO_PROMOTE_RE.test(title) && !HOWTO_BR_SIGNAL_RE.test(urlSlug)) return false;
 
   // Opinião ou estudo → não promover (how-to pode estar no summary, mas o conteúdo não é acionável).
   if (isOpinionOrStudy(url, title, summary)) return false;
 
   // "New X in Y" release note / dev announcement → não promover.
-  // (Importado de categorize.ts ao nível de interface para evitar dependência circular —
-  // a regex é duplicada aqui por design: use-melhor-curation.ts não pode importar categorize.ts.)
-  const DEV_RELEASE_NOTE_RE = /^\s*New\s+\w[\w\s]{2,40}\s+in\s+(?:the\s+)?\w/i;
-  if (DEV_RELEASE_NOTE_RE.test(title)) return false;
+  // #2469 (finding 4): usa isDevReleaseNote importada de lib/release-note-detect.ts
+  // (fonte única — elimina duplicação com a cópia em categorize.ts).
+  if (isDevReleaseNote(title)) return false;
 
   return true;
 }
@@ -1016,21 +1033,24 @@ export function promoteHowTosFromRadar(
   newRadar: RadarArticle[];
   promoted: number;
 } {
+  // #2469 (finding 5): usa canonicalize() em vez de toLowerCase() —
+  // variantes com UTM params, fragment ou trailing-slash escapavam do dedup.
   const seenUrls = new Set<string>(
-    useMelhorItems.map((a) => a.url.toLowerCase()),
+    useMelhorItems.map((a) => canonicalize(a.url)),
   );
 
   const promoted: RadarArticle[] = [];
   const remainingRadar: RadarArticle[] = [];
 
   for (const item of radarItems) {
+    const canonUrl = canonicalize(item.url);
     if (
       promoted.length < maxPromote &&
-      !seenUrls.has(item.url.toLowerCase()) &&
+      !seenUrls.has(canonUrl) &&
       isRadarHowToEligible(item.url, item.title ?? "", item.summary ?? "")
     ) {
       promoted.push(item);
-      seenUrls.add(item.url.toLowerCase());
+      seenUrls.add(canonUrl);
     } else {
       remainingRadar.push(item);
     }

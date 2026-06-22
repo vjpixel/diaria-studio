@@ -34,6 +34,7 @@ import type { Article } from "./lib/types/article.ts"; // #650
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176 / #2197
 import { isMarketingCaseStudy } from "./lib/use-melhor-curation.ts"; // #2276
+import { isDevReleaseNote } from "./lib/release-note-detect.ts"; // #2469 (finding 4): shared regex — fonte única, evita divergência com use-melhor-curation.ts
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -626,31 +627,10 @@ export function isLaunchSlug(url: string): boolean {
   }
 }
 
-/**
- * #2448: título de release note / feature announcement em dev blog.
- * Padrão "New [Feature] in [Product]" é anúncio de feature, não tutorial acionável.
- *
- * Casos reais 260622:
- *   - "New Session Metadata in Sign in with Google" (developers.googleblog.com)
- *   - "New APIs in the Google Identity Services library"
- *
- * Regex ancora no início (`^\s*New\s+`) pra não pegar "What's new in X" ou
- * "How to use new features in Y" (o guard `isTutorialByKeyword` já retorna antes).
- * Requer "in" como separador seguido de ≥1 palavra — evita "New to Python?"
- * (interrogativo, não announcement). Conservador: só dispara quando the TITLE
- * claramente descreve adição de feature, não quando apenas menciona "new".
- */
-const DEV_RELEASE_NOTE_TITLE_RE =
-  /^\s*New\s+\w[\w\s]{2,40}\s+in\s+(?:the\s+)?\w/i;
-
-/**
- * #2448: retorna true se o título parece release note de dev ("New X in Y").
- * Usado em isNewsNotTutorial para rejeitar anúncios de feature de dev blogs
- * (developers.googleblog.com, etc.) que não contêm how-to acionável.
- */
-export function isDevReleaseNote(title: string): boolean {
-  return DEV_RELEASE_NOTE_TITLE_RE.test(title);
-}
+// #2469 (finding 4): isDevReleaseNote vive em scripts/lib/release-note-detect.ts
+// (fonte única compartilhada com use-melhor-curation.ts, que não pode importar
+// categorize.ts por dependência circular). Re-exportado aqui para manter a API pública.
+export { isDevReleaseNote };
 
 /**
  * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
@@ -1049,8 +1029,15 @@ const TUTORIAL_PATTERNS: RegExp[] = [
  * - Papers acadêmicos com "A Tutorial on X" (precedência PESQUISA vem antes)
  * - "how to" genérico em press releases (exige contexto forte)
  */
+// #2469 (finding 2): adicionados "guide to/for", "techniques for" e "patterns for"
+// como sinais de tutorial. Sem isso, "New Guide to X in Y" não casava aqui
+// (isTutorialByKeyword retornava false) e DEV_RELEASE_NOTE_TITLE_RE o ejetava
+// de use_melhor — falso-negativo (guias didáticos não são release notes).
+// "guide" bare é conservador: exige preposição "to/for" para evitar "style guide",
+// "buyer guide" ou "productivity guide" (não acionáveis).
+// "techniques for" e "patterns for" exigem preposição por analogia.
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;

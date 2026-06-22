@@ -633,12 +633,48 @@ export function finalizeStage1(
     }
   }
 
+  // Step 3.7 (#2448): promover how-tos do RADAR para USE MELHOR.
+  // Alguns tutoriais chegam ao RADAR porque o categorizador não os reconheceu
+  // (domínio neutro, slug sem how-to) mas o título é claramente um how-to
+  // acionável ("Como montar um PC para IA local", "Tutorial passo a passo...").
+  // Máximo de 2 promoções para não esvaziar o RADAR.
+  //
+  // #2469 (finding 1): movido para ANTES do Step 3.6 (cap de domínio por-bucket).
+  // Antes, itens promovidos escapavam do USE_MELHOR_DOMAIN_CAP=1 porque a promoção
+  // rodava APÓS o cap — um how-to de docs.aws.amazon.com podia virar o 2º item de
+  // amazon.com em use_melhor. Agora o Step 3.6 aplica o cap sobre o pool já com
+  // os promovidos incluídos.
+  let radarPromotedCount = 0;
+  {
+    const radarArr = (enriched["radar"] as Article[] | undefined) ?? [];
+    const umArr = (enriched["use_melhor"] as Article[] | undefined) ?? [];
+    if (radarArr.length > 0) {
+      const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar(
+        radarArr as Array<{ url: string; title?: string; summary?: string; [k: string]: unknown }>,
+        umArr as Array<{ url: string; title?: string; summary?: string; [k: string]: unknown }>,
+        2, // maxPromote
+      );
+      if (promoted > 0) {
+        enriched["use_melhor"] = newUseMelhor as Article[];
+        enriched["radar"] = newRadar as Article[];
+        radarPromotedCount = promoted;
+        console.error(
+          `[finalize-stage1] radar→use_melhor (#2448): promovidos ${promoted} how-to(s) do RADAR`,
+        );
+        for (const a of newUseMelhor.slice(0, promoted)) {
+          console.error(`  + ${a.url.slice(0, 80)} | "${(a.title ?? "").slice(0, 60)}"`);
+        }
+      }
+    }
+  }
+
   // Step 3.6 (#2313 #5): cap de domínio por-bucket para use_melhor = 1.
   // O cap global (Step 3.5) é 3 (DEFAULT_DOMAIN_CAP) — suficiente para radar/lancamento,
   // mas insuficiente para use_melhor onde 3× AWS ou 2× langchain ainda sobram.
   // Em split-articles-for-scoring.ts já há maxPerDomain:2 (pré-scoring), mas após o
   // scorer o global cap de 3 pode trazer 3 do mesmo domínio de volta.
-  // Fix: aplicar cap 1 por domínio exclusivamente no bucket use_melhor pós-global-cap.
+  // Fix: aplicar cap 1 por domínio exclusivamente no bucket use_melhor pós-global-cap
+  // E pós-promoção (Step 3.7 agora roda antes — #2469 finding 1).
   const USE_MELHOR_DOMAIN_CAP = 1;
   if ((enriched["use_melhor"] ?? []).length > 0) {
     const umCountByDomain = new Map<string, number>();
@@ -675,35 +711,6 @@ export function finalizeStage1(
           score: d.score, // #2321: usar score real (não null) para logs de auditoria úteis
         })),
       );
-    }
-  }
-
-  // Step 3.7 (#2448): promover how-tos do RADAR para USE MELHOR.
-  // Alguns tutoriais chegam ao RADAR porque o categorizador não os reconheceu
-  // (domínio neutro, slug sem how-to) mas o título é claramente um how-to
-  // acionável ("Como montar um PC para IA local", "Tutorial passo a passo...").
-  // Máximo de 2 promoções para não esvaziar o RADAR.
-  let radarPromotedCount = 0;
-  {
-    const radarArr = (enriched["radar"] as Article[] | undefined) ?? [];
-    const umArr = (enriched["use_melhor"] as Article[] | undefined) ?? [];
-    if (radarArr.length > 0) {
-      const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar(
-        radarArr as Array<{ url: string; title?: string; summary?: string; [k: string]: unknown }>,
-        umArr as Array<{ url: string; title?: string; summary?: string; [k: string]: unknown }>,
-        2, // maxPromote
-      );
-      if (promoted > 0) {
-        enriched["use_melhor"] = newUseMelhor as Article[];
-        enriched["radar"] = newRadar as Article[];
-        radarPromotedCount = promoted;
-        console.error(
-          `[finalize-stage1] radar→use_melhor (#2448): promovidos ${promoted} how-to(s) do RADAR`,
-        );
-        for (const a of newUseMelhor.slice(0, promoted)) {
-          console.error(`  + ${a.url.slice(0, 80)} | "${(a.title ?? "").slice(0, 60)}"`);
-        }
-      }
     }
   }
 

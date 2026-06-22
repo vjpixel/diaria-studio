@@ -915,3 +915,72 @@ describe("finalizeStage1 — use_melhor domain cap usa rootDomain (#2336)", () =
     assert.equal(domain_capped.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2469 (finding 1) — Step 3.7 roda ANTES do Step 3.6: promoção radar→use_melhor
+// submete os promovidos ao domain cap (USE_MELHOR_DOMAIN_CAP=1).
+// ---------------------------------------------------------------------------
+
+describe("finalizeStage1 — promoção radar→use_melhor respeita domain cap (#2469 finding 1)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>): ScoredOutput {
+    return {
+      highlights: [],
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("how-to promovido do RADAR do mesmo root-domain que item existente em use_melhor é barrado pelo cap", () => {
+    // Cenário pré-fix: docs.aws.amazon.com promovido de radar viraria 2º item de
+    // amazon.com em use_melhor, escapando do cap=1.
+    // Pós-fix (Step 3.7 antes do Step 3.6): o cap barra o promovido.
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      radar: [
+        // How-to explícito de docs.aws.amazon.com — elegível para promoção
+        { url: "https://docs.aws.amazon.com/sagemaker/como-usar-sagemaker", title: "Como usar SageMaker para treinar modelos", score: 60 },
+      ],
+      use_melhor: [
+        // Já existe 1 item de amazon.com — cap=1 vai bloquear o promovido
+        { url: "https://aws.amazon.com/bedrock/getting-started", title: "Getting started with Bedrock", score: 80 },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://docs.aws.amazon.com/sagemaker/como-usar-sagemaker", score: 60 },
+      { url: "https://aws.amazon.com/bedrock/getting-started", score: 80 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    // O promovido de docs.aws.amazon.com deve ser barrado pelo cap (amazon.com já tem 1)
+    assert.equal(buckets.use_melhor.length, 1, "cap=1 deve bloquear o promovido do mesmo root-domain");
+    // O cap mantém o primeiro item por score — seja o original ou o promovido (prepended).
+    // O invariante é que só 1 item de amazon.com passa, independente de qual dos dois sobrevive.
+    assert.ok(
+      buckets.use_melhor.some((a) => a.url.includes("amazon.com") || a.url.includes("aws.amazon.com")),
+      "o item restante deve ser de amazon.com",
+    );
+    assert.ok(
+      domain_capped.some((d) => d.url.includes("sagemaker") || d.url.includes("bedrock")),
+      "o item de amazon.com barrado pelo cap deve aparecer em domain_capped",
+    );
+  });
+
+  it("how-to promovido de domínio distinto passa o cap normalmente", () => {
+    // Promoção de domínio diferente não deve ser barrada pelo cap de amazon.com
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      radar: [
+        { url: "https://blog.example.com/como-usar-python-para-ia", title: "Como usar Python para IA", score: 65 },
+      ],
+      use_melhor: [
+        { url: "https://aws.amazon.com/bedrock", title: "AWS Bedrock", score: 80 },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://blog.example.com/como-usar-python-para-ia", score: 65 },
+      { url: "https://aws.amazon.com/bedrock", score: 80 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.use_melhor.length, 2, "domínios distintos = 2 passam o cap");
+    assert.equal(domain_capped.length, 0, "nenhum deve ser capped");
+  });
+});

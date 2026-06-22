@@ -2901,3 +2901,70 @@ describe("isDevReleaseNote (#2448)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2469 (finding 2) — TUTORIAL_KEYWORDS_RE: "New Guide to X in Y" NÃO é ejetado
+// ---------------------------------------------------------------------------
+
+describe("isNewsNotTutorial — 'New Guide to X' não é ejetado como release note (#2469 finding 2)", () => {
+  it("isDevReleaseNote('New Guide to X in Y') retorna true (regex pega o padrão)", () => {
+    // Confirma que DEV_RELEASE_NOTE_TITLE_RE ancora no início e pega "New Guide to X in Y"
+    assert.ok(
+      isDevReleaseNote("New Guide to Prompt Engineering in LangChain"),
+      "regex de release note deve casar 'New Guide to X in Y'",
+    );
+  });
+
+  it("'New Guide to X in Y' em domínio de tutorial NÃO é ejetado de use_melhor (#2469 fix)", () => {
+    // Antes do fix: isTutorialByKeyword retornava false (não havia "guide to" em TUTORIAL_KEYWORDS_RE),
+    // então isNewsNotTutorial caia em isDevReleaseNote e ejetava o artigo.
+    // Após o fix: "guide to" é sinal de how-to → isTutorialByKeyword retorna true → article fica tutorial.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-guide-to-prompt-engineering-in-langchain/",
+      title: "New Guide to Prompt Engineering in LangChain",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Guide to X in Y' com sinal how-to deve continuar tutorial, não ser ejetado",
+    );
+  });
+
+  it("'New Techniques for X in Y' em domínio de tutorial NÃO é ejetado (#2469 fix)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-techniques-for-training-in-tensorflow/",
+      title: "New Techniques for Training Models in TensorFlow",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Techniques for X in Y' deve ser tutorial quando o conteúdo é how-to",
+    );
+  });
+
+  it("'New Patterns for X in Y' em domínio de tutorial NÃO é ejetado (#2469 fix)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-patterns-for-agents-in-gemini/",
+      title: "New Patterns for Building Agents in Gemini",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Patterns for X in Y' deve ser tutorial quando o conteúdo é how-to",
+    );
+  });
+
+  it("'New Session Metadata in X' SEM sinal how-to CONTINUA sendo ejetado (#2448 regressão)", () => {
+    // Sem "guide to"/"techniques for"/"patterns for" → isTutorialByKeyword não casa →
+    // isDevReleaseNote ejeta normalmente.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-session-metadata-in-sign-in-with-google/",
+      title: "New Session Metadata in Sign in with Google",
+    };
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio 'New X in Y' sem sinal how-to não deve virar tutorial",
+    );
+  });
+});
