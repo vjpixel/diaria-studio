@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 45 invariants.
+**Total**: 46 invariants.
 
 ## Static (estrutura do repo)
 
@@ -73,6 +73,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `edition-url-file-exists` | _internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454) | #2454 |
 | `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch) | #facebook |
 | `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch) | #facebook |
+| `instagram-creds-set` | INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49) | #49 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
 | `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |

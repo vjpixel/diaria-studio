@@ -139,6 +139,28 @@ describe("PublishedSocialSchema (#1132 P2.5)", () => {
     );
   });
 
+  it("aceita platform='instagram' + ig_media_id/ig_container_id (#49)", () => {
+    const valid = {
+      posts: [
+        {
+          platform: "instagram",
+          destaque: "d1",
+          url: "https://www.instagram.com/p/Cabc123/",
+          status: "published",
+          scheduled_at: null,
+          ig_media_id: "17896453961137500",
+          ig_container_id: "17999000111222333",
+        },
+      ],
+    };
+    const parsed = parsePublishedSocial(valid);
+    assert.equal(parsed.posts.length, 1);
+    assert.equal(parsed.posts[0].platform, "instagram");
+    // Campos ig_* preservados via .passthrough()
+    assert.equal(parsed.posts[0].ig_media_id, "17896453961137500");
+    assert.equal(parsed.posts[0].ig_container_id, "17999000111222333");
+  });
+
   it("rejeita posts ausente", () => {
     assert.throws(
       () => parsePublishedSocial({}),

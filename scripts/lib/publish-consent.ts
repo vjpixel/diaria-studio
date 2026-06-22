@@ -16,6 +16,8 @@ export interface PublishConsent {
   newsletter: Mode;
   linkedin: Mode;
   facebook: Mode;
+  /** #49 — Instagram. Default "auto" como os demais canais de social. */
+  instagram: Mode;
   /** Origem da decisão pra rastreabilidade no run-log. */
   source: string;
 }
@@ -29,6 +31,7 @@ export function autoApproveConsent(): PublishConsent {
     newsletter: "auto",
     linkedin: "auto",
     facebook: "auto",
+    instagram: "auto",
     source: "auto_approve_default",
   };
 }
@@ -43,6 +46,7 @@ export function defaultAutoConsent(): PublishConsent {
     newsletter: "auto",
     linkedin: "auto",
     facebook: "auto",
+    instagram: "auto",
     source: "default_auto",
   };
 }
@@ -57,6 +61,7 @@ export function defaultManualConsent(): PublishConsent {
     newsletter: "manual",
     linkedin: "manual",
     facebook: "manual",
+    instagram: "manual",
     source: "default_manual",
   };
 }
@@ -69,7 +74,7 @@ export function defaultManualConsent(): PublishConsent {
  *   - "" / "all" → todos auto (no-op)
  *   - "newsletter" → só newsletter manual
  *   - "linkedin,facebook" → linkedin + facebook manual
- *   - "newsletter,linkedin,facebook" → tudo manual
+ *   - "newsletter,linkedin,facebook,instagram" → tudo manual
  *
  * Retorna null pra input inválido (tokens não reconhecidos).
  */
@@ -78,7 +83,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook"]);
+  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram"]);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -88,6 +93,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     newsletter: skipped.has("newsletter") ? "manual" : "auto",
     linkedin: skipped.has("linkedin") ? "manual" : "auto",
     facebook: skipped.has("facebook") ? "manual" : "auto",
+    instagram: skipped.has("instagram") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
@@ -96,10 +102,11 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  * Parseia a resposta do editor no gate 4b. Aceita:
  *   - "all" → tudo auto
  *   - "none" → tudo skipped
- *   - Lista CSV de números 1-6:
+ *   - Lista CSV de números 1-8:
  *     1=Beehiiv auto, 2=Beehiiv manual
  *     3=LinkedIn auto, 4=LinkedIn manual
  *     5=Facebook auto, 6=Facebook manual
+ *     7=Instagram auto, 8=Instagram manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -114,6 +121,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       newsletter: "auto",
       linkedin: "auto",
       facebook: "auto",
+      instagram: "auto",
       source: "editor_response_all",
     };
   }
@@ -122,6 +130,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       newsletter: "skipped",
       linkedin: "skipped",
       facebook: "skipped",
+      instagram: "skipped",
       source: "editor_response_none",
     };
   }
@@ -131,15 +140,17 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 6)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 8)) {
     return null;
   }
 
-  // Start com manual default; aplicar overrides na ordem
+  // Start com manual default; aplicar overrides na ordem.
+  // #49: Instagram = 7 (auto) / 8 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",
     facebook: "manual",
+    instagram: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {
@@ -149,6 +160,8 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 4) out.linkedin = "manual";
     else if (n === 5) out.facebook = "auto";
     else if (n === 6) out.facebook = "manual";
+    else if (n === 7) out.instagram = "auto";
+    else if (n === 8) out.instagram = "manual";
   }
   return out;
 }
@@ -161,7 +174,8 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
   return (
     consent.newsletter === "auto" ||
     consent.linkedin === "auto" ||
-    consent.facebook === "auto"
+    consent.facebook === "auto" ||
+    consent.instagram === "auto"
   );
 }
 
@@ -173,6 +187,7 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
   return (
     consent.newsletter === "skipped" &&
     consent.linkedin === "skipped" &&
-    consent.facebook === "skipped"
+    consent.facebook === "skipped" &&
+    consent.instagram === "skipped"
   );
 }

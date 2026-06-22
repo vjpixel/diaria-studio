@@ -60,6 +60,47 @@ function checkFbTokenSet(): InvariantViolation[] {
 }
 
 /**
+ * `INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN` env vars (#49).
+ * publish-instagram usa pra postar via Graph API (fluxo 2-passos).
+ *
+ * ASSIMETRIA DE SEVERIDADE: severity="warning" (não "error" como Facebook).
+ * Instagram é dispatch best-effort — se as env vars estão ausentes, o
+ * publish-instagram aborta com exit 1 mas NÃO bloqueia os outros canais
+ * (são chamadas Bash separadas no orchestrator §5c-3). Warning informa o
+ * editor que Instagram não vai publicar sem abortar o pipeline.
+ */
+function checkInstagramCredsSet(): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  if (
+    !process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ||
+    process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID.trim().length === 0
+  ) {
+    violations.push({
+      rule: "instagram-business-account-id-set",
+      message:
+        "INSTAGRAM_BUSINESS_ACCOUNT_ID ausente — publish-instagram vai pular " +
+        "(Instagram não será publicado). Configure em .env.local pra habilitar.",
+      source_issue: "#49",
+      severity: "warning",
+    });
+  }
+  if (
+    !process.env.INSTAGRAM_ACCESS_TOKEN ||
+    process.env.INSTAGRAM_ACCESS_TOKEN.trim().length === 0
+  ) {
+    violations.push({
+      rule: "instagram-access-token-set",
+      message:
+        "INSTAGRAM_ACCESS_TOKEN ausente — publish-instagram vai pular " +
+        "(Instagram não será publicado). Configure em .env.local pra habilitar.",
+      source_issue: "#49",
+      severity: "warning",
+    });
+  }
+  return violations;
+}
+
+/**
  * `DIARIA_LINKEDIN_CRON_URL` deve estar setado — publish-linkedin envia
  * agendamento pro Cloudflare Worker. Sem ele, fallback é Make webhook
  * (#971 com graceful degrade). Nome confirmado em
@@ -462,7 +503,7 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
 function checkConsentBinding(editionDir: string): InvariantViolation[] {
   const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
   if (!existsSync(consentPath)) return [];
-  let consent: { newsletter?: string; linkedin?: string; facebook?: string };
+  let consent: { newsletter?: string; linkedin?: string; facebook?: string; instagram?: string };
   try {
     consent = JSON.parse(readFileSync(consentPath, "utf8"));
   } catch (e) {
@@ -521,13 +562,14 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
     }
   }
 
-  // Social check (linkedin + facebook)
+  // Social check (linkedin + facebook + instagram)
   const socialPath = resolve(editionDir, "_internal", "06-social-published.json");
-  if (consent.linkedin === "auto" || consent.facebook === "auto") {
+  if (consent.linkedin === "auto" || consent.facebook === "auto" || consent.instagram === "auto") {
     if (!existsSync(socialPath)) {
       const channels = [
         consent.linkedin === "auto" ? "linkedin" : null,
         consent.facebook === "auto" ? "facebook" : null,
+        consent.instagram === "auto" ? "instagram" : null,
       ].filter(Boolean);
       violations.push({
         rule: "consent-binding-social",
@@ -543,7 +585,7 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
           posts?: Array<{ platform?: string; status?: string; url?: string }>;
         };
         const posts = social.posts ?? [];
-        for (const platform of ["linkedin", "facebook"] as const) {
+        for (const platform of ["linkedin", "facebook", "instagram"] as const) {
           if (consent[platform] !== "auto") continue;
           const platformPosts = posts.filter(
             (p) => p.platform === platform,
@@ -720,6 +762,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     source_issue: "#facebook",
     stage: 5,
     run: () => checkFbTokenSet(),
+  },
+  {
+    id: "instagram-creds-set",
+    description: "INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49)",
+    source_issue: "#49",
+    stage: 5,
+    run: () => checkInstagramCredsSet(),
   },
   {
     // #2172: checkLinkedinWorkerUrlSet agora checa APENAS PRESENÇA (split de

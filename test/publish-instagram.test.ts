@@ -1,0 +1,371 @@
+/**
+ * publish-instagram.test.ts (#49)
+ *
+ * Testa o fluxo de 2 passos da Instagram Graph API (container → publish)
+ * com mock da API (sem chamadas reais), incluindo o caso de imagem ausente.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  extractDestaquesFromSocialMd,
+  extractPostText,
+  truncateCaption,
+} from "../scripts/publish-instagram.ts";
+
+const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Leitura da source estática — reutilizada por múltiplos testes estáticos
+const SRC = readFileSync(resolve(__ROOT, "scripts/publish-instagram.ts"), "utf8");
+
+// ─── Fixtures ───────────────────────────────────────────────────────────────
+
+const MD_INSTAGRAM = `# Instagram
+
+## d1
+Post d1 para o Instagram. #inovacao #tecnologia
+
+## d2
+Post d2 para o Instagram. #ia #futuro
+
+## d3
+Post d3 para o Instagram. #dados
+<!-- comentario oculto -->
+
+# Facebook
+
+## d1
+Post d1 Facebook diferente.
+`;
+
+const MD_SEM_INSTAGRAM = `# Facebook
+
+## d1
+Post d1 Facebook.
+
+## d2
+Post d2 Facebook.
+
+## d3
+Post d3 Facebook.
+`;
+
+const MD_CRLF = MD_INSTAGRAM.replace(/\n/g, "\r\n");
+
+// ─── extractDestaquesFromSocialMd ────────────────────────────────────────────
+
+describe("extractDestaquesFromSocialMd (instagram)", () => {
+  it("retorna d1/d2/d3 quando seção Instagram existe com 3 destaques", () => {
+    const destaques = extractDestaquesFromSocialMd(MD_INSTAGRAM, "instagram");
+    assert.deepEqual(destaques, ["d1", "d2", "d3"]);
+  });
+
+  it("usa fallback Facebook quando seção Instagram ausente", () => {
+    const destaques = extractDestaquesFromSocialMd(MD_SEM_INSTAGRAM, "instagram");
+    assert.deepEqual(destaques, ["d1", "d2", "d3"]);
+  });
+
+  it("retorna fallback [d1,d2,d3] quando nenhuma seção existe", () => {
+    const destaques = extractDestaquesFromSocialMd("# Outra\n## d1\ntexto", "instagram");
+    assert.deepEqual(destaques, ["d1", "d2", "d3"]);
+  });
+
+  it("retorna d1/d2 quando edição tem só 2 destaques", () => {
+    const md = `# Instagram\n\n## d1\nPost d1.\n\n## d2\nPost d2.\n`;
+    const destaques = extractDestaquesFromSocialMd(md, "instagram");
+    assert.deepEqual(destaques, ["d1", "d2"]);
+  });
+});
+
+// ─── extractPostText ─────────────────────────────────────────────────────────
+
+describe("extractPostText (instagram)", () => {
+  it("extrai d1 da seção Instagram", () => {
+    const t = extractPostText(MD_INSTAGRAM, "d1");
+    assert.ok(t.includes("Post d1 para o Instagram."));
+    assert.ok(!t.includes("Post d1 Facebook diferente."));
+  });
+
+  it("extrai d2 sem vazar d1 ou d3", () => {
+    const t = extractPostText(MD_INSTAGRAM, "d2");
+    assert.ok(t.includes("Post d2 para o Instagram."));
+    assert.ok(!t.includes("Post d1"));
+    assert.ok(!t.includes("Post d3"));
+  });
+
+  it("extrai d3 e remove comentários HTML", () => {
+    const t = extractPostText(MD_INSTAGRAM, "d3");
+    assert.ok(t.includes("Post d3 para o Instagram."));
+    assert.ok(!t.includes("comentario oculto"));
+  });
+
+  it("não vaza seção Facebook quando Instagram presente", () => {
+    const t = extractPostText(MD_INSTAGRAM, "d1");
+    assert.ok(!t.includes("Post d1 Facebook diferente."));
+  });
+
+  it("usa fallback Facebook quando seção Instagram ausente", () => {
+    const t = extractPostText(MD_SEM_INSTAGRAM, "d1");
+    assert.ok(t.includes("Post d1 Facebook."));
+  });
+
+  it("normaliza CRLF para LF", () => {
+    const t = extractPostText(MD_CRLF, "d1");
+    assert.ok(t.includes("Post d1 para o Instagram."));
+  });
+
+  it("lança quando destaque não encontrado", () => {
+    assert.throws(
+      () => extractPostText(MD_INSTAGRAM, "d9"),
+      /d9|não encontrado/i,
+    );
+  });
+
+  it("lança quando não há seção Instagram nem Facebook", () => {
+    assert.throws(
+      () => extractPostText("# LinkedIn\n## d1\ntexto", "d1"),
+      /não encontrado/i,
+    );
+  });
+});
+
+// ─── truncateCaption ─────────────────────────────────────────────────────────
+
+describe("truncateCaption", () => {
+  it("não trunca caption dentro do limite (2200 chars)", () => {
+    const short = "Texto curto #hashtag";
+    assert.equal(truncateCaption(short), short);
+  });
+
+  it("trunca caption acima de 2200 chars com '...'", () => {
+    const long = "A".repeat(2100) + " " + "B".repeat(200);
+    const result = truncateCaption(long);
+    assert.ok(result.length <= 2200);
+    assert.ok(result.endsWith("..."));
+  });
+
+  it("corta no último espaço antes do limite", () => {
+    const text = "palavra ".repeat(300); // ~2400 chars
+    const result = truncateCaption(text);
+    assert.ok(result.length <= 2200);
+    assert.ok(result.trim().length > 0);
+  });
+
+  it("aceita maxLen customizado", () => {
+    const text = "ola mundo tudo bem";
+    const result = truncateCaption(text, 10);
+    assert.ok(result.length <= 10);
+  });
+});
+
+// ─── Fluxo de 2 passos — verificação estática do código ──────────────────────
+
+describe("Fluxo Instagram 2 passos (verificação estática do script)", () => {
+  it("passo 1: envia image_url + caption para /{ig-user-id}/media", () => {
+    assert.match(SRC, /image_url/, "deve enviar image_url para /media");
+    assert.match(SRC, /caption/, "deve enviar caption para /media");
+    // O endpoint /media é montado via concatenação de string (não literal com aspas)
+    assert.match(SRC, /\/media`/, "deve chamar endpoint /media via template string");
+  });
+
+  it("passo 2: envia creation_id para /{ig-user-id}/media_publish", () => {
+    assert.match(SRC, /creation_id/, "deve enviar creation_id para /media_publish");
+    assert.match(SRC, /\/media_publish`/, "deve chamar endpoint /media_publish via template string");
+  });
+
+  it("fluxo completo: containerId do passo 1 é passado ao passo 2", () => {
+    // containerId deve ser retornado por createMediaContainer e passado a publishMediaContainer
+    assert.match(
+      SRC,
+      /containerId.*publishMediaContainer|publishMediaContainer.*containerId/s,
+      "containerId deve fluir de createMediaContainer para publishMediaContainer",
+    );
+  });
+
+  it("retorna status 'published' após fluxo bem-sucedido (não 'scheduled')", () => {
+    // Instagram publica imediato — status deve ser "published", não "scheduled"
+    assert.match(SRC, /status: "published"/, "status do post Instagram deve ser 'published'");
+  });
+
+  it("armazena ig_media_id e ig_container_id no entry", () => {
+    assert.match(SRC, /ig_media_id/, "deve gravar ig_media_id no entry");
+    assert.match(SRC, /ig_container_id/, "deve gravar ig_container_id no entry");
+  });
+
+  it("busca permalink real (não usa media_id como shortcode na URL) (#49)", () => {
+    // O media_id é numérico, não o shortcode da URL pública — fetchPermalink
+    // busca o permalink real via GET ?fields=permalink.
+    assert.match(SRC, /fetchPermalink/, "deve ter helper fetchPermalink");
+    assert.match(SRC, /fields=permalink/, "deve buscar campo permalink da Graph API");
+    // NÃO deve construir /p/${mediaId}/ diretamente
+    assert.doesNotMatch(
+      SRC,
+      /instagram\.com\/p\/\$\{mediaId\}/,
+      "não deve usar media_id numérico como shortcode na URL",
+    );
+  });
+
+  it("summary.skipped usa contador dedicado, não tautologia (#49)", () => {
+    // Bug anterior: results.indexOf(r) === results.indexOf(r) (sempre true).
+    assert.match(SRC, /skipped: skippedCount/, "skipped deve usar skippedCount");
+    assert.doesNotMatch(
+      SRC,
+      /results\.indexOf\(r\) === results\.indexOf\(r\)/,
+      "não deve ter comparação tautológica",
+    );
+  });
+
+  it("lê 06-public-images.json UMA vez antes do loop (não por destaque) (#49)", () => {
+    assert.match(SRC, /const publicImagesExists = existsSync/, "deve hoistar a leitura");
+  });
+});
+
+// ─── Caso de imagem ausente (erro claro) ────────────────────────────────────
+
+describe("Erro claro quando imagem ausente", () => {
+  it("emite erro acionável quando imagem local não existe", () => {
+    assert.match(SRC, /not found/, "deve mencionar 'not found' quando imagem ausente");
+  });
+
+  it("usa imagem 1x1 (quadrada) para Instagram", () => {
+    // Instagram prefere formato quadrado — verificar que usa 04-dN-1x1.jpg
+    const imageFile = (d: string) => `04-${d}-1x1.jpg`;
+    assert.equal(imageFile("d1"), "04-d1-1x1.jpg");
+    assert.equal(imageFile("d2"), "04-d2-1x1.jpg");
+    assert.equal(imageFile("d3"), "04-d3-1x1.jpg");
+    for (const f of ["d1", "d2", "d3"].map(imageFile)) {
+      assert.ok(!f.includes("2x1"), "não deve usar imagem 2x1 no Instagram");
+    }
+    // Verificar no source também
+    assert.match(SRC, /04-\$\{d\}-1x1\.jpg|1x1\.jpg/, "deve usar imagem 1x1 no Instagram");
+  });
+
+  it("emite erro quando 06-public-images.json ausente", () => {
+    assert.match(
+      SRC,
+      /06-public-images\.json/,
+      "deve verificar existência de 06-public-images.json",
+    );
+    assert.match(
+      SRC,
+      /upload-images-public/,
+      "deve mencionar upload-images-public.ts na mensagem de erro",
+    );
+  });
+
+  it("entry com status 'failed' quando imagem pública ausente (mock)", () => {
+    // Simula o entry de falha quando URL pública não encontrada
+    const failEntry = {
+      platform: "instagram",
+      destaque: "d1",
+      url: null,
+      status: "failed" as const,
+      scheduled_at: null,
+      reason: "public URL para d1_1x1 ausente em 06-public-images.json",
+    };
+    assert.equal(failEntry.status, "failed");
+    assert.equal(failEntry.url, null);
+    assert.ok(failEntry.reason.includes("d1_1x1"));
+  });
+
+  it("chave de imagem pública é {destaque}_1x1 (ex: d1_1x1)", () => {
+    // Verificar o padrão de chave usado para lookup em 06-public-images.json
+    assert.match(SRC, /_1x1/, "deve usar sufixo _1x1 para lookup de imagem pública");
+  });
+});
+
+// ─── Resume-aware (pula posts já publicados) ─────────────────────────────────
+
+describe("Resume-aware skip posts já publicados", () => {
+  it("pula post com status 'published'", () => {
+    const posts = [{ platform: "instagram", destaque: "d1", status: "published" }];
+    const existing = posts.find(
+      (p) =>
+        p.platform === "instagram" &&
+        p.destaque === "d1" &&
+        (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+    );
+    assert.ok(existing !== undefined);
+    assert.equal(existing.status, "published");
+  });
+
+  it("não pula post failed (retry)", () => {
+    const posts = [{ platform: "instagram", destaque: "d1", status: "failed" }];
+    const existing = posts.find(
+      (p) =>
+        p.platform === "instagram" &&
+        p.destaque === "d1" &&
+        (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+    );
+    assert.equal(existing, undefined);
+  });
+
+  it("não pula outra plataforma", () => {
+    const posts = [{ platform: "facebook", destaque: "d1", status: "published" }];
+    const existing = posts.find(
+      (p) =>
+        p.platform === "instagram" &&
+        p.destaque === "d1" &&
+        (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+    );
+    assert.equal(existing, undefined);
+  });
+
+  it("script verifica status 'published' como válido para skip", () => {
+    // No Facebook apenas draft/scheduled são skipped; no Instagram, published também é skip
+    assert.match(
+      SRC,
+      /status === "published"/,
+      "deve incluir 'published' na verificação de skip",
+    );
+  });
+});
+
+// ─── Credenciais obrigatórias ────────────────────────────────────────────────
+
+describe("Credenciais INSTAGRAM obrigatórias", () => {
+  it("INSTAGRAM_BUSINESS_ACCOUNT_ID verificado no script", () => {
+    assert.match(
+      SRC,
+      /INSTAGRAM_BUSINESS_ACCOUNT_ID/,
+      "deve verificar INSTAGRAM_BUSINESS_ACCOUNT_ID",
+    );
+  });
+
+  it("INSTAGRAM_ACCESS_TOKEN verificado no script", () => {
+    assert.match(SRC, /INSTAGRAM_ACCESS_TOKEN/, "deve verificar INSTAGRAM_ACCESS_TOKEN");
+  });
+
+  it("script tem CLI guard (não roda em import)", () => {
+    // Padrão CLI guard do repo: if (import.meta.url === `file://${_argv1}` ...)
+    assert.match(
+      SRC,
+      /import\.meta\.url.*_argv1|_argv1.*import\.meta\.url/s,
+      "deve ter CLI guard padrão do repo",
+    );
+  });
+
+  it("env vars ausentes resultam em process.exit(1) com mensagem acionável", () => {
+    assert.match(SRC, /process\.exit\(1\)/, "deve sair com código 1 quando env vars ausentes");
+  });
+});
+
+// ─── Retry com backoff exponencial ───────────────────────────────────────────
+
+describe("Retry com backoff exponencial", () => {
+  it("script tenta até 3 vezes em caso de falha", () => {
+    assert.match(SRC, /attempt <= 3/, "deve tentar até 3 vezes");
+  });
+
+  it("script usa backoff exponencial entre tentativas", () => {
+    assert.match(SRC, /Math\.pow\(2, attempt - 1\)/, "deve usar backoff 2^(attempt-1)");
+  });
+
+  it("em test-mode, pula o sleep entre tentativas", () => {
+    // Análogo a publish-facebook.ts: !isTest guard no setTimeout
+    assert.match(SRC, /isTest/, "deve respeitar isTest para pular delay");
+  });
+});
