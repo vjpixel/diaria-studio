@@ -1065,10 +1065,11 @@ describe("Stage 4 invariants", () => {
       assert.ok(!getRulesForStage(2).some((r) => r.id === "use-melhor-tempo"));
     });
 
-    it("falha quando item USE MELHOR sem estimativa de tempo (severity=warning, não error — hotfix #2377/#2372)", () => {
-      // REGRESSÃO: regra rebaixada de error→warning (#2377/#2372 hotfix).
-      // Em modo --no-gates/automação o editor não pode adicionar tempo no gate;
-      // severity=warning garante que o pipeline NÃO trava por esta regra.
+    it("falha quando item USE MELHOR sem estimativa de tempo (severity=error, gate-blocking — #2447)", () => {
+      // REGRESSÃO #2447 (opção a): regra promovida de warning→error.
+      // stitch-newsletter.ts injeta `(X min)` automaticamente (#2447 opção b),
+      // então um item sem tempo no Stage 4 indica edição manual que removeu a estimativa.
+      // severity=error garante que o pipeline TRAVA nesse caso — a rede de segurança.
       writeFileSync(
         join(fixture, "02-reviewed.md"),
         `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho\n\n---\n`,
@@ -1076,7 +1077,7 @@ describe("Stage 4 invariants", () => {
       const v = getTempoRule().run(fixture);
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "use-melhor-tempo");
-      assert.equal(v[0].severity, "warning", "use-melhor-tempo deve ser warning (não error) — hotfix #2372");
+      assert.equal(v[0].severity, "error", "use-melhor-tempo deve ser error (gate-blocking) — #2447");
       assert.match(v[0].message, /sem estimativa de tempo/);
       rmSync(fixture, { recursive: true, force: true });
     });
@@ -1267,10 +1268,11 @@ describe("Stage 4 invariants", () => {
     });
   });
 
-  describe("e2e: check-invariants --stage 4 NÃO retorna exit 1 para use-melhor-tempo + narrative-not-generic-placeholder (#2377/#2372 hotfix)", () => {
-    // Regressão crítica: antes do hotfix, as 2 regras eram severity=error e
-    // travavam o pipeline. Agora são warning → exit 0 mesmo com ambas disparando.
-    it("exit 0 quando única violation é use-melhor-tempo (warning, não error)", () => {
+  describe("e2e: check-invariants --stage 4 use-melhor-tempo é gate-blocking + narrative-not-generic-placeholder (#2447/#2377)", () => {
+    // #2447 (opção a): use-melhor-tempo promovida para error (gate-blocking).
+    // stitch injeta (X min) automaticamente — item sem tempo no Stage 4 = edição manual removeu.
+    // narrative-not-generic-placeholder permanece warning (não bloqueia).
+    it("exit 1 quando única violation é use-melhor-tempo (error, gate-blocking — #2447)", () => {
       const fixture2 = makeFixtureEdition();
       // Escrever 02-reviewed.md com item USE MELHOR sem tempo (dispara a regra)
       // e sem narrative genérica (para isolar o caso de use-melhor-tempo).
@@ -1282,7 +1284,7 @@ describe("Stage 4 invariants", () => {
       const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-tempo")!;
       const v = rule.run(fixture2);
       assert.equal(v.length, 1);
-      assert.equal(v[0].severity, "warning", "use-melhor-tempo deve ser warning → não causa exit 1");
+      assert.equal(v[0].severity, "error", "use-melhor-tempo deve ser error (gate-blocking) → causa exit 1 — #2447");
       rmSync(fixture2, { recursive: true, force: true });
     });
 

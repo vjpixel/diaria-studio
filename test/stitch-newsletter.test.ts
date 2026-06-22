@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, stitchNewsletter, loadClariceCallout } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout } from "../scripts/stitch-newsletter.ts";
 import { extractMidCallout } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
@@ -940,5 +940,102 @@ describe("#2166 pass2 — stripHtml: 7 bugs corrigidos", () => {
     const out = stripHtml(raw);
     assert.ok(!out.includes("<"), `sem < solto; got: "${out}"`);
     assert.match(out, /Veja mais em/, "texto antes da tag deve sobrar");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderUseMelhorSection (#2447/#2450)
+// ---------------------------------------------------------------------------
+
+describe("renderUseMelhorSection (#2447/#2450)", () => {
+  it("retorna string vazia para array vazio", () => {
+    assert.equal(renderUseMelhorSection([]), "");
+  });
+
+  it("injeta estimativa auto '(5 min)' quando summary sem tempo (regressão #2447)", () => {
+    // Regressão: edição 260622, itens vieram sem tempo — editor teve que pedir manual.
+    // Agora o stitch injeta automaticamente.
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/tutorial",
+        title: "Como usar ChatGPT no trabalho",
+        summary: "Guia prático para usar ChatGPT no dia a dia",
+      },
+    ]);
+    assert.match(out, /\(5 min\)/, "deve injetar '(5 min)' quando sem tempo");
+    assert.ok(!out.includes("— 5 min"), "não deve usar formato dash");
+  });
+
+  it("injeta '(15 min)' para tutorial/guia completo (sinal médio)", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://realpython.com/python-tutorial",
+        title: "Tutorial passo a passo de Python para iniciantes",
+        summary: "Aprenda Python do zero com exemplos práticos.",
+      },
+    ]);
+    assert.match(out, /\(15 min\)/, "deve injetar '(15 min)' para tutorial médio");
+  });
+
+  it("NÃO injeta duplicata quando summary já tem '(N min)'", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/t",
+        title: "Tutorial de RAG",
+        summary: "Como construir RAG do zero com LangChain (30 min)",
+      },
+    ]);
+    // Deve ter exatamente 1 ocorrência de "(N min)" — não duplicata
+    const matches = out.match(/\(\d+\s*min\)/g) ?? [];
+    assert.equal(matches.length, 1, `não deve duplicar o tempo; got: ${out}`);
+    assert.match(out, /\(30 min\)/, "deve preservar o tempo original do summary");
+  });
+
+  it("normaliza '— X min' do summary para '(X min)' (#2450)", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/guia",
+        title: "Guia de Prompt Engineering",
+        summary: "Técnicas essenciais de prompt para ChatGPT — 10 min",
+      },
+    ]);
+    assert.match(out, /\(10 min\)/, "deve normalizar '— 10 min' → '(10 min)'");
+    assert.ok(!out.includes("— 10 min"), "não deve manter o formato dash");
+  });
+
+  it("injeta estimativa mesmo quando summary está em EN marcado [TRADUZIR]", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://cookbook.openai.com/examples/api",
+        title: "Getting Started with the OpenAI API",
+        summary: "A step-by-step guide to using the OpenAI API for the first time.",
+        summary_lang: "en",
+      },
+    ]);
+    // Deve ter [TRADUZIR] E estimativa de tempo
+    assert.match(out, /\[TRADUZIR\]/, "deve marcar EN summary com [TRADUZIR]");
+    assert.ok(/\(\d+\s*min\)/.test(out), `deve ter estimativa de tempo; got: ${out}`);
+  });
+
+  it("injeta '[DESCRIÇÃO PENDENTE] (N min)' quando item sem summary", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/t",
+        title: "Tutorial de RAG",
+      },
+    ]);
+    assert.match(out, /\[DESCRIÇÃO PENDENTE\]/, "deve ter placeholder de descrição");
+    assert.ok(/\(\d+\s*min\)/.test(out), `deve ter estimativa mesmo sem summary; got: ${out}`);
+  });
+
+  it("header 'USE MELHOR' presente na saída", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/t",
+        title: "Tutorial ChatGPT",
+        summary: "Como usar ChatGPT (5 min)",
+      },
+    ]);
+    assert.match(out, /🛠️ USE MELHOR/, "deve ter o header da seção");
   });
 });

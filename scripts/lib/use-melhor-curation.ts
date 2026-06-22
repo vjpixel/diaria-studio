@@ -724,6 +724,102 @@ export function checkAndNormalizeUrl(url: string): UrlNormalizationResult {
 }
 
 // ---------------------------------------------------------------------------
+// #2447 — Estimativa de tempo auto-gerada para USE MELHOR
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex de tutorial longo (cursos, trilhas, workshops, formações).
+ * Indica duração ≥30 min — mais do que um artigo curto.
+ */
+const LONG_TUTORIAL_RE =
+  /\b(curso|course|trilha|bootcamp|forma[cç][aã]o|masterclass|workshop|certifica(?:[cç][aã]o|tion)|learn(?:ing)?\s+path|getting\s+started\s+with|end[- ]?to[- ]?end)\b/i;
+
+/**
+ * Regex de tutorial médio (~15 min): artigos how-to step-by-step, tutoriais
+ * completos, guias práticos, cookbooks.
+ */
+const MEDIUM_TUTORIAL_RE =
+  /\b(tutorial|guia\s+(?:completo|pr[aá]tico|passo\s+a\s+passo)|passo\s+a\s+passo|step[- ]?by[- ]?step|hands[- ]?on|walkthrough|cookbook|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course|quickstart)\b/i;
+
+/**
+ * #2447 (opção b): Estima automaticamente o tempo de leitura/execução de um
+ * item USE MELHOR com base no tipo de tutorial detectado no título.
+ *
+ * Heurística determinística (sem LLM):
+ *   - Curso/trilha/formação/workshop/bootcamp → `(30 min)` (atividade longa)
+ *   - Tutorial completo/passo-a-passo/guia/cookbook → `(15 min)` (how-to médio)
+ *   - Default (artigo curto, how-to rápido) → `(5 min)`
+ *
+ * O resultado é sempre no formato canônico `(X min)` (#2450).
+ * O editor pode ajustar livremente no gate.
+ *
+ * @param title    Título do artigo (usado para classificar o tipo).
+ * @param url      URL do artigo (usado para detectar plataformas de curso).
+ * @returns        String no formato `"(X min)"`.
+ */
+export function estimateUseMelhorTempo(title: string, url = ""): string {
+  const hay = title;
+  // Plataformas de curso/academia → atividade longa (o editor vai p/ a plataforma
+  // e consome mais do que lê um artigo).
+  if (isTutorialAcademy(url, title) && LONG_TUTORIAL_RE.test(hay)) {
+    return "(30 min)";
+  }
+  // Plataformas de academy com título curto → médio por default
+  if (isTutorialAcademy(url, title)) {
+    return "(15 min)";
+  }
+  // Tutorial/guia completo, passo-a-passo, cookbook → médio
+  if (MEDIUM_TUTORIAL_RE.test(hay)) {
+    return "(15 min)";
+  }
+  // Default: artigo curto, dica rápida, how-to simples
+  return "(5 min)";
+}
+
+// ---------------------------------------------------------------------------
+// #2450 — Normalização de formato de tempo: "— X min" → "(X min)"
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex para detectar estimativa de tempo no formato de dash (atalho que deve
+ * ser normalizado para o formato canônico de parênteses).
+ *
+ * Casa: `— 5 min`, `— 5 min de leitura`, `– 10 min`, `—5min`, `— ~15 min`
+ * Não casa: `(5 min)`, `~5 min` (sem dash)
+ */
+const DASH_TEMPO_RE = /[–—]\s*~?\s*(\d+)\s*min\b[^\)]*?(?=\s*$|\s+\(|\s+[–—])/;
+
+/**
+ * #2450: Normaliza o formato de estimativa de tempo de dash (`— X min`) para
+ * parênteses (`(X min)`) numa string de descrição USE MELHOR.
+ *
+ * O editor pode digitar `— 15 min` como atalho; o stitch injeta a string,
+ * e depois o lint Stage 4 verifica. Antes que o check rode, este helper
+ * converte `— X min` → `(X min)` para que o formato canônico seja preservado
+ * nos outputs. O lint aceita ambos os formatos (backwards-compat), mas o
+ * formato CANÔNICO de saída do stitch é sempre `(X min)`.
+ *
+ * Regra: substitui `[–—] X min` (com variações: `~`, `de leitura`) pelo
+ * equivalente entre parênteses. Preserva o número de minutos.
+ *
+ * @param desc  Linha de descrição de item USE MELHOR.
+ * @returns     Descrição com `(X min)` no formato canônico; inalterada se
+ *              já estiver no formato correto ou sem estimativa de tempo.
+ */
+export function normalizeDashToParens(desc: string): string {
+  // Já tem parênteses com número? → formato canônico, não tocar.
+  if (/\(\s*~?\s*\d+\s*min\b/.test(desc)) return desc;
+  // Tem dash format? → extrair número e substituir.
+  const m = desc.match(/([–—]\s*~?\s*)(\d+)(\s*min\b[^)]*?)(\s*$)/);
+  if (!m) return desc;
+  // Remove o dash + "N min [de leitura]..." e adiciona "(N min)" no fim.
+  const minutes = m[2];
+  // Remover toda a parte de dash-tempo do fim da string
+  const withoutDash = desc.replace(/\s*[–—]\s*~?\s*\d+\s*min\b.*$/, "").trimEnd();
+  return `${withoutDash} (${minutes} min)`;
+}
+
+// ---------------------------------------------------------------------------
 // #2368 item 2 — Classificador de ensaio de opinião / estudo de pesquisa
 // ---------------------------------------------------------------------------
 

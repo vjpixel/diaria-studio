@@ -30,6 +30,8 @@ import {
   normalizeUseMelhorUrl,
   checkAndNormalizeUrl,
   isOpinionOrStudy,
+  estimateUseMelhorTempo,
+  normalizeDashToParens,
 } from "../scripts/lib/use-melhor-curation.ts";
 
 // ---------------------------------------------------------------------------
@@ -1938,5 +1940,132 @@ describe("isOpinionOrStudy (#2368 item 2)", () => {
   it("URL inválida não crasha", () => {
     assert.equal(isOpinionOrStudy("not-a-url", "Reflections on AI"), true);
     assert.equal(isOpinionOrStudy("not-a-url", "Build a chatbot tutorial"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// estimateUseMelhorTempo (#2447)
+// ---------------------------------------------------------------------------
+
+describe("estimateUseMelhorTempo (#2447)", () => {
+  it("retorna '(5 min)' para artigo genérico (default)", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Como usar o ChatGPT no trabalho", "https://example.com/post"),
+      "(5 min)",
+    );
+  });
+
+  it("retorna '(15 min)' para tutorial com sinal médio no título", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Tutorial passo a passo de RAG com LangChain", "https://langchain.com/blog/rag-tutorial"),
+      "(15 min)",
+    );
+  });
+
+  it("retorna '(15 min)' para guia completo no título", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Guia completo para iniciantes em Python", "https://realpython.com/python-guide"),
+      "(15 min)",
+    );
+  });
+
+  it("retorna '(15 min)' para plataforma academy sem sinal de curso longo", () => {
+    assert.equal(
+      estimateUseMelhorTempo("How to Use the OpenAI API", "https://cookbook.openai.com/examples/api-intro"),
+      "(15 min)",
+    );
+  });
+
+  it("retorna '(30 min)' para curso/trilha em plataforma academy", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Curso Completo de Prompt Engineering", "https://learn.deeplearning.ai/courses/chatgpt-prompt-eng"),
+      "(30 min)",
+    );
+  });
+
+  it("retorna '(30 min)' para bootcamp em plataforma academy", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Machine Learning Bootcamp for Beginners", "https://kaggle.com/learn/intro-to-machine-learning"),
+      "(30 min)",
+    );
+  });
+
+  it("retorna '(15 min)' para walkthrough (sinal médio)", () => {
+    assert.equal(
+      estimateUseMelhorTempo("A Complete Walkthrough of Building a RAG App", "https://example.com/rag"),
+      "(15 min)",
+    );
+  });
+
+  it("URL vazia não crasha — retorna '(5 min)' default", () => {
+    assert.equal(estimateUseMelhorTempo("Dica rápida de produtividade"), "(5 min)");
+  });
+
+  it("URL malformada não crasha — retorna estimativa baseada no título", () => {
+    // URL malformada → isTutorialAcademy retorna false (URL parse falha).
+    // Título sem sinal de tutorial → default (5 min).
+    assert.equal(estimateUseMelhorTempo("Como usar IA no trabalho", "not-a-url"), "(5 min)");
+    // Título COM sinal de tutorial → (15 min) pelo MEDIUM_TUTORIAL_RE.
+    assert.equal(estimateUseMelhorTempo("Tutorial básico de Python", "not-a-url"), "(15 min)");
+  });
+
+  // Regressão de produção: edição 260622 — itens vieram sem tempo (motivou #2447)
+  it("regressão 260622: sem tempo em item casual gerado sem sinal de tutorial — default (5 min)", () => {
+    assert.equal(
+      estimateUseMelhorTempo("Inteligência artificial nos pequenos negócios", "https://www.seudinheiro.com/2026/seu-negocio/ia-pequenos-negocios/"),
+      "(5 min)",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeDashToParens (#2450)
+// ---------------------------------------------------------------------------
+
+describe("normalizeDashToParens (#2450)", () => {
+  it("normaliza '— 5 min' para '(5 min)' no fim da descrição", () => {
+    const result = normalizeDashToParens("Como usar ChatGPT no trabalho — 5 min");
+    assert.equal(result, "Como usar ChatGPT no trabalho (5 min)");
+  });
+
+  it("normaliza '— 15 min' (em dash) no fim da descrição", () => {
+    const result = normalizeDashToParens("Tutorial de RAG completo — 15 min");
+    assert.equal(result, "Tutorial de RAG completo (15 min)");
+  });
+
+  it("normaliza '– 10 min' (en dash) no fim da descrição", () => {
+    const result = normalizeDashToParens("Guia de Python – 10 min");
+    assert.equal(result, "Guia de Python (10 min)");
+  });
+
+  it("normaliza '— 8 min de leitura' → '(8 min)'", () => {
+    const result = normalizeDashToParens("Tutorial passo a passo — 8 min de leitura");
+    assert.equal(result, "Tutorial passo a passo (8 min)");
+  });
+
+  it("preserva descrição que já tem '(15 min)' — sem duplicata", () => {
+    const desc = "Como usar ChatGPT no trabalho (15 min)";
+    assert.equal(normalizeDashToParens(desc), desc);
+  });
+
+  it("preserva descrição que já tem '(~20 min)' (com tilde)", () => {
+    const desc = "Tutorial de RAG (~20 min)";
+    assert.equal(normalizeDashToParens(desc), desc);
+  });
+
+  it("preserva descrição sem tempo — retorna inalterada", () => {
+    const desc = "Como usar ChatGPT no trabalho";
+    assert.equal(normalizeDashToParens(desc), desc);
+  });
+
+  it("normaliza '— ~15 min' (dash com tilde) → '(15 min)'", () => {
+    const result = normalizeDashToParens("Tutorial completo — ~15 min");
+    assert.equal(result, "Tutorial completo (15 min)");
+  });
+
+  it("preserva '- 5 min' (hyphen simples) — sem normalização (não é dash editorial)", () => {
+    const desc = "Tutorial - 5 min";
+    // hyphen simples não é dash editorial — preservar para evitar FP
+    assert.equal(normalizeDashToParens(desc), desc);
   });
 });

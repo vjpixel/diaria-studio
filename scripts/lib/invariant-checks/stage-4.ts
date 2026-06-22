@@ -393,13 +393,16 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #2372/#2415: cada item de USE MELHOR precisa de estimativa de tempo na descrição
- * (`(15 min)` ou `— 15 min`). Roda no Stage 4 (PÓS-gate) — pré-gate (Stage 2) o
- * `stitch-newsletter.ts` ainda não tem o tempo no `summary`, e é o editor quem
- * o adiciona ao curar a seção USE MELHOR no gate.
+ * #2372/#2415/#2447: cada item de USE MELHOR precisa de estimativa de tempo na
+ * descrição (`(15 min)` — formato canônico, ou `— 15 min` como atalho aceito).
  *
- * severity: "warning" (pós-hotfix #2403 — não bloqueia Stage 4, avisa o editor).
- * Re-block para error é follow-up quando houver cobertura maior.
+ * severity: "error" (gate-blocking, #2447 opção a) — `stitch-newsletter.ts` agora
+ * injeta `(X min)` automaticamente (#2447 opção b), então o editor só chega aqui
+ * sem tempo se editou a seção no Drive e removeu a estimativa.
+ *
+ * Roda no Stage 4 (PÓS-gate) onde o 02-reviewed.md já tem a estimativa injetada
+ * pelo stitch. PRÉ-gate (Stage 2) o check permanece fora da STAGE_2_RULES porque
+ * edições manuais do editor no Drive ou re-stitch podem alterar o conteúdo.
  */
 function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
@@ -415,9 +418,10 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
       rule: "use-melhor-tempo",
       message:
         `${result.errors.length} item(ns) de USE MELHOR sem estimativa de tempo: ${items}. ` +
-        `Fix manual: adicionar "(X min)" ou "— X min" ao fim de cada descrição em ${path}.`,
-      source_issue: "#2372",
-      severity: "warning",
+        `Fix: adicionar "(X min)" ao fim de cada descrição em ${path} ` +
+        `(stitch injeta automaticamente — pode ter sido removido na edição manual).`,
+      source_issue: "#2447",
+      severity: "error",
       file: path,
     },
   ];

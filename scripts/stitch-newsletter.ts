@@ -26,6 +26,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
+import {
+  estimateUseMelhorTempo,
+  normalizeDashToParens,
+} from "./lib/use-melhor-curation.ts"; // #2447/#2450
 
 interface ArticleLike {
   url?: string;
@@ -136,6 +140,59 @@ export function renderSection(
 }
 
 /**
+ * #2447/#2450: Padrão de estimativa de tempo — detecta `(N min)` ou `— N min`
+ * na descrição para não injetar duplicata. Espelha USE_MELHOR_TEMPO_RE do lint.
+ */
+const TEMPO_ALREADY_RE = /(\(\s*~?\s*\d+\s*min\b|[–—]\s*~?\s*\d+\s*min\b|~\s*\d+\s*min\b)/;
+
+/**
+ * #2447/#2450: Renderiza a seção USE MELHOR com injeção automática de estimativa
+ * de tempo `(X min)` quando a descrição ainda não tem tempo.
+ *
+ * Diferenças em relação a `renderSection` genérico:
+ *   1. Detecta se a descrição já contém tempo → não injeta duplicata.
+ *   2. Se não tem tempo → appenda `estimateUseMelhorTempo(title, url)` ao fim.
+ *   3. Normaliza `— X min` → `(X min)` (formato canônico, #2450).
+ *
+ * O editor pode ajustar a estimativa no gate Stage 2 → Stage 4. O lint
+ * `use-melhor-tempo` (Stage 4, error) garante que nenhum item chegue sem tempo.
+ */
+export function renderUseMelhorSection(items: ArticleLike[]): string {
+  if (items.length === 0) return "";
+  const header = `**🛠️ USE MELHOR**`;
+  const lines: string[] = [header, ""];
+  for (const a of items) {
+    if (!a.url || !a.title) continue;
+    lines.push(`**[${a.title}](${a.url})**  `);
+    if (a.summary) {
+      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary, { minWords: 4 });
+      const descPrefix = summaryIsEn ? "[TRADUZIR] " : "";
+      let desc = descPrefix + cleanSummary(a.summary, a.title);
+
+      // #2450: normalizar `— X min` → `(X min)` primeiro (atalho editorial)
+      desc = normalizeDashToParens(desc);
+
+      // #2447: injetar estimativa auto se não tiver nenhuma
+      if (!TEMPO_ALREADY_RE.test(desc)) {
+        const estimate = estimateUseMelhorTempo(a.title, a.url);
+        desc = `${desc.trimEnd()} ${estimate}`;
+      }
+
+      lines.push(desc);
+    } else {
+      // Sem summary: injetar placeholder de tempo mínimo para o lint não bloquear.
+      // O editor vai preencher a descrição + ajustar o tempo no gate.
+      const estimate = estimateUseMelhorTempo(a.title, a.url);
+      lines.push(`[DESCRIÇÃO PENDENTE] ${estimate}`);
+    }
+    lines.push("");
+  }
+  // Remove trailing blank
+  while (lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
+/**
  * Lê o bloco É IA? do `01-eia.md`. Se ausente, retorna placeholder simples.
  * Format do 01-eia.md:
  *   "É IA?\n\n{description}\n\n> Gabarito: **{A|B} é a IA**"
@@ -213,7 +270,10 @@ export function stitchNewsletter(input: StitchInput): string {
   // #1855: tutoriais EN agora aparecem (revert do PT-only #1632) — mesma regra
   // [TRADUZIR]-na-descrição das demais seções. O mínimo de 2 itens é garantido
   // upstream pelo promoteUseMelhorToMinimum em apply-stage2-caps.
-  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? []);
+  // #2447/#2450: USE MELHOR recebe tratamento especial — injetar estimativa de
+  // tempo auto-gerada `(X min)` quando a descrição ainda não tem tempo, e
+  // normalizar `— X min` → `(X min)` para garantir formato canônico de parênteses.
+  const useMelhor = renderUseMelhorSection(approved.use_melhor ?? []);
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
