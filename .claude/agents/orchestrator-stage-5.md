@@ -205,6 +205,7 @@ Exit code do guard:
 
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
+3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script aborta com erro claro — nao bloqueia os outros canais.
 
 Aguardar todos retornarem antes de prosseguir.
 
@@ -364,6 +365,7 @@ Publicacao dispatchada — edicao {AAMMDD}
   Newsletter: rascunho criado + test email enviado — review {status}
   LinkedIn: agendado x 3
   Facebook: agendado x 3
+  Instagram: publicado x 3 (ou "env vars ausentes — pular" se nao configurado)
 
 Proximo passo → /diaria-6-agendamento {AAMMDD}
 (agendamento Beehiiv + auto-reporter)
@@ -377,6 +379,7 @@ Retomada manual pendente
 Etapa 5 (newsletter no Beehiiv): pulado (claude-in-chrome MCP indisponivel)
 LinkedIn x 3: agendado normal via Worker ✓
 Facebook x 3: agendado normal via Graph API ✓
+Instagram x 3: publicado normal via Graph API ✓
 
 Quando o MCP estiver ativo, rodar:
   /diaria-5-publicacao newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
