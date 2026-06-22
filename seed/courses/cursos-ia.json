@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "issue": "#1745",
-    "status": "20 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025). Todos gratuitos ou de auditoria livre; 13 PT-BR, 7 EN.",
+    "issue": "#1745, #2451",
+    "status": "20 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451). Todos gratuitos ou de auditoria livre; 11 PT-BR, 9 EN.",
     "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar.",
     "schema": {
       "id": "slug-kebab-case (estável)",
@@ -330,6 +330,43 @@
         "Machine Learning"
       ],
       "summary": "Padrão ouro de acesso aberto: material de referência de alto rigor teórico do MIT. Exige autodisciplina e base em matemática/programação."
+    },
+    {
+      "id": "anthropic-ai-fluency-framework-foundations",
+      "title": "AI Fluency: Framework & Foundations",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/ai-fluency-framework-foundations",
+      "language": "en",
+      "level": "iniciante",
+      "format": "video",
+      "duration_hours": 3,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Fundamentos",
+        "Prompt Engineering",
+        "IA Generativa"
+      ],
+      "summary": "Curso oficial da Anthropic: ensina o framework 4D (Delegation, Description, Discernment, Diligence) pra trabalhar com IA de forma eficaz, ética e segura. Certificado gratuito ao concluir."
+    },
+    {
+      "id": "openai-academy-ai-foundations",
+      "title": "AI Foundations",
+      "platform": "OpenAI Academy",
+      "url": "https://academy.openai.com/public/courses/ai-foundations-juzjs",
+      "language": "en",
+      "level": "iniciante",
+      "format": "video",
+      "duration_hours": 1,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Fundamentos",
+        "Prompt Engineering",
+        "Produtividade"
+      ],
+      "summary": "Curso oficial da OpenAI: fundamentos de IA, modelos de linguagem e ChatGPT — com foco em prompting prático, revisão de outputs e uso responsável no dia a dia."
     }
   ]
 }
