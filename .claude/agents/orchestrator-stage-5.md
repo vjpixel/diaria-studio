@@ -78,7 +78,7 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
   ```
   (mantem `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pre-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edicoes pre-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
-- **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. Falha = abort imediato — evita DLQ recurrence (incident 260508 #999):
+- **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. `INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN` sao checadas como **warning** (#49 — ausencia pula Instagram, nao bloqueia os demais canais). Falha (error) = abort imediato — evita DLQ recurrence (incident 260508 #999):
   ```bash
   npx tsx scripts/check-invariants.ts --stage 5 --edition-dir data/editions/{AAMMDD}/
   ```

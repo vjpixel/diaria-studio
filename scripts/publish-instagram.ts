@@ -199,6 +199,35 @@ async function publishMediaContainer(
   return data.id;
 }
 
+/**
+ * Busca o permalink público do post recém-publicado.
+ *
+ * IMPORTANTE: o `media_id` retornado por /media_publish é o ID numérico do
+ * Graph API (ex: 17896453961137500), NÃO o shortcode usado nas URLs públicas
+ * do Instagram (ex: /p/Cxyz123/). Construir `/p/${mediaId}/` daria um link 404.
+ * A URL correta vem do campo `permalink` via GET /{media-id}?fields=permalink.
+ *
+ * Best-effort: se a chamada falhar, retorna null (o post foi publicado com
+ * sucesso de qualquer forma — só não temos o link canônico). O caller registra
+ * url: null em vez de um link quebrado.
+ */
+async function fetchPermalink(
+  mediaId: string,
+  accessToken: string,
+  apiVersion: string,
+): Promise<string | null> {
+  try {
+    const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${mediaId}?fields=permalink&access_token=${encodeURIComponent(accessToken)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { permalink?: string; error?: unknown };
+    if (data.error || !data.permalink) return null;
+    return data.permalink;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const editionDirArg = args["edition-dir"] as string | undefined;
@@ -259,9 +288,19 @@ async function main() {
     publishedPath = internalPath;
   }
 
+  // Ler o cache de imagens públicas UMA vez (não muda entre destaques).
+  // Para Instagram Graph API, a imagem precisa estar em URL pública acessível —
+  // gerado por upload-images-public.ts no Stage 5c-pre.
+  const publicImagesPath = resolve(editionDir, "_internal", "06-public-images.json");
+  const publicImagesExists = existsSync(publicImagesPath);
+  const publicImages: Record<string, unknown> = publicImagesExists
+    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as Record<string, unknown>)
+    : {};
+
   // Extrair destaques da seção Instagram (ou fallback para Facebook)
   const destaques = extractDestaquesFromSocialMd(socialMd, "instagram");
   const results: PostEntry[] = [];
+  let skippedCount = 0;
 
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
@@ -282,6 +321,7 @@ async function main() {
       if (existing) {
         console.log(`SKIP instagram/${d} — already ${existing.status}`);
         results.push(existing);
+        skippedCount += 1;
         continue;
       }
     }
@@ -325,9 +365,8 @@ async function main() {
     }
 
     // Para Instagram Graph API, a imagem precisa estar em URL pública acessível.
-    // Lê o cache 06-public-images.json (gerado por upload-images-public.ts no Stage 5c-pre).
-    const publicImagesPath = resolve(editionDir, "_internal", "06-public-images.json");
-    if (!existsSync(publicImagesPath)) {
+    // (publicImages já foi lido UMA vez antes do loop — não muda entre destaques.)
+    if (!publicImagesExists) {
       console.error(
         `ERROR: 06-public-images.json não encontrado. ` +
           `Rode scripts/upload-images-public.ts antes de publicar no Instagram.`,
@@ -345,10 +384,6 @@ async function main() {
       continue;
     }
 
-    const publicImages = JSON.parse(readFileSync(publicImagesPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
     // Chave esperada: "d1_1x1", "d2_1x1", "d3_1x1"
     const imgKey = `${d}_1x1`;
     const imageUrl = publicImages[imgKey] as string | undefined;
@@ -392,7 +427,9 @@ async function main() {
         const mediaId = await publishMediaContainer(igUserId, accessToken, containerId, apiVersion);
         console.log(`  Publicado: ${mediaId}`);
 
-        const postUrl = `https://www.instagram.com/p/${mediaId}/`;
+        // O media_id NÃO é o shortcode da URL pública — buscar o permalink real.
+        // Se falhar, registramos url: null em vez de um link 404.
+        const postUrl = await fetchPermalink(mediaId, accessToken, apiVersion);
         const entry: PostEntry = {
           platform: "instagram",
           destaque: d,
@@ -405,7 +442,7 @@ async function main() {
 
         tagAndAppend(entry);
         results.push(entry);
-        console.log(`OK instagram/${d} — published — ${postUrl}`);
+        console.log(`OK instagram/${d} — published — ${postUrl ?? `(media_id ${mediaId})`}`);
         success = true;
         break;
       } catch (e: any) {
@@ -434,12 +471,15 @@ async function main() {
     }
   }
 
-  // Summary
+  // Summary. `skipped` conta entradas pré-existentes puladas via skipExisting
+  // (já publicadas em rodada anterior) — rastreado por skippedCount, não derivado
+  // de status (published cobre both new + skipped, então não dá pra distinguir
+  // pós-fato).
   const summary = {
     total: results.length,
     published: results.filter((r) => r.status === "published").length,
     failed: results.filter((r) => r.status === "failed").length,
-    skipped: results.filter((r) => r.status !== "failed" && results.indexOf(r) === results.indexOf(r)).length,
+    skipped: skippedCount,
   };
 
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));

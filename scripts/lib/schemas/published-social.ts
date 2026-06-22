@@ -11,7 +11,7 @@
 
 import { z } from "zod";
 
-export const SocialPlatformSchema = z.enum(["facebook", "linkedin"]);
+export const SocialPlatformSchema = z.enum(["facebook", "linkedin", "instagram"]);
 // Type inferido inline via `z.infer<typeof SocialPlatformSchema>` quando necessário.
 
 export const SocialPostStatusSchema = z.enum([

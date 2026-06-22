@@ -194,6 +194,33 @@ describe("Fluxo Instagram 2 passos (verificação estática do script)", () => {
     assert.match(SRC, /ig_media_id/, "deve gravar ig_media_id no entry");
     assert.match(SRC, /ig_container_id/, "deve gravar ig_container_id no entry");
   });
+
+  it("busca permalink real (não usa media_id como shortcode na URL) (#49)", () => {
+    // O media_id é numérico, não o shortcode da URL pública — fetchPermalink
+    // busca o permalink real via GET ?fields=permalink.
+    assert.match(SRC, /fetchPermalink/, "deve ter helper fetchPermalink");
+    assert.match(SRC, /fields=permalink/, "deve buscar campo permalink da Graph API");
+    // NÃO deve construir /p/${mediaId}/ diretamente
+    assert.doesNotMatch(
+      SRC,
+      /instagram\.com\/p\/\$\{mediaId\}/,
+      "não deve usar media_id numérico como shortcode na URL",
+    );
+  });
+
+  it("summary.skipped usa contador dedicado, não tautologia (#49)", () => {
+    // Bug anterior: results.indexOf(r) === results.indexOf(r) (sempre true).
+    assert.match(SRC, /skipped: skippedCount/, "skipped deve usar skippedCount");
+    assert.doesNotMatch(
+      SRC,
+      /results\.indexOf\(r\) === results\.indexOf\(r\)/,
+      "não deve ter comparação tautológica",
+    );
+  });
+
+  it("lê 06-public-images.json UMA vez antes do loop (não por destaque) (#49)", () => {
+    assert.match(SRC, /const publicImagesExists = existsSync/, "deve hoistar a leitura");
+  });
 });
 
 // ─── Caso de imagem ausente (erro claro) ────────────────────────────────────

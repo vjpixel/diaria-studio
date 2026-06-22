@@ -16,6 +16,7 @@ describe("autoApproveConsent (#1238)", () => {
     assert.equal(c.newsletter, "auto");
     assert.equal(c.linkedin, "auto");
     assert.equal(c.facebook, "auto");
+    assert.equal(c.instagram, "auto"); // #49
     assert.equal(c.source, "auto_approve_default");
   });
 });
@@ -87,6 +88,15 @@ describe("parseSkipFlag (#1326)", () => {
     assert.equal(parseSkipFlag("invalid"), null);
     assert.equal(parseSkipFlag("newsletter,invalid"), null);
     assert.equal(parseSkipFlag("123"), null);
+  });
+
+  it("'instagram' → só instagram manual (#49)", () => {
+    const c = parseSkipFlag("instagram");
+    assert.ok(c, "instagram deve ser um canal válido em --skip");
+    assert.equal(c.instagram, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
   });
 
   it("aceita whitespace separators", () => {
@@ -172,9 +182,33 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-6 → null", () => {
-    assert.equal(parseEditorResponse("7"), null);
+  it("número fora do range 1-8 → null (#49: range estendido pra Instagram)", () => {
+    assert.equal(parseEditorResponse("9"), null);
     assert.equal(parseEditorResponse("0,1"), null);
+  });
+
+  it("'7' → Instagram auto (canais não mencionados ficam manual) (#49)", () => {
+    const c = parseEditorResponse("7");
+    assert.ok(c);
+    assert.equal(c.instagram, "auto");
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.facebook, "manual");
+  });
+
+  it("'8' → Instagram manual (#49)", () => {
+    const c = parseEditorResponse("8");
+    assert.ok(c);
+    assert.equal(c.instagram, "manual");
+  });
+
+  it("'1,3,5,7' → tudo auto incluindo Instagram (#49)", () => {
+    const c = parseEditorResponse("1,3,5,7");
+    assert.ok(c);
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.equal(c.instagram, "auto");
   });
 
   it("texto não-numérico → null", () => {
