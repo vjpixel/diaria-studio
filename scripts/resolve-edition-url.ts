@@ -15,14 +15,15 @@
  *
  * Guard anti-placeholder:
  *   Com --validate-social, lê 03-social.md e aborta com exit 3 se
- *   {edition_url} ou {outros_count} estiverem presentes após a resolução.
- *   Isso garante que placeholders nunca chegam à fila de publicação.
+ *   {edition_url} estiver presente após a resolução.
+ *   {outros_count} é DEFERRED (resolvido por publish-linkedin.ts no dispatch)
+ *   e NÃO é rejeitado por este guard.
  *
  * Uso:
  *   npx tsx scripts/resolve-edition-url.ts \
  *     --edition-dir data/editions/260623/ \
  *     --title "Título D1 da edição"
- *     [--validate-social]   # falhar se placeholder sobreviver no 03-social.md
+ *     [--validate-social]   # falhar se {edition_url} sobreviver no 03-social.md
  *
  *   npx tsx scripts/resolve-edition-url.ts \
  *     --edition-dir data/editions/260623/ \
@@ -37,29 +38,45 @@
  * Exit codes:
  *   0 — URL gravada com sucesso (+ validação passed se --validate-social)
  *   1 — Erro de input / arquivo ausente
- *   3 — Placeholder não-resolvido detectado em 03-social.md (--validate-social)
+ *   3 — {edition_url} não-resolvido detectado em 03-social.md (--validate-social)
  */
 
-import { writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveEditionUrl, findUnresolvedPlaceholders } from "./lib/edition-url.ts";
+import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── CLI parser ────────────────────────────────────────────────────────────────
+// #finding3: corrige crash quando --title (ou --slug / --edition-url) é seguido
+// de outra flag em vez de um valor. A lógica anterior tratava a próxima flag como
+// o valor da opção anterior (ex: --title --validate-social definia title="--validate-social").
+// Agora: flags booleanas conhecidas são tratadas separadamente; qualquer argumento
+// que começa com "--" não é consumido como valor de outra flag.
+
+const BOOLEAN_FLAGS = new Set(["validate-social"]);
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const args: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--validate-social") {
-      args["validate-social"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    } else if (argv[i].startsWith("--")) {
-      args[argv[i].slice(2)] = true;
+    const arg = argv[i];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    if (BOOLEAN_FLAGS.has(key)) {
+      args[key] = true;
+      continue;
+    }
+    // Verificar se o próximo argumento existe e NÃO é outra flag
+    const nextArg = argv[i + 1];
+    if (nextArg !== undefined && !nextArg.startsWith("--")) {
+      args[key] = nextArg;
+      i++; // consumir o valor
+    } else {
+      // Sem valor (próximo é outra flag ou fim da lista) → tratar como booleano
+      args[key] = true;
     }
   }
   return args;
@@ -75,7 +92,7 @@ function main(argv: string[]): void {
   const args = parseArgs(argv);
 
   const editionDirRaw = args["edition-dir"] as string | undefined;
-  if (!editionDirRaw) {
+  if (!editionDirRaw || typeof editionDirRaw !== "string") {
     console.error("Erro: --edition-dir é obrigatório.");
     process.exit(1);
   }
@@ -91,9 +108,9 @@ function main(argv: string[]): void {
 
   // ── Resolver a URL ────────────────────────────────────────────────────────
 
-  const titleArg = args["title"] as string | undefined;
-  const slugArg = args["slug"] as string | undefined;
-  const editionUrlArg = args["edition-url"] as string | undefined;
+  const titleArg = typeof args["title"] === "string" ? args["title"] : undefined;
+  const slugArg = typeof args["slug"] === "string" ? args["slug"] : undefined;
+  const editionUrlArg = typeof args["edition-url"] === "string" ? args["edition-url"] : undefined;
 
   let editionUrl: string;
 
@@ -102,7 +119,7 @@ function main(argv: string[]): void {
     console.log(`#2454: edition_url derivada do título → ${editionUrl}`);
     console.log(`       (slug: "${seoSlug(titleArg)}")`);
   } else if (slugArg) {
-    editionUrl = `https://diar.ia.br/p/${slugArg}`;
+    editionUrl = `${BEEHIIV_BASE_URL}/p/${slugArg}`;
     console.log(`#2454: edition_url via slug → ${editionUrl}`);
   } else if (editionUrlArg) {
     editionUrl = editionUrlArg;
@@ -121,10 +138,12 @@ function main(argv: string[]): void {
     process.exit(1);
   }
 
-  // ── Gravar 05-edition-url.txt ─────────────────────────────────────────────
+  // ── Gravar 05-edition-url.txt (write atômico) ─────────────────────────────
+  // #finding2: write atômico (tmp + rename) — garante que o arquivo é ou a versão
+  // anterior completa ou a nova, nunca parcial (kill mid-write, crash, OOM).
 
   const outPath = resolve(internalDir, "05-edition-url.txt");
-  writeFileSync(outPath, editionUrl, "utf8");
+  writeFileAtomic(outPath, editionUrl, { encoding: "utf8" });
   console.log(`#2454: gravado → ${outPath}`);
 
   // ── Guard anti-placeholder (--validate-social) ────────────────────────────
@@ -145,17 +164,16 @@ function main(argv: string[]): void {
         `ERRO (#2454 guard anti-placeholder): 03-social.md contém placeholders não-resolvidos:\n` +
         `  ${unresolved.join(", ")}\n` +
         `\n` +
-        `Estes placeholders DEVEM ser substituídos antes do dispatch do social.\n` +
-        `  {edition_url}  → resolvido via --title/--slug/--edition-url neste script (já gravado: ${editionUrl})\n` +
-        `  {outros_count} → resolvido por publish-linkedin.ts (#2319) lendo 01-approved-capped.json\n` +
+        `{edition_url} DEVE ser substituído antes do dispatch do social.\n` +
+        `  → resolvido via --title/--slug/--edition-url neste script (já gravado: ${editionUrl})\n` +
+        `  → confirmar que publish-linkedin.ts foi invocado DEPOIS que 05-edition-url.txt foi gravado.\n` +
         `\n` +
-        `Se {edition_url} está presente: confirmar que publish-linkedin.ts foi invocado\n` +
-        `  DEPOIS que 05-edition-url.txt foi gravado (este script).\n` +
-        `Se {outros_count} está presente: verificar 01-approved-capped.json / 01-approved.json.`,
+        `Nota: {outros_count} é resolvido por publish-linkedin.ts no dispatch (deferred) —\n` +
+        `  não é detectado por este guard.`,
       );
       process.exit(3);
     }
-    console.log(`#2454: guard anti-placeholder OK — nenhum placeholder em 03-social.md.`);
+    console.log(`#2454: guard anti-placeholder OK — {edition_url} não presente em 03-social.md.`);
   }
 
   // Sucesso

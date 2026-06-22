@@ -9,9 +9,13 @@
  * onde {slug} = seoSlug(title) — mesmo algoritmo usado em 4a-bis do
  * beehiiv-playbook.md para setar o campo SEO/URL slug do post draft.
  *
- * Este módulo também expõe `validateNoPlaceholders` para o guard
- * anti-placeholder: garante que {edition_url} e {outros_count} nunca
- * chegam à fila de publicação do social.
+ * Este módulo também expõe `findUnresolvedPlaceholders` para o guard
+ * anti-placeholder: garante que {edition_url} não chega à fila de
+ * publicação do social com valor não-resolvido.
+ *
+ * Nota: {outros_count} é placeholder DEFERRED — resolvido pelo
+ * publish-linkedin.ts durante o dispatch (não aqui). O guard NÃO
+ * rejeita {outros_count} presente em 03-social.md antes do dispatch.
  */
 
 import { seoSlug } from "./slug.ts";
@@ -34,21 +38,31 @@ export function deriveEditionUrl(title: string): string {
   return `${BEEHIIV_BASE_URL}/p/${slug}`;
 }
 
-/** Padrão de placeholders que não devem sobreviver ao Stage 5. */
-const PLACEHOLDER_RE = /\{edition_url\}|\{outros_count\}/g;
+/**
+ * Placeholders que NÃO devem sobreviver ao guard anti-placeholder do Stage 5.
+ *
+ * Somente {edition_url} — resolvido por resolve-edition-url.ts antes do dispatch.
+ * {outros_count} é DEFERRED: resolvido por publish-linkedin.ts no dispatch e
+ * portanto sempre presente em 03-social.md neste ponto. Não deve ser rejeitado aqui.
+ */
+const UNRESOLVED_PLACEHOLDER_RE = /\{edition_url\}/g;
 
 /**
- * Valida que o texto não contém placeholders não-resolvidos.
+ * Valida que o texto não contém {edition_url} não-resolvido.
  *
- * Retorna array com os placeholders encontrados (vazio = ok).
+ * {outros_count} é intencionalmente ignorado — é resolvido pelo dispatch
+ * (publish-linkedin.ts) e estará presente em 03-social.md neste ponto.
+ * Rejeitar {outros_count} aqui causaria exit 3 em toda edição (regressão #2454).
+ *
+ * Retorna array com os placeholders não-resolvidos encontrados (vazio = ok).
  * Caller deve abortar o dispatch se o array não estiver vazio.
  *
  * @param text - Conteúdo a validar (03-social.md ou trecho dele)
- * @returns Array de placeholders encontrados, ex: ["{edition_url}", "{outros_count}"]
+ * @returns Array de placeholders encontrados, ex: ["{edition_url}"]
  */
 export function findUnresolvedPlaceholders(text: string): string[] {
   const found = new Set<string>();
-  for (const match of text.matchAll(PLACEHOLDER_RE)) {
+  for (const match of text.matchAll(UNRESOLVED_PLACEHOLDER_RE)) {
     found.add(match[0]);
   }
   return [...found];

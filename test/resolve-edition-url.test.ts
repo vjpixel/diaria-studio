@@ -2,13 +2,15 @@
  * test/resolve-edition-url.test.ts (#2454)
  *
  * Testa:
- *   (a) deriveEditionUrl — URL pública derivada do título via seoSlug
+ *   (a) deriveEditionUrl — URL publica derivada do titulo via seoSlug
  *       bate com o formato real do Beehiiv (https://diar.ia.br/p/{slug}).
- *   (b) findUnresolvedPlaceholders — guard anti-placeholder rejeita textos
- *       com {edition_url} ou {outros_count} não-resolvidos.
- *   (c) CLI resolve-edition-url.ts — integração via spawnSync:
+ *   (b) findUnresolvedPlaceholders — guard anti-placeholder rejeita {edition_url}
+ *       mas IGNORA {outros_count} (deferred-to-dispatch, resolvido por publish-linkedin).
+ *   (c) CLI resolve-edition-url.ts — integracao via spawnSync:
  *       grava 05-edition-url.txt + aborta (exit 3) quando --validate-social
- *       detecta placeholder não-resolvido.
+ *       detecta {edition_url} nao-resolvido.
+ *       Regressao #2454-finding-1: {outros_count} presente com {edition_url} resolvido -> exit 0.
+ *       Regressao #2454-finding-3: --title seguido de outra flag nao crashar.
  */
 
 import { describe, it } from "node:test";
@@ -26,91 +28,94 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 
-// Importar funções puras diretamente para testes unitários
+// Importar funcoes puras diretamente para testes unitarios
 import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
 
-// ── (a) Testes unitários: deriveEditionUrl ────────────────────────────────────
+// ── (a) Testes unitarios: deriveEditionUrl ────────────────────────────────────
 
-describe("#2454 deriveEditionUrl — URL pública determinística do slug", () => {
-  it("título simples → slug ASCII + URL correta", () => {
+describe("#2454 deriveEditionUrl — URL publica deterministica do slug", () => {
+  it("titulo simples → slug ASCII + URL correta", () => {
     const url = deriveEditionUrl("Modelos se replicam sozinhos");
     assert.equal(url, "https://diar.ia.br/p/modelos-se-replicam-sozinhos");
   });
 
-  it("título com acentos PT-BR → slug sem diacríticos (mesmo algoritmo de §4a-bis)", () => {
-    // Valida que o algoritmo é byte-idêntico ao seoSlug do beehiiv-playbook
-    // 'ç' → 'c', 'ã' → 'a', 'é' → 'e', 'â' → 'a', etc.
-    const url = deriveEditionUrl("Empregos e automação: pânico vs dados");
+  it("titulo com acentos PT-BR → slug sem diacriticos (mesmo algoritmo de §4a-bis)", () => {
+    const url = deriveEditionUrl("Empregos e automacao: panico vs dados");
     assert.equal(url, "https://diar.ia.br/p/empregos-e-automacao-panico-vs-dados");
   });
 
-  it("título com acentos manglados pelo Beehiiv (verificar diferença antes/depois do fix)", () => {
-    // Sem o fix de slug (#1989), Beehiiv geraria "automa-o" para "automação"
-    // Este teste documenta que o algoritmo correto gera "automacao"
-    const url = deriveEditionUrl("Automação de alto risco");
+  it("titulo com acentos manglados pelo Beehiiv (verificar diferenca antes/depois do fix)", () => {
+    const url = deriveEditionUrl("Automacao de alto risco");
     assert.ok(url.includes("automacao"), `URL deve conter 'automacao', obteve: ${url}`);
-    assert.ok(!url.includes("automa-o"), `URL NÃO deve conter 'automa-o' (slug manglado)`);
+    assert.ok(!url.includes("automa-o"), `URL NAO deve conter 'automa-o' (slug manglado)`);
   });
 
-  it("URL começa com BEEHIIV_BASE_URL + /p/", () => {
-    const url = deriveEditionUrl("Qualquer título");
+  it("URL comeca com BEEHIIV_BASE_URL + /p/", () => {
+    const url = deriveEditionUrl("Qualquer titulo");
     assert.ok(url.startsWith(`${BEEHIIV_BASE_URL}/p/`));
   });
 
-  it("título longo é truncado em palavra inteira (seoSlug maxLen=60)", () => {
-    // seoSlug trunca em ≤60 chars na última palavra inteira
-    const longTitle = "Esta é uma frase muito longa que deve ser truncada pelo seoSlug em palavra inteira";
+  it("titulo longo e truncado em palavra inteira (seoSlug maxLen=60)", () => {
+    const longTitle = "Esta e uma frase muito longa que deve ser truncada pelo seoSlug em palavra inteira";
     const url = deriveEditionUrl(longTitle);
-    // Extrair o slug da URL
     const slug = url.replace(`${BEEHIIV_BASE_URL}/p/`, "");
     assert.ok(slug.length <= 60, `slug deve ter ≤60 chars, obteve ${slug.length}: "${slug}"`);
-    // Não deve terminar com hífen
-    assert.ok(!slug.endsWith("-"), `slug não deve terminar com hífen: "${slug}"`);
+    assert.ok(!slug.endsWith("-"), `slug nao deve terminar com hifen: "${slug}"`);
   });
 });
 
-// ── (b) Testes unitários: findUnresolvedPlaceholders ─────────────────────────
+// ── (b) Testes unitarios: findUnresolvedPlaceholders ─────────────────────────
 
 describe("#2454 findUnresolvedPlaceholders — guard anti-placeholder", () => {
   it("texto sem placeholders → array vazio (OK para dispatch)", () => {
-    const text = "Edição completa com mais 12 destaques em https://diar.ia.br/p/meu-slug";
+    const text = "Edicao completa com mais 12 destaques em https://diar.ia.br/p/meu-slug";
     assert.deepEqual(findUnresolvedPlaceholders(text), []);
   });
 
   it("texto com {edition_url} → detectado", () => {
-    const text = "Edição completa em {edition_url}";
+    const text = "Edicao completa em {edition_url}";
     const found = findUnresolvedPlaceholders(text);
     assert.ok(found.includes("{edition_url}"), `deve detectar {edition_url}: ${JSON.stringify(found)}`);
   });
 
-  it("texto com {outros_count} → detectado", () => {
-    const text = "Mais {outros_count} destaques na edição completa";
+  // #2454-finding-1: {outros_count} e DEFERRED (resolvido por publish-linkedin.ts
+  // no dispatch). O guard NAO deve rejeitar {outros_count} — e sempre presente em
+  // 03-social.md antes do dispatch e seria um exit 3 falso em toda edicao.
+  it("#2454-finding-1 regressao: {outros_count} → IGNORADO pelo guard (deferred-to-dispatch)", () => {
+    const text = "Mais {outros_count} destaques na edicao completa";
     const found = findUnresolvedPlaceholders(text);
-    assert.ok(found.includes("{outros_count}"), `deve detectar {outros_count}: ${JSON.stringify(found)}`);
+    assert.deepEqual(found, [], `{outros_count} e deferred e NAO deve ser detectado: ${JSON.stringify(found)}`);
   });
 
-  it("texto com ambos os placeholders → ambos detectados", () => {
-    const text = "Mais {outros_count} destaques em {edition_url}";
+  it("#2454-finding-1 regressao: {edition_url} resolvido + {outros_count} presente → vazio (OK pre-dispatch)", () => {
+    // Estado real de 03-social.md antes do dispatch social:
+    // {edition_url} ja substituido pela URL real, {outros_count} ainda presente.
+    // Antes do fix: guard daria exit 3, bloqueando toda edicao.
+    const text = "Edicao em https://diar.ia.br/p/meu-slug — mais {outros_count} destaques";
     const found = findUnresolvedPlaceholders(text);
-    assert.ok(found.includes("{edition_url}"), "deve detectar {edition_url}");
-    assert.ok(found.includes("{outros_count}"), "deve detectar {outros_count}");
-    assert.equal(found.length, 2);
+    assert.deepEqual(found, [], `pre-dispatch valido: {edition_url} resolvido + {outros_count} deferred → deve ser []`);
   });
 
-  it("placeholder duplicado no texto → retorna só 1 entry (Set)", () => {
-    // {edition_url} aparece 3× (um por destaque) — deve retornar só 1
+  it("{edition_url} detectado independentemente de {outros_count}", () => {
+    const text = "Mais 12 destaques em {edition_url}";
+    const found = findUnresolvedPlaceholders(text);
+    assert.ok(found.includes("{edition_url}"), "{edition_url} ainda deve ser detectado");
+    assert.equal(found.length, 1);
+  });
+
+  it("placeholder duplicado no texto → retorna so 1 entry (Set)", () => {
     const text = "d1: {edition_url}\nd2: {edition_url}\nd3: {edition_url}";
     const found = findUnresolvedPlaceholders(text);
     assert.equal(found.filter(f => f === "{edition_url}").length, 1);
   });
 
-  it("URL resolvida (diar.ia.br/p/slug) não é detectada como placeholder", () => {
-    const text = "Edição em https://diar.ia.br/p/modelos-se-replicam-sozinhos";
+  it("URL resolvida (diar.ia.br/p/slug) nao e detectada como placeholder", () => {
+    const text = "Edicao em https://diar.ia.br/p/modelos-se-replicam-sozinhos";
     assert.deepEqual(findUnresolvedPlaceholders(text), []);
   });
 });
 
-// ── (c) Testes de integração: CLI resolve-edition-url.ts ────────────────────
+// ── (c) Testes de integracao: CLI resolve-edition-url.ts ────────────────────
 
 function runCli(args: string[], extraFiles?: Record<string, string>): {
   stdout: string;
@@ -148,10 +153,7 @@ function runCli(args: string[], extraFiles?: Record<string, string>): {
 }
 
 describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () => {
-  it("exit 0: grava URL correta via --title (palavra única sem espaços)", () => {
-    // Usa título de palavra única para evitar problemas de quoting no shell
-    // no Windows (shell:true + args array não escapa espaços). O comportamento
-    // multi-palavra é testado via funções puras em (a)+(b) acima.
+  it("exit 0: grava URL correta via --title (palavra unica sem espacos)", () => {
     const { exitCode, editionDir, tmp } = runCli(["--title", "Automacao"]);
     const outPath = resolve(editionDir, "_internal", "05-edition-url.txt");
     assert.equal(exitCode, 0, `esperava exit 0`);
@@ -192,8 +194,8 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       "",
       "## d1",
       "Post d1 sem placeholders.",
-      "Edição em https://diar.ia.br/p/meu-slug",
-      "Mais 12 destaques na edição.",
+      "Edicao em https://diar.ia.br/p/meu-slug",
+      "Mais 12 destaques na edicao.",
       "",
     ].join("\n");
 
@@ -205,15 +207,13 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 3: --validate-social com {edition_url} não-resolvido → aborta (#2454 guard)", () => {
-    // Simula o cenário em que o Stage 2 deixou o placeholder e o Stage 5
-    // tentaria publicar com a URL não-resolvida.
+  it("exit 3: --validate-social com {edition_url} nao-resolvido → aborta (#2454 guard)", () => {
     const socialMd = [
       "# LinkedIn",
       "",
       "## d1",
       "Post d1.",
-      "Edição completa em {edition_url}",
+      "Edicao completa em {edition_url}",
       "",
     ].join("\n");
 
@@ -227,33 +227,49 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 3: --validate-social com {outros_count} não-resolvido → aborta (#2454 guard)", () => {
+  // #2454-finding-1: regressao — {outros_count} e deferred, nao bloqueia dispatch.
+  // ANTES do fix: este teste daria exit 3 (false positive), bloqueando toda edicao.
+  it("#2454-finding-1 regressao: exit 0: {outros_count} presente + {edition_url} resolvido → PASSA", () => {
     const socialMd = [
       "# LinkedIn",
       "",
       "## d1",
-      "Mais {outros_count} destaques na edição.",
+      "Post d1.",
+      "Edicao em https://diar.ia.br/p/meu-slug — mais {outros_count} destaques.",
       "",
     ].join("\n");
 
-    const { exitCode, stderr, tmp } = runCli(
+    const { exitCode, tmp } = runCli(
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
     );
-    assert.equal(exitCode, 3, `esperava exit 3 (placeholder detectado), obteve ${exitCode}`);
-    assert.match(stderr, /\{outros_count\}/);
+    assert.equal(exitCode, 0, `{outros_count} e deferred — guard deve passar com exit 0, obteve ${exitCode}`);
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 0: acentos PT-BR via --slug passado pré-processado → URL correta", () => {
-    // Testa o caminho --slug (acentos já removidos pelo caller).
-    // Testes de remoção de acentos via --title estão nas funções puras acima (sem shell).
+  // #2454-finding-3: regressao — --title seguido de outra flag nao deve crashar.
+  // ANTES do fix: --title --validate-social definia title="--validate-social"
+  // (proxima flag consumida como valor), causando comportamento inesperado.
+  it("#2454-finding-3 regressao: --title seguido de --validate-social → exit 1 (nao crash)", () => {
+    const socialMd = "# LinkedIn\n\n## d1\nSem placeholder.\n";
+    const { exitCode, stderr, tmp } = runCli(
+      ["--title", "--validate-social"],
+      { "03-social.md": socialMd },
+    );
+    // --title sem valor → args["title"] = true (boolean), nao tratado como string valida
+    // → cai no else → exit 1 com mensagem de erro de flags obrigatorias
+    assert.equal(exitCode, 1, `--title sem valor deve dar exit 1, obteve ${exitCode}`);
+    assert.match(stderr, /--title.*--slug.*--edition-url/);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("exit 0: acentos PT-BR via --slug passado pre-processado → URL correta", () => {
     const { exitCode, editionDir, tmp } = runCli(["--slug", "automacao-e-panico-no-mercado"]);
     const outPath = resolve(editionDir, "_internal", "05-edition-url.txt");
     assert.equal(exitCode, 0);
     const content = readFileSync(outPath, "utf8").trim();
     assert.ok(content.includes("/automacao-e-panico-no-mercado"), `URL deve ter slug sem acentos: ${content}`);
-    assert.ok(!content.includes("automa-o"), `slug não deve ter 'automa-o' (manglaço do Beehiiv): ${content}`);
+    assert.ok(!content.includes("automa-o"), `slug nao deve ter 'automa-o': ${content}`);
     rmSync(tmp, { recursive: true, force: true });
   });
 });

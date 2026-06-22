@@ -178,26 +178,26 @@ npx tsx scripts/resolve-edition-url.ts \
 
 **Tab isolation no Chrome**: publish-newsletter e o unico agent Chrome em Etapa 5 — abre tab Beehiiv propria via `tabs_create_mcp`. LinkedIn e Facebook sao scripts shell sem browser.
 
-**Passo 5c-2: Resolver edition_url + guard anti-placeholder (#2454).**
+**Passo 5c-2: Guard anti-placeholder (#2454).**
 
-**SO APOS o draft Beehiiv retornar** (passo 5c-1 completo), verificar que `05-edition-url.txt` existe e rodar o guard:
+**SO APOS o draft Beehiiv retornar** (passo 5c-1 completo), verificar que `05-edition-url.txt` existe. Se o arquivo foi gravado pelo playbook (§6.1 do beehiiv-playbook.md), apenas rodar o guard de validacao — sem re-escrever o arquivo:
 
 ```bash
-# Verifica se o arquivo foi gravado pelo playbook:
-cat data/editions/{AAMMDD}/_internal/05-edition-url.txt
-# Se ausente — gravar agora (ver passo 5c-1 acima).
+# Se ausente — gravar agora (ver passo 5c-1 acima):
+if [ ! -f data/editions/{AAMMDD}/_internal/05-edition-url.txt ]; then
+  npx tsx scripts/resolve-edition-url.ts \n    --edition-dir data/editions/{AAMMDD}/ \n    --title "{titulo_d1}"
+fi
 
-# Guard anti-placeholder: aborta (exit 3) se {edition_url} ou {outros_count}
-# sobreviveram em 03-social.md. Nao dispatchar social se exit != 0.
-npx tsx scripts/resolve-edition-url.ts \
-  --edition-dir data/editions/{AAMMDD}/ \
-  --edition-url "$(cat data/editions/{AAMMDD}/_internal/05-edition-url.txt)" \
-  --validate-social
+# Guard anti-placeholder: aborta (exit 3) se {edition_url}
+# sobreviveu em 03-social.md. Nao dispatchar social se exit != 0.
+# Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
+EDITION_URL="$(cat data/editions/{AAMMDD}/_internal/05-edition-url.txt)"
+npx tsx scripts/resolve-edition-url.ts \n  --edition-dir data/editions/{AAMMDD}/ \n  --edition-url "${EDITION_URL}" \n  --validate-social
 ```
 
 Exit code do guard:
-- `0` → placeholders resolvidos, prosseguir pro dispatch do social.
-- `3` → **FATAL: placeholder nao-resolvido em 03-social.md.** NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com `{edition_url}` ou `{outros_count}` literal — o dispatch precisa ser corrigido primeiro.
+- `0` → {edition_url} resolvido, prosseguir pro dispatch do social.
+- `3` → **FATAL: {edition_url} nao-resolvido em 03-social.md.** NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com `{edition_url}` literal — o dispatch precisa ser corrigido primeiro.
 
 **Passo 5c-3: Dispatch social — APOS a URL estar resolvida.**
 
