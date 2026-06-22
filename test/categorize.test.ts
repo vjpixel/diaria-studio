@@ -24,6 +24,7 @@ import {
   isResearchBySlug,
   isOpenAIFrontiersStory,
   isFirstPartyToolingBlog,
+  isDevReleaseNote,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -2812,5 +2813,158 @@ describe("categorize() — #2176 path-mais-específico-vence no empate de host",
     // O bucket real esperado é "lancamento" (blog.google LANCAMENTO_DOMAIN, sem override de path).
     const cat = categorize(art);
     assert.equal(cat, "lancamento", "URL fora do path pt-br → lancamento (Google Primária, não tutorial)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2448 — isDevReleaseNote: rejeita anúncio dev "New X in Y" do USE MELHOR
+// ---------------------------------------------------------------------------
+
+describe("isDevReleaseNote (#2448)", () => {
+  it("detecta 'New Session Metadata in Sign in with Google' (caso real 260622)", () => {
+    assert.ok(
+      isDevReleaseNote("New Session Metadata in Sign in with Google"),
+      "'New Session Metadata in Sign in with Google' deve ser detectado como release note",
+    );
+  });
+
+  it("detecta 'New APIs in the Google Identity Services library'", () => {
+    assert.ok(
+      isDevReleaseNote("New APIs in the Google Identity Services library"),
+      "anúncio dev 'New APIs in ...' deve ser detectado",
+    );
+  });
+
+  it("detecta 'New Authentication Methods in Firebase Auth'", () => {
+    assert.ok(
+      isDevReleaseNote("New Authentication Methods in Firebase Auth"),
+      "padrão 'New X in Y' genérico deve ser detectado",
+    );
+  });
+
+  it("NÃO detecta título com how-to que contém 'new' — NÃO começa com 'New'", () => {
+    assert.ok(
+      !isDevReleaseNote("How to use new features in the OpenAI API"),
+      "how-to com 'new' no meio não é release note (não começa com 'New')",
+    );
+  });
+
+  it("NÃO detecta tutorial legítimo que começa com 'New'", () => {
+    // "New" com conteúdo curto (< 3 chars) → não bate no padrão {2,40}.
+    // Um tutorial como "New to Python: how to build your first script" — "to Python"
+    // tem comprimento curto após New, mas a regex requer {2,40} então testamos
+    // que títulos tutoriais reais com "New" variante não são falso-positivo.
+    assert.ok(
+      !isDevReleaseNote("How to build new AI features"),
+      "'How to build...' não começa com 'New' — não é release note",
+    );
+  });
+
+  it("isNewsNotTutorial retorna true para release note 'New X in Y' (#2448)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-session-metadata-in-sign-in-with-google/",
+      title: "New Session Metadata in Sign in with Google",
+    };
+    assert.ok(
+      isNewsNotTutorial(art),
+      "release note 'New X in Y' deve ser tratado como não-tutorial pelo isNewsNotTutorial",
+    );
+  });
+
+  it("categorize(): anúncio dev 'New X in Y' em developers.googleblog.com NÃO vira tutorial (#2448)", () => {
+    // Caso real 260622: "New Session Metadata in Sign in with Google" entrou no USE MELHOR.
+    // developers.googleblog.com bate em TUTORIAL_DOMAIN_EXTRA_PATTERNS (L357 do categorize).
+    // Fix: isNewsNotTutorial detecta via isDevReleaseNote e retorna true → não é tutorial.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-session-metadata-in-sign-in-with-google/",
+      title: "New Session Metadata in Sign in with Google",
+    };
+    const cat = categorize(art);
+    assert.notEqual(
+      cat,
+      "tutorial",
+      "anúncio 'New X in Y' de developers.googleblog.com NÃO deve virar tutorial",
+    );
+  });
+
+  it("categorize(): tutorial real de developers.googleblog.com CONTINUA sendo tutorial (#2448 regressão)", () => {
+    // Guard de regressão: não ejetar how-tos reais com "New" no título.
+    // "New" aparece mas depois de verbo how-to → isTutorialByKeyword retorna antes de isDevReleaseNote.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/how-to-use-gemini-api/",
+      title: "How to use the new Gemini API for developers",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "how-to real de developers.googleblog.com deve continuar sendo tutorial",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2469 (finding 2) — TUTORIAL_KEYWORDS_RE: "New Guide to X in Y" NÃO é ejetado
+// ---------------------------------------------------------------------------
+
+describe("isNewsNotTutorial — 'New Guide to X' não é ejetado como release note (#2469 finding 2)", () => {
+  it("isDevReleaseNote('New Guide to X in Y') retorna true (regex pega o padrão)", () => {
+    // Confirma que DEV_RELEASE_NOTE_TITLE_RE ancora no início e pega "New Guide to X in Y"
+    assert.ok(
+      isDevReleaseNote("New Guide to Prompt Engineering in LangChain"),
+      "regex de release note deve casar 'New Guide to X in Y'",
+    );
+  });
+
+  it("'New Guide to X in Y' em domínio de tutorial NÃO é ejetado de use_melhor (#2469 fix)", () => {
+    // Antes do fix: isTutorialByKeyword retornava false (não havia "guide to" em TUTORIAL_KEYWORDS_RE),
+    // então isNewsNotTutorial caia em isDevReleaseNote e ejetava o artigo.
+    // Após o fix: "guide to" é sinal de how-to → isTutorialByKeyword retorna true → article fica tutorial.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-guide-to-prompt-engineering-in-langchain/",
+      title: "New Guide to Prompt Engineering in LangChain",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Guide to X in Y' com sinal how-to deve continuar tutorial, não ser ejetado",
+    );
+  });
+
+  it("'New Techniques for X in Y' em domínio de tutorial NÃO é ejetado (#2469 fix)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-techniques-for-training-in-tensorflow/",
+      title: "New Techniques for Training Models in TensorFlow",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Techniques for X in Y' deve ser tutorial quando o conteúdo é how-to",
+    );
+  });
+
+  it("'New Patterns for X in Y' em domínio de tutorial NÃO é ejetado (#2469 fix)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-patterns-for-agents-in-gemini/",
+      title: "New Patterns for Building Agents in Gemini",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'New Patterns for X in Y' deve ser tutorial quando o conteúdo é how-to",
+    );
+  });
+
+  it("'New Session Metadata in X' SEM sinal how-to CONTINUA sendo ejetado (#2448 regressão)", () => {
+    // Sem "guide to"/"techniques for"/"patterns for" → isTutorialByKeyword não casa →
+    // isDevReleaseNote ejeta normalmente.
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-session-metadata-in-sign-in-with-google/",
+      title: "New Session Metadata in Sign in with Google",
+    };
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "anúncio 'New X in Y' sem sinal how-to não deve virar tutorial",
+    );
   });
 });

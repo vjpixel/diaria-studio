@@ -8,6 +8,12 @@
  * Todos os exports são funções puras, sem I/O, testáveis diretamente.
  */
 
+// #2469 (finding 4): isDevReleaseNote extraída para lib compartilhada (fonte única).
+// (Não pode importar categorize.ts — dependência circular.)
+import { isDevReleaseNote } from "./release-note-detect.ts";
+// #2469 (finding 5): canonicalize para dedup robusto (UTM/fragment/trailing-slash).
+import { canonicalize } from "./url-utils.ts";
+
 // ---------------------------------------------------------------------------
 // #2276 — Boost: tutorial/academy oficial
 // ---------------------------------------------------------------------------
@@ -926,4 +932,136 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// #2448 — Promoção de how-to do RADAR para USE MELHOR
+// ---------------------------------------------------------------------------
+
+/**
+ * Sinal forte de how-to no título — usado pra promover do RADAR pro USE MELHOR.
+ *
+ * Mais restrito que HOW_TO_GUARD_RE (que vence opinião/estudo): aqui precisamos
+ * de sinal MUITO explícito pra justificar mover do bucket radar, já que o
+ * categorizador já tentou classificar. Requer verbo acionável explícito:
+ *   - "Como usar/fazer/criar/configurar/implementar/construir/desenvolver"
+ *   - "How to build/create/deploy/train/use"
+ *   - "passo a passo / step-by-step"
+ *   - "tutorial" ou "guia prático/completo"
+ *   - Sinais how-to do HOWTO_BR_SIGNAL_RE (PT-BR consumer)
+ *
+ * Não basta HOW_TO_GUARD_RE (que inclui "guide" genérico) — queremos
+ * conteúdo genuinamente acionável, não apenas levemente tutorial.
+ */
+// #2469 (finding 3): `tutorial\b` solto casava notícias SOBRE tutoriais
+// ("New Tutorial Series on LLMs", "The State of Tutorials in 2026").
+// Substituído por `tutorial\s*:` (com dois-pontos — sinal de how-to) e
+// `tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)` (com contexto how-to explícito).
+const RADAR_HOWTO_PROMOTE_RE =
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)\b/i;
+
+/**
+ * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to
+ * acionável e deve ser promovido ao bucket USE MELHOR.
+ *
+ * Critérios (todos devem ser atendidos):
+ *   1. Título tem sinal RADAR_HOWTO_PROMOTE_RE (how-to explícito).
+ *   2. Título NÃO tem sinal de opinião/estudo (isOpinionOrStudy).
+ *   3. Título NÃO é um anúncio de dev/feature ("New X in Y").
+ *
+ * Propositalmente conservador — falso-negativo (deixar how-to no RADAR) é
+ * menos problemático que falso-positivo (promover análise ao USE MELHOR).
+ *
+ * @param url     URL do artigo.
+ * @param title   Título do artigo.
+ * @param summary Sumário/descrição opcional.
+ */
+export function isRadarHowToEligible(url: string, title: string, summary = ""): boolean {
+  // Sem sinal how-to explícito no título nem no slug PT-BR da URL → não promover.
+  // #2469 (finding 3): checar também o slug da URL via HOWTO_BR_SIGNAL_RE —
+  // conforme prometido no docstring, mas que antes nunca era chamado.
+  let urlSlug = "";
+  try {
+    urlSlug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    // URL inválida — prossegue sem slug
+  }
+  if (!RADAR_HOWTO_PROMOTE_RE.test(title) && !HOWTO_BR_SIGNAL_RE.test(urlSlug)) return false;
+
+  // Opinião ou estudo → não promover (how-to pode estar no summary, mas o conteúdo não é acionável).
+  if (isOpinionOrStudy(url, title, summary)) return false;
+
+  // "New X in Y" release note / dev announcement → não promover.
+  // #2469 (finding 4): usa isDevReleaseNote importada de lib/release-note-detect.ts
+  // (fonte única — elimina duplicação com a cópia em categorize.ts).
+  if (isDevReleaseNote(title)) return false;
+
+  return true;
+}
+
+/** Artigo mínimo aceito pela promoção radar→use_melhor. */
+export interface RadarArticle {
+  url: string;
+  title?: string;
+  summary?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * #2448 (b): Promove how-tos do bucket RADAR para o bucket USE MELHOR.
+ *
+ * Percorre `radarItems` em ordem (presumida score desc) e move para USE MELHOR
+ * aqueles que têm sinal forte de how-to (`isRadarHowToEligible`), respeitando:
+ *   - Cap máximo de promoções (default `maxPromote = 2`) para não esvaziar o RADAR.
+ *   - Não promover URLs que já estão em `useMelhorItems` (dedup por URL canônica).
+ *
+ * Retorna `{ newUseMelhor, newRadar, promoted }`:
+ *   - `newUseMelhor` — use_melhor com os promovidos PREPENDED (score mais alto primeiro).
+ *   - `newRadar`     — radar sem os promovidos.
+ *   - `promoted`     — contagem de promoções realizadas.
+ *
+ * @param radarItems      Candidatos do bucket radar (score desc).
+ * @param useMelhorItems  Itens já no bucket use_melhor.
+ * @param maxPromote      Máximo de itens a promover (default 2).
+ */
+export function promoteHowTosFromRadar(
+  radarItems: RadarArticle[],
+  useMelhorItems: RadarArticle[],
+  maxPromote = 2,
+): {
+  newUseMelhor: RadarArticle[];
+  newRadar: RadarArticle[];
+  promoted: number;
+} {
+  // #2469 (finding 5): usa canonicalize() em vez de toLowerCase() —
+  // variantes com UTM params, fragment ou trailing-slash escapavam do dedup.
+  const seenUrls = new Set<string>(
+    useMelhorItems.map((a) => canonicalize(a.url)),
+  );
+
+  const promoted: RadarArticle[] = [];
+  const remainingRadar: RadarArticle[] = [];
+
+  for (const item of radarItems) {
+    const canonUrl = canonicalize(item.url);
+    if (
+      promoted.length < maxPromote &&
+      !seenUrls.has(canonUrl) &&
+      isRadarHowToEligible(item.url, item.title ?? "", item.summary ?? "")
+    ) {
+      promoted.push(item);
+      seenUrls.add(canonUrl);
+    } else {
+      remainingRadar.push(item);
+    }
+  }
+
+  // Prepend promoted to use_melhor (higher-scored items first).
+  const newUseMelhor = [...promoted, ...useMelhorItems];
+
+  return {
+    newUseMelhor,
+    newRadar: remainingRadar,
+    promoted: promoted.length,
+  };
 }
