@@ -89,6 +89,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    **Só pra D1.** Um post **próprio no feed pessoal do Pixel (vjpixel)** sobre o destaque #1 — não um comentário, e **não** uma cópia verbatim do `## d1` da página. Perfis pessoais têm alcance orgânico bem maior que páginas; este post amplifica o conteúdo de topo.
 
+   **⚠️ NÃO gerar `### comment_pixel` para o `## post_pixel` (#2453).** O `comment_pixel` existe para ir SOB os posts da company page (d1/d2/d3) — não sob o post pessoal standalone. O `post_pixel` já É a voz pessoal do Pixel; um comment_pixel seria redundante e confuso. A seção termina direto com o corpo do post (+ hashtags + CTA de follow). Zero subseções.
+
    - **Voz pessoal/opinião do Pixel** (reaproveite o tom do `### comment_pixel` como base, mas em formato de POST completo, não comentário). Primeira pessoa, autor curador.
    - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual da página.
    - Pode abrir com o fato, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
@@ -180,7 +182,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 ## Regras
 
-- O arquivo temporário tem **9 textos** total (3 destaques × {main, comment_diaria, comment_pixel}). Cada um delimitado por header markdown — sem cabeçalhos extras, sem `POST N —`, sem linha de instrução.
+- O arquivo temporário tem **9 textos + 1 post pessoal** total: 3 destaques × {main, comment_diaria, comment_pixel} + 1 `## post_pixel` standalone. Cada um delimitado por header markdown — sem cabeçalhos extras, sem `POST N —`, sem linha de instrução. **O `## post_pixel` NÃO tem subseções** (#2453) — nem `### comment_pixel`, nem `### comment_diaria`.
 - Cada post deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 posts principais.
 - `comment_pixel` em cada destaque adiciona ângulo distinto — não copiar o hook do main, não simplesmente "concordo".
