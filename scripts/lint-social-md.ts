@@ -473,6 +473,28 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     }
   }
 
+  // #2453: `## post_pixel` é um post standalone na conta pessoal do Pixel —
+  // já é a voz do Pixel. Ter um `### comment_pixel` dentro dele seria redundante
+  // (comment_pixel é para ir SOB os posts da company page d1/d2/d3, não sob
+  // post_pixel). Validar que o bloco post_pixel NÃO contém essa subseção.
+  if (linkedinSection) {
+    const ppBlockMatch = ("\n" + linkedinSection).match(
+      /\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i,
+    );
+    if (ppBlockMatch) {
+      const ppBody = ppBlockMatch[1];
+      if (/\n### comment_pixel\b/i.test(ppBody)) {
+        errors.push({
+          destaque: "post_pixel",
+          rule: "post_pixel_has_comment_pixel",
+          detail:
+            "post_pixel: subseção ### comment_pixel não deve existir aqui " +
+            "— comment_pixel é para os posts d1/d2/d3 da company page, não para o post pessoal standalone (#2453).",
+        });
+      }
+    }
+  }
+
   return { ok: errors.length === 0, errors, destaques };
 }
 

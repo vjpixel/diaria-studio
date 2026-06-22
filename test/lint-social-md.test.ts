@@ -1382,3 +1382,100 @@ describe("lintLinkedinPageLink — fixes self-review (#2458)", () => {
     );
   });
 });
+
+describe("lintLinkedinSchema — post_pixel NÃO tem comment_pixel (#2453)", () => {
+  // Helper: gera um 03-social.md com LinkedIn válido (d1/d2/d3 com comment_pixel)
+  // e um ## post_pixel que pode ou não ter ### comment_pixel.
+  const mkMdWithPostPixel = (postPixelBody: string) => `# LinkedIn
+
+## d1
+
+Texto editorial sobre modelo de linguagem e estratégia da Anthropic.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+
+### comment_pixel
+
+O frame mudou pra quem trabalha com agentes em produção.
+
+## d2
+
+Texto editorial sobre automação e impacto no mercado de trabalho.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+
+### comment_pixel
+
+Dado interessante que muda como penso em automação.
+
+## d3
+
+Texto editorial sobre infraestrutura de computação e data centers.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+
+### comment_pixel
+
+Contexto de infraestrutura que pouca gente considera.
+
+## post_pixel
+
+<!-- destaque: d1 -->
+
+${postPixelBody}
+
+Siga a Diar.ia em linkedin.com/company/diaria
+
+#IA #Tecnologia
+`;
+
+  it("PASSA: post_pixel sem ### comment_pixel — regra post_pixel_has_comment_pixel ausente (#2453)", () => {
+    const md = mkMdWithPostPixel(
+      "A estratégia da Anthropic faz sentido quando você vê o padrão: alinhamento como vantagem competitiva, não como restrição.",
+    );
+    const r = lintLinkedinSchema(md);
+    // Não deve existir o erro específico do post_pixel
+    const err = r.errors.find((e) => e.rule === "post_pixel_has_comment_pixel");
+    assert.equal(err, undefined, `regra post_pixel_has_comment_pixel não deve disparar: ${JSON.stringify(err)}`);
+    // d1/d2/d3 devem ter comment_pixel (inalterado)
+    const d1 = r.destaques.find((d) => d.destaque === "d1");
+    assert.ok(d1?.has_comment_pixel, "d1 deve ter comment_pixel");
+    const d2 = r.destaques.find((d) => d.destaque === "d2");
+    assert.ok(d2?.has_comment_pixel, "d2 deve ter comment_pixel");
+    const d3 = r.destaques.find((d) => d.destaque === "d3");
+    assert.ok(d3?.has_comment_pixel, "d3 deve ter comment_pixel");
+  });
+
+  it("FALHA: post_pixel com ### comment_pixel — redundante e incorreto (#2453)", () => {
+    // Caso de regressão: agente adiciona comment_pixel após o post_pixel,
+    // extrapolando o padrão d{N} → comment_diaria → comment_pixel.
+    const md = mkMdWithPostPixel(
+      `A estratégia da Anthropic faz sentido quando você vê o padrão: alinhamento como vantagem competitiva.
+
+### comment_pixel
+
+Complemento pessoal do Pixel sob o próprio post pessoal — isso não deveria existir.`,
+    );
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, false, "post_pixel com comment_pixel deve falhar");
+    const err = r.errors.find((e) => e.rule === "post_pixel_has_comment_pixel");
+    assert.ok(err, `erro post_pixel_has_comment_pixel esperado; got: ${JSON.stringify(r.errors)}`);
+    assert.equal(err?.destaque, "post_pixel");
+    // d1/d2/d3 não devem ser afetados pelo erro do post_pixel
+    assert.ok(r.destaques.find((d) => d.destaque === "d1")?.has_comment_pixel, "d1 ainda tem comment_pixel");
+    assert.ok(r.destaques.find((d) => d.destaque === "d2")?.has_comment_pixel, "d2 ainda tem comment_pixel");
+    assert.ok(r.destaques.find((d) => d.destaque === "d3")?.has_comment_pixel, "d3 ainda tem comment_pixel");
+  });
+});
