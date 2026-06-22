@@ -1038,4 +1038,29 @@ describe("renderUseMelhorSection (#2447/#2450)", () => {
     ]);
     assert.match(out, /🛠️ USE MELHOR/, "deve ter o header da seção");
   });
+
+  // #2464 finding 3: header órfão quando todos os items são inválidos
+  it("#2464 finding 3: retorna string vazia quando TODOS os items são inválidos (sem url/title)", () => {
+    // Sem este guard, a função emitia "**🛠️ USE MELHOR**" sem itens abaixo.
+    const out = renderUseMelhorSection([
+      { summary: "sem url e sem titulo" }, // inválido: sem url
+      { url: "https://x.com/t" }, // inválido: sem title
+    ] as Parameters<typeof renderUseMelhorSection>[0]);
+    assert.equal(out, "", `deve retornar string vazia quando todos inválidos; got: ${JSON.stringify(out)}`);
+    assert.ok(!out.includes("USE MELHOR"), "header orphan não deve aparecer quando sem itens válidos");
+  });
+
+  // #2464 finding 1 via renderUseMelhorSection: dash-tempo no meio do summary normalizado
+  it("#2464 finding 1: dash-tempo no meio do summary é normalizado para '(X min)'", () => {
+    const out = renderUseMelhorSection([
+      {
+        url: "https://example.com/guia",
+        title: "Guia de Prompt Engineering",
+        // dash-tempo no meio da frase, não no fim
+        summary: "Técnicas essenciais — 10 min para iniciantes avançados",
+      },
+    ]);
+    assert.match(out, /\(10 min\)/, "dash-tempo no meio deve ser normalizado para '(10 min)'");
+    assert.ok(!out.includes("— 10 min"), "não deve manter o formato dash");
+  });
 });

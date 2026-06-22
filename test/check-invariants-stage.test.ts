@@ -1099,6 +1099,49 @@ describe("Stage 4 invariants", () => {
     });
   });
 
+  describe("use-melhor-sentinel (#2464 finding 2)", () => {
+    // #2464 finding 2: o sentinel [DESCRIÇÃO PENDENTE] satisfaz o check de tempo
+    // (stitch appenda "(X min)") mas não deve chegar ao leitor.
+    // Este check rejeita itens que ainda têm o placeholder não-preenchido.
+
+    it("registrado no Stage 4 (gate-blocking, severity=error)", () => {
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-sentinel");
+      assert.ok(rule, "use-melhor-sentinel deve estar registrado no Stage 4");
+    });
+
+    it("falha quando 02-reviewed.md contém '[DESCRIÇÃO PENDENTE]' (severity=error)", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\n[DESCRIÇÃO PENDENTE] (5 min)\n\n---\n`,
+      );
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-sentinel")!;
+      const v = rule.run(fixture);
+      assert.equal(v.length, 1, "deve detectar o sentinel");
+      assert.equal(v[0].rule, "use-melhor-sentinel");
+      assert.equal(v[0].severity, "error", "sentinel deve ser error (gate-blocking) — #2464");
+      assert.match(v[0].message, /DESCRIÇÃO PENDENTE/, "mensagem deve mencionar o sentinel");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa quando 02-reviewed.md não contém '[DESCRIÇÃO PENDENTE]'", () => {
+      writeFileSync(
+        join(fixture, "02-reviewed.md"),
+        `**🛠️ USE MELHOR**\n\n**[Tutorial](https://x.com/t)**\nComo usar ChatGPT no trabalho (5 min)\n\n---\n`,
+      );
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-sentinel")!;
+      const v = rule.run(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa quando 02-reviewed.md ausente (não bloqueia setup parcial)", () => {
+      const rule = getRulesForStage(4).find((r) => r.id === "use-melhor-sentinel")!;
+      const v = rule.run(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
   describe("narrative-not-generic-placeholder (#2377 hotfix)", () => {
     // REGRESSÃO: regra rebaixada de error→warning (hotfix #2377/#2372).
     // O sinal continua aparecendo mas NÃO deve causar exit 1.

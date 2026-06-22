@@ -393,6 +393,47 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * #2464 finding 2: rejeita items de USE MELHOR contendo o sentinel
+ * `[DESCRIÇÃO PENDENTE]` — injetado pelo stitch quando não há `summary`.
+ *
+ * O sentinel satisfaz o check de tempo (o stitch já appenda `(5 min)` a ele),
+ * então sem este guard poderia chegar ao leitor se o editor não notar.
+ *
+ * `[DESCRIÇÃO PENDENTE]` é escrito EXCLUSIVAMENTE por `renderUseMelhorSection`
+ * (stitch-newsletter.ts) — não aparece em nenhuma outra seção. Portanto a busca
+ * simples por substring no documento é suficiente e precisa, sem precisar escopar
+ * ao bloco USE MELHOR linha a linha.
+ *
+ * severity: "error" (gate-blocking) — o editor DEVE preencher a descrição antes
+ * da publicação. Um link sem descrição não agrega valor editorial.
+ */
+function checkUseMelhorSentinel(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  if (!md.includes("[DESCRIÇÃO PENDENTE]")) return [];
+
+  // Contar ocorrências do sentinel para mensagem diagnóstica.
+  const matches = md.match(/\[DESCRIÇÃO PENDENTE\]/g);
+  const count = matches?.length ?? 1;
+
+  return [
+    {
+      rule: "use-melhor-sentinel",
+      message:
+        `${count} item(ns) de USE MELHOR com descrição placeholder "[DESCRIÇÃO PENDENTE]" ` +
+        `em ${path}. ` +
+        `Fix: substituir "[DESCRIÇÃO PENDENTE]" pela descrição real de cada item antes de publicar ` +
+        `(stitch injeta esse placeholder quando approved.json não tem "summary"; ` +
+        `preencha o summary no JSON ou edite diretamente no 02-reviewed.md).`,
+      source_issue: "#2464",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
+/**
  * #2372/#2415/#2447: cada item de USE MELHOR precisa de estimativa de tempo na
  * descrição (`(15 min)` — formato canônico, ou `— 15 min` como atalho aceito).
  *
@@ -644,6 +685,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#1578",
     stage: 4,
     run: checkIntroCountConsistent,
+  },
+  {
+    id: "use-melhor-sentinel",
+    description: "itens USE MELHOR sem descrição real (sentinel [DESCRIÇÃO PENDENTE] presente, #2464)",
+    source_issue: "#2464",
+    stage: 4,
+    run: checkUseMelhorSentinel,
   },
   {
     id: "use-melhor-tempo",

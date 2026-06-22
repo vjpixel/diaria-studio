@@ -759,13 +759,15 @@ const MEDIUM_TUTORIAL_RE =
  */
 export function estimateUseMelhorTempo(title: string, url = ""): string {
   const hay = title;
+  // Hoist: chamada única (finding 7 code-review #2464 — era chamado 2×).
+  const isAcademy = isTutorialAcademy(url, title);
   // Plataformas de curso/academia → atividade longa (o editor vai p/ a plataforma
   // e consome mais do que lê um artigo).
-  if (isTutorialAcademy(url, title) && LONG_TUTORIAL_RE.test(hay)) {
+  if (isAcademy && LONG_TUTORIAL_RE.test(hay)) {
     return "(30 min)";
   }
   // Plataformas de academy com título curto → médio por default
-  if (isTutorialAcademy(url, title)) {
+  if (isAcademy) {
     return "(15 min)";
   }
   // Tutorial/guia completo, passo-a-passo, cookbook → médio
@@ -781,15 +783,6 @@ export function estimateUseMelhorTempo(title: string, url = ""): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Regex para detectar estimativa de tempo no formato de dash (atalho que deve
- * ser normalizado para o formato canônico de parênteses).
- *
- * Casa: `— 5 min`, `— 5 min de leitura`, `– 10 min`, `—5min`, `— ~15 min`
- * Não casa: `(5 min)`, `~5 min` (sem dash)
- */
-const DASH_TEMPO_RE = /[–—]\s*~?\s*(\d+)\s*min\b[^\)]*?(?=\s*$|\s+\(|\s+[–—])/;
-
-/**
  * #2450: Normaliza o formato de estimativa de tempo de dash (`— X min`) para
  * parênteses (`(X min)`) numa string de descrição USE MELHOR.
  *
@@ -800,7 +793,8 @@ const DASH_TEMPO_RE = /[–—]\s*~?\s*(\d+)\s*min\b[^\)]*?(?=\s*$|\s+\(|\s+[–
  * formato CANÔNICO de saída do stitch é sempre `(X min)`.
  *
  * Regra: substitui `[–—] X min` (com variações: `~`, `de leitura`) pelo
- * equivalente entre parênteses. Preserva o número de minutos.
+ * equivalente entre parênteses em QUALQUER posição da string (não só no fim
+ * — finding 1 do code-review #2464).
  *
  * @param desc  Linha de descrição de item USE MELHOR.
  * @returns     Descrição com `(X min)` no formato canônico; inalterada se
@@ -809,14 +803,15 @@ const DASH_TEMPO_RE = /[–—]\s*~?\s*(\d+)\s*min\b[^\)]*?(?=\s*$|\s+\(|\s+[–
 export function normalizeDashToParens(desc: string): string {
   // Já tem parênteses com número? → formato canônico, não tocar.
   if (/\(\s*~?\s*\d+\s*min\b/.test(desc)) return desc;
-  // Tem dash format? → extrair número e substituir.
-  const m = desc.match(/([–—]\s*~?\s*)(\d+)(\s*min\b[^)]*?)(\s*$)/);
-  if (!m) return desc;
-  // Remove o dash + "N min [de leitura]..." e adiciona "(N min)" no fim.
-  const minutes = m[2];
-  // Remover toda a parte de dash-tempo do fim da string
-  const withoutDash = desc.replace(/\s*[–—]\s*~?\s*\d+\s*min\b.*$/, "").trimEnd();
-  return `${withoutDash} (${minutes} min)`;
+  // Normaliza `[–—] ~? N min [sufixo opcional como "de leitura"]` em QUALQUER
+  // posição da string (not só no fim — finding 1 code-review #2464).
+  // O sufixo não-canônico ("de leitura", " de execução") é descartado;
+  // tudo antes do dash é preservado. Caracteres permitidos no sufixo:
+  // [^)–—\n] para não engolir outra ocorrência de dash-tempo ou fecha-parens.
+  return desc.replace(
+    /[–—]\s*~?\s*(\d+)\s*min\b[^)–—\n]*/g,
+    (_match, minutes) => `(${minutes} min)`,
+  );
 }
 
 // ---------------------------------------------------------------------------

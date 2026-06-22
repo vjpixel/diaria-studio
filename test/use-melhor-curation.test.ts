@@ -2068,4 +2068,21 @@ describe("normalizeDashToParens (#2450)", () => {
     // hyphen simples não é dash editorial — preservar para evitar FP
     assert.equal(normalizeDashToParens(desc), desc);
   });
+
+  // #2464 finding 1: normalização mid-sentence (não só no fim da string)
+  it("#2464 finding 1: normaliza '— X min' no MEIO da descrição (não só no fim)", () => {
+    // Caso real: "Guia de Python — 15 min para iniciantes" → dash no meio, resto preservado
+    const result = normalizeDashToParens("Guia de Python — 15 min para iniciantes");
+    assert.match(result, /\(15 min\)/, "deve normalizar dash-tempo no meio da frase");
+    assert.ok(!result.includes("— 15 min"), "não deve manter o formato dash");
+  });
+
+  it("#2464 finding 1: normaliza '— X min' independente de posição (no início após prefixo)", () => {
+    // Dash-tempo após um prefixo curto (não só final da string)
+    const result = normalizeDashToParens("[TRADUZIR] Guia completo — 10 min de execução");
+    assert.match(result, /\(10 min\)/, "deve normalizar dash-tempo em qualquer posição");
+    assert.ok(!result.includes("— 10 min"), "não deve manter o formato dash");
+    // Prefixo [TRADUZIR] deve ser preservado
+    assert.match(result, /\[TRADUZIR\]/, "prefixo deve ser preservado");
+  });
 });
