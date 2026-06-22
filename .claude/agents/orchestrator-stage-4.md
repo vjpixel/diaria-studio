@@ -183,6 +183,38 @@ Exit code handling:
 - Comparar os títulos finais em `02-reviewed.md` com os títulos originais em `_internal/01-approved.json` para mostrar se houve mudança editorial.
 - Informativo — sem bloqueio.
 
+**4c.6 — Fact-check de claims (#2455):**
+
+Disparar o subagente `fact-checker` em paralelo com (ou logo após) os lints acima:
+
+```bash
+# 1. Validar pré-condições e obter parâmetros para o subagente:
+npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+Em seguida, despachar o subagente `fact-checker` via Agent tool com os parâmetros:
+```
+Agent("fact-checker", {
+  newsletter_path: "data/editions/{AAMMDD}/02-reviewed.md",
+  social_path: "data/editions/{AAMMDD}/03-social.md",
+  approved_json_path: "data/editions/{AAMMDD}/_internal/01-approved.json",
+  out_path: "data/editions/{AAMMDD}/_internal/fact-check.json"
+})
+```
+
+Após o subagente concluir (gravar `_internal/fact-check.json`), formatar o gate summary:
+```bash
+# 2. Formatar seção para o gate (lê o fact-check.json gravado pelo subagente):
+npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/ \
+  --input-json data/editions/{AAMMDD}/_internal/fact-check.json
+```
+
+**Exit code handling:**
+- `0` → capturar stdout (seção formatada) e incluir na seção `━━━ FACT-CHECK` do gate.
+- `1` → fact-checker não rodou (pré-condição falhou ou arquivo ausente) → mostrar `⚠️ Fact-check indisponível: {motivo do stderr}` no gate. **Não bloquear** — fact-check é assistido, não gate-blocking.
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`), mas pular a apresentação no gate (que é pulado inteiramente). O arquivo fica disponível para auditoria pós-edição.
+
 ### 4d. Gate humano (#1694)
 
 **Sync push antes do gate (#507):** Subir outputs pra o editor revisar no Drive antes de aprovar:
@@ -236,6 +268,8 @@ Facebook  D3  "{hook_d3_facebook}"
 
 {violations_block ou "✅ Nenhuma violação detectada"}
 
+{fact_check_block}
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?
 
@@ -250,6 +284,7 @@ Aprovar e prosseguir para Publicação (Etapa 5)?
 Regras de apresentação:
 - `{verify_verdict}` = `✅ acessível` / `⚠️ inacessível` / `⏱ timeout`.
 - `{violations_block}` = uma linha por violation com ❌ (crítico) ou ⚠️ (warning) + mensagem.
+- `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência do fact-check.** Decisão final é sempre do editor.
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
 
