@@ -284,37 +284,38 @@ test("#2441 renderEngagementCohortsSection: tfoot com alerta quando soma != univ
   assert.match(html, /⚠️/, "deve ter alerta ⚠️ quando soma != universe");
 });
 
-// ─── #2446: aberturas MPP somadas nas coortes de abertura ────────────────────
+// ─── #2446 (reaberta): normalizeContact IGNORA machineOpened; tooltips EXCLUEM MPP ──
 
-test("#2446 normalizeContact: machineOpened soma a opened (contato só-MPP → opened=1)", () => {
-  // Contato com 0 aberturas diretas + 1 abertura MPP → opened deve ser 1.
+test("#2446 normalizeContact: machineOpened presente é IGNORADO — opened vem só de statistics.opened", () => {
+  // A Brevo não atribui MPP a contatos individuais — statistics.machineOpened não
+  // existe na API. Mesmo que um campo com esse nome apareça no shape, deve ser ignorado.
   const c = normalizeContact({
     statistics: {
       messagesSent: [{}],
       opened: [],
-      machineOpened: [{ campaignId: 42 }],
+      machineOpened: [{ campaignId: 42 }], // campo inexistente na API — deve ser ignorado
     },
   });
   assert.equal(c.received, 1);
-  assert.equal(c.opened, 1, "machineOpened deve ser somado a opened");
+  assert.equal(c.opened, 0, "machineOpened deve ser IGNORADO — opened vem só de statistics.opened");
   assert.equal(c.bounced, false);
   assert.equal(c.optedOut, false);
 });
 
-test("#2446 normalizeContact: direto + MPP são somados", () => {
-  // 1 abertura direta + 2 aberturas MPP → opened = 3.
+test("#2446 normalizeContact: machineOpened presente com aberturas diretas — só opened conta", () => {
+  // 1 abertura direta + 2 campos machineOpened (fictícios) → opened = 1 (só diretas).
   const c = normalizeContact({
     statistics: {
       messagesSent: [{}, {}, {}],
       opened: [{ campaignId: 1 }],
-      machineOpened: [{ campaignId: 2 }, { campaignId: 3 }],
+      machineOpened: [{ campaignId: 2 }, { campaignId: 3 }], // ignorado
     },
   });
-  assert.equal(c.opened, 3, "opened direto + machineOpened devem ser somados");
+  assert.equal(c.opened, 1, "machineOpened deve ser ignorado — opened = só statistics.opened");
 });
 
 test("#2446 normalizeContact: sem machineOpened → comportamento inalterado", () => {
-  // Campo ausente: não deve quebrar (len([]) = 0 → soma 0).
+  // Campo ausente (comportamento normal — statistics.opened é a fonte).
   const c = normalizeContact({
     statistics: {
       messagesSent: [{}],
@@ -322,49 +323,50 @@ test("#2446 normalizeContact: sem machineOpened → comportamento inalterado", (
       // machineOpened ausente
     },
   });
-  assert.equal(c.opened, 1, "sem machineOpened, opened vem só de statistics.opened");
+  assert.equal(c.opened, 1, "sem machineOpened, opened vem de statistics.opened normalmente");
 });
 
-test("#2446 computeCohorts: contato só-MPP (0 diretas + 1 MPP) cai em 'Abriu 1'", () => {
-  // Cenário real: contato que nunca clicou "abrir" mas teve MPP pré-carregado.
-  // Antes do #2446, opened=0 → "Recebeu 1, não abriu". Após: opened=1 → "Abriu 1".
+test("#2446 computeCohorts: contato com opened=0 (sem trackable, mesmo com MPP externo) cai em 'Recebeu 1, não abriu'", () => {
+  // As coortes usam statistics.opened (trackable, EXCLUI MPP). Contato com 0
+  // aberturas trackable cai em "não abriu", mesmo que tenha MPP em nível de campanha.
   const contacts: ContactEngagement[] = [
-    eng({ received: 1, opened: 1 }), // 0 diretas + 1 MPP (normalizado por normalizeContact)
-    eng({ received: 1, opened: 0 }), // realmente não abriu
+    eng({ received: 1, opened: 1 }), // abertura trackable real
+    eng({ received: 1, opened: 0 }), // sem abertura trackable (MPP não conta)
   ];
   const r = computeCohorts(contacts, GEN);
-  assert.equal(r.opened1, 1, "contato com opened=1 (MPP) deve cair em opened1");
-  assert.equal(r.received1_opened0, 1, "contato com opened=0 deve cair em received1_opened0");
+  assert.equal(r.opened1, 1, "contato com opened=1 trackable deve cair em opened1");
+  assert.equal(r.received1_opened0, 1, "contato com opened=0 deve cair em received1_opened0 (MPP não conta)");
 });
 
-test("#2446 computeCohorts: contato só-MPP com 2+ aberturas cai em 'Abriu 2+'", () => {
-  const contacts: ContactEngagement[] = [
-    eng({ received: 3, opened: 2 }), // 2 aberturas MPP
-  ];
-  const r = computeCohorts(contacts, GEN);
-  assert.equal(r.opened2plus, 1, "contato com opened=2 (MPP) deve cair em opened2plus");
-  assert.equal(r.opened1, 0);
-  assert.equal(r.received1_opened0, 0);
-  assert.equal(r.received2_opened0, 0);
-});
-
-test("#2446 renderEngagementCohortsSection: tooltip menciona MPP em 'Abriu 2+' E 'Abriu 1'", () => {
+test("#2446 renderEngagementCohortsSection: tooltips de 'Abriu 2+' E 'Abriu 1' mencionam EXCLUI MPP / trackable", () => {
   const html = renderEngagementCohortsSection(SAMPLE);
-  assert.match(html, /MPP/, "tooltip deve mencionar MPP");
-  // Ambas as linhas de abertura ('Abriu 2+' e 'Abriu 1') tiveram o tooltip
-  // alterado — verificar as DUAS ocorrências, não só a primeira (self-review #2446).
-  const mppTooltips = html.match(/Inclui aberturas MPP\/machine/g) ?? [];
+  // Os tooltips devem usar semântica de EXCLUI MPP (não 'Inclui aberturas MPP/machine').
+  assert.doesNotMatch(
+    html,
+    /Inclui aberturas MPP\/machine/,
+    "tooltips NÃO devem dizer 'Inclui aberturas MPP/machine' (era falso — corrigido em #2446)",
+  );
+  // Ancorar nos ATRIBUTOS title= das DUAS linhas de abertura — não no blob inteiro
+  // (self-review #2446): a nota da seção menciona EXCLUI MPP mas é <p>, não title=.
+  // Contar title="...trackable/EXCLUI MPP..." pega só as linhas 'Abriu 2+' e 'Abriu 1';
+  // uma regressão que tire o texto de uma/ambas é capturada (antes passava verde).
+  const rowTooltips = html.match(/title="[^"]*(?:trackable|EXCLUI MPP)[^"]*"/gi) ?? [];
   assert.ok(
-    mppTooltips.length >= 2,
-    `tooltips de 'Abriu 2+' E 'Abriu 1' devem mencionar MPP/machine (encontrado: ${mppTooltips.length})`,
+    rowTooltips.length >= 2,
+    `ambas as linhas 'Abriu 2+' e 'Abriu 1' devem ter tooltip trackable/EXCLUI MPP (achou ${rowTooltips.length})`,
   );
 });
 
-test("#2446 renderEngagementCohortsSection: nota da seção menciona MPP", () => {
+test("#2446 renderEngagementCohortsSection: nota da seção diz EXCLUI MPP e diferencia de Totais por mês", () => {
   const html = renderEngagementCohortsSection(SAMPLE);
   assert.match(
     html,
-    /"Abriu".*inclui.*MPP/,
-    "nota da seção deve explicar que aberturas incluem MPP",
+    /EXCLUI MPP/,
+    "nota da seção deve explicar que aberturas EXCLUEM MPP (corrigido em #2446)",
+  );
+  assert.match(
+    html,
+    /Totais por m/,
+    "nota da seção deve mencionar 'Totais por mês' para contextualizar a diferença",
   );
 });

@@ -83,10 +83,14 @@ export interface ContactEngagement {
   /** nº de campanhas entregues ao contato (statistics.messagesSent.length) */
   received: number;
   /**
-   * nº de campanhas abertas pelo contato — SOMA de aberturas diretas
-   * (statistics.opened) + aberturas MPP/machine (statistics.machineOpened).
-   * (#2446: inclui MPP pra que contatos com apenas abertura de máquina caiam
-   * nas coortes "Abriu 1" / "Abriu 2+" em vez de "não abriu nenhum".)
+   * nº de campanhas abertas pelo contato — aberturas reais (trackable) per-contato.
+   * Corresponde a `statistics.opened` da Brevo, que ≈ `trackableViews` da campanha
+   * (aproximado, não idêntico): EXCLUI MPP/machine (Apple Mail Privacy Protection).
+   *
+   * A Brevo não atribui MPP a contatos individuais — `appleMppOpens` existe só
+   * como agregado de campanha, sem atribuição per-contato. `statistics.machineOpened`
+   * não existe na API Brevo. Portanto este campo representa o sinal humano mais limpo
+   * disponível por contato.
    */
   opened: number;
   /** teve hard ou soft bounce em alguma campanha */
@@ -193,11 +197,12 @@ function hasUnsub(stats: any): boolean {
  * `bounced` tem prioridade no breakdown: optedOut só conta blacklist/unsub que
  * NÃO seja consequência de bounce já contabilizado.
  *
- * #2446: `opened` soma aberturas diretas (statistics.opened) + aberturas
- * MPP/machine (statistics.machineOpened). Apple Mail Privacy Protection pré-carrega
- * o pixel de rastreamento em background — tecnicamente é abertura de máquina, mas
- * indica que o e-mail chegou e foi processado. Somamos ao total para que contatos
- * com apenas abertura MPP não caiam em "não abriu nenhum".
+ * `opened` = statistics.opened per-contato (≈ trackableViews da campanha).
+ * A Brevo NÃO atribui MPP a contatos individuais: `appleMppOpens` é só agregado
+ * de campanha, e `statistics.machineOpened` não existe na API Brevo — qualquer
+ * referência a esse campo é no-op (len([]) = 0). Portanto `opened` representa
+ * aberturas reais (EXCLUI MPP/proxy Apple), que é o sinal humano mais limpo
+ * disponível por contato. (#2446 — campo machineOpened removido do cálculo.)
  */
 export function normalizeContact(raw: {
   emailBlacklisted?: boolean;
@@ -210,8 +215,9 @@ export function normalizeContact(raw: {
   const optedOut = !bounced && (hasUnsub(stats) || raw.emailBlacklisted === true);
   return {
     received: len(stats.messagesSent),
-    // #2446: soma aberturas diretas + aberturas MPP (statistics.machineOpened).
-    opened: len(stats.opened) + len(stats.machineOpened),
+    // opened = aberturas reais per-contato (statistics.opened ≈ trackableViews).
+    // EXCLUI MPP: a Brevo não atribui MPP a contatos individuais. (#2446)
+    opened: len(stats.opened),
     bounced,
     optedOut,
   };
