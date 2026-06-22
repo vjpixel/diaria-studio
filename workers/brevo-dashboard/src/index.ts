@@ -2228,7 +2228,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
   return `
 <section class="phase2-section" id="monthly-totals">
   <h2 class="section-title">Totais por mês</h2>
-  <p class="section-note">1 linha por mês — agrega todos os envios realizados naquele mês. Veja a lista detalhada na seção Envios abaixo.</p>
+  <p class="section-note">1 linha por mês — agrega todos os envios realizados naquele mês. Valores são <strong>eventos por envio</strong> (um contato que recebeu 3 campanhas conta 3×). Opens usa <code>uniqueViews</code> (MPP-inclusivo, igual à UI da Brevo) — não comparar diretamente com as Coortes de engajamento (que contam <strong>pessoas únicas</strong> com aberturas reais/trackable, EXCLUI MPP). Veja a lista detalhada na seção Envios abaixo.</p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -2278,8 +2278,8 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   // pode exceder received em anomalias de tracking da Brevo).
 
   const defs: Array<{ label: string; title: string; n: number }> = [
-    { label: "Abriu 2+ e-mails", title: "Contatos que abriram 2 ou mais e-mails (e não saíram). Inclui aberturas MPP/machine (Apple Mail Privacy Protection).", n: cohorts.opened2plus },
-    { label: "Abriu 1 e-mail", title: "Contatos que abriram exatamente 1 e-mail (e não saíram). Inclui aberturas MPP/machine (Apple Mail Privacy Protection).", n: cohorts.opened1 },
+    { label: "Abriu 2+ e-mails", title: "Contatos que abriram 2 ou mais e-mails reais (e não saíram). Conta aberturas trackable per-contato — EXCLUI MPP/proxy Apple (sinal humano mais limpo). A Brevo não atribui MPP a contatos individuais.", n: cohorts.opened2plus },
+    { label: "Abriu 1 e-mail", title: "Contatos que abriram exatamente 1 e-mail real (e não saíram). Conta aberturas trackable per-contato — EXCLUI MPP/proxy Apple (sinal humano mais limpo). A Brevo não atribui MPP a contatos individuais.", n: cohorts.opened1 },
     { label: "Recebeu 1, não abriu", title: "Recebeu 1 e-mail e não abriu nenhum (e não saiu).", n: cohorts.received1_opened0 },
     { label: "Recebeu 2+, não abriu", title: "Recebeu 2 ou mais e-mails e não abriu nenhum (e não saiu).", n: cohorts.received2_opened0 },
     {
@@ -2311,7 +2311,7 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" inclui aberturas MPP/machine (Apple Mail Privacy Protection). Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
+  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" = aberturas reais (trackable) per-contato — <strong>EXCLUI MPP</strong> (a Brevo não atribui MPP a contatos individuais; <code>appleMppOpens</code> é só agregado de campanha). Por isso os números aqui diferem de "Totais por mês" (que usa <code>uniqueViews</code>, MPP-inclusivo) — não comparar 1:1. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
   <div class="table-wrap">
   <table>
     <thead>
