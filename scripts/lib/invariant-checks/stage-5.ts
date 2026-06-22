@@ -607,6 +607,69 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
 }
 
 
+
+/**
+ * #2454-finding-7: `_internal/05-edition-url.txt` deve existir e conter URL
+ * bem-formada (HTTPS, sem placeholder {edition_url}) antes do dispatch social.
+ *
+ * Este arquivo é gravado pelo beehiiv-playbook (§6.1) imediatamente após criar
+ * o draft. O dispatch do social (publish-linkedin.ts + publish-facebook.ts) lê
+ * este arquivo para substituir `{edition_url}` no comment_diaria. Se o arquivo
+ * estiver ausente ou com placeholder, o post social vai ao ar com URL errada.
+ *
+ * Roda como pós-publicacao invariant (checkInvariants --stage 5): detecta o
+ * caso em que o playbook falhou silenciosamente ao gravar 05-edition-url.txt
+ * e o dispatch social rodou com fallback para https://diar.ia.br (raiz).
+ */
+function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "05-edition-url.txt");
+  if (!existsSync(path)) {
+    return [
+      {
+        rule: "edition-url-file-exists",
+        message:
+          `_internal/05-edition-url.txt ausente — playbook Beehiiv nao gravou a URL publica. ` +
+          `publish-linkedin/facebook usou fallback https://diar.ia.br (raiz) no comment_diaria, ` +
+          `em vez do link direto da edicao. ` +
+          `Gravar manualmente: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
+        source_issue: "#2454",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  const url = readFileSync(path, "utf8").trim();
+  if (!url.startsWith("https://")) {
+    return [
+      {
+        rule: "edition-url-file-valid",
+        message:
+          `_internal/05-edition-url.txt existe mas contém valor inválido: "${url.slice(0, 80)}". ` +
+          `Esperado: URL HTTPS (ex: https://diar.ia.br/p/titulo-da-edicao). ` +
+          `Corrigir manualmente e re-dispatch social se necessário.`,
+        source_issue: "#2454",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  if (url.includes("{edition_url}")) {
+    return [
+      {
+        rule: "edition-url-file-valid",
+        message:
+          `_internal/05-edition-url.txt contém placeholder literal "{edition_url}" — nao foi resolvido. ` +
+          `publish-linkedin/facebook enviou placeholder ao vivo. ` +
+          `Corrigir: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
+        source_issue: "#2454",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -695,6 +758,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkStep5Sentinel,
   },
   {
+    id: "edition-url-file-exists",
+    description: "_internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454)",
+    source_issue: "#2454",
+    stage: 5,
+    run: checkEditionUrlFile,
+  },
+  {
     id: "consent-binding",
     description: "canais com consent=auto devem ter dispatch real (#1575)",
     source_issue: "#1575",
@@ -705,6 +775,7 @@ export const STAGE_5_RULES: InvariantRule[] = [
 
 export {
   checkStep4Sentinel,
+  checkEditionUrlFile,
   checkSocialPublishedComplete,
   checkStage4ReviewLoop,
   checkStage4ReviewCompleted,

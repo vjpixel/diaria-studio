@@ -49,6 +49,7 @@ import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
 import { applyStage2Caps } from "./lib/apply-stage2-caps.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
+import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -683,7 +684,7 @@ async function main(): Promise<void> {
       editionUrl = readFileSync(editionUrlFile, "utf8").trim();
       console.log(`#595: edition_url via 05-edition-url.txt → ${editionUrl}`);
     } else {
-      editionUrl = "https://diar.ia.br";
+      editionUrl = BEEHIIV_BASE_URL;
       console.warn(
         `#595: edition_url não fornecido (sem --edition-url nem 05-edition-url.txt) — fallback ${editionUrl}. ` +
         `Comment_diaria vai apontar pra raiz da newsletter em vez do post específico.`,

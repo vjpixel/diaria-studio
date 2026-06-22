@@ -1010,3 +1010,80 @@ describe("#2331/F3: outrosCount não-resolvível → abort (nunca posta literal)
     }
   });
 });
+
+describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no comment_diaria", () => {
+  it("05-edition-url.txt presente → {edition_url} substituido no output (nao aparece literal)", () => {
+    // Testa o LADO DE LEITURA: publish-linkedin.ts deve ler _internal/05-edition-url.txt
+    // e substituir {edition_url} no comment_diaria antes de dispatchar (#2454).
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      const editionUrlContent = "https://diar.ia.br/p/meu-slug-de-teste";
+      writeFileSync(join(internalDir, "05-edition-url.txt"), editionUrlContent, "utf8");
+      writeFileSync(join(internalDir, "01-approved.json"), APPROVED_CAPPED, "utf8");
+      writeFileSync(join(dir, "03-social.md"),
+        "# LinkedIn\n\n## d1\nPost d1.\n\n### comment_diaria\n\n" +
+        "Edicao completa em {edition_url} \u2014 mais {outros_count} destaques.\n\n" +
+        "### comment_pixel\n\nMinha opiniao.\n\n# Facebook\n\n## d1\nFB d1.",
+        "utf8",
+      );
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: {
+          d1: { url: "https://img.test/d1.jpg" },
+          d2: { url: "https://img.test/d2.jpg" },
+          d3: { url: "https://img.test/d3.jpg" },
+        },
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+
+      // O stdout/log deve confirmar que 05-edition-url.txt foi lido
+      assert.match(
+        result.stdout + result.stderr,
+        /05-edition-url\.txt/,
+        "#2454: publish-linkedin deve logar que leu 05-edition-url.txt",
+      );
+      // {edition_url} NAO deve aparecer literal no output (foi substituido pela URL real)
+      assert.doesNotMatch(
+        result.stdout + result.stderr,
+        /\{edition_url\}/,
+        "#2454: {edition_url} nao deve aparecer literal no output — deve ter sido substituido",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("05-edition-url.txt ausente → fallback para raiz com warn (nao crasha)", () => {
+    // Quando 05-edition-url.txt nao existe, publish-linkedin usa fallback
+    // https://diar.ia.br (raiz) com warn — nao deve crashar por ausencia do arquivo.
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      // NAO criar 05-edition-url.txt
+      writeFileSync(join(internalDir, "01-approved.json"), APPROVED_CAPPED, "utf8");
+      writeFileSync(join(dir, "03-social.md"),
+        "# LinkedIn\n\n## d1\nPost d1.\n\n### comment_diaria\n\n" +
+        "Edicao em {edition_url} \u2014 mais {outros_count} destaques.\n\n" +
+        "# Facebook\n\n## d1\nFB d1.",
+        "utf8",
+      );
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: {
+          d1: { url: "https://img.test/d1.jpg" },
+          d2: { url: "https://img.test/d2.jpg" },
+          d3: { url: "https://img.test/d3.jpg" },
+        },
+      }), "utf8");
+
+      const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
+
+      // Deve logar warn sobre fallback (nao crashar)
+      assert.match(
+        result.stdout + result.stderr,
+        /fallback|sem.*05-edition-url|edition_url nao fornecido/i,
+        "#2454: sem 05-edition-url.txt → deve logar fallback",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});

@@ -156,20 +156,57 @@ npx tsx scripts/render-halt-banner.ts \
 
 Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b.
 
-### 5c. Dispatch newsletter + social (em paralelo)
-
-**Social e newsletter dispatcham juntos** no Stage 5.
+### 5c. Dispatch newsletter — primeiro, antes do social (#2454)
 
 **So dispatchar se o canal foi autorizado em 5b.** Canal manual fica com `status: pending_manual`.
 
-**Em uma unica mensagem, disparar simultaneamente:**
-1. **Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** (#1327). Output: `_internal/05-published.json`.
-2. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
-3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3.
+**ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** O social usa `{edition_url}` no comment_diaria — essa URL so pode ser derivada do slug do draft depois que o draft Beehiiv for criado. Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: draft Beehiiv → resolve URL → dispatch social.
 
-Aguardar todos retornarem antes de prosseguir.
+**Passo 5c-1: Newsletter Beehiiv.**
+
+**Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** (#1327). Output: `_internal/05-published.json`.
+
+Playbook ja grava `_internal/05-edition-url.txt` (ver §"Gravar 05-edition-url.txt" no beehiiv-playbook.md). Se por qualquer razao o playbook nao gravou, gravar manualmente:
+
+```bash
+npx tsx scripts/resolve-edition-url.ts \
+  --edition-dir data/editions/{AAMMDD}/ \
+  --title "{titulo_d1}"
+# Usa seoSlug(titulo) — mesmo algoritmo de 4a-bis do beehiiv-playbook (§"Setar slug SEO").
+# Se o titulo nao estiver disponivel, usar --slug {slug_correto} ou --edition-url {url_literal}.
+```
 
 **Tab isolation no Chrome**: publish-newsletter e o unico agent Chrome em Etapa 5 — abre tab Beehiiv propria via `tabs_create_mcp`. LinkedIn e Facebook sao scripts shell sem browser.
+
+**Passo 5c-2: Guard anti-placeholder (#2454).**
+
+**SO APOS o draft Beehiiv retornar** (passo 5c-1 completo), verificar que `05-edition-url.txt` existe. Se o arquivo foi gravado pelo playbook (§6.1 do beehiiv-playbook.md), apenas rodar o guard de validacao — sem re-escrever o arquivo:
+
+```bash
+# Se ausente — gravar agora (ver passo 5c-1 acima):
+if [ ! -f data/editions/{AAMMDD}/_internal/05-edition-url.txt ]; then
+  npx tsx scripts/resolve-edition-url.ts \n    --edition-dir data/editions/{AAMMDD}/ \n    --title "{titulo_d1}"
+fi
+
+# Guard anti-placeholder: aborta (exit 3) se {edition_url}
+# sobreviveu em 03-social.md. Nao dispatchar social se exit != 0.
+# Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
+EDITION_URL="$(cat data/editions/{AAMMDD}/_internal/05-edition-url.txt)"
+npx tsx scripts/resolve-edition-url.ts \n  --edition-dir data/editions/{AAMMDD}/ \n  --edition-url "${EDITION_URL}" \n  --validate-social
+```
+
+Exit code do guard:
+- `0` → {edition_url} resolvido, prosseguir pro dispatch do social.
+- `3` → **FATAL: {edition_url} nao-resolvido em 03-social.md.** NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com `{edition_url}` literal — o dispatch precisa ser corrigido primeiro.
+
+**Passo 5c-3: Dispatch social — APOS a URL estar resolvida.**
+
+**Em uma unica mensagem, disparar simultaneamente** (so apos passo 5c-2 retornar exit 0):
+
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
+2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
+
+Aguardar todos retornarem antes de prosseguir.
 
 **LinkedIn route — Worker queue + fallback Make (#887):** `publish-linkedin.ts` prefere o Cloudflare Worker `diaria-linkedin-cron` quando `cloudflare_worker_url` + `DIARIA_LINKEDIN_CRON_TOKEN` estao configurados E `scheduled_at` e futuro. Se o Worker falhar todos os retries (503, KV down, deploy quebrado), o script cai automaticamente em `postToMakeWebhook` — Make posta **imediatamente** (ignora `scheduled_at`). Entry resultante traz `status: "draft"` (post live, sem agendamento futuro) + `fallback_used: true` + `fallback_reason` para auditoria.
 
