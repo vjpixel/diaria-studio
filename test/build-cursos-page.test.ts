@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   validateCourses,
+  loadCourses,
   renderCursosPage,
   esc,
   isSafeUrl,
@@ -222,5 +223,40 @@ describe("seed cursos — títulos sem sufixo de idioma/código (#1994 followup)
   });
   it("o título do MIT não traz mais o código '(6.036)'", () => {
     assert.equal(byId["mit-ocw-machine-learning"], "Introduction to Machine Learning");
+  });
+});
+
+describe("seed cursos — cursos oficiais Anthropic e OpenAI (#2451)", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const seed = JSON.parse(readFileSync(resolve(ROOT, "seed/courses/cursos-ia.json"), "utf8")) as {
+    courses: Array<{ id: string; title: string; platform: string; url: string; cost: string; certificate: boolean; language: string; level: string }>;
+  };
+  const byId = Object.fromEntries(seed.courses.map((c) => [c.id, c]));
+
+  it("curso oficial da Anthropic presente no seed", () => {
+    const c = byId["anthropic-ai-fluency-framework-foundations"];
+    assert.ok(c, "anthropic-ai-fluency-framework-foundations deve existir no seed");
+    assert.equal(c.platform, "Anthropic Academy");
+    assert.equal(c.cost, "free");
+    assert.equal(c.certificate, true);
+    assert.equal(c.language, "en");
+    assert.ok(c.url.startsWith("https://"), "URL deve ser https");
+  });
+
+  it("curso oficial da OpenAI presente no seed", () => {
+    const c = byId["openai-academy-ai-foundations"];
+    assert.ok(c, "openai-academy-ai-foundations deve existir no seed");
+    assert.equal(c.platform, "OpenAI Academy");
+    assert.equal(c.cost, "free");
+    assert.equal(c.certificate, true);
+    assert.equal(c.language, "en");
+    assert.ok(c.url.startsWith("https://"), "URL deve ser https");
+  });
+
+  it("HTML renderizado inclui Anthropic Academy e OpenAI Academy nas plataformas", () => {
+    // Carrega via loadCourses() (tipado + validado) em vez de cast — self-review #2451.
+    const html = renderCursosPage(loadCourses());
+    assert.ok(html.includes("Anthropic Academy"), "Anthropic Academy deve aparecer no HTML");
+    assert.ok(html.includes("OpenAI Academy"), "OpenAI Academy deve aparecer no HTML");
   });
 });
