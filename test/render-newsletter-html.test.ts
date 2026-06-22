@@ -12,6 +12,7 @@ import {
   extractContent,
   renderHTML,
   renderBodyParasInner,
+  renderWhyBoxInner,
   renderEiaStandalone,
   renderLeaderboardTop1Row,
   extractTemplateBlock,
@@ -1981,34 +1982,61 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
     assert.doesNotMatch(html, /margin:16px 0 0/, "margem antiga 16px não deve mais aparecer");
   });
 
-  it("bloco 'Por que isso importa' preserva seu próprio margin-top (28px)", () => {
-    // renderWhyBoxInner usa margin-top:28px independente do renderBodyParasInner.
-    // Smoke: destaque completo com corpo multi-parágrafo gera o box correto.
-    const destaque = {
+  it("parágrafo único: só 18px, sem nenhum 8px nem 16px", () => {
+    // Guard: a margem 8px é EXCLUSIVA de parágrafos 2º+. Corpo de 1 parágrafo
+    // não pode emitir 8px (regressão se a condição i===0 inverter).
+    const html = renderBodyParasInner("Único.");
+    assert.doesNotMatch(html, /margin:8px 0 0/, "1 parágrafo não deve ter margem inter-parágrafo");
+    assert.doesNotMatch(html, /margin:16px 0 0/);
+  });
+
+  it("box 'Por que isso importa' NÃO é afetado: mantém margin-top:28px + <p> margin:0", () => {
+    // renderWhyBoxInner é independente de renderBodyParasInner. O bug #2456 era
+    // só nos parágrafos de corpo dos destaques — o box why deve preservar seu
+    // espaçamento. Testa o helper direto (exportado), sem full render.
+    const html = renderWhyBoxInner("Razão do destaque.");
+    assert.match(html, /margin-top:28px/, "box why mantém margin-top:28px (separação do corpo acima)");
+    // o <p> interno do box usa margin:0 (não herda 8px/16px do corpo)
+    assert.doesNotMatch(html, /margin:8px 0 0/, "box why não deve emitir a margem de corpo");
+    assert.doesNotMatch(html, /margin:16px 0 0/);
+  });
+
+  it("integração renderHTML: corpo 8px e box why 28px coexistem (sem EIA na fixture)", () => {
+    // Fixture sem EIA (eia.credit vazio → seção É IA? omitida), então o
+    // `margin:8px 0 0` do lbStyle do leaderboard NÃO aparece. Assim a contagem
+    // de 8px reflete EXCLUSIVAMENTE os parágrafos de corpo (2 destaques × 1
+    // parágrafo extra cada = 2), tornando a asserção exata e não-frágil.
+    const baseDestaque = {
       n: 1 as const,
       category: "LANÇAMENTO",
       title: "Título",
-      body: "Parágrafo A.\n\nParágrafo B.\n\nParágrafo C.",
+      body: "Parágrafo A.\n\nParágrafo B.",
       why: "Por que isso importa.",
       url: "https://example.com/d1",
       emoji: "🚀",
-      imageFile: "04-d1-2x1.jpg",
     };
     const content = {
       title: "X",
       subtitle: "X",
       coverImage: "04-d1-2x1.jpg",
-      destaques: [destaque],
+      destaques: [
+        baseDestaque,
+        { ...baseDestaque, n: 2 as const, url: "https://example.com/d2" },
+      ],
       eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
       sections: [],
     };
     const html = renderHTML(content);
-    // corpo: 2 parágrafos consecutivos com 8px
+    // Sem EIA → o único produtor de `margin:8px 0 0` são os 2º parágrafos de
+    // corpo (1 por destaque = 2). Contagem exata, não >= (guard anti-fragilidade).
+    assert.doesNotMatch(html, /Clique na imagem que foi gerada por IA/, "fixture não deve ter É IA?");
     const bodyMatches = html.match(/margin:8px 0 0/g);
-    assert.ok(bodyMatches && bodyMatches.length >= 2, "parágrafos B e C têm margin 8px");
-    // box "Por que isso importa": margin-top:28px separado
-    assert.match(html, /margin-top:28px/, "box why usa margin-top:28px independente");
-    // texto do why presente
-    assert.match(html, /Por que isso importa/);
+    assert.ok(
+      bodyMatches && bodyMatches.length === 2,
+      `esperava exatamente 2 margin:8px 0 0 (2º parágrafo de cada destaque), got ${bodyMatches?.length ?? 0}`,
+    );
+    // box "Por que isso importa" preserva margin-top:28px (não afetado)
+    assert.match(html, /margin-top:28px/);
+    assert.doesNotMatch(html, /margin:16px 0 0/, "valor antigo não deve aparecer no render completo");
   });
 });
