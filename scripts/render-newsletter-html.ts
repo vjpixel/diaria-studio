@@ -58,6 +58,7 @@ export {
   processInlineLinks,
   isSponsoredCallout,
   renderCoverage,
+  renderBodyParasInner,
   renderIntroCallout,
   renderMidCallout,
   renderLeaderboardTop1Row,

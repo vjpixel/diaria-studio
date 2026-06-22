@@ -193,14 +193,16 @@ export function renderHeroImageInner(placeholder: string, alt = "", caption = im
   <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
 }
 
-/** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno. */
+/** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno.
+ * #2456: margem entre parágrafos consecutivos reduzida de 16px → 8px.
+ * O primeiro parágrafo mantém 18px (espaço após manchete/hero). */
 export function renderBodyParasInner(text: string): string {
   return text
     .split(/\n\n+/)
     .filter((p) => p.trim())
     .map(
       (p, i) =>
-        bodyP(`${i === 0 ? "18px" : "16px"} 0 0`, escText(p.trim())),
+        bodyP(`${i === 0 ? "18px" : "8px"} 0 0`, escText(p.trim())),
     )
     .join("\n  ");
 }

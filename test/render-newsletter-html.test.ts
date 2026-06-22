@@ -11,6 +11,7 @@ import {
   resolvePrevResultLine,
   extractContent,
   renderHTML,
+  renderBodyParasInner,
   renderEiaStandalone,
   renderLeaderboardTop1Row,
   extractTemplateBlock,
@@ -1962,5 +1963,52 @@ describe("#2316: extractContent aceita 2 destaques + renderHTML produz HTML coer
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
+  it("1º parágrafo tem margin-top 18px (espaço após manchete/hero)", () => {
+    const html = renderBodyParasInner("Parágrafo único.");
+    assert.match(html, /margin:18px 0 0/, "1º <p> deve ter margin-top 18px");
+  });
+
+  it("2º+ parágrafos têm margin-top 8px (#2456 — reduzido de 16px)", () => {
+    const html = renderBodyParasInner("Parágrafo 1.\n\nParágrafo 2.\n\nParágrafo 3.");
+    // Conta ocorrências de 8px 0 0 (deve haver 2: parágrafos 2 e 3)
+    const matches = html.match(/margin:8px 0 0/g);
+    assert.ok(matches && matches.length === 2, `esperava 2 ocorrências de margin:8px 0 0, got ${matches?.length ?? 0}: ${html}`);
+    // Garante que 16px NÃO aparece mais (regressão do valor antigo)
+    assert.doesNotMatch(html, /margin:16px 0 0/, "margem antiga 16px não deve mais aparecer");
+  });
+
+  it("bloco 'Por que isso importa' preserva seu próprio margin-top (28px)", () => {
+    // renderWhyBoxInner usa margin-top:28px independente do renderBodyParasInner.
+    // Smoke: destaque completo com corpo multi-parágrafo gera o box correto.
+    const destaque = {
+      n: 1 as const,
+      category: "LANÇAMENTO",
+      title: "Título",
+      body: "Parágrafo A.\n\nParágrafo B.\n\nParágrafo C.",
+      why: "Por que isso importa.",
+      url: "https://example.com/d1",
+      emoji: "🚀",
+      imageFile: "04-d1-2x1.jpg",
+    };
+    const content = {
+      title: "X",
+      subtitle: "X",
+      coverImage: "04-d1-2x1.jpg",
+      destaques: [destaque],
+      eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+      sections: [],
+    };
+    const html = renderHTML(content);
+    // corpo: 2 parágrafos consecutivos com 8px
+    const bodyMatches = html.match(/margin:8px 0 0/g);
+    assert.ok(bodyMatches && bodyMatches.length >= 2, "parágrafos B e C têm margin 8px");
+    // box "Por que isso importa": margin-top:28px separado
+    assert.match(html, /margin-top:28px/, "box why usa margin-top:28px independente");
+    // texto do why presente
+    assert.match(html, /Por que isso importa/);
   });
 });
