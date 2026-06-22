@@ -484,8 +484,13 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
  * #2458: padrões de CTA por e-mail que estão banidos dos posts do LinkedIn.
  * O LinkedIn não é canal de aquisição de e-mail — o foco é seguir a página.
  */
+// #2458 fix (self-review): cobertura ampliada — verbos de assinatura ancorados a
+// e-mail/newsletter, aceitando variantes que o agente plausivelmente emite
+// ("assine a Diar.ia", "assinar a newsletter", "cadastre-se por email", "e-mail"
+// com ou sem hífen). Ancorado em intenção de assinatura pra evitar falso-positivo
+// em menções casuais a e-mail.
 const EMAIL_CTA_RE =
-  /\b(assine\s+grátis|receba\s+a\s+diar\.ia\s+todo\s+dia\s+por\s+e-mail|receba\s+por\s+e-mail|inscreva-se\s+por\s+e-mail|inscreva-se\s+grátis|assine\s+a\s+newsletter\s+por\s+e-mail)\b/gi;
+  /\b(assine\s+(grátis|a\s+diar\.ia|(a\s+)?(nossa\s+)?newsletter|por\s+e-?mail)|assinar\s+(a\s+)?(nossa\s+)?newsletter|inscreva-se\s+(grátis|por\s+e-?mail|na\s+newsletter)|cadastre-se\s+(grátis|por\s+e-?mail|para\s+receber)|receba\s+(a\s+diar\.ia\s+)?(todo\s+dia\s+)?por\s+e-?mail)\b/gi;
 
 export interface LinkedinEmailCtaError {
   section: string;
@@ -533,8 +538,10 @@ export function lintLinkedinEmailCTA(md: string): LinkedinEmailCtaResult {
 
 /**
  * URL canônica da página da Diar.ia no LinkedIn (sem https://, sem ponto final).
- * Fonte autoritativa: platform.config.json#publishing.social.linkedin.diaria_linkedin_page_url
- * (#2458 — centralizada aqui como constante pra o lint ser determinístico sem ler o config).
+ * #2458 — esta constante é a FONTE para o lint (determinístico, sem ler config em
+ * runtime). `platform.config.json#...diaria_linkedin_page_url` espelha este valor
+ * para o fluxo de publish; o teste de drift em lint-social-md.test.ts garante que
+ * os dois não divergem.
  */
 export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diaria";
 
@@ -564,7 +571,10 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
   const pageRe = /linkedin\.com\/company\/diaria/i;
 
   // --- Checar cada comment_diaria ---
-  const chunks = linkedinSection.split(/\n## (d\d+)\n/);
+  // #2458 fix (self-review): prefixar "\n" para casar `## d1` no início da seção
+  // (sem newline anterior) e aceitar trailing content/espaços no header (`[^\n]*`),
+  // senão o primeiro destaque escaparia silenciosamente do check.
+  const chunks = ("\n" + linkedinSection).split(/\n## (d\d+)[^\n]*\n/);
   for (let i = 1; i < chunks.length; i += 2) {
     const destaque = chunks[i];
     const body = chunks[i + 1] ?? "";

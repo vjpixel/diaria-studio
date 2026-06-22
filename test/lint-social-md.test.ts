@@ -1213,6 +1213,21 @@ describe("lintLinkedinEmailCTA (#2458)", () => {
     assert.ok(r.errors.some((e) => e.section === "post_pixel"), JSON.stringify(r.errors));
   });
 
+  it("FALHA (self-review #2458): variantes ampliadas de CTA de e-mail", () => {
+    for (const phrase of [
+      "Assine a Diar.ia em diar.ia.br",
+      "Quer mais? Assinar a newsletter é grátis",
+      "Cadastre-se por email para receber",
+      "Inscreva-se na newsletter",
+    ]) {
+      const md = mkLinkedinMd({
+        commentDiariaD1: `Edição em {edition_url}\n\n${phrase}\n\n${DIARIA_LINKEDIN_PAGE_SLUG}`,
+      });
+      const r = lintLinkedinEmailCTA(md);
+      assert.equal(r.ok, false, `deveria flagar variante de CTA de e-mail: "${phrase}"`);
+    }
+  });
+
   it("NÃO flaga email CTA no Facebook (não é seção LinkedIn)", () => {
     // Email CTAs no Facebook são permitidas (e até obrigatórias no formato antigo)
     const md = mkLinkedinMd({});
@@ -1332,5 +1347,38 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.equal(run(noLink).status, 1, "sem link da página → exit 1");
     // Com link → exit 0
     assert.equal(run(mkLinkedinMd({})).status, 0, "com link da página → exit 0");
+  });
+});
+
+describe("lintLinkedinPageLink — fixes self-review (#2458)", () => {
+  it("d1 no início da seção (sem newline anterior) NÃO escapa do split", () => {
+    // Reproduz o bug do chunk-split: '## d1' logo após '# LinkedIn' — sem o prefixo
+    // "\n" o primeiro destaque era pulado e um comment_diaria sem link passava.
+    const md = [
+      "# LinkedIn",
+      "## d1",
+      "Texto editorial d1.",
+      "### comment_diaria",
+      "Edição completa em {edition_url}", // <- falta o link da página
+      "### comment_pixel",
+      "Comentário pessoal.",
+      "",
+      "# Facebook",
+      "## d1",
+      "fb",
+    ].join("\n");
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false, "d1 comment_diaria sem link deve falhar (não escapar do split)");
+    assert.ok(r.errors.some((e) => e.destaque === "d1"), JSON.stringify(r.errors));
+  });
+
+  it("drift guard: platform.config.json espelha DIARIA_LINKEDIN_PAGE_SLUG", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const cfgRaw = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8");
+    assert.ok(
+      cfgRaw.includes(DIARIA_LINKEDIN_PAGE_SLUG),
+      "platform.config.json deve conter o slug canônico — não divergir da constante do lint",
+    );
   });
 });
