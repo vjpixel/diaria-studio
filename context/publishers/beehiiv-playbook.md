@@ -684,6 +684,34 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 **Por que o playbook para no draft (não tenta Schedule via automação)** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão: **Schedule é sempre manual**, mesmo se o resto do flow rodar 100% automático — não vale gastar mais ciclos tentando contornar.
 
+### 6.1. Gravar 05-edition-url.txt (#2454)
+
+**IMEDIATAMENTE após salvar o draft**, gravar a URL pública prevista em `_internal/05-edition-url.txt`.
+Esta URL é necessária pelo `publish-linkedin.ts` (Step 5c-3 do orchestrator-stage-5) para substituir
+o placeholder `{edition_url}` no `comment_diaria` antes do dispatch do social.
+
+**O dispatch do social (LinkedIn + Facebook) só ocorre APÓS este passo** (#2454) — nunca em paralelo.
+
+```bash
+npx tsx scripts/resolve-edition-url.ts \
+  --edition-dir {edition_dir} \
+  --title "{title}"
+# {title} = título D1 extraído no passo 1 (mesmo usado em §4a-bis pra setar o slug SEO).
+# O script computa seoSlug(title) — algoritmo idêntico ao §4a-bis — e grava:
+#   _internal/05-edition-url.txt = "https://diar.ia.br/p/{slug}"
+```
+
+Confirmar que o arquivo foi criado:
+
+```bash
+cat {edition_dir}/_internal/05-edition-url.txt
+# Esperado: https://diar.ia.br/p/{slug-do-titulo}
+```
+
+**Se o título contiver acentos PT-BR:** o algoritmo `seoSlug` no script remove diacríticos corretamente
+(ex: "automação" → "automacao", "pânico" → "panico") — mesmo algoritmo de §4a-bis, logo a URL prevista
+bate com o slug que o playbook setou no campo SEO/URL slug do post.
+
 ### 6.5. Setar Subject line do email (#610)
 
 Antes de enviar o test email, garantir que o Subject está correto.
