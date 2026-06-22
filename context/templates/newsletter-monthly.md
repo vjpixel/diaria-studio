@@ -96,7 +96,10 @@ imagem boa/difícil. 1-2 parágrafos curtos.]
 ENCERRAMENTO
 
 [Chamada padrão pra interação: responder ao e-mail, sugerir tema, indicar a
-newsletter pra colega. Tom igual ao diário.]
+newsletter pra colega. Tom igual ao diário. Incluir call-to-action para assinar
+a newsletter diária com o link https://diar.ia.br/?utm_source=mensal-brevo
+(o parâmetro utm_source é obrigatório — é o que rastreia quantos assinantes
+da diária vieram pela mensal; ver #2457).]
 ```
 
 ## Limites de caracteres por destaque
