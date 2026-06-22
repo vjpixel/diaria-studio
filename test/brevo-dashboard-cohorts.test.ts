@@ -346,8 +346,15 @@ test("#2446 renderEngagementCohortsSection: tooltips de 'Abriu 2+' E 'Abriu 1' m
     /Inclui aberturas MPP\/machine/,
     "tooltips NÃO devem dizer 'Inclui aberturas MPP/machine' (era falso — corrigido em #2446)",
   );
-  // Devem mencionar que é trackable / exclui MPP.
-  assert.match(html, /trackable|EXCLUI MPP|reais/i, "tooltips devem mencionar trackable ou EXCLUI MPP");
+  // Ancorar nos ATRIBUTOS title= das DUAS linhas de abertura — não no blob inteiro
+  // (self-review #2446): a nota da seção menciona EXCLUI MPP mas é <p>, não title=.
+  // Contar title="...trackable/EXCLUI MPP..." pega só as linhas 'Abriu 2+' e 'Abriu 1';
+  // uma regressão que tire o texto de uma/ambas é capturada (antes passava verde).
+  const rowTooltips = html.match(/title="[^"]*(?:trackable|EXCLUI MPP)[^"]*"/gi) ?? [];
+  assert.ok(
+    rowTooltips.length >= 2,
+    `ambas as linhas 'Abriu 2+' e 'Abriu 1' devem ter tooltip trackable/EXCLUI MPP (achou ${rowTooltips.length})`,
+  );
 });
 
 test("#2446 renderEngagementCohortsSection: nota da seção diz EXCLUI MPP e diferencia de Totais por mês", () => {

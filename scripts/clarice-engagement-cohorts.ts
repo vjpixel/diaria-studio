@@ -84,8 +84,8 @@ export interface ContactEngagement {
   received: number;
   /**
    * nº de campanhas abertas pelo contato — aberturas reais (trackable) per-contato.
-   * Corresponde a `statistics.opened` da Brevo, que equivale a `trackableViews`
-   * da campanha: EXCLUI MPP/machine (Apple Mail Privacy Protection).
+   * Corresponde a `statistics.opened` da Brevo, que ≈ `trackableViews` da campanha
+   * (aproximado, não idêntico): EXCLUI MPP/machine (Apple Mail Privacy Protection).
    *
    * A Brevo não atribui MPP a contatos individuais — `appleMppOpens` existe só
    * como agregado de campanha, sem atribuição per-contato. `statistics.machineOpened`
