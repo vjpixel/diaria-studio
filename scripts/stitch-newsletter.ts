@@ -26,6 +26,11 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
+import {
+  estimateUseMelhorTempo,
+  normalizeDashToParens,
+} from "./lib/use-melhor-curation.ts"; // #2447/#2450
+import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 
 interface ArticleLike {
   url?: string;
@@ -136,6 +141,64 @@ export function renderSection(
 }
 
 /**
+ * #2447/#2450: Renderiza a seção USE MELHOR com injeção automática de estimativa
+ * de tempo `(X min)` quando a descrição ainda não tem tempo.
+ *
+ * Diferenças em relação a `renderSection` genérico:
+ *   1. Detecta se a descrição já contém tempo → não injeta duplicata.
+ *   2. Se não tem tempo → appenda `estimateUseMelhorTempo(title, url)` ao fim.
+ *   3. Normaliza `— X min` → `(X min)` (formato canônico, #2450).
+ *
+ * O editor pode ajustar a estimativa no gate Stage 2 → Stage 4. O lint
+ * `use-melhor-tempo` (Stage 4, error) garante que nenhum item chegue sem tempo.
+ *
+ * Finding 3 (#2464): retorna "" quando TODOS os items são inválidos (sem url/title).
+ * Sem esse guard, o header "🛠️ USE MELHOR" seria emitido órfão sem itens.
+ */
+export function renderUseMelhorSection(items: ArticleLike[]): string {
+  if (items.length === 0) return "";
+  const header = `**🛠️ USE MELHOR**`;
+  const lines: string[] = [header, ""];
+  let validCount = 0;
+  for (const a of items) {
+    if (!a.url || !a.title) continue;
+    validCount++;
+    lines.push(`**[${a.title}](${a.url})**  `);
+    if (a.summary) {
+      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary, { minWords: 4 });
+      const descPrefix = summaryIsEn ? "[TRADUZIR] " : "";
+      // #2464 finding 4: cleanSummary pode retornar "" — evitar espaço à esquerda.
+      const cleanedSummary = cleanSummary(a.summary, a.title);
+      let desc = cleanedSummary ? descPrefix + cleanedSummary : "";
+
+      // #2450: normalizar `— X min` → `(X min)` primeiro (atalho editorial)
+      desc = normalizeDashToParens(desc);
+
+      // #2447: injetar estimativa auto se não tiver nenhuma.
+      // USE_MELHOR_TEMPO_RE importado do lint (finding 5 #2464 — sem cópia duplicada).
+      if (!USE_MELHOR_TEMPO_RE.test(desc)) {
+        const estimate = estimateUseMelhorTempo(a.title, a.url);
+        desc = desc ? `${desc.trimEnd()} ${estimate}` : estimate;
+      }
+
+      lines.push(desc);
+    } else {
+      // Sem summary: injetar placeholder de tempo mínimo para o lint não bloquear.
+      // O editor vai preencher a descrição + ajustar o tempo no gate.
+      const estimate = estimateUseMelhorTempo(a.title, a.url);
+      lines.push(`[DESCRIÇÃO PENDENTE] ${estimate}`);
+    }
+    lines.push("");
+  }
+  // Finding 3 (#2464): se todos os items eram inválidos (sem url/title), retornar
+  // string vazia em vez de emitir o header órfão "**🛠️ USE MELHOR**".
+  if (validCount === 0) return "";
+  // Remove trailing blank
+  while (lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
+/**
  * Lê o bloco É IA? do `01-eia.md`. Se ausente, retorna placeholder simples.
  * Format do 01-eia.md:
  *   "É IA?\n\n{description}\n\n> Gabarito: **{A|B} é a IA**"
@@ -213,7 +276,10 @@ export function stitchNewsletter(input: StitchInput): string {
   // #1855: tutoriais EN agora aparecem (revert do PT-only #1632) — mesma regra
   // [TRADUZIR]-na-descrição das demais seções. O mínimo de 2 itens é garantido
   // upstream pelo promoteUseMelhorToMinimum em apply-stage2-caps.
-  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? []);
+  // #2447/#2450: USE MELHOR recebe tratamento especial — injetar estimativa de
+  // tempo auto-gerada `(X min)` quando a descrição ainda não tem tempo, e
+  // normalizar `— X min` → `(X min)` para garantir formato canônico de parênteses.
+  const useMelhor = renderUseMelhorSection(approved.use_melhor ?? []);
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.

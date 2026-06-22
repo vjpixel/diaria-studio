@@ -114,7 +114,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    Frase descritiva em 1 linha — ferramenta/técnica, tempo estimado entre parênteses.
    ```
 
-   Tempo estimado é obrigatório no fim da descrição entre parênteses, ex: `(15 min)`, `(30 min)`. Sem subscription paga obrigatória; se houver, sinalizar no fim da descrição: `(requer plano pago)`. **Enforçado pelo lint `--check use-melhor-tempo` (#2372)** — bloqueante no Stage 4: cada item USE MELHOR precisa de `(N min)` (ou `— N min`) na descrição.
+   Tempo estimado é obrigatório no fim da descrição **entre parênteses**: `(5 min)`, `(15 min)`, `(30 min)` — formato canônico (#2450). Heurística: setup rápido/artigo curto → `(5 min)`; tutorial/guia/passo-a-passo → `(15 min)`; curso/trilha/bootcamp → `(30 min)`. No fluxo `writer-destaque×3` o `stitch-newsletter.ts` injeta automaticamente a estimativa (#2447) — só usar esta regra no fallback single-writer. Sem subscription paga obrigatória; se houver, sinalizar: `(15 min, requer plano pago)`. **Enforçado pelo lint `--check use-melhor-tempo` (#2372/#2447)** — gate-blocking (error) no Stage 4: cada item USE MELHOR precisa de `(N min)` na descrição.
 
    **Exemplo literal (#909) — copiar formato exato:**
 
