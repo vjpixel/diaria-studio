@@ -33,13 +33,22 @@
  *   npx tsx scripts/analyze-scorer-impact.ts \
  *     --baseline-from 2026-05-20 --baseline-to 2026-05-28 \
  *     --treatment-from 2026-05-30 --treatment-to 2026-06-12 \
- *     [--ctr data/link-ctr-table.csv] [--editions-dir data/editions] [--out report.md]
+ *     [--ctr data/link-ctr-table.csv] [--editions-dir data/editions] [--history data/scorer-ctr-history.jsonl] [--out report.md]
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
+import {
+  loadCtrRowsH4,
+  loadHistoryEditions,
+  computeNewH4Entries,
+  appendHistory,
+  loadHistory,
+  computeH4Trend,
+  type H4Trend,
+} from "./analyze-h4.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -285,7 +294,11 @@ function pct(part: number, whole: number): string {
 }
 
 /** Renderiza o relatório markdown comparando baseline vs treatment. */
-export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics): string {
+export function renderReport(
+  baseline: WindowMetrics,
+  treatment: WindowMetrics,
+  h4Trend?: H4Trend,
+): string {
   const L: string[] = [];
   L.push("# Impacto do scorer pós-#1565 (Aprofunde + decay 90d) — análise #1567", "");
   L.push(
@@ -374,6 +387,65 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
   }
   L.push("");
 
+  // ─── H4: ranking scorer vs CTR observado ──────────────────────────────────
+  //
+  // Dados vêm de `data/scorer-ctr-history.jsonl` (histórico append-only computado
+  // incrementalmente por `scripts/analyze-h4.ts` / `update-audience.ts`). Se o
+  // histórico não existe ou está vazio, a seção exibe aviso de espera.
+  //
+  // A janela H4 abrange TODAS as edições no histórico (não restringe às janelas
+  // baseline/treatment desta análise), porque o histórico é acumulado ao longo
+  // do tempo e serve como serie temporal contínua — filtrar por janela aqui
+  // reduziria o n sem benefício analítico.
+  L.push("## H4 — ranking scorer vs CTR observado por edição", "");
+  if (!h4Trend || h4Trend.entries.length === 0) {
+    L.push(
+      "> ⚠️ **H4 sem dados disponíveis.** Rode `npx tsx scripts/analyze-h4.ts` para computar " +
+        "edições maduras (≥7d) e popular `data/scorer-ctr-history.jsonl`. " +
+        "Ou passe `--history` / deixe o `update-audience.ts` atualizar recorrentemente.",
+      "",
+    );
+  } else {
+    const { entries, rho_mean, top1_hit_rate, alert_low_rho } = h4Trend;
+    // Distingue entradas com rho definido vs zero-CTR (rho=null)
+    const definedRhoEntries = entries.filter((e) => e.rho !== null);
+
+    if (alert_low_rho) {
+      L.push(
+        "> ⚠️ **ALERTA H4:** rho médio < 0,4 por 2 semanas consecutivas — scorer pode estar " +
+          "pesando sinal editorial demais em relação ao CTR observado. Considerar re-análise.",
+        "",
+      );
+    }
+
+    L.push(
+      `Últimas ${entries.length} edições maduras no histórico ` +
+        `(${definedRhoEntries.length} com rho definido):`,
+      "",
+    );
+    L.push("| Edição | Rho | Top-1 hit | Overlap top-3 | n |");
+    L.push("|---|---|---|---|---|");
+    for (const e of entries) {
+      const rhoStr = e.rho !== null ? e.rho.toFixed(3) : "—(undef)";
+      const hitStr = e.top1_hit ? "✅" : "❌";
+      L.push(`| ${e.edition} | ${rhoStr} | ${hitStr} | ${e.top3_overlap}/3 | ${e.n_matches} |`);
+    }
+    L.push("");
+
+    const rhoMeanStr = rho_mean !== null ? rho_mean.toFixed(3) : "—";
+    const hitRateStr =
+      top1_hit_rate !== null ? `${(top1_hit_rate * 100).toFixed(0)}%` : "—";
+    L.push(`**Rho médio** (${definedRhoEntries.length} edições com rho definido): **${rhoMeanStr}**`);
+    L.push(`**Top-1 hit rate**: ${hitRateStr} (${entries.filter((e) => e.top1_hit).length}/${entries.length} edições)`);
+    L.push("");
+    L.push(
+      "_Rho Spearman entre ranking do scorer e ranking por CTR observado (1=concordância perfeita, " +
+        "–1=inversão total). Edições com <4 matches no join são excluídas. " +
+        "Histórico completo: `data/scorer-ctr-history.jsonl`._",
+      "",
+    );
+  }
+
   L.push("## Confounders (não controlados)", "");
   L.push("- Audience drift: base ainda crescendo → CTR pode cair mesmo com scorer melhor.");
   L.push("- #1560/#1562 (Brave) mergearam junto → efeito combinado, atribuir conservadoramente.");
@@ -382,7 +454,6 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
     "- Cobertura do join (ver seção acima): só edições com approved.json e join " +
       "completo entram nas médias; cobertura desigual entre janelas enviesa o Δ.",
   );
-  L.push("- H4 (top-6 scorer vs observado) — implementado em `scripts/analyze-h4.ts` (#1619); histórico em `data/scorer-ctr-history.jsonl`; surfacing recorrente em `update-audience.ts`.");
   L.push("");
 
   return L.join("\n");
@@ -433,13 +504,15 @@ export function main(): void {
     if (!args[k]) {
       console.error(
         "Uso: analyze-scorer-impact.ts --baseline-from YYYY-MM-DD --baseline-to YYYY-MM-DD " +
-          "--treatment-from YYYY-MM-DD --treatment-to YYYY-MM-DD [--ctr <csv>] [--editions-dir <dir>] [--out <md>]",
+          "--treatment-from YYYY-MM-DD --treatment-to YYYY-MM-DD [--ctr <csv>] [--editions-dir <dir>] " +
+          "[--history <jsonl>] [--out <md>]",
       );
       process.exit(1);
     }
   }
   const ctrPath = args.ctr ?? "data/link-ctr-table.csv";
   const editionsDir = args["editions-dir"] ?? "data/editions";
+  const historyPath = args.history ?? "data/scorer-ctr-history.jsonl";
 
   const rows = loadCtrRows(ctrPath);
   const windows = [
@@ -451,7 +524,26 @@ export function main(): void {
   const baseline = computeWindowMetrics(rows, windows[0].from, windows[0].to, highlights);
   const treatment = computeWindowMetrics(rows, windows[1].from, windows[1].to, highlights);
 
-  const report = renderReport(baseline, treatment);
+  // ─── H4: computa edições recém-maduras e carrega o histórico ─────────────
+  // Reutiliza o CTR CSV já lido, mas via loadCtrRowsH4 para aplicar o filtro Aprofunde
+  // (loadCtrRows não filtra — é usado para H1-H3 onde o filtro não se aplica ao CSV principal).
+  // O H4 usa apenas edições com ≥7 dias de maturidade, idempotente.
+  const h4CtrRows = loadCtrRowsH4(ctrPath);
+  let h4Trend;
+  if (h4CtrRows.length > 0) {
+    const alreadyComputed = loadHistoryEditions(historyPath);
+    const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
+    if (newEntries.length > 0) {
+      appendHistory(historyPath, newEntries);
+      process.stderr.write(
+        `[analyze-scorer-impact] H4: +${newEntries.length} edição(ões) nova(s) gravada(s) em ${historyPath}\n`,
+      );
+    }
+    const allH4Entries = loadHistory(historyPath);
+    h4Trend = computeH4Trend(allH4Entries);
+  }
+
+  const report = renderReport(baseline, treatment, h4Trend);
   if (args.out) {
     writeFileSync(resolve(ROOT, args.out), report, "utf8");
     process.stderr.write(`[analyze-scorer-impact] relatório em ${args.out}\n`);
