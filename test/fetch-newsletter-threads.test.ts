@@ -20,9 +20,54 @@ import { strict as assert } from "node:assert";
 import {
   extractTextPart,
   stripHtmlForBody,
+  mergeCaptured,
   DEFAULT_BODY_LIMIT,
 } from "../scripts/fetch-newsletter-threads.ts";
 import type { CapturedThread } from "../scripts/fetch-newsletter-threads.ts";
+
+function mkThread(id: string): CapturedThread {
+  return {
+    thread_id: id,
+    sender: `Sender ${id} <s${id}@example.com>`,
+    subject: `Subject ${id}`,
+    date: "2026-06-22T00:00:00.000Z",
+    body: `body-${id}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// mergeCaptured — crash-resume merge by thread_id
+// ---------------------------------------------------------------------------
+
+describe("mergeCaptured — resume-safe merge by thread_id", () => {
+  it("appends fresh threads not already present", () => {
+    const existing = [mkThread("a"), mkThread("b")];
+    const fresh = [mkThread("c")];
+    const merged = mergeCaptured(existing, fresh);
+    assert.deepEqual(merged.map((t) => t.thread_id), ["a", "b", "c"]);
+  });
+
+  it("does not duplicate a thread_id present in both", () => {
+    const existing = [mkThread("a"), mkThread("b")];
+    const fresh = [mkThread("b"), mkThread("c")];
+    const merged = mergeCaptured(existing, fresh);
+    assert.deepEqual(merged.map((t) => t.thread_id), ["a", "b", "c"]);
+  });
+
+  it("preserves existing threads even when fresh is empty (narrower window must not wipe prior run)", () => {
+    const existing = [mkThread("a"), mkThread("b")];
+    const merged = mergeCaptured(existing, []);
+    assert.deepEqual(merged.map((t) => t.thread_id), ["a", "b"]);
+  });
+
+  it("existing entry wins (kept as-is) when both have the same thread_id", () => {
+    const existing = [{ ...mkThread("a"), body: "OLD" }];
+    const fresh = [{ ...mkThread("a"), body: "NEW" }];
+    const merged = mergeCaptured(existing, fresh);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].body, "OLD");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // extractTextPart — text/plain preferred
