@@ -103,6 +103,7 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
  * `03-social.md` deve passar lint social. Roda checks granulares:
  * `linkedin-schema` (#595), `relative-time` (qualidade editorial),
  * `post_pixel-matches-d1` (#1861), `personal-post-no-newsletter-deixis` (#2148),
+ * `no-email-cta-linkedin` (#2458), `linkedin-page-link` (#2458),
  * e `humanizer-section-coverage` (#2148, quando snapshot pré-humanizador existe).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
@@ -146,6 +147,28 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       ["--check", "personal-post-no-newsletter-deixis", "--md", file],
       "social-personal-post-no-newsletter-deixis",
       "#2148",
+      file,
+    ),
+  );
+  // #2458: posts do LinkedIn não devem conter CTA de assinatura por e-mail —
+  // substituído por CTA de seguir a página da Diar.ia.
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "no-email-cta-linkedin", "--md", file],
+      "social-no-email-cta-linkedin",
+      "#2458",
+      file,
+    ),
+  );
+  // #2458: comment_diaria e post_pixel devem conter link da página da Diar.ia
+  // no LinkedIn (linkedin.com/company/diaria) como CTA de follow.
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "linkedin-page-link", "--md", file],
+      "social-linkedin-page-link",
+      "#2458",
       file,
     ),
   );

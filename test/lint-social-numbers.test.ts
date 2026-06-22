@@ -217,7 +217,7 @@ Post principal d1.
 
 Edição completa com mais 9 destaques de IA do dia em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -231,7 +231,7 @@ Post principal d2.
 
 Edição completa com mais 9 destaques de IA do dia em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -245,7 +245,7 @@ Post principal d3.
 
 Edição completa com mais 9 destaques de IA do dia em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -363,7 +363,7 @@ Post principal d1. Confira os mais 9 destaques curados nesta edição.
 
 Edição completa com mais 9 destaques de IA do dia em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 

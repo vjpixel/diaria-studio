@@ -361,9 +361,10 @@ describe("Stage 2 invariants", () => {
   it("social-passes-lints falha com 'file-exists' quando 03-social.md ausente", () => {
     const v = checkSocialPassesLints(fixture);
     // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861) +
-    // personal-post-no-newsletter-deixis (#2148).
+    // personal-post-no-newsletter-deixis (#2148) +
+    // no-email-cta-linkedin (#2458) + linkedin-page-link (#2458).
     // humanizer-section-coverage só roda quando snapshot existe → não conta aqui.
-    assert.equal(v.length, 4);
+    assert.equal(v.length, 6);
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     // #1861: a nova check está registrada (não só a contagem mudou).
     assert.ok(
@@ -374,6 +375,15 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       v.some((x) => x.rule === "social-personal-post-no-newsletter-deixis-file-exists"),
       "rule social-personal-post-no-newsletter-deixis deve estar presente",
+    );
+    // #2458: email CTA + page link checks registradas
+    assert.ok(
+      v.some((x) => x.rule === "social-no-email-cta-linkedin-file-exists"),
+      "rule social-no-email-cta-linkedin deve estar presente (#2458)",
+    );
+    assert.ok(
+      v.some((x) => x.rule === "social-linkedin-page-link-file-exists"),
+      "rule social-linkedin-page-link deve estar presente (#2458)",
     );
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
@@ -423,7 +433,7 @@ describe("Stage 2 invariants", () => {
       "",
       "Edição completa em {edition_url}",
       "",
-      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria",
       "",
       "### comment_pixel",
       "",
@@ -437,7 +447,7 @@ describe("Stage 2 invariants", () => {
       "",
       "Edição completa em {edition_url}",
       "",
-      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria",
       "",
       "### comment_pixel",
       "",
@@ -451,7 +461,7 @@ describe("Stage 2 invariants", () => {
       "",
       "Edição completa em {edition_url}",
       "",
-      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria",
       "",
       "### comment_pixel",
       "",
@@ -462,6 +472,8 @@ describe("Stage 2 invariants", () => {
       "<!-- destaque: d1 -->",
       "",
       "Esta newsletter roda em grande parte com agentes — o que ainda me surpreende.",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diaria",
       "",
       "#IA #Brasil",
       "",
@@ -535,6 +547,144 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       !ruleIds.includes("social-humanizer-section-coverage"),
       `Não devia rodar humanizer-section-coverage sem snapshot: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#2458: gate social detecta CTA de e-mail em post LinkedIn (social-no-email-cta-linkedin é gate-blocking)", () => {
+    const withEmailCta = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Texto editorial d1.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## d2",
+      "",
+      "Texto editorial d2.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## d3",
+      "",
+      "Texto editorial d3.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## post_pixel",
+      "",
+      "Texto do post pessoal.",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diaria",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Post Facebook.",
+      "",
+      "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.",
+    ].join("\n");
+    writeFileSync(join(fixture, "03-social.md"), withEmailCta);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-no-email-cta-linkedin"),
+      `Gate não detectou email CTA. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#2458: gate social detecta link da página ausente em comment_diaria (social-linkedin-page-link é gate-blocking)", () => {
+    const missingPageLink = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Texto editorial d1.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## d2",
+      "",
+      "Texto editorial d2.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diaria",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## d3",
+      "",
+      "Texto editorial d3.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diaria",
+      "",
+      "### comment_pixel",
+      "",
+      "Comentário pessoal.",
+      "",
+      "## post_pixel",
+      "",
+      "Texto do post pessoal.",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diaria",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Post Facebook.",
+      "",
+      "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.",
+    ].join("\n");
+    writeFileSync(join(fixture, "03-social.md"), missingPageLink);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-linkedin-page-link"),
+      `Gate não detectou link ausente. violations: ${JSON.stringify(ruleIds)}`,
     );
     rmSync(fixture, { recursive: true, force: true });
   });

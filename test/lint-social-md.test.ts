@@ -10,6 +10,9 @@ import {
   lintPostPixelMatchesD1,
   lintPersonalPostNewsletterDeixis,
   checkHumanizerSectionCoverage,
+  lintLinkedinEmailCTA,
+  lintLinkedinPageLink,
+  DIARIA_LINKEDIN_PAGE_SLUG,
 } from "../scripts/lint-social-md.ts";
 
 describe("lintPostPixelMatchesD1 (#1861)", () => {
@@ -487,7 +490,7 @@ describe("lintLinkedinSchema (#595)", () => {
     // comment_diaria: 200-400 chars tolerância. Inclui {edition_url} placeholder.
     const cd =
       "Edição completa com mais 9 destaques de IA do dia em {edition_url}" +
-      "\n\nReceba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br" +
+      "\n\nSiga a Diar.ia no LinkedIn em linkedin.com/company/diaria" +
       "\n\nMais sobre esse e outros casos.";
     // comment_pixel: 300-600 chars tolerância. ~400.
     const cp =
@@ -643,7 +646,7 @@ ${mainD1}
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -657,7 +660,7 @@ Texto do d2.
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -671,7 +674,7 @@ Texto do d3.
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -859,7 +862,7 @@ ${mainD1}
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -873,7 +876,7 @@ ${mainD2}
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -887,7 +890,7 @@ ${mainD3}
 
 Edição completa em {edition_url}
 
-Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
 
 ### comment_pixel
 
@@ -1110,5 +1113,272 @@ describe("checkHumanizerSectionCoverage (#2148 Fix B)", () => {
       postPixel: "G reescrito.",
     });
     assert.equal(run(preMd2, postMd2).status, 0, "tudo tocado → exit 0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2458: lintLinkedinEmailCTA + lintLinkedinPageLink
+// ---------------------------------------------------------------------------
+
+/** Helper: monta 03-social.md minimal com conteúdo de LinkedIn configurável */
+function mkLinkedinMd(opts: {
+  commentDiariaD1?: string;
+  commentDiariaD2?: string;
+  commentDiariaD3?: string;
+  postPixel?: string;
+}): string {
+  const cd1 = opts.commentDiariaD1 ?? `Edição completa em {edition_url}\n\n${DIARIA_LINKEDIN_PAGE_SLUG}`;
+  const cd2 = opts.commentDiariaD2 ?? `Edição completa em {edition_url}\n\n${DIARIA_LINKEDIN_PAGE_SLUG}`;
+  const cd3 = opts.commentDiariaD3 ?? `Edição completa em {edition_url}\n\n${DIARIA_LINKEDIN_PAGE_SLUG}`;
+  const pp = opts.postPixel ?? `Texto do post pessoal.\n\nSiga a Diar.ia em ${DIARIA_LINKEDIN_PAGE_SLUG}`;
+  return `# LinkedIn
+
+## d1
+
+Texto editorial d1.
+
+### comment_diaria
+
+${cd1}
+
+### comment_pixel
+
+Comentário pessoal d1.
+
+## d2
+
+Texto editorial d2.
+
+### comment_diaria
+
+${cd2}
+
+### comment_pixel
+
+Comentário pessoal d2.
+
+## d3
+
+Texto editorial d3.
+
+### comment_diaria
+
+${cd3}
+
+### comment_pixel
+
+Comentário pessoal d3.
+
+## post_pixel
+
+<!-- destaque: d1 -->
+
+${pp}
+
+#IA #Brasil
+
+# Facebook
+
+## d1
+
+Post Facebook.
+
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
+`;
+}
+
+describe("lintLinkedinEmailCTA (#2458)", () => {
+  it("PASSA: sem CTA de e-mail em nenhum bloco LinkedIn", () => {
+    const md = mkLinkedinMd({});
+    const r = lintLinkedinEmailCTA(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("FALHA: 'assine grátis' em comment_diaria", () => {
+    const md = mkLinkedinMd({
+      commentDiariaD1: `Edição completa em {edition_url}\n\nReceba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br`,
+    });
+    const r = lintLinkedinEmailCTA(md);
+    assert.equal(r.ok, false, "deve falhar com CTA de e-mail");
+    assert.ok(r.errors.some((e) => e.section === "comment_diaria"), JSON.stringify(r.errors));
+  });
+
+  it("FALHA: 'receba a Diar.ia todo dia por e-mail' em post_pixel", () => {
+    const md = mkLinkedinMd({
+      postPixel: `Texto do post.\n\nReceba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br`,
+    });
+    const r = lintLinkedinEmailCTA(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.section === "post_pixel"), JSON.stringify(r.errors));
+  });
+
+  it("FALHA (self-review #2458): variantes ampliadas de CTA de e-mail", () => {
+    for (const phrase of [
+      "Assine a Diar.ia em diar.ia.br",
+      "Quer mais? Assinar a newsletter é grátis",
+      "Cadastre-se por email para receber",
+      "Inscreva-se na newsletter",
+    ]) {
+      const md = mkLinkedinMd({
+        commentDiariaD1: `Edição em {edition_url}\n\n${phrase}\n\n${DIARIA_LINKEDIN_PAGE_SLUG}`,
+      });
+      const r = lintLinkedinEmailCTA(md);
+      assert.equal(r.ok, false, `deveria flagar variante de CTA de e-mail: "${phrase}"`);
+    }
+  });
+
+  it("NÃO flaga email CTA no Facebook (não é seção LinkedIn)", () => {
+    // Email CTAs no Facebook são permitidas (e até obrigatórias no formato antigo)
+    const md = mkLinkedinMd({});
+    // O mkLinkedinMd já inclui Facebook com email CTA
+    const r = lintLinkedinEmailCTA(md);
+    assert.equal(r.ok, true, "email CTA no Facebook não deve ser flagada pelo lint LinkedIn");
+  });
+
+  it("no-op quando não há seção LinkedIn", () => {
+    const r = lintLinkedinEmailCTA("# Facebook\n## d1\nTexto.");
+    assert.equal(r.ok, true);
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("CLI: exit 1 com email CTA, exit 0 sem email CTA", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "email-cta-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(process.execPath, ["--import", "tsx", scriptPath, "--check", "no-email-cta-linkedin", "--md", p], { encoding: "utf8" });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    // Com email CTA → exit 1
+    const withEmailCTA = mkLinkedinMd({
+      commentDiariaD1: "Edição completa em {edition_url}\n\nReceba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br",
+    });
+    assert.equal(run(withEmailCTA).status, 1, "email CTA → exit 1");
+    // Sem email CTA → exit 0
+    assert.equal(run(mkLinkedinMd({})).status, 0, "sem email CTA → exit 0");
+  });
+});
+
+describe("lintLinkedinPageLink (#2458)", () => {
+  it("PASSA: comment_diaria e post_pixel com link da página", () => {
+    const md = mkLinkedinMd({});
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("FALHA: comment_diaria de d1 sem link da página", () => {
+    const md = mkLinkedinMd({
+      commentDiariaD1: "Edição completa em {edition_url}",
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((x) => x.section === "comment_diaria" && x.destaque === "d1");
+    assert.ok(e, `esperava erro em d1/comment_diaria, achei: ${JSON.stringify(r.errors)}`);
+  });
+
+  it("FALHA: comment_diaria de d3 sem link da página", () => {
+    const md = mkLinkedinMd({
+      commentDiariaD3: "Edição completa em {edition_url}",
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((x) => x.section === "comment_diaria" && x.destaque === "d3");
+    assert.ok(e, `esperava erro em d3/comment_diaria, achei: ${JSON.stringify(r.errors)}`);
+  });
+
+  it("FALHA: post_pixel sem link da página", () => {
+    const md = mkLinkedinMd({
+      postPixel: "Texto do post pessoal sobre o D1.",
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false);
+    const e = r.errors.find((x) => x.section === "post_pixel");
+    assert.ok(e, `esperava erro em post_pixel, achei: ${JSON.stringify(r.errors)}`);
+  });
+
+  it("PASSA: comment_diaria com URL completa 'https://linkedin.com/company/diaria'", () => {
+    // Aceita qualquer forma que contenha 'linkedin.com/company/diaria'
+    const md = mkLinkedinMd({
+      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em https://linkedin.com/company/diaria",
+      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("no-op quando não há seção LinkedIn", () => {
+    const r = lintLinkedinPageLink("# Facebook\n## d1\nTexto.");
+    assert.equal(r.ok, true);
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("DIARIA_LINKEDIN_PAGE_SLUG aponta para slug canônico", () => {
+    assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diaria");
+  });
+
+  it("CLI: exit 1 sem link da página, exit 0 com link da página", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "page-link-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(process.execPath, ["--import", "tsx", scriptPath, "--check", "linkedin-page-link", "--md", p], { encoding: "utf8" });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    // Sem link → exit 1
+    const noLink = mkLinkedinMd({ commentDiariaD1: "Edição completa em {edition_url}" });
+    assert.equal(run(noLink).status, 1, "sem link da página → exit 1");
+    // Com link → exit 0
+    assert.equal(run(mkLinkedinMd({})).status, 0, "com link da página → exit 0");
+  });
+});
+
+describe("lintLinkedinPageLink — fixes self-review (#2458)", () => {
+  it("d1 no início da seção (sem newline anterior) NÃO escapa do split", () => {
+    // Reproduz o bug do chunk-split: '## d1' logo após '# LinkedIn' — sem o prefixo
+    // "\n" o primeiro destaque era pulado e um comment_diaria sem link passava.
+    const md = [
+      "# LinkedIn",
+      "## d1",
+      "Texto editorial d1.",
+      "### comment_diaria",
+      "Edição completa em {edition_url}", // <- falta o link da página
+      "### comment_pixel",
+      "Comentário pessoal.",
+      "",
+      "# Facebook",
+      "## d1",
+      "fb",
+    ].join("\n");
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false, "d1 comment_diaria sem link deve falhar (não escapar do split)");
+    assert.ok(r.errors.some((e) => e.destaque === "d1"), JSON.stringify(r.errors));
+  });
+
+  it("drift guard: platform.config.json espelha DIARIA_LINKEDIN_PAGE_SLUG", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const cfgRaw = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8");
+    assert.ok(
+      cfgRaw.includes(DIARIA_LINKEDIN_PAGE_SLUG),
+      "platform.config.json deve conter o slug canônico — não divergir da constante do lint",
+    );
   });
 });
