@@ -471,6 +471,18 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
+/**
+ * #1619 (self-review): decide se PULA a gravação no history de H4.
+ * Pula quando (a) `--no-update-history` foi passado, OU (b) `--ctr` (fixture) foi
+ * passado SEM `--history` explícito — para não poluir o history de produção
+ * (`data/scorer-ctr-history.jsonl`) com dados de fixture/teste.
+ */
+export function shouldSkipHistoryUpdate(args: Record<string, string>): boolean {
+  if (args["no-update-history"] != null) return true;
+  if (args.ctr != null && args.history == null) return true;
+  return false;
+}
+
 export function loadCtrRows(ctrPath: string): CtrRow[] {
   const csv = readFileSync(resolve(ROOT, ctrPath), "utf8");
   const { data } = Papa.parse<Record<string, string>>(csv, {
@@ -528,15 +540,24 @@ export function main(): void {
   // Reutiliza o CTR CSV já lido, mas via loadCtrRowsH4 para aplicar o filtro Aprofunde
   // (loadCtrRows não filtra — é usado para H1-H3 onde o filtro não se aplica ao CSV principal).
   // O H4 usa apenas edições com ≥7 dias de maturidade, idempotente.
+  // Guard (self-review #1619): NÃO gravar no history de PRODUÇÃO quando o CTR vem de
+  // fixture customizada (--ctr) sem --history explícito, ou com --no-update-history.
+  // Sem isso, um run de teste/fixture poluiria data/scorer-ctr-history.jsonl.
+  const skipHistoryUpdate = shouldSkipHistoryUpdate(args);
   const h4CtrRows = loadCtrRowsH4(ctrPath);
   let h4Trend;
   if (h4CtrRows.length > 0) {
     const alreadyComputed = loadHistoryEditions(historyPath);
     const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
-    if (newEntries.length > 0) {
+    if (newEntries.length > 0 && !skipHistoryUpdate) {
       appendHistory(historyPath, newEntries);
       process.stderr.write(
         `[analyze-scorer-impact] H4: +${newEntries.length} edição(ões) nova(s) gravada(s) em ${historyPath}\n`,
+      );
+    } else if (newEntries.length > 0) {
+      process.stderr.write(
+        `[analyze-scorer-impact] H4: ${newEntries.length} edição(ões) nova(s) NÃO gravada(s) ` +
+          `(--ctr fixture sem --history, ou --no-update-history) — history de produção preservado.\n`,
       );
     }
     const allH4Entries = loadHistory(historyPath);

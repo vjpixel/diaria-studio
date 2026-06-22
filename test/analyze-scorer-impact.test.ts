@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   recordToCtrRow,
+  shouldSkipHistoryUpdate,
   loadCtrRows,
   dateToEdition,
   inWindow,
@@ -304,5 +305,26 @@ describe("renderReport — H4 section (#1619)", () => {
     assert.ok(md.includes("H3 — distribuição BR/INT"), "H3 intacta");
     assert.ok(md.includes("Cobertura do join"), "cobertura intacta");
     assert.ok(md.includes("Confounders"), "confounders intactos");
+  });
+});
+
+describe("shouldSkipHistoryUpdate (#1619 self-review — guard anti-poluição)", () => {
+  it("default (sem --ctr nem --history) → NÃO pula (atualiza o history real)", () => {
+    assert.equal(shouldSkipHistoryUpdate({}), false);
+  });
+  it("--ctr fixture SEM --history → PULA (não polui produção)", () => {
+    assert.equal(shouldSkipHistoryUpdate({ ctr: "test/fixtures/ctr.csv" }), true);
+  });
+  it("--ctr fixture COM --history explícito → NÃO pula (destino seguro)", () => {
+    assert.equal(
+      shouldSkipHistoryUpdate({ ctr: "test/fixtures/ctr.csv", history: "/tmp/h.jsonl" }),
+      false,
+    );
+  });
+  it("--no-update-history → PULA mesmo sem --ctr", () => {
+    assert.equal(shouldSkipHistoryUpdate({ "no-update-history": "true" }), true);
+  });
+  it("--history sem --ctr (fonte real + destino explícito) → NÃO pula", () => {
+    assert.equal(shouldSkipHistoryUpdate({ history: "/tmp/h.jsonl" }), false);
   });
 });
