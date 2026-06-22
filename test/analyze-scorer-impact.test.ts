@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   recordToCtrRow,
+  shouldSkipHistoryUpdate,
   loadCtrRows,
   dateToEdition,
   inWindow,
@@ -14,6 +15,7 @@ import {
   type EditionHighlights,
 } from "../scripts/analyze-scorer-impact.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
+import type { H4Trend, H4HistoryEntry } from "../scripts/analyze-h4.ts";
 
 describe("recordToCtrRow", () => {
   it("mapeia record limpo", () => {
@@ -207,5 +209,122 @@ describe("renderReport", () => {
     assert.ok(md.includes("H1"));
     assert.ok(md.includes("H2"));
     assert.ok(md.includes("H3"));
+  });
+});
+
+// ─── renderReport — H4 section (#1619) ─────────────────────────────────────
+//
+// Testa que o relatório de analyze-scorer-impact.ts inclui corretamente a seção H4
+// quando h4Trend é passado, e exibe aviso quando ausente. Regressão #633.
+
+describe("renderReport — H4 section (#1619)", () => {
+  const base = computeWindowMetrics([], "2026-05-20", "2026-05-28", new Map());
+  const treat = computeWindowMetrics([], "2026-05-30", "2026-06-12", new Map());
+
+  it("sem h4Trend → seção H4 mostra aviso de espera (não crasha)", () => {
+    // Caso: analyze-h4.ts nunca rodou ou CTR CSV ausente — h4Trend undefined.
+    const md = renderReport(base, treat, undefined);
+    assert.ok(md.includes("H4"), "seção H4 deve aparecer");
+    assert.ok(md.includes("H4 sem dados disponíveis"), "aviso de ausência de dados");
+    assert.ok(md.includes("analyze-h4.ts"), "instrução de como popular");
+  });
+
+  it("h4Trend com 0 entradas → mesma mensagem de espera", () => {
+    const emptyTrend: H4Trend = {
+      entries: [],
+      rho_mean: null,
+      top1_hit_rate: null,
+      alert_low_rho: false,
+    };
+    const md = renderReport(base, treat, emptyTrend);
+    assert.ok(md.includes("H4 sem dados disponíveis"), "aviso de ausência de dados");
+  });
+
+  it("h4Trend com entradas → tabela por edição + métricas agregadas", () => {
+    // Conjunto sintético: 3 edições com rho definido + 1 zero-CTR (rho=null).
+    // Verifica: tabela presente, métricas corretas, sem crash.
+    const entries: H4HistoryEntry[] = [
+      { edition: "260520", rho: 0.8,  top1_hit: true,  top3_overlap: 3, n_matches: 6, computed_at: "" },
+      { edition: "260521", rho: 0.6,  top1_hit: false, top3_overlap: 2, n_matches: 5, computed_at: "" },
+      { edition: "260522", rho: null, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" }, // zero-CTR
+      { edition: "260525", rho: 0.7,  top1_hit: true,  top3_overlap: 3, n_matches: 5, computed_at: "" },
+    ];
+    const trend: H4Trend = {
+      entries,
+      rho_mean: (0.8 + 0.6 + 0.7) / 3, // ≈ 0.700 — exclui null
+      top1_hit_rate: 2 / 4,             // 2 hits em 4 entradas
+      alert_low_rho: false,
+    };
+    const md = renderReport(base, treat, trend);
+
+    // Seção H4 presente
+    assert.ok(md.includes("H4 — ranking scorer vs CTR observado por edição"), "cabeçalho H4");
+
+    // Edições na tabela
+    assert.ok(md.includes("260520"), "edição 260520 na tabela");
+    assert.ok(md.includes("260521"), "edição 260521 na tabela");
+    assert.ok(md.includes("260522"), "edição 260522 (zero-CTR) na tabela");
+    assert.ok(md.includes("260525"), "edição 260525 na tabela");
+
+    // rho=null formatado como '—(undef)' (não '0.000' nem crash)
+    assert.ok(md.includes("—(undef)"), "zero-CTR deve aparecer como '—(undef)'");
+
+    // Rho médio correto (3 edições definidas, não 4)
+    assert.ok(md.includes("3 edições com rho definido"), "deve contar só edições com rho definido");
+    // Valor do rho médio (0.700)
+    assert.ok(md.includes("0.700"), "rho médio ≈ 0.700");
+
+    // Top-1 hit rate: 2/4 = 50%
+    assert.ok(md.includes("50%"), "top-1 hit rate 50%");
+
+    // Sem alerta (rho saudável)
+    assert.ok(!md.includes("ALERTA H4"), "sem alerta com rho saudável");
+  });
+
+  it("h4Trend com alert_low_rho=true → bloco de alerta no relatório", () => {
+    const entries: H4HistoryEntry[] = [
+      { edition: "260524", rho: 0.2, top1_hit: false, top3_overlap: 1, n_matches: 4, computed_at: "" },
+      { edition: "260525", rho: 0.1, top1_hit: false, top3_overlap: 0, n_matches: 4, computed_at: "" },
+    ];
+    const alertTrend: H4Trend = {
+      entries,
+      rho_mean: 0.15,
+      top1_hit_rate: 0,
+      alert_low_rho: true,
+    };
+    const md = renderReport(base, treat, alertTrend);
+    assert.ok(md.includes("ALERTA H4"), "bloco de alerta H4 deve aparecer");
+    assert.ok(md.includes("0,4"), "deve mencionar o threshold 0,4");
+  });
+
+  it("renderReport sem h4Trend ainda inclui H1/H2/H3 (regressão: não quebra outras seções)", () => {
+    const md = renderReport(base, treat, undefined);
+    // As seções pré-existentes devem continuar presentes
+    assert.ok(md.includes("H1 — frequência de destaques Aplicação/Segurança"), "H1 intacta");
+    assert.ok(md.includes("H2 — CTR médio dos destaques"), "H2 intacta");
+    assert.ok(md.includes("H3 — distribuição BR/INT"), "H3 intacta");
+    assert.ok(md.includes("Cobertura do join"), "cobertura intacta");
+    assert.ok(md.includes("Confounders"), "confounders intactos");
+  });
+});
+
+describe("shouldSkipHistoryUpdate (#1619 self-review — guard anti-poluição)", () => {
+  it("default (sem --ctr nem --history) → NÃO pula (atualiza o history real)", () => {
+    assert.equal(shouldSkipHistoryUpdate({}), false);
+  });
+  it("--ctr fixture SEM --history → PULA (não polui produção)", () => {
+    assert.equal(shouldSkipHistoryUpdate({ ctr: "test/fixtures/ctr.csv" }), true);
+  });
+  it("--ctr fixture COM --history explícito → NÃO pula (destino seguro)", () => {
+    assert.equal(
+      shouldSkipHistoryUpdate({ ctr: "test/fixtures/ctr.csv", history: "/tmp/h.jsonl" }),
+      false,
+    );
+  });
+  it("--no-update-history → PULA mesmo sem --ctr", () => {
+    assert.equal(shouldSkipHistoryUpdate({ "no-update-history": "true" }), true);
+  });
+  it("--history sem --ctr (fonte real + destino explícito) → NÃO pula", () => {
+    assert.equal(shouldSkipHistoryUpdate({ history: "/tmp/h.jsonl" }), false);
   });
 });
