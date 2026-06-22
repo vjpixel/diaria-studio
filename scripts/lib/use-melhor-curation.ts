@@ -927,3 +927,121 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// #2448 — Promoção de how-to do RADAR para USE MELHOR
+// ---------------------------------------------------------------------------
+
+/**
+ * Sinal forte de how-to no título — usado pra promover do RADAR pro USE MELHOR.
+ *
+ * Mais restrito que HOW_TO_GUARD_RE (que vence opinião/estudo): aqui precisamos
+ * de sinal MUITO explícito pra justificar mover do bucket radar, já que o
+ * categorizador já tentou classificar. Requer verbo acionável explícito:
+ *   - "Como usar/fazer/criar/configurar/implementar/construir/desenvolver"
+ *   - "How to build/create/deploy/train/use"
+ *   - "passo a passo / step-by-step"
+ *   - "tutorial" ou "guia prático/completo"
+ *   - Sinais how-to do HOWTO_BR_SIGNAL_RE (PT-BR consumer)
+ *
+ * Não basta HOW_TO_GUARD_RE (que inclui "guide" genérico) — queremos
+ * conteúdo genuinamente acionável, não apenas levemente tutorial.
+ */
+const RADAR_HOWTO_PROMOTE_RE =
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\b|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)\b/i;
+
+/**
+ * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to
+ * acionável e deve ser promovido ao bucket USE MELHOR.
+ *
+ * Critérios (todos devem ser atendidos):
+ *   1. Título tem sinal RADAR_HOWTO_PROMOTE_RE (how-to explícito).
+ *   2. Título NÃO tem sinal de opinião/estudo (isOpinionOrStudy).
+ *   3. Título NÃO é um anúncio de dev/feature ("New X in Y").
+ *
+ * Propositalmente conservador — falso-negativo (deixar how-to no RADAR) é
+ * menos problemático que falso-positivo (promover análise ao USE MELHOR).
+ *
+ * @param url     URL do artigo.
+ * @param title   Título do artigo.
+ * @param summary Sumário/descrição opcional.
+ */
+export function isRadarHowToEligible(url: string, title: string, summary = ""): boolean {
+  // Sem sinal how-to explícito → não promover.
+  if (!RADAR_HOWTO_PROMOTE_RE.test(title)) return false;
+
+  // Opinião ou estudo → não promover (how-to pode estar no summary, mas o conteúdo não é acionável).
+  if (isOpinionOrStudy(url, title, summary)) return false;
+
+  // "New X in Y" release note / dev announcement → não promover.
+  // (Importado de categorize.ts ao nível de interface para evitar dependência circular —
+  // a regex é duplicada aqui por design: use-melhor-curation.ts não pode importar categorize.ts.)
+  const DEV_RELEASE_NOTE_RE = /^\s*New\s+\w[\w\s]{2,40}\s+in\s+(?:the\s+)?\w/i;
+  if (DEV_RELEASE_NOTE_RE.test(title)) return false;
+
+  return true;
+}
+
+/** Artigo mínimo aceito pela promoção radar→use_melhor. */
+export interface RadarArticle {
+  url: string;
+  title?: string;
+  summary?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * #2448 (b): Promove how-tos do bucket RADAR para o bucket USE MELHOR.
+ *
+ * Percorre `radarItems` em ordem (presumida score desc) e move para USE MELHOR
+ * aqueles que têm sinal forte de how-to (`isRadarHowToEligible`), respeitando:
+ *   - Cap máximo de promoções (default `maxPromote = 2`) para não esvaziar o RADAR.
+ *   - Não promover URLs que já estão em `useMelhorItems` (dedup por URL canônica).
+ *
+ * Retorna `{ newUseMelhor, newRadar, promoted }`:
+ *   - `newUseMelhor` — use_melhor com os promovidos PREPENDED (score mais alto primeiro).
+ *   - `newRadar`     — radar sem os promovidos.
+ *   - `promoted`     — contagem de promoções realizadas.
+ *
+ * @param radarItems      Candidatos do bucket radar (score desc).
+ * @param useMelhorItems  Itens já no bucket use_melhor.
+ * @param maxPromote      Máximo de itens a promover (default 2).
+ */
+export function promoteHowTosFromRadar(
+  radarItems: RadarArticle[],
+  useMelhorItems: RadarArticle[],
+  maxPromote = 2,
+): {
+  newUseMelhor: RadarArticle[];
+  newRadar: RadarArticle[];
+  promoted: number;
+} {
+  const seenUrls = new Set<string>(
+    useMelhorItems.map((a) => a.url.toLowerCase()),
+  );
+
+  const promoted: RadarArticle[] = [];
+  const remainingRadar: RadarArticle[] = [];
+
+  for (const item of radarItems) {
+    if (
+      promoted.length < maxPromote &&
+      !seenUrls.has(item.url.toLowerCase()) &&
+      isRadarHowToEligible(item.url, item.title ?? "", item.summary ?? "")
+    ) {
+      promoted.push(item);
+      seenUrls.add(item.url.toLowerCase());
+    } else {
+      remainingRadar.push(item);
+    }
+  }
+
+  // Prepend promoted to use_melhor (higher-scored items first).
+  const newUseMelhor = [...promoted, ...useMelhorItems];
+
+  return {
+    newUseMelhor,
+    newRadar: remainingRadar,
+    promoted: promoted.length,
+  };
+}

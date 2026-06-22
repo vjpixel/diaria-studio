@@ -627,6 +627,32 @@ export function isLaunchSlug(url: string): boolean {
 }
 
 /**
+ * #2448: título de release note / feature announcement em dev blog.
+ * Padrão "New [Feature] in [Product]" é anúncio de feature, não tutorial acionável.
+ *
+ * Casos reais 260622:
+ *   - "New Session Metadata in Sign in with Google" (developers.googleblog.com)
+ *   - "New APIs in the Google Identity Services library"
+ *
+ * Regex ancora no início (`^\s*New\s+`) pra não pegar "What's new in X" ou
+ * "How to use new features in Y" (o guard `isTutorialByKeyword` já retorna antes).
+ * Requer "in" como separador seguido de ≥1 palavra — evita "New to Python?"
+ * (interrogativo, não announcement). Conservador: só dispara quando the TITLE
+ * claramente descreve adição de feature, não quando apenas menciona "new".
+ */
+const DEV_RELEASE_NOTE_TITLE_RE =
+  /^\s*New\s+\w[\w\s]{2,40}\s+in\s+(?:the\s+)?\w/i;
+
+/**
+ * #2448: retorna true se o título parece release note de dev ("New X in Y").
+ * Usado em isNewsNotTutorial para rejeitar anúncios de feature de dev blogs
+ * (developers.googleblog.com, etc.) que não contêm how-to acionável.
+ */
+export function isDevReleaseNote(title: string): boolean {
+  return DEV_RELEASE_NOTE_TITLE_RE.test(title);
+}
+
+/**
  * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
  * notícia/comentário/análise. Os domínios de "Use Melhor" (cookbook.openai.com,
  * blogs de devrel) também postam comentário/cobertura, e a classificação por
@@ -637,6 +663,7 @@ export function isLaunchSlug(url: string): boolean {
  *   - type_hint do agent (que LEU a página) = noticia OU opiniao, OU
  *   - business deal (funding/M&A) ou relatório no título, OU
  *   - #2313: slug de lançamento no path (introducing-X, announcing-X).
+ *   - #2448: título "New X in Y" (release note / feature announcement).
  *
  * Deliberadamente NÃO usa:
  *   - `isExplainerByTitle` — "How X works" / "Understanding Y" / "A guide to Z"
@@ -658,6 +685,9 @@ export function isNewsNotTutorial(article: Article): boolean {
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
+  // #2448: "New X in Y" release note / feature announcement — não é tutorial acionável.
+  // Roda após isTutorialByKeyword (how-to vence) e antes do default.
+  if (isDevReleaseNote(article.title ?? "")) return true;
   return isBusinessDeal(article) || isReport(article);
 }
 

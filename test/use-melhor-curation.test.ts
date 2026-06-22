@@ -32,6 +32,8 @@ import {
   isOpinionOrStudy,
   estimateUseMelhorTempo,
   normalizeDashToParens,
+  isRadarHowToEligible,
+  promoteHowTosFromRadar,
 } from "../scripts/lib/use-melhor-curation.ts";
 
 // ---------------------------------------------------------------------------
@@ -2084,5 +2086,164 @@ describe("normalizeDashToParens (#2450)", () => {
     assert.ok(!result.includes("— 10 min"), "não deve manter o formato dash");
     // Prefixo [TRADUZIR] deve ser preservado
     assert.match(result, /\[TRADUZIR\]/, "prefixo deve ser preservado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2448 — isRadarHowToEligible: detecta how-to no RADAR para promoção
+// ---------------------------------------------------------------------------
+
+describe("isRadarHowToEligible (#2448)", () => {
+  it("reconhece título com 'como montar' como elegível para promoção", () => {
+    // Caso real 260622: "Como montar um PC para IA local" caiu no RADAR
+    assert.ok(
+      isRadarHowToEligible(
+        "https://techblog.example.com/como-montar-pc-ia-local",
+        "Como montar um PC para IA local",
+      ),
+      "título 'Como montar' com verbo acionável deve ser elegível para promoção",
+    );
+  });
+
+  it("reconhece título 'Tutorial passo a passo' como elegível", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://dev.example.com/tutorial-rag",
+        "Tutorial passo a passo para construir um RAG com LangChain",
+      ),
+      "tutorial passo a passo deve ser elegível",
+    );
+  });
+
+  it("reconhece 'How to build' em inglês como elegível", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://blog.example.com/how-to-build-agent",
+        "How to build your first AI agent with Python",
+      ),
+      "'How to build' deve ser elegível para promoção",
+    );
+  });
+
+  it("NÃO considera ensaio de opinião elegível", () => {
+    // isOpinionOrStudy vence mesmo com how-to na regex do summary
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://blog.example.com/reflections",
+        "Reflections on building AI systems in 2025",
+        "passo a passo para pensar sobre IA",
+      ),
+      "ensaio de opinião não deve ser elegível (isOpinionOrStudy vence)",
+    );
+  });
+
+  it("NÃO considera release note 'New X in Y' elegível (#2448 integração)", () => {
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://developers.googleblog.com/blog/new-session-metadata",
+        "New Session Metadata in Sign in with Google",
+      ),
+      "'New X in Y' não deve ser elegível para promoção",
+    );
+  });
+
+  it("NÃO considera artigo sem sinal how-to no título elegível", () => {
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://techcrunch.com/2026/01/01/openai-lanca-modelo",
+        "OpenAI lança novo modelo de linguagem",
+      ),
+      "artigo sem how-to explícito no título não deve ser elegível",
+    );
+  });
+
+  it("NÃO considera estudo de pesquisa elegível", () => {
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://blog.langchain.dev/research-study-llm",
+        "Research Study: State of LLM Adoption in Production",
+      ),
+      "estudo de pesquisa não deve ser elegível",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2448 — promoteHowTosFromRadar: move how-tos do RADAR para USE MELHOR
+// ---------------------------------------------------------------------------
+
+describe("promoteHowTosFromRadar (#2448)", () => {
+  const radarHowTo = {
+    url: "https://blog.example.com/como-montar-pc-ia",
+    title: "Como montar um PC para IA local",
+  };
+  const radarNews = {
+    url: "https://techcrunch.com/lanca-modelo",
+    title: "OpenAI lança GPT-6 com capacidades avançadas",
+  };
+  const existingUseMelhor = {
+    url: "https://deeplearning.ai/courses/prompt-eng",
+    title: "Prompt Engineering for Developers",
+  };
+
+  it("promove how-to do RADAR para USE MELHOR e remove do RADAR", () => {
+    const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar(
+      [radarHowTo, radarNews],
+      [existingUseMelhor],
+    );
+    assert.equal(promoted, 1, "deve promover 1 how-to");
+    assert.equal(newUseMelhor.length, 2, "use_melhor deve ter 2 itens (1 promovido + 1 existente)");
+    assert.equal(newRadar.length, 1, "radar deve ter 1 item (apenas a notícia)");
+    assert.equal(newUseMelhor[0].url, radarHowTo.url, "promovido deve ser prepended (primeiro)");
+    assert.ok(newRadar.some((a) => a.url === radarNews.url), "notícia deve permanecer no RADAR");
+  });
+
+  it("não promove how-to que já está em use_melhor (dedup por URL)", () => {
+    const { promoted } = promoteHowTosFromRadar(
+      [radarHowTo],
+      [radarHowTo, existingUseMelhor], // radarHowTo já está no use_melhor
+    );
+    assert.equal(promoted, 0, "não deve promover URL já presente em use_melhor");
+  });
+
+  it("respeita maxPromote (default 2)", () => {
+    const manyHowTos = [1, 2, 3, 4].map((n) => ({
+      url: `https://blog${n}.example.com/como-usar-ia-${n}`,
+      title: `Como usar IA para produtividade ${n} — guia prático`,
+    }));
+    const { promoted, newRadar } = promoteHowTosFromRadar(manyHowTos, []);
+    assert.equal(promoted, 2, "deve promover no máximo 2 (default)");
+    assert.equal(newRadar.length, 2, "2 how-tos devem permanecer no RADAR");
+  });
+
+  it("não promove nenhum quando RADAR só tem notícias", () => {
+    const { promoted, newRadar } = promoteHowTosFromRadar([radarNews], []);
+    assert.equal(promoted, 0, "sem how-to no RADAR, promoted deve ser 0");
+    assert.equal(newRadar.length, 1, "notícia permanece no RADAR");
+  });
+
+  it("RADAR vazio retorna use_melhor intacto e promoted=0", () => {
+    const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar([], [existingUseMelhor]);
+    assert.equal(promoted, 0);
+    assert.equal(newUseMelhor.length, 1);
+    assert.equal(newRadar.length, 0);
+  });
+
+  it("distribuição casual/iniciante: promovido how-to PT-BR casual melhora composição (#2448 c)", () => {
+    // Regressão: confirma que how-to casual promovido do RADAR contribui pra
+    // que selectUseMelhorSplit possa respeitar 2 casual + 2 dev-iniciante.
+    // Sem a promoção, o pool de casual seria menor.
+    const casualHowTo = {
+      url: "https://canaltech.com.br/ia/como-usar-chatgpt-para-emprego",
+      title: "Como usar ChatGPT para se preparar para entrevista de emprego",
+      audience_affinity: { matched: ["howto_br:true"] },
+    };
+    const { newUseMelhor, promoted } = promoteHowTosFromRadar(
+      [casualHowTo],
+      [], // pool vazio
+    );
+    assert.equal(promoted, 1, "casual how-to deve ser promovido");
+    assert.equal(newUseMelhor.length, 1);
+    assert.equal(newUseMelhor[0].url, casualHowTo.url);
   });
 });
