@@ -266,7 +266,28 @@ export function renderIntroCallout(text: string): string {
       // Strip `→ ` / `Acesse ` prefix antes de testar se sobrou só um link.
       const lastStripped = lastPara.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
       const lastLinks = findMarkdownLinks(lastStripped);
+      // #260622: o parágrafo é "só CTAs" quando, removidos TODOS os links e os
+      // separadores (·/•/| + pontuação/seta), não sobra texto substancial.
+      // Suporta múltiplos botões (ex: "→ [Livros](u1) · [Cursos](u2)").
+      let onlyCtas = false;
       if (lastLinks.length > 0) {
+        let rem = lastStripped;
+        for (let k = lastLinks.length - 1; k >= 0; k--) {
+          rem = rem.slice(0, lastLinks[k].start) + rem.slice(lastLinks[k].end);
+        }
+        onlyCtas = rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
+      }
+      if (lastLinks.length > 1 && onlyCtas) {
+        // Múltiplos CTAs → 1 pill por link (margin entre eles).
+        const pills = lastLinks
+          .map(
+            (l) =>
+              `<a href="${esc(l.url)}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;margin:0 4px 8px;">${esc(l.label)}</a>`,
+          )
+          .join("");
+        ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">${pills}</td></tr>`;
+        bodyParas = bodyParas.slice(0, -1);
+      } else if (lastLinks.length > 0) {
         // Verifica se o parágrafo é apenas o link (sem outro texto substancial).
         const firstLink = lastLinks[0];
         let remainingText = lastStripped.slice(0, firstLink.start) + lastStripped.slice(firstLink.end);

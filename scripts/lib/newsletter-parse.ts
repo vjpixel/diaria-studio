@@ -610,6 +610,11 @@ export function stripMidCalloutFromD1(text: string): string {
  */
 export function isMidCalloutLivros(text: string | null | undefined): boolean {
   if (!text) return false;
+  // #260622: box combinado Livros+Cursos NÃO é o promo de livros — é um box de
+  // seções com múltiplos CTAs (renderizado como texto, sem o screenshot da
+  // página de livros). Se o texto também linka cursos.diaria.workers.dev,
+  // tratar como box de seções (false), não promo de livros.
+  if (/cursos\.diaria\.workers\.dev/i.test(text)) return false;
   // Marcador 📚 OU link apontando para livros.diaria.workers.dev
   return /^\s*📚/u.test(text) || /livros\.diaria\.workers\.dev/i.test(text);
 }
