@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   validateCourses,
+  loadCourses,
   renderCursosPage,
   esc,
   isSafeUrl,
@@ -253,8 +254,8 @@ describe("seed cursos — cursos oficiais Anthropic e OpenAI (#2451)", () => {
   });
 
   it("HTML renderizado inclui Anthropic Academy e OpenAI Academy nas plataformas", () => {
-    // Reutiliza o seed já lido e renderCursosPage importado no topo do módulo.
-    const html = renderCursosPage(seed.courses as unknown as import("../scripts/build-cursos-page.ts").Course[]);
+    // Carrega via loadCourses() (tipado + validado) em vez de cast — self-review #2451.
+    const html = renderCursosPage(loadCourses());
     assert.ok(html.includes("Anthropic Academy"), "Anthropic Academy deve aparecer no HTML");
     assert.ok(html.includes("OpenAI Academy"), "OpenAI Academy deve aparecer no HTML");
   });

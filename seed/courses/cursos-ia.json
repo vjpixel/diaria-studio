@@ -340,6 +340,7 @@
       "level": "iniciante",
       "format": "video",
       "duration_hours": 3,
+      "duration_estimated": true,
       "cost": "free",
       "certificate": true,
       "themes": [
