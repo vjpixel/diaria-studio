@@ -348,13 +348,15 @@ test("#2446 computeCohorts: contato só-MPP com 2+ aberturas cai em 'Abriu 2+'",
   assert.equal(r.received2_opened0, 0);
 });
 
-test("#2446 renderEngagementCohortsSection: tooltip menciona MPP em 'Abriu 2+'", () => {
+test("#2446 renderEngagementCohortsSection: tooltip menciona MPP em 'Abriu 2+' E 'Abriu 1'", () => {
   const html = renderEngagementCohortsSection(SAMPLE);
   assert.match(html, /MPP/, "tooltip deve mencionar MPP");
-  assert.match(
-    html,
-    /Inclui aberturas MPP.*machine/,
-    "tooltip 'Abriu 2+' deve mencionar aberturas MPP/machine",
+  // Ambas as linhas de abertura ('Abriu 2+' e 'Abriu 1') tiveram o tooltip
+  // alterado — verificar as DUAS ocorrências, não só a primeira (self-review #2446).
+  const mppTooltips = html.match(/Inclui aberturas MPP\/machine/g) ?? [];
+  assert.ok(
+    mppTooltips.length >= 2,
+    `tooltips de 'Abriu 2+' E 'Abriu 1' devem mencionar MPP/machine (encontrado: ${mppTooltips.length})`,
   );
 });
 
