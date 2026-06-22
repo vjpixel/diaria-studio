@@ -77,11 +77,19 @@ Substitui o forward manual que o editor fazia diariamente.
 **Por que após 0b (resume check):** se o pipeline está retomando uma edição que já passou do Stage 0, o resume (0b) pula direto para o stage pendente — evitando 30-40s de chamadas Gmail MCP desnecessárias. Mover este passo para antes do resume desperdiçaria esse tempo em todo resume.
 
 1. Ler `platform.config.json > newsletter_auto_capture`. Se `enabled !== true`, skip silencioso.
-2. Montar senders OR clause: `from:({sender1} OR {sender2} OR ...)`.
-3. Buscar via Gmail MCP: `mcp__claude_ai_Gmail__search_threads` com query `from:({senders}) newer_than:2d` (usa `since_hours` da config, default 48h = `2d`). Limit 20.
-4. Para cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (messageFormat: `"FULL_CONTENT"`). Extrair `thread_id`, `sender` (From header), `subject`, `date` (ISO from internalDate), `body` (text/plain preferido, fallback text/html). Montar JSON array `CapturedThread[]`.
-5. Salvar threads em `data/editions/{AAMMDD}/_internal/captured-newsletters.json`.
-6. Rodar **em background** (`run_in_background: true`) — o resultado (`_internal/captured-newsletter-articles.json`) só é consumido no Stage 1 (1h inject-inbox-urls), então não precisa bloquear os health checks (0c) e refreshes (0d+):
+2. Montar lista de senders como string separada por vírgulas a partir de `newsletter_auto_capture.senders[]`.
+3. **Usar script TS em vez de MCP direto (#2452 — token-reduction):** chamar via Bash:
+   ```bash
+   npx tsx scripts/fetch-newsletter-threads.ts \
+     --senders "{sender1},{sender2},..." \
+     --since-hours {since_hours} \
+     --out data/editions/{AAMMDD}/_internal/captured-newsletters.json
+   ```
+   O script usa a Gmail REST API diretamente (OAuth via `data/.credentials.json`), extrai somente `text/plain` (fallback HTML stripped+truncado a 8000 chars por thread), e escreve `CapturedThread[]` JSON. **Isso evita que até 20× `get_thread FULL_CONTENT` (80–112k chars HTML cada) entre no contexto do orchestrator.** O script faz a própria busca (Gmail REST `threads.list`) — **não chamar `mcp__claude_ai_Gmail__search_threads` neste passo**: busca e fetch são ambos feitos pelo script.
+   - Se o script terminar com exit 0: ler o JSON de summary do stdout (campos `threads_found`, `threads_written`, `skipped_no_body`) e logar via `log-event.ts`.
+   - Se o script terminar com exit 1 (erro de credenciais OAuth, rede, etc.): tratar como MCP indisponível — logar warn e fazer skip (mesmo comportamento do fallback Gmail MCP).
+4. Salvar threads em `data/editions/{AAMMDD}/_internal/captured-newsletters.json` (feito pelo script no passo 3).
+5. Rodar **em background** (`run_in_background: true`) — o resultado (`_internal/captured-newsletter-articles.json`) só é consumido no Stage 1 (1h inject-inbox-urls), então não precisa bloquear os health checks (0c) e refreshes (0d+):
    ```bash
    npx tsx scripts/capture-newsletter-urls.ts \
      --threads data/editions/{AAMMDD}/_internal/captured-newsletters.json \
@@ -89,10 +97,10 @@ Substitui o forward manual que o editor fazia diariamente.
      --cursor data/newsletter-capture-cursor.json
    ```
    Writes `SyntheticInboxArticle[]` JSON directly to `_internal/captured-newsletter-articles.json` — no inbox.md intermediary (#1520). URL filtering (tracking, affiliate, sender-domain) is applied during capture.
-7. Logar resultado quando o background completar (info). Falha não bloqueia (warn only).
-8. **Guard determinístico (#1756):** se o search (passo 3) retornou **N>0 threads** mas `captured-newsletters.json` ficou **ausente/vazio** (e Gmail MCP estava disponível), logar **WARN loud** — sinal de que 0b-bis foi pulado ou falhou silenciosamente. O Stage 1 (1h inject-inbox-urls) deve re-checar: se há newsletters na janela do Gmail mas `captured_newsletter_count: 0` no marker, repetir o WARN antes do gate (o editor decide re-capturar/re-rodar). A linha de cobertura sairia com X subcontado caso contrário.
+6. Logar resultado quando o background completar (info). Falha não bloqueia (warn only).
+7. **Guard determinístico (#1756):** se `threads_found > 0` (do summary do passo 3) mas `captured-newsletters.json` ficou **ausente/vazio**, logar **WARN loud** — sinal de que o script falhou silenciosamente. O Stage 1 (1h inject-inbox-urls) deve re-checar: se `captured_newsletter_count: 0` no marker mas `threads_found > 0`, repetir o WARN antes do gate (o editor decide re-capturar/re-rodar). A linha de cobertura sairia com X subcontado caso contrário.
 
-Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped: Gmail MCP unavailable"`). Esse é o **único** skip legítimo (#1756) — newsletter capture exige Gmail; sem ele não há como capturar.
+Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth expirado, sem acesso à rede): skip silencioso (logar `info "0b-bis skipped: fetch-newsletter-threads falhou"`). Esse é o **único** skip legítimo (#1756). **Não usar `mcp__claude_ai_Gmail__get_thread` como fallback** — o volume de HTML no contexto é o problema que este corte resolve.
 
 ### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
 
