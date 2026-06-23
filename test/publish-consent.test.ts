@@ -17,6 +17,7 @@ describe("autoApproveConsent (#1238)", () => {
     assert.equal(c.linkedin, "auto");
     assert.equal(c.facebook, "auto");
     assert.equal(c.instagram, "auto"); // #49
+    assert.equal(c.threads, "auto"); // #2479
     assert.equal(c.source, "auto_approve_default");
   });
 });
@@ -97,6 +98,17 @@ describe("parseSkipFlag (#1326)", () => {
     assert.equal(c.newsletter, "auto");
     assert.equal(c.linkedin, "auto");
     assert.equal(c.facebook, "auto");
+    assert.equal(c.threads, "auto");
+  });
+
+  it("'threads' → só threads manual (#2479)", () => {
+    const c = parseSkipFlag("threads");
+    assert.ok(c, "threads deve ser um canal válido em --skip");
+    assert.equal(c.threads, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.equal(c.instagram, "auto");
   });
 
   it("aceita whitespace separators", () => {
@@ -182,8 +194,8 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-8 → null (#49: range estendido pra Instagram)", () => {
-    assert.equal(parseEditorResponse("9"), null);
+  it("número fora do range 1-10 → null (#2479: range estendido pra Threads)", () => {
+    assert.equal(parseEditorResponse("11"), null);
     assert.equal(parseEditorResponse("0,1"), null);
   });
 
@@ -211,6 +223,32 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(c.instagram, "auto");
   });
 
+  it("'9' → Threads auto (canais não mencionados ficam manual) (#2479)", () => {
+    const c = parseEditorResponse("9");
+    assert.ok(c);
+    assert.equal(c.threads, "auto");
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.facebook, "manual");
+    assert.equal(c.instagram, "manual");
+  });
+
+  it("'10' → Threads manual (#2479)", () => {
+    const c = parseEditorResponse("10");
+    assert.ok(c);
+    assert.equal(c.threads, "manual");
+  });
+
+  it("'1,3,5,7,9' → tudo auto incluindo Instagram + Threads (#2479)", () => {
+    const c = parseEditorResponse("1,3,5,7,9");
+    assert.ok(c);
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.equal(c.instagram, "auto");
+    assert.equal(c.threads, "auto");
+  });
+
   it("texto não-numérico → null", () => {
     assert.equal(parseEditorResponse("abc"), null);
     assert.equal(parseEditorResponse("1,abc,3"), null);
@@ -233,14 +271,20 @@ describe("hasAnyAutoChannel (#1238)", () => {
   it("true quando algum canal é auto", () => {
     assert.equal(hasAnyAutoChannel(autoApproveConsent()), true);
     assert.equal(
-      hasAnyAutoChannel({ newsletter: "manual", linkedin: "auto", facebook: "manual", source: "x" }),
+      hasAnyAutoChannel({ newsletter: "manual", linkedin: "auto", facebook: "manual", instagram: "manual", threads: "manual", source: "x" }),
+      true,
+    );
+  });
+  it("true quando só threads é auto (#2479)", () => {
+    assert.equal(
+      hasAnyAutoChannel({ newsletter: "manual", linkedin: "manual", facebook: "manual", instagram: "manual", threads: "auto", source: "x" }),
       true,
     );
   });
   it("false quando tudo manual ou skipped", () => {
     assert.equal(hasAnyAutoChannel(defaultManualConsent()), false);
     assert.equal(
-      hasAnyAutoChannel({ newsletter: "skipped", linkedin: "skipped", facebook: "manual", source: "x" }),
+      hasAnyAutoChannel({ newsletter: "skipped", linkedin: "skipped", facebook: "manual", instagram: "manual", threads: "manual", source: "x" }),
       false,
     );
   });
@@ -255,7 +299,13 @@ describe("allChannelsSkipped (#1238)", () => {
     assert.equal(allChannelsSkipped(defaultManualConsent()), false);
     assert.equal(allChannelsSkipped(autoApproveConsent()), false);
     assert.equal(
-      allChannelsSkipped({ newsletter: "skipped", linkedin: "skipped", facebook: "auto", source: "x" }),
+      allChannelsSkipped({ newsletter: "skipped", linkedin: "skipped", facebook: "auto", instagram: "skipped", threads: "skipped", source: "x" }),
+      false,
+    );
+  });
+  it("false quando threads não-skipped mas resto skipped (#2479)", () => {
+    assert.equal(
+      allChannelsSkipped({ newsletter: "skipped", linkedin: "skipped", facebook: "skipped", instagram: "skipped", threads: "manual", source: "x" }),
       false,
     );
   });

@@ -354,6 +354,11 @@ describe("loadSocialsFromConfig (#2488)", () => {
     const socials = loadSocialsFromConfig();
     assert.ok(socials.includes("instagram"), "deve incluir instagram do config atual");
   });
+
+  it("inclui threads (canal adicionado em #2479)", () => {
+    const socials = loadSocialsFromConfig();
+    assert.ok(socials.includes("threads"), "deve incluir threads do config atual");
+  });
 });
 
 // #2486 / #633: regressão de severity — Instagram sem creds é warning (não error),
@@ -444,22 +449,24 @@ describe("checkConsentBinding — canais dinâmicos via platform.config (#2488)"
   });
 
   it("canal desconhecido no consent (não no config) é ignorado silenciosamente", () => {
-    // Se consent contiver "threads" mas config#socials não tiver, não deve produzir violation.
+    // Se consent contiver "tiktok" mas config#socials não tiver, não deve produzir violation.
     // (O canal seria ignorado pelo loop "for platform of socials".)
+    // #2479: usa "tiktok" como canal hipotético — "threads" virou canal real do config,
+    // então não serve mais como exemplo de canal-não-configurado.
     const dir = makeEditionDir();
     try {
       writeFileSync(
         resolve(dir, "_internal", "05-publish-consent.json"),
-        JSON.stringify({ newsletter: "manual", linkedin: "auto", facebook: "auto", threads: "auto" }),
+        JSON.stringify({ newsletter: "manual", linkedin: "auto", facebook: "auto", tiktok: "auto" }),
       );
       writeSocialPublished(dir, [
         { platform: "linkedin", status: "scheduled", url: null },
         { platform: "facebook", status: "scheduled", url: null },
       ]);
       const violations = checkConsentBinding(dir);
-      // threads não está no config → não gera violation
+      // tiktok não está no config → não gera violation
       assert.ok(
-        !violations.some((v) => v.rule === "consent-binding-threads"),
+        !violations.some((v) => v.rule === "consent-binding-tiktok"),
         `não deve emitir violation para canal não configurado; got: ${JSON.stringify(violations.map((v) => v.rule))}`,
       );
       // linkedin e facebook OK → sem violation

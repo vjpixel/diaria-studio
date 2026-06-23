@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 46 invariants.
+**Total**: 47 invariants.
 
 ## Static (estrutura do repo)
 
@@ -82,6 +82,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `stage-5-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |
 | `step-4-sentinel-exists` | _internal/.step-4-done.json escrito (#780) | #780 |
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
+| `threads-creds-set` | THREADS_USER_ID + THREADS_ACCESS_TOKEN presentes — ausente pula Threads (#2479) | #2479 |
 
 ## Stage 6 — Agendamento
 
