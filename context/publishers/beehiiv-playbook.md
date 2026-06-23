@@ -4,6 +4,8 @@ Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como *
 
 ## TLDR (#1327)
 
+> **⚠️ DEGRADADO desde 260623 (#2495).** O fluxo canônico abaixo (upload Worker + fetch na Fase 3) está parcialmente quebrado: o `fetch()` do Worker **fica pendurado** dentro do `javascript_tool` na página `app.beehiiv.com` (bloqueio CSP `connect-src`). Além disso, após o paste do snippet completo (~34KB + imagens), **a página congela** e a automação de UI subsequente (subject, preview, slug, capa, test email) torna-se inoperante. O editor precisa finalizar esses passos manualmente na UI do Beehiiv. Workaround usado em 260623: injetar HTML via base64 inline (chunks via `javascript_tool` → `atob` + `TextDecoder` → `insertContentAt`) — veja fallback chunked no apêndice. Ver follow-ups #2500 (CSP) e #2501 (edit_post gated) para as ações necessárias.
+
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
 1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker. **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
@@ -397,7 +399,7 @@ const postAfter = await mcp__claude_ai_Beehiiv__get_post({ post_id });
 const coverChanged = postAfter.thumbnail_url !== postBefore.thumbnail_url;
 ```
 
-> **⚠️ #1705 (atualizado em #2340):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free). Por enquanto, o único caminho viável para SETAR a cover é Chrome/#1500. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano.
+> **⚠️ #1705 (atualizado em #2340, confirmado em #2495):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free) — retorna *"not available on your current plan"*. Em 260623 foi confirmado que **`edit_post` como um todo está gated**: tentativa de setar `title`, `subtitle`, `email_settings` e `slug` via MCP também retornou erro de plano. Por enquanto, o único caminho viável para metadados de post (capa, subject, preview, slug) é Chrome. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano e #2501 para o follow-up deste bloqueio.
 
 **Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem `classifyCoverVerify` retornar `applied: true`. E, simetricamente, **NUNCA** escreva `cover_status: stale_pending_manual` ou `cover_replace_failed` sem ter chamado `buildCoverDataTransferJs` (#1500) e recebido `applied: false` em resposta — ter chamado #1500 e obtido `applied: false` é pré-condição para declarar falha, não consequência. Se após 3 tentativas `applied: false`, **SEMPRE** emita no gate e no resumo final:
 
@@ -507,6 +509,8 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
+> **⚠️ DEGRADADO desde 260623 (#2495).** O upload para o Worker (este passo) ainda funciona. Porém o `fetch()` da Fase 3 — que busca o HTML do Worker de dentro da página `app.beehiiv.com` — **fica pendurado sem resolver nem rejeitar** (bloqueio de CSP `connect-src`). Use o fallback chunked (apêndice) enquanto este bloqueio não for resolvido. Follow-up: #2500.
+
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
@@ -536,6 +540,8 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 **Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
 
 **Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
+
+> **⚠️ DEGRADADO desde 260623 (#2495) — fase bloqueada por CSP.** O `fetch('{DRAFT_PREVIEW_URL}')` executado dentro do `javascript_tool` na página `app.beehiiv.com` **fica pendurado indefinidamente** (confirmado 3× em 260623, incluindo fetch de controle). Comportamento de bloqueio de `connect-src` no CSP do Beehiiv, apertado desde a validação do #1054. **Usar o fallback chunked base64 (apêndice)** enquanto este bloqueio não for resolvido. Adicionalmente: após inserir o snippet completo (~34KB + imagens), **a página trava o renderer** — `computer` (screenshot/click) e `javascript_tool` retornam `CDP timed out after 45000ms / renderer may be frozen`. Isso impede toda automação de UI subsequente (subject, preview, slug, capa, test email). O editor deve finalizar esses passos manualmente na UI do Beehiiv. Follow-up: #2500 (CSP) e #2501 (edit_post gated).
 
 Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
 
