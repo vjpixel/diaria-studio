@@ -319,7 +319,13 @@ describe("#2496 — split emite pool capado via --pool-out", () => {
 
       // manifest inclui pool_out quando flag passado
       const manifest = JSON.parse(stdout.trim());
-      assert.equal(manifest.pool_out, poolOutPath, "manifest.pool_out aponta pro arquivo gravado");
+      // #2496: pool_out é normalizado pra forward-slash (igual chunk_files[]) —
+      // comparar contra o path normalizado (no Windows, poolOutPath tem `\`).
+      assert.equal(
+        manifest.pool_out,
+        poolOutPath.replaceAll("\\", "/"),
+        "manifest.pool_out aponta pro arquivo gravado (forward-slash normalizado)",
+      );
 
       // total_articles no manifest reflete o pool CAPADO (não o não-capado)
       const poolTotal =
@@ -348,6 +354,86 @@ describe("#2496 — split emite pool capado via --pool-out", () => {
       const manifest = JSON.parse(stdout.trim());
       // pool_out não deve aparecer no manifest quando flag não foi passado
       assert.equal(manifest.pool_out, undefined, "sem --pool-out: pool_out ausente no manifest");
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  // #2496 review sweep: re-split SEM --pool-out deve REMOVER tmp-scoring-pool.json
+  // stale do run anterior → senao o merge (1q.3) consome um pool de outro run.
+  it("re-split sem --pool-out remove tmp-scoring-pool.json stale (anti-stale, #2496)", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2496-stale-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    // tmp-scoring-pool.json mora no PARENT de scoring-chunks/ (= _internal/).
+    const stalePoolPath = join(tmpBase, "tmp-scoring-pool.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      // Simula um pool capado de um run ANTERIOR no disco.
+      writeFileSync(stalePoolPath, JSON.stringify({ categorized: { lancamento: [], radar: [{ url: "stale" }], use_melhor: [], video: [] } }));
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      // Re-split SEM --pool-out.
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      // O stale deve ter sido removido (nao consumivel pelo merge deste run).
+      assert.ok(
+        !existsSync(stalePoolPath),
+        "tmp-scoring-pool.json stale deve ser removido no re-split sem --pool-out",
+      );
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  // #2496 review sweep: re-split COM --pool-out sobrescreve com o pool fresco
+  // (nao deixa o stale → writeFileSync trunca).
+  it("re-split com --pool-out sobrescreve tmp-scoring-pool.json com pool fresco (#2496)", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2496-fresh-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    const poolOutPath = join(tmpBase, "tmp-scoring-pool.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      // Pool stale de run anterior contendo uma URL que NAO esta no input atual.
+      writeFileSync(poolOutPath, JSON.stringify({ categorized: { lancamento: [{ url: "stale-url" }], radar: [], use_melhor: [], video: [] } }));
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir, poolOut: poolOutPath });
+
+      const pool = JSON.parse(readFileSync(poolOutPath, "utf8"));
+      const allUrls = [
+        ...pool.categorized.lancamento,
+        ...pool.categorized.radar,
+        ...pool.categorized.use_melhor,
+        ...(pool.categorized.video ?? []),
+      ].map((a: { url: string }) => a.url);
+      assert.ok(!allUrls.includes("stale-url"), "pool fresco nao contem a stale-url do run anterior");
+      assert.ok(allUrls.includes("https://example.com/1"), "pool fresco contem a URL do input atual");
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  // #2496 review (#2509 followup): a limpeza do stale — INCONDICIONAL (fora do
+  // gate existsSync(scoring-chunks/)). Mesmo sem scoring-chunks/ pre-existente (fresh
+  // edition), um tmp-scoring-pool.json stale no _internal/ deve ser removido.
+  it("re-split sem --pool-out remove stale mesmo sem scoring-chunks/ pre-existente (#2509)", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2509-nochunkdir-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    const stalePoolPath = join(tmpBase, "tmp-scoring-pool.json");
+    // NAO criar chunksDir de proposito — o split o cria via mkdirSync.
+    try {
+      writeFileSync(stalePoolPath, JSON.stringify({ categorized: { lancamento: [], radar: [{ url: "stale-orphan" }], use_melhor: [], video: [] } }));
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      assert.ok(
+        !existsSync(stalePoolPath),
+        "stale removido mesmo sem scoring-chunks/ pre-existente (cleanup incondicional, #2509)",
+      );
     } finally {
       rmSync(tmpBase, { recursive: true, force: true });
     }

@@ -4,6 +4,7 @@ import {
   extractScores,
   mergeChunks,
   loadChunks,
+  MAX_BENIGN_MISSING,
   type ChunkScoreFile,
 } from "../scripts/merge-scored-chunks.ts";
 import type { Categorized } from "../scripts/split-articles-for-scoring.ts";
@@ -316,10 +317,10 @@ describe("#2496 — use_melhor capado não vira catastrophic", () => {
     // com o pool capado, missing_count=0 e catastrophic=false (teste anterior).
   });
 
-  it("catastrophic REAL ainda detectado: lancamento missing no pool capado → catastrophic", () => {
-    // Garante que o fix #2496 NÃO cega o guard #1669 para perdas reais.
-    // Cenário: pool capado tem 3 lancamentos, mas o scorer-chunk não pontuou l3
-    // (chunk falhou ou agente omitiu) → perda real → deve ser catastrophic.
+  it("gap benigno (1 lancamento missing ≤ MAX_BENIGN_MISSING) no pool capado → incompleto mas NÃO catastrophic", () => {
+    // Fronteira benigna: 1 artigo missing (≤ MAX_BENIGN_MISSING) é gap recuperável,
+    // NÃO catastrophic. A detecção REAL de catastrophic está nos 2 testes abaixo
+    // (gap > MAX_BENIGN_MISSING e chunk inteiro ilegível).
     const cappedPool: Categorized = {
       // 3 lancamentos, 5 radar, 3 use_melhor — pool pequeno mas representativo
       lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
@@ -340,8 +341,34 @@ describe("#2496 — use_melhor capado não vira catastrophic", () => {
     assert.equal(r.missing_count, 1);
     // missing_count=1 ≤ MAX_BENIGN_MISSING=2 → não é catastrophic (gap benigno recuperável)
     // MAS se o chunk inteiro falhou → catastrophic via failed_chunks
-    assert.equal(r.catastrophic, false, "1 artigo missing: gap benigno (≤ MAX_BENIGN_MISSING=2), não catastrophic");
+    assert.ok(MAX_BENIGN_MISSING >= 1, "fixture assume MAX_BENIGN_MISSING >= 1");
+    assert.equal(r.catastrophic, false, "1 artigo missing: gap benigno (≤ MAX_BENIGN_MISSING), não catastrophic");
     assert.equal(r.incomplete, true, "mas incompleto — artigo recebe score 0");
+  });
+
+  it("catastrophic REAL detectado: gap > MAX_BENIGN_MISSING no pool capado (sem failed_chunks) → catastrophic", () => {
+    // O caso crítico que faltava (#2496 review sweep): pool capado + failed_chunks=0
+    // + missing_count > MAX_BENIGN_MISSING. Prova que o fix (pool capado) NÃO cega o
+    // guard #1669 para perdas REAIS de score (scorer-chunk devolveu all_scored curto,
+    // não um chunk ilegível). Se um futuro patch exentasse use_melhor do cálculo de
+    // missing pra "consertar" o falso-catastrophic, este teste pega a regressão.
+    const cappedPool: Categorized = {
+      lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
+      radar: [mk("r1", "noticias"), mk("r2", "noticias"), mk("r3", "pesquisa"), mk("r4", "pesquisa")],
+      use_melhor: [mk("um1", "tutorial"), mk("um2", "tutorial"), mk("um3", "tutorial")],
+    };
+    // pool_size=10; chunk só pontuou 3 → missing_count=7 (>> MAX_BENIGN_MISSING)
+    const allScores = [
+      { url: "l1", score: 90 }, { url: "r1", score: 70 }, { url: "um1", score: 55 },
+    ];
+    const chunks: ChunkScoreFile[] = [{ all_scored: allScores }];
+    const r = mergeChunks(cappedPool, chunks, 15, /* failedChunks */ 0);
+    assert.equal(r.pool_size, 10);
+    assert.equal(r.scored_count, 3);
+    assert.equal(r.missing_count, 7);
+    assert.equal(r.failed_chunks, 0, "nenhum chunk ilegível → gap puro de score");
+    assert.ok(r.missing_count > MAX_BENIGN_MISSING, "fixture: gap acima do limite benigno");
+    assert.equal(r.catastrophic, true, "gap > MAX_BENIGN_MISSING no pool capado → catastrophic REAL (guard #1669 intacto)");
   });
 
   it("catastrophic REAL detectado: chunk inteiro ilegível com pool capado → catastrophic", () => {
