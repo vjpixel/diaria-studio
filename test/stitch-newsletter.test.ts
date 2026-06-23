@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout } from "../scripts/stitch-newsletter.ts";
 import { extractMidCallout } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
@@ -660,18 +660,27 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /clarice\.ai\/precos-planos\?via=diaria/);
   });
 
-  it("default (sponsor on): injeta o callout entre D1 e D2 + extractMidCallout o acha", () => {
+  it("loadDailyCallout (#2527): retorna o bloco **📚 …** de curadoria de livros", () => {
+    const block = loadDailyCallout();
+    assert.ok(block, "snippet de livros existe");
+    assert.match(block!, /^\*\*\s*📚/);
+    assert.match(block!, /\*\*$/);
+    assert.match(block!, /curadoria de livros/i);
+    assert.match(block!, /livros\.diaria\.workers\.dev/);
+  });
+
+  it("default (sponsor on, #2527): injeta o callout 📚 de livros entre D1 e D2 + extractMidCallout o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d1Pos = out.indexOf("DESTAQUE 1");
-      const calloutPos = out.indexOf("📣");
+      const calloutPos = out.indexOf("📚");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #1938: snippet presente → midCallout no HTML final (extractMidCallout)
+      // acceptance #2527: snippet de livros presente → midCallout 📚 no HTML final
       const mid = extractMidCallout(out);
       assert.ok(mid, "extractMidCallout acha o box");
-      assert.match(mid!, /^📣 Escreva melhor/);
+      assert.match(mid!, /^📚 A Diar\.ia mantém uma curadoria/);
     } finally {
       cleanup();
     }
@@ -681,7 +690,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir, false));
-      assert.ok(!out.includes("📣"), "sem callout quando sponsor=false");
+      assert.ok(!out.includes("📚"), "sem callout quando sponsor=false");
       assert.equal(extractMidCallout(out), null);
     } finally {
       cleanup();

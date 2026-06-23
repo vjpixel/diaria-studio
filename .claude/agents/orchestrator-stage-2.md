@@ -109,7 +109,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
 ```
 
-**#1938:** o stitch auto-injeta o midCallout de divulgação CLARICE (`**📣 …**`, fonte única `context/snippets/clarice-divulgacao.md`) entre D1 e D2 em **todo daily** (decisão editorial). Idempotente (pula se D1/D2 já trazem `**📣 …**`). Kill-switch pontual: `--no-sponsor`.
+**#1938/#2527:** o stitch auto-injeta o midCallout de divulgação entre D1 e D2 em **todo daily** (decisão editorial). **Default desde #2527: bloco 📚 de curadoria de livros** (`context/snippets/livros-divulgacao.md`, via `loadDailyCallout`); o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual). Idempotente (pula se D1/D2 já trazem um callout `**📣/📚/🎉 …**`). Kill-switch pontual: `--no-sponsor` (suprime o callout, seja livros ou Clarice).
 
 O script é determinístico, sem LLM. Ordem canonical:
 - Coverage line (do `01-approved-capped.json > coverage.line`)
@@ -295,7 +295,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Exit 0 = todas URLs em LANÇAMENTOS estáveis (warnings em outras seções são informativos, não bloqueiam). Exit 1 = Clarice mexeu em URL de lançamento — incluir o output no prompt do gate humano com diff `antes/depois` pra editor decidir: aceitar a versão pós-Clarice (pode quebrar #160) ou restaurar manualmente em `02-reviewed.md`. Não auto-restaurar — preserva agência editorial.
 
-- **Verificar sobrevivência dos cupons CLARICE (#1982).** O bloco de divulgação CLARICE (midCallout `**📣 …**` #1938 + PARA ENCERRAR) passa por humanizer + Clarice; os cupons `NEWS25`/`NEWS50` e o link de afiliado `?via=diaria` não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
+- **Verificar sobrevivência dos cupons CLARICE (#1982).** Os cupons `NEWS25`/`NEWS50` + link de afiliado `?via=diaria` aparecem no bloco PARA ENCERRAR (sempre) e no midCallout `**📣 …**` Clarice **apenas quando esse for o callout ativo** (desde #2527 o default diário é o 📚 livros, sem cupons — o check sai exit 0 "sem patrocínio", esperado). Esses literais passam por humanizer + Clarice e não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
   ```bash
   npx tsx scripts/verify-clarice-coupons.ts \
     --pre data/editions/{AAMMDD}/_internal/02-normalized.md \

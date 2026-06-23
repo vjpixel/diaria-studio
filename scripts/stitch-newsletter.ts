@@ -77,20 +77,38 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * #1938: carrega o bloco canônico de divulgação CLARICE (`**📣 …**`) de
- * `context/snippets/clarice-divulgacao.md` — fonte ÚNICA reaproveitada na
- * diária (midCallout) e na mensal. Strip do comentário HTML de header; retorna
- * o bloco `**📣 …**` trimado, ou `null` se o arquivo não existir / não tiver o
- * marcador (graceful — daily sai sem sponsor em vez de quebrar).
+ * Carrega um bloco de divulgação de `context/snippets/{file}` matchando o
+ * `marker` informado (📣 Clarice, 📚 livros). Strip do comentário HTML de
+ * header; retorna o bloco bold-wrapped trimado, ou `null` se o arquivo não
+ * existir / não tiver o marcador (graceful — daily sai sem callout em vez de
+ * quebrar).
  */
-export function loadClariceCallout(): string | null {
+function loadCalloutSnippet(file: string, marker: string): string | null {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const p = join(root, "context", "snippets", "clarice-divulgacao.md");
+  const p = join(root, "context", "snippets", file);
   if (!existsSync(p)) return null;
   const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
-  // Exige o bloco bold-wrapped iniciado por 📣 (mesmo que extractMidCallout casa).
-  const m = raw.match(/\*\*\s*📣[\s\S]+?\*\*/);
+  // Bloco bold-wrapped iniciado pelo marcador (mesmo que extractMidCallout casa).
+  const re = new RegExp(`\\*\\*\\s*${marker}[\\s\\S]+?\\*\\*`);
+  const m = raw.match(re);
   return m ? m[0].trim() : null;
+}
+
+/**
+ * #2527: carrega o midCallout DIÁRIO default — bloco de curadoria de LIVROS
+ * (`**📚 …**`) de `context/snippets/livros-divulgacao.md`. Substituiu o bloco
+ * 📣 Clarice como padrão (decisão editorial). Graceful: snippet ausente → null.
+ */
+export function loadDailyCallout(): string | null {
+  return loadCalloutSnippet("livros-divulgacao.md", "📚");
+}
+
+/**
+ * #1938: bloco canônico de divulgação CLARICE (`**📣 …**`) — mantido para reuso
+ * (mensal, ou troca pontual do callout diário). Não é mais o default diário (#2527).
+ */
+export function loadClariceCallout(): string | null {
+  return loadCalloutSnippet("clarice-divulgacao.md", "📣");
 }
 
 /**
@@ -286,18 +304,19 @@ export function stitchNewsletter(input: StitchInput): string {
   const radar = renderSection("📡", "RADAR", "RADAR", approved.radar ?? []);
   const videos = renderSection("📺", "VÍDEO", "VÍDEOS", approved.video ?? []);
 
-  // #1938: midCallout de divulgação CLARICE entre D1 e D2, isolado entre dois
+  // #1938/#2527: midCallout de divulgação entre D1 e D2, isolado entre dois
   // `---` (posição que extractMidCallout procura; #1972 garante de-dup no render).
-  // Idempotente: pula se D1/D2 já trazem um `**📣 …**` (editor já colou à mão, ou
+  // Default = bloco 📚 de curadoria de livros (#2527; antes era o 📣 Clarice).
+  // Idempotente: pula se D1/D2 já trazem um callout (editor já colou à mão, ou
   // re-run). Kill-switch: sponsor=false. Graceful: snippet ausente → sem callout.
   const wantSponsor = input.sponsor !== false;
-  // Code-review #1938: casa QUALQUER marcador de callout (📣/📚/🎉), não só 📣 —
-  // se um 📚 (livros) ou 🎉 (sorteio) já estiver na região do D1, um 2º callout
-  // 📣 criaria dois midCallouts (extractMidCallout só renderiza o 1º, o outro
-  // orfana). Qualquer callout pré-existente suprime a injeção.
+  // Code-review #1938: casa QUALQUER marcador de callout (📣/📚/🎉) — se um callout
+  // (livros/Clarice/sorteio) já estiver na região do D1, um 2º callout criaria
+  // dois midCallouts (extractMidCallout só renderiza o 1º, o outro orfana).
+  // Qualquer callout pré-existente suprime a injeção.
   const calloutRe = /\*\*\s*(?:📣|📚|🎉)/;
   const alreadyHasCallout = calloutRe.test(d1) || calloutRe.test(d2);
-  const clariceCallout = wantSponsor && !alreadyHasCallout ? loadClariceCallout() : null;
+  const dailyCallout = wantSponsor && !alreadyHasCallout ? loadDailyCallout() : null;
 
   const parts: string[] = [
     coverageLine,
@@ -309,8 +328,8 @@ export function stitchNewsletter(input: StitchInput): string {
     "---",
     "",
   ];
-  if (clariceCallout) {
-    parts.push(clariceCallout, "", "---", "");
+  if (dailyCallout) {
+    parts.push(dailyCallout, "", "---", "");
   }
   parts.push(
     d2,
