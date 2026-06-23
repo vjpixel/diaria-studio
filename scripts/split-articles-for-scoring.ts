@@ -23,9 +23,17 @@
  *     --out-dir data/editions/{AAMMDD}/_internal/scoring-chunks \
  *     [--chunk-size 30]
  *
- * Output stdout: JSON manifest { total_articles, chunk_count, chunk_files[] }.
+ * Output stdout: JSON manifest { total_articles, chunk_count, chunk_files[], pool_out? }.
  * Quando total_articles <= chunk-size, emite 1 chunk só (o orchestrator pode
  * cair no caminho single-scorer nesse caso).
+ *
+ * --pool-out <path> (#2496): quando fornecido, grava o pool capado
+ * (após audience_affinity + dedup/cap use_melhor) em <path> com shape
+ * { categorized: {...} }. O merge-scored-chunks.ts deve receber esse arquivo
+ * como --categorized em vez de tmp-dates-reviewed.json, para que o pool de
+ * comparação seja exatamente o que foi distribuído nos chunks — evita
+ * falso catastrophic quando use_melhor é capado (ex: 31→15, os 16 capados
+ * apareciam como missing no merge → missing_count > 2 → catastrophic falso).
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from "node:fs";
@@ -69,6 +77,8 @@ export interface SplitManifest {
   total_articles: number;
   chunk_count: number;
   chunk_files: string[];
+  /** Caminho do pool capado gravado por --pool-out (#2496). Presente apenas quando o flag é passado. */
+  pool_out?: string;
 }
 
 /** Achata os buckets na ordem canônica, preservando o bucket de cada artigo. */
@@ -142,10 +152,14 @@ export function main(): void {
   const categorizedPath = args.categorized;
   const outDir = args["out-dir"];
   const chunkSize = parseInt(args["chunk-size"] ?? "30", 10);
+  // #2496: --pool-out emite o pool capado para que merge-scored-chunks use como
+  // --categorized. Sem isso o merge compara contra o pool não-capado e gera
+  // falso catastrophic quando use_melhor tem muitos itens capados.
+  const poolOut = args["pool-out"];
 
   if (!categorizedPath || !outDir) {
     console.error(
-      "Uso: split-articles-for-scoring.ts --categorized <tmp-dates-reviewed.json> --out-dir <dir> [--chunk-size 30]",
+      "Uso: split-articles-for-scoring.ts --categorized <tmp-dates-reviewed.json> --out-dir <dir> [--chunk-size 30] [--pool-out <path>]",
     );
     process.exit(1);
   }
@@ -184,6 +198,18 @@ export function main(): void {
       );
     }
     categorized["use_melhor"] = deduped;
+  }
+
+  // #2496: gravar o pool capado (pós audience_affinity + dedup/cap use_melhor)
+  // num arquivo separado. O orchestrator passa este arquivo como --categorized
+  // do merge-scored-chunks, garantindo que o merge compare contra exatamente o
+  // que foi distribuído nos chunks — evita falso catastrophic quando use_melhor
+  // é capado (ex: 31→15: os 16 capados não pontuados apareciam como missing
+  // → missing_count > 2 → catastrophic falso, forçando fallback desnecessário).
+  if (poolOut) {
+    const absPoolOut = resolve(ROOT, poolOut);
+    writeFileSync(absPoolOut, JSON.stringify({ categorized }, null, 2), "utf8");
+    console.error(`[split-articles-for-scoring] pool capado gravado em ${absPoolOut} (#2496)`);
   }
 
   const chunks = buildChunks(categorized, chunkSize);
@@ -277,6 +303,9 @@ export function main(): void {
     total_articles: flattenCategorized(categorized).length,
     chunk_count: chunks.length,
     chunk_files: chunkFiles,
+    // #2496: incluir no manifest o caminho do pool capado (quando --pool-out foi passado),
+    // para que o orchestrator possa usá-lo como --categorized do merge sem hardcodar o path.
+    ...(poolOut ? { pool_out: poolOut } : {}),
   };
   process.stdout.write(JSON.stringify(manifest) + "\n");
 }

@@ -397,16 +397,23 @@ O scorer single-call (Opus sobre ~80-150 artigos numa passada) gastava ~8min. Ag
 npx tsx scripts/split-articles-for-scoring.ts \
   --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
   --out-dir data/editions/{AAMMDD}/_internal/scoring-chunks \
-  --chunk-size 30
+  --chunk-size 30 \
+  --pool-out data/editions/{AAMMDD}/_internal/tmp-scoring-pool.json
 ```
-O manifest stdout traz `chunk_count` + `chunk_files[]`. **Se `chunk_count <= 1`, pular pro 1q-fallback.**
+O manifest stdout traz `chunk_count` + `chunk_files[]` + `pool_out` (quando `--pool-out` é passado). **Se `chunk_count <= 1`, pular pro 1q-fallback.**
+
+`--pool-out` (#2496): grava o pool **capado** (pós `dedupeUseMelhorBucket`) em `tmp-scoring-pool.json`. O passo 1q.3 usa este arquivo como `--categorized` do merge — garante que o merge compare contra exatamente o que foi distribuído nos chunks. Sem isso, o merge recebia `tmp-dates-reviewed.json` (pool não-capado) e os artigos `use_melhor` capados apareciam como `missing` → falso `catastrophic`.
 
 **1q.2 — Pontuar em paralelo.** Disparar `chunk_count` agents `scorer-chunk` **EM PARALELO** (uma chamada `Agent` por chunk, todas no MESMO bloco de tool calls). Cada um: input = `scoring-chunks/scoring-chunk-{i}.json`, out_path = `scoring-chunks/scored-chunk-{i}.json`.
 
 **1q.3 — Merge.**
 ```bash
+# #2496: usar tmp-scoring-pool.json (pool capado emitido pelo split) como --categorized,
+# NÃO tmp-dates-reviewed.json. O merge compara artigos pontuados contra o pool que
+# de fato foi distribuído nos chunks — evita falso catastrophic quando use_melhor
+# é capado pelo split (ex: 31→15: os 16 capados apareciam como missing → exit 2 falso).
 npx tsx scripts/merge-scored-chunks.ts \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
+  --categorized data/editions/{AAMMDD}/_internal/tmp-scoring-pool.json \
   --chunk-scores data/editions/{AAMMDD}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-{N-1}.json \
   --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
   --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \

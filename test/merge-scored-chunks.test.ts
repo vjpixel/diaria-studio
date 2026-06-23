@@ -252,3 +252,111 @@ describe("main() CLI — exit code determinístico (#1669)", () => {
     assert.equal(runMerge([valid]).status, 0);
   });
 });
+
+// #2496 — falso catastrophic quando use_melhor é capado pelo split
+//
+// Causa: split-articles-for-scoring capa use_melhor via dedupeUseMelhorBucket
+// (ex: 31→15). merge-scored-chunks recebia tmp-dates-reviewed.json (pool
+// não-capado, 31 use_melhor) e comparava contra os chunks (que só tinham os 15
+// capados). Os 16 use_melhor capados apareciam como missing → missing_count=16
+// > MAX_BENIGN_MISSING=2 → catastrophic=true (falso positivo).
+//
+// Fix: split emite o pool capado (--pool-out) e o merge recebe esse arquivo
+// como --categorized. O pool comparado é exatamente o que foi pontuado.
+describe("#2496 — use_melhor capado não vira catastrophic", () => {
+  it("pool capado (15 use_melhor) vs chunks (15 pontuados) → NOT catastrophic", () => {
+    // Simula o cenário de 260623: split capou use_melhor de 31 → 15.
+    // O merge deve comparar contra os 15 (pool capado), não os 31 (não-capado).
+    // Todos os 15 use_melhor + 3 lancamento + 5 radar foram pontuados → exit 0.
+    const cappedPool: Categorized = {
+      lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
+      radar: [mk("r1", "noticias"), mk("r2", "noticias"), mk("r3", "pesquisa"), mk("r4", "pesquisa"), mk("r5", "noticias")],
+      // 15 use_melhor (capado de >15)
+      use_melhor: Array.from({ length: 15 }, (_, i) => mk(`um${i}`, "tutorial")),
+    };
+    // Todos os 23 artigos do pool capado recebem score nos chunks
+    const allScores = [
+      ...cappedPool.lancamento.map((a) => ({ url: a.url, score: 80 })),
+      ...cappedPool.radar.map((a) => ({ url: a.url, score: 70 })),
+      ...(cappedPool.use_melhor ?? []).map((a) => ({ url: a.url, score: 60 })),
+    ];
+    const chunks: ChunkScoreFile[] = [{ all_scored: allScores }];
+    const r = mergeChunks(cappedPool, chunks, 15, 0);
+    assert.equal(r.pool_size, 23, "pool capado: 3+5+15=23");
+    assert.equal(r.scored_count, 23, "todos pontuados");
+    assert.equal(r.missing_count, 0);
+    assert.equal(r.incomplete, false);
+    assert.equal(r.catastrophic, false, "falso catastrophic #2496: pool capado → não deve ser catastrophic");
+  });
+
+  it("pool não-capado (31 use_melhor) vs chunks (15 pontuados) → catastrophic (comportamento anterior, agora evitado com fix)", () => {
+    // Este teste documenta O PROBLEMA anterior: se o merge recebe o pool
+    // não-capado (31 use_melhor) mas os chunks só pontuaram 15, os 16
+    // capados aparecem como missing → catastrophic falso.
+    // Este teste PASSA catastrophic=true — é O COMPORTAMENTO ERRADO que o fix evita.
+    const uncappedPool: Categorized = {
+      lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
+      radar: [mk("r1", "noticias"), mk("r2", "noticias"), mk("r3", "pesquisa"), mk("r4", "pesquisa"), mk("r5", "noticias")],
+      // 31 use_melhor (NÃO-capado — como estava em tmp-dates-reviewed.json)
+      use_melhor: Array.from({ length: 31 }, (_, i) => mk(`um${i}`, "tutorial")),
+    };
+    // Chunks só pontuam os primeiros 15 use_melhor (os capados)
+    const capItems = (uncappedPool.use_melhor ?? []).slice(0, 15);
+    const allScores = [
+      ...uncappedPool.lancamento.map((a) => ({ url: a.url, score: 80 })),
+      ...uncappedPool.radar.map((a) => ({ url: a.url, score: 70 })),
+      ...capItems.map((a) => ({ url: a.url, score: 60 })),
+    ];
+    const chunks: ChunkScoreFile[] = [{ all_scored: allScores }];
+    const r = mergeChunks(uncappedPool, chunks, 15, 0);
+    // Os 16 use_melhor capados aparecem como missing → catastrophic=true
+    assert.equal(r.missing_count, 16, "16 use_melhor capados aparecem como missing no pool não-capado");
+    assert.equal(r.catastrophic, true, "comportamento errado (pré-fix): falso catastrophic com pool não-capado");
+    // Este teste prova que passar o pool capado (#2496) é necessário:
+    // com o pool capado, missing_count=0 e catastrophic=false (teste anterior).
+  });
+
+  it("catastrophic REAL ainda detectado: lancamento missing no pool capado → catastrophic", () => {
+    // Garante que o fix #2496 NÃO cega o guard #1669 para perdas reais.
+    // Cenário: pool capado tem 3 lancamentos, mas o scorer-chunk não pontuou l3
+    // (chunk falhou ou agente omitiu) → perda real → deve ser catastrophic.
+    const cappedPool: Categorized = {
+      // 3 lancamentos, 5 radar, 3 use_melhor — pool pequeno mas representativo
+      lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
+      radar: [mk("r1", "noticias"), mk("r2", "noticias"), mk("r3", "pesquisa")],
+      use_melhor: [mk("um1", "tutorial"), mk("um2", "tutorial"), mk("um3", "tutorial")],
+    };
+    // chunk pontuou l1, l2, r1, r2, r3, um1, um2, um3 — MAS NÃO l3 (perdido)
+    const allScores = [
+      { url: "l1", score: 90 }, { url: "l2", score: 85 },
+      // l3 AUSENTE — perda real
+      { url: "r1", score: 70 }, { url: "r2", score: 65 }, { url: "r3", score: 60 },
+      { url: "um1", score: 55 }, { url: "um2", score: 50 }, { url: "um3", score: 45 },
+    ];
+    const chunks: ChunkScoreFile[] = [{ all_scored: allScores }];
+    const r = mergeChunks(cappedPool, chunks, 15, 0);
+    assert.equal(r.pool_size, 9);
+    assert.equal(r.scored_count, 8, "1 artigo perdido (l3)");
+    assert.equal(r.missing_count, 1);
+    // missing_count=1 ≤ MAX_BENIGN_MISSING=2 → não é catastrophic (gap benigno recuperável)
+    // MAS se o chunk inteiro falhou → catastrophic via failed_chunks
+    assert.equal(r.catastrophic, false, "1 artigo missing: gap benigno (≤ MAX_BENIGN_MISSING=2), não catastrophic");
+    assert.equal(r.incomplete, true, "mas incompleto — artigo recebe score 0");
+  });
+
+  it("catastrophic REAL detectado: chunk inteiro ilegível com pool capado → catastrophic", () => {
+    // Com pool capado (#2496) E chunk ilegível real → deve continuar sendo catastrophic.
+    const cappedPool: Categorized = {
+      lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],
+      radar: [mk("r1", "noticias"), mk("r2", "noticias")],
+      use_melhor: [mk("um1", "tutorial")],
+    };
+    // 1 chunk pontuou só parte; 1 chunk ilegível → failedChunks=1
+    const partialChunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "l1", score: 90 }, { url: "r1", score: 70 }] },
+    ];
+    const r = mergeChunks(cappedPool, partialChunks, 15, /* failedChunks */ 1);
+    assert.equal(r.failed_chunks, 1);
+    assert.equal(r.catastrophic, true, "chunk ilegível com pool capado → catastrophic REAL, guard #1669 intacto");
+  });
+});

@@ -140,10 +140,12 @@ describe("orchestrator-prompt (#634)", () => {
     // stage-5.md herda o conteúdo pesado do antigo stage-4.md. Budget mantido
     // em 745 por arquivo — stage-4.md (Revisão) é muito menor (~130 linhas).
     // 745→755 quando #2367 adicionou step 1u-bis (dedup-intra-edition).
+    // 755→770 quando #2496 adicionou nota explicativa do --pool-out no passo 1q.1
+    // e comentário no 1q.3 sobre o motivo da mudança de --categorized.
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 755,
-        `${file} tem ${lines[file]} linhas (target ≤755)`,
+        lines[file] <= 770,
+        `${file} tem ${lines[file]} linhas (target ≤770)`,
       );
     }
   });
