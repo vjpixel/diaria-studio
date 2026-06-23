@@ -660,7 +660,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /clarice\.ai\/precos-planos\?via=diaria/);
   });
 
-  it("loadDailyCallout (#2526): retorna o bloco **📚 …** de curadoria de livros", () => {
+  it("loadDailyCallout (#2527): retorna o bloco **📚 …** de curadoria de livros", () => {
     const block = loadDailyCallout();
     assert.ok(block, "snippet de livros existe");
     assert.match(block!, /^\*\*\s*📚/);
@@ -669,7 +669,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /livros\.diaria\.workers\.dev/);
   });
 
-  it("default (sponsor on, #2526): injeta o callout 📚 de livros entre D1 e D2 + extractMidCallout o acha", () => {
+  it("default (sponsor on, #2527): injeta o callout 📚 de livros entre D1 e D2 + extractMidCallout o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
@@ -677,7 +677,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
       const calloutPos = out.indexOf("📚");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #2526: snippet de livros presente → midCallout 📚 no HTML final
+      // acceptance #2527: snippet de livros presente → midCallout 📚 no HTML final
       const mid = extractMidCallout(out);
       assert.ok(mid, "extractMidCallout acha o box");
       assert.match(mid!, /^📚 A Diar\.ia mantém uma curadoria/);
