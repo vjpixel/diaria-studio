@@ -4,6 +4,8 @@ Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como *
 
 ## TLDR (#1327)
 
+> **⚠️ DEGRADADO desde 260623 (#2495).** O fluxo canônico abaixo (upload Worker + fetch na Fase 3) está parcialmente quebrado: o `fetch()` do Worker **fica pendurado** dentro do `javascript_tool` na página `app.beehiiv.com` (bloqueio CSP `connect-src`). Além disso, após o paste do snippet completo (~34KB + imagens), **a página congela** e a automação de UI subsequente (subject, preview, slug, capa, test email) torna-se inoperante. O editor precisa finalizar esses passos manualmente na UI do Beehiiv. Workaround usado em 260623: injetar HTML via base64 inline (chunks via `javascript_tool` → `atob` + `TextDecoder` → `insertContent`) — veja fallback chunked no apêndice. Ver follow-ups #2500 (CSP) e #2501 (edit_post gated) para as ações necessárias.
+
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
 1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker. **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
@@ -11,7 +13,7 @@ Beehiiv newsletter = 1 comando + 1 paste JS:
 
 Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
 
-**Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe só como fallback automático se o Worker falhar — não usar como default mesmo se parecer "mais simples".
+**Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe como fallback automático se o Worker falhar. **Atenção (#2495):** enquanto o bloqueio CSP da Fase 3 persistir, o chunked base64 é o caminho que de fato funciona e precisa ser selecionado **manualmente** — o auto-fallback dispara no exit não-zero de `upload-html-public.ts`, mas a falha atual é um `fetch()` pendurado (exit 0), que o auto-fallback **não** detecta.
 
 **Histórico do arquivo**: este arquivo era `.claude/agents/publish-newsletter.md` até #1114 (2026-05-12). Movido pra `context/publishers/` pra refletir o que ele é de fato: um **playbook lido pelo top-level Claude Code**, não um subagent dispatchável. Razão técnica original em #1054: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes não conseguem chamá-la. E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent completaria o passo 5.
 
@@ -397,7 +399,7 @@ const postAfter = await mcp__claude_ai_Beehiiv__get_post({ post_id });
 const coverChanged = postAfter.thumbnail_url !== postBefore.thumbnail_url;
 ```
 
-> **⚠️ #1705 (atualizado em #2340):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free). Por enquanto, o único caminho viável para SETAR a cover é Chrome/#1500. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano.
+> **⚠️ #1705 (atualizado em #2340, confirmado em #2495):** o campo `thumbnail_image_url` existe no schema do MCP (`edit_post`/`save_post`), mas está **gated por plano pago do Beehiiv** (plano atual = Launch/free) — retorna *"not available on your current plan"*. Em 260623 foi confirmado que **`edit_post` como um todo está gated**: tentativa de setar `title`, `subtitle`, `email_settings` e `slug` via MCP também retornou erro de plano. Por enquanto, o único caminho viável para metadados de post (capa, subject, preview, slug) é Chrome. O campo `thumbnail_url` de `get_post` (READ-only) **está disponível** e muda quando a cover é substituída — útil para verificação pós-apply. Ver #2340 para a decisão de upgrade de plano e #2501 para o follow-up deste bloqueio.
 
 **Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem `classifyCoverVerify` retornar `applied: true`. E, simetricamente, **NUNCA** escreva `cover_status: stale_pending_manual` ou `cover_replace_failed` sem ter chamado `buildCoverDataTransferJs` (#1500) e recebido `applied: false` em resposta — ter chamado #1500 e obtido `applied: false` é pré-condição para declarar falha, não consequência. Se após 3 tentativas `applied: false`, **SEMPRE** emita no gate e no resumo final:
 
@@ -507,6 +509,8 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
+> **⚠️ DEGRADADO desde 260623 (#2495).** O upload para o Worker (este passo) ainda funciona. Porém o `fetch()` da Fase 3 — que busca o HTML do Worker de dentro da página `app.beehiiv.com` — **fica pendurado sem resolver nem rejeitar** (bloqueio de CSP `connect-src`). Use o fallback chunked (apêndice) enquanto este bloqueio não for resolvido. Follow-up: #2500.
+
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
@@ -536,6 +540,8 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 **Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
 
 **Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
+
+> **⚠️ DEGRADADO desde 260623 (#2495) — fase bloqueada por CSP.** O `fetch('{DRAFT_PREVIEW_URL}')` executado dentro do `javascript_tool` na página `app.beehiiv.com` **fica pendurado indefinidamente** (confirmado 3× em 260623, incluindo fetch de controle). Comportamento de bloqueio de `connect-src` no CSP do Beehiiv, apertado desde a validação do #1054. **Usar o fallback chunked base64 (apêndice)** enquanto este bloqueio não for resolvido. Adicionalmente: após inserir o snippet completo (~34KB + imagens), **a página trava o renderer** — `computer` (screenshot/click) e `javascript_tool` retornam `CDP timed out after 45000ms / renderer may be frozen`. Isso impede toda automação de UI subsequente (subject, preview, slug, capa, test email). O editor deve finalizar esses passos manualmente na UI do Beehiiv. **Reload da página NÃO resolve o congelamento.** Nota: o corpo (e título/subtítulo, se já inseridos) costuma ter sido autosalvo antes do freeze (#2375) — o que normalmente falta é só a metadata. Follow-up: #2500 (CSP) e #2501 (edit_post gated).
 
 Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
 
@@ -1044,7 +1050,9 @@ Ou, no caso de envio imediato:
 
 ---
 
-## Apêndice: Fallback chunked (legacy — não usar como default)
+## Apêndice: Fallback chunked (base64 inline)
+
+> **Status (#2495):** rotulado "legacy", mas enquanto o bloqueio CSP da Fase 3 persistir (260623+) **este é o caminho que de fato funciona** para inserir o corpo — selecione-o manualmente. Volta a ser apenas fallback quando o fetch do Worker for desbloqueado.
 
 ⚠️ **Atenção (#1327):** este caminho consome ~80K tokens vs ~5K do Worker-hosted (Fase 2). Só usar quando `upload-html-public.ts` falhar e o fallback automático ativar — nunca como primeira opção em runtime.
 
