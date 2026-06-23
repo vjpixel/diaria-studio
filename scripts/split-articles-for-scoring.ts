@@ -285,22 +285,26 @@ export function main(): void {
     }
   }
 
-  // PASSO 2-bis (#2496): invalidar QUALQUER tmp-scoring-pool.json STALE antes de
-  // (re)escrever os chunks. INCONDICIONAL e FORA do gate existsSync(absOutDir) —
-  // mirror exato da disciplina de tmp-allscored.json — para que nenhum pool de um
-  // run anterior sobreviva a este split (o merge em 1q.3 o consumiria via
-  // --categorized e compararia contra chunks DESTE run → falso missing/catastrophic
-  // ou falso-safe). Remove tanto o path canônico (que o orchestrator hardcoda no
-  // merge) quanto o destino atual de --pool-out, se diferente. PASSO 3 reescreve o
-  // destino atual com o pool fresco logo abaixo.
+  // PASSO 2-bis (#2496/#2519): invalidar tmp-scoring-pool.json STALE antes de
+  // (re)escrever os chunks. Remove SOMENTE os paths que serão re-escritos neste
+  // run pelo PASSO 3 (i.e., absPoolOut não-null). Se --pool-out foi passado,
+  // apaga tanto o canonicalPoolPath (que o orchestrator hardcoda no merge em 1q.3)
+  // quanto absPoolOut (se diferente) — ambos serão reescritos logo abaixo.
+  //
+  // #2519: a versão anterior era incondicional e removia canonicalPoolPath MESMO
+  // quando --pool-out estava ausente (absPoolOut null). Nesse caso o PASSO 3 não
+  // reescreve o arquivo → merge em 1q.3 recebe ENOENT → exit 1 → HALT. Fix:
+  // só deletar quando absPoolOut está definido (o arquivo SERÁ reescrito em PASSO 3).
   const canonicalPoolPath = resolve(parentDir, "tmp-scoring-pool.json");
-  for (const stale of new Set([canonicalPoolPath, absPoolOut].filter(Boolean) as string[])) {
-    if (existsSync(stale)) {
-      rmSync(stale, { force: true });
-      console.error(
-        `[split-articles-for-scoring] tmp-scoring-pool.json stale removido (${stale}) — ` +
-        "o merge não consumirá um pool de run anterior (#2496).",
-      );
+  if (absPoolOut) {
+    for (const stale of new Set([canonicalPoolPath, absPoolOut])) {
+      if (existsSync(stale)) {
+        rmSync(stale, { force: true });
+        console.error(
+          `[split-articles-for-scoring] tmp-scoring-pool.json stale removido (${stale}) — ` +
+          "o merge não consumirá um pool de run anterior (#2496).",
+        );
+      }
     }
   }
 
