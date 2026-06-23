@@ -69,6 +69,93 @@ export interface OvernightRun {
   slowest_unit: { label: string; duration_ms: number } | null;
 }
 
+// ─── Use Melhor por edição (data/editions/*/  _internal/01-approved.json + link-ctr-table.csv) ──
+
+export interface UseMelhorItem {
+  /** URL canônica do item (de approved.json — pode diferir da publicada) */
+  url: string;
+  title: string;
+  /** CTR (%) — null se URL não foi encontrada no CSV (join lossy) */
+  ctr_pct: number | null;
+  /** Cliques únicos verificados — null se não encontrado no CSV */
+  unique_verified_clicks: number | null;
+}
+
+export interface UseMelhorEditionEntry {
+  /** AAMMDD da edição */
+  edition: string;
+  items: UseMelhorItem[];
+  /** Quantos itens tinham match no CTR CSV */
+  ctr_matched: number;
+  /** Quantos itens NÃO tinham match (join lossy) */
+  ctr_unmatched: number;
+}
+
+export interface UseMelhorSummary {
+  /** Número de edições com pelo menos 1 item Use Melhor */
+  total_editions_with_use_melhor: number;
+  /** AAMMDD da primeira edição com Use Melhor */
+  first_edition: string | null;
+  /** Entradas por edição (mais recente primeiro) */
+  editions: UseMelhorEditionEntry[];
+  /** Top 10 itens por CTR (todos os tempos) */
+  top_items: Array<{
+    edition: string;
+    url: string;
+    title: string;
+    ctr_pct: number;
+    unique_verified_clicks: number;
+  }>;
+  /** Total de itens com match no CTR vs total publicados (cobertura do join) */
+  coverage: {
+    total_items: number;
+    matched: number;
+    unmatched: number;
+    coverage_pct: number;
+  };
+}
+
+// ─── Poll É IA? (workers/poll KV — push via script externo) ──────────────────
+
+export interface PollEiaEditionEntry {
+  /** AAMMDD */
+  edition: string;
+  /** Total de votos (sem votos de teste do editor) */
+  total_votes: number;
+  /** Votos na opção A */
+  voted_a: number;
+  /** Votos na opção B */
+  voted_b: number;
+  /** Porcentagem de acertos (null se abaixo do threshold ou resposta correta não configurada) */
+  pct_correct: number | null;
+  /** Qual opção era a correta ("A", "B", ou null se não configurado) */
+  correct_choice: string | null;
+}
+
+export interface PollEiaLeaderboardEntry {
+  /** Nickname ou email (parcialmente mascarado) */
+  display_name: string;
+  /** Total de acertos */
+  correct: number;
+  /** Total de participações */
+  total: number;
+  /** Streak atual */
+  streak: number;
+}
+
+export interface PollEiaSummary {
+  /** Fonte dos dados (para rastreabilidade) */
+  source: "push" | "stub";
+  /** AAMMDD da última edição com dados de poll */
+  last_edition: string | null;
+  /** Entradas por edição (mais recente primeiro, máx 20) */
+  editions: PollEiaEditionEntry[];
+  /** Top 10 do leaderboard (votos de teste do editor excluídos) */
+  leaderboard: PollEiaLeaderboardEntry[];
+  /** Timestamp da última atualização dos dados */
+  updated_at: string | null;
+}
+
 // ─── Seções stub (dados não disponíveis localmente ainda) ────────────────────
 
 export interface StubSection {
@@ -103,6 +190,12 @@ export interface DashboardData {
     runs: OvernightRun[];
     total_runs: number;
   };
+
+  /** Use Melhor histórico por edição — null se nenhuma edição com Use Melhor encontrada */
+  use_melhor: UseMelhorSummary | null;
+
+  /** Poll É IA? por edição — null se dados não disponíveis (requer push do workers/poll) */
+  poll_eia: PollEiaSummary | null;
 
   /** Seções que ainda não têm dados disponíveis */
   stubs: StubSection[];

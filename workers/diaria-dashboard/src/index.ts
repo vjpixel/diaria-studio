@@ -21,7 +21,7 @@
  */
 
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
-import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection } from "./types.ts";
+import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary } from "./types.ts";
 
 const DS = DS_COLORS;
 
@@ -31,7 +31,7 @@ export interface Env {
 
 // ─── Re-export types para testes ─────────────────────────────────────────────
 
-export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection };
+export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -79,6 +79,15 @@ function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
   if (status === "verde") return `<span style="color:#2d8a4e">●</span>`;
   if (status === "amarelo") return `<span style="color:#c07800">●</span>`;
   return `<span style="color:#C00000">●</span>`;
+}
+
+/**
+ * #2511 self-review (Angle Reuse): href escapado só se for http(s) — bloqueia
+ * javascript:/data: URIs. Consolidado das 3 cópias do mesmo regex+ternário
+ * (renderCtrSection + renderUseMelhorSection top/edition rows).
+ */
+function safeHttpHref(url: string): string {
+  return /^https?:\/\//i.test(url) ? escHtml(url) : "";
 }
 
 // ─── Render sections ──────────────────────────────────────────────────────────
@@ -264,6 +273,190 @@ export function renderOvernightSection(data: DashboardData): string {
 </section>`;
 }
 
+export function renderUseMelhorSection(data: DashboardData): string {
+  const um = data.use_melhor;
+  if (!um) {
+    return `<section class="dash-section" id="use-melhor">
+  <h2 class="section-title">Use Melhor</h2>
+  <p class="section-note muted">Nenhuma edição com itens Use Melhor encontrada em <code>data/editions/*/  _internal/01-approved.json</code>. A seção Use Melhor foi introduzida em meados de 2026.</p>
+</section>`;
+  }
+
+  // Coverage note
+  const cov = um.coverage;
+  const coveragePct = cov.coverage_pct;
+  const coverageNote = cov.total_items > 0
+    ? `Cobertura do join CTR: <strong>${cov.matched}/${cov.total_items} itens (${coveragePct}%)</strong>` +
+      (cov.unmatched > 0
+        ? ` — <span class="alert-text">${cov.unmatched} sem match</span> (URL de pesquisa ≠ URL publicada — join lossy esperado, ver #CTR)`
+        : "")
+    : "Sem dados de CTR disponíveis";
+
+  // Top items table
+  const hasTopItems = um.top_items.length > 0;
+  const topRows = um.top_items.map((r) => {
+    const safeHref = safeHttpHref(r.url);
+    const linkCell = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
+      : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    // #2511 self-review (Angle A): ctr_pct é `number | null` no tipo — guarda contra
+    // null (schema drift / JSON hand-crafted) p/ não crashar o render inteiro.
+    const ctrCell = r.ctr_pct !== null ? `${r.ctr_pct.toFixed(2)}%` : "—";
+    return `<tr>
+      <td>${escHtml(r.edition)}</td>
+      <td>${escHtml(r.title || "—")}</td>
+      <td class="metric">${ctrCell}</td>
+      <td><small>${r.unique_verified_clicks ?? "—"}</small></td>
+      <td>${linkCell}</td>
+    </tr>`;
+  }).join("\n");
+
+  // Per-edition rows (most recent first, up to 20)
+  const editionRows = (um.editions ?? []).slice(0, 20).map((ed) => {
+    const itemList = (ed.items ?? []).map((it) => {
+      const ctrCell = it.ctr_pct !== null
+        ? `<span class="metric">${it.ctr_pct.toFixed(1)}%</span>`
+        : `<span class="muted">—</span>`;
+      const safeHref = safeHttpHref(it.url);
+      const linkCell = safeHref
+        ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand)">${escHtml(it.title || it.url)}</a>`
+        : escHtml(it.title || it.url);
+      return `<li>${linkCell} ${ctrCell}</li>`;
+    }).join("");
+    const matchNote = ed.ctr_unmatched > 0
+      ? ` <small class="alert-text">(${ed.ctr_unmatched} sem CTR)</small>`
+      : "";
+    return `<tr>
+      <td>${escHtml(ed.edition)}</td>
+      <td>${ed.items.length} itens${matchNote}</td>
+      <td><ul style="margin:0;padding-left:16px">${itemList}</ul></td>
+    </tr>`;
+  }).join("\n");
+
+  return `<section class="dash-section" id="use-melhor">
+  <h2 class="section-title">Use Melhor</h2>
+  <p class="section-note">${um.total_editions_with_use_melhor} edições com Use Melhor (desde ${escHtml(um.first_edition ?? "—")})</p>
+  <p class="section-note muted">${coverageNote}</p>
+
+  ${hasTopItems ? `<h3 class="subsection-title">Top 10 itens por CTR (histórico)</h3>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Edição (AAMMDD)">Edição</th>
+        <th title="Título do item">Título</th>
+        <th title="CTR: cliques ÷ opens (URL publicada — join pode ser parcial)">CTR</th>
+        <th title="Cliques únicos verificados">Cliques</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody>${topRows}</tbody>
+  </table>
+  </div>` : ""}
+
+  <h3 class="subsection-title" style="margin-top:16px">Por edição (últimas 20)</h3>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="AAMMDD">Edição</th>
+        <th title="Quantidade de itens">Itens</th>
+        <th title="Itens publicados com CTR quando disponível">Conteúdo</th>
+      </tr>
+    </thead>
+    <tbody>${editionRows}</tbody>
+  </table>
+  </div>
+  <p class="section-note muted">Dados de <code>data/editions/*/  _internal/01-approved.json</code> + <code>data/link-ctr-table.csv</code>. Join por URL pode ser lossy (~22% gap esperado — #CTR).</p>
+</section>`;
+}
+
+export function renderPollEiaSection(data: DashboardData): string {
+  const poll = data.poll_eia;
+  if (!poll) {
+    return `<section class="dash-section" id="poll-eia">
+  <h2 class="section-title">É IA? (poll)</h2>
+  <p class="section-note muted">Dados não disponíveis. Requer push do <code>workers/poll</code>.</p>
+  <p class="section-note muted">
+    Para habilitar: o worker poll precisa escrever <code>data/poll-eia-summary.json</code>
+    (via <code>npx tsx scripts/build-poll-eia-data.ts --push</code>) com o schema <code>PollEiaSummary</code>.
+    <!-- TODO #2475: cross-worker KV read ou push do workers/poll — requer POLL KV namespace ID -->
+  </p>
+</section>`;
+  }
+
+  // #2511 self-review (Angles A+E): o Worker faz `JSON.parse(raw) as DashboardData`
+  // sem revalidar — KV stale/corrompido pode trazer editions/leaderboard não-array.
+  // Array.isArray defende o render contra crash no .map() (buildPollEiaSummary já
+  // valida no lado do build, mas o Worker lê o KV direto).
+  const editions = Array.isArray(poll.editions) ? poll.editions : [];
+  const leaderboard = Array.isArray(poll.leaderboard) ? poll.leaderboard : [];
+
+  // Edition rows
+  const edRows = editions.slice(0, 20).map((ed) => {
+    const pctCell = ed.pct_correct !== null
+      ? `<span class="metric">${ed.pct_correct}%</span>`
+      : `<span class="muted">—</span>`;
+    const correctCell = ed.correct_choice ? escHtml(ed.correct_choice) : `<span class="muted">?</span>`;
+    return `<tr>
+      <td>${escHtml(ed.edition)}</td>
+      <td>${ed.total_votes}</td>
+      <td>${ed.voted_a} / ${ed.voted_b}</td>
+      <td>${correctCell}</td>
+      <td>${pctCell}</td>
+    </tr>`;
+  }).join("\n");
+
+  // Leaderboard
+  const lbRows = leaderboard.slice(0, 10).map((e, i) => `<tr>
+    <td>${i + 1}º</td>
+    <td>${escHtml(e.display_name)}</td>
+    <td class="metric">${e.correct}</td>
+    <td>${e.total}</td>
+    <td>${e.streak > 0 ? `🔥${e.streak}` : "—"}</td>
+  </tr>`).join("\n");
+
+  const updatedAt = poll.updated_at ? fmtTimeBRT(poll.updated_at) : "—";
+
+  return `<section class="dash-section" id="poll-eia">
+  <h2 class="section-title">É IA? (poll)</h2>
+  <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
+  <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
+
+  <h3 class="subsection-title">Por edição</h3>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="AAMMDD">Edição</th>
+        <th title="Total de votos (votos de teste excluídos)">Total</th>
+        <th title="Votos A / Votos B">A / B</th>
+        <th title="Opção correta">Correta</th>
+        <th title="% que acertou">% acerto</th>
+      </tr>
+    </thead>
+    <tbody>${edRows}</tbody>
+  </table>
+  </div>
+
+  <h3 class="subsection-title" style="margin-top:16px">Leaderboard (top 10)</h3>
+  ${lbRows ? `<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Participante</th>
+        <th title="Total de acertos">Acertos</th>
+        <th title="Total de participações">Participações</th>
+        <th title="Streak atual">Streak</th>
+      </tr>
+    </thead>
+    <tbody>${lbRows}</tbody>
+  </table>
+  </div>` : `<p class="section-note muted">Sem dados de leaderboard ainda.</p>`}
+</section>`;
+}
+
 export function renderStubsSection(stubs: StubSection[]): string {
   if (stubs.length === 0) return "";
 
@@ -298,6 +491,8 @@ export function renderDashboardHtml(data: DashboardData): string {
   const sourceSection = renderSourceHealthSection(data);
   const ctrSection = renderCtrSection(data);
   const overnightSection = renderOvernightSection(data);
+  const useMelhorSection = renderUseMelhorSection(data);
+  const pollEiaSection = renderPollEiaSection(data);
   const stubsSection = renderStubsSection(data.stubs ?? []);
 
   return `<!DOCTYPE html>
@@ -349,12 +544,16 @@ export function renderDashboardHtml(data: DashboardData): string {
 
 <nav class="nav">
   <a href="#ctr">CTR por categoria</a>
+  <a href="#use-melhor">Use Melhor</a>
+  <a href="#poll-eia">É IA?</a>
   <a href="#overnight">Overnight</a>
   <a href="#source-health">Saúde das fontes</a>
   ${data.stubs?.length ? '<a href="#stubs">Em breve</a>' : ""}
 </nav>
 
 ${ctrSection}
+${useMelhorSection}
+${pollEiaSection}
 ${overnightSection}
 ${sourceSection}
 ${stubsSection}

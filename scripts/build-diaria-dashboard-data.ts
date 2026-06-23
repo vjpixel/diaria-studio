@@ -48,6 +48,7 @@ import {
   slugify,
 } from "./lib/source-runs.ts";
 import type { SourceEntry } from "./lib/source-runs.ts";
+import { canonicalize } from "./lib/url-utils.ts";
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
   DashboardData,
@@ -56,6 +57,9 @@ import type {
   CtrByCategoryRow,
   OvernightRun,
   StubSection,
+  UseMelhorSummary,
+  UseMelhorEditionEntry,
+  PollEiaSummary,
 } from "../workers/diaria-dashboard/src/types.ts";
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -78,11 +82,6 @@ const STUBS: StubSection[] = [
     id: "subscriber_growth",
     description: "Crescimento e engajamento de assinantes Beehiiv (taxa, churn, cohort).",
     tracking_issue: "futuro -- requer API Beehiiv live",
-  },
-  {
-    id: "poll_eia",
-    description: "Resultado do poll É IA? por ediçao (score medio, distribuiçao de votos).",
-    tracking_issue: "futuro -- requer cross-worker KV read ou push do workers/poll",
   },
 ];
 
@@ -380,6 +379,234 @@ function buildOvernightSummary(): DashboardData["overnight"] {
   return { runs, total_runs: runs.length };
 }
 
+// ─── Fonte 4: Use Melhor por edição ──────────────────────────────────────────
+
+/** Interface local para o bucket use_melhor em 01-approved.json */
+interface ApprovedUseMelhorItem {
+  url?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Constrói um índice de cliques por URL canônica a partir do CSV.
+ * A URL do CSV é a base_url publicada; a URL do approved.json é a de pesquisa —
+ * o join é intencalmente lossy (~22%). Surfaçamos a cobertura, não a silenciamos.
+ *
+ * #2511 self-review (Angle Simplification): chaves já vêm normalizadas via
+ * normalizeUrlForJoin (canonicalize) no insert — elimina o segundo Map que o
+ * caller construía. O caller usa a mesma normalização no lado do approved.json.
+ */
+function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; unique_verified_clicks: number }> {
+  const index = new Map<string, { ctr_pct: number; unique_verified_clicks: number }>();
+  if (!existsSync(csvPath)) return index;
+  let raw: string;
+  try {
+    raw = readFileSync(csvPath, "utf8");
+  } catch {
+    return index;
+  }
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return index;
+  const header = parseCsvLine(lines[0]);
+  const baseUrlIdx = header.indexOf("base_url");
+  const ctrIdx = header.indexOf("ctr_pct");
+  const clicksIdx = header.indexOf("unique_verified_clicks");
+  const catIdx = header.indexOf("category");
+  if (baseUrlIdx < 0 || ctrIdx < 0 || clicksIdx < 0) return index;
+
+  for (const line of lines.slice(1)) {
+    try {
+      const cols = parseCsvLine(line);
+      // Apenas linhas de Use Melhor
+      const cat = catIdx >= 0 ? (cols[catIdx] ?? "").trim() : "";
+      if (cat !== "Use Melhor") continue;
+      const url = (cols[baseUrlIdx] ?? "").trim();
+      if (!url) continue;
+      // #2511 self-review (Angles A+D): célula ctr_pct em branco NÃO é 0% medido — é
+      // dado ausente. parseFloat("") → NaN; tratar como skip (não inflar coverage com
+      // 0.00% falso). Linha sem CTR válido não entra no índice (vira unmatched no join).
+      const ctrRaw = (cols[ctrIdx] ?? "").trim();
+      const ctr = parseFloat(ctrRaw);
+      if (!Number.isFinite(ctr)) continue;
+      const clicks = parseInt(cols[clicksIdx] ?? "0", 10) || 0;
+      // Keep the highest CTR if the same URL appears multiple times.
+      // Chave canônica (normalizeUrlForJoin) — o caller usa a mesma no lado approved.json.
+      const key = normalizeUrlForJoin(url);
+      const existing = index.get(key);
+      if (!existing || ctr > existing.ctr_pct) {
+        index.set(key, { ctr_pct: ctr, unique_verified_clicks: clicks });
+      }
+    } catch {
+      // skip malformed line
+    }
+  }
+  return index;
+}
+
+/**
+ * Normaliza URL para o join CTR↔use_melhor.
+ *
+ * #2511 self-review (Angle Reuse + Angle E): reusa o `canonicalize` central de
+ * lib/url-utils.ts (#523) em vez de reimplementar. Vantagem sobre a versão
+ * anterior: também remove tracking params (utm_*, ref) e normaliza arxiv — o que
+ * reduz mismatches no join lossy (a URL de pesquisa pode trazer UTM que a publicada
+ * não tem). Mantém o nome `normalizeUrlForJoin` por clareza no call site.
+ */
+export function normalizeUrlForJoin(url: string): string {
+  return canonicalize(url);
+}
+
+/**
+ * buildUseMelhorSummary (#2474)
+ *
+ * Varre data/editions/{AAMMDD}/_internal/01-approved.json, extrai o bucket use_melhor,
+ * e faz join com o CTR CSV por URL. O join e intencialmente lossy — a URL de
+ * pesquisa (approved.json) difere da URL publicada (CTR CSV); surfacamos a
+ * cobertura via coverage em vez de silenciar o gap.
+ */
+export function buildUseMelhorSummary(
+  // #2511 self-review (Angle Altitude): params opcionais p/ isolar testes do DATA_DIR
+  // real (junction OneDrive). Default = produção. Testes injetam dir/csv temporário.
+  editionsDir: string = join(DATA_DIR, "editions"),
+  csvPath: string = join(DATA_DIR, "link-ctr-table.csv"),
+): UseMelhorSummary | null {
+  if (!existsSync(editionsDir)) return null;
+
+  // Build CTR index já normalizado por URL (canonicalize aplicado no insert).
+  const ctrByNormalized = buildCtrIndexByUrl(csvPath);
+
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return null;
+  }
+
+  const editionEntries: UseMelhorEditionEntry[] = [];
+  let totalMatched = 0;
+  let totalUnmatched = 0;
+  const allTopItems: Array<{ edition: string; url: string; title: string; ctr_pct: number; unique_verified_clicks: number }> = [];
+
+  for (const edition of dirs) {
+    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
+    if (!existsSync(approvedPath)) continue;
+
+    let approved: { use_melhor?: ApprovedUseMelhorItem[] };
+    try {
+      approved = JSON.parse(readFileSync(approvedPath, "utf8")) as typeof approved;
+    } catch {
+      continue;
+    }
+
+    const items = approved.use_melhor ?? [];
+    if (items.length === 0) continue;
+
+    let edMatched = 0;
+    let edUnmatched = 0;
+    const edItems = items.map((item) => {
+      const url = (item.url ?? "").trim();
+      const title = (item.title ?? "").trim();
+      const normUrl = normalizeUrlForJoin(url);
+      const ctrData = ctrByNormalized.get(normUrl) ?? null;
+      if (ctrData) {
+        edMatched++;
+        totalMatched++;
+        allTopItems.push({ edition, url, title, ctr_pct: ctrData.ctr_pct, unique_verified_clicks: ctrData.unique_verified_clicks });
+      } else {
+        edUnmatched++;
+        totalUnmatched++;
+      }
+      return {
+        url,
+        title,
+        ctr_pct: ctrData?.ctr_pct ?? null,
+        unique_verified_clicks: ctrData?.unique_verified_clicks ?? null,
+      };
+    });
+
+    editionEntries.push({
+      edition,
+      items: edItems,
+      ctr_matched: edMatched,
+      ctr_unmatched: edUnmatched,
+    });
+  }
+
+  if (editionEntries.length === 0) return null;
+
+  // #2511 self-review (Angles A+Simpl): captura first_edition ANTES do sort (não
+  // depende de ordem de statements) — editionEntries foi preenchido em ordem asc
+  // (dirs.sort()), então [0] é a 1ª edição cronológica com itens.
+  const firstEdition = editionEntries[0]?.edition ?? null;
+  // Sort by edition desc for display (most recent first). In-place: editionEntries
+  // não é reusado em ordem asc depois daqui.
+  editionEntries.sort((a, b) => (b.edition > a.edition ? 1 : -1));
+
+  const topItems = [...allTopItems]
+    .sort((a, b) => b.ctr_pct - a.ctr_pct)
+    .slice(0, 10);
+
+  const totalItems = totalMatched + totalUnmatched;
+  return {
+    total_editions_with_use_melhor: editionEntries.length,
+    first_edition: firstEdition,
+    editions: editionEntries,
+    top_items: topItems,
+    coverage: {
+      total_items: totalItems,
+      matched: totalMatched,
+      unmatched: totalUnmatched,
+      coverage_pct: totalItems > 0 ? Math.round((totalMatched / totalItems) * 100) : 0,
+    },
+  };
+}
+
+// ─── Fonte 5: Poll É IA? (push do workers/poll) ───────────────────────────────
+
+/**
+ * buildPollEiaSummary (#2475)
+ *
+ * Lê data/poll-eia-summary.json — arquivo gerado pelo workers/poll via push
+ * (análogo ao padrão --push deste script). O workers/poll precisa ser configurado
+ * para escrever esse arquivo ou fazer push pro KV diaria-dashboard.
+ *
+ * TODO (bloqueio externo — #2475): integração com workers/poll requer:
+ *   (a) namespace ID do KV `POLL` do worker poll (configurado pelo editor em wrangler.toml)
+ *   (b) OU um endpoint /api/stats no poll worker que agregue e emita dados pro dashboard
+ *
+ * Enquanto isso, este método lê de data/poll-eia-summary.json se existir.
+ * Para popular esse arquivo, o poll worker precisa chamar:
+ *   PUT https://api.cloudflare.com/client/v4/.../kv/.../values/poll-eia-summary
+ * OU o editor pode gerar manualmente com:
+ *   npx tsx scripts/build-poll-eia-data.ts --push
+ *
+ * Votos de teste do editor (pixel@memelab.com.br + vjpixel@gmail.com) devem ser
+ * excluídos da contagem — esta responsabilidade é do script/worker que gera o JSON.
+ */
+export function buildPollEiaSummary(
+  // #2511 self-review (Angle Altitude): param opcional p/ isolar testes do DATA_DIR real.
+  summaryPath: string = join(DATA_DIR, "poll-eia-summary.json"),
+): PollEiaSummary | null {
+  if (!existsSync(summaryPath)) return null;
+
+  try {
+    const raw = readFileSync(summaryPath, "utf8");
+    const parsed = JSON.parse(raw) as PollEiaSummary;
+    // #2511 self-review (Angles A+E): valida editions E leaderboard como arrays.
+    // Sem o guard de leaderboard, um JSON com leaderboard não-array (schema drift /
+    // arquivo corrompido) passaria e faria renderPollEiaSection crashar no .map().
+    if (!Array.isArray(parsed.editions)) return null;
+    if (!Array.isArray(parsed.leaderboard)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Agrega tudo ─────────────────────────────────────────────────────────────
 
 export function buildDashboardData(): DashboardData {
@@ -389,6 +616,8 @@ export function buildDashboardData(): DashboardData {
     source_health: buildSourceHealth(),
     ctr: buildCtrSummary(),
     overnight: buildOvernightSummary(),
+    use_melhor: buildUseMelhorSummary(),
+    poll_eia: buildPollEiaSummary(),
     stubs: STUBS,
   };
 }
@@ -471,6 +700,17 @@ async function main() {
     console.log(`  • CTR: nao disponivel (data/link-ctr-table.csv ausente)`);
   }
   console.log(`  • Overnight: ${data.overnight.total_runs} rodadas`);
+  if (data.use_melhor) {
+    const cov = data.use_melhor.coverage;
+    console.log(`  • Use Melhor: ${data.use_melhor.total_editions_with_use_melhor} edicoes (cobertura CTR: ${cov.matched}/${cov.total_items} = ${cov.coverage_pct}%)`);
+  } else {
+    console.log(`  • Use Melhor: nenhuma edicao com bucket use_melhor encontrada`);
+  }
+  if (data.poll_eia) {
+    console.log(`  • Poll IA?: ${data.poll_eia.editions.length} edicoes, fonte=${data.poll_eia.source}`);
+  } else {
+    console.log(`  • Poll IA?: nao disponivel (data/poll-eia-summary.json ausente -- requer push do workers/poll)`);
+  }
   console.log(`  • Stubs: ${data.stubs.length}`);
 
   if (isDryRun) {
