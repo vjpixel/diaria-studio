@@ -48,6 +48,7 @@ import {
   slugify,
 } from "./lib/source-runs.ts";
 import type { SourceEntry } from "./lib/source-runs.ts";
+import { canonicalize } from "./lib/url-utils.ts";
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
   DashboardData,
@@ -388,9 +389,13 @@ interface ApprovedUseMelhorItem {
 }
 
 /**
- * Constrói um índice de cliques por URL normalizada a partir do CSV.
+ * Constrói um índice de cliques por URL canônica a partir do CSV.
  * A URL do CSV é a base_url publicada; a URL do approved.json é a de pesquisa —
  * o join é intencalmente lossy (~22%). Surfaçamos a cobertura, não a silenciamos.
+ *
+ * #2511 self-review (Angle Simplification): chaves já vêm normalizadas via
+ * normalizeUrlForJoin (canonicalize) no insert — elimina o segundo Map que o
+ * caller construía. O caller usa a mesma normalização no lado do approved.json.
  */
 function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; unique_verified_clicks: number }> {
   const index = new Map<string, { ctr_pct: number; unique_verified_clicks: number }>();
@@ -418,12 +423,19 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
       if (cat !== "Use Melhor") continue;
       const url = (cols[baseUrlIdx] ?? "").trim();
       if (!url) continue;
-      const ctr = parseFloat(cols[ctrIdx] ?? "0") || 0;
+      // #2511 self-review (Angles A+D): célula ctr_pct em branco NÃO é 0% medido — é
+      // dado ausente. parseFloat("") → NaN; tratar como skip (não inflar coverage com
+      // 0.00% falso). Linha sem CTR válido não entra no índice (vira unmatched no join).
+      const ctrRaw = (cols[ctrIdx] ?? "").trim();
+      const ctr = parseFloat(ctrRaw);
+      if (!Number.isFinite(ctr)) continue;
       const clicks = parseInt(cols[clicksIdx] ?? "0", 10) || 0;
-      // Keep the highest CTR if the same URL appears multiple times
-      const existing = index.get(url);
+      // Keep the highest CTR if the same URL appears multiple times.
+      // Chave canônica (normalizeUrlForJoin) — o caller usa a mesma no lado approved.json.
+      const key = normalizeUrlForJoin(url);
+      const existing = index.get(key);
       if (!existing || ctr > existing.ctr_pct) {
-        index.set(url, { ctr_pct: ctr, unique_verified_clicks: clicks });
+        index.set(key, { ctr_pct: ctr, unique_verified_clicks: clicks });
       }
     } catch {
       // skip malformed line
@@ -432,16 +444,17 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
   return index;
 }
 
-/** Normaliza URL para comparação: strip trailing slash, lowercase scheme+host */
+/**
+ * Normaliza URL para o join CTR↔use_melhor.
+ *
+ * #2511 self-review (Angle Reuse + Angle E): reusa o `canonicalize` central de
+ * lib/url-utils.ts (#523) em vez de reimplementar. Vantagem sobre a versão
+ * anterior: também remove tracking params (utm_*, ref) e normaliza arxiv — o que
+ * reduz mismatches no join lossy (a URL de pesquisa pode trazer UTM que a publicada
+ * não tem). Mantém o nome `normalizeUrlForJoin` por clareza no call site.
+ */
 export function normalizeUrlForJoin(url: string): string {
-  try {
-    const u = new URL(url);
-    // normalize: lowercase host, remove trailing slash from pathname
-    const path = u.pathname.replace(/\/$/, "") || "/";
-    return `${u.protocol}//${u.host.toLowerCase()}${path}${u.search}`;
-  } catch {
-    return url.trim().toLowerCase();
-  }
+  return canonicalize(url);
 }
 
 /**
@@ -452,19 +465,16 @@ export function normalizeUrlForJoin(url: string): string {
  * pesquisa (approved.json) difere da URL publicada (CTR CSV); surfacamos a
  * cobertura via coverage em vez de silenciar o gap.
  */
-export function buildUseMelhorSummary(): UseMelhorSummary | null {
-  const editionsDir = join(DATA_DIR, "editions");
-  const csvPath = join(DATA_DIR, "link-ctr-table.csv");
-
+export function buildUseMelhorSummary(
+  // #2511 self-review (Angle Altitude): params opcionais p/ isolar testes do DATA_DIR
+  // real (junction OneDrive). Default = produção. Testes injetam dir/csv temporário.
+  editionsDir: string = join(DATA_DIR, "editions"),
+  csvPath: string = join(DATA_DIR, "link-ctr-table.csv"),
+): UseMelhorSummary | null {
   if (!existsSync(editionsDir)) return null;
 
-  // Build CTR index (URL → {ctr_pct, clicks}) — uses normalized URLs for matching
-  const ctrRaw = buildCtrIndexByUrl(csvPath);
-  // Build both raw and normalized index for join
-  const ctrByNormalized = new Map<string, { ctr_pct: number; unique_verified_clicks: number }>();
-  for (const [url, val] of ctrRaw.entries()) {
-    ctrByNormalized.set(normalizeUrlForJoin(url), val);
-  }
+  // Build CTR index já normalizado por URL (canonicalize aplicado no insert).
+  const ctrByNormalized = buildCtrIndexByUrl(csvPath);
 
   let dirs: string[];
   try {
@@ -528,9 +538,13 @@ export function buildUseMelhorSummary(): UseMelhorSummary | null {
 
   if (editionEntries.length === 0) return null;
 
-  // Sort by edition desc for display (most recent first)
-  const sorted = [...editionEntries].sort((a, b) => (b.edition > a.edition ? 1 : -1));
-  const firstEdition = editionEntries[0]?.edition ?? null; // already sorted asc
+  // #2511 self-review (Angles A+Simpl): captura first_edition ANTES do sort (não
+  // depende de ordem de statements) — editionEntries foi preenchido em ordem asc
+  // (dirs.sort()), então [0] é a 1ª edição cronológica com itens.
+  const firstEdition = editionEntries[0]?.edition ?? null;
+  // Sort by edition desc for display (most recent first). In-place: editionEntries
+  // não é reusado em ordem asc depois daqui.
+  editionEntries.sort((a, b) => (b.edition > a.edition ? 1 : -1));
 
   const topItems = [...allTopItems]
     .sort((a, b) => b.ctr_pct - a.ctr_pct)
@@ -540,7 +554,7 @@ export function buildUseMelhorSummary(): UseMelhorSummary | null {
   return {
     total_editions_with_use_melhor: editionEntries.length,
     first_edition: firstEdition,
-    editions: sorted,
+    editions: editionEntries,
     top_items: topItems,
     coverage: {
       total_items: totalItems,
@@ -573,15 +587,20 @@ export function buildUseMelhorSummary(): UseMelhorSummary | null {
  * Votos de teste do editor (pixel@memelab.com.br + vjpixel@gmail.com) devem ser
  * excluídos da contagem — esta responsabilidade é do script/worker que gera o JSON.
  */
-export function buildPollEiaSummary(): PollEiaSummary | null {
-  const summaryPath = join(DATA_DIR, "poll-eia-summary.json");
+export function buildPollEiaSummary(
+  // #2511 self-review (Angle Altitude): param opcional p/ isolar testes do DATA_DIR real.
+  summaryPath: string = join(DATA_DIR, "poll-eia-summary.json"),
+): PollEiaSummary | null {
   if (!existsSync(summaryPath)) return null;
 
   try {
     const raw = readFileSync(summaryPath, "utf8");
     const parsed = JSON.parse(raw) as PollEiaSummary;
-    // Validate minimal structure
+    // #2511 self-review (Angles A+E): valida editions E leaderboard como arrays.
+    // Sem o guard de leaderboard, um JSON com leaderboard não-array (schema drift /
+    // arquivo corrompido) passaria e faria renderPollEiaSection crashar no .map().
     if (!Array.isArray(parsed.editions)) return null;
+    if (!Array.isArray(parsed.leaderboard)) return null;
     return parsed;
   } catch {
     return null;

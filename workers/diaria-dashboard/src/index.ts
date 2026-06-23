@@ -81,6 +81,15 @@ function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
   return `<span style="color:#C00000">●</span>`;
 }
 
+/**
+ * #2511 self-review (Angle Reuse): href escapado só se for http(s) — bloqueia
+ * javascript:/data: URIs. Consolidado das 3 cópias do mesmo regex+ternário
+ * (renderCtrSection + renderUseMelhorSection top/edition rows).
+ */
+function safeHttpHref(url: string): string {
+  return /^https?:\/\//i.test(url) ? escHtml(url) : "";
+}
+
 // ─── Render sections ──────────────────────────────────────────────────────────
 
 export function renderSourceHealthSection(data: DashboardData): string {
@@ -286,15 +295,18 @@ export function renderUseMelhorSection(data: DashboardData): string {
   // Top items table
   const hasTopItems = um.top_items.length > 0;
   const topRows = um.top_items.map((r) => {
-    const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    const safeHref = safeHttpHref(r.url);
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    // #2511 self-review (Angle A): ctr_pct é `number | null` no tipo — guarda contra
+    // null (schema drift / JSON hand-crafted) p/ não crashar o render inteiro.
+    const ctrCell = r.ctr_pct !== null ? `${r.ctr_pct.toFixed(2)}%` : "—";
     return `<tr>
       <td>${escHtml(r.edition)}</td>
       <td>${escHtml(r.title || "—")}</td>
-      <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
-      <td><small>${r.unique_verified_clicks}</small></td>
+      <td class="metric">${ctrCell}</td>
+      <td><small>${r.unique_verified_clicks ?? "—"}</small></td>
       <td>${linkCell}</td>
     </tr>`;
   }).join("\n");
@@ -305,7 +317,7 @@ export function renderUseMelhorSection(data: DashboardData): string {
       const ctrCell = it.ctr_pct !== null
         ? `<span class="metric">${it.ctr_pct.toFixed(1)}%</span>`
         : `<span class="muted">—</span>`;
-      const safeHref = /^https?:\/\//i.test(it.url) ? escHtml(it.url) : "";
+      const safeHref = safeHttpHref(it.url);
       const linkCell = safeHref
         ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand)">${escHtml(it.title || it.url)}</a>`
         : escHtml(it.title || it.url);
@@ -373,8 +385,15 @@ export function renderPollEiaSection(data: DashboardData): string {
 </section>`;
   }
 
+  // #2511 self-review (Angles A+E): o Worker faz `JSON.parse(raw) as DashboardData`
+  // sem revalidar — KV stale/corrompido pode trazer editions/leaderboard não-array.
+  // Array.isArray defende o render contra crash no .map() (buildPollEiaSummary já
+  // valida no lado do build, mas o Worker lê o KV direto).
+  const editions = Array.isArray(poll.editions) ? poll.editions : [];
+  const leaderboard = Array.isArray(poll.leaderboard) ? poll.leaderboard : [];
+
   // Edition rows
-  const edRows = (poll.editions ?? []).slice(0, 20).map((ed) => {
+  const edRows = editions.slice(0, 20).map((ed) => {
     const pctCell = ed.pct_correct !== null
       ? `<span class="metric">${ed.pct_correct}%</span>`
       : `<span class="muted">—</span>`;
@@ -389,7 +408,7 @@ export function renderPollEiaSection(data: DashboardData): string {
   }).join("\n");
 
   // Leaderboard
-  const lbRows = (poll.leaderboard ?? []).slice(0, 10).map((e, i) => `<tr>
+  const lbRows = leaderboard.slice(0, 10).map((e, i) => `<tr>
     <td>${i + 1}º</td>
     <td>${escHtml(e.display_name)}</td>
     <td class="metric">${e.correct}</td>
@@ -401,7 +420,7 @@ export function renderPollEiaSection(data: DashboardData): string {
 
   return `<section class="dash-section" id="poll-eia">
   <h2 class="section-title">É IA? (poll)</h2>
-  <p class="section-note">${poll.editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
+  <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
   <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
 
   <h3 class="subsection-title">Por edição</h3>
@@ -420,8 +439,8 @@ export function renderPollEiaSection(data: DashboardData): string {
   </table>
   </div>
 
-  ${lbRows ? `<h3 class="subsection-title" style="margin-top:16px">Leaderboard (top 10)</h3>
-  <div class="table-wrap">
+  <h3 class="subsection-title" style="margin-top:16px">Leaderboard (top 10)</h3>
+  ${lbRows ? `<div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -434,7 +453,7 @@ export function renderPollEiaSection(data: DashboardData): string {
     </thead>
     <tbody>${lbRows}</tbody>
   </table>
-  </div>` : ""}
+  </div>` : `<p class="section-note muted">Sem dados de leaderboard ainda.</p>`}
 </section>`;
 }
 

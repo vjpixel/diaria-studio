@@ -81,14 +81,70 @@ describe("normalizeUrlForJoin (#2474)", () => {
 // ─── Testes de buildUseMelhorSummary ─────────────────────────────────────────
 
 describe("buildUseMelhorSummary (#2474)", () => {
-  test("retorna null quando diretório de edições não existe", async () => {
-    // Não podemos injetar DATA_DIR diretamente (hardcoded no script).
-    // Testamos indiretamente: sem data/editions/ → null.
-    // Este teste documenta o comportamento de degradação graciosa.
-    // O diretório /tmp/nao-existe-xyzzy nunca existe.
-    const { normalizeUrlForJoin } = await import("../scripts/build-diaria-dashboard-data.ts");
-    // normalizeUrlForJoin é a função exportável — testa que o módulo carregou sem erro
-    assert.ok(typeof normalizeUrlForJoin === "function", "módulo deve carregar corretamente");
+  test("retorna null quando diretório de edições não existe (param injetado)", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const result = buildUseMelhorSummary("/tmp/nao-existe-xyzzy-um", "/tmp/nao-existe-csv.csv");
+    assert.equal(result, null, "sem editions dir → null");
+  });
+
+  test("end-to-end: 2 edições, join CTR, cobertura surfaçada (params injetados)", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const editionsDir = makeTmpEditionsDir();
+    // 260501: 1 item com CTR (perplexity), 1 sem (nao-tem-ctr)
+    writeApprovedJson(editionsDir, "260501", [
+      { url: "https://perplexity.ai/tutorial", title: "Como usar o Perplexity" },
+      { url: "https://nao-tem-ctr.com/post", title: "Sem CTR" },
+    ]);
+    // 260508: 1 item com CTR (cursor)
+    writeApprovedJson(editionsDir, "260508", [
+      { url: "https://cursor.sh/tips", title: "Cursor AI dicas" },
+    ]);
+    // 260415: edição mais antiga com use_melhor vazio → não conta como first_edition
+    writeApprovedJson(editionsDir, "260415", []);
+
+    const csvPath = writeCtrCsv(editionsDir, [
+      "2026-05-01,Ed 01,Use Melhor,Como usar o Perplexity,https://perplexity.ai/tutorial,perplexity.ai,200,20,18,9.00,Use Melhor,INT",
+      "2026-05-08,Ed 08,Use Melhor,Cursor AI dicas,https://cursor.sh/tips,cursor.sh,180,12,11,6.11,Use Melhor,INT",
+      // linha Destaque com URL diferente — não deve entrar no índice Use Melhor
+      "2026-05-08,Ed 08,Destaque,Outra coisa,https://destaque.com/x,destaque.com,180,5,4,2.00,Destaque,INT",
+    ]);
+
+    const r = buildUseMelhorSummary(editionsDir, csvPath);
+    assert.ok(r, "deve retornar summary");
+    assert.equal(r!.total_editions_with_use_melhor, 2, "2 edições com itens (260415 vazia ignorada)");
+    assert.equal(r!.first_edition, "260501", "first_edition = 1ª edição com itens, não a 260415 vazia");
+    // Coverage: 3 itens totais, 2 com match, 1 sem
+    assert.equal(r!.coverage.total_items, 3);
+    assert.equal(r!.coverage.matched, 2);
+    assert.equal(r!.coverage.unmatched, 1, "1 item sem CTR surfaçado (não silenciado)");
+    assert.equal(r!.coverage.coverage_pct, 67);
+    // Editions ordenadas desc (mais recente primeiro)
+    assert.equal(r!.editions[0].edition, "260508", "mais recente primeiro");
+    // Top items ordenados por CTR desc
+    assert.equal(r!.top_items[0].ctr_pct, 9.00, "perplexity (9.00) é o top");
+    // Item sem match tem ctr_pct=null
+    const ed501 = r!.editions.find((e) => e.edition === "260501")!;
+    const semCtr = ed501.items.find((i) => i.url === "https://nao-tem-ctr.com/post")!;
+    assert.equal(semCtr.ctr_pct, null, "item sem match → ctr_pct null");
+  });
+
+  test("regressão (Angles A+D): célula ctr_pct em branco NÃO vira 0% medido", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const editionsDir = makeTmpEditionsDir();
+    writeApprovedJson(editionsDir, "260501", [
+      { url: "https://blank-ctr.com/post", title: "CTR em branco" },
+    ]);
+    // CSV com célula ctr_pct vazia para essa URL
+    const csvPath = writeCtrCsv(editionsDir, [
+      "2026-05-01,Ed 01,Use Melhor,CTR em branco,https://blank-ctr.com/post,blank-ctr.com,200,0,0,,Use Melhor,INT",
+    ]);
+    const r = buildUseMelhorSummary(editionsDir, csvPath);
+    assert.ok(r, "deve retornar summary");
+    // A URL com CTR em branco NÃO deve contar como match com 0% — deve ser unmatched
+    assert.equal(r!.coverage.matched, 0, "célula em branco não conta como match");
+    assert.equal(r!.coverage.unmatched, 1, "célula em branco vira unmatched (dado ausente)");
+    const item = r!.editions[0].items[0];
+    assert.equal(item.ctr_pct, null, "ctr_pct null (não 0) para célula em branco");
   });
 
   test("join CTR por URL: item sem match tem ctr_pct=null (lossy surfaçado)", async () => {
@@ -187,14 +243,16 @@ describe("buildUseMelhorSummary (#2474)", () => {
     assert.equal(coverage.coverage_pct, 50, "cobertura 50%");
     assert.ok(coverage.unmatched > 0, "unmatched surfaçado (não zero-silenciado)");
 
-    // Join items from 260508
+    // Join items from 260508 — contadores próprios (não reusar unmatched do 260501)
     let matched2 = 0;
+    let unmatched2 = 0;
     const joinedItems2 = items260508.map((item) => {
       const ctrData = ctrIndex.get(normalizeUrlForJoin(item.url)) ?? null;
-      if (ctrData) matched2++; else unmatched++;
+      if (ctrData) matched2++; else unmatched2++;
       return { ...item, ctr_pct: ctrData?.ctr_pct ?? null };
     });
     assert.equal(matched2, 1, "260508: 1 item com CTR (cursor)");
+    assert.equal(unmatched2, 0, "260508: 0 itens sem CTR");
     assert.equal(joinedItems2[0].ctr_pct, 6.11);
   });
 });
@@ -202,23 +260,50 @@ describe("buildUseMelhorSummary (#2474)", () => {
 // ─── Testes de buildPollEiaSummary (#2475) ────────────────────────────────────
 
 describe("buildPollEiaSummary (#2475)", () => {
-  test("retorna null quando poll-eia-summary.json não existe", async () => {
-    // buildPollEiaSummary lê DATA_DIR/poll-eia-summary.json.
-    // Sem o arquivo, retorna null (degradação graciosa).
-    // Documentado aqui — testado indiretamente via renderização.
+  test("retorna null quando arquivo não existe (param injetado)", async () => {
     const { buildPollEiaSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
-    // A função existe e é exportada
-    assert.ok(typeof buildPollEiaSummary === "function", "buildPollEiaSummary deve ser função exportada");
+    const result = buildPollEiaSummary("/tmp/nao-existe-poll-xyzzy.json");
+    assert.equal(result, null, "sem arquivo → null");
   });
 
   test("retorna null para JSON malformado", async () => {
-    // Testar com path inválido (não existe) → null
     const { buildPollEiaSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
-    // Sem arquivo no DATA_DIR real → null
-    // Verificamos apenas que a função não crasha e retorna null ou PollEiaSummary
-    const result = buildPollEiaSummary();
-    assert.ok(result === null || (typeof result === "object" && Array.isArray(result.editions)),
-      "deve retornar null ou PollEiaSummary válido");
+    const dir = makeTmpEditionsDir();
+    const path = join(dir, "poll-eia-summary.json");
+    writeFileSync(path, "{ nao eh json valido", "utf8");
+    assert.equal(buildPollEiaSummary(path), null, "JSON malformado → null");
+  });
+
+  test("lê e retorna PollEiaSummary válido (param injetado)", async () => {
+    const { buildPollEiaSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const dir = makeTmpEditionsDir();
+    const summary = {
+      source: "push",
+      last_edition: "260622",
+      updated_at: "2026-06-22T22:00:00Z",
+      editions: [{ edition: "260622", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 64, correct_choice: "A" }],
+      leaderboard: [{ display_name: "João", correct: 8, total: 10, streak: 3 }],
+    };
+    const path = writePollEiaSummary(dir, summary);
+    const r = buildPollEiaSummary(path);
+    assert.ok(r, "deve retornar summary");
+    assert.equal(r!.editions.length, 1);
+    assert.equal(r!.leaderboard.length, 1);
+  });
+
+  test("regressão (Angles A+E): leaderboard não-array → null (não crasha o render depois)", async () => {
+    const { buildPollEiaSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const dir = makeTmpEditionsDir();
+    // editions é array válido, MAS leaderboard é string (schema drift)
+    const path = writePollEiaSummary(dir, { source: "push", editions: [], leaderboard: "corrompido" });
+    assert.equal(buildPollEiaSummary(path), null, "leaderboard não-array → null (guard adicionado)");
+  });
+
+  test("regressão: editions não-array → null", async () => {
+    const { buildPollEiaSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const dir = makeTmpEditionsDir();
+    const path = writePollEiaSummary(dir, { source: "push", editions: "nope", leaderboard: [] });
+    assert.equal(buildPollEiaSummary(path), null, "editions não-array → null");
   });
 });
 
@@ -422,7 +507,7 @@ describe("renderPollEiaSection (#2475)", () => {
     assert.ok(html.includes("—"), "edição sem pct_correct deve renderizar '—'");
   });
 
-  test("não crasha com leaderboard vazio", async () => {
+  test("leaderboard vazio → nota 'sem dados' (não omite silenciosamente)", async () => {
     const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
     const data = makeBase();
     data.poll_eia = {
@@ -435,6 +520,26 @@ describe("renderPollEiaSection (#2475)", () => {
     let html: string;
     assert.doesNotThrow(() => { html = renderPollEiaSection(data); }, "não deve crashar com leaderboard vazio");
     assert.ok(html!.includes("poll-eia"), "deve renderizar seção mesmo sem leaderboard");
+    // #2511 self-review (Angle E): leaderboard vazio mostra nota explícita
+    assert.ok(html!.includes("Sem dados de leaderboard"), "leaderboard vazio mostra nota, não omite");
+  });
+
+  test("regressão (Angles A+E): editions/leaderboard não-array no KV não crasha o render", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeBase();
+    // Simula KV stale/corrompido que escapou a validação do build (Worker faz cast direto)
+    data.poll_eia = {
+      source: "push",
+      last_edition: null,
+      updated_at: null,
+      // @ts-expect-error testando defesa runtime contra schema drift
+      editions: "corrompido",
+      // @ts-expect-error testando defesa runtime contra schema drift
+      leaderboard: null,
+    };
+    let html: string;
+    assert.doesNotThrow(() => { html = renderPollEiaSection(data); }, "não deve crashar com editions/leaderboard não-array");
+    assert.ok(html!.includes("poll-eia"), "deve renderizar seção mesmo com dados corrompidos");
   });
 
   test("não inclui XSS em display_name do leaderboard", async () => {
