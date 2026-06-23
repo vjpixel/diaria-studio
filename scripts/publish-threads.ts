@@ -97,10 +97,7 @@ export function extractDestaquesFromSocialMd(socialMd: string): string[] {
   let section = extractSection(socialMd, "Threads");
   if (section === null) {
     // Fallback para Facebook (mesma lógica do publish-instagram.ts)
-    const normalized = socialMd.replace(/\r\n/g, "\n");
-    const re = /(?:^|\n)# Facebook\n([\s\S]*?)(?=\n# |$)/i;
-    const m = normalized.match(re);
-    section = m ? m[1] : null;
+    section = extractSection(socialMd, "Facebook");
   }
   if (section === null) return ["d1", "d2", "d3"];
   const valid = parseDestaqueHeaders(section);
@@ -151,7 +148,7 @@ export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT)
   while (remaining.length > maxLen) {
     // Procurar o último espaço antes do limite
     let cut = remaining.lastIndexOf(" ", maxLen - 1);
-    if (cut <= 0) {
+    if (cut < 0) {
       // Sem espaço — cortar no limite duro
       cut = maxLen;
     }
@@ -268,7 +265,10 @@ async function publishThread(
     }
   }
 
-  return rootMediaId!;
+  if (rootMediaId === null) {
+    throw new Error("publishThread: chunks array vazio — texto do post não pode ser vazio");
+  }
+  return rootMediaId;
 }
 
 /**
@@ -399,19 +399,46 @@ async function main() {
       continue;
     }
 
+    // Guard: texto vazio (ex: destaque com apenas comentários HTML) → fail-fast
+    // sem tentar publicar post em branco na Threads API.
+    if (!text) {
+      console.error(`ERROR threads/${d}: texto vazio após strip de comentários — skip`);
+      const entry: PostEntry = {
+        platform: "threads",
+        destaque: d,
+        url: null,
+        status: "failed",
+        scheduled_at: null,
+        reason: "texto vazio após strip de comentários HTML",
+      };
+      tagAndAppend(entry);
+      results.push(entry);
+      continue;
+    }
+
     // Dividir em chunks de 500 chars se necessário
     const chunks = splitIntoThreadChunks(text, THREADS_CHAR_LIMIT);
     if (chunks.length > 1) {
       console.log(`threads/${d}: texto longo (${text.length} chars) → ${chunks.length} posts encadeados`);
     }
 
-    // Publicar com retry + exponential backoff (análogo a publish-instagram.ts)
+    // Publicar com retry + exponential backoff (análogo a publish-instagram.ts).
+    //
+    // ATOMICIDADE: retry só é seguro para posts de chunk único (1 container →
+    // threads_publish). Quando há múltiplos chunks, publishThread publica o
+    // chunk 1 antes de tentar o chunk 2. Se o chunk 2 falha, o chunk 1 já está
+    // ao vivo no Threads — um retry recomeça do zero e cria um segundo post
+    // raiz independente (post órfão). Para evitar isso, não fazemos retry em
+    // falhas de multi-chunk: a primeira exceção é registrada como "failed" e
+    // o editor resolve manualmente.
+    const isMultiChunk = chunks.length > 1;
     let lastError = "";
     let success = false;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    const maxAttempts = isMultiChunk ? 1 : 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        console.log(`Publishing threads/${d} (attempt ${attempt}, ${chunks.length} chunk(s))...`);
+        console.log(`Publishing threads/${d} (attempt ${attempt}/${maxAttempts}, ${chunks.length} chunk(s))...`);
 
         const rootMediaId = await publishThread(threadsUserId, accessToken, chunks, apiVersion);
         console.log(`  Publicado: ${rootMediaId}`);
@@ -435,8 +462,13 @@ async function main() {
         break;
       } catch (e: any) {
         lastError = e.message;
-        console.error(`Attempt ${attempt}/3 failed for threads/${d}: ${lastError}`);
-        if (attempt < 3) {
+        console.error(`Attempt ${attempt}/${maxAttempts} failed for threads/${d}: ${lastError}`);
+        if (isMultiChunk) {
+          console.warn(
+            `threads/${d}: post multi-chunk — sem retry para evitar posts órfãos. ` +
+            `Chunk 1 pode ter sido publicado. Verificar manualmente no Threads.`,
+          );
+        } else if (attempt < maxAttempts) {
           const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
           if (!isTest) {
             await new Promise((r) => setTimeout(r, delaySec * 1000));

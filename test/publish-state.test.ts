@@ -4,6 +4,7 @@ import {
   resolveBeehiivState,
   resolveLinkedInState,
   resolveFacebookState,
+  resolveThreadsState,
 } from "../scripts/lib/publish-state.ts";
 
 const NOW = new Date("2026-05-06T22:00:00Z");
@@ -186,6 +187,46 @@ describe("PublishState — sem variant 'sent' (#833)", () => {
     // status desconhecido vira 'unknown', não 'sent'
     const result = resolveBeehiivState({ status: "sent" }, NOW);
     assert.notEqual(result as string, "sent");
+    assert.equal(result, "unknown");
+  });
+});
+
+// ─── resolveThreadsState (#2479) ───────────────────────────────────────────────
+
+describe("resolveThreadsState (#2479)", () => {
+  it("status=published + threads_media_id → published", () => {
+    assert.equal(resolveThreadsState({ status: "published", threads_media_id: "12345" }), "published");
+  });
+
+  it("status=published sem threads_media_id → unknown (dispatch incompleto)", () => {
+    // passo 2 (threads_publish) retornou mas media_id não foi gravado
+    assert.equal(resolveThreadsState({ status: "published", threads_media_id: null }), "unknown");
+    assert.equal(resolveThreadsState({ status: "published" }), "unknown");
+  });
+
+  it("status=failed → unknown (dispatch tentado, falhou)", () => {
+    assert.equal(resolveThreadsState({ status: "failed" }), "unknown");
+    assert.equal(resolveThreadsState({ status: "failed", threads_media_id: null }), "unknown");
+  });
+
+  it("status ausente → unknown", () => {
+    assert.equal(resolveThreadsState({}), "unknown");
+  });
+
+  it("status desconhecido → unknown (defensive)", () => {
+    assert.equal(resolveThreadsState({ status: "pending" }), "unknown");
+  });
+
+  it("Threads nunca retorna 'scheduled' (não suporta agendamento via API)", () => {
+    // Threads publica imediatamente — sem estado scheduled.
+    const result = resolveThreadsState({ status: "scheduled" as string });
+    assert.notEqual(result, "scheduled");
+    assert.equal(result, "unknown");
+  });
+
+  it("Threads nunca retorna 'draft' (publica imediato, sem rascunho)", () => {
+    const result = resolveThreadsState({ status: "draft" as string });
+    assert.notEqual(result, "draft");
     assert.equal(result, "unknown");
   });
 });

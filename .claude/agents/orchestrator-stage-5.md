@@ -126,7 +126,7 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista-de-ca
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info \
   --message "Stage 5 dispatch auto (sem gate — Stage 4 revisao aprovado)" \
-  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram"]}'
+  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram","threads"]}'
 ```
 
 **#1238 trade-off atualizado em #1380**: O user-activation guard do Beehiiv **so atinge o click de Schedule** — nao o "Send test email". Validado em 260519 (4x test emails enviados consecutivamente via Chrome MCP). O trigger correto pra Send test email e o **chevron dropdown** ao lado do botao Preview:

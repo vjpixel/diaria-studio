@@ -131,3 +131,34 @@ export function resolveFacebookState(
 ): PublishState {
   return resolveLinkedInState(post, now);
 }
+
+// ─── Threads (formato local Diar.ia) ──────────────────────────────────────────
+
+export interface ThreadsPostLike {
+  /** Status local (escrito por publish-threads.ts): "published" | "failed". */
+  status?: string;
+  /** Threads media_id do post publicado. Presente quando status === "published". */
+  threads_media_id?: string | null;
+}
+
+/**
+ * Normaliza o estado de um post Threads (formato local em
+ * `06-social-published.json`).
+ *
+ * Diferente de Beehiiv/LinkedIn/Facebook, o Threads não suporta agendamento
+ * via API — o post é publicado imediatamente (2 passos: create container →
+ * threads_publish). Portanto, os estados possíveis são:
+ *   - "published": threads_media_id presente (passo 2 bem-sucedido)
+ *   - "draft": nunca ocorre (Threads publica imediato, não armazena rascunho)
+ *   - "scheduled": nunca ocorre (Threads não tem agendamento via API)
+ *   - "unknown": status desconhecido, threads_media_id ausente, ou "failed"
+ *
+ * CLAUDE.md invariant #573: orchestrator usa este helper antes de relayar
+ * estado de publicação Threads ao editor — nunca lê o campo status raw.
+ */
+export function resolveThreadsState(post: ThreadsPostLike): PublishState {
+  const status = (post.status ?? "").toLowerCase();
+  if (status === "published" && post.threads_media_id) return "published";
+  // "failed" ou qualquer outro status → "unknown" (não houve publicação confirmada)
+  return "unknown";
+}
