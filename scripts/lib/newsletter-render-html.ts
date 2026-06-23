@@ -61,7 +61,7 @@ const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
  * #2490: wordmark "diar.ia.br" teal no topo do newsletter body.
  *
  * Aparece antes da coverage line como masthead de marca — texto em teal
- * (#00A0A0), fonte sans bold 20px, letter-spacing 2px, centralizado.
+ * (#00A0A0), fonte sans bold 22px (type-scale aprovado do DS), letter-spacing 2px, centralizado.
  * Não usa o TEAL alias pra ser autoexplicativo na saída HTML.
  *
  * Pure helper — exportado pra teste.
@@ -69,7 +69,7 @@ const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 export function renderMasthead(): string {
   return `<!-- Masthead (#2490) -->
 <tr><td class="pad" style="padding:32px 32px 0;text-align:center;">
-  <p style="margin:0;font-family:${FONT_LABEL};font-size:20px;font-weight:bold;letter-spacing:2px;color:${TEAL};">diar.ia.br</p>
+  <p style="margin:0;font-family:${FONT_LABEL};font-size:22px;font-weight:bold;letter-spacing:2px;color:${TEAL};">diar.ia.br</p>
 </td></tr>`;
 }
 
