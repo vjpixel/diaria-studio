@@ -92,7 +92,7 @@ function bodyP(margin: string, content: string): string {
 }
 
 // #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com
-// padding lateral de 32px (mobile → 24px via .pad). Os helpers abaixo retornam
+// padding lateral de 32px (mobile → 12px via .pad, #2514). Os helpers abaixo retornam
 // HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
 const PAD_SECTION = "40px 32px 0"; // padrão entre seções
 const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
@@ -106,7 +106,7 @@ export const DS_STYLE_BLOCK = `<style>
   a.headline:hover { color:${TEAL} !important; }
   @media only screen and (max-width:480px) {
     .container { width:100% !important; }
-    .pad { padding-left:24px !important; padding-right:24px !important; }
+    .pad { padding-left:12px !important; padding-right:12px !important; }
     .poll-col { display:block !important; width:100% !important; padding:0 !important; }
     .poll-col-b { padding-top:12px !important; }
     .hero { height:auto !important; }
