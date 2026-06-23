@@ -56,6 +56,9 @@ import type {
   CtrByCategoryRow,
   OvernightRun,
   StubSection,
+  UseMelhorSummary,
+  UseMelhorEditionEntry,
+  PollEiaSummary,
 } from "../workers/diaria-dashboard/src/types.ts";
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -78,11 +81,6 @@ const STUBS: StubSection[] = [
     id: "subscriber_growth",
     description: "Crescimento e engajamento de assinantes Beehiiv (taxa, churn, cohort).",
     tracking_issue: "futuro -- requer API Beehiiv live",
-  },
-  {
-    id: "poll_eia",
-    description: "Resultado do poll É IA? por ediçao (score medio, distribuiçao de votos).",
-    tracking_issue: "futuro -- requer cross-worker KV read ou push do workers/poll",
   },
 ];
 
@@ -380,6 +378,216 @@ function buildOvernightSummary(): DashboardData["overnight"] {
   return { runs, total_runs: runs.length };
 }
 
+// ─── Fonte 4: Use Melhor por edição ──────────────────────────────────────────
+
+/** Interface local para o bucket use_melhor em 01-approved.json */
+interface ApprovedUseMelhorItem {
+  url?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Constrói um índice de cliques por URL normalizada a partir do CSV.
+ * A URL do CSV é a base_url publicada; a URL do approved.json é a de pesquisa —
+ * o join é intencalmente lossy (~22%). Surfaçamos a cobertura, não a silenciamos.
+ */
+function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; unique_verified_clicks: number }> {
+  const index = new Map<string, { ctr_pct: number; unique_verified_clicks: number }>();
+  if (!existsSync(csvPath)) return index;
+  let raw: string;
+  try {
+    raw = readFileSync(csvPath, "utf8");
+  } catch {
+    return index;
+  }
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return index;
+  const header = parseCsvLine(lines[0]);
+  const baseUrlIdx = header.indexOf("base_url");
+  const ctrIdx = header.indexOf("ctr_pct");
+  const clicksIdx = header.indexOf("unique_verified_clicks");
+  const catIdx = header.indexOf("category");
+  if (baseUrlIdx < 0 || ctrIdx < 0 || clicksIdx < 0) return index;
+
+  for (const line of lines.slice(1)) {
+    try {
+      const cols = parseCsvLine(line);
+      // Apenas linhas de Use Melhor
+      const cat = catIdx >= 0 ? (cols[catIdx] ?? "").trim() : "";
+      if (cat !== "Use Melhor") continue;
+      const url = (cols[baseUrlIdx] ?? "").trim();
+      if (!url) continue;
+      const ctr = parseFloat(cols[ctrIdx] ?? "0") || 0;
+      const clicks = parseInt(cols[clicksIdx] ?? "0", 10) || 0;
+      // Keep the highest CTR if the same URL appears multiple times
+      const existing = index.get(url);
+      if (!existing || ctr > existing.ctr_pct) {
+        index.set(url, { ctr_pct: ctr, unique_verified_clicks: clicks });
+      }
+    } catch {
+      // skip malformed line
+    }
+  }
+  return index;
+}
+
+/** Normaliza URL para comparação: strip trailing slash, lowercase scheme+host */
+export function normalizeUrlForJoin(url: string): string {
+  try {
+    const u = new URL(url);
+    // normalize: lowercase host, remove trailing slash from pathname
+    const path = u.pathname.replace(/\/$/, "") || "/";
+    return `${u.protocol}//${u.host.toLowerCase()}${path}${u.search}`;
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
+/**
+ * buildUseMelhorSummary (#2474)
+ *
+ * Varre data/editions/{AAMMDD}/_internal/01-approved.json, extrai o bucket use_melhor,
+ * e faz join com o CTR CSV por URL. O join e intencialmente lossy — a URL de
+ * pesquisa (approved.json) difere da URL publicada (CTR CSV); surfacamos a
+ * cobertura via coverage em vez de silenciar o gap.
+ */
+export function buildUseMelhorSummary(): UseMelhorSummary | null {
+  const editionsDir = join(DATA_DIR, "editions");
+  const csvPath = join(DATA_DIR, "link-ctr-table.csv");
+
+  if (!existsSync(editionsDir)) return null;
+
+  // Build CTR index (URL → {ctr_pct, clicks}) — uses normalized URLs for matching
+  const ctrRaw = buildCtrIndexByUrl(csvPath);
+  // Build both raw and normalized index for join
+  const ctrByNormalized = new Map<string, { ctr_pct: number; unique_verified_clicks: number }>();
+  for (const [url, val] of ctrRaw.entries()) {
+    ctrByNormalized.set(normalizeUrlForJoin(url), val);
+  }
+
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return null;
+  }
+
+  const editionEntries: UseMelhorEditionEntry[] = [];
+  let totalMatched = 0;
+  let totalUnmatched = 0;
+  const allTopItems: Array<{ edition: string; url: string; title: string; ctr_pct: number; unique_verified_clicks: number }> = [];
+
+  for (const edition of dirs) {
+    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
+    if (!existsSync(approvedPath)) continue;
+
+    let approved: { use_melhor?: ApprovedUseMelhorItem[] };
+    try {
+      approved = JSON.parse(readFileSync(approvedPath, "utf8")) as typeof approved;
+    } catch {
+      continue;
+    }
+
+    const items = approved.use_melhor ?? [];
+    if (items.length === 0) continue;
+
+    let edMatched = 0;
+    let edUnmatched = 0;
+    const edItems = items.map((item) => {
+      const url = (item.url ?? "").trim();
+      const title = (item.title ?? "").trim();
+      const normUrl = normalizeUrlForJoin(url);
+      const ctrData = ctrByNormalized.get(normUrl) ?? null;
+      if (ctrData) {
+        edMatched++;
+        totalMatched++;
+        allTopItems.push({ edition, url, title, ctr_pct: ctrData.ctr_pct, unique_verified_clicks: ctrData.unique_verified_clicks });
+      } else {
+        edUnmatched++;
+        totalUnmatched++;
+      }
+      return {
+        url,
+        title,
+        ctr_pct: ctrData?.ctr_pct ?? null,
+        unique_verified_clicks: ctrData?.unique_verified_clicks ?? null,
+      };
+    });
+
+    editionEntries.push({
+      edition,
+      items: edItems,
+      ctr_matched: edMatched,
+      ctr_unmatched: edUnmatched,
+    });
+  }
+
+  if (editionEntries.length === 0) return null;
+
+  // Sort by edition desc for display (most recent first)
+  const sorted = [...editionEntries].sort((a, b) => (b.edition > a.edition ? 1 : -1));
+  const firstEdition = editionEntries[0]?.edition ?? null; // already sorted asc
+
+  const topItems = [...allTopItems]
+    .sort((a, b) => b.ctr_pct - a.ctr_pct)
+    .slice(0, 10);
+
+  const totalItems = totalMatched + totalUnmatched;
+  return {
+    total_editions_with_use_melhor: editionEntries.length,
+    first_edition: firstEdition,
+    editions: sorted,
+    top_items: topItems,
+    coverage: {
+      total_items: totalItems,
+      matched: totalMatched,
+      unmatched: totalUnmatched,
+      coverage_pct: totalItems > 0 ? Math.round((totalMatched / totalItems) * 100) : 0,
+    },
+  };
+}
+
+// ─── Fonte 5: Poll É IA? (push do workers/poll) ───────────────────────────────
+
+/**
+ * buildPollEiaSummary (#2475)
+ *
+ * Lê data/poll-eia-summary.json — arquivo gerado pelo workers/poll via push
+ * (análogo ao padrão --push deste script). O workers/poll precisa ser configurado
+ * para escrever esse arquivo ou fazer push pro KV diaria-dashboard.
+ *
+ * TODO (bloqueio externo — #2475): integração com workers/poll requer:
+ *   (a) namespace ID do KV `POLL` do worker poll (configurado pelo editor em wrangler.toml)
+ *   (b) OU um endpoint /api/stats no poll worker que agregue e emita dados pro dashboard
+ *
+ * Enquanto isso, este método lê de data/poll-eia-summary.json se existir.
+ * Para popular esse arquivo, o poll worker precisa chamar:
+ *   PUT https://api.cloudflare.com/client/v4/.../kv/.../values/poll-eia-summary
+ * OU o editor pode gerar manualmente com:
+ *   npx tsx scripts/build-poll-eia-data.ts --push
+ *
+ * Votos de teste do editor (pixel@memelab.com.br + vjpixel@gmail.com) devem ser
+ * excluídos da contagem — esta responsabilidade é do script/worker que gera o JSON.
+ */
+export function buildPollEiaSummary(): PollEiaSummary | null {
+  const summaryPath = join(DATA_DIR, "poll-eia-summary.json");
+  if (!existsSync(summaryPath)) return null;
+
+  try {
+    const raw = readFileSync(summaryPath, "utf8");
+    const parsed = JSON.parse(raw) as PollEiaSummary;
+    // Validate minimal structure
+    if (!Array.isArray(parsed.editions)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Agrega tudo ─────────────────────────────────────────────────────────────
 
 export function buildDashboardData(): DashboardData {
@@ -389,6 +597,8 @@ export function buildDashboardData(): DashboardData {
     source_health: buildSourceHealth(),
     ctr: buildCtrSummary(),
     overnight: buildOvernightSummary(),
+    use_melhor: buildUseMelhorSummary(),
+    poll_eia: buildPollEiaSummary(),
     stubs: STUBS,
   };
 }
@@ -471,6 +681,17 @@ async function main() {
     console.log(`  • CTR: nao disponivel (data/link-ctr-table.csv ausente)`);
   }
   console.log(`  • Overnight: ${data.overnight.total_runs} rodadas`);
+  if (data.use_melhor) {
+    const cov = data.use_melhor.coverage;
+    console.log(`  • Use Melhor: ${data.use_melhor.total_editions_with_use_melhor} edicoes (cobertura CTR: ${cov.matched}/${cov.total_items} = ${cov.coverage_pct}%)`);
+  } else {
+    console.log(`  • Use Melhor: nenhuma edicao com bucket use_melhor encontrada`);
+  }
+  if (data.poll_eia) {
+    console.log(`  • Poll IA?: ${data.poll_eia.editions.length} edicoes, fonte=${data.poll_eia.source}`);
+  } else {
+    console.log(`  • Poll IA?: nao disponivel (data/poll-eia-summary.json ausente -- requer push do workers/poll)`);
+  }
   console.log(`  • Stubs: ${data.stubs.length}`);
 
   if (isDryRun) {
