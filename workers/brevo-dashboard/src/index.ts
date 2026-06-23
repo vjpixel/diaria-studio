@@ -1245,10 +1245,12 @@ export function renderDashboardHtml(
 
   // #2086 Fase 2: seções adicionais
   const activeCycle = detectActiveCycle(campaigns);
-  const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
   const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
   const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
-  const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
+  // #2492: breakdown D1–D5 por dia (substitui Resumo A/B/C por célula no dashboard).
+  // aggregateAbcSummary e renderAbcSection são mantidos para compatibilidade e testes unitários.
+  const daySummaryRows = activeCycle ? aggregateDaySummary(campaigns, activeCycle) : [];
+  const abcSection = activeCycle ? renderDaySummarySection(daySummaryRows) : "";
   // #2134: tabela de open rate por dia da semana (ciclo ativo).
   // Escopo: ciclo ativo quando detectado; fallback "todas as campanhas" quando
   // não há campanha Clarice News (activeCycle=null). Linha all-time separada
@@ -1346,13 +1348,8 @@ export function renderDashboardHtml(
 <body>
 <h1>📧 Clarice News Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
-${cohortsSection}
-${aggregatedLinksSection}
-${scheduledSection}
-${volumeSection}
-${abcSection}
-${weekdaySection}
 ${monthlyTotalsSection}
+${volumeSection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
 <div class="table-wrap">
@@ -1362,7 +1359,7 @@ ${monthlyTotalsSection}
 <th title="ID do envio no Brevo.">ID</th>
 <th title="Lista de destinatários no Brevo.">Lista</th>
 <th title="Data e hora do envio (horário de Brasília).">Enviado</th>
-<th title="${escHtml(ENVIOS_TOOLTIP)}">Envios (eventos)</th>
+<th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
 <th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
@@ -1437,6 +1434,11 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 })();
 </script>
 </section>
+${scheduledSection}
+${weekdaySection}
+${abcSection}
+${cohortsSection}
+${aggregatedLinksSection}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
@@ -1954,6 +1956,159 @@ export function renderAbcSection(abcRows: CellSummary[]): string {
 </section>`;
 }
 
+// ─── #2492: breakdown por dia (D1–D5) ────────────────────────────────────────
+
+/**
+ * Resumo de um dia de envio do ciclo Clarice (agrega todas as células A/B/C do dia).
+ * Substituição do Resumo A/B/C (por célula) por um breakdown por dia.
+ * Exportado pra teste unitário.
+ */
+export interface DaySummary {
+  /** Número do dia (1–5, correspondente a d01–d05 da S1) */
+  dayNum: number;
+  /** Rótulo legível (ex: "D1") */
+  label: string;
+  /** Soma de uniqueViews (MPP-inclusivo) das campanhas do dia */
+  totalViews: number;
+  /** Soma de delivered das campanhas do dia */
+  totalDelivered: number;
+  /** Open rate agregado MPP-inclusivo (totalViews / totalDelivered) */
+  openRate: number;
+  /** Número de campanhas contabilizadas (células enviadas neste dia) */
+  campaignCount: number;
+  /**
+   * Open rate ORGÂNICO (sem Apple MPP), secundário. `null` quando alguma
+   * campanha do dia caiu no fallback campaignStats (sem `appleMppOpens`).
+   * Só preenchido quando TODAS as campanhas do dia têm globalStats.
+   */
+  organicOpenRate: number | null;
+}
+
+/**
+ * #2492: agrega resumo D1–D5 das campanhas S1 (d01–d05) de um ciclo Clarice.
+ * Cada row representa UM DIA, somando todas as células (A/B/C) daquele dia.
+ * Usa apenas campanhas com stats reais (gs.sent > 0 ou cs.sent > 0).
+ * Exportado pra teste unitário.
+ */
+export function aggregateDaySummary(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string,
+): DaySummary[] {
+  // D1–D5 = dias 1 a 5 da S1
+  const MAX_DAY = 5;
+  const days: Record<
+    number,
+    { views: number; delivered: number; count: number; organicViews: number; organicDays: number }
+  > = {};
+  for (let d = 1; d <= MAX_DAY; d++) {
+    days[d] = { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 };
+  }
+
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name);
+    if (!parsed || parsed.cycle !== cycle) continue;
+    if (parsed.dayNum < 1 || parsed.dayNum > MAX_DAY) continue;
+
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const { stats: s, isGlobal } = picked;
+
+    const d = days[parsed.dayNum];
+    d.views += s.uniqueViews ?? 0;
+    d.delivered += s.delivered ?? 0;
+    d.count += 1;
+
+    if (isGlobal) {
+      const gs = s as BrevoGlobalStats;
+      d.organicViews += Math.max(0, (gs.uniqueViews ?? 0) - (gs.appleMppOpens ?? 0));
+      d.organicDays += 1;
+    }
+  }
+
+  return Array.from({ length: MAX_DAY }, (_, i) => {
+    const dayNum = i + 1;
+    const d = days[dayNum];
+    const organicComplete = d.count > 0 && d.organicDays === d.count;
+    return {
+      dayNum,
+      label: `D${dayNum}`,
+      totalViews: d.views,
+      totalDelivered: d.delivered,
+      openRate: d.delivered > 0 ? (d.views / d.delivered) * 100 : 0,
+      campaignCount: d.count,
+      organicOpenRate:
+        organicComplete && d.delivered > 0 ? (d.organicViews / d.delivered) * 100 : null,
+    };
+  });
+}
+
+/**
+ * #2492: renderiza a seção de breakdown D1–D5 (um row por dia de envio da S1,
+ * somando todas as células A/B/C). Oculta ("") quando nenhum dia tem dados.
+ * Exportado pra teste unitário.
+ */
+export function renderDaySummarySection(rows: DaySummary[]): string {
+  if (rows.every((r) => r.campaignCount === 0)) return "";
+
+  // Melhor dia = maior open rate entre os que têm dados
+  const sampledRows = rows.filter((r) => r.campaignCount > 0);
+  const maxRate = sampledRows.reduce((m, r) => Math.max(m, r.openRate), 0);
+  const tiedCount = sampledRows.filter((r) => r.openRate === maxRate).length;
+  const isTied = sampledRows.length >= 2 && tiedCount > 1;
+  const winnerDay = !isTied && sampledRows.length >= 2
+    ? sampledRows.find((r) => r.openRate === maxRate)?.dayNum ?? null
+    : null;
+
+  const allZero = isTied && maxRate === 0;
+  const statusNote = allZero
+    ? `Aguardando dados de abertura — primeiras horas pós-envio.`
+    : isTied
+    ? `Empate entre dias com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
+    : sampledRows.length >= 2 && winnerDay
+    ? `Melhor dia provisório: <strong style="color:${DS.brand}">D${winnerDay}</strong> — aguardar conclusão da S1 para decisão final.`
+    : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
+
+  const tableRows = rows
+    .map((r) => {
+      const isWinner = r.dayNum === winnerDay && r.campaignCount > 0;
+      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
+      const organicInline =
+        r.campaignCount > 0 && r.organicOpenRate != null
+          ? ` <span class="rate-inline">(${r.organicOpenRate.toFixed(1)}% s/ MPP)</span>`
+          : "";
+      const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
+      return `<tr>
+        <td><strong>${r.label}</strong></td>
+        <td>${r.campaignCount > 0 ? r.totalDelivered : "—"}</td>
+        <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
+        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${organicInline}${winnerTag}</td>
+        <td>${r.campaignCount}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return `
+<section class="phase2-section" id="abc-summary">
+  <h2 class="section-title">Resumo D1–D5 — S1</h2>
+  <p class="section-note">${statusNote}</p>
+  <p class="section-note"><small>Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo) — base do vencedor. Entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os envios do dia têm esse dado. Cada linha agrega todas as células (A/B/C) enviadas naquele dia.</small></p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Dia da S1 (D1 = d01, D2 = d02, … D5 = d05)">Dia</th>
+        <th title="Soma de entregues de todas as células enviadas no dia">Delivered (total)</th>
+        <th title="Soma de aberturas únicas (com Apple MPP) de todas as células do dia">Opens (total)</th>
+        <th title="Open rate agregado com Apple MPP — entre parênteses, taxa sem MPP quando disponível">Open rate agr.</th>
+        <th title="Número de campanhas (células) enviadas neste dia">Campanhas</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
 /**
  * #2251: renderiza a seção "Campanhas agendadas" (status queued), ordenada por
  * horário (próximo envio primeiro). Mostra dia/célula (quando Clarice News),
@@ -2015,8 +2170,9 @@ export function renderVolumeSection(cumulativeSent: number): string {
   const pctLabel = pctBar.toFixed(1);
   const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
   const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
-  // #2429: rótulo "Envios (eventos)" deixa explícito que este número conta eventos
-  // de envio (uma pessoa em 2 campanhas conta 2 vezes; inclui bounces), não pessoas únicas.
+  // #2429: rótulo "E-mails (eventos)" (#2491: renomeado de "Envios (eventos)") deixa explícito
+  // que este número conta eventos de envio (uma pessoa em 2 campanhas conta 2 vezes; inclui
+  // bounces), não pessoas únicas.
   // Tooltip compartilhado via ENVIOS_TOOLTIP — mesma cópia usada na tabela por-campanha e mensal.
   return `
 <section class="phase2-section" id="volume-ciclo">
@@ -2236,7 +2392,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
         <th title="Mês do envio">Mês</th>
         <th title="Número de envios realizados no mês">Envios</th>
         <th title="Intervalo de datas: 1º envio – último envio do mês (horário de Brasília)">Enviado (1º – último)</th>
-        <th title="${escHtml(ENVIOS_TOOLTIP)}">Envios (eventos)</th>
+        <th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
         <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
         <th title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
         <th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>

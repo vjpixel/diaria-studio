@@ -39,6 +39,8 @@ import {
   WEEKDAY_LABELS,
   monthKeyBRT,
   ENVIOS_TOOLTIP,
+  aggregateDaySummary,
+  renderDaySummarySection,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -675,12 +677,12 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
   });
 
-  // #2429: rótulo "Envios (eventos)" na coluna Sent da tabela mensal
-  test("#2429 coluna Sent da tabela mensal tem rótulo 'Envios (eventos)' com tooltip", () => {
+  // #2429: rótulo "E-mails (eventos)" na coluna Sent da tabela mensal (#2491: renomeado de "Envios (eventos)")
+  test("#2429 coluna Sent da tabela mensal tem rótulo 'E-mails (eventos)' com tooltip", () => {
     const rows = aggregateByMonth(allCampaigns);
     const html = renderMonthlyTotalsSection(rows);
-    // Coluna deve ser rotulada como "Envios (eventos)", não apenas "Sent" (#2429)
-    assert.match(html, /Envios \(eventos\)/, "coluna deve ter rótulo 'Envios (eventos)'");
+    // Coluna deve ser rotulada como "E-mails (eventos)" (#2491: renomeado de "Envios (eventos)")
+    assert.match(html, /E-mails \(eventos\)/, "coluna deve ter rótulo 'E-mails (eventos)'");
     // Tooltip usa "N vezes" (PT-BR legível), não "N×" (#2429 self-review finding 3)
     assert.match(html, /title="[^"]*uma pessoa em N campanhas conta N vezes[^"]*"/, "tooltip deve usar 'N vezes', não 'N×'");
     // Tooltip compartilhado via ENVIOS_TOOLTIP — verifica que a constante está em uso
@@ -987,7 +989,8 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
     // #2208 (item 4): ancorando em id= para não casar href/nav que pudesse vir antes.
     assert.match(html, /id="abc-summary"/, "deve conter a seção abc-summary com id=");
-    assert.match(html, /Resumo A\/B\/C/, "deve ter título 'Resumo A/B/C'");
+    // #2492: seção agora mostra breakdown D1–D5 em vez de A/B/C por célula
+    assert.match(html, /Resumo D1–D5/, "deve ter título 'Resumo D1–D5'");
   });
 
   test("volume-ciclo vem ANTES de abc-summary (editor 2026-06-11)", () => {
@@ -1045,18 +1048,18 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /Open rate por dia da semana/, "deve ter título da seção weekday");
   });
 
-  test("seção weekday-openrate posicionada ENTRE abc-summary e campaigns-table (#2134)", () => {
+  test("seção weekday-openrate posicionada ENTRE campaigns-table e abc-summary (#2134, #2472)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    // #2208 (item 4): ancorando em id= para não casar substring de nav/href que
-    // pudesse aparecer antes da section real (ex: href="#abc-summary").
-    const idxAbc = html.indexOf('id="abc-summary"');
-    const idxWeekday = html.indexOf('id="weekday-openrate"');
+    // #2472: nova ordem: campaigns-table → weekday-openrate → abc-summary
+    // #2208 (item 4): ancorando em id= para não casar substring de nav/href.
     const idxCampaigns = html.indexOf('id="campaigns-table"');
-    assert.ok(idxAbc > -1, 'deve encontrar id="abc-summary"');
-    assert.ok(idxWeekday > -1, 'deve encontrar id="weekday-openrate"');
+    const idxWeekday = html.indexOf('id="weekday-openrate"');
+    const idxAbc = html.indexOf('id="abc-summary"');
     assert.ok(idxCampaigns > -1, 'deve encontrar id="campaigns-table"');
-    assert.ok(idxAbc < idxWeekday, "weekday-openrate deve vir depois de abc-summary");
-    assert.ok(idxWeekday < idxCampaigns, "weekday-openrate deve vir antes de campaigns-table");
+    assert.ok(idxWeekday > -1, 'deve encontrar id="weekday-openrate"');
+    assert.ok(idxAbc > -1, 'deve encontrar id="abc-summary"');
+    assert.ok(idxCampaigns < idxWeekday, "weekday-openrate deve vir depois de campaigns-table");
+    assert.ok(idxWeekday < idxAbc, "weekday-openrate deve vir antes de abc-summary");
   });
 });
 
@@ -1504,6 +1507,96 @@ describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent un
   });
 });
 
+// ─── #2492: aggregateDaySummary / renderDaySummarySection ────────────────────
+
+describe("aggregateDaySummary (#2492)", () => {
+  test("retorna 5 rows (D1–D5) para ciclo 2605 com campanhas d01–d04", () => {
+    const result = aggregateDaySummary(cycle2605Campaigns, "2605");
+    assert.equal(result.length, 5, "deve retornar exatamente 5 rows (D1–D5)");
+    assert.deepEqual(result.map((r) => r.label), ["D1", "D2", "D3", "D4", "D5"]);
+  });
+
+  test("agrega todas as células (A/B/C) do mesmo dia em um único row", () => {
+    // cycle2605Campaigns: d01-A + d01-B + d01-C → D1 deve ter campaignCount=3
+    const result = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const d1 = result.find((r) => r.dayNum === 1)!;
+    assert.ok(d1, "deve ter row para D1");
+    assert.equal(d1.campaignCount, 3, "D1 deve ter 3 campanhas (células A+B+C do d01)");
+  });
+
+  test("totalViews de D1 = soma das 3 células A+B+C do d01", () => {
+    // d01-A uniqueViews=20, d01-B uniqueViews=32, d01-C uniqueViews=30 (de cycle2605Campaigns)
+    const result = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const d1 = result.find((r) => r.dayNum === 1)!;
+    assert.equal(d1.totalViews, 20 + 32 + 30, "totalViews D1 = 82 (soma A+B+C)");
+  });
+
+  test("dias sem campanhas têm campaignCount=0 e openRate=0", () => {
+    const result = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const d5 = result.find((r) => r.dayNum === 5)!;
+    assert.equal(d5.campaignCount, 0, "D5 sem campanhas deve ter count=0");
+    assert.equal(d5.openRate, 0, "D5 sem campanhas deve ter openRate=0");
+  });
+
+  test("retorna 5 rows vazios para ciclo sem campanhas", () => {
+    const result = aggregateDaySummary(cycle2605Campaigns, "9999");
+    assert.equal(result.length, 5);
+    assert.ok(result.every((r) => r.campaignCount === 0), "todos os rows devem ter count=0");
+  });
+
+  test("exclui campanhas de S2+ (dayNum > 5 ignorado)", () => {
+    const s2Campaign = {
+      id: 99,
+      name: "Clarice News 2605 d06-A (seg)",
+      subject: "s2",
+      status: "sent",
+      sentDate: "2026-06-17T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-17T09:00:00Z",
+      recipients: { lists: [199] },
+      statistics: { globalStats: makeGlobalStats({ sent: 150, delivered: 148, uniqueViews: 50 }) },
+    };
+    const result = aggregateDaySummary([...cycle2605Campaigns, s2Campaign], "2605");
+    assert.ok(!result.some((r) => r.dayNum > 5), "não deve haver row para dayNum>5");
+    // D1 não deve ser afetado pelo d06
+    const d1 = result.find((r) => r.dayNum === 1)!;
+    assert.equal(d1.campaignCount, 3, "D1 não deve ser afetado pela campanha d06");
+  });
+});
+
+describe("renderDaySummarySection (#2492)", () => {
+  test("retorna string vazia quando todos os dias sem campanhas", () => {
+    const rows = aggregateDaySummary(cycle2605Campaigns, "9999");
+    assert.equal(renderDaySummarySection(rows), "");
+  });
+
+  test("contém id='abc-summary' (mantém âncora para compatibilidade)", () => {
+    const rows = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const html = renderDaySummarySection(rows);
+    assert.match(html, /id="abc-summary"/, "deve manter id=abc-summary para âncoras existentes");
+  });
+
+  test("título é 'Resumo D1–D5 — S1' (#2492)", () => {
+    const rows = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const html = renderDaySummarySection(rows);
+    assert.match(html, /Resumo D1–D5/, "título deve conter 'Resumo D1–D5'");
+  });
+
+  test("exibe rótulo D1, D2, etc. nas células", () => {
+    const rows = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const html = renderDaySummarySection(rows);
+    assert.match(html, />D1</, "deve ter célula D1");
+    assert.match(html, />D2</, "deve ter célula D2");
+  });
+
+  test("identifica vencedor quando há 2+ dias com dados e taxas distintas", () => {
+    const rows = aggregateDaySummary(cycle2605Campaigns, "2605");
+    const html = renderDaySummarySection(rows);
+    // cycle2605Campaigns tem dados para D1, D2, D3 — um deve ser LÍDER
+    assert.match(html, /▲ LÍDER/, "deve identificar o dia vencedor");
+  });
+});
+
 // ─── Regressão #2199 Finding 1: aggregateAbcSummary sent undefined → sem NaN ───
 
 describe("regressão #2199 Finding 1: aggregateAbcSummary exclui campanha com gs.sent undefined", () => {
@@ -1628,15 +1721,14 @@ describe("aggregateLinksAcrossCampaigns (#2249)", () => {
     assert.ok(!rows.some((r) => r.url.includes("/a") || r.url.includes("/b") || r.url.includes("utm")), "sem path/query no resultado");
   });
 
-  test("seção de links agregados é a 1ª seção do body (#2249)", () => {
+  test("seção de links agregados aparece após as seções principais (#2249, #2472)", () => {
+    // #2472: nova ordem — links-agregados vem por último (após cohorts), não no topo.
     const campaigns = [withLinks(92, 1, { "https://diaria.com.br/a": 7 })];
     const html = renderDashboardHtml(campaigns);
     const posLinks = html.indexOf('id="links-agregados"');
-    const posVolume = html.indexOf('id="volume-ciclo"');
     const posCampaigns = html.indexOf('id="campaigns-table"');
     assert.ok(posLinks > 0, "seção de links agregados deve existir");
-    assert.ok(posLinks < posCampaigns, "links agregados antes da tabela de campanhas");
-    if (posVolume > 0) assert.ok(posLinks < posVolume, "links agregados antes do volume");
+    assert.ok(posLinks > posCampaigns, "links agregados vem depois da tabela de campanhas (#2472)");
   });
 });
 
