@@ -18,13 +18,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 /**
  * #2488: lê o array `socials` de `platform.config.json` para iterar canais
  * dinamicamente em vez de hard-codar. Fallback: lista canônica do config atual
- * (`["linkedin","facebook","instagram"]`) se o config não for encontrado/parseável.
- * Isso garante que adicionar um canal novo ao config.json propaga para os checks
- * sem alterar este arquivo.
+ * (`["linkedin","facebook","instagram","threads"]`) se o config não for
+ * encontrado/parseável. Isso garante que adicionar um canal novo ao config.json
+ * propaga para os checks sem alterar este arquivo.
+ * #2479: 'threads' incluído no fallback — sem isso, config ausente/malformado
+ * faria checkConsentBinding pular Threads silenciosamente (canal dispatchado
+ * mas não validado).
  */
 function loadSocialsFromConfig(): string[] {
   const configPath = resolve(ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram"];
+  if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram", "threads"];
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { socials?: string[] };
     // #2486: array vazio = opt-out intencional (0 canais sociais) — respeitado como tal.
@@ -33,7 +36,7 @@ function loadSocialsFromConfig(): string[] {
   } catch {
     // ignorar erro de parse — retornar fallback
   }
-  return ["linkedin", "facebook", "instagram"];
+  return ["linkedin", "facebook", "instagram", "threads"];
 }
 
 /**
