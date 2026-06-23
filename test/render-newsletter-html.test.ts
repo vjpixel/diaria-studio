@@ -28,6 +28,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
+import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -2086,5 +2087,23 @@ describe("renderMasthead (#2490)", () => {
     assert.ok(mastheadIdx < coverageIdx, "masthead deve aparecer antes do conteúdo do destaque");
     // cor teal aplicada ao wordmark
     assert.match(html, /#00A0A0/);
+  });
+});
+
+describe("DS_STYLE_BLOCK — padding lateral mobile (#2514)", () => {
+  it("usa .pad de 12px no mobile (max-width:480px), não 24px", () => {
+    // #2514 (pedido do editor 260623): o corpo aparecia estreito demais no celular
+    // por causa do padding lateral de 24px. Reduzido para 12px para usar mais
+    // largura horizontal. Desktop continua 32px (inline nos helpers PAD_*).
+    assert.match(
+      DS_STYLE_BLOCK,
+      /\.pad\s*\{\s*padding-left:12px\s*!important;\s*padding-right:12px\s*!important;\s*\}/,
+      "mobile .pad deve ser 12px (#2514)",
+    );
+    assert.doesNotMatch(
+      DS_STYLE_BLOCK,
+      /padding-left:24px\s*!important;\s*padding-right:24px/,
+      "mobile .pad não deve mais ser 24px",
+    );
   });
 });
