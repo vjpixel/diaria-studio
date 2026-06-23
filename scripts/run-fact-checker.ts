@@ -15,8 +15,9 @@
  *   + stdout: seção formatada para o gate do Stage 4
  *
  * Exit codes:
- *   0 — sucesso (mesmo se houver findings — não bloqueia)
+ *   0 — sucesso sem attention_items (tudo verificado ou sem claims)
  *   1 — erro de args ou arquivo não encontrado
+ *   2 — sucesso com attention_items > 0 (claims que o editor deve revisar; não bloqueia)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -54,7 +55,13 @@ export interface FactCheckSummary {
   not_found_in_source: number;
   source_unreachable: number;
   inferred: number;
-  /** divergent + not_found superlatives + superlatives not sustained */
+  /**
+   * Itens que merecem atenção do editor:
+   *   - DIVERGENT (qualquer tipo)
+   *   - NOT_FOUND_IN_SOURCE (exceto superlativos, que entram na categoria abaixo)
+   *   - superlatives que NÃO são SUSTAINED
+   * Nota: NOT_FOUND_IN_SOURCE + superlative é contado UMA vez (na categoria de superlativo).
+   */
   attention_items: number;
 }
 
@@ -89,8 +96,23 @@ export interface ExtractedClaim {
   context: string;
 }
 
-// Regex para preços com valor numérico
-const PRICE_RE = /(?:R\$|US\$|\$|€|USD|BRL|EUR)\s*\d[\d.,]*/g;
+/**
+ * Schema do output do modo --dry-run.
+ * Alinhado com FactCheckResult: usa os mesmos tipos de claim (ExtractedClaim),
+ * mas omite veredictos — não há subagente no dry-run. (#2468 finding 1)
+ */
+export interface DryRunOutput {
+  mode: "dry-run";
+  edition: string;
+  claims_heuristic: ExtractedClaim[];
+  note: string;
+}
+
+// Regex para preços com valor numérico.
+// R$, US$, $ e € são símbolos que não ocorrem mid-word — não precisam de \b.
+// USD, BRL e EUR são siglas alfabéticas que podem ocorrer como substring
+// (ex: "ESTUDANTE", "EMBRO") → âncora \b obrigatória para evitar FP.
+const PRICE_RE = /(?:R\$|US\$|\$|€|\bUSD|\bBRL|\bEUR)\s*\d[\d.,]*/g;
 
 // Regex para ineditismo/superlativos.
 // Estratégia: capturar a palavra-âncora mais uma janela de contexto à frente
@@ -219,6 +241,16 @@ export function formatGateSummary(result: FactCheckResult): string {
     lines.push("");
   }
 
+  // Guard contra ghost-header (#2468 finding 5):
+  // Se attention_items > 0 mas nenhuma seção renderizou (inconsistência interna),
+  // emitir um aviso genérico em vez de deixar o header "vazio".
+  const sectionsRendered =
+    divergent.length > 0 || unsupportedSuperlatives.length > 0 || notFound.length > 0;
+  if (!sectionsRendered) {
+    lines.push(`  ⚠️  ${summary.attention_items} item(ns) de atenção (ver claims completos em fact-check.json).`);
+    lines.push("");
+  }
+
   lines.push(
     "  Decisão final é do editor. Aprovação no gate confirma revisão dos itens acima.",
   );
@@ -252,7 +284,8 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
 
   const claims: FactClaim[] = Array.isArray(obj.claims)
     ? (obj.claims as FactClaim[]).filter(
-        (c) => c && typeof c === "object" && c.text && c.verdict && c.destaque,
+        // Usar != null para destaque em vez de truthy: destaque=0 é válido (#2468 finding 2)
+        (c) => c && typeof c === "object" && c.text && c.verdict && c.destaque != null,
       )
     : [];
 
@@ -333,25 +366,21 @@ async function main(): Promise<void> {
 
   mkdirSync(internalDir, { recursive: true });
 
-  // Modo dry-run: só extrai claims heurísticos sem invocar o subagente
+  // Modo dry-run: só extrai claims heurísticos sem invocar o subagente.
+  // Output schema: DryRunOutput (alinhado com ExtractedClaim — #2468 finding 1).
   if (args["dry-run"] === "true") {
     const newsletter = readFileSync(newsletterPath, "utf8");
     const social = readFileSync(socialPath, "utf8");
     const allText = `${newsletter}\n${social}`;
     const extracted = parseClaimsFromText(allText);
 
-    console.log(
-      JSON.stringify(
-        {
-          mode: "dry-run",
-          edition,
-          claims_heuristic: extracted,
-          note: "Dry-run: só extração heurística. Omite verificação por URL (sem subagente).",
-        },
-        null,
-        2,
-      ),
-    );
+    const dryRunOutput: DryRunOutput = {
+      mode: "dry-run",
+      edition,
+      claims_heuristic: extracted,
+      note: "Dry-run: só extração heurística. Omite verificação por URL (sem subagente).",
+    };
+    console.log(JSON.stringify(dryRunOutput, null, 2));
     return;
   }
 
@@ -376,10 +405,19 @@ async function main(): Promise<void> {
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     console.log(formatGateSummary(result));
+
+    // Exit codes (#2468 finding 4):
+    //   0 — sem attention_items (tudo ok ou sem claims)
+    //   2 — há attention_items que o editor deve revisar (não bloqueia, mas distingue)
+    //   1 — erro de args / arquivo não encontrado (reservado para erros fatais)
+    if (result.summary.attention_items > 0) {
+      process.exit(2);
+    }
     return;
   }
 
-  // Modo padrão: imprimir instrução para o orchestrator
+  // Modo padrão: imprimir instrução para o orchestrator.
+  // Exit 0 sempre — este modo só valida pré-condições, não executa fact-checking.
   console.log(
     `[run-fact-checker] Pré-condições validadas para edição ${edition}.`,
   );
@@ -394,6 +432,7 @@ async function main(): Promise<void> {
   console.log(
     "  Após o subagente gravar fact-check.json, rodar com --input-json para formatar o gate summary.",
   );
+  // Exit 0 — pré-condições ok, nenhum claim verificado ainda
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

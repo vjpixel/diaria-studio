@@ -104,7 +104,11 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
 }
 ```
 
-`attention_items` = count de `DIVERGENT` + `NOT_FOUND_IN_SOURCE` + itens com `claim_type: "superlative"` que não são SUSTAINED.
+`attention_items` = count de:
+- `DIVERGENT` (qualquer tipo)
+- `NOT_FOUND_IN_SOURCE` com `claim_type` que NÃO seja `"superlative"` (superlativos entram na categoria abaixo)
+- `claim_type: "superlative"` cujo `verdict` não é `"SUSTAINED"` (inclui NOT_FOUND, INFERRED, SOURCE_UNREACHABLE)
+Isso garante que um superlativo NOT_FOUND_IN_SOURCE é contado UMA vez (como superlativo), não duas.
 
 ## Regras
 
