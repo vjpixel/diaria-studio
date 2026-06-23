@@ -362,9 +362,10 @@ describe("Stage 2 invariants", () => {
     const v = checkSocialPassesLints(fixture);
     // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861) +
     // personal-post-no-newsletter-deixis (#2148) +
-    // no-email-cta-linkedin (#2458) + linkedin-page-link (#2458).
+    // no-email-cta-linkedin (#2458) + linkedin-page-link (#2458) +
+    // no-credential-bio (#2494).
     // humanizer-section-coverage só roda quando snapshot existe → não conta aqui.
-    assert.equal(v.length, 6);
+    assert.equal(v.length, 7);
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     // #1861: a nova check está registrada (não só a contagem mudou).
     assert.ok(
@@ -384,6 +385,11 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       v.some((x) => x.rule === "social-linkedin-page-link-file-exists"),
       "rule social-linkedin-page-link deve estar presente (#2458)",
+    );
+    // #2494: no-credential-bio check registrada
+    assert.ok(
+      v.some((x) => x.rule === "social-no-credential-bio-file-exists"),
+      "rule social-no-credential-bio deve estar presente (#2494)",
     );
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
