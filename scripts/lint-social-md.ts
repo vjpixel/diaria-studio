@@ -511,8 +511,11 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
 // ("assine a Diar.ia", "assinar a newsletter", "cadastre-se por email", "e-mail"
 // com ou sem hífen). Ancorado em intenção de assinatura pra evitar falso-positivo
 // em menções casuais a e-mail.
+// #2489: simplificado pra evitar quantificadores aninhados `(a\s+)?(nossa\s+)?`
+// que geram ReDoS teórico em input adversarial longo. Posts são curtos (baixo risco
+// real), mas o padrão linear é preferível e mantém a mesma cobertura semântica.
 const EMAIL_CTA_RE =
-  /\b(assine\s+(grátis|a\s+diar\.ia|(a\s+)?(nossa\s+)?newsletter|por\s+e-?mail)|assinar\s+(a\s+)?(nossa\s+)?newsletter|inscreva-se\s+(grátis|por\s+e-?mail|na\s+newsletter)|cadastre-se\s+(grátis|por\s+e-?mail|para\s+receber)|receba\s+(a\s+diar\.ia\s+)?(todo\s+dia\s+)?por\s+e-?mail)\b/gi;
+  /\b(assine\s+(?:grátis|a\s+diar\.ia|a\s+newsletter|nossa\s+newsletter|por\s+e-?mail)|assinar\s+(?:a\s+newsletter|nossa\s+newsletter)|inscreva-se\s+(?:grátis|por\s+e-?mail|na\s+newsletter)|cadastre-se\s+(?:grátis|por\s+e-?mail|para\s+receber)|receba\s+(?:a\s+diar\.ia\s+)?(?:todo\s+dia\s+)?por\s+e-?mail)\b/gi;
 
 export interface LinkedinEmailCtaError {
   section: string;
@@ -605,15 +608,21 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
     const cpStart = body.search(/\n### comment_pixel\b/);
     if (cdStart === -1) continue; // sem comment_diaria → regra missing_comment_diaria já pega
     const start = body.indexOf("\n", cdStart + 1) + 1;
-    const end = cpStart !== -1 ? cpStart : body.length;
+    // #2489: guard — se comment_pixel vier antes de comment_diaria (ou ausente),
+    // cpStart ≤ cdStart produz slice vazio → falso-positivo "link ausente".
+    // Usar body.length como fallback garante que o texto inteiro do comment_diaria
+    // é avaliado nesses casos.
+    const end = cpStart !== -1 && cpStart > cdStart ? cpStart : body.length;
     const cdText = body.slice(start, end).replace(/<!--[\s\S]*?-->/g, "").trim();
     if (!pageRe.test(cdText)) {
       errors.push({
         section: "comment_diaria",
         destaque,
+        // #2489: usar a const canônica nas msgs de erro para que mudar o slug
+        // atualize automaticamente todas as mensagens (evita drift).
         detail:
           `${destaque}/comment_diaria: link da página da Diar.ia no LinkedIn ausente. ` +
-          `Adicionar "linkedin.com/company/diaria" no CTA (#2458).`,
+          `Adicionar "${DIARIA_LINKEDIN_PAGE_SLUG}" no CTA (#2458).`,
       });
     }
   }
@@ -626,14 +635,101 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
     if (ppText.length > 0 && !pageRe.test(ppText)) {
       errors.push({
         section: "post_pixel",
+        // #2489: usar a const canônica nas msgs de erro (consistência com comment_diaria)
         detail:
           `post_pixel: link da página da Diar.ia no LinkedIn ausente. ` +
-          `Adicionar "linkedin.com/company/diaria" ao final do post (#2458).`,
+          `Adicionar "${DIARIA_LINKEDIN_PAGE_SLUG}" ao final do post (#2458).`,
       });
     }
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+// ---------------------------------------------------------------------------
+// #2494: no-credential-bio guard — post_pixel / comment_pixel
+// ---------------------------------------------------------------------------
+
+/**
+ * #2494: padrões de frases de credencial/bio auto-referenciais banidas do
+ * `## post_pixel` e `### comment_pixel`. O post pessoal deve sustentar o ponto
+ * pelo conteúdo, não pela bio ("trabalho com IA há anos", "faço uma newsletter").
+ *
+ * Primo das estruturas vetadas (punchline de autoridade — memória
+ * `feedback_estruturas_texto_proibidas`).
+ *
+ * Detecta em AMBAS as seções pessoais (post_pixel + comment_pixel × 3).
+ * NÃO flaga em main posts d{N} da company page.
+ */
+// Padrões de credencial/bio auto-referencial. Anchored com \b pra evitar
+// falso-positivo em fragmentos de palavras. Case-insensitive.
+// Nota de boundary: JS \b é ASCII-only — "á" não é \w, então \b após "há"
+// nunca dispara. Usamos (?!\w) como lookahead de encerramento (não consome
+// o char seguinte) para cobrir fins de frase com acentos.
+export const CREDENTIAL_BIO_RE =
+  /\b(?:trabalho\s+com\s+(?:isso|ia|intelig[eê]ncia\s+artificial)\s+h[aá]|fa[çc]o\s+(?:uma\s+)?newsletter|como\s+(?:algu[eé]m\s+que\s+)?(?:acompanha|trabalha)\s+(?:o\s+setor|(?:com\s+)?ia)|h[aá]\s+(?:alguns\s+)?anos\s+(?:que\s+)?(?:trabalho|acompanho))(?!\w)/gi;
+
+export interface CredentialBioMatch {
+  section: string;
+  phrase: string;
+  context: string;
+  line: number;
+}
+
+export interface CredentialBioResult {
+  ok: boolean;
+  matches: CredentialBioMatch[];
+}
+
+/**
+ * #2494: Detecta frases de credencial/bio auto-referencial em post_pixel e
+ * comment_pixel. Essas frases estabelecem autoridade pela bio ("vindo de quem
+ * constrói X") em vez de sustentar o ponto pelo conteúdo.
+ */
+export function lintCredentialBio(md: string): CredentialBioResult {
+  const matches: CredentialBioMatch[] = [];
+
+  const linkedinSection = extractPlatformSection(md, "linkedin");
+  if (!linkedinSection) return { ok: true, matches };
+
+  // Checar ## post_pixel
+  const ppBlock = extractPostPixelBlock(linkedinSection);
+  if (ppBlock) {
+    const lines = ppBlock.text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      CREDENTIAL_BIO_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = CREDENTIAL_BIO_RE.exec(line)) !== null) {
+        matches.push({
+          section: "post_pixel",
+          phrase: m[0],
+          context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
+          line: ppBlock.lineOffset + i,
+        });
+      }
+    }
+  }
+
+  // Checar ### comment_pixel em cada destaque d1/d2/d3
+  for (const { destaque, text, lineOffset } of extractCommentPixelBlocks(linkedinSection)) {
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      CREDENTIAL_BIO_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = CREDENTIAL_BIO_RE.exec(line)) !== null) {
+        matches.push({
+          section: `comment_pixel (${destaque})`,
+          phrase: m[0],
+          context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
+          line: lineOffset + i,
+        });
+      }
+    }
+  }
+
+  return { ok: matches.length === 0, matches };
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,7 +1200,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check personal-post-no-newsletter-deixis --md <path>\n" +
         "  ou: lint-social-md.ts --check humanizer-section-coverage --pre <path-pre> --md <path-post>\n" +
         "  ou: lint-social-md.ts --check no-email-cta-linkedin --md <path>\n" +
-        "  ou: lint-social-md.ts --check linkedin-page-link --md <path>",
+        "  ou: lint-social-md.ts --check linkedin-page-link --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-credential-bio --md <path>",
     );
     process.exit(2);
   }
@@ -1260,6 +1357,26 @@ function main(): void {
       );
       for (const e of result.errors) {
         console.error(`  [${e.section}${e.destaque ? `/${e.destaque}` : ""}]: ${e.detail}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-credential-bio (#2494) — detecta frases de credencial/bio
+  // auto-referenciais em post_pixel e comment_pixel. Warn-only (exit 1 para
+  // bloquear e forçar revisão).
+  if (args.check === "no-credential-bio") {
+    const result = lintCredentialBio(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} frase(s) de credencial/bio auto-referencial detectada(s) em post/comment pessoal (#2494):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  [${m.section}] linha ${m.line}: '${m.phrase}' — o ponto se sustenta pelo conteúdo, não pela bio\n    contexto: "...${m.context}..."`,
+        );
       }
       process.exit(1);
     }
