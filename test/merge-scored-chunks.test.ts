@@ -318,9 +318,9 @@ describe("#2496 — use_melhor capado não vira catastrophic", () => {
   });
 
   it("gap benigno (1 lancamento missing ≤ MAX_BENIGN_MISSING) no pool capado → incompleto mas NÃO catastrophic", () => {
-    // Garante que o fix #2496 NÃO cega o guard #1669 para perdas reais.
-    // Cenário: pool capado tem 3 lancamentos, mas o scorer-chunk não pontuou l3
-    // (chunk falhou ou agente omitiu) → perda real → deve ser catastrophic.
+    // Fronteira benigna: 1 artigo missing (≤ MAX_BENIGN_MISSING) é gap recuperável,
+    // NÃO catastrophic. A detecção REAL de catastrophic está nos 2 testes abaixo
+    // (gap > MAX_BENIGN_MISSING e chunk inteiro ilegível).
     const cappedPool: Categorized = {
       // 3 lancamentos, 5 radar, 3 use_melhor — pool pequeno mas representativo
       lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento"), mk("l3", "lancamento")],

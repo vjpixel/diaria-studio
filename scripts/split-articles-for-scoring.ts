@@ -204,10 +204,10 @@ export function main(): void {
   const absOutDir = resolve(ROOT, outDir);
   mkdirSync(absOutDir, { recursive: true });
 
-  // #2496: caminho do pool capado. Resolvido aqui (após mkdirSync de absOutDir,
-  // que garante que o diretório pai _internal/ existe) — escrito no PASSO 3 abaixo,
-  // junto da limpeza dos stale, para que um re-split sem --pool-out invalide o
-  // arquivo antigo em vez de deixá-lo stale (mesma disciplina de tmp-allscored.json).
+  // #2496: caminho do pool capado (--pool-out). Resolvido após o mkdirSync de
+  // absOutDir (garante que o pai _internal/ existe). A escrita acontece no PASSO 3,
+  // DEPOIS da escrita dos chunks (crash-consistency: se o loop de chunks falhar no
+  // meio, não fica um pool fresco apontando pra chunks parciais → falso catastrophic).
   const absPoolOut = poolOut ? resolve(ROOT, poolOut) : null;
 
   // #2287 / #6-fix: limpar scoring-chunks/ pré-existentes antes de escrever os novos.
@@ -283,36 +283,25 @@ export function main(): void {
         "O merge vai re-gerar o arquivo.",
       );
     }
-
-    // PASSO 2-bis (#2496): invalidar tmp-scoring-pool.json STALE quando o re-split
-    // NÃO emite um novo (--pool-out ausente). Sem isto, um re-split sem --pool-out
-    // deixaria o pool capado do run anterior no disco; o merge (1q.3) o consome via
-    // --categorized e compara contra chunks de OUTRO run → falso missing/catastrophic
-    // ou falso-safe. Mirror exato da disciplina de tmp-allscored.json acima.
-    // Quando --pool-out É passado, o PASSO 3 abaixo sobrescreve com o pool fresco.
-    if (!absPoolOut) {
-      const stalePoolPath = resolve(parentDir, "tmp-scoring-pool.json");
-      if (existsSync(stalePoolPath)) {
-        rmSync(stalePoolPath, { force: true });
-        console.error(
-          "[split-articles-for-scoring] tmp-scoring-pool.json stale removido (re-split sem --pool-out) — " +
-          "o merge não consumirá um pool de run anterior (#2496).",
-        );
-      }
-    }
   }
 
-  // PASSO 3 (#2496): gravar o pool capado (pós audience_affinity + dedup/cap use_melhor).
-  // Escrito DEPOIS do mkdirSync (parent _internal/ garantido existir) e do cleanup dos
-  // stale. O orchestrator passa este arquivo como --categorized do merge — assim o merge
-  // compara contra exatamente o que foi distribuído nos chunks (evita falso catastrophic
-  // quando use_melhor é capado, ex: 31→15: os 16 capados apareciam como missing →
-  // missing_count > 2 → catastrophic falso). buildChunks acima NÃO muta `categorized`
-  // (cria arrays novos via splitRoundRobin/toCategorized), então o pool gravado bate
-  // exatamente com a união dos chunks.
-  if (absPoolOut) {
-    writeFileSync(absPoolOut, JSON.stringify({ categorized }, null, 2), "utf8");
-    console.error(`[split-articles-for-scoring] pool capado gravado em ${absPoolOut} (#2496)`);
+  // PASSO 2-bis (#2496): invalidar QUALQUER tmp-scoring-pool.json STALE antes de
+  // (re)escrever os chunks. INCONDICIONAL e FORA do gate existsSync(absOutDir) —
+  // mirror exato da disciplina de tmp-allscored.json — para que nenhum pool de um
+  // run anterior sobreviva a este split (o merge em 1q.3 o consumiria via
+  // --categorized e compararia contra chunks DESTE run → falso missing/catastrophic
+  // ou falso-safe). Remove tanto o path canônico (que o orchestrator hardcoda no
+  // merge) quanto o destino atual de --pool-out, se diferente. PASSO 3 reescreve o
+  // destino atual com o pool fresco logo abaixo.
+  const canonicalPoolPath = resolve(parentDir, "tmp-scoring-pool.json");
+  for (const stale of new Set([canonicalPoolPath, absPoolOut].filter(Boolean) as string[])) {
+    if (existsSync(stale)) {
+      rmSync(stale, { force: true });
+      console.error(
+        `[split-articles-for-scoring] tmp-scoring-pool.json stale removido (${stale}) — ` +
+        "o merge não consumirá um pool de run anterior (#2496).",
+      );
+    }
   }
 
   const chunkFiles: string[] = [];
@@ -323,14 +312,29 @@ export function main(): void {
     chunkFiles.push(join(outDir, `scoring-chunk-${i}.json`).replaceAll("\\", "/"));
   });
 
+  // PASSO 3 (#2496): gravar o pool capado DEPOIS dos chunks (crash-consistency).
+  // O orchestrator passa este arquivo como --categorized do merge (1q.3) — assim o
+  // merge compara contra exatamente o que foi distribuído nos chunks (evita falso
+  // catastrophic quando use_melhor é capado, ex: 31→15: os 16 capados apareciam como
+  // missing → missing_count > 2 → catastrophic falso). buildChunks acima NÃO muta
+  // `categorized` (flattenCategorized lê; splitRoundRobin/toCategorized criam arrays
+  // novos), então o pool gravado bate exatamente com a união dos chunks. Escrever por
+  // último garante que um crash no loop de chunks NÃO deixa um pool fresco apontando
+  // pra chunks parciais (PASSO 2-bis já removeu o pool anterior de qualquer forma).
+  if (absPoolOut) {
+    writeFileSync(absPoolOut, JSON.stringify({ categorized }, null, 2), "utf8");
+    console.error(`[split-articles-for-scoring] pool capado gravado em ${absPoolOut} (#2496)`);
+  }
+
   const manifest: SplitManifest = {
     total_articles: flattenCategorized(categorized).length,
     chunk_count: chunks.length,
     chunk_files: chunkFiles,
-    // #2496: incluir no manifest o caminho do pool capado (quando --pool-out foi passado),
-    // para que o orchestrator possa usá-lo como --categorized do merge sem hardcodar o path.
+    // #2496: caminho do pool capado no manifest (quando --pool-out foi passado).
+    // Informacional — hoje o orchestrator HARDCODA o path em 1q.1/1q.3 (não lê este
+    // campo); fica disponível pra um consumidor futuro que prefira derivá-lo do manifest.
     // Normalizar separador igual a chunk_files[] — manifest 100% forward-slash no Windows
-    // (senão um consumidor que interpola pool_out num comando shell quebraria com `\`).
+    // (senão um consumidor que interpole pool_out num comando shell quebraria com `\`).
     ...(poolOut ? { pool_out: poolOut.replaceAll("\\", "/") } : {}),
   };
   process.stdout.write(JSON.stringify(manifest) + "\n");

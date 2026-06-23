@@ -414,4 +414,28 @@ describe("#2496 — split emite pool capado via --pool-out", () => {
       rmSync(tmpBase, { recursive: true, force: true });
     }
   });
+
+  // #2496 review (#2509 followup): a limpeza do stale — INCONDICIONAL (fora do
+  // gate existsSync(scoring-chunks/)). Mesmo sem scoring-chunks/ pre-existente (fresh
+  // edition), um tmp-scoring-pool.json stale no _internal/ deve ser removido.
+  it("re-split sem --pool-out remove stale mesmo sem scoring-chunks/ pre-existente (#2509)", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2509-nochunkdir-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    const stalePoolPath = join(tmpBase, "tmp-scoring-pool.json");
+    // NAO criar chunksDir de proposito — o split o cria via mkdirSync.
+    try {
+      writeFileSync(stalePoolPath, JSON.stringify({ categorized: { lancamento: [], radar: [{ url: "stale-orphan" }], use_melhor: [], video: [] } }));
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      assert.ok(
+        !existsSync(stalePoolPath),
+        "stale removido mesmo sem scoring-chunks/ pre-existente (cleanup incondicional, #2509)",
+      );
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
 });
