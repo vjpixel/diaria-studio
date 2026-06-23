@@ -40,6 +40,20 @@ import {
 } from "../scripts/run-fact-checker.ts";
 
 // ---------------------------------------------------------------------------
+// Shared CLI runner (#2468 code-review: dedup das 4 cópias idênticas de runCli)
+// ---------------------------------------------------------------------------
+
+function runFactCheckerCli(editionDir: string, extraArgs: string[] = []) {
+  const projectRoot = join(import.meta.dirname, "..");
+  const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // extractPriceClaims
 // ---------------------------------------------------------------------------
 
@@ -391,16 +405,6 @@ describe("formatGateSummary (#2455)", () => {
 // ---------------------------------------------------------------------------
 
 describe("run-fact-checker CLI --dry-run (#2455)", () => {
-  function runCli(editionDir: string, extraArgs: string[] = []) {
-    const projectRoot = join(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
-    return spawnSync(
-      process.execPath,
-      ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
-      { cwd: projectRoot, encoding: "utf8" },
-    );
-  }
-
   it("--dry-run com newsletter que contém R$ 24,99 → claim de preço detectado", () => {
     const tmp = mkdtempSync(join(tmpdir(), "fact-check-test-"));
     const internalDir = join(tmp, "_internal");
@@ -440,7 +444,7 @@ Google lança AI Plus por R$ 24,99/mês.`,
         "utf8",
       );
 
-      const result = runCli(tmp, ["--dry-run"]);
+      const result = runFactCheckerCli(tmp, ["--dry-run"]);
       assert.equal(result.status, 0, `exit 0 esperado. stderr: ${result.stderr}`);
 
       const parsed = JSON.parse(result.stdout) as { claims_heuristic: Array<{ claim_type: string; text: string }> };
@@ -480,7 +484,7 @@ Pela primeira vez uma operadora distribui IA no pacote pré-pago.`,
         "utf8",
       );
 
-      const result = runCli(tmp, ["--dry-run"]);
+      const result = runFactCheckerCli(tmp, ["--dry-run"]);
       assert.equal(result.status, 0, `exit 0 esperado. stderr: ${result.stderr}`);
 
       const parsed = JSON.parse(result.stdout) as { claims_heuristic: Array<{ claim_type: string; text: string }> };
@@ -498,7 +502,7 @@ Pela primeira vez uma operadora distribui IA no pacote pré-pago.`,
   it("falha com exit 1 se 02-reviewed.md não existe", () => {
     const tmp = mkdtempSync(join(tmpdir(), "fact-check-missing-"));
     try {
-      const result = runCli(tmp);
+      const result = runFactCheckerCli(tmp);
       assert.equal(result.status, 1, "deve falhar se arquivo não existe");
       assert.ok(result.stderr.includes("02-reviewed.md"), "stderr deve mencionar o arquivo ausente");
     } finally {
@@ -524,16 +528,6 @@ Pela primeira vez uma operadora distribui IA no pacote pré-pago.`,
 // ---------------------------------------------------------------------------
 
 describe("run-fact-checker CLI --input-json (#2455)", () => {
-  function runCli(editionDir: string, extraArgs: string[] = []) {
-    const projectRoot = join(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
-    return spawnSync(
-      process.execPath,
-      ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
-      { cwd: projectRoot, encoding: "utf8" },
-    );
-  }
-
   it("grava fact-check.json e exibe gate summary com DIVERGENT", () => {
     const tmp = mkdtempSync(join(tmpdir(), "fact-check-inputjson-"));
     const internalDir = join(tmp, "_internal");
@@ -571,9 +565,9 @@ describe("run-fact-checker CLI --input-json (#2455)", () => {
       const inputJsonPath = join(tmp, "agent-output.json");
       writeFileSync(inputJsonPath, JSON.stringify(agentOutput), "utf8");
 
-      const result = runCli(tmp, ["--input-json", inputJsonPath]);
-      // DIVERGENT → attention_items=1 → exit 2 (#2468 finding 4)
-      assert.equal(result.status, 2, `exit 2 esperado (attention_items>0). stderr: ${result.stderr}`);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath]);
+      // DIVERGENT (attention_items>0) ainda sai 0 — fact-check não bloqueia (#2468 finding 4)
+      assert.equal(result.status, 0, `exit 0 esperado (fact-check não bloqueia). stderr: ${result.stderr}`);
 
       // Gate summary no stdout deve conter ❌
       assert.ok(result.stdout.includes("❌"), `stdout deve ter ❌ para DIVERGENT. stdout: ${result.stdout}`);
@@ -597,16 +591,6 @@ describe("run-fact-checker CLI --input-json (#2455)", () => {
 // ---------------------------------------------------------------------------
 
 describe("regressões #2468 — finding 1: dry-run schema alinhado", () => {
-  function runCli(editionDir: string, extraArgs: string[] = []) {
-    const projectRoot = join(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
-    return spawnSync(
-      process.execPath,
-      ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
-      { cwd: projectRoot, encoding: "utf8" },
-    );
-  }
-
   it("dry-run output satisfaz schema DryRunOutput (mode, edition, claims_heuristic, note)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "fact-check-2468-f1-"));
     const internalDir = join(tmp, "_internal");
@@ -620,7 +604,7 @@ describe("regressões #2468 — finding 1: dry-run schema alinhado", () => {
         "utf8",
       );
 
-      const result = runCli(tmp, ["--dry-run"]);
+      const result = runFactCheckerCli(tmp, ["--dry-run"]);
       assert.equal(result.status, 0, `exit 0 esperado. stderr: ${result.stderr}`);
 
       const parsed = JSON.parse(result.stdout) as DryRunOutput;
@@ -684,8 +668,32 @@ describe("regressões #2468 — finding 2: destaque=0 não filtrado por falsy", 
       ],
     };
     const result = normalizeFactCheckResult(raw, "260622");
-    // destaque=undefined → null check falha → filtrado
+    // destaque=undefined → não é number → filtrado
     assert.equal(result.claims.length, 0, "claim sem destaque (undefined) deve ser filtrado");
+  });
+
+  // Discriminação contra o fix antigo `!= null` (code-review #2468): `!= null`
+  // aceitaria NaN e "" (renderizando "DNaN"/"D" no gate). O fix correto exige
+  // number finito. Estes casos PASSAM com `typeof===number && isFinite` e FALHAM
+  // com `!= null` — provando que o fix está no nível certo.
+  it("normalizeFactCheckResult filtra destaque NaN", () => {
+    const raw = {
+      claims: [
+        { destaque: NaN, claim_type: "price", text: "R$ 99", context: "x", sources: ["newsletter"], verdict: "DIVERGENT" },
+      ],
+    };
+    const result = normalizeFactCheckResult(raw, "260622");
+    assert.equal(result.claims.length, 0, "destaque=NaN deve ser filtrado (não renderizar 'DNaN')");
+  });
+
+  it("normalizeFactCheckResult filtra destaque string", () => {
+    const raw = {
+      claims: [
+        { destaque: "1", claim_type: "price", text: "R$ 99", context: "x", sources: ["newsletter"], verdict: "DIVERGENT" },
+      ],
+    };
+    const result = normalizeFactCheckResult(raw, "260622");
+    assert.equal(result.claims.length, 0, "destaque string '1' deve ser filtrado (FactClaim.destaque é number)");
   });
 });
 
@@ -705,22 +713,17 @@ describe("regressões #2468 — finding 3: USD/BRL/EUR ancorado com \\b", () => 
     assert.ok(claims.some((c) => c.text.includes("15")), "EUR 15 deve ser detectado");
   });
 
-  it("USD/BRL/EUR como substring mid-word NÃO gera FP (#2468 finding 3)", () => {
-    // 'ESTUDANTE' contém 'EUR'? Não, mas vamos usar exemplos realistas.
-    // Palavra que contém BRL: há poucas em português, mas testamos o padrão
-    // Uma palavra inventada que contém USD/BRL/EUR no meio
-    const claims = extractPriceClaims("Texto sem preço (OCURSD, OBLRL, BLEUR são siglas).");
-    // Nenhuma dessas deve casar como preço porque não têm dígitos após a sigla
-    // (o regex já exige \d após a sigla), mas o importante é que o \b evita
-    // matches onde USD/BRL/EUR aparecem no meio de palavras seguidos de número.
-    // Teste mais realista: "BRLTOKEN123" — sem \b, "BRL" casaria "BRL123"
-    const claimsWordBoundary = extractPriceClaims("O BRLTOKEN123 é um crypto, não um preço.");
-    // Com \b, "BRL" em "BRLTOKEN" não deve casar (B é precedido por início de palavra, OK)
-    // mas "BRLTOKEN123" — o \b está ANTES de BRL, não depois, então isso casa
-    // O real FP seria: "BRLTOKEN 123" → com \b, BRL deve casar se está no início de palavra
-    // Caso verdadeiro de FP sem \b: "fooBRL 123" → "BRL 123" seria extraído
+  it("BRL infixo (após word char) NÃO gera FP de preço (#2468 finding 3)", () => {
+    // Sem \b, o regex antigo extrairia "BRL 123" de "fooBRL 123" (substring).
+    // Com \bBRL, o B precedido por 'o' (word char) não está em word boundary → sem match.
     const claimsInfix = extractPriceClaims("fooBRL 123 é um código interno, não preço.");
     assert.equal(claimsInfix.length, 0, "'BRL' dentro de 'fooBRL' não deve gerar FP de preço");
+  });
+
+  it("USD infixo (após word char) NÃO gera FP de preço (#2468 finding 3)", () => {
+    // "STUSD 100" — sob o regex antigo "USD 100" seria extraído; com \bUSD, não.
+    const claimsInfix = extractPriceClaims("O ticker STUSD 100 não é um preço.");
+    assert.equal(claimsInfix.length, 0, "'USD' dentro de 'STUSD' não deve gerar FP de preço");
   });
 
   it("USD/BRL/EUR NÃO são FP em contexto sem dígitos", () => {
@@ -729,64 +732,53 @@ describe("regressões #2468 — finding 3: USD/BRL/EUR ancorado com \\b", () => 
   });
 });
 
-describe("regressões #2468 — finding 4: exit codes distintos", () => {
-  function runCli(editionDir: string, extraArgs: string[] = []) {
-    const projectRoot = join(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "run-fact-checker.ts");
-    return spawnSync(
-      process.execPath,
-      ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
-      { cwd: projectRoot, encoding: "utf8" },
+describe("regressões #2468 — finding 4: exit 0 sempre; distinção via stdout", () => {
+  function writeFixture(tmp: string, agentClaims: unknown[]) {
+    const internalDir = join(tmp, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(tmp, "02-reviewed.md"), "DESTAQUE 1\n\nTexto.\n", "utf8");
+    writeFileSync(join(tmp, "03-social.md"), "# LinkedIn\n## d1\nPost.\n", "utf8");
+    writeFileSync(
+      join(internalDir, "01-approved.json"),
+      JSON.stringify({ highlights: [{ url: "https://ex.com", title_options: ["T"], article: { title: "T", summary: "S" } }] }),
+      "utf8",
     );
+    const inputJsonPath = join(tmp, "agent.json");
+    writeFileSync(inputJsonPath, JSON.stringify({ claims: agentClaims, checked_at: new Date().toISOString() }), "utf8");
+    return inputJsonPath;
   }
 
-  it("--input-json com attention_items=0 → exit 0", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "fact-check-2468-f4a-"));
-    const internalDir = join(tmp, "_internal");
-    try {
-      mkdirSync(internalDir, { recursive: true });
-      writeFileSync(join(tmp, "02-reviewed.md"), "DESTAQUE 1\n\nTexto.\n", "utf8");
-      writeFileSync(join(tmp, "03-social.md"), "# LinkedIn\n## d1\nPost.\n", "utf8");
-      writeFileSync(
-        join(internalDir, "01-approved.json"),
-        JSON.stringify({ highlights: [{ url: "https://ex.com", title_options: ["T"], article: { title: "T", summary: "S" } }] }),
-        "utf8",
-      );
-      const agentOutput = {
-        claims: [{ destaque: 1, claim_type: "price", text: "R$ 99", context: "custa R$ 99", sources: ["newsletter"], verdict: "SUSTAINED" }],
-        checked_at: new Date().toISOString(),
-      };
-      const inputJsonPath = join(tmp, "agent.json");
-      writeFileSync(inputJsonPath, JSON.stringify(agentOutput), "utf8");
+  // Regressão da regressão (code-review #2468): o orchestrator-stage-4.md só trata
+  // exit 0 e 1. Um exit 2 em attention_items>0 seria lido como "Fact-check
+  // indisponível", ESCONDENDO as divergências. Portanto AMBOS os casos saem 0;
+  // a distinção é feita pelo CONTEÚDO do stdout (formatGateSummary).
 
-      const result = runCli(tmp, ["--input-json", inputJsonPath]);
+  it("--input-json com attention_items=0 → exit 0 + stdout sem alarme", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-2468-f4a-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        { destaque: 1, claim_type: "price", text: "R$ 99", context: "custa R$ 99", sources: ["newsletter"], verdict: "SUSTAINED" },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath]);
       assert.equal(result.status, 0, `exit 0 esperado quando attention_items=0. stderr: ${result.stderr}`);
+      assert.ok(!result.stdout.includes("❌"), "stdout não deve ter ❌ quando tudo SUSTAINED");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("--input-json com attention_items>0 → exit 2 (#2468 finding 4)", () => {
+  it("--input-json com attention_items>0 → exit 0 (não bloqueia) + stdout com ❌", () => {
     const tmp = mkdtempSync(join(tmpdir(), "fact-check-2468-f4b-"));
-    const internalDir = join(tmp, "_internal");
     try {
-      mkdirSync(internalDir, { recursive: true });
-      writeFileSync(join(tmp, "02-reviewed.md"), "DESTAQUE 1\n\nTexto.\n", "utf8");
-      writeFileSync(join(tmp, "03-social.md"), "# LinkedIn\n## d1\nPost.\n", "utf8");
-      writeFileSync(
-        join(internalDir, "01-approved.json"),
-        JSON.stringify({ highlights: [{ url: "https://ex.com", title_options: ["T"], article: { title: "T", summary: "S" } }] }),
-        "utf8",
-      );
-      const agentOutput = {
-        claims: [{ destaque: 1, claim_type: "price", text: "R$ 99", context: "custa R$ 99", sources: ["newsletter"], verdict: "DIVERGENT", note: "fonte diz R$ 24,99" }],
-        checked_at: new Date().toISOString(),
-      };
-      const inputJsonPath = join(tmp, "agent.json");
-      writeFileSync(inputJsonPath, JSON.stringify(agentOutput), "utf8");
-
-      const result = runCli(tmp, ["--input-json", inputJsonPath]);
-      assert.equal(result.status, 2, `exit 2 esperado quando attention_items>0. stderr: ${result.stderr}`);
+      const inputJsonPath = writeFixture(tmp, [
+        { destaque: 1, claim_type: "price", text: "R$ 99", context: "custa R$ 99", sources: ["newsletter"], verdict: "DIVERGENT", note: "fonte diz R$ 24,99" },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath]);
+      // CRÍTICO: exit 0 mesmo com divergência — orchestrator só trata 0/1; exit 2
+      // viraria "Fact-check indisponível" e esconderia a divergência do editor.
+      assert.equal(result.status, 0, `exit 0 esperado (fact-check não bloqueia). stderr: ${result.stderr}`);
+      // A distinção vs. o caso sem-claims é o conteúdo do stdout, não o exit code.
+      assert.ok(result.stdout.includes("❌"), "stdout deve ter ❌ quando há DIVERGENT");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -804,8 +796,9 @@ describe("regressões #2468 — finding 5: ghost-header em formatGateSummary", (
       summary: { total: 1, sustained: 0, divergent: 0, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 1 },
     };
     const s = formatGateSummary(result);
-    // Não deve ter header de seção sem conteúdo
-    assert.ok(!s.includes("DIVERGÊNCIAS") || s.indexOf("DIVERGÊNCIAS") < s.indexOf("D1"), "não deve ter seção vazia");
+    // Nenhuma seção de claims deve renderizar (claims=[]): sem headers de seção
+    assert.ok(!s.includes("DIVERGÊNCIAS"), "não deve ter header de divergências sem claims");
+    assert.ok(!s.includes("INEDITISMO"), "não deve ter header de superlativos sem claims");
     // Deve ter o fallback genérico
     assert.ok(s.includes("item(ns) de atenção"), "deve ter fallback genérico quando seções estão vazias");
     assert.ok(s.includes("━━━"), "deve ter separador de fechamento");
