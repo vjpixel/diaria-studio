@@ -15,9 +15,9 @@
  *   + stdout: seção formatada para o gate do Stage 4
  *
  * Exit codes:
- *   0 — sucesso sem attention_items (tudo verificado ou sem claims)
+ *   0 — sucesso (mesmo com attention_items > 0 — fact-check não bloqueia; a
+ *       presença de claims é comunicada via stdout + fact-check.json)
  *   1 — erro de args ou arquivo não encontrado
- *   2 — sucesso com attention_items > 0 (claims que o editor deve revisar; não bloqueia)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -284,8 +284,18 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
 
   const claims: FactClaim[] = Array.isArray(obj.claims)
     ? (obj.claims as FactClaim[]).filter(
-        // Usar != null para destaque em vez de truthy: destaque=0 é válido (#2468 finding 2)
-        (c) => c && typeof c === "object" && c.text && c.verdict && c.destaque != null,
+        // destaque: validar que é um número finito (#2468 finding 2 + code-review).
+        // O check antigo (`c.destaque` truthy) descartava destaque=0 — bug original.
+        // `!= null` corrige isso mas aceitaria "" / NaN de um subagente que alucina
+        // (renderizam como "D"/"DNaN" no gate). FactClaim.destaque é `number`, então
+        // exigir number finito é o fix no nível certo do boundary unknown→FactClaim.
+        (c) =>
+          c &&
+          typeof c === "object" &&
+          c.text &&
+          c.verdict &&
+          typeof c.destaque === "number" &&
+          Number.isFinite(c.destaque),
       )
     : [];
 
@@ -406,13 +416,14 @@ async function main(): Promise<void> {
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     console.log(formatGateSummary(result));
 
-    // Exit codes (#2468 finding 4):
-    //   0 — sem attention_items (tudo ok ou sem claims)
-    //   2 — há attention_items que o editor deve revisar (não bloqueia, mas distingue)
-    //   1 — erro de args / arquivo não encontrado (reservado para erros fatais)
-    if (result.summary.attention_items > 0) {
-      process.exit(2);
-    }
+    // Exit code 0 sempre neste modo (#2468 finding 4 + code-review):
+    // A presença de attention_items NÃO é um erro — o fact-check é assistido, não
+    // gate-blocking (orchestrator-stage-4.md §4c.6). A distinção "sem claims" vs
+    // "rodou ok com claims" é comunicada via stdout (formatGateSummary) + o campo
+    // `summary.attention_items` em fact-check.json, ambos lidos pelo orchestrator.
+    // Um exit não-zero aqui seria interpretado pelo orchestrator como "Fact-check
+    // indisponível" (só exit 0/1 são tratados), ESCONDENDO as divergências do editor
+    // — exatamente o oposto do desejado. Por isso este modo sai sempre 0.
     return;
   }
 
