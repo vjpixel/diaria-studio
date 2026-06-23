@@ -243,6 +243,13 @@ export function checkUrlsAccessible(
     "wikimedia.org", // commons + upload
     "creativecommons.org",
     "wikidata.org",
+    // #2498: Workers do template (cursos/livros/poll) são links fixos do rodapé —
+    // nunca são artigos pesquisados e portanto nunca entram no link-verify-cache.
+    // São Workers vivos (HTTP 200); allowlistar por hostname exato pra evitar
+    // match permissivo de substring (ex: "workers.dev" casaria qualquer Worker).
+    "cursos.diaria.workers.dev",
+    "livros.diaria.workers.dev",
+    "poll.diaria.workers.dev",
   ];
   // #1456 review fix: build reverse index por finalUrl + normalized form tb.
   // verify-accessibility.ts strips trailing slash; nosso checker precisa
