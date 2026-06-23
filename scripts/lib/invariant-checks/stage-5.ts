@@ -648,12 +648,18 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
   if (socials.some((ch) => consent[ch] === "auto")) {
     if (!existsSync(socialPath)) {
       const channels = socials.filter((ch) => consent[ch] === "auto");
+      // #2520: derivar severity — se TODOS os canais auto são best-effort
+      // (BEST_EFFORT_SOCIALS) → warning (arquivo ausente é esperado quando
+      // nenhuma cred está configurada); se pelo menos 1 canal com creds
+      // obrigatórias (linkedin/facebook) tem consent=auto → error.
+      const nonBestEffortAuto = channels.filter((ch) => !BEST_EFFORT_SOCIALS.has(ch));
+      const fileMissingSeverity = nonBestEffortAuto.length > 0 ? "error" : "warning";
       violations.push({
         rule: "consent-binding-social",
         message:
           `consent.{${channels.join(",")}}=auto mas 06-social-published.json ausente — dispatch social não rodou.`,
         source_issue: "#1575",
-        severity: "error",
+        severity: fileMissingSeverity,
         file: socialPath,
       });
     } else {

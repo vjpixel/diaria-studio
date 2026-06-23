@@ -448,6 +448,65 @@ describe("checkConsentBinding — canais dinâmicos via platform.config (#2488)"
     }
   });
 
+  // #2520: branch file-absent com TODOS os canais auto = best-effort → warning.
+  // Cenário: instagram + threads com consent=auto, linkedin/facebook=manual,
+  // 06-social-published.json AUSENTE (canais best-effort pulam sem creds).
+  it("#2520: consent.{instagram,threads}=auto + linkedin/facebook=manual + arquivo ausente → warning (não error)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "manual", instagram: "auto", threads: "auto" }),
+      );
+      // 06-social-published.json AUSENTE (canais best-effort não escrevem quando sem creds)
+      const violations = checkConsentBinding(dir);
+      const v = violations.find((v) => v.rule === "consent-binding-social");
+      assert.ok(v, "#2520: deve gerar violation consent-binding-social");
+      assert.equal(v!.severity, "warning",
+        `#2520: todos auto são best-effort → warning (não error); got severity=${v!.severity}`);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  // #2520: contraste — facebook=auto (canal com creds obrigatórias) + arquivo ausente → error.
+  it("#2520: consent.facebook=auto + arquivo ausente → error (canal com creds obrigatórias)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "auto", instagram: "manual", threads: "manual" }),
+      );
+      // 06-social-published.json AUSENTE
+      const violations = checkConsentBinding(dir);
+      const v = violations.find((v) => v.rule === "consent-binding-social");
+      assert.ok(v, "#2520: deve gerar violation consent-binding-social");
+      assert.equal(v!.severity, "error",
+        `#2520: facebook tem creds obrigatórias → error; got severity=${v!.severity}`);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  // #2520: mix — instagram=auto (best-effort) + facebook=auto (obrigatório) + arquivo ausente → error.
+  it("#2520: mix best-effort+obrigatório + arquivo ausente → error (ao menos 1 non-best-effort)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "auto", instagram: "auto", threads: "manual" }),
+      );
+      // 06-social-published.json AUSENTE
+      const violations = checkConsentBinding(dir);
+      const v = violations.find((v) => v.rule === "consent-binding-social");
+      assert.ok(v, "#2520: deve gerar violation consent-binding-social");
+      assert.equal(v!.severity, "error",
+        `#2520: instagram(best-effort)+facebook(obrigatório) → error pois ao menos 1 non-best-effort; got severity=${v!.severity}`);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("canal desconhecido no consent (não no config) é ignorado silenciosamente", () => {
     // Se consent contiver "tiktok" mas config#socials não tiver, não deve produzir violation.
     // (O canal seria ignorado pelo loop "for platform of socials".)
