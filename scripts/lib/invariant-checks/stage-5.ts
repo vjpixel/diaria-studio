@@ -9,8 +9,42 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/**
+ * #2488: lê o array `socials` de `platform.config.json` para iterar canais
+ * dinamicamente em vez de hard-codar. Fallback: lista canônica do config atual
+ * (`["linkedin","facebook","instagram"]`) se o config não for encontrado/parseável.
+ * Isso garante que adicionar um canal novo ao config.json propaga para os checks
+ * sem alterar este arquivo.
+ */
+function loadSocialsFromConfig(): string[] {
+  const configPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram"];
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { socials?: string[] };
+    // #2486: array vazio = opt-out intencional (0 canais sociais) — respeitado como tal.
+    // Só caímos no fallback quando a chave está ausente ou não é array (config malformado).
+    if (Array.isArray(cfg.socials)) return cfg.socials;
+  } catch {
+    // ignorar erro de parse — retornar fallback
+  }
+  return ["linkedin", "facebook", "instagram"];
+}
+
+/**
+ * #2486: canais sociais best-effort — dispatch não-bloqueante. Quando consent=auto
+ * mas o canal não publicou (ex: Instagram sem creds → publish-instagram sai 0 sem
+ * escrever post), a violation de consent-binding é WARNING, não ERROR, espelhando a
+ * assimetria de severidade documentada em checkInstagramCredsSet. Canais com creds
+ * obrigatórias (LinkedIn/Facebook) continuam ERROR.
+ */
+const BEST_EFFORT_SOCIALS = new Set(["instagram"]);
+
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
 // 06-social-published.json) que só existem no Stage 5 (Publicação).
@@ -493,17 +527,19 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
  * Chrome MCP do Beehiiv e apresentou instruções de paste manual.
  *
  * Roda apenas se 05-publish-consent.json existe. Compara cada canal
- * (newsletter, linkedin, facebook) contra evidência de dispatch:
+ * (newsletter + todos os sociais de platform.config.json) contra evidência:
  *   - newsletter consent=auto → 05-published.json deve ter draft_url ou
  *     post_id (status != pending_manual)
- *   - linkedin consent=auto → 06-social-published.json deve ter posts[]
- *     da plataforma linkedin com url ou status != pending_manual
- *   - facebook consent=auto → idem para facebook
+ *   - <social> consent=auto → 06-social-published.json deve ter posts[]
+ *     da plataforma com status de dispatch reconhecido
+ *
+ * #2488: canais sociais derivados de `platform.config.json#socials` — não
+ * hard-coded. Adicionar canal ao config propaga aqui sem editar este arquivo.
  */
 function checkConsentBinding(editionDir: string): InvariantViolation[] {
   const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
   if (!existsSync(consentPath)) return [];
-  let consent: { newsletter?: string; linkedin?: string; facebook?: string; instagram?: string };
+  let consent: Record<string, string>;
   try {
     consent = JSON.parse(readFileSync(consentPath, "utf8"));
   } catch (e) {
@@ -520,7 +556,7 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
 
   // Newsletter check
-  if (consent.newsletter === "auto") {
+  if (consent["newsletter"] === "auto") {
     const publishedPath = resolve(editionDir, "_internal", "05-published.json");
     if (!existsSync(publishedPath)) {
       violations.push({
@@ -562,15 +598,13 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
     }
   }
 
-  // Social check (linkedin + facebook + instagram)
+  // #2488: Social check — itera platform.config.json#socials em vez de hard-codar canais.
+  // Permite adicionar novo canal (ex: Threads) só no config sem editar aqui.
+  const socials = loadSocialsFromConfig();
   const socialPath = resolve(editionDir, "_internal", "06-social-published.json");
-  if (consent.linkedin === "auto" || consent.facebook === "auto" || consent.instagram === "auto") {
+  if (socials.some((ch) => consent[ch] === "auto")) {
     if (!existsSync(socialPath)) {
-      const channels = [
-        consent.linkedin === "auto" ? "linkedin" : null,
-        consent.facebook === "auto" ? "facebook" : null,
-        consent.instagram === "auto" ? "instagram" : null,
-      ].filter(Boolean);
+      const channels = socials.filter((ch) => consent[ch] === "auto");
       violations.push({
         rule: "consent-binding-social",
         message:
@@ -585,7 +619,7 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
           posts?: Array<{ platform?: string; status?: string; url?: string }>;
         };
         const posts = social.posts ?? [];
-        for (const platform of ["linkedin", "facebook", "instagram"] as const) {
+        for (const platform of socials) {
           if (consent[platform] !== "auto") continue;
           const platformPosts = posts.filter(
             (p) => p.platform === platform,
@@ -597,7 +631,8 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
                 `consent.${platform}="auto" mas posts[platform="${platform}"] ` +
                 `vazio em 06-social-published.json.`,
               source_issue: "#1575",
-              severity: "error",
+              // #2486: best-effort (ex: Instagram sem creds sai 0 sem escrever) → warning
+              severity: BEST_EFFORT_SOCIALS.has(platform) ? "warning" : "error",
               file: socialPath,
             });
             continue;
@@ -629,7 +664,8 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
                 `têm status de dispatch (scheduled/draft/published/failed) — ` +
                 `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
               source_issue: "#1575",
-              severity: "error",
+              // #2486: best-effort (ex: Instagram) → warning; canais com creds obrigatórias → error
+              severity: BEST_EFFORT_SOCIALS.has(platform) ? "warning" : "error",
               file: socialPath,
             });
           }
@@ -681,20 +717,10 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
     ];
   }
   const url = readFileSync(path, "utf8").trim();
-  if (!url.startsWith("https://")) {
-    return [
-      {
-        rule: "edition-url-file-valid",
-        message:
-          `_internal/05-edition-url.txt existe mas contém valor inválido: "${url.slice(0, 80)}". ` +
-          `Esperado: URL HTTPS (ex: https://diar.ia.br/p/titulo-da-edicao). ` +
-          `Corrigir manualmente e re-dispatch social se necessário.`,
-        source_issue: "#2454",
-        severity: "warning",
-        file: path,
-      },
-    ];
-  }
+  // #2487: checar placeholder ANTES do check de https:// — o placeholder não começa
+  // com "https://", então o check genérico disparava primeiro (severity:warning) e
+  // tornava o check específico do placeholder (severity:error) inalcançável.
+  // Ordem correta: placeholder (error) → https (warning).
   if (url.includes("{edition_url}")) {
     return [
       {
@@ -705,6 +731,20 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
           `Corrigir: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
         source_issue: "#2454",
         severity: "error",
+        file: path,
+      },
+    ];
+  }
+  if (!url.startsWith("https://")) {
+    return [
+      {
+        rule: "edition-url-file-valid",
+        message:
+          `_internal/05-edition-url.txt existe mas contém valor inválido: "${url.slice(0, 80)}". ` +
+          `Esperado: URL HTTPS (ex: https://diar.ia.br/p/titulo-da-edicao). ` +
+          `Corrigir manualmente e re-dispatch social se necessário.`,
+        source_issue: "#2454",
+        severity: "warning",
         file: path,
       },
     ];
@@ -837,4 +877,7 @@ export {
   // #2154 pass-2: checkConsentBinding agora vive exclusivamente aqui (stage-5).
   // A cópia órfã de stage-4 foi removida; testes redirecionados pra cá.
   checkConsentBinding,
+  // #2488: helper de config — exportado para testes.
+  loadSocialsFromConfig,
+  checkInstagramCredsSet,
 };

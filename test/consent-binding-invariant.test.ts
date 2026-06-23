@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 // #2154 pass-2: checkConsentBinding vive em stage-5.ts (dados pós-dispatch).
 // A cópia órfã em stage-4.ts foi removida; testes agora importam da fonte canônica.
 import { STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
-import { checkConsentBinding, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
+import { checkConsentBinding, loadSocialsFromConfig, checkInstagramCredsSet, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 function makeEditionDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "consent-binding-"));
@@ -330,6 +330,141 @@ describe("checkConsentBinding (#1575)", () => {
       const violations = checkConsentBinding(dir);
       assert.ok(violations.length > 0);
       assert.ok(violations.some((v) => v.rule === "consent-binding-newsletter"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+// ─── #2488: loadSocialsFromConfig + checkConsentBinding dinâmico ─────────────
+// Regressão: checagem de consent deve iterar platform.config.json#socials
+// em vez de hard-codar ["linkedin","facebook","instagram"].
+
+describe("loadSocialsFromConfig (#2488)", () => {
+  it("retorna array quando platform.config.json tem socials válido", () => {
+    // Testa o path real do repo — platform.config.json tem ["linkedin","facebook","instagram"]
+    const socials = loadSocialsFromConfig();
+    assert.ok(Array.isArray(socials), "deve retornar array");
+    assert.ok(socials.length >= 2, "deve ter ao menos 2 canais");
+    assert.ok(socials.includes("linkedin"), "deve incluir linkedin");
+    assert.ok(socials.includes("facebook"), "deve incluir facebook");
+  });
+
+  it("inclui instagram (canal adicionado em #49)", () => {
+    const socials = loadSocialsFromConfig();
+    assert.ok(socials.includes("instagram"), "deve incluir instagram do config atual");
+  });
+});
+
+// #2486 / #633: regressão de severity — Instagram sem creds é warning (não error),
+// espelhando a assimetria documentada (best-effort, não bloqueia o pipeline).
+describe("checkInstagramCredsSet — severity warning (#2486)", () => {
+  it("creds ausentes → violations com severity 'warning' (não 'error')", () => {
+    const saved = {
+      id: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+      token: process.env.INSTAGRAM_ACCESS_TOKEN,
+    };
+    try {
+      delete process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+      delete process.env.INSTAGRAM_ACCESS_TOKEN;
+      const violations = checkInstagramCredsSet();
+      assert.ok(violations.length >= 1, "creds ausentes devem gerar ao menos 1 violation");
+      assert.ok(
+        violations.every((v) => v.severity === "warning"),
+        `todas as violations de IG creds devem ser warning; got: ${JSON.stringify(violations.map((v) => v.severity))}`,
+      );
+    } finally {
+      if (saved.id !== undefined) process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID = saved.id;
+      if (saved.token !== undefined) process.env.INSTAGRAM_ACCESS_TOKEN = saved.token;
+    }
+  });
+});
+
+describe("checkConsentBinding — canais dinâmicos via platform.config (#2488)", () => {
+  it("canal do config com consent=auto e sem posts → violation para esse canal", () => {
+    // Verifica que o canal "instagram" (presente no config) gera violation
+    // quando consent=auto mas posts ausentes — via iteração do config, não hard-code.
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "manual", instagram: "auto" }),
+      );
+      writeSocialPublished(dir, [
+        // linkedin e facebook OK, instagram ausente
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "facebook", status: "scheduled", url: null },
+      ]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        violations.some((v) => v.rule === "consent-binding-instagram"),
+        `esperava consent-binding-instagram; got: ${JSON.stringify(violations.map((v) => v.rule))}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  // #2486: Instagram é best-effort — consent.instagram=auto sem posts (creds ausentes →
+  // publish-instagram sai 0 sem escrever) deve ser WARNING, não ERROR (não trava o gate).
+  it("#2486: consent.instagram=auto + sem posts IG → severity warning (best-effort)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "manual", instagram: "auto" }),
+      );
+      writeSocialPublished(dir, [{ platform: "linkedin", status: "scheduled", url: null }]);
+      const violations = checkConsentBinding(dir);
+      const ig = violations.find((v) => v.rule === "consent-binding-instagram");
+      assert.ok(ig, "esperava consent-binding-instagram");
+      assert.equal(ig!.severity, "warning", "Instagram best-effort → warning, não error");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  // #2486: contraste — Facebook tem creds obrigatórias, então consent=auto sem posts
+  // permanece ERROR (a assimetria de severity vale só para os best-effort).
+  it("#2486: consent.facebook=auto + sem posts FB → severity error (creds obrigatórias)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "manual", facebook: "auto", instagram: "manual" }),
+      );
+      writeSocialPublished(dir, [{ platform: "linkedin", status: "scheduled", url: null }]);
+      const violations = checkConsentBinding(dir);
+      const fb = violations.find((v) => v.rule === "consent-binding-facebook");
+      assert.ok(fb, "esperava consent-binding-facebook");
+      assert.equal(fb!.severity, "error", "Facebook (creds obrigatórias) → error");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("canal desconhecido no consent (não no config) é ignorado silenciosamente", () => {
+    // Se consent contiver "threads" mas config#socials não tiver, não deve produzir violation.
+    // (O canal seria ignorado pelo loop "for platform of socials".)
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "manual", linkedin: "auto", facebook: "auto", threads: "auto" }),
+      );
+      writeSocialPublished(dir, [
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "facebook", status: "scheduled", url: null },
+      ]);
+      const violations = checkConsentBinding(dir);
+      // threads não está no config → não gera violation
+      assert.ok(
+        !violations.some((v) => v.rule === "consent-binding-threads"),
+        `não deve emitir violation para canal não configurado; got: ${JSON.stringify(violations.map((v) => v.rule))}`,
+      );
+      // linkedin e facebook OK → sem violation
+      assert.equal(violations.length, 0,
+        `sem violations esperadas; got: ${JSON.stringify(violations)}`);
     } finally {
       rmSync(dir, { recursive: true });
     }

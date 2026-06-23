@@ -49,6 +49,7 @@ import {
   checkFbPageIdSet,
   checkFbTokenSet,
   checkCloudflareTokenSet,
+  checkEditionUrlFile,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -363,9 +364,9 @@ describe("Stage 2 invariants", () => {
     // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861) +
     // personal-post-no-newsletter-deixis (#2148) +
     // no-email-cta-linkedin (#2458) + linkedin-page-link (#2458) +
-    // no-credential-bio (#2494).
+    // no-credential-bio (#2494) + no-email-cta-instagram (#2486).
     // humanizer-section-coverage só roda quando snapshot existe → não conta aqui.
-    assert.equal(v.length, 7);
+    assert.equal(v.length, 8);
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     // #1861: a nova check está registrada (não só a contagem mudou).
     assert.ok(
@@ -390,6 +391,11 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       v.some((x) => x.rule === "social-no-credential-bio-file-exists"),
       "rule social-no-credential-bio deve estar presente (#2494)",
+    );
+    // #2486: no-email-cta-instagram check registrada
+    assert.ok(
+      v.some((x) => x.rule === "social-no-email-cta-instagram-file-exists"),
+      "rule social-no-email-cta-instagram deve estar presente (#2486)",
     );
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
@@ -1811,6 +1817,54 @@ describe("Stage 5 invariants (pós-publicação)", () => {
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "close-poll-marker-valid");
     rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+// ─── #2487: checkEditionUrlFile — severity ordering ─────────────────────────
+// Regressão: placeholder `{edition_url}` deve produzir severity=error ANTES
+// do check genérico de https:// (que produzia severity=warning e tornava o
+// check específico do placeholder inalcançável).
+
+describe("checkEditionUrlFile — severity ordering (#2487)", () => {
+  let fixture: string;
+  before(() => {
+    fixture = mkdtempSync(join(tmpdir(), "diaria-edition-url-"));
+    mkdirSync(join(fixture, "_internal"), { recursive: true });
+  });
+  after(() => { rmSync(fixture, { recursive: true, force: true }); });
+
+  it("placeholder {edition_url} → severity=error (não warning)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "{edition_url}",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 1, "deve emitir exatamente 1 violation");
+    assert.equal(v[0].rule, "edition-url-file-valid");
+    assert.equal(v[0].severity, "error",
+      "placeholder {edition_url} deve ser severity=error, não warning");
+    assert.ok(v[0].message.includes("{edition_url}"),
+      "mensagem deve mencionar o placeholder literal");
+  });
+
+  it("valor sem https:// (não placeholder) → severity=warning", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "http://diar.ia.br/p/teste",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning",
+      "URL com esquema inválido (mas não placeholder) deve ser warning");
+  });
+
+  it("URL HTTPS válida → sem violation", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "https://diar.ia.br/p/titulo-da-edicao",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 0, "URL HTTPS válida não deve emitir violation");
   });
 });
 

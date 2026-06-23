@@ -348,8 +348,14 @@ describe("Credenciais INSTAGRAM obrigatórias", () => {
     );
   });
 
-  it("env vars ausentes resultam em process.exit(1) com mensagem acionável", () => {
-    assert.match(SRC, /process\.exit\(1\)/, "deve sair com código 1 quando env vars ausentes");
+  it("#2486: credenciais ausentes resultam em process.exit(0) (graceful skip, não exit 1)", () => {
+    // #2486 finding 2: exit 1 mascarava violations de consent de LinkedIn/Facebook.
+    // O comportamento correto é exit 0 + log de aviso — Instagram é best-effort.
+    // O check estático verifica que o caminho de "ausente" chama process.exit(0).
+    assert.match(SRC, /process\.exit\(0\)/, "deve sair graciosamente (exit 0) quando env vars ausentes");
+    // Verifica também que o script NÃO usa process.exit(1) no caminho de credenciais ausentes
+    // (ainda pode ter process.exit(1) em outros erros fatais — só a bifurcação de creds mudou).
+    assert.match(SRC, /SKIP:.*ausente/, "deve emitir mensagem SKIP quando creds ausentes");
   });
 });
 
