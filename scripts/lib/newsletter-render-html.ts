@@ -58,6 +58,22 @@ const FONT_LABEL = FONTS.sans;
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 
 /**
+ * #2490: wordmark "diar.ia.br" teal no topo do newsletter body.
+ *
+ * Aparece antes da coverage line como masthead de marca — texto em teal
+ * (#00A0A0), fonte sans bold 20px, letter-spacing 2px, centralizado.
+ * Não usa o TEAL alias pra ser autoexplicativo na saída HTML.
+ *
+ * Pure helper — exportado pra teste.
+ */
+export function renderMasthead(): string {
+  return `<!-- Masthead (#2490) -->
+<tr><td class="pad" style="padding:32px 32px 0;text-align:center;">
+  <p style="margin:0;font-family:${FONT_LABEL};font-size:20px;font-weight:bold;letter-spacing:2px;color:${TEAL};">diar.ia.br</p>
+</td></tr>`;
+}
+
+/**
  * #2067: helper DS body — sans 16px line-height 1.62 ink. `margin` aceita
  * qualquer shorthand CSS (ex: "18px 0 0", "12px 0 0", "0 0 12px", "0").
  *
@@ -833,6 +849,9 @@ export function renderEncerrar(text: string): string {
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
 
+  // #2490: wordmark "diar.ia.br" teal no topo (antes da coverage line).
+  parts.push(renderMasthead());
+
   // #1093: linha de cobertura no topo, antes do primeiro destaque. Graceful
   // skip quando ausente (edições antigas pré-#1095/#1097).
   if (content.coverageLine) {
@@ -912,7 +931,7 @@ ${container}
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="x-apple-disable-message-reformatting" />
-<title>Diar.ia — Edição</title>
+<title>diar.ia.br — Edição</title>
 ${DS_STYLE_BLOCK}
 </head>
 <body style="margin:0; padding:0; background:${PAGE_BG};">

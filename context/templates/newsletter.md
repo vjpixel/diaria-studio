@@ -1,4 +1,4 @@
-# Template — Edição Diar.ia
+# Template — Edição diar.ia.br
 
 Formato exato do output da edição. Seguir rigorosamente.
 
@@ -11,7 +11,7 @@ Formato exato do output da edição. Seguir rigorosamente.
 **Negrito em headers/títulos (#590):** nomes de seção e títulos saem em **negrito** (`**...**`) para hierarquia visual no Drive review (mobile). URLs e parágrafos seguem plain. Markdown link `[Título](URL)` é compatível com bold via `**[Título](URL)**`.
 
 ```
-Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.
+Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.
 
 ---
 
@@ -95,13 +95,13 @@ Nessa edição, {curr_narrative}.
 
 Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse exercício, há pelo menos um pequeno erro em cada edição.
 
-**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da Diar.ia, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.
+**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da diar.ia.br, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.
 
 ---
 
 **🙋🏼‍♀️ PARA ENCERRAR**
 
-Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
+Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
 **Acesse:**
 
