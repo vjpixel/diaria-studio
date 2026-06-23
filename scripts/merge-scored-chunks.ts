@@ -17,9 +17,15 @@
  *
  * URLs são opacas (#720): join por igualdade de string, sem canonicalizar.
  *
+ * --categorized DEVE ser o pool CAPADO emitido por split-articles-for-scoring.ts
+ * via --pool-out (`tmp-scoring-pool.json`), NÃO `tmp-dates-reviewed.json` (#2496).
+ * O pool capado é exatamente o que foi distribuído nos chunks — passar o pool
+ * não-capado faz os itens use_melhor capados aparecerem como `missing` → falso
+ * `catastrophic`. (finalize-stage1.ts é o oposto: usa tmp-dates-reviewed.json.)
+ *
  * Uso:
  *   npx tsx scripts/merge-scored-chunks.ts \
- *     --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
+ *     --categorized data/editions/{AAMMDD}/_internal/tmp-scoring-pool.json \
  *     --chunk-scores data/editions/{AAMMDD}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-2.json \
  *     --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
  *     --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
@@ -200,7 +206,7 @@ export function main(): void {
 
   if (!categorizedPath || !chunkScoresArg || !allscoredOut || !finalistsOut) {
     console.error(
-      "Uso: merge-scored-chunks.ts --categorized <tmp-dates-reviewed.json> --chunk-scores <f1,f2,...> --allscored-out <file> --finalists-out <file> [--top 15]",
+      "Uso: merge-scored-chunks.ts --categorized <tmp-scoring-pool.json> --chunk-scores <f1,f2,...> --allscored-out <file> --finalists-out <file> [--top 15]",
     );
     process.exit(1);
   }

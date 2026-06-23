@@ -200,21 +200,15 @@ export function main(): void {
     categorized["use_melhor"] = deduped;
   }
 
-  // #2496: gravar o pool capado (pós audience_affinity + dedup/cap use_melhor)
-  // num arquivo separado. O orchestrator passa este arquivo como --categorized
-  // do merge-scored-chunks, garantindo que o merge compare contra exatamente o
-  // que foi distribuído nos chunks — evita falso catastrophic quando use_melhor
-  // é capado (ex: 31→15: os 16 capados não pontuados apareciam como missing
-  // → missing_count > 2 → catastrophic falso, forçando fallback desnecessário).
-  if (poolOut) {
-    const absPoolOut = resolve(ROOT, poolOut);
-    writeFileSync(absPoolOut, JSON.stringify({ categorized }, null, 2), "utf8");
-    console.error(`[split-articles-for-scoring] pool capado gravado em ${absPoolOut} (#2496)`);
-  }
-
   const chunks = buildChunks(categorized, chunkSize);
   const absOutDir = resolve(ROOT, outDir);
   mkdirSync(absOutDir, { recursive: true });
+
+  // #2496: caminho do pool capado. Resolvido aqui (após mkdirSync de absOutDir,
+  // que garante que o diretório pai _internal/ existe) — escrito no PASSO 3 abaixo,
+  // junto da limpeza dos stale, para que um re-split sem --pool-out invalide o
+  // arquivo antigo em vez de deixá-lo stale (mesma disciplina de tmp-allscored.json).
+  const absPoolOut = poolOut ? resolve(ROOT, poolOut) : null;
 
   // #2287 / #6-fix: limpar scoring-chunks/ pré-existentes antes de escrever os novos.
   // Chunks de runs anteriores podem ter scores de URLs de outra edição.
@@ -289,6 +283,36 @@ export function main(): void {
         "O merge vai re-gerar o arquivo.",
       );
     }
+
+    // PASSO 2-bis (#2496): invalidar tmp-scoring-pool.json STALE quando o re-split
+    // NÃO emite um novo (--pool-out ausente). Sem isto, um re-split sem --pool-out
+    // deixaria o pool capado do run anterior no disco; o merge (1q.3) o consome via
+    // --categorized e compara contra chunks de OUTRO run → falso missing/catastrophic
+    // ou falso-safe. Mirror exato da disciplina de tmp-allscored.json acima.
+    // Quando --pool-out É passado, o PASSO 3 abaixo sobrescreve com o pool fresco.
+    if (!absPoolOut) {
+      const stalePoolPath = resolve(parentDir, "tmp-scoring-pool.json");
+      if (existsSync(stalePoolPath)) {
+        rmSync(stalePoolPath, { force: true });
+        console.error(
+          "[split-articles-for-scoring] tmp-scoring-pool.json stale removido (re-split sem --pool-out) — " +
+          "o merge não consumirá um pool de run anterior (#2496).",
+        );
+      }
+    }
+  }
+
+  // PASSO 3 (#2496): gravar o pool capado (pós audience_affinity + dedup/cap use_melhor).
+  // Escrito DEPOIS do mkdirSync (parent _internal/ garantido existir) e do cleanup dos
+  // stale. O orchestrator passa este arquivo como --categorized do merge — assim o merge
+  // compara contra exatamente o que foi distribuído nos chunks (evita falso catastrophic
+  // quando use_melhor é capado, ex: 31→15: os 16 capados apareciam como missing →
+  // missing_count > 2 → catastrophic falso). buildChunks acima NÃO muta `categorized`
+  // (cria arrays novos via splitRoundRobin/toCategorized), então o pool gravado bate
+  // exatamente com a união dos chunks.
+  if (absPoolOut) {
+    writeFileSync(absPoolOut, JSON.stringify({ categorized }, null, 2), "utf8");
+    console.error(`[split-articles-for-scoring] pool capado gravado em ${absPoolOut} (#2496)`);
   }
 
   const chunkFiles: string[] = [];
@@ -305,7 +329,9 @@ export function main(): void {
     chunk_files: chunkFiles,
     // #2496: incluir no manifest o caminho do pool capado (quando --pool-out foi passado),
     // para que o orchestrator possa usá-lo como --categorized do merge sem hardcodar o path.
-    ...(poolOut ? { pool_out: poolOut } : {}),
+    // Normalizar separador igual a chunk_files[] — manifest 100% forward-slash no Windows
+    // (senão um consumidor que interpola pool_out num comando shell quebraria com `\`).
+    ...(poolOut ? { pool_out: poolOut.replaceAll("\\", "/") } : {}),
   };
   process.stdout.write(JSON.stringify(manifest) + "\n");
 }
