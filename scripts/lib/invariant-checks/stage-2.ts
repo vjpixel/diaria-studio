@@ -104,7 +104,8 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
  * `linkedin-schema` (#595), `relative-time` (qualidade editorial),
  * `post_pixel-matches-d1` (#1861), `personal-post-no-newsletter-deixis` (#2148),
  * `no-email-cta-linkedin` (#2458), `linkedin-page-link` (#2458),
- * e `humanizer-section-coverage` (#2148, quando snapshot pré-humanizador existe).
+ * `no-credential-bio` (#2494), e `humanizer-section-coverage`
+ * (#2148, quando snapshot pré-humanizador existe).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "03-social.md");
@@ -169,6 +170,19 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       ["--check", "linkedin-page-link", "--md", file],
       "social-linkedin-page-link",
       "#2458",
+      file,
+    ),
+  );
+  // #2494: post_pixel e comment_pixel não devem conter frases de credencial/bio
+  // auto-referenciais ("trabalho com IA há anos", "faço uma newsletter") — o ponto
+  // se sustenta pelo conteúdo, não pela bio. Wira o check no gate (sem isso o lint
+  // ficaria dormente e a instrução do agent seria a única proteção).
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "no-credential-bio", "--md", file],
+      "social-no-credential-bio",
+      "#2494",
       file,
     ),
   );
