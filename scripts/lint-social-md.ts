@@ -1251,7 +1251,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check humanizer-section-coverage --pre <path-pre> --md <path-post>\n" +
         "  ou: lint-social-md.ts --check no-email-cta-linkedin --md <path>\n" +
         "  ou: lint-social-md.ts --check linkedin-page-link --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-credential-bio --md <path>",
+        "  ou: lint-social-md.ts --check no-credential-bio --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>",
     );
     process.exit(2);
   }
@@ -1391,6 +1392,23 @@ function main(): void {
       );
       for (const e of result.errors) {
         console.error(`  [${e.section}] linha ${e.line}: '${e.phrase}' — substituir pelo CTA da página`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-email-cta-instagram (#2486) — proibe CTA de assinatura por e-mail
+  // na seção que o Instagram consome (Instagram própria ou fallback Facebook).
+  if (args.check === "no-email-cta-instagram") {
+    const result = lintInstagramEmailCTA(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} CTA(s) de e-mail encontrado(s) na copy do Instagram (#2486 — adapte o caption, sem CTA de assinatura por e-mail):`,
+      );
+      for (const e of result.errors) {
+        console.error(`  [${e.section}] linha ${e.line}: '${e.phrase}' — remover/adaptar o CTA de e-mail`);
       }
       process.exit(1);
     }

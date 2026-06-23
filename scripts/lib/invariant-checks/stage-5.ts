@@ -27,12 +27,23 @@ function loadSocialsFromConfig(): string[] {
   if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram"];
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { socials?: string[] };
-    if (Array.isArray(cfg.socials) && cfg.socials.length > 0) return cfg.socials;
+    // #2486: array vazio = opt-out intencional (0 canais sociais) — respeitado como tal.
+    // Só caímos no fallback quando a chave está ausente ou não é array (config malformado).
+    if (Array.isArray(cfg.socials)) return cfg.socials;
   } catch {
     // ignorar erro de parse — retornar fallback
   }
   return ["linkedin", "facebook", "instagram"];
 }
+
+/**
+ * #2486: canais sociais best-effort — dispatch não-bloqueante. Quando consent=auto
+ * mas o canal não publicou (ex: Instagram sem creds → publish-instagram sai 0 sem
+ * escrever post), a violation de consent-binding é WARNING, não ERROR, espelhando a
+ * assimetria de severidade documentada em checkInstagramCredsSet. Canais com creds
+ * obrigatórias (LinkedIn/Facebook) continuam ERROR.
+ */
+const BEST_EFFORT_SOCIALS = new Set(["instagram"]);
 
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
@@ -620,7 +631,8 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
                 `consent.${platform}="auto" mas posts[platform="${platform}"] ` +
                 `vazio em 06-social-published.json.`,
               source_issue: "#1575",
-              severity: "error",
+              // #2486: best-effort (ex: Instagram sem creds sai 0 sem escrever) → warning
+              severity: BEST_EFFORT_SOCIALS.has(platform) ? "warning" : "error",
               file: socialPath,
             });
             continue;
@@ -652,7 +664,8 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
                 `têm status de dispatch (scheduled/draft/published/failed) — ` +
                 `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
               source_issue: "#1575",
-              severity: "error",
+              // #2486: best-effort (ex: Instagram) → warning; canais com creds obrigatórias → error
+              severity: BEST_EFFORT_SOCIALS.has(platform) ? "warning" : "error",
               file: socialPath,
             });
           }

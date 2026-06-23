@@ -71,11 +71,15 @@ function loadPublished(path: string): SocialPublished {
  * do extractPlatformSection de lint-social-md.ts).
  */
 function extractSection(md: string, sectionTitle: string): string | null {
+  // #2486: normalizar CRLF→LF como o gêmeo em lint-social-md.ts. Sem isso, em
+  // arquivos com CRLF (Windows) o `\n` da regex não casa e a seção Instagram
+  // não é encontrada → fallback silencioso pro caption do Facebook.
+  const normalized = md.replace(/\r\n/g, "\n");
   const re = new RegExp(
     `(?:^|\\n)# ${sectionTitle}\\n([\\s\\S]*?)(?=\\n# |$)`,
     "i",
   );
-  const m = md.match(re);
+  const m = normalized.match(re);
   return m ? m[1] : null;
 }
 

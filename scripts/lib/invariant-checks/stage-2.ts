@@ -104,8 +104,8 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
  * `linkedin-schema` (#595), `relative-time` (qualidade editorial),
  * `post_pixel-matches-d1` (#1861), `personal-post-no-newsletter-deixis` (#2148),
  * `no-email-cta-linkedin` (#2458), `linkedin-page-link` (#2458),
- * `no-credential-bio` (#2494), e `humanizer-section-coverage`
- * (#2148, quando snapshot pré-humanizador existe).
+ * `no-credential-bio` (#2494), `no-email-cta-instagram` (#2486),
+ * e `humanizer-section-coverage` (#2148, quando snapshot pré-humanizador existe).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "03-social.md");
@@ -183,6 +183,18 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       ["--check", "no-credential-bio", "--md", file],
       "social-no-credential-bio",
       "#2494",
+      file,
+    ),
+  );
+  // #2486: a seção que o Instagram consome (Instagram própria ou fallback Facebook)
+  // não deve conter CTA de assinatura por e-mail. lintLinkedinEmailCTA só cobre
+  // # LinkedIn, então sem este check o CTA banido chegava ao IG sem flag.
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "no-email-cta-instagram", "--md", file],
+      "social-no-email-cta-instagram",
+      "#2486",
       file,
     ),
   );
