@@ -714,3 +714,102 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2498 — Worker URLs fixos do template (cursos/livros/poll) são allowlistados
+// ---------------------------------------------------------------------------
+
+describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible", () => {
+  const REVIEWED_WITH_FM = `---
+intentional_error:
+  description: "teste"
+  location: "DESTAQUE 1"
+  category: "factual"
+  correct_value: "valor correto"
+---
+corpo`;
+
+  it("cursos.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+    // Bug 260623: URL fixa do rodapé (PARA ENCERRAR) era flagada not_in_cache.
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Cursos](https://cursos.diaria.workers.dev)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "cursos.diaria.workers.dev deve ser allowlistado");
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("livros.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Livros](https://livros.diaria.workers.dev/lista)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "livros.diaria.workers.dev deve ser allowlistado");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("poll.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Poll](https://poll.diaria.workers.dev/img/vote.png)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "poll.diaria.workers.dev deve ser allowlistado");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("URL editorial externa desconhecida AINDA bloqueia (allowlist não é permissiva)", () => {
+    // Garantia de que a allowlist só cobre os Workers específicos, não qualquer URL.
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        // Workers allowlistados + URL editorial desconhecida
+        `${REVIEWED_WITH_FM}\n[C](https://cursos.diaria.workers.dev) [X](https://unknown-editorial.com/article)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, false, "URL editorial desconhecida ainda bloqueia");
+    } finally {
+      cleanup();
+    }
+  });
+});

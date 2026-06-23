@@ -135,6 +135,37 @@ const PROGRAM_SIGNAL_RE =
 const PROGRAM_WARN_RE = /\bgrants?\b|\bpartnership\b/i;
 
 /**
+ * #2493 (warn-only): roundup de software de conferência — post oficial que anuncia
+ * vários softwares/produtos novos num mesmo artigo, em vez de página oficial de 1
+ * produto específico. Warn informativo (não bloqueia o gate), pra o editor decidir
+ * se é lançamento ou notícia. Aplicado SOMENTE no título (o slug raramente expõe
+ * "conference roundup" de forma legível).
+ *
+ * Padrão detectado: "[New|Latest] … Software[s] …" com complemento vago
+ * (Unlocks/Powers/Advances/Drives/Enables/Fuels + substantivo científico/plural).
+ * Exemplo real 260623: "New NVIDIA AI Software Unlocks Scientific Discoveries" (ISC).
+ *
+ * NÃO bloqueia e NÃO entra em isNonProductLancamento — é warn-only (análogo a
+ * PROGRAM_WARN_RE). Itens com sinal positivo de produto (versão/família) passam
+ * mesmo que o título seja amplo.
+ */
+// Gaps são `[^.]{0,40}` (não `.{0,80}`) — limitados e parando no primeiro ponto
+// final pra não atravessar 2 frases. Verbos são prefixos intencionais (sem `\b`
+// final): `power`→powers/powering, `advanc`→advances/advancing, `driv`→drives.
+// `transform` foi REMOVIDO (review #2512): casava "Transformers" (linha de modelo
+// real), rebaixando hard-block legítimo a warn.
+const CONFERENCE_ROUNDUP_TITLE_RE =
+  /\b(?:new|latest|all\s+(?:the\s+)?news\s+from|everything\s+(?:announced|from))\b[^.]{0,40}\bsoftware(?:s)?\b[^.]{0,40}\b(?:unlock|power|advanc|driv|enabl|fuel|revolutioniz|accelerat)\w*/i;
+
+/**
+ * #2493: `true` quando o título tem sinal de roundup de software de conferência
+ * (warn-only — não alimenta isNonProductLancamento nem isVerifiedTool).
+ */
+export function isConferenceRoundupWarn(title?: string): boolean {
+  return !!title && CONFERENCE_ROUNDUP_TITLE_RE.test(title);
+}
+
+/**
  * #1852: defesa-em-profundidade pra LANÇAMENTOS que escaparam o categorize via
  * `type_hint=lancamento` (agent vence as heurísticas). Sinais no SLUG de que a
  * URL é pesquisa/case-study, não a página oficial do produto:
@@ -232,12 +263,39 @@ const VERSION_SIGNAL_RE =
 // products/notebooklm/...). Sinal estrutural, mais forte que keyword no slug.
 const PRODUCT_PATH_RE = /\/products?\//i;
 
+/**
+ * #2493: `true` para `huggingface.co/blog/{org}/{model-slug}` — post de org
+ * publicado no blog da HuggingFace com 3+ segmentos de path após o host
+ * (blog + org + slug). Sinal estrutural de model release / lançamento de produto
+ * publicado na plataforma da HF por uma org terceira.
+ *
+ * Distingue de `huggingface.co/blog/{slug}` (post HF próprio — 2 segmentos)
+ * e de `huggingface.co/{model-card}` (model card — sem "blog"). Não coincide
+ * com `isFirstPartyToolingBlog` (CLI/SDK post em huggingface.co/blog/ com
+ * 2 segmentos — ferramenta da própria HF, → noticias).
+ */
+function isHuggingFaceOrgBlogPost(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.hostname.replace(/^www\./, "") !== "huggingface.co") return false;
+    const segs = u.pathname.split("/").filter(Boolean);
+    // /blog/{org}/{slug} → exatamente 3 segmentos; /blog/{slug} → 2 (HF próprio).
+    // Exato (não `>= 3`, review #2512): paths mais fundos (/blog/org/slug/about,
+    // releases/notes) não são páginas de release de modelo.
+    return segs.length === 3 && segs[0].toLowerCase() === "blog";
+  } catch {
+    return false;
+  }
+}
+
 export function hasProductSignal(url: string, title?: string): boolean {
   const norm = normalizedSlug(url);
   const raw = rawSlug(url);
   const t = title ?? "";
   return (
     PRODUCT_PATH_RE.test(raw) ||
+    // #2493: huggingface.co/blog/{org}/{slug} = org released model/tool on HF
+    isHuggingFaceOrgBlogPost(url) ||
     PRODUCT_SIGNAL_RE.test(norm) ||
     PRODUCT_SIGNAL_RE.test(t) ||
     VERSION_SIGNAL_RE.test(raw) ||
@@ -348,17 +406,29 @@ export function validateLancamentos(text: string, allowlist: string[] = []): Val
   // #1978: passa o título (capturado de `[Título](url)`) — simetria com approved-mode.
   const official = unique.filter((u) => isOfficialLancamentoUrl(u.url));
   const verified_product = official.filter((u) => isVerifiedTool(u.url, u.title, allowlist));
-  const not_a_tool = official.filter((u) => !isVerifiedTool(u.url, u.title, allowlist));
-  // #1799/#2277: itens de governança/política/análise — warn (não muda o status,
-  // que segue regido pela regra de domínio oficial #160 + not_a_tool #1968).
-  // Inclui: (a) isNonProductLancamento (hard-block terms) e (b) isProgramWarn
-  // (warn-only terms: grants?/partnership). Exclui itens já em not_a_tool para
-  // evitar double-reporting do mesmo item com mensagens conflitantes (#2277).
+  // #2493: roundup de conferência → rebaixar de hard-block (not_a_tool) para
+  // warn informativo (non_product). Item sem sinal de produto E com sinal de
+  // roundup não bloqueia o gate — editor decide no resumo.
+  const not_a_tool = official.filter(
+    (u) => !isVerifiedTool(u.url, u.title, allowlist) && !isConferenceRoundupWarn(u.title),
+  );
+  // #1799/#2277/#2493: itens de governança/política/análise/roundup — warn (não muda
+  // o status, que segue regido pela regra de domínio oficial #160 + not_a_tool #1968).
+  // Inclui: (a) isNonProductLancamento (hard-block terms), (b) isProgramWarn
+  // (grants?/partnership), (c) #2493 isConferenceRoundupWarn (roundup de software de
+  // conferência — warn, não erro). Exclui itens já em not_a_tool para evitar
+  // double-reporting do mesmo item com mensagens conflitantes (#2277).
   const not_a_tool_urls = new Set(not_a_tool.map((u) => u.url));
+  // #2512: roundup-warn só se aplica a item NÃO verificado como produto. Um
+  // produto real com título "roundup-like" (ex: "New PyTorch Software Powers...")
+  // já está em verified_product — não duplicar como warn de non_product.
+  const verified_urls = new Set(verified_product.map((u) => u.url));
   const non_product = unique.filter(
     (u) =>
       !not_a_tool_urls.has(u.url) &&
-      (isNonProductLancamento(u.url, u.title) || isProgramWarn(u.url, u.title)),
+      (isNonProductLancamento(u.url, u.title) ||
+        isProgramWarn(u.url, u.title) ||
+        (isConferenceRoundupWarn(u.title) && !verified_urls.has(u.url))),
   );
   return {
     lancamento_count: unique.length,
@@ -426,17 +496,26 @@ export function validateLancamentosFromApproved(
     } else {
       removed.push({ url, title, reason: "non_official_domain" });
     }
-    // #1968: verificação positiva só nos itens oficiais (não-oficial já é
-    // removido por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
-    const isNatool = official && !isVerifiedTool(url, title, allowlist);
+    // #1968/#2493: verificação positiva só nos itens oficiais (não-oficial já é
+    // removido por #160; não dupla-flagar). Sem sinal de produto → not_a_tool
+    // (hard-block), EXCETO roundup de conferência (#2493) → flagged_non_product
+    // (warn-only, não bloqueia o gate).
+    const isNatool =
+      official &&
+      !isVerifiedTool(url, title, allowlist) &&
+      !isConferenceRoundupWarn(title);
     if (isNatool) {
       not_a_tool.push({ url, title });
     }
-    // #1799/#2277: classificação produto-vs-governança é independente do domínio —
+    // #1799/#2277/#2493: classificação produto-vs-governança é independente do domínio —
     // openai.com/index/public-policy-agenda é oficial mas NÃO é produto. Inclui
-    // também isProgramWarn (grants?/partnership — warn-only). Exclui itens já em
-    // not_a_tool para evitar double-reporting (#2277).
-    if (!isNatool && (isNonProductLancamento(url, title) || isProgramWarn(url, title))) {
+    // também isProgramWarn (grants?/partnership) e isConferenceRoundupWarn (#2493)
+    // — warn-only. Exclui itens já em not_a_tool para evitar double-reporting (#2277).
+    // #2512: roundup-warn só pra item NÃO verificado como produto — um produto real
+    // com título "roundup-like" não deve gerar warn espúrio de non-product.
+    const roundupWarn =
+      official && isConferenceRoundupWarn(title) && !isVerifiedTool(url, title, allowlist);
+    if (!isNatool && (isNonProductLancamento(url, title) || isProgramWarn(url, title) || roundupWarn)) {
       flagged_non_product.push({ url, title });
     }
   }

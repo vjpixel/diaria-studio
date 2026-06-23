@@ -138,8 +138,8 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 
 **4c.2 — Lints consolidados:**
 ```bash
-npx tsx scripts/validate-lancamentos.ts --edition-dir data/editions/{AAMMDD}/
-npx tsx scripts/lint-newsletter-md.ts --check all --file data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --md data/editions/{AAMMDD}/02-reviewed.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 

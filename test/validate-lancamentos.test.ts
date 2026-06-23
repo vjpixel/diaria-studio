@@ -11,6 +11,7 @@ import {
   isProgramWarn,
   hasProductSignal,
   isVerifiedTool,
+  isConferenceRoundupWarn,
 } from "../scripts/validate-lancamentos.ts";
 import { isOfficialLancamentoUrl } from "../scripts/categorize.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
@@ -895,5 +896,204 @@ describe("#2370 — claude.com como domínio oficial de lançamento Anthropic", 
     assert.equal(r.verified_product.length, 1, "título com 'claude' (marca) → produto verificado");
     assert.equal(r.not_a_tool.length, 0);
     assert.equal(r.status, "ok");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2493 — FPs em releases de modelo (HF org blog) e roundups de software
+// ---------------------------------------------------------------------------
+
+describe("#2493 — HuggingFace org blog como sinal de release de modelo", () => {
+  it("hasProductSignal: huggingface.co/blog/{org}/{slug} → sinal de produto (3 segmentos)", () => {
+    // Caso real 260623: pp-ocrv6 sem keyword de produto no slug/título
+    assert.ok(
+      hasProductSignal("https://huggingface.co/blog/PaddlePaddle/pp-ocrv6"),
+      "HF blog/{org}/{slug} é release de modelo → produto",
+    );
+    // Outros casos reais de org releases no HF
+    assert.ok(hasProductSignal("https://huggingface.co/blog/google/gemma-3n"));
+    assert.ok(hasProductSignal("https://huggingface.co/blog/mistralai/mistral-small-3-2"));
+  });
+
+  it("hasProductSignal: huggingface.co/blog/{slug} (HF próprio, 2 segs) NÃO recebe sinal estrutural", () => {
+    // Post da HF sobre design/processo — 2 segmentos, sem org no path.
+    // Sinal estrutural isHuggingFaceOrgBlogPost só se aplica a 3+ segs (blog+org+slug).
+    // URL com slug sem keyword de produto (2 segs) — não deve ter sinal positivo por struct.
+    // Nota: hf-cli-for-agents tem 'agents' em PRODUCT_SIGNAL_RE → hasProductSignal=true
+    // independentemente da estrutura. Testamos com um slug verdadeiramente neutro.
+    assert.ok(!hasProductSignal("https://huggingface.co/blog/hf-blog-post-no-keyword"), "2-seg HF blog sem keyword → sem produto signal via struct");
+  });
+
+  it("validateLancamentos: pp-ocrv6 (HF org blog) → verified_product + ok (FP corrigido)", () => {
+    // Caso real 260623: PP-OCRv6 era allowlistado manualmente; agora deve passar
+    // automaticamente via sinal estrutural de org blog.
+    const md = [
+      "LANÇAMENTOS",
+      "**[PP-OCRv6: 50-Language OCR](https://huggingface.co/blog/PaddlePaddle/pp-ocrv6)**",
+      "Motor OCR open-source da Baidu com suporte a 50 idiomas.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.invalid_urls.length, 0, "HF oficial → URL válida");
+    assert.equal(r.verified_product.length, 1, "org blog → produto verificado");
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+
+  it("validateLancamentos: lançamento de programa (claude-corps) ainda bloqueado (não regrediu)", () => {
+    // Regressão: corps é programa, não produto — deve continuar bloqueando
+    const md = [
+      "LANÇAMENTOS",
+      "**[Claude Corps](https://www.anthropic.com/news/claude-corps)**",
+      "Bolsa filantrópica.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1, "corps → still hard-block");
+    assert.equal(r.status, "error");
+  });
+
+  it("validateLancamentos: cobertura de imprensa (TechCrunch) ainda rejeitada (não regrediu)", () => {
+    // Regra #160 invariável: cobertura de terceiros → non_official_domain → error
+    const md = [
+      "LANÇAMENTOS",
+      "**[PP-OCRv6 coverage](https://techcrunch.com/2026/06/23/pp-ocrv6/)**",
+      "Artigo do TechCrunch.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.invalid_urls.length, 1, "TechCrunch ainda é non_official_domain");
+    assert.equal(r.status, "error");
+  });
+});
+
+describe("#2493 — roundup de software de conferência → warning, não erro", () => {
+  it("isConferenceRoundupWarn: título de roundup ISC detectado", () => {
+    // Caso real 260623: NVIDIA ISC roundup
+    assert.ok(
+      isConferenceRoundupWarn("New NVIDIA AI Software Unlocks Scientific Discoveries"),
+      "roundup ISC deve ser detectado como warn",
+    );
+  });
+
+  it("isConferenceRoundupWarn: outros padrões de roundup", () => {
+    assert.ok(isConferenceRoundupWarn("New Google AI Software Powers Research Advances"));
+    assert.ok(isConferenceRoundupWarn("New Microsoft AI Software Enables Scientific Discovery"));
+  });
+
+  it("isConferenceRoundupWarn: título de produto real NÃO é roundup", () => {
+    // Produto específico não deve ser detectado como roundup
+    assert.ok(!isConferenceRoundupWarn("PP-OCRv6: 50-Language OCR Engine"));
+    assert.ok(!isConferenceRoundupWarn("Introducing GPT-5"));
+    assert.ok(!isConferenceRoundupWarn("Claude Opus 4.5"));
+    assert.ok(!isConferenceRoundupWarn("Gemini 2.5 Flash"));
+    assert.ok(!isConferenceRoundupWarn(undefined));
+    assert.ok(!isConferenceRoundupWarn(""));
+  });
+
+  it("validateLancamentos: NVIDIA ISC roundup → non_product warn (não not_a_tool error)", () => {
+    // Caso real 260623: blogs.nvidia.com é oficial; título é roundup → warn, não error.
+    const md = [
+      "LANÇAMENTOS",
+      "**[New NVIDIA AI Software Unlocks Scientific Discoveries](https://blogs.nvidia.com/blog/ai-for-science-software-cuda/)**",
+      "Software da NVIDIA no ISC.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.invalid_urls.length, 0, "blogs.nvidia.com é oficial");
+    assert.equal(r.not_a_tool.length, 0, "roundup NÃO deve bloquear como not_a_tool");
+    assert.equal(r.non_product.length, 1, "roundup deve ir para non_product (warn)");
+    assert.equal(r.status, "ok", "roundup vira warning, não exit 1");
+  });
+
+  it("validateLancamentos: patch-the-planet initiative → not_a_tool (PROGRAMA, não roundup)", () => {
+    // Caso real 260623: openai.com/index/patch-the-planet — initiative sem sinal de
+    // produto E sem sinal de roundup → still hard-block (not_a_tool).
+    const md = [
+      "LANÇAMENTOS",
+      "**[Daybreak Initiative](https://openai.com/index/patch-the-planet)**",
+      "Iniciativa para open source maintainers.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1, "initiative sem roundup signal → still hard-block");
+    assert.equal(r.status, "error");
+  });
+
+  it("validateLancamentosFromApproved: NVIDIA roundup → flagged_non_product (não not_a_tool)", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://blogs.nvidia.com/blog/ai-for-science-software-cuda/",
+          title: "New NVIDIA AI Software Unlocks Scientific Discoveries",
+        },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 0, "roundup NÃO deve estar em not_a_tool");
+    assert.equal(s.flagged_non_product.length, 1, "roundup deve estar em flagged_non_product (warn)");
+  });
+
+  it("REGRESSÃO #160: lançamento real (produto com versão) ainda passa, não vira roundup", () => {
+    // Produto de software com versão específica NÃO deve ser detectado como roundup.
+    const md = [
+      "LANÇAMENTOS",
+      "**[CUDA 12.5 Released](https://developer.nvidia.com/blog/cuda-12-5-released)**",
+      "Nova versão do CUDA.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1, "CUDA com versão → produto verificado");
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+
+  it("REVIEW #2512: 'Software Transformers' (linha de modelo) NÃO é roundup", () => {
+    // 'transform' foi removido do regex — casava 'Transformers' (modelo real),
+    // rebaixando hard-block legítimo a warn.
+    assert.ok(!isConferenceRoundupWarn("New NVIDIA AI Software Transformers Released"));
+  });
+
+  it("REVIEW #2512: produto verificado com título roundup-like NÃO aparece em non_product (sem double-class)", () => {
+    // Bug: 'New PyTorch Software Powers AI Research' em URL com sinal de produto
+    // (HF org blog) → verified_product. NÃO deve também estar em non_product.
+    const md = [
+      "LANÇAMENTOS",
+      "**[New PyTorch Software Powers AI Research](https://huggingface.co/blog/pytorch/pytorch-2-3)**",
+      "Release.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1, "produto verificado");
+    assert.equal(r.non_product.length, 0, "NÃO duplicar verified como non_product warn");
+    assert.equal(r.status, "ok");
+  });
+
+  it("REVIEW #2512: validateLancamentosFromApproved — produto roundup-like não vira flagged_non_product", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://huggingface.co/blog/pytorch/pytorch-2-3",
+          title: "New PyTorch Software Powers AI Research",
+        },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 0);
+    assert.equal(s.flagged_non_product.length, 0, "produto verificado não vira warn de non-product");
+  });
+
+  it("REVIEW #2512: HF blog path com 4+ segmentos NÃO recebe sinal estrutural", () => {
+    // /blog/org/slug/extra não é página de release de modelo (about, releases/notes).
+    assert.ok(!hasProductSignal("https://huggingface.co/blog/someorg/slug/about-us-page"), "4-seg HF blog → sem sinal estrutural");
+    // 3 segmentos exatos ainda passa
+    assert.ok(hasProductSignal("https://huggingface.co/blog/someorg/model-v2"));
   });
 });
