@@ -111,7 +111,7 @@ Casos:
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
   --message "Etapa 5 auto-approved via --no-gates: canais dispatchados sem confirmacao por canal" \
-  --details '{"channels":["newsletter","linkedin","facebook","instagram"]}'
+  --details '{"channels":["newsletter","linkedin","facebook","instagram","threads"]}'
 ```
 
 **Skip flag path (`--skip newsletter,facebook`, etc):**
@@ -206,6 +206,7 @@ Exit code do guard:
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
 3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
+4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Threads via Threads API oficial da Meta (2 passos: container → threads_publish). **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` no env.** Textos >500 chars sao automaticamente encadeados (thread). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais (#2479).
 
 Aguardar todos retornarem antes de prosseguir.
 

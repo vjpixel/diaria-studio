@@ -43,7 +43,7 @@ function loadSocialsFromConfig(): string[] {
  * assimetria de severidade documentada em checkInstagramCredsSet. Canais com creds
  * obrigatórias (LinkedIn/Facebook) continuam ERROR.
  */
-const BEST_EFFORT_SOCIALS = new Set(["instagram"]);
+const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads"]);
 
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
@@ -128,6 +128,46 @@ function checkInstagramCredsSet(): InvariantViolation[] {
         "INSTAGRAM_ACCESS_TOKEN ausente — publish-instagram vai pular " +
         "(Instagram não será publicado). Configure em .env.local pra habilitar.",
       source_issue: "#49",
+      severity: "warning",
+    });
+  }
+  return violations;
+}
+
+/**
+ * `THREADS_USER_ID` + `THREADS_ACCESS_TOKEN` env vars (#2479).
+ * publish-threads usa pra postar via Threads API oficial da Meta.
+ *
+ * ASSIMETRIA DE SEVERIDADE: severity="warning" (não "error" como Facebook/LinkedIn).
+ * Threads é dispatch best-effort — se as env vars estão ausentes, o
+ * publish-threads encerra com exit 0 (skip gracioso) e não bloqueia os outros canais.
+ * Credenciais são runtime-only: o editor configura quando for publicar ao vivo.
+ */
+function checkThreadsCredsSet(): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  if (
+    !process.env.THREADS_USER_ID ||
+    process.env.THREADS_USER_ID.trim().length === 0
+  ) {
+    violations.push({
+      rule: "threads-user-id-set",
+      message:
+        "THREADS_USER_ID ausente — publish-threads vai pular " +
+        "(Threads não será publicado). Configure em .env.local pra habilitar.",
+      source_issue: "#2479",
+      severity: "warning",
+    });
+  }
+  if (
+    !process.env.THREADS_ACCESS_TOKEN ||
+    process.env.THREADS_ACCESS_TOKEN.trim().length === 0
+  ) {
+    violations.push({
+      rule: "threads-access-token-set",
+      message:
+        "THREADS_ACCESS_TOKEN ausente — publish-threads vai pular " +
+        "(Threads não será publicado). Configure em .env.local pra habilitar.",
+      source_issue: "#2479",
       severity: "warning",
     });
   }
@@ -811,6 +851,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: () => checkInstagramCredsSet(),
   },
   {
+    id: "threads-creds-set",
+    description: "THREADS_USER_ID + THREADS_ACCESS_TOKEN presentes — ausente pula Threads (#2479)",
+    source_issue: "#2479",
+    stage: 5,
+    run: () => checkThreadsCredsSet(),
+  },
+  {
     // #2172: checkLinkedinWorkerUrlSet agora checa APENAS PRESENÇA (split de
     // responsabilidade). A verificação de esquema HTTP/HTTPS foi extraída para
     // checkLinkedinWorkerUrlHttps + entry separada abaixo. Antes do fix, ambas
@@ -880,4 +927,5 @@ export {
   // #2488: helper de config — exportado para testes.
   loadSocialsFromConfig,
   checkInstagramCredsSet,
+  checkThreadsCredsSet,
 };
