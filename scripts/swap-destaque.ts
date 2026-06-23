@@ -55,7 +55,6 @@ import {
   existsSync,
   readFileSync,
   writeFileSync,
-  renameSync,
   readdirSync,
   unlinkSync,
 } from "node:fs";
