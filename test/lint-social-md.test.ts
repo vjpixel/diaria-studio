@@ -13,6 +13,7 @@ import {
   lintLinkedinEmailCTA,
   lintLinkedinPageLink,
   lintCredentialBio,
+  lintInstagramEmailCTA,
   DIARIA_LINKEDIN_PAGE_SLUG,
 } from "../scripts/lint-social-md.ts";
 
@@ -1478,5 +1479,49 @@ Complemento pessoal do Pixel sob o próprio post pessoal — isso não deveria e
     assert.ok(r.destaques.find((d) => d.destaque === "d1")?.has_comment_pixel, "d1 ainda tem comment_pixel");
     assert.ok(r.destaques.find((d) => d.destaque === "d2")?.has_comment_pixel, "d2 ainda tem comment_pixel");
     assert.ok(r.destaques.find((d) => d.destaque === "d3")?.has_comment_pixel, "d3 ainda tem comment_pixel");
+  });
+});
+
+// ─── #2486: lintInstagramEmailCTA ────────────────────────────────────────────
+// Regressão: CTA de e-mail em seção Facebook chegava ao Instagram sem ser flagado
+// porque lintLinkedinEmailCTA só checa # LinkedIn.
+// lintInstagramEmailCTA deve detectar CTAs na seção que o IG vai consumir.
+
+describe("lintInstagramEmailCTA (#2486)", () => {
+  const mkFbMd = (body: string) => `# Facebook\n\n## d1\n${body}\n`;
+  const mkIgMd = (body: string) => `# Instagram\n\n## d1\n${body}\n`;
+
+  it("detecta CTA de e-mail na seção Facebook (fallback do Instagram)", () => {
+    const md = mkFbMd("Assine grátis em diar.ia.br!");
+    const r = lintInstagramEmailCTA(md);
+    assert.equal(r.ok, false, "deve detectar CTA de e-mail em seção FB (fallback IG)");
+    assert.ok(r.errors.length > 0);
+    assert.ok(r.errors[0].phrase.toLowerCase().includes("assine"), "deve incluir a frase banida");
+  });
+
+  it("detecta CTA de e-mail na seção Instagram (quando presente)", () => {
+    const md = mkIgMd("Receba a Diar.ia por e-mail!");
+    const r = lintInstagramEmailCTA(md);
+    assert.equal(r.ok, false, "deve detectar CTA de e-mail em seção IG direta");
+    assert.ok(r.errors.length > 0);
+  });
+
+  it("seção Instagram prevalece sobre Facebook quando ambas presentes", () => {
+    // IG limpa + FB com CTA → ok (IG vence, não lê FB)
+    const md = `# Instagram\n\n## d1\nTexto limpo sem CTA.\n\n# Facebook\n\n## d1\nAssine grátis!\n`;
+    const r = lintInstagramEmailCTA(md);
+    assert.equal(r.ok, true, "deve usar seção Instagram e ignorar FB quando IG presente e limpo");
+  });
+
+  it("sem seção Instagram nem Facebook → ok (sem conteúdo pra checar)", () => {
+    const md = "# LinkedIn\n\n## d1\nTexto qualquer.";
+    const r = lintInstagramEmailCTA(md);
+    assert.equal(r.ok, true, "sem seção relevante → sem violation");
+  });
+
+  it("texto limpo (sem CTA) na seção Facebook → ok", () => {
+    const md = mkFbMd("Inovação em IA muda o panorama da tecnologia. Saiba mais em diar.ia.br.");
+    const r = lintInstagramEmailCTA(md);
+    assert.equal(r.ok, true, "texto sem CTA de e-mail deve passar");
   });
 });

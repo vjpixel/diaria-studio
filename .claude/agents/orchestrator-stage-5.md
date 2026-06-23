@@ -110,8 +110,8 @@ Casos:
 ```bash
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
-  --message "Etapa 5 auto-approved via --no-gates: 3 canais dispatchados sem confirmacao por canal" \
-  --details '{"channels":["newsletter","linkedin","facebook"]}'
+  --message "Etapa 5 auto-approved via --no-gates: canais dispatchados sem confirmacao por canal" \
+  --details '{"channels":["newsletter","linkedin","facebook","instagram"]}'
 ```
 
 **Skip flag path (`--skip newsletter,facebook`, etc):**
@@ -126,7 +126,7 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista-de-ca
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info \
   --message "Stage 5 dispatch auto (sem gate — Stage 4 revisao aprovado)" \
-  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook"]}'
+  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram"]}'
 ```
 
 **#1238 trade-off atualizado em #1380**: O user-activation guard do Beehiiv **so atinge o click de Schedule** — nao o "Send test email". Validado em 260519 (4x test emails enviados consecutivamente via Chrome MCP). O trigger correto pra Send test email e o **chevron dropdown** ao lado do botao Preview:
@@ -205,7 +205,7 @@ Exit code do guard:
 
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
-3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script aborta com erro claro — nao bloqueia os outros canais.
+3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
 
 Aguardar todos retornarem antes de prosseguir.
 

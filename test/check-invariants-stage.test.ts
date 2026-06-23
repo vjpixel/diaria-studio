@@ -49,6 +49,7 @@ import {
   checkFbPageIdSet,
   checkFbTokenSet,
   checkCloudflareTokenSet,
+  checkEditionUrlFile,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -1811,6 +1812,54 @@ describe("Stage 5 invariants (pós-publicação)", () => {
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "close-poll-marker-valid");
     rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+// ─── #2487: checkEditionUrlFile — severity ordering ─────────────────────────
+// Regressão: placeholder `{edition_url}` deve produzir severity=error ANTES
+// do check genérico de https:// (que produzia severity=warning e tornava o
+// check específico do placeholder inalcançável).
+
+describe("checkEditionUrlFile — severity ordering (#2487)", () => {
+  let fixture: string;
+  before(() => {
+    fixture = mkdtempSync(join(tmpdir(), "diaria-edition-url-"));
+    mkdirSync(join(fixture, "_internal"), { recursive: true });
+  });
+  after(() => { rmSync(fixture, { recursive: true, force: true }); });
+
+  it("placeholder {edition_url} → severity=error (não warning)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "{edition_url}",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 1, "deve emitir exatamente 1 violation");
+    assert.equal(v[0].rule, "edition-url-file-valid");
+    assert.equal(v[0].severity, "error",
+      "placeholder {edition_url} deve ser severity=error, não warning");
+    assert.ok(v[0].message.includes("{edition_url}"),
+      "mensagem deve mencionar o placeholder literal");
+  });
+
+  it("valor sem https:// (não placeholder) → severity=warning", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "http://diar.ia.br/p/teste",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning",
+      "URL com esquema inválido (mas não placeholder) deve ser warning");
+  });
+
+  it("URL HTTPS válida → sem violation", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-edition-url.txt"),
+      "https://diar.ia.br/p/titulo-da-edicao",
+    );
+    const v = checkEditionUrlFile(fixture);
+    assert.equal(v.length, 0, "URL HTTPS válida não deve emitir violation");
   });
 });
 

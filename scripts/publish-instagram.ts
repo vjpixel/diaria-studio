@@ -244,24 +244,26 @@ async function main() {
   const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN || "";
   const apiVersion = process.env.INSTAGRAM_API_VERSION || INSTAGRAM_API_VERSION;
 
-  if (!igUserId) {
-    console.error(
-      "ERRO: INSTAGRAM_BUSINESS_ACCOUNT_ID não está setado.\n" +
-        "Adicionar em .env. Encontrar o Business Account ID em:\n" +
-        "  https://developers.facebook.com/apps/ → seu app → Instagram → Business Account ID\n" +
-        "  ou via GET /me/accounts → /ig_users.",
+  // #2486 finding 2: sair com exit 0 (graceful skip) quando credenciais ausentes,
+  // NÃO com exit 1 (erro duro). O invariante checkInstagramCredsSet registra
+  // severity=warning (Instagram é best-effort). Se o exit fosse 1, o orchestrator
+  // descartaria o payload inteiro do processo junto — incluindo violations reais
+  // de consent de LinkedIn/Facebook — mascarando problemas nos canais em produção.
+  // Exit 0 + log permite que os outros canais sejam inspecionados corretamente.
+  if (!igUserId || !accessToken) {
+    const missing = [
+      !igUserId && "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+      !accessToken && "INSTAGRAM_ACCESS_TOKEN",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    console.warn(
+      `SKIP: ${missing} ausente(s) — Instagram não publicado nesta edição.\n` +
+        "Configure em .env.local para habilitar o Instagram.\n" +
+        "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
+        "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish)",
     );
-    process.exit(1);
-  }
-  if (!accessToken) {
-    console.error(
-      "ERRO: INSTAGRAM_ACCESS_TOKEN não está setado.\n" +
-        "Adicionar em .env. Gerar em:\n" +
-        "  https://developers.facebook.com/tools/explorer/\n" +
-        "  Escopos necessários: instagram_basic, instagram_content_publish, pages_read_engagement.\n" +
-        "  Usar token de longa duração (60 dias) — renovar antes de expirar.",
-    );
-    process.exit(1);
+    process.exit(0);
   }
 
   // Carregar social content

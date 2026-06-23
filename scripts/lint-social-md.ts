@@ -562,6 +562,56 @@ export function lintLinkedinEmailCTA(md: string): LinkedinEmailCtaResult {
 }
 
 /**
+ * #2486: Detecta CTA de assinatura por e-mail na seção que o Instagram vai
+ * consumir de 03-social.md. Usa a mesma lógica de fallback de publish-instagram.ts:
+ *   1. Seção `# Instagram` (quando social-instagram escrever a seção própria).
+ *   2. Fallback: seção `# Facebook` (situação atual — IG herda o copy do FB).
+ *
+ * Importante: `lintLinkedinEmailCTA` só checa `# LinkedIn`, então o CTA banido
+ * em FB/IG passava sem flag. Este lint fecha o gap para o canal Instagram.
+ *
+ * Interface reutiliza LinkedinEmailCtaResult para consistência com a função irmã.
+ */
+export function lintInstagramEmailCTA(md: string): LinkedinEmailCtaResult {
+  const errors: LinkedinEmailCtaError[] = [];
+  // Tentar seção Instagram primeiro; fallback para Facebook (igual a publish-instagram.ts).
+  let section = extractSection(md, "Instagram") ?? extractPlatformSection(md, "facebook");
+  if (!section) return { ok: true, errors };
+
+  const lines = section.split("\n");
+  let currentSection = "preamble";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^## (d\d+)\b/i.test(line)) {
+      currentSection = line.replace(/^## /, "").trim();
+    }
+    EMAIL_CTA_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = EMAIL_CTA_RE.exec(line)) !== null) {
+      errors.push({
+        section: currentSection,
+        line: i + 1,
+        phrase: m[0],
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Extrai a seção de uma plataforma arbitrária do md por título (`# {Title}`).
+ * Versão mais genérica de extractPlatformSection que aceita qualquer título.
+ * Usada internamente por lintInstagramEmailCTA para buscar `# Instagram`.
+ */
+function extractSection(md: string, sectionTitle: string): string | null {
+  const normalized = md.replace(/\r\n/g, "\n");
+  const re = new RegExp(`(?:^|\\n)# ${sectionTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
+  const m = normalized.match(re);
+  return m ? m[1] : null;
+}
+
+/**
  * URL canônica da página da Diar.ia no LinkedIn (sem https://, sem ponto final).
  * #2458 — esta constante é a FONTE para o lint (determinístico, sem ler config em
  * runtime). `platform.config.json#...diaria_linkedin_page_url` espelha este valor
