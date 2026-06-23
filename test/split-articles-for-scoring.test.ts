@@ -119,7 +119,7 @@ describe("buildChunks", () => {
 
 // Helper to run splitMain() with argv override + stdout capture
 function runSplitMain(
-  args: { categorizedPath: string; outDir: string; chunkSize?: number },
+  args: { categorizedPath: string; outDir: string; chunkSize?: number; poolOut?: string },
 ): { stdout: string } {
   const origArgv = process.argv;
   const origWrite = process.stdout.write.bind(process.stdout);
@@ -134,6 +134,7 @@ function runSplitMain(
     "--categorized", args.categorizedPath,
     "--out-dir", args.outDir,
     "--chunk-size", String(args.chunkSize ?? 30),
+    ...(args.poolOut ? ["--pool-out", args.poolOut] : []),
   ];
   try {
     splitMain();
@@ -267,6 +268,86 @@ describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de es
       assert.ok(typeof manifest.total_articles === "number");
       assert.ok(typeof manifest.chunk_count === "number");
       assert.ok(Array.isArray(manifest.chunk_files));
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+});
+
+// #2496 — --pool-out emite pool capado (pós dedup/cap use_melhor) para merge
+describe("#2496 — split emite pool capado via --pool-out", () => {
+  // Categorized com muitos use_melhor (simulando o caso 260623: 31→15 após cap).
+  // Quando --pool-out é passado, o arquivo deve conter só os artigos que de fato
+  // foram distribuídos nos chunks (i.e., o pool capado, não o não-capado).
+  const MANY_USE_MELHOR = {
+    categorized: {
+      lancamento: [{ url: "https://example.com/l1", title: "L1", category: "lancamento" }],
+      radar: [{ url: "https://example.com/r1", title: "R1", category: "noticias" }],
+      // 20 use_melhor do mesmo domínio (serão capados a maxPerDomain=2)
+      use_melhor: Array.from({ length: 20 }, (_, i) => ({
+        url: `https://same-domain.com/tutorial-${i}`,
+        title: `Tutorial ${i}`,
+        category: "tutorial",
+      })),
+      video: [],
+    },
+  };
+
+  it("--pool-out grava arquivo com shape { categorized } e conteúdo capado", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2496-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    const poolOutPath = join(tmpBase, "tmp-scoring-pool.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(categorizedPath, JSON.stringify(MANY_USE_MELHOR));
+      const { stdout } = runSplitMain({ categorizedPath, outDir: chunksDir, poolOut: poolOutPath });
+
+      // O arquivo deve existir
+      assert.ok(existsSync(poolOutPath), "--pool-out criou tmp-scoring-pool.json");
+
+      // Shape válido: { categorized: { lancamento, radar, use_melhor, video } }
+      const pool = JSON.parse(readFileSync(poolOutPath, "utf8"));
+      assert.ok(pool.categorized, "pool-out tem campo categorized");
+      assert.ok(Array.isArray(pool.categorized.use_melhor), "pool-out.categorized.use_melhor é array");
+
+      // use_melhor foi capado (maxPerDomain=2): 20 do mesmo domínio → ≤ 2
+      assert.ok(
+        pool.categorized.use_melhor.length <= 2,
+        `pool capado: use_melhor.length=${pool.categorized.use_melhor.length} (esperado ≤ 2 do mesmo domínio)`,
+      );
+
+      // manifest inclui pool_out quando flag passado
+      const manifest = JSON.parse(stdout.trim());
+      assert.equal(manifest.pool_out, poolOutPath, "manifest.pool_out aponta pro arquivo gravado");
+
+      // total_articles no manifest reflete o pool CAPADO (não o não-capado)
+      const poolTotal =
+        pool.categorized.lancamento.length +
+        pool.categorized.radar.length +
+        pool.categorized.use_melhor.length +
+        (pool.categorized.video ?? []).length;
+      assert.equal(
+        manifest.total_articles,
+        poolTotal,
+        "manifest.total_articles == pool capado (não o não-capado)",
+      );
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --pool-out: manifest.pool_out ausente, comportamento inalterado", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-2496-nopool-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+      const { stdout } = runSplitMain({ categorizedPath, outDir: chunksDir });
+      const manifest = JSON.parse(stdout.trim());
+      // pool_out não deve aparecer no manifest quando flag não foi passado
+      assert.equal(manifest.pool_out, undefined, "sem --pool-out: pool_out ausente no manifest");
     } finally {
       rmSync(tmpBase, { recursive: true, force: true });
     }
