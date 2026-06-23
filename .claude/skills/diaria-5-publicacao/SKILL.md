@@ -95,7 +95,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --
 
 1. `publish-facebook.ts --schedule` (Graph API, ~30s)
 2. `publish-linkedin.ts --schedule` (Worker queue + Make webhook × 3)
-3. **Newsletter Beehiiv (#1054 / #207 / #1114)**: você lê `context/publishers/beehiiv-playbook.md` e executa direto. **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level.
+3. **Newsletter Beehiiv (#1054 / #207 / #1114)**: você lê `context/publishers/beehiiv-playbook.md` e executa direto. **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level. **⚠️ DEGRADADO desde 260623 (#2495) — paste via Worker-hosted (Fase 2) está bloqueado por CSP; usar chunked base64 manualmente enquanto o bloqueio persistir. Editor finaliza metadata na UI. Ver playbook para instruções.**
 
 Após todos retornarem, **loop de review-test-email** roda em cima do draft Beehiiv.
 

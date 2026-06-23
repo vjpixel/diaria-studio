@@ -164,7 +164,7 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b
 
 **Passo 5c-1: Newsletter Beehiiv.**
 
-**Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** (#1327). Output: `_internal/05-published.json`.
+**Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **⚠️ DEGRADADO desde 260623 (#2495) — Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste) esta bloqueada por CSP; usar chunked base64 manualmente enquanto o bloqueio persistir (#2500). Editor finaliza metadata na UI. Ver `context/publishers/beehiiv-playbook.md` para instruções detalhadas.** Output: `_internal/05-published.json`.
 
 Playbook ja grava `_internal/05-edition-url.txt` (ver §"Gravar 05-edition-url.txt" no beehiiv-playbook.md). Se por qualquer razao o playbook nao gravou, gravar manualmente:
 
