@@ -149,8 +149,13 @@ const PROGRAM_WARN_RE = /\bgrants?\b|\bpartnership\b/i;
  * PROGRAM_WARN_RE). Itens com sinal positivo de produto (versão/família) passam
  * mesmo que o título seja amplo.
  */
+// Gaps são `[^.]{0,40}` (não `.{0,80}`) — limitados e parando no primeiro ponto
+// final pra não atravessar 2 frases. Verbos são prefixos intencionais (sem `\b`
+// final): `power`→powers/powering, `advanc`→advances/advancing, `driv`→drives.
+// `transform` foi REMOVIDO (review #2512): casava "Transformers" (linha de modelo
+// real), rebaixando hard-block legítimo a warn.
 const CONFERENCE_ROUNDUP_TITLE_RE =
-  /\b(?:new|latest|all\s+(?:the\s+)?news\s+from|everything\s+(?:announced|from))\b.{0,60}\bsoftware(?:s)?\b.{0,80}\b(?:unlock|power|advanc|driv|enabl|fuel|transform|revolutioniz|accelerat)/i;
+  /\b(?:new|latest|all\s+(?:the\s+)?news\s+from|everything\s+(?:announced|from))\b[^.]{0,40}\bsoftware(?:s)?\b[^.]{0,40}\b(?:unlock|power|advanc|driv|enabl|fuel|revolutioniz|accelerat)\w*/i;
 
 /**
  * #2493: `true` quando o título tem sinal de roundup de software de conferência
@@ -274,8 +279,10 @@ function isHuggingFaceOrgBlogPost(url: string): boolean {
     const u = new URL(url);
     if (u.hostname.replace(/^www\./, "") !== "huggingface.co") return false;
     const segs = u.pathname.split("/").filter(Boolean);
-    // /blog/{org}/{slug} → 3+ segmentos; /blog/{slug} → 2 segmentos (HF próprio)
-    return segs.length >= 3 && segs[0].toLowerCase() === "blog";
+    // /blog/{org}/{slug} → exatamente 3 segmentos; /blog/{slug} → 2 (HF próprio).
+    // Exato (não `>= 3`, review #2512): paths mais fundos (/blog/org/slug/about,
+    // releases/notes) não são páginas de release de modelo.
+    return segs.length === 3 && segs[0].toLowerCase() === "blog";
   } catch {
     return false;
   }
@@ -412,12 +419,16 @@ export function validateLancamentos(text: string, allowlist: string[] = []): Val
   // conferência — warn, não erro). Exclui itens já em not_a_tool para evitar
   // double-reporting do mesmo item com mensagens conflitantes (#2277).
   const not_a_tool_urls = new Set(not_a_tool.map((u) => u.url));
+  // #2512: roundup-warn só se aplica a item NÃO verificado como produto. Um
+  // produto real com título "roundup-like" (ex: "New PyTorch Software Powers...")
+  // já está em verified_product — não duplicar como warn de non_product.
+  const verified_urls = new Set(verified_product.map((u) => u.url));
   const non_product = unique.filter(
     (u) =>
       !not_a_tool_urls.has(u.url) &&
       (isNonProductLancamento(u.url, u.title) ||
         isProgramWarn(u.url, u.title) ||
-        isConferenceRoundupWarn(u.title)),
+        (isConferenceRoundupWarn(u.title) && !verified_urls.has(u.url))),
   );
   return {
     lancamento_count: unique.length,
@@ -500,7 +511,11 @@ export function validateLancamentosFromApproved(
     // openai.com/index/public-policy-agenda é oficial mas NÃO é produto. Inclui
     // também isProgramWarn (grants?/partnership) e isConferenceRoundupWarn (#2493)
     // — warn-only. Exclui itens já em not_a_tool para evitar double-reporting (#2277).
-    if (!isNatool && (isNonProductLancamento(url, title) || isProgramWarn(url, title) || isConferenceRoundupWarn(title))) {
+    // #2512: roundup-warn só pra item NÃO verificado como produto — um produto real
+    // com título "roundup-like" não deve gerar warn espúrio de non-product.
+    const roundupWarn =
+      official && isConferenceRoundupWarn(title) && !isVerifiedTool(url, title, allowlist);
+    if (!isNatool && (isNonProductLancamento(url, title) || isProgramWarn(url, title) || roundupWarn)) {
       flagged_non_product.push({ url, title });
     }
   }

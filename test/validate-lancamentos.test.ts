@@ -1053,4 +1053,47 @@ describe("#2493 — roundup de software de conferência → warning, não erro",
     assert.equal(r.not_a_tool.length, 0);
     assert.equal(r.status, "ok");
   });
+
+  it("REVIEW #2512: 'Software Transformers' (linha de modelo) NÃO é roundup", () => {
+    // 'transform' foi removido do regex — casava 'Transformers' (modelo real),
+    // rebaixando hard-block legítimo a warn.
+    assert.ok(!isConferenceRoundupWarn("New NVIDIA AI Software Transformers Released"));
+  });
+
+  it("REVIEW #2512: produto verificado com título roundup-like NÃO aparece em non_product (sem double-class)", () => {
+    // Bug: 'New PyTorch Software Powers AI Research' em URL com sinal de produto
+    // (HF org blog) → verified_product. NÃO deve também estar em non_product.
+    const md = [
+      "LANÇAMENTOS",
+      "**[New PyTorch Software Powers AI Research](https://huggingface.co/blog/pytorch/pytorch-2-3)**",
+      "Release.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1, "produto verificado");
+    assert.equal(r.non_product.length, 0, "NÃO duplicar verified como non_product warn");
+    assert.equal(r.status, "ok");
+  });
+
+  it("REVIEW #2512: validateLancamentosFromApproved — produto roundup-like não vira flagged_non_product", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://huggingface.co/blog/pytorch/pytorch-2-3",
+          title: "New PyTorch Software Powers AI Research",
+        },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 0);
+    assert.equal(s.flagged_non_product.length, 0, "produto verificado não vira warn de non-product");
+  });
+
+  it("REVIEW #2512: HF blog path com 4+ segmentos NÃO recebe sinal estrutural", () => {
+    // /blog/org/slug/extra não é página de release de modelo (about, releases/notes).
+    assert.ok(!hasProductSignal("https://huggingface.co/blog/someorg/slug/about-us-page"), "4-seg HF blog → sem sinal estrutural");
+    // 3 segmentos exatos ainda passa
+    assert.ok(hasProductSignal("https://huggingface.co/blog/someorg/model-v2"));
+  });
 });
