@@ -154,7 +154,14 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   ```bash
   npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --init
   ```
-  Idempotente — se já existe (resume), apenas reabre o estado anterior; não zera. Push ao Drive logo após init:
+  Idempotente — se já existe (resume), apenas reabre o estado anterior; não zera.
+
+  - **Reconciliar stages `running` órfãos no resume (#2525).** Logo após o `--init`, rodar reconcile: uma interrupção (Claude fechado, crash, timeout) deixa o stage corrente em `running` pra sempre, travando a barra de progresso da statusLine (fica em "5/7 Publicação" e nunca avança). Edição fresca = no-op (tudo `pending`); resume = marca os `running` órfãos como `failed` pro orchestrator decidir re-rodar:
+    ```bash
+    npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --reconcile-running
+    ```
+
+  Push ao Drive logo após init:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 0 --files stage-status.md
   ```
