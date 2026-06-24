@@ -12,7 +12,6 @@ import {
   checkHumanizerSectionCoverage,
   lintLinkedinEmailCTA,
   lintLinkedinPageLink,
-  lintCredentialBio,
   lintInstagramEmailCTA,
   DIARIA_LINKEDIN_PAGE_SLUG,
 } from "../scripts/lint-social-md.ts";

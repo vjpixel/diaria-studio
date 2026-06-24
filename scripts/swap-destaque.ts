@@ -184,7 +184,24 @@ export function removeDestaqueBlockFromMd(
     positions.push({ start: m.index, end: m.index + m[1].length });
   }
 
-  if (blocks.length < position) return md; // not enough blocks
+  if (blocks.length === 0) {
+    // No DESTAQUE blocks found at all — likely no '---' separator in the MD.
+    // Fail loud so the caller knows the placeholder was NOT inserted.
+    console.error(
+      `swap-destaque: removeDestaqueBlockFromMd — nenhum bloco DESTAQUE encontrado no 02-reviewed.md.\n` +
+      `  Causa provável: separadores '---' ausentes entre blocos.\n` +
+      `  O placeholder NÃO foi inserido. Re-inserir manualmente o destaque após confirmar o swap.`,
+    );
+    return md;
+  }
+  if (blocks.length < position) {
+    console.error(
+      `swap-destaque: removeDestaqueBlockFromMd — só ${blocks.length} bloco(s) DESTAQUE encontrado(s), ` +
+      `mas a posição solicitada é ${position}.\n` +
+      `  O placeholder NÃO foi inserido. Verifique se o 02-reviewed.md tem separadores '---' entre os blocos.`,
+    );
+    return md;
+  }
 
   const zeroIdx = position - 1;
 
@@ -582,9 +599,22 @@ function main(): void {
     );
     if (!cappedSwap.ok) {
       // Capped JSON may have fewer items in the bucket; just swap highlights
+      // and, if not dropping, return the demoted item to the bucket.
       const cappedHighlights = approvedCappedData.highlights as Record<string, unknown>[] | undefined;
       if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
+        const cappedDemotedItem = cappedHighlights[demotePos];
         cappedHighlights[demotePos] = promotedItem;
+        // Mirror the approved.json logic: if not dropping, prepend demoted item back
+        // to the source bucket (if the bucket exists in capped JSON).
+        if (!drop) {
+          const cappedBucket = approvedCappedData[promote.bucket];
+          if (Array.isArray(cappedBucket)) {
+            approvedCappedData[promote.bucket] = [cappedDemotedItem, ...cappedBucket];
+          } else {
+            // Bucket absent in capped JSON: create it with just the demoted item
+            approvedCappedData[promote.bucket] = [cappedDemotedItem];
+          }
+        }
       }
     }
     writeFileSync(approvedCappedPath, JSON.stringify(approvedCappedData, null, 2) + "\n", "utf8");

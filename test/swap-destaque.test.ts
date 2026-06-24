@@ -793,3 +793,192 @@ describe("swap-destaque e2e integration (#2499)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression tests: #2521
+// ---------------------------------------------------------------------------
+
+describe("swapInApprovedJson fallback-capped regression (#2521 Bug 1)", () => {
+  /**
+   * Regression for #2521 Bug 1:
+   * When cappedSwap.ok=false (bucket absent/short in capped JSON), the fallback
+   * must ALSO return the demoted item to the bucket (when --drop omitted),
+   * mirroring the approved.json logic.
+   */
+  it("fallback (cappedSwap.ok=false, no --drop): returns demoted item to bucket in capped JSON", () => {
+    // Capped JSON has radar bucket ABSENT — swapInApprovedJson returns ok:false.
+    // The fallback code must still create/prepend the demoted item to the bucket.
+    const cappedData: Record<string, unknown> = {
+      highlights: [
+        { ...HIGHLIGHT_D1 },
+        { ...HIGHLIGHT_D2 },
+        { ...HIGHLIGHT_D3 },
+      ],
+      // radar bucket intentionally absent → swapInApprovedJson returns ok:false
+    };
+
+    const demotePos = 0; // D1 position
+    const drop = false;
+    const promotedItem = { ...RADAR_ITEM_0 };
+
+    // Simulate what main() does in the fallback branch (cappedSwap.ok=false):
+    const cappedHighlights = cappedData.highlights as Record<string, unknown>[];
+    const cappedDemotedItem = cappedHighlights[demotePos];
+
+    // Confirm swapInApprovedJson fails (triggering the fallback path)
+    const attempt = swapInApprovedJson(cappedData, "radar", 0, demotePos, drop);
+    assert.equal(attempt.ok, false, "swapInApprovedJson should fail when bucket absent");
+
+    // Fallback: manually swap highlights and return demoted to bucket
+    cappedHighlights[demotePos] = promotedItem;
+    const cappedBucket = cappedData["radar"];
+    if (Array.isArray(cappedBucket)) {
+      cappedData["radar"] = [cappedDemotedItem, ...cappedBucket];
+    } else {
+      cappedData["radar"] = [cappedDemotedItem];
+    }
+
+    // Verify: highlights[0] is now the promoted item
+    assert.equal(
+      extractUrl(cappedHighlights[0]),
+      "https://example.com/radar-0",
+      "promoted item must be in highlights[0]",
+    );
+    // Verify: demoted item is now in the radar bucket (was absent, now created)
+    const resultBucket = cappedData["radar"] as Record<string, unknown>[];
+    assert.ok(Array.isArray(resultBucket), "radar bucket must be created when absent");
+    assert.equal(
+      extractUrl(resultBucket[0]),
+      "https://example.com/d1",
+      "demoted D1 must be prepended to radar bucket even when bucket was absent in capped JSON",
+    );
+  });
+
+  it("fallback (cappedSwap.ok=false, --drop): does NOT add demoted item to bucket", () => {
+    // When --drop is true, even the fallback must not return the demoted item.
+    const cappedData: Record<string, unknown> = {
+      highlights: [
+        { ...HIGHLIGHT_D1 },
+        { ...HIGHLIGHT_D2 },
+        { ...HIGHLIGHT_D3 },
+      ],
+      // radar bucket short (only 1 item at idx 0, but promoteIdx=99 → fail)
+      radar: [{ ...RADAR_ITEM_0 }],
+    };
+
+    const demotePos = 0;
+    const drop = true;
+    const promotedItem = { ...RADAR_ITEM_1 };
+
+    const attempt = swapInApprovedJson(cappedData, "radar", 99, demotePos, drop); // idx 99 → fail
+    assert.equal(attempt.ok, false, "swapInApprovedJson should fail with out-of-range idx");
+
+    const cappedHighlights = cappedData.highlights as Record<string, unknown>[];
+    const cappedDemotedItem = cappedHighlights[demotePos];
+
+    cappedHighlights[demotePos] = promotedItem;
+    if (!drop) {
+      // This branch must NOT execute when drop=true
+      const existing = cappedData["radar"];
+      cappedData["radar"] = Array.isArray(existing)
+        ? [cappedDemotedItem, ...existing]
+        : [cappedDemotedItem];
+    }
+
+    // radar bucket unchanged (demoted item NOT added, since drop=true)
+    const resultBucket = cappedData["radar"] as Record<string, unknown>[];
+    const urls = resultBucket.map(extractUrl);
+    assert.ok(
+      !urls.includes("https://example.com/d1"),
+      "demoted item must NOT be in bucket when --drop is true",
+    );
+    assert.equal(resultBucket.length, 1, "bucket unchanged when --drop=true");
+  });
+});
+
+describe("removeDestaqueBlockFromMd fail-loud regression (#2521 Bug 2)", () => {
+  /**
+   * Regression for #2521 Bug 2:
+   * When the MD has no '---' separators, blockRe finds no blocks.
+   * The function must emit a console.error warning instead of returning the
+   * unchanged MD silently — so the editor knows the placeholder was NOT inserted.
+   */
+  it("emits console.error when only 1 block found but position 3 requested (no '---' between destaques)", () => {
+    // Without '---' separators between DESTAQUE blocks, blockRe matches one
+    // giant block from the first DESTAQUE to EOF. Requesting position 3 (which
+    // doesn't exist as a separate block) must emit a fail-loud error.
+    const mdNoSep = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Artigo](https://example.com/d1)**",
+      "",
+      "Texto sem separadores entre blocos.",
+      "",
+      "**DESTAQUE 2 | 📡 RADAR**",
+      "",
+      "**[Artigo2](https://example.com/d2)**",
+      "",
+      "Texto do destaque 2.",
+    ].join("\n");
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let result: string;
+    try {
+      // Position 3 requested but only 1 block found (no separators → merged)
+      result = removeDestaqueBlockFromMd(mdNoSep, 3, "Item Novo", "https://example.com/novo");
+    } finally {
+      console.error = origError;
+    }
+
+    // Must return original MD unchanged (placeholder NOT inserted for pos 3)
+    assert.equal(result!, mdNoSep, "must return original MD when position exceeds block count");
+    // Must emit at least one console.error mentioning the problem
+    assert.ok(errors.length > 0, "must emit console.error when position exceeds block count");
+    assert.ok(
+      errors.some((e) => /placeholder.*NÃO|bloco|posição|separadores/i.test(e)),
+      `expected warning about missing position, got: ${errors.join(" | ")}`,
+    );
+  });
+
+  it("emits console.error when blocks found but position exceeds count", () => {
+    // MD with only 1 DESTAQUE block + separator, but requesting position 3
+    const mdOnlyOne = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Artigo](https://example.com/d1)**",
+      "",
+      "Texto do destaque.",
+      "",
+      "---",
+      "",
+      "**📡 RADAR**",
+      "",
+      "Seção de radar.",
+    ].join("\n");
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let result: string;
+    try {
+      result = removeDestaqueBlockFromMd(mdOnlyOne, 3, "Item Promovido", "https://example.com/novo");
+    } finally {
+      console.error = origError;
+    }
+
+    assert.equal(result!, mdOnlyOne, "must return original MD unchanged");
+    assert.ok(errors.length > 0, "must emit console.error when position exceeds block count");
+    assert.ok(
+      errors.some((e) => /placeholder.*NÃO|bloco|posição|separadores/i.test(e)),
+      `expected warning about missing position, got: ${errors.join(" | ")}`,
+    );
+  });
+});

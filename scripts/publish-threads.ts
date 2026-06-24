@@ -61,6 +61,10 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       args["no-skip-existing"] = true;
     } else if (argv[i] === "--test-mode") {
       args["test-mode"] = true;
+    } else if (argv[i] === "--dry-run") {
+      // --dry-run: real guard — does NOT call fetch at all (unlike --test-mode which
+      // only skips sleep). Safe to run with real credentials in the environment.
+      args["dry-run"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       args[argv[i].slice(2)] = argv[i + 1];
       i++;
@@ -148,11 +152,15 @@ export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT)
   while (remaining.length > maxLen) {
     // Procurar o último espaço antes do limite
     let cut = remaining.lastIndexOf(" ", maxLen - 1);
-    if (cut < 0) {
-      // Sem espaço — cortar no limite duro
+    if (cut <= 0) {
+      // Sem espaço (ou espaço na posição 0) — cortar no limite duro para
+      // evitar chunk vazio quando cut=0.
       cut = maxLen;
     }
-    chunks.push(remaining.slice(0, cut).trim());
+    const chunk = remaining.slice(0, cut).trim();
+    if (chunk.length > 0) {
+      chunks.push(chunk);
+    }
     remaining = remaining.slice(cut).trim();
   }
 
@@ -305,6 +313,7 @@ async function main() {
   const editionDir = resolve(ROOT, editionDirArg);
   const skipExisting = args["no-skip-existing"] !== true;
   const isTest = !!args["test-mode"];
+  const isDryRun = !!args["dry-run"];
 
   // Carregar credenciais — env vars obrigatórias em runtime
   const threadsUserId = process.env.THREADS_USER_ID || "";
@@ -420,6 +429,25 @@ async function main() {
     const chunks = splitIntoThreadChunks(text, THREADS_CHAR_LIMIT);
     if (chunks.length > 1) {
       console.log(`threads/${d}: texto longo (${text.length} chars) → ${chunks.length} posts encadeados`);
+    }
+
+    // --dry-run guard: do NOT call fetch. Print what would be published and skip.
+    // This is a real guard (unlike --test-mode which only skips sleep).
+    if (isDryRun) {
+      console.log(
+        `DRY-RUN threads/${d}: ${chunks.length} chunk(s), ${text.length} chars total\n` +
+        chunks.map((c, i) => `  chunk ${i + 1}: ${c.slice(0, 80)}${c.length > 80 ? "…" : ""}`).join("\n"),
+      );
+      const entry: PostEntry = {
+        platform: "threads",
+        destaque: d,
+        url: null,
+        status: "draft",
+        scheduled_at: null,
+        reason: "dry-run — não publicado",
+      };
+      results.push(entry);
+      continue;
     }
 
     // Publicar com retry + exponential backoff (análogo a publish-instagram.ts).

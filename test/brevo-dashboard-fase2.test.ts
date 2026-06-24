@@ -985,20 +985,23 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /<small>15<\/small>/, "deve exibir count trackableViews=15");
   });
 
-  test("seção abc-summary aparece quando há campanhas Clarice News", () => {
+  test("seção day-summary aparece quando há campanhas Clarice News (#2523)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
+    // #2523: id foi renomeado de "abc-summary" para "day-summary" em renderDaySummarySection
+    // para não colidir com o id da legada renderAbcSection (que mantém "abc-summary").
     // #2208 (item 4): ancorando em id= para não casar href/nav que pudesse vir antes.
-    assert.match(html, /id="abc-summary"/, "deve conter a seção abc-summary com id=");
+    assert.match(html, /id="day-summary"/, "deve conter a seção day-summary com id= (#2523)");
+    assert.doesNotMatch(html, /id="abc-summary"/, "renderDaySummarySection não deve mais usar id=abc-summary (#2523)");
     // #2492: seção agora mostra breakdown D1–D5 em vez de A/B/C por célula
     assert.match(html, /Resumo D1–D5/, "deve ter título 'Resumo D1–D5'");
   });
 
-  test("volume-ciclo vem ANTES de abc-summary (editor 2026-06-11)", () => {
+  test("volume-ciclo vem ANTES de day-summary (editor 2026-06-11)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
     const posVolume = html.indexOf('id="volume-ciclo"');
-    const posAbc = html.indexOf('id="abc-summary"');
+    const posAbc = html.indexOf('id="day-summary"');
     assert.ok(posVolume > -1, "deve conter a seção de volume");
-    assert.ok(posVolume < posAbc, "volume deve vir antes do resumo A/B/C");
+    assert.ok(posVolume < posAbc, "volume deve vir antes do resumo D1–D5");
   });
 
   test("seção wave-trend NÃO aparece no dashboard (removida em #2359)", () => {
@@ -1007,10 +1010,11 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.doesNotMatch(html, /Tend.ncia entre waves/, "título da seção removida não deve aparecer");
   });
 
-  test("sem campanhas Clarice News: seção abc-summary ausente", () => {
+  test("sem campanhas Clarice News: seção day-summary ausente (#2523)", () => {
     const html = renderDashboardHtml(t1Campaigns);
     // #2208 (item 4): verificar ausência do id= específico, não de qualquer substring.
-    assert.doesNotMatch(html, /id="abc-summary"/, "seção abc deve estar ausente sem Clarice News");
+    // #2523: verificar pelo novo id "day-summary"
+    assert.doesNotMatch(html, /id="day-summary"/, "seção day-summary deve estar ausente sem Clarice News (#2523)");
   });
 
   test("colspan da linha 'sem stats' atualizado para 7 (11 colunas - 4 fixas)", () => {
@@ -1048,18 +1052,19 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /Open rate por dia da semana/, "deve ter título da seção weekday");
   });
 
-  test("seção weekday-openrate posicionada ENTRE campaigns-table e abc-summary (#2134, #2472)", () => {
+  test("seção weekday-openrate posicionada ENTRE campaigns-table e day-summary (#2134, #2472, #2523)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    // #2472: nova ordem: campaigns-table → weekday-openrate → abc-summary
+    // #2472: nova ordem: campaigns-table → weekday-openrate → day-summary
+    // #2523: seção agora tem id="day-summary" (era "abc-summary")
     // #2208 (item 4): ancorando em id= para não casar substring de nav/href.
     const idxCampaigns = html.indexOf('id="campaigns-table"');
     const idxWeekday = html.indexOf('id="weekday-openrate"');
-    const idxAbc = html.indexOf('id="abc-summary"');
+    const idxDaySummary = html.indexOf('id="day-summary"');
     assert.ok(idxCampaigns > -1, 'deve encontrar id="campaigns-table"');
     assert.ok(idxWeekday > -1, 'deve encontrar id="weekday-openrate"');
-    assert.ok(idxAbc > -1, 'deve encontrar id="abc-summary"');
+    assert.ok(idxDaySummary > -1, 'deve encontrar id="day-summary" (#2523)');
     assert.ok(idxCampaigns < idxWeekday, "weekday-openrate deve vir depois de campaigns-table");
-    assert.ok(idxWeekday < idxAbc, "weekday-openrate deve vir antes de abc-summary");
+    assert.ok(idxWeekday < idxDaySummary, "weekday-openrate deve vir antes de day-summary");
   });
 });
 
@@ -1570,10 +1575,13 @@ describe("renderDaySummarySection (#2492)", () => {
     assert.equal(renderDaySummarySection(rows), "");
   });
 
-  test("contém id='abc-summary' (mantém âncora para compatibilidade)", () => {
+  test("contém id='day-summary' (id único, distinto de renderAbcSection) (#2523)", () => {
+    // #2523: renderDaySummarySection agora usa id="day-summary" para evitar colisão
+    // com renderAbcSection que mantém id="abc-summary".
     const rows = aggregateDaySummary(cycle2605Campaigns, "2605");
     const html = renderDaySummarySection(rows);
-    assert.match(html, /id="abc-summary"/, "deve manter id=abc-summary para âncoras existentes");
+    assert.match(html, /id="day-summary"/, "renderDaySummarySection deve usar id=day-summary (#2523)");
+    assert.doesNotMatch(html, /id="abc-summary"/, "renderDaySummarySection não deve colidir com id de renderAbcSection");
   });
 
   test("título é 'Resumo D1–D5 — S1' (#2492)", () => {

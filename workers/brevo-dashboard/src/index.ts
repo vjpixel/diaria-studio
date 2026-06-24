@@ -2088,7 +2088,7 @@ export function renderDaySummarySection(rows: DaySummary[]): string {
     .join("\n");
 
   return `
-<section class="phase2-section" id="abc-summary">
+<section class="phase2-section" id="day-summary">
   <h2 class="section-title">Resumo D1–D5 — S1</h2>
   <p class="section-note">${statusNote}</p>
   <p class="section-note"><small>Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo) — base do vencedor. Entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os envios do dia têm esse dado. Cada linha agrega todas as células (A/B/C) enviadas naquele dia.</small></p>
