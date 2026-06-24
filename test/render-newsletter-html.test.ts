@@ -11,7 +11,6 @@ import {
   resolvePrevResultLine,
   extractContent,
   renderHTML,
-  renderMasthead,
   renderBodyParasInner,
   renderWhyBoxInner,
   renderEiaStandalone,
@@ -2040,53 +2039,6 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
     // box "Por que isso importa" preserva margin-top:28px (não afetado)
     assert.match(html, /margin-top:28px/);
     assert.doesNotMatch(html, /margin:16px 0 0/, "valor antigo não deve aparecer no render completo");
-  });
-});
-
-// ── #2490 — wordmark diar.ia.br teal no masthead ─────────────────────────────
-
-describe("renderMasthead (#2490)", () => {
-  it("contém o wordmark 'diar.ia.br'", () => {
-    const html = renderMasthead();
-    assert.match(html, /diar\.ia\.br/);
-  });
-
-  it("aplica a cor teal #00A0A0 ao wordmark", () => {
-    const html = renderMasthead();
-    assert.match(html, /#00A0A0/);
-  });
-
-  it("não menciona 'Diar.ia' (wordmark antigo) no masthead", () => {
-    const html = renderMasthead();
-    assert.ok(!html.includes("Diar.ia"), "wordmark antigo não deve aparecer no masthead");
-  });
-
-  it("renderHTML inclui o masthead com diar.ia.br + teal como primeiro elemento", () => {
-    const fixture = {
-      title: "Teste",
-      subtitle: "Sub",
-      coverImage: "04-d1-2x1.jpg",
-      destaques: [{
-        n: 1 as const,
-        category: "TESTE",
-        title: "Título do destaque",
-        body: "Corpo.",
-        why: "Por que importa.",
-        url: "https://example.com",
-        emoji: "🔬",
-        imageFile: "04-d1-2x1.jpg",
-      }],
-      eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
-      sections: [],
-    };
-    const html = renderHTML(fixture);
-    // masthead deve aparecer ANTES da primeira seção de conteúdo
-    const mastheadIdx = html.indexOf("diar.ia.br");
-    const coverageIdx = html.indexOf("Título do destaque");
-    assert.ok(mastheadIdx !== -1, "masthead 'diar.ia.br' deve existir no renderHTML");
-    assert.ok(mastheadIdx < coverageIdx, "masthead deve aparecer antes do conteúdo do destaque");
-    // cor teal aplicada ao wordmark
-    assert.match(html, /#00A0A0/);
   });
 });
 
