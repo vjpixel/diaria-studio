@@ -56,6 +56,7 @@ export {
 export {
   processInlineItalics,
   processInlineLinks,
+  applyBrandWordmark,
   isSponsoredCallout,
   renderCoverage,
   renderBodyParasInner,

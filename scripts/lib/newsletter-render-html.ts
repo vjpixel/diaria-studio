@@ -678,13 +678,16 @@ export function mdInlineToHtml(s: string): string {
     const label = input.slice(start + 1, labelEnd);
     // #2008: word-joiner aplicado nos segmentos de TEXTO (não no href da URL
     // nem no label do link — label já tem href explícito, sem risco de linkify).
-    parts.push(applyWordJoiner(input.slice(lastIdx, start)));
+    // #2532/#2533 review: wordmark também só nos segmentos de TEXTO (não no
+    // label nem no href) — simétrico com processInlineLinks. Aplicado ANTES do
+    // passo de `**` abaixo, então `**Diar.ia**` → `**{wordmark}**` → `<b>{wordmark}</b>`.
+    parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start))));
     parts.push(
       `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
     );
     lastIdx = end;
   }
-  parts.push(applyWordJoiner(input.slice(lastIdx)));
+  parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
   let out = parts.join("");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   return out;
@@ -965,15 +968,42 @@ export function processInlineItalics(s: string): string {
 /**
  * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
  * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`)
- * + word-joiner anti-linkify (#2008 — "Clarice.ai" em texto puro).
- * Ordem: unescape → esc → italics → word-joiner. Word-joiner roda por último
- * pra não ser consumido pelo esc (já pós-escape). Usar em conteúdo editorial;
- * NÃO usar em URLs (backslash em URL é literal, raro mas legítimo).
+ * + word-joiner anti-linkify (#2008 — "Clarice.ai" em texto puro)
+ * + wordmark da marca (#2532 — `Diar.ia` → `diar.ia.br` teal).
+ * Ordem: unescape → esc → italics → word-joiner → wordmark. Os 2 últimos rodam
+ * pós-esc (injetam HTML cru de propósito). Usar em conteúdo editorial destinado
+ * a `<p>` de corpo; NÃO em URLs nem em atributos (`alt=`/`title=`) — o output
+ * contém `<span>`/`<wbr>` não-escapados que quebrariam o atributo.
  */
 function escText(s: string): string {
   // #2008: word-joiner aplicado via applyWordJoiner (declarado acima) — análogo
   // ao monthly-render.ts renderTextInline (commit 1ec81b0).
-  return applyWordJoiner(processInlineItalics(esc(unescapeMd(s))));
+  // #2532: wordmark da marca aplicado por último (já pós-esc — injeta <span> raw).
+  return applyBrandWordmark(applyWordJoiner(processInlineItalics(esc(unescapeMd(s)))));
+}
+
+/**
+ * #2532: wordmark da marca no corpo — token `Diar.ia` (D maiúsculo) → o domínio
+ * `diar.ia.br` com os separadores destacados em teal (`.` e `.br` em #00A0A0;
+ * `diar`/`ia` em ink). Pedido do editor (2026-06-23): a marca, onde aparece no
+ * corpo, exibe o domínio com os pontos em verde.
+ *
+ * Aplica-se a conteúdo de TEXTO já renderizado (segmentos de prosa). Casa o
+ * token `Diar.ia` (D maiúsculo), absorvendo um sufixo `.br` opcional no MESMO
+ * match — `Diar.ia.br` capital vira 1 wordmark, sem `.br` duplicado (#2533
+ * review). NUNCA toca URLs (lowercase `diaria`/`diar.ia.br`), nem `diaria` sem
+ * ponto, nem o comentário HTML `<!-- Diar.ia newsletter body -->` (gerado fora
+ * das primitivas de texto). Output lowercase (`diar...`), logo re-aplicar é
+ * idempotente. O caso bold é coberto aplicando o wordmark nos segmentos de
+ * texto ANTES do passo de `**` (o `<b>` resultante envolve o span).
+ */
+const BRAND_WORDMARK_HTML =
+  `diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span>`;
+// Regex de módulo (não realocar por chamada). `replace` com flag `/g` é
+// stateless — reseta `lastIndex` a cada chamada — então o reuso é seguro.
+const BRAND_WORDMARK_RE = /\bDiar\.ia(?:\.br)?\b/g;
+export function applyBrandWordmark(s: string): string {
+  return s.replace(BRAND_WORDMARK_RE, BRAND_WORDMARK_HTML);
 }
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.
@@ -1017,7 +1047,8 @@ export function processInlineLinks(s: string): string {
       linkStart.lastIndex = j + 1;
       continue;
     }
-    if (m.index > lastIdx) parts.push(esc(input.substring(lastIdx, m.index)));
+    // #2532: wordmark só nos segmentos de TEXTO (não no label do link).
+    if (m.index > lastIdx) parts.push(applyBrandWordmark(esc(input.substring(lastIdx, m.index))));
     // #2004: sem font-weight:bold — link inline fica só underline teal (decisão 2026-06-09).
     parts.push(
       `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
@@ -1025,6 +1056,6 @@ export function processInlineLinks(s: string): string {
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
   }
-  if (lastIdx < input.length) parts.push(esc(input.substring(lastIdx)));
+  if (lastIdx < input.length) parts.push(applyBrandWordmark(esc(input.substring(lastIdx))));
   return parts.join("");
 }

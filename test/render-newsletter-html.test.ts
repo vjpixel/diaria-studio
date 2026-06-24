@@ -22,12 +22,13 @@ import {
   unescapeMd,
   processInlineItalics,
   processInlineLinks,
+  applyBrandWordmark,
   truncateAtSectionTerminator,
   joinMultilineLinks,
   singularizeSectionName,
   pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
-import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
+import { DS_STYLE_BLOCK, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -1132,7 +1133,8 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
 Agora interaja!`,
     }));
     assert.match(html, /Para encerrar/); // #1936: kicker sem emoji
-    assert.match(html, /<b>Diar\.ia<\/b>/);
+    // #2532: "**Diar.ia**" → bold preservado + wordmark diar.ia.br (pontos teal) interno.
+    assert.match(html, /<b>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/b>/);
     // #1936: lista vira PILLS (DS), precedidas de "Acesse nossas curadorias:" (#1942)
     assert.match(html, /Acesse nossas curadorias:/);
     assert.match(html, /border-radius:999px/);
@@ -1393,7 +1395,9 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.match(html, /<tr><td/);
     assert.match(html, /enviei 5 submissões/);
     // HTML escape do & → &amp; (segurança contra injection de entities)
-    assert.match(html, /&amp; a Diar\.ia/);
+    // #2532: a marca "Diar.ia" renderiza como wordmark diar.ia.br (pontos teal);
+    // o escape do & precede o wordmark, garantindo que ambos coexistem.
+    assert.match(html, /&amp; a diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span> encontrou/);
   });
 
   it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {
@@ -2057,5 +2061,90 @@ describe("DS_STYLE_BLOCK — padding lateral mobile (#2514)", () => {
       /padding-left:24px\s*!important;\s*padding-right:24px/,
       "mobile .pad não deve mais ser 24px",
     );
+  });
+});
+
+describe("applyBrandWordmark (#2532 — Diar.ia → diar.ia.br teal)", () => {
+  const WM =
+    'diar<span style="color:#00A0A0">.</span>ia<span style="color:#00A0A0">.br</span>';
+
+  it("token da marca em texto puro → wordmark com pontos teal", () => {
+    assert.equal(applyBrandWordmark("a Diar.ia encontrou"), `a ${WM} encontrou`);
+  });
+
+  it("os separadores '.' e '.br' ficam teal; 'diar'/'ia' ficam ink (sem span)", () => {
+    const out = applyBrandWordmark("Diar.ia");
+    assert.equal(out, WM);
+    // exatamente 2 spans teal (o '.' e o '.br'), nada mais.
+    assert.equal((out.match(/<span style="color:#00A0A0">/g) || []).length, 2);
+  });
+
+  it("caso bold: <b>Diar.ia</b> (pós-** do mdInlineToHtml) → <b>{wordmark}</b>", () => {
+    assert.equal(applyBrandWordmark("<b>Diar.ia</b>"), `<b>${WM}</b>`);
+  });
+
+  it("NÃO casa URL lowercase diar.ia.br (domínio já existente)", () => {
+    const url = 'href="https://diar.ia.br/p/post"';
+    assert.equal(applyBrandWordmark(url), url);
+  });
+
+  it("NÃO casa 'diaria' sem ponto (livros.diaria.workers.dev)", () => {
+    const url = "https://livros.diaria.workers.dev";
+    assert.equal(applyBrandWordmark(url), url);
+  });
+
+  it("NÃO casa o comentário HTML <!-- Diar.ia newsletter body --> não é entrada das primitivas, mas o regex tampouco quebra se aparecer parcial sem boundary", () => {
+    // 'Diaria' (sem ponto) e 'Diar.iax' (sufixo) não casam o token \bDiar\.ia\b.
+    assert.equal(applyBrandWordmark("Diaria"), "Diaria");
+    assert.equal(applyBrandWordmark("Diar.iax"), "Diar.iax");
+  });
+
+  it("idempotente — re-aplicar no output lowercase não re-transforma", () => {
+    const once = applyBrandWordmark("da Diar.ia,");
+    assert.equal(applyBrandWordmark(once), once);
+  });
+
+  it("#2533: 'Diar.ia.br' capital absorve o sufixo .br — 1 wordmark, sem '.br' duplicado", () => {
+    const out = applyBrandWordmark("Visite o Diar.ia.br hoje");
+    assert.equal(out, `Visite o ${WM} hoje`);
+    // guard explícito contra a regressão do '.br.br'
+    assert.doesNotMatch(out, /\.br<\/span>\.br/);
+  });
+
+  it("#2533: 'Diar.ia' em fim de frase (seguido de '.') ainda casa", () => {
+    assert.equal(applyBrandWordmark("uma edição da Diar.ia."), `uma edição da ${WM}.`);
+  });
+
+  it("#2533: mdInlineToHtml NÃO brandmarka o label de [Diar.ia](url) — só o texto fora do link", () => {
+    const out = mdInlineToHtml("Diar.ia: veja [Diar.ia](https://diar.ia.br) agora");
+    // texto fora do link vira wordmark
+    assert.ok(out.includes(`${WM}: veja`), "texto antes do link é wordmark");
+    // label dentro do <a> permanece literal "Diar.ia" (simétrico com processInlineLinks)
+    assert.match(out, /<a [^>]*>Diar\.ia<\/a>/, "label do link permanece plain");
+    // href lowercase intacto
+    assert.match(out, /href="https:\/\/diar\.ia\.br"/, "href intacto");
+  });
+
+  it("múltiplas ocorrências numa string", () => {
+    assert.equal(
+      applyBrandWordmark("Diar.ia e Diar.ia"),
+      `${WM} e ${WM}`,
+    );
+  });
+
+  it("integração processInlineLinks: marca no texto vira wordmark, URL do link intacta", () => {
+    const out = processInlineLinks(
+      "A Diar.ia mantém [livros](https://livros.diaria.workers.dev).",
+    );
+    assert.ok(out.includes(WM), "wordmark no texto");
+    assert.ok(
+      out.includes('href="https://livros.diaria.workers.dev"'),
+      "URL do link preservada (sem span injetado)",
+    );
+  });
+
+  it("integração renderCoverage (escText): coverage com a marca renderiza wordmark", () => {
+    const out = renderCoverage("Para esta edição, a Diar.ia encontrou 12 artigos.");
+    assert.ok(out.includes(WM), "wordmark na coverage line");
   });
 });
