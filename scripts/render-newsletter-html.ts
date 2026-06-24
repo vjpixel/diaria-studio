@@ -57,7 +57,6 @@ export {
   processInlineItalics,
   processInlineLinks,
   isSponsoredCallout,
-  renderMasthead,
   renderCoverage,
   renderBodyParasInner,
   renderWhyBoxInner,
