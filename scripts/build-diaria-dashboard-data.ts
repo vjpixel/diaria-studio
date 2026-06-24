@@ -17,10 +17,13 @@
  *   2. CTR por categoria: data/link-ctr-table.csv
  *   3. Overnight:         data/overnight/{AAMMDD}/plan.json
  *
+ * Fontes (requer pre-build externo):
+ *   4. É IA? / poll   -- data/poll-eia-summary.json gerado por build-poll-eia-data.ts --push (#2475)
+ *                        Lê endpoints públicos do workers/poll (abordagem push/agregador).
+ *
  * Fontes stub (placeholder -- dados nao disponiveis localmente):
- *   4. Scorer x CTR   -- data/scorer-ctr-history.jsonl (issue #1619, deferido)
- *   5. Assinantes     -- Beehiiv API live (futuro)
- *   6. É IA? / poll   -- KV do worker poll (futuro cross-worker ou push)
+ *   5. Scorer x CTR   -- data/scorer-ctr-history.jsonl (issue #1619, deferido)
+ *   6. Assinantes     -- Beehiiv API live (futuro)
  *
  * Uso:
  *   npx tsx scripts/build-diaria-dashboard-data.ts [--dry-run] [--push] [--kv-namespace-id ID]
@@ -565,27 +568,23 @@ export function buildUseMelhorSummary(
   };
 }
 
-// ─── Fonte 5: Poll É IA? (push do workers/poll) ───────────────────────────────
+// ─── Fonte 4: Poll É IA? (push via build-poll-eia-data.ts) ───────────────────
 
 /**
  * buildPollEiaSummary (#2475)
  *
- * Lê data/poll-eia-summary.json — arquivo gerado pelo workers/poll via push
- * (análogo ao padrão --push deste script). O workers/poll precisa ser configurado
- * para escrever esse arquivo ou fazer push pro KV diaria-dashboard.
+ * Lê data/poll-eia-summary.json — arquivo gerado por `build-poll-eia-data.ts --push`.
+ * Esse script consome endpoints públicos do worker poll (abordagem push/agregador):
+ *   - GET /stats?edition=AAMMDD → totais por edição
+ *   - GET /leaderboard/top1?period=YYYY-MM → podium mensal (nicknames apenas)
  *
- * TODO (bloqueio externo — #2475): integração com workers/poll requer:
- *   (a) namespace ID do KV `POLL` do worker poll (configurado pelo editor em wrangler.toml)
- *   (b) OU um endpoint /api/stats no poll worker que agregue e emita dados pro dashboard
- *
- * Enquanto isso, este método lê de data/poll-eia-summary.json se existir.
- * Para popular esse arquivo, o poll worker precisa chamar:
- *   PUT https://api.cloudflare.com/client/v4/.../kv/.../values/poll-eia-summary
- * OU o editor pode gerar manualmente com:
+ * Para popular esse arquivo antes de rodar --push aqui:
  *   npx tsx scripts/build-poll-eia-data.ts --push
  *
- * Votos de teste do editor (pixel@memelab.com.br + vjpixel@gmail.com) devem ser
- * excluídos da contagem — esta responsabilidade é do script/worker que gera o JSON.
+ * Nota sobre votos de teste do editor (#2475):
+ *   O endpoint /stats é agregado — não é possível excluir pixel@memelab.com.br e
+ *   vjpixel@gmail.com dos totais por edição via API pública. Rodar /diaria-remover-votos-pixel
+ *   antes do build-poll-eia-data.ts --push remove esses votos do KV, refletindo nos dados.
  */
 export function buildPollEiaSummary(
   // #2511 self-review (Angle Altitude): param opcional p/ isolar testes do DATA_DIR real.
