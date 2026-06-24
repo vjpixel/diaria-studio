@@ -28,7 +28,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
-import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
+import { DS_STYLE_BLOCK, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -2102,6 +2102,27 @@ describe("applyBrandWordmark (#2532 — Diar.ia → diar.ia.br teal)", () => {
   it("idempotente — re-aplicar no output lowercase não re-transforma", () => {
     const once = applyBrandWordmark("da Diar.ia,");
     assert.equal(applyBrandWordmark(once), once);
+  });
+
+  it("#2533: 'Diar.ia.br' capital absorve o sufixo .br — 1 wordmark, sem '.br' duplicado", () => {
+    const out = applyBrandWordmark("Visite o Diar.ia.br hoje");
+    assert.equal(out, `Visite o ${WM} hoje`);
+    // guard explícito contra a regressão do '.br.br'
+    assert.doesNotMatch(out, /\.br<\/span>\.br/);
+  });
+
+  it("#2533: 'Diar.ia' em fim de frase (seguido de '.') ainda casa", () => {
+    assert.equal(applyBrandWordmark("uma edição da Diar.ia."), `uma edição da ${WM}.`);
+  });
+
+  it("#2533: mdInlineToHtml NÃO brandmarka o label de [Diar.ia](url) — só o texto fora do link", () => {
+    const out = mdInlineToHtml("Diar.ia: veja [Diar.ia](https://diar.ia.br) agora");
+    // texto fora do link vira wordmark
+    assert.ok(out.includes(`${WM}: veja`), "texto antes do link é wordmark");
+    // label dentro do <a> permanece literal "Diar.ia" (simétrico com processInlineLinks)
+    assert.match(out, /<a [^>]*>Diar\.ia<\/a>/, "label do link permanece plain");
+    // href lowercase intacto
+    assert.match(out, /href="https:\/\/diar\.ia\.br"/, "href intacto");
   });
 
   it("múltiplas ocorrências numa string", () => {
