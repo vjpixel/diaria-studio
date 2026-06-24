@@ -37,7 +37,7 @@
  *   npx tsx scripts/build-poll-eia-data.ts --push --worker-url http://localhost:8787  # local test
  */
 
-import { existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "../workers/diaria-dashboard/src/types.ts";
@@ -48,7 +48,23 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = join(ROOT, "data");
 const OUT_PATH = join(DATA_DIR, "poll-eia-summary.json");
 
-const DEFAULT_WORKER_URL = "https://poll.diaria.workers.dev";
+/**
+ * #2475 self-review: lê a URL do worker poll de platform.config.json (poll.worker_url)
+ * em vez de hardcoded. Fallback para o literal se o arquivo/campo estiver ausente
+ * (ex: clone fresco antes de configurar). Strip trailing slash para consistência.
+ */
+function readDefaultWorkerUrl(): string {
+  try {
+    const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+    const url = cfg?.poll?.worker_url;
+    if (typeof url === "string" && url.length > 0) return url.replace(/\/$/, "");
+  } catch {
+    // arquivo ausente/inválido → cai no literal default
+  }
+  return "https://poll.diaria.workers.dev";
+}
+
+const DEFAULT_WORKER_URL = readDefaultWorkerUrl();
 
 /** Editions com editions de teste do editor — excluídas do leaderboard se apareceram
  * como display_name (improvável pós-purge, mas defensivo). */
