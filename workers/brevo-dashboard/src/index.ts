@@ -1338,18 +1338,59 @@ export function renderDashboardHtml(
   .links-table td.link-clicks { font-weight: 600; color: var(--brand); }
   .links-table td.link-pct { opacity: 0.75; }
   .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.5; padding: 2px 12px 6px; margin: 0; }
+  /* #2542: tab navigation — CSS-only via radio+label+:checked (sem JS externo) */
+  .tab-radios { display: none; } /* inputs ocultos — só controlam estado */
+  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; }
+  .tab-label {
+    display: inline-block; padding: 8px 18px; font-size: 0.85rem; font-weight: 600;
+    cursor: pointer; border: 1px solid transparent; border-bottom: none;
+    border-radius: 4px 4px 0 0; color: var(--ink); opacity: 0.65;
+    margin-bottom: -2px; user-select: none;
+    transition: opacity 0.1s;
+  }
+  .tab-label:hover { opacity: 1; background: var(--paper-alt); }
+  #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
+  #tab-links:checked ~ .tab-bar label[for="tab-links"] {
+    background: var(--paper); border-color: var(--rule); opacity: 1;
+    color: var(--brand); border-bottom-color: var(--paper);
+  }
+  .tab-panel { display: none; padding-top: 8px; }
+  #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
+  #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
+  #tab-links:checked ~ .tab-panels #panel-links { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
     th, td { padding: 6px 4px; }
+    .tab-label { padding: 6px 10px; font-size: 0.8rem; }
   }
 </style>
 </head>
 <body>
 <h1>📧 Clarice News Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+
+<!-- #2542: tab state inputs (hidden, CSS-only — sem JS externo) -->
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
+
+<!-- tab bar (labels referencing the radio inputs above) -->
+<div class="tab-bar" role="tablist">
+  <label class="tab-label" for="tab-visaogeral" role="tab">Visão geral</label>
+  <label class="tab-label" for="tab-engajamento" role="tab">Engajamento</label>
+  <label class="tab-label" for="tab-links" role="tab">Links / CTR</label>
+</div>
+
+<!-- tab panels -->
+<div class="tab-panels">
+
+  <!-- Aba 1: Visão geral — totais mensais + volume + agendados + envios -->
+  <div class="tab-panel" id="panel-visaogeral" role="tabpanel">
 ${monthlyTotalsSection}
 ${volumeSection}
+${scheduledSection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
 <div class="table-wrap">
@@ -1434,11 +1475,22 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 })();
 </script>
 </section>
-${scheduledSection}
+  </div><!-- /panel-visaogeral -->
+
+  <!-- Aba 2: Engajamento — coortes + weekday + resumo D1-D5 -->
+  <div class="tab-panel" id="panel-engajamento" role="tabpanel">
+${cohortsSection}
 ${weekdaySection}
 ${abcSection}
-${cohortsSection}
+  </div><!-- /panel-engajamento -->
+
+  <!-- Aba 3: Links / CTR — links agregados do período -->
+  <div class="tab-panel" id="panel-links" role="tabpanel">
 ${aggregatedLinksSection}
+  </div><!-- /panel-links -->
+
+</div><!-- /tab-panels -->
+
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
