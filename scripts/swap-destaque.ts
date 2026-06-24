@@ -184,7 +184,24 @@ export function removeDestaqueBlockFromMd(
     positions.push({ start: m.index, end: m.index + m[1].length });
   }
 
-  if (blocks.length < position) return md; // not enough blocks
+  if (blocks.length === 0) {
+    // No DESTAQUE blocks found at all — likely no '---' separator in the MD.
+    // Fail loud so the caller knows the placeholder was NOT inserted.
+    console.error(
+      `swap-destaque: removeDestaqueBlockFromMd — nenhum bloco DESTAQUE encontrado no 02-reviewed.md.\n` +
+      `  Causa provável: separadores '---' ausentes entre blocos.\n` +
+      `  O placeholder NÃO foi inserido. Re-inserir manualmente o destaque após confirmar o swap.`,
+    );
+    return md;
+  }
+  if (blocks.length < position) {
+    console.error(
+      `swap-destaque: removeDestaqueBlockFromMd — só ${blocks.length} bloco(s) DESTAQUE encontrado(s), ` +
+      `mas a posição solicitada é ${position}.\n` +
+      `  O placeholder NÃO foi inserido. Verifique se o 02-reviewed.md tem separadores '---' entre os blocos.`,
+    );
+    return md;
+  }
 
   const zeroIdx = position - 1;
 
@@ -329,6 +346,49 @@ export function swapInApprovedJson(
   }
 
   return { ok: true, promotedItem, demotedItem };
+}
+
+/**
+ * #2521 Bug 1: fallback de sincronização do 01-approved-capped.json quando
+ * `swapInApprovedJson` falha no capped (bucket ausente/curto). Espelha a lógica
+ * do approved.json: troca highlights[demotePos] pelo promovido e — se `--drop`
+ * omitido — devolve o rebaixado ao bucket (criando-o se ausente).
+ *
+ * Retorna `{ synced: false, warning }` quando highlights[] do capped é curto
+ * demais pro demotePos (slot inexistente) — fail-loud, o chamador deve avisar
+ * em vez de gravar um capped divergente em silêncio. Pure (muta o objeto in-place,
+ * como o swapInApprovedJson) — exportado pra teste de regressão real (#633).
+ */
+export function mirrorCappedSwapFallback(
+  approvedCappedData: Record<string, unknown>,
+  bucket: string,
+  demotePos: number,
+  drop: boolean,
+  promotedItem: Record<string, unknown>,
+): { synced: boolean; warning?: string } {
+  const cappedHighlights = approvedCappedData.highlights as
+    | Record<string, unknown>[]
+    | undefined;
+  if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
+    const cappedDemotedItem = cappedHighlights[demotePos];
+    cappedHighlights[demotePos] = promotedItem;
+    if (!drop) {
+      const cappedBucket = approvedCappedData[bucket];
+      if (Array.isArray(cappedBucket)) {
+        approvedCappedData[bucket] = [cappedDemotedItem, ...cappedBucket];
+      } else {
+        approvedCappedData[bucket] = [cappedDemotedItem];
+      }
+    }
+    return { synced: true };
+  }
+  return {
+    synced: false,
+    warning:
+      `01-approved-capped.json highlights[] tem ${Array.isArray(cappedHighlights) ? cappedHighlights.length : 0} itens, ` +
+      `mas o swap pede demotePos=${demotePos} (slot inexistente). O capped NÃO foi sincronizado ` +
+      `com 01-approved.json neste swap — possível divergência entre os 2 arquivos. Verifique manualmente.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -581,11 +641,18 @@ function main(): void {
       drop,
     );
     if (!cappedSwap.ok) {
-      // Capped JSON may have fewer items in the bucket; just swap highlights
-      const cappedHighlights = approvedCappedData.highlights as Record<string, unknown>[] | undefined;
-      if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
-        cappedHighlights[demotePos] = promotedItem;
-      }
+      // #2521: capped JSON pode ter o bucket ausente/curto — espelhar o swap via
+      // helper testável (mirrorCappedSwapFallback). Fail-loud se highlights[] for
+      // curto demais pro demotePos (slot inexistente) — avisa em vez de gravar
+      // capped divergente em silêncio.
+      const { warning } = mirrorCappedSwapFallback(
+        approvedCappedData,
+        promote.bucket,
+        demotePos,
+        drop,
+        promotedItem,
+      );
+      if (warning) console.error(`AVISO: ${warning}`);
     }
     writeFileSync(approvedCappedPath, JSON.stringify(approvedCappedData, null, 2) + "\n", "utf8");
     result.modified.rewritten.push(approvedCappedPath);

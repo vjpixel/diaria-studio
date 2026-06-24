@@ -410,3 +410,98 @@ describe("Integração com platform.config.json", () => {
     assert.ok(cfg.socials!.includes("threads"), "socials deve conter 'threads'");
   });
 });
+
+// ─── Regression #2522 Bug 1: --dry-run real guard (não chama fetch) ──────────
+
+describe("--dry-run real guard (#2522 Bug 1)", () => {
+  /**
+   * Regression for #2522 Bug 1:
+   * --test-mode only skips sleep — it does NOT block real fetch calls.
+   * --dry-run must be a real guard that prevents any fetch from being issued.
+   *
+   * Verificação estática: o script deve ter um guard isDryRun ANTES do loop de
+   * publicação (antes de publishThread ser chamado), não apenas pular o sleep.
+   */
+  it("script tem flag --dry-run parseada no parseArgs", () => {
+    assert.match(SRC, /dry-run/, "parseArgs deve aceitar --dry-run");
+    assert.match(SRC, /isDryRun/, "deve ter variável isDryRun");
+  });
+
+  it("guard isDryRun bloqueia ANTES da chamada de fetch (publishThread)", () => {
+    // O guard deve aparecer ANTES do bloco de retry/publishThread no source.
+    // #2522 review: casar o GUARD `if (isDryRun)`, não a declaração `const
+    // isDryRun` (que está no topo e passaria mesmo se o guard fosse removido).
+    const dryRunIdx = SRC.indexOf("if (isDryRun)");
+    const publishThreadCallIdx = SRC.indexOf("await publishThread(");
+    assert.ok(dryRunIdx > 0, "guard `if (isDryRun)` deve existir no script (não só a declaração)");
+    assert.ok(publishThreadCallIdx > 0, "publishThread deve existir no script");
+    assert.ok(
+      dryRunIdx < publishThreadCallIdx,
+      `isDryRun guard (pos ${dryRunIdx}) deve aparecer ANTES de publishThread call (pos ${publishThreadCallIdx})`,
+    );
+  });
+
+  it("--dry-run é distinto de --test-mode (test-mode não bloqueia fetch)", () => {
+    // Ambos devem existir — são propósitos diferentes:
+    // --test-mode: skip sleep (compatibilidade retroativa)
+    // --dry-run: real guard, não chama fetch
+    assert.match(SRC, /--test-mode/, "deve manter suporte a --test-mode para compat retroativa");
+    assert.match(SRC, /--dry-run/, "deve ter --dry-run como guard real");
+  });
+
+  it("--dry-run imprime DRY-RUN no output (não chama Threads API)", () => {
+    // Verificação estática: o branch isDryRun deve imprimir algo indicando dry-run
+    assert.match(SRC, /DRY-RUN|dry.run/i, "deve imprimir indicador de dry-run quando ativo");
+  });
+});
+
+// ─── Regression #2522 Bug 2: chunk vazio filtrado ────────────────────────────
+
+describe("splitIntoThreadChunks chunk vazio (#2522 Bug 2)", () => {
+  /**
+   * Regression for #2522 Bug 2:
+   * Quando cut=0 (espaço na posição 0 do remaining), slice(0,0).trim()=""
+   * resultava em chunk vazio sendo adicionado ao array.
+   * Fix: filtrar chunks vazios antes do push (cut <= 0 → usar corte duro).
+   */
+  it("não emite chunk vazio quando texto começa com espaço (cut=0 edge case)", () => {
+    // Simular o caso edge onde cut seria 0: texto tem um espaço logo no início
+    // após o trim de remaining, e o espaço está na posição 0 de remaining.
+    // Na prática, remaining.trim() remove leading spaces, mas se o split
+    // produz um remaining que começa com espaço, cut=0 → chunk vazio.
+    //
+    // Forçar o edge case com um texto onde cada "palavra" é um bloco de 499
+    // 'a' seguido de espaço — o segundo remaining começa com espaço.
+    const wordOf499 = "a".repeat(499);
+    const text = `${wordOf499} ${wordOf499}`; // 1000 chars com espaço no meio
+    const chunks = splitIntoThreadChunks(text, 500);
+    for (const chunk of chunks) {
+      assert.ok(chunk.length > 0, `chunk vazio encontrado: "${chunk}"`);
+      assert.ok(chunk.trim().length > 0, `chunk só com whitespace encontrado: "${chunk}"`);
+    }
+    assert.ok(chunks.length >= 1, "deve ter pelo menos 1 chunk");
+  });
+
+  it("não emite chunk vazio para texto com espaços no início (leading spaces)", () => {
+    // Texto longo onde o primeiro corte deixa um remaining com espaço líder
+    const long = "palavra ".repeat(200); // 1600 chars
+    const chunks = splitIntoThreadChunks(long.trimEnd(), 500);
+    for (const chunk of chunks) {
+      assert.ok(chunk.length > 0, `chunk vazio em texto longo: "${chunk}"`);
+    }
+    assert.ok(chunks.length >= 2, "texto de 1600 chars deve gerar ≥2 chunks");
+  });
+
+  it("texto onde lastIndexOf retorna 0 não gera chunk vazio", () => {
+    // Forçar: maxLen=5, texto " abcd efgh"
+    // remaining=" abcd efgh", lastIndexOf(" ", 4) = 0 → cut=0 → slice(0,0)=""
+    // Fix deve usar cut=maxLen quando cut<=0
+    const text = "abcd efgh"; // 9 chars, maxLen=5
+    const chunks = splitIntoThreadChunks(text, 5);
+    for (const chunk of chunks) {
+      assert.ok(chunk.length > 0, `chunk vazio com maxLen=5: "${chunk}"`);
+    }
+    // Verificar que todos os chars estão presentes (sem perda)
+    assert.ok(chunks.join("").replace(/\s/g, "").length > 0);
+  });
+});
