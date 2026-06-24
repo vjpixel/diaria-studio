@@ -22,14 +22,18 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
+// #2530 review: tokens do DS canônico (fonte única, #1936) — não duplicar
+// literais de cor/fonte (há drift-test pra esse padrão; um change no DS propaga).
+import { COLORS, FONTS } from "./lib/design-tokens.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "assets", "default-thumbnail-1200x630.png");
 
-// Design tokens (DS canônico — context/README / project_new_diaria_design.md)
-const COLOR_PAPER = "#FBFAF6";
-const COLOR_TEAL = "#00A0A0";
-const COLOR_INK = "#171411";
+// Design tokens (DS canônico — derivados de scripts/lib/design-tokens.ts, #1936).
+const COLOR_PAPER = COLORS.paper;
+const COLOR_TEAL = COLORS.brand;
+const COLOR_INK = COLORS.ink;
+const FONT_SERIF = FONTS.serif;
 
 const W = 1200;
 const H = 630;
@@ -61,7 +65,7 @@ function buildSvg(): string {
     x="50%"
     y="295"
     text-anchor="middle"
-    font-family="Georgia, 'Times New Roman', Times, serif"
+    font-family="${FONT_SERIF}"
     font-size="102"
     font-weight="400"
     letter-spacing="-1"
@@ -105,7 +109,15 @@ async function main(): Promise<void> {
   let outPath = DEFAULT_OUT;
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
-    if ((args[i] === "--out" || args[i] === "-o") && args[i + 1]) {
+    if (args[i] === "--out" || args[i] === "-o") {
+      // #2530 review: validar o valor — sem isso, `--out` no fim (sem valor) cai
+      // silenciosamente no DEFAULT_OUT (sobrescreve o asset canônico), e
+      // `--out --flag` usaria o flag como path literal.
+      const val = args[i + 1];
+      if (val === undefined || val.startsWith("-")) {
+        console.error(`${args[i]} requer um path de saída (ex: --out assets/default-thumbnail-1200x630.png)`);
+        process.exit(2);
+      }
       outPath = resolve(process.cwd(), args[++i]);
     }
   }
@@ -116,8 +128,11 @@ async function main(): Promise<void> {
   const svg = buildSvg();
 
   // Rasterize SVG → PNG via sharp (uses libvips + librsvg under the hood)
+  // #2530 review: sem .resize — o SVG já declara width/height ${W}x${H} (templados
+  // das constantes W/H), então o sharp/librsvg rasteriza nessas dims nativamente.
+  // O .resize era no-op, mas `fit:"fill"` distorceria silenciosamente caso as dims
+  // do SVG divergissem das constantes.
   const pngBuf = await sharp(Buffer.from(svg))
-    .resize(W, H, { fit: "fill" })
     .png({ compressionLevel: 9 })
     .toBuffer();
 
