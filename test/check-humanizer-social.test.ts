@@ -22,6 +22,7 @@ import {
   checkSentinel,
   computeSocialHash,
   writeSentinel,
+  lintTicsOnMismatch,
 } from "../scripts/check-humanizer-social.ts";
 
 const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/check-humanizer-social.ts");
@@ -392,6 +393,162 @@ describe("--bypass-reason guard (#2373) — CLI subprocess", () => {
       const data = JSON.parse(readFileSync(sentinelPath, "utf8"));
       assert.ok(data.bypass_reason && data.bypass_reason.includes("Stage 4"),
         "bypass_reason deve estar no sentinel");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2529: Tic lint on hash mismatch — caso real 260624
+// ---------------------------------------------------------------------------
+
+/**
+ * Social com construção de antítese-revelação ("não é X, é Y") — tic de IA
+ * que o humanizador deveria ter removido mas passou por uma edição pós-humanização.
+ * Reproduz o cenário 260624: editor edita social no gate do Stage 4, reintroduz
+ * tom corporativo, e o guard deve detectar E sinalizar os tics.
+ */
+const SOCIAL_WITH_TICS = `# LinkedIn
+## d1
+Não é uma ferramenta, é uma revolução no mercado de trabalho.
+Isso muda tudo no setor.
+
+### comment_diaria
+Leia a edição completa em {edition_url}
+Siga a Diar.ia: linkedin.com/company/diaria
+
+### comment_pixel
+Compartilho minha perspectiva sobre isso.
+
+## post_pixel
+<!-- destaque: d1 -->
+Não é hype, é tendência real.
+
+# Facebook
+## d1
+Saiba mais em https://diar.ia.br.
+`;
+
+/** Social editado pós-humanização mas SEM tics de IA — apenas mudança de conteúdo legítima. */
+const SOCIAL_EDITED_NO_TICS = `# LinkedIn
+## d1
+Post ajustado pelo editor no gate — sem tics de IA aqui.
+Conteúdo direto, objetivo, sem construções problemáticas.
+
+### comment_diaria
+Leia a edição em {edition_url}
+linkedin.com/company/diaria
+
+### comment_pixel
+Perspectiva direta sobre o tema.
+
+## post_pixel
+<!-- destaque: d1 -->
+Ajuste editado sem tics.
+
+# Facebook
+## d1
+Saiba mais em https://diar.ia.br.
+`;
+
+describe("lintTicsOnMismatch (#2529) — caso real 260624", () => {
+  it("detecta tics de antítese-revelação em social editado pós-humanizador", () => {
+    // Reproduz caso 260624: social editado no gate do Stage 4 com tics de IA
+    const { dir, cleanup } = mkEdition(SOCIAL_WITH_TICS);
+    try {
+      const socialPath = join(dir, "03-social.md");
+      const result = lintTicsOnMismatch(socialPath);
+      assert.equal(result.ok, true, "lintTicsOnMismatch sempre retorna ok:true (WARN-ONLY)");
+      assert.equal(result.tics_found, true, "deve detectar tics no social com antítese-revelação");
+      assert.ok(result.antithesis_matches.length > 0,
+        `deve ter matches de antítese-revelação; got ${result.antithesis_matches.length}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("retorna tics_found:false quando social editado não tem tics", () => {
+    // Caso onde edição foi só remoção de tic — não deve forçar re-humanização
+    const { dir, cleanup } = mkEdition(SOCIAL_EDITED_NO_TICS);
+    try {
+      const socialPath = join(dir, "03-social.md");
+      const result = lintTicsOnMismatch(socialPath);
+      assert.equal(result.ok, true);
+      assert.equal(result.tics_found, false, "social sem tics não deve acusar warning");
+      assert.equal(result.antithesis_matches.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("retorna tics_found:false graciosamente quando 03-social.md não existe", () => {
+    const { dir, cleanup } = mkEdition(); // sem social
+    try {
+      const result = lintTicsOnMismatch(join(dir, "03-social.md"));
+      assert.equal(result.ok, true);
+      assert.equal(result.tics_found, false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("--check exits 2 + tic lint (#2529) — CLI subprocess", () => {
+  function runScript(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", SCRIPT_PATH, ...args],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  it("--check exits 2 AND warns about tics when social edited with AI tics (#2529 caso 260624)", () => {
+    // Reproduz caso 260624: sentinel foi gravado após humanizador, depois editor
+    // editou o social no gate reintroduzindo antítese-revelação ("não é X, é Y").
+    // O guard deve: (a) continuar saindo exit 2 (bloqueio existente), (b) mostrar
+    // WARNs adicionais sobre os tics detectados.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A); // conteúdo humanizado inicial
+    try {
+      writeSentinel(dir); // grava sentinel com hash do social humanizado
+      // Simula edição pós-humanização no gate do Stage 4 com tics de IA
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_WITH_TICS, "utf8");
+      const result = runScript(["--check", "--edition-dir", dir]);
+      // (a) continua exit 2 — não introduz novo código de saída
+      assert.equal(result.status, 2,
+        `expected exit 2 (hash mismatch), got ${result.status}\nstderr: ${result.stderr}`);
+      // (b) avisa sobre tics detectados
+      assert.ok(
+        result.stderr.includes("TICS DE IA") || result.stderr.includes("antítese"),
+        `stderr deve mencionar tics de IA; got:\n${result.stderr}`,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exits 2 AND shows 'nenhum tic' info when social edited without tics (#2529 WARN correto)", () => {
+    // Caso onde edição foi remoção de tic — editor NÃO deve ser forçado a re-humanizar.
+    // WARN deve informar que não há tics, dando ao editor informação para decidir.
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_A);
+    try {
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_EDITED_NO_TICS, "utf8");
+      const result = runScript(["--check", "--edition-dir", dir]);
+      // Ainda exit 2 (hash diverge = gate-blocking)
+      assert.equal(result.status, 2,
+        `expected exit 2, got ${result.status}\nstderr: ${result.stderr}`);
+      // Mas mensagem informa que não foram detectados tics (não forçar re-humanização)
+      assert.ok(
+        result.stderr.includes("nenhum tic") || result.stderr.includes("Lint de tics"),
+        `stderr deve indicar que nenhum tic foi detectado; got:\n${result.stderr}`,
+      );
+      // NÃO deve conter a mensagem de tics encontrados
+      assert.ok(
+        !result.stderr.includes("TICS DE IA DETECTADOS"),
+        "stderr não deve alegar tics encontrados quando social não tem tics",
+      );
     } finally {
       cleanup();
     }
