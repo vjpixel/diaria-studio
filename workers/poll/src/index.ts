@@ -1494,6 +1494,90 @@ async function handleLeaderboardByMonth(
   return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, brand);
 }
 
+// ── /leaderboard/{YYYY-MM}.json (#2475 — endpoint JSON com métricas completas) ─
+
+/**
+ * Entry shape exposta pelo endpoint `/leaderboard/{YYYY-MM}.json`.
+ * Inclui correct/total para TODOS os ranks (diferente do /leaderboard/top1
+ * que só expõe métricas de rank=1 via campo `top1`).
+ */
+export interface LeaderboardJsonEntry {
+  rank: number;
+  medal: string;
+  nickname: string;
+  correct: number;
+  total: number;
+  pct: number;
+}
+
+/**
+ * Handler `GET /leaderboard/{YYYY-MM}.json` (#2475)
+ *
+ * Retorna JSON array com todos os entries rankeados do mês, incluindo
+ * correct/total para ranks 1-N (resolve o bug onde ranks 2/3 apareciam
+ * com zeros no dashboard). Reusa a mesma pipeline de agregação do HTML:
+ * getOrComputeSnapshot → scoreByMonthEntriesToLeaderboard → rankEntries.
+ *
+ * Cache: idêntico ao HTML (30d immutable para meses fechados, 60s para corrente).
+ * CORS: sim (via corsHeaders helper).
+ */
+export async function handleLeaderboardByMonthJson(
+  monthSlug: string,
+  env: Env,
+  brand: Brand = "diaria",
+): Promise<Response> {
+  const parsed = parseMonthSlug(monthSlug);
+  if (!parsed) {
+    return json({ error: "Mês inválido. Use formato YYYY-MM (ex: 2026-05)." }, 400, env);
+  }
+
+  const currentSlug = currentMonthSlugBrt(new Date());
+  const slugCmp = monthSlugCompare(monthSlug, currentSlug);
+
+  const entries = await getOrComputeSnapshot(env, monthSlug);
+
+  // Mês futuro sem votos ainda
+  if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
+    return json({ entries: [], period_slug: monthSlug, message: `O leaderboard de ${monthSlug} ainda não começou.` }, 200, env);
+  }
+
+  const scores = scoreByMonthEntriesToLeaderboard(entries);
+  const ranked = rankEntries(scores);
+
+  const medals = ["🥇", "🥈", "🥉"];
+  const jsonEntries: LeaderboardJsonEntry[] = ranked.map((e) => {
+    const rawNickname = e.nickname ?? null;
+    const displayNickname = rawNickname
+      ? rawNickname
+      : (() => {
+          const at = e.email.indexOf("@");
+          return at > 0 ? `${e.email.slice(0, at)}@***` : `${e.email.slice(0, 4)}***`;
+        })();
+    return {
+      rank: e.rank,
+      medal: e.rank <= 3 ? medals[e.rank - 1] : "",
+      nickname: displayNickname,
+      correct: e.correct,
+      total: e.total,
+      pct: e.pct,
+    };
+  });
+
+  const isPast = slugCmp < 0;
+  const cacheControl = isPast
+    ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
+    : "public, max-age=60"; // 60s pro mês corrente
+
+  return new Response(JSON.stringify({ entries: jsonEntries, period_slug: monthSlug }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": cacheControl,
+      ...corsHeaders(env),
+    },
+  });
+}
+
 // ── /leaderboard/{YYYY} (#2006 — visão ANUAL; default da Clarice News) ───────
 
 /**
@@ -2120,6 +2204,8 @@ export default {
           headers: { Location: target.toString(), "Cache-Control": "no-store" },
         });
       }
+      const jsonMonthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})\.json$/);
+      if (jsonMonthMatch) return handleLeaderboardByMonthJson(jsonMonthMatch[1], bEnv, brand);
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
       if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);
@@ -2129,7 +2215,7 @@ export default {
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset

@@ -14,9 +14,9 @@
  *   GET https://poll.diaria.workers.dev/stats?edition=AAMMDD
  *     → { total, voted_a, voted_b, correct_answer, correct_count, correct_pct }
  *       (brand=diaria implícito — não precisa de ?brand=)
- *   GET https://poll.diaria.workers.dev/leaderboard/top1?period=YYYY-MM
- *     → { top1, podium: [{nickname, rank}], period, period_slug }
- *       (apenas nicknames — sem emails; preserva privacidade por design do worker)
+ *   GET https://poll.diaria.workers.dev/leaderboard/{YYYY-MM}.json
+ *     → { entries: [{rank, medal, nickname, correct, total, pct}], period_slug }
+ *       (novo endpoint #2475 — expõe métricas para TODOS os ranks, não só rank 1)
  *
  * Limitação conhecida (#2475):
  *   O endpoint /stats agrega TODOS os votos, incluindo os votos de teste do editor
@@ -69,11 +69,17 @@ interface PollStatsResponse {
   correct_pct: number | null;
 }
 
-interface LeaderboardTop1Response {
-  top1: Array<{ nickname: string; pct: number; correct: number; total: number }>;
-  podium: Array<{ nickname: string; rank: number }>;
-  period: string;
+interface LeaderboardJsonResponse {
+  entries: Array<{
+    rank: number;
+    medal: string;
+    nickname: string;
+    correct: number;
+    total: number;
+    pct: number;
+  }>;
   period_slug: string;
+  message?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -155,14 +161,15 @@ export async function fetchEditionStats(
 }
 
 /**
- * Busca leaderboard do mês via GET /leaderboard/top1?period=YYYY-MM.
- * Retorna null em erro. Só retorna nicknames (sem emails — privacidade by design).
+ * Busca leaderboard do mês via GET /leaderboard/{YYYY-MM}.json (#2475).
+ * Retorna null em erro. Expõe correct/total para TODOS os ranks (resolve o bug
+ * onde ranks 2/3 apareciam com zeros no dashboard).
  */
-export async function fetchMonthLeaderboard(
+export async function fetchMonthLeaderboardJson(
   workerUrl: string,
   monthSlug: string,
-): Promise<LeaderboardTop1Response | null> {
-  const url = `${workerUrl}/leaderboard/top1?period=${encodeURIComponent(monthSlug)}`;
+): Promise<LeaderboardJsonResponse | null> {
+  const url = `${workerUrl}/leaderboard/${encodeURIComponent(monthSlug)}.json`;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json" },
@@ -170,14 +177,15 @@ export async function fetchMonthLeaderboard(
     });
     if (!res.ok) {
       if (res.status !== 404 && res.status !== 400) {
-        console.warn(`[poll-eia] /leaderboard/top1?period=${monthSlug} → HTTP ${res.status}`);
+        console.warn(`[poll-eia] /leaderboard/${monthSlug}.json → HTTP ${res.status}`);
       }
       return null;
     }
-    const json = await res.json() as LeaderboardTop1Response;
-    return json;
+    const data = await res.json() as LeaderboardJsonResponse;
+    if (!Array.isArray(data.entries)) return null;
+    return data;
   } catch (e) {
-    console.warn(`[poll-eia] fetch /leaderboard/top1?period=${monthSlug} falhou: ${(e as Error).message}`);
+    console.warn(`[poll-eia] fetch /leaderboard/${monthSlug}.json falhou: ${(e as Error).message}`);
     return null;
   }
 }
@@ -233,46 +241,41 @@ export async function buildPollEiaSummaryFromApi(
 
   // Ordena desc (mais recente primeiro) para o dashboard
   editionResults.sort((a, b) => (b.edition > a.edition ? 1 : -1));
+  if (editionResults.length > 20) {
+    console.log(`[poll-eia] truncando ${editionResults.length} edições → top 20 (mais recentes)`);
+  }
 
   const last_edition = editionResults.length > 0 ? editionResults[0].edition : null;
 
   // 2. Busca leaderboard por mês único (para construir top 10 global)
-  //    /leaderboard/top1 retorna o podium (ranks 1-3) do mês — sem opção de top 10 completo.
-  //    Acumulamos o pódio de cada mês e dedupamos por nickname para aproximar o top global.
-  const monthSlugs = editionsToMonthSlugs(editions);
-  const lbByNickname = new Map<string, { correct: number; total: number; streak: number }>();
+  //    /leaderboard/{YYYY-MM}.json retorna entries completos (rank, correct, total) —
+  //    resolve o bug #2475 onde ranks 2/3 apareciam com zeros.
+  const monthSlugs = editionsToMonthSlugs(editionResults.map((r) => r.edition));
+  const lbByNickname = new Map<string, { correct: number; total: number; rank: number }>();
 
   for (let i = 0; i < monthSlugs.length; i += BATCH) {
     const batch = monthSlugs.slice(i, i + BATCH);
     const results = await Promise.all(
-      batch.map((slug) => fetchMonthLeaderboard(workerUrl, slug)),
+      batch.map((slug) => fetchMonthLeaderboardJson(workerUrl, slug)),
     );
     for (const lb of results) {
       if (!lb) continue;
-      // /leaderboard/top1 retorna podium [{nickname, rank}]. Acumulamos correct/total via
-      // top1 se disponível, ou apenas o nickname via podium (sem métricas de top1 individuais).
-      const top1Map = new Map<string, { correct: number; total: number; pct: number }>(
-        (lb.top1 ?? []).map((e) => [e.nickname, { correct: e.correct, total: e.total, pct: e.pct }]),
-      );
-
-      for (const entry of lb.podium ?? []) {
+      for (const entry of lb.entries) {
         const name = entry.nickname;
         // Filtrar display names de teste (defesa; normalmente vazio pós-purge)
         if (EDITOR_TEST_DISPLAY_NAMES.has(name)) continue;
 
-        const metrics = top1Map.get(name);
         const existing = lbByNickname.get(name);
         if (existing) {
-          // Acumula correct+total entre meses (aproximação: top1 só em rank 1)
-          if (metrics) {
-            existing.correct += metrics.correct;
-            existing.total += metrics.total;
-          }
+          // Acumula correct+total entre meses; mantém o melhor rank histórico
+          existing.correct += entry.correct;
+          existing.total += entry.total;
+          if (entry.rank < existing.rank) existing.rank = entry.rank;
         } else {
           lbByNickname.set(name, {
-            correct: metrics?.correct ?? 0,
-            total: metrics?.total ?? 0,
-            streak: 0, // streak não exposto pelo /leaderboard/top1 (acumulado global)
+            correct: entry.correct,
+            total: entry.total,
+            rank: entry.rank,
           });
         }
       }
@@ -285,7 +288,7 @@ export async function buildPollEiaSummaryFromApi(
       display_name: nickname,
       correct: v.correct,
       total: v.total,
-      streak: v.streak,
+      streak: 0, // streak não exposto pelo endpoint JSON (acumulado global)
     }))
     .sort((a, b) => {
       if (b.correct !== a.correct) return b.correct - a.correct;
@@ -305,17 +308,21 @@ export async function buildPollEiaSummaryFromApi(
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { dryRun: boolean; push: boolean; workerUrl: string } {
-  const dryRun = argv.includes("--dry-run") || !argv.includes("--push");
+function parseArgs(argv: string[]): { push: boolean; workerUrl: string } {
   const push = argv.includes("--push");
   const workerUrlIdx = argv.indexOf("--worker-url");
-  const workerUrl = workerUrlIdx >= 0 ? (argv[workerUrlIdx + 1] ?? DEFAULT_WORKER_URL) : DEFAULT_WORKER_URL;
-  return { dryRun, push, workerUrl };
+  const workerUrl = workerUrlIdx >= 0
+    ? (argv[workerUrlIdx + 1] && !argv[workerUrlIdx + 1].startsWith("--"))
+      ? argv[workerUrlIdx + 1]
+      : (() => { console.error("[poll-eia] Erro: --worker-url requer um valor (ex: http://localhost:8787)"); process.exit(1); })()
+    : DEFAULT_WORKER_URL;
+  return { push, workerUrl };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const { push, workerUrl } = args;
+  const dryRun = !push;
 
   console.log(`[poll-eia] worker URL: ${workerUrl}`);
 
@@ -323,8 +330,8 @@ async function main(): Promise<void> {
   const editions = discoverEditions(editionsDir);
 
   if (editions.length === 0) {
-    console.warn("[poll-eia] Nenhuma edição encontrada em data/editions/ — abortando");
-    process.exit(0);
+    console.error("[poll-eia] Erro: nenhuma edição encontrada em data/editions/ — verifique se a junction OneDrive está montada");
+    process.exit(1);
   }
 
   console.log(`[poll-eia] ${editions.length} edições em data/editions/ — buscando stats...`);

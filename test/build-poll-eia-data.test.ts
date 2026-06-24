@@ -87,7 +87,7 @@ function installFetchStub(): () => void {
       };
     }
 
-    // /leaderboard/top1?period=2026-04
+    // /leaderboard/top1?period=2026-04 (mantido para testes legados)
     if (urlStr.includes("/leaderboard/top1") && urlStr.includes("period=2026-04")) {
       return {
         ok: true,
@@ -107,6 +107,27 @@ function installFetchStub(): () => void {
 
     // /leaderboard/top1?period=2026-05 → sem dados
     if (urlStr.includes("/leaderboard/top1") && urlStr.includes("period=2026-05")) {
+      return { ok: false, status: 404, text: async () => "Not Found" };
+    }
+
+    // /leaderboard/2026-04.json — novo endpoint #2475 com correct/total para todos os ranks
+    if (urlStr.includes("/leaderboard/") && urlStr.endsWith("/2026-04.json")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          entries: [
+            { rank: 1, medal: "🥇", nickname: "João", correct: 8, total: 10, pct: 80 },
+            { rank: 2, medal: "🥈", nickname: "Maria", correct: 5, total: 10, pct: 50 },
+            { rank: 3, medal: "🥉", nickname: "Pedro", correct: 3, total: 8, pct: 37 },
+          ],
+          period_slug: "2026-04",
+        }),
+      };
+    }
+
+    // /leaderboard/2026-05.json → 404
+    if (urlStr.includes("/leaderboard/") && urlStr.endsWith("/2026-05.json")) {
       return { ok: false, status: 404, text: async () => "Not Found" };
     }
 
@@ -241,26 +262,37 @@ describe("fetchEditionStats (#2475)", () => {
   });
 });
 
-// ─── fetchMonthLeaderboard com fetch stub ─────────────────────────────────────
+// ─── fetchMonthLeaderboardJson com fetch stub ─────────────────────────────────
 
-describe("fetchMonthLeaderboard (#2475)", () => {
-  test("retorna leaderboard com podium", async () => {
+describe("fetchMonthLeaderboardJson (#2475 follow-up)", () => {
+  test("retorna entries com correct/total para todos os ranks", async () => {
     const restore = installFetchStub();
     try {
-      const { fetchMonthLeaderboard } = await import("../scripts/build-poll-eia-data.ts");
-      const result = await fetchMonthLeaderboard("https://poll.example.com", "2026-04");
-      assert.ok(result, "deve retornar leaderboard");
-      assert.equal(result!.podium.length, 3);
-      assert.equal(result!.podium[0].nickname, "João");
-      assert.equal(result!.podium[0].rank, 1);
+      const { fetchMonthLeaderboardJson } = await import("../scripts/build-poll-eia-data.ts");
+      const result = await fetchMonthLeaderboardJson("https://poll.example.com", "2026-04");
+      assert.ok(result, "deve retornar leaderboard JSON");
+      assert.equal(result!.entries.length, 3);
+      assert.equal(result!.entries[0].nickname, "João");
+      assert.equal(result!.entries[0].rank, 1);
+      assert.equal(result!.entries[0].correct, 8);
+      assert.equal(result!.entries[0].total, 10);
+      // Ranks 2 e 3 têm métricas reais (bug #2475)
+      assert.equal(result!.entries[1].nickname, "Maria");
+      assert.equal(result!.entries[1].rank, 2);
+      assert.equal(result!.entries[1].correct, 5);
+      assert.equal(result!.entries[1].total, 10);
+      assert.equal(result!.entries[2].nickname, "Pedro");
+      assert.equal(result!.entries[2].rank, 3);
+      assert.equal(result!.entries[2].correct, 3);
+      assert.equal(result!.entries[2].total, 8);
     } finally { restore(); }
   });
 
   test("retorna null para período sem dados (404)", async () => {
     const restore = installFetchStub();
     try {
-      const { fetchMonthLeaderboard } = await import("../scripts/build-poll-eia-data.ts");
-      const result = await fetchMonthLeaderboard("https://poll.example.com", "2026-05");
+      const { fetchMonthLeaderboardJson } = await import("../scripts/build-poll-eia-data.ts");
+      const result = await fetchMonthLeaderboardJson("https://poll.example.com", "2026-05");
       assert.equal(result, null, "404 → null");
     } finally { restore(); }
   });
@@ -311,8 +343,8 @@ describe("buildPollEiaSummaryFromApi (#2475)", () => {
       assert.ok(summary.leaderboard.length > 0, "deve ter entradas no leaderboard");
       const joao = summary.leaderboard.find((e) => e.display_name === "João");
       assert.ok(joao, "João deve estar no leaderboard");
-      assert.equal(joao!.correct, 8, "correct de João deve vir do top1 (8)");
-      assert.equal(joao!.total, 10, "total de João deve vir do top1 (10)");
+      assert.equal(joao!.correct, 8, "correct de João deve vir do endpoint JSON (8)");
+      assert.equal(joao!.total, 10, "total de João deve vir do endpoint JSON (10)");
 
       // Todos os entries têm display_name string válida
       for (const entry of summary.leaderboard) {
@@ -336,7 +368,34 @@ describe("buildPollEiaSummaryFromApi (#2475)", () => {
     } finally { restore(); }
   });
 
-  test("retorna summary vazio quando nenhuma edição tem dados", async () => {
+  // Regressão #2475: ranks 2/3 não devem ter correct=0
+  test("ranks 2 e 3 têm correct/total > 0 no leaderboard agregado (#2475)", async () => {
+    const restore = installFetchStub();
+    try {
+      const { buildPollEiaSummaryFromApi } = await import("../scripts/build-poll-eia-data.ts");
+      // 260418 → stats + leaderboard 2026-04 com João(8/10), Maria(5/10), Pedro(3/8)
+      const editions = ["260418"];
+      const summary = await buildPollEiaSummaryFromApi(editions, "https://poll.example.com");
+
+      const maria = summary.leaderboard.find((e) => e.display_name === "Maria");
+      const pedro = summary.leaderboard.find((e) => e.display_name === "Pedro");
+      assert.ok(maria, "Maria deve estar no leaderboard");
+      assert.ok(pedro, "Pedro deve estar no leaderboard");
+      // Bug #2475: com /leaderboard/top1, ranks 2/3 tinham correct=0 e total=0
+      // porque só rank=1 tinha métricas via campo top1[]. Com o novo endpoint .json,
+      // todos os ranks têm métricas reais.
+      assert.ok(maria!.correct > 0, `Maria.correct deve ser > 0 (got ${maria!.correct})`);
+      assert.ok(maria!.total > 0, `Maria.total deve ser > 0 (got ${maria!.total})`);
+      assert.ok(pedro!.correct > 0, `Pedro.correct deve ser > 0 (got ${pedro!.correct})`);
+      assert.ok(pedro!.total > 0, `Pedro.total deve ser > 0 (got ${pedro!.total})`);
+      assert.equal(maria!.correct, 5, "Maria deve ter correct=5");
+      assert.equal(maria!.total, 10, "Maria deve ter total=10");
+      assert.equal(pedro!.correct, 3, "Pedro deve ter correct=3");
+      assert.equal(pedro!.total, 8, "Pedro deve ter total=8");
+    } finally { restore(); }
+  });
+
+    test("retorna summary vazio quando nenhuma edição tem dados", async () => {
     const restore = installFetchStub();
     try {
       const { buildPollEiaSummaryFromApi } = await import("../scripts/build-poll-eia-data.ts");
