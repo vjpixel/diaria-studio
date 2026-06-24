@@ -384,14 +384,43 @@ export function renderEditionBar(doc: StageStatusDoc | null | undefined): string
   }
 
   // Find the current running stage for label display (in-progress path only).
-  // Priority: first "running" stage; fallback: last "done/failed" stage (by scan); fallback: stage 0 label.
-  const runningRow = rows.find((r) => r?.status === "running");
-  // Scan from end without allocating a copy (findLast polyfill — tsconfig targets ES2022).
+  //
+  // #2525: use HIGHEST-index running stage (not first) so that when Stage 5 is
+  // still `running` AND Stage 6 has been marked `running` (gate presentation),
+  // the bar shows "6/7 Agendamento" instead of "5/7 Publicação".
+  // Also handles orphaned `running` stages from interrupted runs — the highest
+  // running stage is always the most meaningful label to surface.
+  //
+  // Priority order:
+  //   1. Highest-index stage with status "running"
+  //   2. First stage with status "pending" (next stage to run — e.g. "6:pending"
+  //      after Stage 5 done shows "Agendamento" not "Publicação")
+  //   3. Last stage with status "done/failed" (fallback: last completed)
+  //   4. rows[0] (absolute fallback)
+  let highestRunningRow: typeof rows[0] | undefined;
+  let firstPendingRow: typeof rows[0] | undefined;
   let lastDoneRow: typeof rows[0] | undefined;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (STAGE_TERMINAL_STATUSES.has(rows[i].status)) { lastDoneRow = rows[i]; break; }
+
+  for (const row of rows) {
+    if (row?.status === "running") {
+      // Track highest-stage running row (rows may be out-of-order; compare by .stage)
+      if (!highestRunningRow || row.stage > highestRunningRow.stage) {
+        highestRunningRow = row;
+      }
+    } else if (row?.status === "pending") {
+      // Track first pending row (stage order — rows are typically ordered 0→6)
+      if (!firstPendingRow || row.stage < firstPendingRow.stage) {
+        firstPendingRow = row;
+      }
+    } else if (STAGE_TERMINAL_STATUSES.has(row?.status as StageStatus)) {
+      // Track last done/failed row by stage number
+      if (!lastDoneRow || row.stage > lastDoneRow.stage) {
+        lastDoneRow = row;
+      }
+    }
   }
-  const displayRow = runningRow ?? lastDoneRow ?? rows[0];
+
+  const displayRow = highestRunningRow ?? firstPendingRow ?? lastDoneRow ?? rows[0];
   const stageLabel = STAGE_LABELS[displayRow?.stage ?? 0] ?? `Stage ${displayRow?.stage ?? 0}`;
 
   const filled = Math.floor((done / total) * BAR_WIDTH);
