@@ -317,6 +317,58 @@ export function makeInitialDoc(edition: string, runStartedAt?: string): StageSta
 }
 
 // ---------------------------------------------------------------------------
+// Reconcile orphaned running stages (#2525)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reconciles stages left in `running` state due to interruption (#2525).
+ *
+ * When the pipeline is interrupted (Claude Code closed, crash, timeout), any
+ * stage that was `running` remains `running` forever — blocking the statusline
+ * bar from advancing. On resume, this function marks all orphaned `running`
+ * stages as `failed` so the orchestrator can decide whether to re-run them.
+ *
+ * "Orphaned" = status is `running` but no active orchestrator is driving it.
+ * The caller (orchestrator resume path) is responsible for detecting this
+ * situation — typically by checking that the pipeline is not currently live
+ * before calling reconcile.
+ *
+ * Returns the list of stage numbers that were reconciled (for logging).
+ * Does NOT save to disk — caller must call saveDoc().
+ *
+ * @param doc       Current stage status document
+ * @param now       ISO timestamp to use as `end` for reconciled rows (injectable for testing)
+ * @returns         Updated doc + list of reconciled stage numbers
+ */
+export function reconcileRunningStages(
+  doc: StageStatusDoc,
+  now?: string,
+): { doc: StageStatusDoc; reconciledStages: number[] } {
+  const nowTs = now ?? new Date().toISOString();
+  const reconciledStages: number[] = [];
+
+  const newRows = doc.rows.map((r) => {
+    if (r.status !== "running") return r;
+    reconciledStages.push(r.stage);
+    // Mark as failed with auto-carimbo of end timestamp (no start override — preserve original).
+    const end = r.end ?? nowTs;
+    const duration_ms =
+      r.start && end ? Math.max(0, new Date(end).getTime() - new Date(r.start).getTime()) : r.duration_ms;
+    return {
+      ...r,
+      status: "failed" as StageStatus,
+      end,
+      duration_ms,
+    } as StageRow;
+  });
+
+  return {
+    doc: { ...doc, rows: newRows, generated_at: nowTs },
+    reconciledStages,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Stage transition gates (#1530, #1563)
 // ---------------------------------------------------------------------------
 
@@ -342,12 +394,16 @@ export function blockReasonForMarkingStageDone(
           review_completed?: boolean;
           review_status?: string;
         };
-        // Aceita review_completed=true OU review_status explicito
+        // Aceita review_completed=true OU review_status explícito
         // ("issues_unfixable" / "inconclusive") — orchestrator declarou
         // resultado terminal. Bloqueia "pending" (loop não rodou).
+        // #2525: também aceita status:"skipped" (newsletter não publicada,
+        // ex: Chrome MCP indisponível, degradação #2495) — sem newsletter,
+        // não há email de teste pra revisar; stage deve poder fechar como done.
         const explicitTerminal =
           pub.review_status === "issues_unfixable" ||
-          pub.review_status === "inconclusive";
+          pub.review_status === "inconclusive" ||
+          (pub as { status?: string }).status === "skipped"; // newsletter skipped (#2525)
         if (!pub.review_completed && !explicitTerminal) {
           return (
             `Stage 5 cannot be marked done without review-test-email loop ` +
@@ -460,6 +516,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso:\n" +
         "  --edition-dir <path> --init                                # inicializa (todos pending)\n" +
+        "  --edition-dir <path> --reconcile-running                   # marca stages 'running' órfãos como 'failed' (#2525)\n" +
         "  --edition-dir <path> --stage N --status pending|running|done|failed [field=val]...",
     );
     process.exit(2);
@@ -471,6 +528,30 @@ async function main(): Promise<void> {
   let doc: StageStatusDoc;
   if (args.init) {
     doc = makeInitialDoc(editionId);
+  } else if (args["reconcile-running"]) {
+    // #2525: reconcile orphaned running stages on resume.
+    // Marks all `running` stages as `failed` — orchestrator can re-run them.
+    doc = loadDoc(editionDir, editionId);
+    const { doc: reconciledDoc, reconciledStages } = reconcileRunningStages(doc, new Date().toISOString());
+    doc = reconciledDoc;
+
+    try {
+      saveDoc(editionDir, doc);
+    } catch (err) {
+      console.error(`falha ao gravar ${statusPath}: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+
+    console.log(
+      JSON.stringify({
+        path: statusPath,
+        reconciled_stages: reconciledStages,
+        message: reconciledStages.length > 0
+          ? `stages ${reconciledStages.join(",")} reconciled running→failed`
+          : "no running stages found — nothing to reconcile",
+      }),
+    );
+    return;
   } else {
     // #1216: load from JSON sidecar (canonical) — MD parse fallback for legacy.
     doc = loadDoc(editionDir, editionId);
