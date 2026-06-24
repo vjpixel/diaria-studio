@@ -1004,6 +1004,44 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.ok(body.length < 25_000, `body ${body.length} bytes < 25KB`);
     assert.ok(eia.length < 10_000, `eia ${eia.length} bytes < 10KB`);
   });
+
+  it("#2541: É IA? empilha A acima de B em layout de 1 coluna (desktop e mobile)", () => {
+    // O fix #2541 trocou o layout 2-colunas (poll-col) por 2 <tr> independentes.
+    const html = renderHTML(fixtureComEia);
+    // 1. Não usa mais largura de 50% (layout 2-colunas)
+    assert.doesNotMatch(html, /width="50%"/, "largura de 50% não deve existir (layout 2-colunas removido)");
+    // 2. Não usa classes poll-col (CSS de 2-colunas)
+    assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir (#2541)");
+    // 3. Imagem A com link choice=A está presente
+    assert.match(html, /choice=A.*01-eia-A\.jpg|01-eia-A\.jpg.*choice=A/s, "imagem A com link choice=A ausente");
+    // 4. Imagem B com link choice=B está presente
+    assert.match(html, /choice=B.*01-eia-B\.jpg|01-eia-B\.jpg.*choice=B/s, "imagem B com link choice=B ausente");
+    // 5. merge tag {{email}} preservada nos dois links de voto
+    const emailMatches = [...html.matchAll(/\{\{email\}\}/g)];
+    assert.ok(emailMatches.length >= 2, `merge tag {{email}} deve aparecer em ambos os links de voto (encontrado ${emailMatches.length}x)`);
+    // 6. A aparece antes de B no HTML (empilhamento correto: A acima de B)
+    const idxA = html.indexOf("01-eia-A.jpg");
+    const idxB = html.indexOf("01-eia-B.jpg");
+    assert.ok(idxA !== -1, "01-eia-A.jpg ausente");
+    assert.ok(idxB !== -1, "01-eia-B.jpg ausente");
+    assert.ok(idxA < idxB, `Imagem A (${idxA}) deve vir antes de B (${idxB}) no HTML`);
+    // 7. Legenda (crédito), resultado anterior e leaderboard preservados
+    assert.match(html, /Foto: Author/, "legenda (credit) ausente");
+  });
+
+  it("#2541: É IA? standalone também usa layout empilhado (1 coluna)", () => {
+    const html = renderEiaStandalone(fixtureComEia)!;
+    assert.ok(html, "standalone deve retornar HTML");
+    assert.doesNotMatch(html, /width="50%"/, "largura de 50% não deve existir no standalone");
+    assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir no standalone");
+    // Ambos os links com {{email}} e choice correto
+    assert.match(html, /choice=A/);
+    assert.match(html, /choice=B/);
+    const emailMatches = [...html.matchAll(/\{\{email\}\}/g)];
+    assert.ok(emailMatches.length >= 2, `{{email}} deve aparecer em ambos os links (encontrado ${emailMatches.length}x)`);
+    // A antes de B
+    assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");
+  });
 });
 
 describe("extractTemplateBlock (#1076)", () => {
