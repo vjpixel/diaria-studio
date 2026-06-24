@@ -1918,7 +1918,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
   // Precisamos de uma fixture mínima que aciona as seções condicionais (Clarice News).
   const baseCampaignForTabs = {
     id: 99,
-    name: "Clarice News 2605 d01-A (ter)",
+    name: "Clarice News 2605 d01-A (qua)", // 2026-06-10 é quarta-feira em BRT
     subject: "Test",
     status: "sent",
     sentDate: "2026-06-10T09:05:00Z",
