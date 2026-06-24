@@ -1132,4 +1132,27 @@ Resultado esperado:
 
 Se `inserted: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save.
 
+---
+
+## Default Thumbnail (config 1x)
+
+Imagem de fallback 1200x630 exibida em OG previews quando um post não tem capa própria. Configurada uma vez nas Settings da publicação — não é por edição.
+
+**Gerar o asset:**
+
+```bash
+npx tsx scripts/gen-default-thumbnail.ts
+# Output: assets/default-thumbnail-1200x630.png
+```
+
+O script monta um SVG com design de marca (fundo papel `#FBFAF6`, acento teal `#00A0A0`, wordmark `diar.ia.br` centralizado com separadores em teal) e rasteriza para PNG 1200x630 via `sharp`. O asset versionado fica em `assets/default-thumbnail-1200x630.png` no repo.
+
+**Passo manual do editor (1x):**
+
+1. Abrir Beehiiv → **Settings → Publication** → rolar até **"Default Thumbnail Preview"**
+2. Fazer upload de `assets/default-thumbnail-1200x630.png`
+3. Salvar
+
+Isso basta — o Beehiiv usa esse thumbnail em todos os posts que não tiverem capa própria configurada.
+
 **Custo medido**: newsletter 16KB = b64 22KB ≈ 4 chunks ≈ ~30K tokens (paste só), 16+ passos sequenciais. Worker-hosted (Fase 2 recomendada) faz tudo em ~5K tokens e 1 javascript_tool call.
