@@ -1910,3 +1910,128 @@ describe("ordem colunas ABC (#2424)", () => {
     assert.ok(pos200 < pos55, "totalDelivered (200) deve aparecer antes de totalViews (55) na linha");
   });
 });
+
+// ─── #2542: tab navigation ────────────────────────────────────────────────────
+
+describe("#2542: tab navigation — estrutura HTML das abas", () => {
+  // Usa allCampaigns (definido no início do arquivo) que contém campanhas variadas.
+  // Precisamos de uma fixture mínima que aciona as seções condicionais (Clarice News).
+  const baseCampaignForTabs = {
+    id: 99,
+    name: "Clarice News 2605 d01-A (qua)", // 2026-06-10 é quarta-feira em BRT
+    subject: "Test",
+    status: "sent",
+    sentDate: "2026-06-10T09:05:00Z",
+    scheduledAt: null,
+    createdAt: "2026-06-10T00:00:00Z",
+    recipients: { lists: [1] },
+    statistics: {
+      globalStats: {
+        sent: 500, delivered: 490, uniqueViews: 200, viewed: 200,
+        trackableViews: 180, uniqueClicks: 30, clickers: 30,
+        hardBounces: 2, softBounces: 3, deferred: 0,
+        unsubscriptions: 1, complaints: 0, appleMppOpens: 50,
+      },
+    },
+    listName: "T1-W1",
+    listSize: 500,
+  };
+
+  test("HTML contém 3 inputs radio para as abas (tab state)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    // Cada aba precisa de 1 radio input
+    const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
+    assert.equal(radioMatches.length, 3, "deve ter exatamente 3 radio inputs para as 3 abas");
+  });
+
+  test("HTML contém 3 labels de aba com textos corretos", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
+    assert.match(html, /Links \/ CTR/, "deve ter label 'Links / CTR'");
+  });
+
+  test("1ª aba tem checked por default (#2542: default = Visão geral)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    // O input da aba 1 deve ter o atributo checked
+    assert.match(html, /id="tab-visaogeral"[^>]*checked/, "aba Visão geral deve estar checked por default");
+  });
+
+  test("cada label aponta para o radio correto via for= (associação funcional)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    assert.match(html, /for="tab-visaogeral"/, "label Visão geral deve ter for=tab-visaogeral");
+    assert.match(html, /for="tab-engajamento"/, "label Engajamento deve ter for=tab-engajamento");
+    assert.match(html, /for="tab-links"/, "label Links deve ter for=tab-links");
+  });
+
+  test("panel-visaogeral contém id=campaigns-table, monthly-totals, volume-ciclo", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    // Extrair o panel visaogeral
+    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-visaogeral deve existir no HTML");
+    assert.match(panel, /id="campaigns-table"/, "Envios deve estar no panel Visão geral");
+    assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no panel Visão geral");
+    assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no panel Visão geral");
+  });
+
+  test("panel-engajamento contém id=engagement-cohorts e weekday-openrate e day-summary", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-engajamento deve existir no HTML");
+    assert.match(panel, /id="engagement-cohorts"/, "Coortes deve estar no panel Engajamento");
+    assert.match(panel, /id="weekday-openrate"/, "Weekday deve estar no panel Engajamento");
+    assert.match(panel, /id="day-summary"/, "Day summary deve estar no panel Engajamento");
+  });
+
+  test("panel-links contém id=links-agregados", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const panel = html.match(/id="panel-links"[\s\S]*?<\/div><!-- \/tab-panels -->/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-links deve existir no HTML");
+    assert.match(panel, /id="links-agregados"/, "Links agregados deve estar no panel Links/CTR");
+  });
+
+  test("todas as seções principais estão presentes no HTML (nenhuma perdida pela reorganização)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    // scheduled-campaigns omitido: só aparece quando há agendados (fixture sem agendados → ausente,
+    // comportamento correto — testado nos testes de renderScheduledSection).
+    const sectionIds = [
+      "monthly-totals",
+      "volume-ciclo",
+      "campaigns-table",
+      "engagement-cohorts",
+      "weekday-openrate",
+      "day-summary",
+      "links-agregados",
+    ];
+    for (const id of sectionIds) {
+      assert.match(html, new RegExp(`id="${id}"`), `seção id="${id}" deve estar presente no HTML`);
+    }
+  });
+
+  test("scheduled-campaigns aparece dentro de panel-visaogeral quando há agendados", () => {
+    const scheduled = [{
+      id: 200,
+      name: "Clarice News 2605 d02-A (qua)",
+      subject: "Test",
+      status: "queued",
+      sentDate: null,
+      scheduledAt: "2026-06-25T09:00:00Z",
+      createdAt: "2026-06-24T00:00:00Z",
+      recipients: { lists: [1] },
+      listName: "T1-W2",
+      listSize: 500,
+    }];
+    const html = renderDashboardHtml([baseCampaignForTabs], scheduled);
+    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-visaogeral deve existir");
+    assert.match(panel, /id="scheduled-campaigns"/, "scheduled-campaigns deve estar no panel Visão geral");
+  });
+
+  test("CSS das abas usa :checked (sem JS externo para tab switching)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    // O CSS deve conter :checked para o mecanismo de tab toggle
+    assert.match(html, /:checked/, "CSS deve conter :checked para tab switching sem JS");
+    // Confirma presença do radio+label pattern (não un script external para tabs)
+    assert.match(html, /type="radio"/, "deve usar radio inputs para tab state");
+  });
+});
