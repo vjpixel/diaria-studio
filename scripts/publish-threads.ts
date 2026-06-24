@@ -403,7 +403,9 @@ async function main() {
         scheduled_at: null,
         reason: e.message,
       };
-      tagAndAppend(entry);
+      // #2522 review: --dry-run não persiste (early-exit não pode escrever entry
+      // "failed" em 06-social-published.json — viola o contrato no-side-effect).
+      if (!isDryRun) tagAndAppend(entry);
       results.push(entry);
       continue;
     }
@@ -420,7 +422,8 @@ async function main() {
         scheduled_at: null,
         reason: "texto vazio após strip de comentários HTML",
       };
-      tagAndAppend(entry);
+      // #2522 review: --dry-run não persiste (ver acima).
+      if (!isDryRun) tagAndAppend(entry);
       results.push(entry);
       continue;
     }

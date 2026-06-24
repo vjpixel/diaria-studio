@@ -23,6 +23,7 @@ import {
   extractTitle,
   hashHighlights,
   swapInApprovedJson,
+  mirrorCappedSwapFallback,
   removeDestaqueBlockFromMd,
   deleteDestaqueImages,
   deleteDestaquePrompts,
@@ -821,22 +822,15 @@ describe("swapInApprovedJson fallback-capped regression (#2521 Bug 1)", () => {
     const drop = false;
     const promotedItem = { ...RADAR_ITEM_0 };
 
-    // Simulate what main() does in the fallback branch (cappedSwap.ok=false):
-    const cappedHighlights = cappedData.highlights as Record<string, unknown>[];
-    const cappedDemotedItem = cappedHighlights[demotePos];
-
     // Confirm swapInApprovedJson fails (triggering the fallback path)
     const attempt = swapInApprovedJson(cappedData, "radar", 0, demotePos, drop);
     assert.equal(attempt.ok, false, "swapInApprovedJson should fail when bucket absent");
 
-    // Fallback: manually swap highlights and return demoted to bucket
-    cappedHighlights[demotePos] = promotedItem;
-    const cappedBucket = cappedData["radar"];
-    if (Array.isArray(cappedBucket)) {
-      cappedData["radar"] = [cappedDemotedItem, ...cappedBucket];
-    } else {
-      cappedData["radar"] = [cappedDemotedItem];
-    }
+    // #2521 review: exercita o CÓDIGO REAL (mirrorCappedSwapFallback), não uma
+    // re-implementação inline — deletar o fallback de main() faz este teste falhar.
+    const cappedHighlights = cappedData.highlights as Record<string, unknown>[];
+    const fb = mirrorCappedSwapFallback(cappedData, "radar", demotePos, drop, promotedItem);
+    assert.equal(fb.synced, true, "fallback deve sincronizar quando highlights[] cobre demotePos");
 
     // Verify: highlights[0] is now the promoted item
     assert.equal(
@@ -873,17 +867,10 @@ describe("swapInApprovedJson fallback-capped regression (#2521 Bug 1)", () => {
     const attempt = swapInApprovedJson(cappedData, "radar", 99, demotePos, drop); // idx 99 → fail
     assert.equal(attempt.ok, false, "swapInApprovedJson should fail with out-of-range idx");
 
-    const cappedHighlights = cappedData.highlights as Record<string, unknown>[];
-    const cappedDemotedItem = cappedHighlights[demotePos];
-
-    cappedHighlights[demotePos] = promotedItem;
-    if (!drop) {
-      // This branch must NOT execute when drop=true
-      const existing = cappedData["radar"];
-      cappedData["radar"] = Array.isArray(existing)
-        ? [cappedDemotedItem, ...existing]
-        : [cappedDemotedItem];
-    }
+    // #2521 review: código real (mirrorCappedSwapFallback) com drop=true — não
+    // deve devolver o rebaixado ao bucket.
+    const fb = mirrorCappedSwapFallback(cappedData, "radar", demotePos, drop, promotedItem);
+    assert.equal(fb.synced, true);
 
     // radar bucket unchanged (demoted item NOT added, since drop=true)
     const resultBucket = cappedData["radar"] as Record<string, unknown>[];
@@ -893,6 +880,23 @@ describe("swapInApprovedJson fallback-capped regression (#2521 Bug 1)", () => {
       "demoted item must NOT be in bucket when --drop is true",
     );
     assert.equal(resultBucket.length, 1, "bucket unchanged when --drop=true");
+  });
+
+  it("highlights[] curto demais pro demotePos → synced:false + warning (fail-loud, #2521 review)", () => {
+    // Capped com highlights[] de 1 item, mas demotePos=2 (slot inexistente) →
+    // não dá pra espelhar o swap; deve avisar em vez de divergir em silêncio.
+    const cappedData: Record<string, unknown> = {
+      highlights: [{ ...HIGHLIGHT_D1 }],
+      radar: [{ ...RADAR_ITEM_0 }],
+    };
+    const fb = mirrorCappedSwapFallback(cappedData, "radar", 2, false, { ...RADAR_ITEM_1 });
+    assert.equal(fb.synced, false, "não sincroniza quando o slot demotePos não existe");
+    assert.match(
+      fb.warning ?? "",
+      /demotePos=2|slot inexistente|divergência/i,
+      "deve emitir warning explícito (fail-loud)",
+    );
+    assert.equal((cappedData.highlights as unknown[]).length, 1, "highlights[] não cresce (sem slot fantasma)");
   });
 });
 

@@ -429,10 +429,11 @@ describe("--dry-run real guard (#2522 Bug 1)", () => {
 
   it("guard isDryRun bloqueia ANTES da chamada de fetch (publishThread)", () => {
     // O guard deve aparecer ANTES do bloco de retry/publishThread no source.
-    // Verificamos que isDryRun aparece antes de publishThread na ordem do código.
-    const dryRunIdx = SRC.indexOf("isDryRun");
+    // #2522 review: casar o GUARD `if (isDryRun)`, não a declaração `const
+    // isDryRun` (que está no topo e passaria mesmo se o guard fosse removido).
+    const dryRunIdx = SRC.indexOf("if (isDryRun)");
     const publishThreadCallIdx = SRC.indexOf("await publishThread(");
-    assert.ok(dryRunIdx > 0, "isDryRun deve existir no script");
+    assert.ok(dryRunIdx > 0, "guard `if (isDryRun)` deve existir no script (não só a declaração)");
     assert.ok(publishThreadCallIdx > 0, "publishThread deve existir no script");
     assert.ok(
       dryRunIdx < publishThreadCallIdx,

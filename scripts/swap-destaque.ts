@@ -348,6 +348,49 @@ export function swapInApprovedJson(
   return { ok: true, promotedItem, demotedItem };
 }
 
+/**
+ * #2521 Bug 1: fallback de sincronização do 01-approved-capped.json quando
+ * `swapInApprovedJson` falha no capped (bucket ausente/curto). Espelha a lógica
+ * do approved.json: troca highlights[demotePos] pelo promovido e — se `--drop`
+ * omitido — devolve o rebaixado ao bucket (criando-o se ausente).
+ *
+ * Retorna `{ synced: false, warning }` quando highlights[] do capped é curto
+ * demais pro demotePos (slot inexistente) — fail-loud, o chamador deve avisar
+ * em vez de gravar um capped divergente em silêncio. Pure (muta o objeto in-place,
+ * como o swapInApprovedJson) — exportado pra teste de regressão real (#633).
+ */
+export function mirrorCappedSwapFallback(
+  approvedCappedData: Record<string, unknown>,
+  bucket: string,
+  demotePos: number,
+  drop: boolean,
+  promotedItem: Record<string, unknown>,
+): { synced: boolean; warning?: string } {
+  const cappedHighlights = approvedCappedData.highlights as
+    | Record<string, unknown>[]
+    | undefined;
+  if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
+    const cappedDemotedItem = cappedHighlights[demotePos];
+    cappedHighlights[demotePos] = promotedItem;
+    if (!drop) {
+      const cappedBucket = approvedCappedData[bucket];
+      if (Array.isArray(cappedBucket)) {
+        approvedCappedData[bucket] = [cappedDemotedItem, ...cappedBucket];
+      } else {
+        approvedCappedData[bucket] = [cappedDemotedItem];
+      }
+    }
+    return { synced: true };
+  }
+  return {
+    synced: false,
+    warning:
+      `01-approved-capped.json highlights[] tem ${Array.isArray(cappedHighlights) ? cappedHighlights.length : 0} itens, ` +
+      `mas o swap pede demotePos=${demotePos} (slot inexistente). O capped NÃO foi sincronizado ` +
+      `com 01-approved.json neste swap — possível divergência entre os 2 arquivos. Verifique manualmente.`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // CLI arg parsing
 // ---------------------------------------------------------------------------
@@ -598,24 +641,18 @@ function main(): void {
       drop,
     );
     if (!cappedSwap.ok) {
-      // Capped JSON may have fewer items in the bucket; just swap highlights
-      // and, if not dropping, return the demoted item to the bucket.
-      const cappedHighlights = approvedCappedData.highlights as Record<string, unknown>[] | undefined;
-      if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
-        const cappedDemotedItem = cappedHighlights[demotePos];
-        cappedHighlights[demotePos] = promotedItem;
-        // Mirror the approved.json logic: if not dropping, prepend demoted item back
-        // to the source bucket (if the bucket exists in capped JSON).
-        if (!drop) {
-          const cappedBucket = approvedCappedData[promote.bucket];
-          if (Array.isArray(cappedBucket)) {
-            approvedCappedData[promote.bucket] = [cappedDemotedItem, ...cappedBucket];
-          } else {
-            // Bucket absent in capped JSON: create it with just the demoted item
-            approvedCappedData[promote.bucket] = [cappedDemotedItem];
-          }
-        }
-      }
+      // #2521: capped JSON pode ter o bucket ausente/curto — espelhar o swap via
+      // helper testável (mirrorCappedSwapFallback). Fail-loud se highlights[] for
+      // curto demais pro demotePos (slot inexistente) — avisa em vez de gravar
+      // capped divergente em silêncio.
+      const { warning } = mirrorCappedSwapFallback(
+        approvedCappedData,
+        promote.bucket,
+        demotePos,
+        drop,
+        promotedItem,
+      );
+      if (warning) console.error(`AVISO: ${warning}`);
     }
     writeFileSync(approvedCappedPath, JSON.stringify(approvedCappedData, null, 2) + "\n", "utf8");
     result.modified.rewritten.push(approvedCappedPath);
