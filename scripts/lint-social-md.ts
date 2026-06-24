@@ -783,6 +783,132 @@ export function lintCredentialBio(md: string): CredentialBioResult {
 }
 
 // ---------------------------------------------------------------------------
+// #2526: no-antithesis-reveal — detecta construções "negar pra revelar" em
+// posts social. Soa a IA. WARN-ONLY — exit 0 mesmo com matches; o orchestrator
+// exibe como ⚠️ no gate, sem bloquear.
+//
+// Padrões banidos (o FORMATO enjoa, não o ponto):
+//   1. "X de verdade, não só Y"  — ex: "É delegação de verdade, não só consulta."
+//   2. "não é X, é Y" / "não é X. É Y" / "não é X e sim Y" — ex: "Não é a
+//      tecnologia. É a aposta de distribuição."
+//   3. Primos: "o que me chama atenção é X, não Y", "não é substituição, é
+//      internalização", "não é mais um bot, e sim um colega".
+//
+// O que PASSA: texto reescrito direto ("a aposta de distribuição me interessa
+// mais que a tecnologia") sem a estrutura de antítese-revelação.
+// ---------------------------------------------------------------------------
+
+/**
+ * Padrão 1: "de verdade, não só" — ex: "delegação de verdade, não só consulta".
+ * Aceita "de verdade" com vírgula+espaço (ou espaço) seguido de "não só"/"não
+ * apenas". Evita casar "de verdade não sei" (sem intenção de revelar Y).
+ *
+ * Nota: \b não funciona com caracteres acentuados em JS (ASCII-only). Usamos
+ * (?<!\w) como lookbehind de início e terminamos naturalmente na palavra
+ * acentuada (ó/o não precisam de \b pois a presença de "só" já é discriminante).
+ */
+const ANTITHESIS_DE_VERDADE_RE =
+  /(?<!\w)de verdade,?\s+n[aã]o\s+s[oó](?!\w)/gi;
+
+/**
+ * Padrão 2: "não é X, é Y" / "não é X. É Y" — a antítese-revelação clássica.
+ * Cobre:
+ *   - "não é X, é Y" (vírgula-separada)
+ *   - "não é X. É Y" (frase nova com É maiúsculo)
+ *   - "não é X e sim Y" / "não é X, e sim Y"
+ *   - "não é X — é Y" (travessão)
+ *
+ * Heurística: "não é" seguido de qualquer conteúdo (até ~40 chars) e então
+ * um dos separadores + conjugação ser/estar em posição reveladora.
+ * Anchored para que "não é só isso" (onde não há revelação posterior) não case:
+ * exige conteúdo significativo entre o "não é" e o "é/e sim".
+ *
+ * Nota: \b após "que" funciona porque "que" é ASCII — ok manter.
+ */
+const ANTITHESIS_NAO_E_RE =
+  /n[aã]o\s+[eé]\s+(?!s[oó]\s)(?:.{3,50}?)(?:[,.]?\s+[EeÉé]\s+(?!mais|menos|por|para|que\b)|[,\s]+e\s+sim\s+|\s+[—–-]\s+(?:[EeÉé]\s+))/gi;
+
+/**
+ * Padrão 3: "o que me chama atenção é X, não Y" e primos estruturais como
+ * "o que me chama atenção não é X".
+ * Simples heurística: "chama atenção" + "não é" (ordem pode variar) na mesma
+ * frase curta. Nota: \b após "não" falha com 'ã', mas o contexto "não é" já
+ * é suficientemente discriminante sem o \b final.
+ */
+const ANTITHESIS_CHAMA_ATENCAO_RE =
+  /o que (?:me\s+)?chama(?:\s+a\s+)?\s*aten[çc][aã]o\s+(?:[eé]\s+.{1,40}?,\s*n[aã]o\s|n[aã]o\s+[eé]\s)/gi;
+
+export interface AntithesisRevealMatch {
+  pattern: "de_verdade" | "nao_e_e" | "chama_atencao";
+  line: number;
+  context: string;
+}
+
+export interface AntithesisRevealResult {
+  /** Sempre true — este check é WARN-ONLY, nunca bloqueia. */
+  ok: true;
+  matches: AntithesisRevealMatch[];
+}
+
+/**
+ * #2526: detecta construções de antítese-revelação em qualquer seção do social.
+ * WARN-ONLY — sempre retorna `ok: true`; matches são surfaçados como ⚠️ no gate.
+ */
+export function lintAntithesisReveal(md: string): AntithesisRevealResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: AntithesisRevealMatch[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip section headers (# / ##) — formato, não prosa
+    if (/^#{1,3}\s/.test(line)) continue;
+    // Skip HTML comments
+    if (/^<!--/.test(line.trim())) continue;
+
+    // Padrão 1: de verdade, não só
+    ANTITHESIS_DE_VERDADE_RE.lastIndex = 0;
+    if (ANTITHESIS_DE_VERDADE_RE.test(line)) {
+      const m = ANTITHESIS_DE_VERDADE_RE.exec(line) ?? line.match(ANTITHESIS_DE_VERDADE_RE);
+      const idx = m ? line.indexOf(m[0]) : 0;
+      matches.push({
+        pattern: "de_verdade",
+        line: i + 1,
+        context: line.slice(Math.max(0, idx - 15), idx + 50).trim(),
+      });
+      continue; // evitar dupla flag na mesma linha
+    }
+
+    // Padrão 3: chama atenção (testar antes do padrão 2 pra evitar dupla flag)
+    ANTITHESIS_CHAMA_ATENCAO_RE.lastIndex = 0;
+    if (ANTITHESIS_CHAMA_ATENCAO_RE.test(line)) {
+      const m = ANTITHESIS_CHAMA_ATENCAO_RE.exec(line) ?? line.match(ANTITHESIS_CHAMA_ATENCAO_RE);
+      const idx = m ? line.indexOf(m[0]) : 0;
+      matches.push({
+        pattern: "chama_atencao",
+        line: i + 1,
+        context: line.slice(Math.max(0, idx - 15), idx + 60).trim(),
+      });
+      continue;
+    }
+
+    // Padrão 2: não é X, é Y
+    ANTITHESIS_NAO_E_RE.lastIndex = 0;
+    if (ANTITHESIS_NAO_E_RE.test(line)) {
+      const m = ANTITHESIS_NAO_E_RE.exec(line) ?? line.match(ANTITHESIS_NAO_E_RE);
+      const idx = m ? line.indexOf(m[0]) : 0;
+      matches.push({
+        pattern: "nao_e_e",
+        line: i + 1,
+        context: line.slice(Math.max(0, idx - 15), idx + 60).trim(),
+      });
+    }
+  }
+
+  return { ok: true, matches };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -1252,7 +1378,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-email-cta-linkedin --md <path>\n" +
         "  ou: lint-social-md.ts --check linkedin-page-link --md <path>\n" +
         "  ou: lint-social-md.ts --check no-credential-bio --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>",
+        "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>",
     );
     process.exit(2);
   }
@@ -1447,6 +1574,25 @@ function main(): void {
         );
       }
       process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-antithesis-reveal (#2526) — detecta construções de antítese-revelação
+  // em posts social. WARN-ONLY: sempre exit 0 mesmo com matches; surfaça como ⚠️ no gate.
+  if (args.check === "no-antithesis-reveal") {
+    const result = lintAntithesisReveal(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (result.matches.length > 0) {
+      console.error(
+        `\n⚠️  ${result.matches.length} construção(ões) de antítese-revelação detectada(s) (#2526 — reescreva direto, sem negar pra revelar):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  linha ${m.line} [${m.pattern}]: "...${m.context}..."`,
+        );
+      }
+      // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
     }
     return;
   }
