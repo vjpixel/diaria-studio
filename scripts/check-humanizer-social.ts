@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * check-humanizer-social.ts (#2279, #2373)
+ * check-humanizer-social.ts (#2279, #2373, #2529)
  *
  * Sentinel determinístico para garantir que o humanizador rodou no social
  * e que o `03-social.md` não foi editado depois da humanização sem re-humanizar.
@@ -19,6 +19,14 @@
  *             Exit 1 = sentinel ausente (humanizador nunca rodou).
  *             Exit 2 = hash diverge (social editado/reordenado pós-humanização
  *                      sem re-humanizar).
+ *
+ *             Quando exit 2 (hash diverge), o guard também roda lint de tics de IA
+ *             determinísticos (#2529) sobre o `03-social.md` editado e emite
+ *             WARNs adicionais no stderr se tics forem detectados. O lint usa
+ *             `lintAntithesisReveal` de lint-social-md.ts. A decisão de
+ *             re-humanizar fica com o editor/orchestrator — não é bloqueio extra.
+ *             Logar a decisão (acusou / passou limpo) no run-log via log-event.ts
+ *             quando --edition-dir é fornecido (sempre o caso no Stage 4).
  *
  * Flags:
  *   --bypass-reason <motivo>   (opcional, só válido com --write)
@@ -40,7 +48,9 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "./lib/cli-args.ts";
+import { lintAntithesisReveal, type AntithesisRevealMatch } from "./lint-social-md.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -158,6 +168,88 @@ export function checkSentinel(editionDir: string): CheckResult {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// #2529: Tic lint on mismatch — roda quando hash diverge (social editado pós-humanização)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resultado do lint de tics de IA sobre o social editado pós-humanizador.
+ * WARN-ONLY: `tics_found` informa se há tics; não bloqueia o gate por si só.
+ * O hash mismatch (exit 2) já é o sinal de bloqueio — o tic lint é informativo,
+ * dando ao editor mais contexto para decidir se re-humaniza.
+ */
+export interface TicLintResult {
+  /** true = lint rodou sem erros (tics pode existir ainda — ver `tics_found`). */
+  ok: true;
+  /** Se algum tic determinístico foi detectado no social editado. */
+  tics_found: boolean;
+  /** Matches de antítese-revelação detectados (pode estar vazio). */
+  antithesis_matches: AntithesisRevealMatch[];
+}
+
+/**
+ * #2529: roda lint de tics determinísticos sobre o `03-social.md` editado.
+ * Chamado internamente pelo `--check` quando o hash diverge (exit 2).
+ *
+ * Só usa `lintAntithesisReveal` de lint-social-md.ts — o único tic check
+ * disponível no lint-social-md.ts que: (a) cobre construções de IA, (b) é
+ * WARN-ONLY por design (#2526), (c) roda sobre qualquer conteúdo do MD.
+ * Travessões e anglicismos não têm equivalente check em lint-social-md.ts
+ * (os existentes são de CTA e schema), então não incluídos (#2529 decisão).
+ */
+export function lintTicsOnMismatch(socialPath: string): TicLintResult {
+  if (!existsSync(socialPath)) {
+    return { ok: true, tics_found: false, antithesis_matches: [] };
+  }
+  const md = readFileSync(socialPath, "utf8");
+  const antithesisResult = lintAntithesisReveal(md);
+  return {
+    ok: true,
+    tics_found: antithesisResult.matches.length > 0,
+    antithesis_matches: antithesisResult.matches,
+  };
+}
+
+/**
+ * Loga o resultado do tic lint via `scripts/log-event.ts` (fire-and-forget).
+ * Falha silenciosa — o lint result já foi emitido no stderr.
+ */
+function logTicLintEvent(editionDir: string, result: TicLintResult): void {
+  // Extrair AAMMDD do editionDir (último componente sem trailing slash)
+  const normalized = editionDir.replace(/[/\\]+$/, "");
+  const edition = normalized.split(/[/\\]/).pop() ?? "unknown";
+  const logScriptPath = resolve(ROOT, "scripts/log-event.ts");
+  if (!existsSync(logScriptPath)) return; // defensive — skip em testes sem scripts/
+
+  const level = result.tics_found ? "warn" : "info";
+  const message = result.tics_found
+    ? `social_tic_lint: hash diverge E tics detectados (${result.antithesis_matches.length} antítese-revelação) — considerar re-humanizar`
+    : "social_tic_lint: hash diverge mas sem tics detectados — edição pode ser só remoção de tic";
+
+  const details = JSON.stringify({
+    tics_found: result.tics_found,
+    antithesis_count: result.antithesis_matches.length,
+    kind: "humanizer_social_tic_lint",
+  });
+
+  try {
+    spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", logScriptPath,
+        "--edition", edition,
+        "--stage", "4",
+        "--agent", "check-humanizer-social",
+        "--level", level,
+        "--message", message,
+        "--details", details,
+      ],
+      { encoding: "utf8", stdio: "ignore" },
+    );
+  } catch {
+    // fire-and-forget: never block on log failure
+  }
+}
+
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -208,6 +300,30 @@ function main(): void {
           `stored=${result.stored.slice(0, 12)}… current=${result.current.slice(0, 12)}… ` +
           "Re-humanizar 03-social.md e gravar sentinel com --write.",
         );
+
+        // #2529: lint de tics de IA sobre o social editado (WARN-ONLY, não bloqueia além do exit 2)
+        const socialPath = resolve(editionDir, "03-social.md");
+        const ticResult = lintTicsOnMismatch(socialPath);
+        if (ticResult.tics_found) {
+          console.error(
+            `[check-humanizer-social] ⚠️  TICS DE IA DETECTADOS no social editado pós-humanizador (#2529):`,
+          );
+          for (const m of ticResult.antithesis_matches) {
+            console.error(`  linha ${m.line} [antítese-revelação/${m.pattern}]: "...${m.context}..."`);
+          }
+          console.error(
+            "[check-humanizer-social] ⚠️  Considere re-humanizar antes de aprovar o gate.",
+          );
+        } else {
+          console.error(
+            "[check-humanizer-social] ℹ️  Lint de tics: nenhum tic detectado na edição — " +
+            "a edição pode ter sido apenas remoção de tic (#2529).",
+          );
+        }
+
+        // Logar decisão no run-log para rastreabilidade (#2529)
+        logTicLintEvent(editionDir, ticResult);
+
         process.exit(2);
       }
       // Exhaustiveness guard — should never reach here

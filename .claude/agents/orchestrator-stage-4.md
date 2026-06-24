@@ -155,14 +155,18 @@ npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md data/edition
 ```
 Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate.
 
-**Guard determinístico do humanizador social (#2279):**
+**Guard determinístico do humanizador social (#2279, #2529):**
 ```bash
 npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
 ```
 Exit code handling:
 - `0` → humanizador rodou e `03-social.md` não foi editado depois. Continuar.
 - `1` → **GATE-BLOCKING:** sentinel ausente — humanizador não rodou no social ou sentinel não foi gravado. Ação: re-rodar humanizador, depois `--write`, antes de aprovar.
-- `2` → **GATE-BLOCKING:** `03-social.md` foi editado/reordenado após humanização (hash diverge — caso real: edição inline em §4d.1 ou reorder de destaques). **Re-humanizar antes de aprovar:**
+- `2` → **GATE-BLOCKING:** `03-social.md` foi editado/reordenado após humanização (hash diverge — caso real: edição inline em §4d.1 ou reorder de destaques).
+
+  **#2529 — Tic lint automático no exit 2:** quando o hash diverge, o guard roda automaticamente `lintAntithesisReveal` sobre o `03-social.md` atual e emite WARNs adicionais no stderr. Se o stderr contiver `⚠️  TICS DE IA DETECTADOS`, incluir esses tics no bloco `{violations_block}` do gate como `⚠️ Social editado pós-humanizador acusa tics de IA (lista abaixo) — considere re-humanizar`. Se o stderr contiver apenas `ℹ️  Lint de tics: nenhum tic detectado`, a edição pode ter sido só remoção de tic — apresentar essa informação ao editor para auxiliar a decisão. O evento é sempre logado no run-log automaticamente.
+
+  **Re-humanizar antes de aprovar** (quando exit 2, independente de tics):
   ```
   Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
   ```
