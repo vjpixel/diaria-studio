@@ -91,8 +91,6 @@ export const DS_STYLE_BLOCK = `<style>
   @media only screen and (max-width:480px) {
     .container { width:100% !important; }
     .pad { padding-left:12px !important; padding-right:12px !important; }
-    .poll-col { display:block !important; width:100% !important; padding:0 !important; }
-    .poll-col-b { padding-top:12px !important; }
     .hero { height:auto !important; }
   }
 </style>`;
@@ -507,15 +505,14 @@ export function renderEIA(eia: EIA): string {
 
   const buildVoteUrl = (choice: "A" | "B") =>
     `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
-  // DS: imagens A/B lado a lado, poll-col empilha no mobile.
-  const eiaChoice = (choice: "A" | "B", imgFile: string, side: "a" | "b") => {
+  // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
+  const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
     const inner = eia.edition
       ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${img}</a>`
       : img;
-    const pad = side === "a" ? "padding-right:8px;" : "padding-left:8px;";
-    const cls = side === "a" ? "poll-col" : "poll-col poll-col-b";
-    return `<td class="${cls}" valign="top" width="50%" style="${pad}">${inner}</td>`;
+    const style = paddingTop ? `padding-top:${paddingTop};` : "";
+    return `<tr><td${style ? ` style="${style}"` : ""}>${inner}</td></tr>`;
   };
 
   return `<!-- É IA? (poll) -->
@@ -524,10 +521,10 @@ export function renderEIA(eia: EIA): string {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
       <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;"><tr>
-        ${eiaChoice("A", eia.imageA, "a")}
-        ${eiaChoice("B", eia.imageB, "b")}
-      </tr></table>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;">
+        ${eiaChoice("A", eia.imageA)}
+        ${eiaChoice("B", eia.imageB, "16px")}
+      </table>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
         <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
       </td></tr>${prevResultHtml}
