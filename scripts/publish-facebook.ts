@@ -119,7 +119,8 @@ function computeScheduledAt(
   config: any,
   destaque: string,
   editionDate: string,
-  dayOffsetOverride?: number
+  dayOffsetOverride?: number,
+  disablePastSlotShift?: boolean
 ): string {
   return computeScheduledAtShared({
     config,
@@ -127,6 +128,7 @@ function computeScheduledAt(
     destaque: destaque as "d1" | "d2" | "d3",
     platform: "facebook",
     dayOffsetOverride,
+    disablePastSlotShift,
   });
 }
 
@@ -281,7 +283,26 @@ async function rescheduleFacebookPosts(opts: {
 
   for (const existing of fbPosts) {
     const d = existing.destaque;
-    const expectedAt = computeScheduledAt(opts.config, d, opts.editionDate, opts.dayOffsetOverride);
+    // #2575: usar slot canônico (sem shift) para COMPARAÇÃO de idempotência.
+    // O shift só faz sentido no agendamento INICIAL — um slot canônico passado
+    // é estável (mesmo valor a cada run), enquanto now+15min avança e gera churn.
+    const expectedAt = computeScheduledAt(
+      opts.config,
+      d,
+      opts.editionDate,
+      opts.dayOffsetOverride,
+      /* disablePastSlotShift */ true,
+    );
+    // #2575/#2576: para a RE-publicação (após DELETE), usar o slot com shift
+    // aplicado (válido/futuro) — o canônico pode estar no passado e seria
+    // rejeitado pela Graph API.
+    const scheduleAt = computeScheduledAt(
+      opts.config,
+      d,
+      opts.editionDate,
+      opts.dayOffsetOverride,
+      /* disablePastSlotShift */ false,
+    );
 
     if (!needsReschedule(existing.scheduled_at, expectedAt)) {
       console.log(`SKIP facebook/${d} — já no horário (${existing.scheduled_at})`);
@@ -290,9 +311,9 @@ async function rescheduleFacebookPosts(opts: {
       continue;
     }
 
-    // Validate new time before destruction (avoid losing post if expectedAt is invalid)
+    // Validate new time before destruction (avoid losing post if scheduleAt is invalid)
     try {
-      validateScheduledTime(expectedAt);
+      validateScheduledTime(scheduleAt);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`SKIP facebook/${d}: scheduled_time_invalid: ${msg}`);
@@ -325,7 +346,7 @@ async function rescheduleFacebookPosts(opts: {
     // create a duplicate). If re-publish fails after DELETE, log and mark
     // failed — better to know the post is gone than have stale data.
     try {
-      console.log(`DELETING facebook/${d} (was ${existing.scheduled_at}, target ${expectedAt})...`);
+      console.log(`DELETING facebook/${d} (was ${existing.scheduled_at}, target ${scheduleAt})...`);
       if (!existing.fb_post_id) {
         throw new Error(`fb_post_id ausente — não dá pra deletar`);
       }
@@ -337,16 +358,16 @@ async function rescheduleFacebookPosts(opts: {
       continue;
     }
 
-    // Re-publish at new time
+    // Re-publish at new time (using scheduleAt which has past-slot shift applied)
     try {
-      console.log(`Re-publishing facebook/${d} at ${expectedAt}...`);
+      console.log(`Re-publishing facebook/${d} at ${scheduleAt}...`);
       const result = await publishPhoto(
         opts.pageId,
         opts.pageToken,
         opts.apiVersion,
         imagePath,
         caption,
-        expectedAt,
+        scheduleAt,
       );
       const postId = result.post_id || result.id;
       const postUrl = `https://www.facebook.com/${opts.pageId}/posts/${postId}`;
@@ -355,14 +376,14 @@ async function rescheduleFacebookPosts(opts: {
         destaque: d,
         url: postUrl,
         status: "scheduled",
-        scheduled_at: expectedAt,
+        scheduled_at: scheduleAt,
         fb_post_id: postId,
       };
       if (opts.isTest) newEntry.is_test = true; // #1056
       appendSocialPosts(opts.publishedPath, [newEntry]);
       rescheduled += 1;
       results.push(newEntry);
-      console.log(`OK facebook/${d} — rescheduled to ${expectedAt} — ${postUrl}`);
+      console.log(`OK facebook/${d} — rescheduled to ${scheduleAt} — ${postUrl}`);
     } catch (e: any) {
       console.error(`Re-publish failed for facebook/${d}: ${e.message}`);
       const lostEntry: PostEntry = {

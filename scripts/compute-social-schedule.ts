@@ -72,6 +72,20 @@ export interface ComputeScheduleInput {
    * Defaults para 15 min (900_000ms) — acima do piso de 10min do Facebook.
    */
   pastSlotShiftMs?: number;
+  /**
+   * Espaçamento entre destaques shiftados (#2576). Quando múltiplos slots estão
+   * no passado e são shiftados, adiciona `(destaqueNum - 1) * pastSlotSpacingMs`
+   * para evitar colisão (d1=now+15, d2=now+25, d3=now+35 com spacing=10min).
+   * Defaults para 10 min (600_000ms). Garante piso FB (>10min) pra todos os destaques.
+   */
+  pastSlotSpacingMs?: number;
+  /**
+   * Quando `true`, suprime o past-slot shift (#2575). Usado no caminho de
+   * COMPARAÇÃO do reschedule (rescheduleFacebookPosts) para que o `expectedAt`
+   * seja o slot canônico determinístico — não `now+15min` que avança a cada run.
+   * O shift ainda se aplica no agendamento INICIAL (não passar este flag lá).
+   */
+  disablePastSlotShift?: boolean;
 }
 
 /**
@@ -147,8 +161,10 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
     platform,
     dayOffsetOverride,
     now: nowOverride,
-    minFutureMs = 10 * 60 * 1000,    // 10 min — piso do Facebook Graph API
-    pastSlotShiftMs = 15 * 60 * 1000, // 15 min — acima do piso de 10min (#2552)
+    minFutureMs = 10 * 60 * 1000,      // 10 min — piso do Facebook Graph API
+    pastSlotShiftMs = 15 * 60 * 1000,   // 15 min — acima do piso de 10min (#2552)
+    pastSlotSpacingMs = 10 * 60 * 1000, // 10 min — espaçamento entre destaques shiftados (#2576)
+    disablePastSlotShift = false,        // quando true, pula o shift (#2575 reschedule path)
   } = input;
 
   const social = config.publishing?.social;
@@ -238,13 +254,30 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   // Testes de regressão do #2552 injetam `now` explicitamente pra testar o
   // comportamento correto sem precisar dessa var.
   //
+  // (#2575) `disablePastSlotShift: true` suprime o shift no caminho de COMPARAÇÃO
+  // do reschedule (rescheduleFacebookPosts) para que `expectedAt` seja o slot
+  // canônico determinístico. O shift se aplica apenas no agendamento inicial.
+  //
+  // (#2576) Espaçamento entre destaques shiftados: quando múltiplos slots estão
+  // no passado, o shift é `now + pastSlotShiftMs + (destaqueNum-1) * pastSlotSpacingMs`
+  // (d1=+15min, d2=+25min, d3=+35min com spacing=10min). Garante ordem e piso FB.
+  //
   // O log do WARN é controlado separadamente por DIARIA_QUIET_SCHEDULE_LOG !== "1".
   const nowMs = nowOverride ?? Date.now();
   const calculatedMs = Date.parse(calculatedIso);
   const minFutureCutoffMs = nowMs + minFutureMs;
 
-  if (calculatedMs < minFutureCutoffMs && process.env.DIARIA_DISABLE_PASTSLOT_SHIFT !== "1") {
-    const shiftedMs = nowMs + pastSlotShiftMs;
+  // #2576: índice do destaque (0-based) pra espaçar slots shiftados
+  const destaqueIndex = destaque === "d1" ? 0 : destaque === "d2" ? 1 : 2;
+
+  if (
+    calculatedMs < minFutureCutoffMs &&
+    !disablePastSlotShift &&
+    process.env.DIARIA_DISABLE_PASTSLOT_SHIFT !== "1"
+  ) {
+    // #2576: espaçar por índice de destaque para evitar colisão quando múltiplos
+    // slots estão no passado (ex: d1=09:00 e d2=12:30 com dispatch às 13:00).
+    const shiftedMs = nowMs + pastSlotShiftMs + destaqueIndex * pastSlotSpacingMs;
     const shiftedDate = new Date(shiftedMs);
     // Calcular offset do timezone pra data shiftada (pode diferir por DST)
     const shiftedOffsetStr = timezoneOffsetIso(shiftedDate, tz);
