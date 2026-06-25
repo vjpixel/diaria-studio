@@ -519,7 +519,7 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
     <thead>
       <tr>
         <th title="Posição">#</th>
-        <th title="Edição (AAMMDD) onde o link apareceu pela primeira vez na janela">Edição</th>
+        <th title="Edição com mais cliques do link na janela de 5 edições">Edição</th>
         <th title="Categoria do link">Categoria</th>
         <th title="Âncora do link (título ou label)">Âncora</th>
         <th title="Cliques únicos verificados (soma da janela de 5 edições)">Cliques</th>
