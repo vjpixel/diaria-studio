@@ -139,7 +139,7 @@ export function verifyFragmentPreserved(fragmentHtml: string): string | null {
  * via `javascript_tool`. Usado pelo orchestrator para decidir se deve acionar
  * o fallback chunked.
  */
-export interface InsertTextResult {
+interface InsertTextResult {
   inserted: boolean;
   htmlBytes: number;
   docSize: number;

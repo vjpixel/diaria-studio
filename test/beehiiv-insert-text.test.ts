@@ -227,10 +227,10 @@ describe("classifyInsertResult (#2550)", () => {
     );
   });
 
-  it("verify_only mesmo com chaves extras (objeto não-vazio com fields desconhecidos)", () => {
+  it("retry_chunked quando objeto não-vazio não tem `inserted` (chaves desconhecidas)", () => {
     // Se javascript_tool retornar um objeto com campos inesperados mas sem `inserted`,
-    // é ambíguo — pedir re-verificação via varredura, não assumir falha.
-    // classifyInsertResult trata `inserted` ausente como r.inserted === undefined → falsy.
+    // NÃO é o caso ambíguo de verify_only (que é só objeto vazio {}). Aqui o objeto é
+    // não-vazio mas `inserted` está ausente → r.inserted === undefined → falsy → retry_chunked.
     assert.equal(
       classifyInsertResult({ unknownField: true }),
       "retry_chunked", // inserted:undefined → !r.inserted → retry_chunked
