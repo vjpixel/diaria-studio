@@ -490,8 +490,9 @@ describe("computeScheduledAt (#270)", () => {
       }
     });
 
-    it("slot exatamente now+5min (abaixo do piso FB de 10min) → shiftado p/ now+15min", () => {
+    it("slot exatamente now+5min (abaixo do piso FB de 10min) → shiftado p/ now+25min (d2, spacing=10min)", () => {
       // now = 11:00 BRT, d2_time ajustado para 11:05 BRT → só 5min no futuro (< piso)
+      // (#2576) d2 tem destaqueIndex=1 → shift = now+15min + 1*10min = now+25min
       delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
       delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
       const cfgWith11h05 = JSON.parse(JSON.stringify(baseConfig)) as typeof baseConfig;
@@ -516,11 +517,12 @@ describe("computeScheduledAt (#270)", () => {
         process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
 
-      const expectedShiftedMs = nowBrt11h + 15 * 60_000;
+      // d2 (índice 1) → now + 15min + 1*10min = now + 25min
+      const expectedShiftedMs = nowBrt11h + 25 * 60_000;
       const actualMs = new Date(iso).getTime();
       assert.ok(
         Math.abs(actualMs - expectedShiftedMs) <= 1000,
-        `slot 11:05 (5min no futuro) deve ser shiftado p/ now+15min, got ${iso}`,
+        `slot 11:05 d2 (5min no futuro) deve ser shiftado p/ now+25min (#2576), got ${iso}`,
       );
 
       const warn = stderrLines.find((l) => l.includes("WARN (#2552)") && l.includes("facebook/d2"));
