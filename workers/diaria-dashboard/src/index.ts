@@ -23,6 +23,13 @@
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
 import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary } from "./types.ts";
 
+// ─── Helpers inline (espelham scripts/lib/ctr-utils.ts) ──────────────────────
+// Duplicar em vez de importar — o Worker não tem acesso a scripts/lib/ no bundle.
+// isAprofundeAnchor: retorna true quando anchor começa com "Aprofunde" (#2556)
+function isAprofundeAnchor(anchor: string): boolean {
+  return /^aprofunde\b/i.test((anchor || "").trim());
+}
+
 const DS = DS_COLORS;
 
 export interface Env {
@@ -173,10 +180,16 @@ export function renderCtrSection(data: DashboardData): string {
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    // #2556: exibir tema do destaque em vez da âncora "Aprofunde".
+    // Prioridade: highlight_title (join contra approved.json) → post_title (fallback seguro)
+    // → anchor (links novos pós-mar/2026 já têm o título como âncora).
+    const temaCell = isAprofundeAnchor(r.anchor)
+      ? escHtml(r.highlight_title ?? r.post_title)
+      : escHtml(r.anchor);
     return `<tr>
     <td>${escHtml(r.date)}</td>
     <td><small>${escHtml(r.category)}</small></td>
-    <td>${escHtml(r.anchor)}</td>
+    <td>${temaCell}</td>
     <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
     <td><small>${r.unique_verified_clicks}</small></td>
     <td>${linkCell}</td>
@@ -210,7 +223,7 @@ export function renderCtrSection(data: DashboardData): string {
       <tr>
         <th>Data</th>
         <th>Categoria</th>
-        <th>Âncora</th>
+        <th title="Título do destaque (links novos) ou âncora genérica resolvida para o destaque (links pré-mar/2026)">Tema</th>
         <th title="CTR: cliques ÷ opens">CTR</th>
         <th title="Cliques únicos verificados">Cliques</th>
         <th>Link</th>
@@ -235,9 +248,20 @@ export function renderOvernightSection(data: DashboardData): string {
     .sort((a, b) => (b.edition > a.edition ? 1 : -1))
     .slice(0, 20)
     .map((r) => {
-      const progress = r.total_issues > 0
-        ? `${r.merged}✓ ${r.draft > 0 ? r.draft + "↩ " : ""}${r.pulada > 0 ? r.pulada + "⊘ " : ""}${r.in_progress > 0 ? r.in_progress + "⏳" : ""}`.trim()
-        : "—";
+      // #2557: tooltips por grupo — só renderiza grupos com contagem > 0.
+      // O número prefixo (N✓) indica contagem; cada grupo tem title= explicativo.
+      let progress: string;
+      if (r.total_issues === 0) {
+        progress = "—";
+      } else {
+        const parts: string[] = [];
+        // merged sempre renderizado (pode ser 0 se nenhuma mergeou ainda)
+        parts.push(`<span title="${r.merged} mergeada${r.merged !== 1 ? "s" : ""}">${r.merged}✓</span>`);
+        if (r.draft > 0) parts.push(`<span title="${r.draft} draft${r.draft !== 1 ? "s" : ""}">${r.draft}↩</span>`);
+        if (r.pulada > 0) parts.push(`<span title="${r.pulada} pulada${r.pulada !== 1 ? "s" : ""}">${r.pulada}⊘</span>`);
+        if (r.in_progress > 0) parts.push(`<span title="${r.in_progress} em andamento">${r.in_progress}⏳</span>`);
+        progress = parts.join(" ");
+      }
       const slowest = r.slowest_unit
         ? `${r.slowest_unit.label} (${fmtDuration(r.slowest_unit.duration_ms)})`
         : "—";
@@ -262,7 +286,7 @@ export function renderOvernightSection(data: DashboardData): string {
         <th title="Data da rodada (AAMMDD)">Rodada</th>
         <th title="Início da rodada (BRT)">Início</th>
         <th title="Total de issues planejadas">Issues</th>
-        <th title="✓ mergeado · ↩ draft · ⊘ pulada · ⏳ em andamento">Resultado</th>
+        <th title="N✓ mergeadas · N↩ drafts · N⊘ puladas · N⏳ em andamento (passe o mouse nos símbolos para a contagem)">Resultado</th>
         <th title="Duração total da rodada">Duração</th>
         <th title="Unidade mais lenta (label + duração)">Mais lenta</th>
       </tr>

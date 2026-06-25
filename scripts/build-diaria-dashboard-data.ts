@@ -52,6 +52,7 @@ import {
 } from "./lib/source-runs.ts";
 import type { SourceEntry } from "./lib/source-runs.ts";
 import { canonicalize } from "./lib/url-utils.ts";
+import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
   DashboardData,
@@ -142,6 +143,73 @@ function buildSourceHealth(): DashboardData["source_health"] {
   };
 }
 
+// ─── Highlight title resolver (#2556) ────────────────────────────────────────
+
+/** Interface local para um destaque em 01-approved.json */
+interface ApprovedHighlight {
+  url?: string;
+  title?: string;
+  titles?: string[];
+  article?: { url?: string; title?: string };
+  [key: string]: unknown;
+}
+
+/**
+ * Constrói um índice de título por URL canonicalizada a partir dos highlights de
+ * todas as edições, para resolver o título do destaque quando o anchor = "Aprofunde".
+ *
+ * Join: base_url (CTR CSV) → url/article.url (approved.json highlights).
+ * Lossy ~22% esperado (URL de pesquisa ≠ URL publicada).
+ *
+ * @param editionsDir  caminho para data/editions/
+ */
+export function buildHighlightTitleIndex(
+  editionsDir: string = join(DATA_DIR, "editions"),
+): Map<string, string> {
+  const index = new Map<string, string>();
+  if (!existsSync(editionsDir)) return index;
+
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+      .map((d) => d.name);
+  } catch {
+    return index;
+  }
+
+  for (const edition of dirs) {
+    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
+    if (!existsSync(approvedPath)) continue;
+
+    let approved: { highlights?: ApprovedHighlight[] };
+    try {
+      approved = JSON.parse(readFileSync(approvedPath, "utf8")) as typeof approved;
+    } catch {
+      continue;
+    }
+
+    const highlights = approved.highlights ?? [];
+    for (const h of highlights) {
+      // Resolve a URL do destaque (pode estar em url ou article.url)
+      const url = (h.url ?? h.article?.url ?? "").trim();
+      if (!url) continue;
+
+      // Resolve o título (pode estar em title ou no primeiro de titles[])
+      const titleRaw = h.title ?? (Array.isArray(h.titles) ? h.titles[0] : undefined) ?? h.article?.title ?? "";
+      const title = (titleRaw as string).trim();
+      if (!title) continue;
+
+      const key = canonicalize(url);
+      if (!index.has(key)) {
+        index.set(key, title);
+      }
+    }
+  }
+
+  return index;
+}
+
 // ─── Fonte 2: CTR por categoria ───────────────────────────────────────────────
 
 interface CsvRow {
@@ -188,7 +256,10 @@ export function parseCsvLine(line: string): string[] {
   return result;
 }
 
-function buildCtrSummary(): CtrSummary | null {
+function buildCtrSummary(
+  // #2556: índice de título por URL canônica (highlight title resolver)
+  highlightTitleIndex: Map<string, string> = new Map(),
+): CtrSummary | null {
   const csvPath = join(DATA_DIR, "link-ctr-table.csv");
   if (!existsSync(csvPath)) return null;
 
@@ -252,15 +323,24 @@ function buildCtrSummary(): CtrSummary | null {
     .filter((r) => parseFloat(r.ctr_pct) > 0)
     .sort((a, b) => parseFloat(b.ctr_pct) - parseFloat(a.ctr_pct))
     .slice(0, 10)
-    .map((r) => ({
-      date: r.date,
-      post_title: r.post_title,
-      anchor: r.anchor,
-      base_url: r.base_url,
-      category: r.category || "Outro",
-      ctr_pct: parseFloat(r.ctr_pct) || 0,
-      unique_verified_clicks: parseInt(r.unique_verified_clicks, 10) || 0,
-    }));
+    .map((r) => {
+      // #2556: resolver título do destaque quando anchor = "Aprofunde"
+      let highlight_title: string | null = null;
+      if (isAprofundeAnchor(r.anchor)) {
+        const key = canonicalize(r.base_url);
+        highlight_title = highlightTitleIndex.get(key) ?? null;
+      }
+      return {
+        date: r.date,
+        post_title: r.post_title,
+        anchor: r.anchor,
+        highlight_title,
+        base_url: r.base_url,
+        category: r.category || "Outro",
+        ctr_pct: parseFloat(r.ctr_pct) || 0,
+        unique_verified_clicks: parseInt(r.unique_verified_clicks, 10) || 0,
+      };
+    });
 
   return {
     total_editions: editions,
@@ -609,11 +689,15 @@ export function buildPollEiaSummary(
 // ─── Agrega tudo ─────────────────────────────────────────────────────────────
 
 export function buildDashboardData(): DashboardData {
+  // #2556: pré-computa o índice de título de destaques (edições → highlights)
+  // antes de buildCtrSummary, para que top_links com anchor "Aprofunde" possam
+  // ser resolvidos para o título real do destaque.
+  const highlightTitleIndex = buildHighlightTitleIndex();
   return {
     generated_at: new Date().toISOString(),
     schema_version: SCHEMA_VERSION,
     source_health: buildSourceHealth(),
-    ctr: buildCtrSummary(),
+    ctr: buildCtrSummary(highlightTitleIndex),
     overnight: buildOvernightSummary(),
     use_melhor: buildUseMelhorSummary(),
     poll_eia: buildPollEiaSummary(),

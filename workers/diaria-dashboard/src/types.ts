@@ -45,6 +45,12 @@ export interface CtrSummary {
     date: string;
     post_title: string;
     anchor: string;
+    /**
+     * Título do destaque resolvido a partir de 01-approved.json (#2556).
+     * Populado quando anchor = "Aprofunde" (âncora genérica pré-mar/2026).
+     * Null quando o join é lossy ou anchor já é o título (links novos).
+     */
+    highlight_title: string | null;
     base_url: string;
     category: string;
     ctr_pct: number;

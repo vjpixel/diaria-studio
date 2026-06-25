@@ -787,3 +787,217 @@ describe("buildOvernightSummary + buildTimelineRows (#2471)", () => {
     assert.equal(rows[0].endLabel, "mergeado");
   });
 });
+
+// ─── Regressão #2556: Top 10 links — renomear Âncora→Tema + resolver Aprofunde ─
+
+describe("regressão #2556: renderCtrSection — coluna Tema + Aprofunde→título", () => {
+  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+
+  function makeCtrData(overrides: Partial<NonNullable<DashData["ctr"]>> = {}): DashData {
+    return {
+      generated_at: "2026-06-25T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: {
+        total_editions: 1,
+        total_links: 3,
+        top_categories: [],
+        top_links: [],
+        ...overrides,
+      },
+      overnight: { runs: [], total_runs: 0 },
+      stubs: [],
+    };
+  }
+
+  test("header da coluna é 'Tema' (não 'Âncora')", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderCtrSection(makeCtrData());
+    assert.ok(html.includes(">Tema<"), "header deve conter 'Tema'");
+    assert.ok(!html.includes(">Âncora<"), "header NÃO deve conter 'Âncora'");
+  });
+
+  test("row anchor='Aprofunde' COM destaque resolvível → exibe highlight_title", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeCtrData({
+      top_links: [{
+        date: "2026-01-10",
+        post_title: "Edição de janeiro",
+        anchor: "Aprofunde",
+        highlight_title: "GPT-5 supera expectativas do mercado",
+        base_url: "https://openai.com/gpt5",
+        category: "Destaque",
+        ctr_pct: 8.5,
+        unique_verified_clicks: 17,
+      }],
+    });
+    const html = renderCtrSection(data);
+    assert.ok(html.includes("GPT-5 supera expectativas do mercado"), "deve exibir highlight_title resolvido");
+    assert.ok(!html.includes(">Aprofunde<"), "NÃO deve exibir a âncora 'Aprofunde' como texto da célula");
+  });
+
+  test("row anchor='Aprofunde' SEM highlight_title → fallback para post_title", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeCtrData({
+      top_links: [{
+        date: "2026-01-10",
+        post_title: "Edição de janeiro — edição especial IA",
+        anchor: "Aprofunde",
+        highlight_title: null,  // join lossy: destaque não encontrado
+        base_url: "https://techcrunch.com/article",
+        category: "Destaque",
+        ctr_pct: 7.0,
+        unique_verified_clicks: 14,
+      }],
+    });
+    const html = renderCtrSection(data);
+    assert.ok(html.includes("Edição de janeiro — edição especial IA"), "deve usar post_title como fallback");
+    assert.ok(!html.includes(">Aprofunde<"), "NÃO deve exibir 'Aprofunde' como texto da célula");
+  });
+
+  test("row anchor já é título (não-Aprofunde) → exibe anchor sem alteração", async () => {
+    const { renderCtrSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeCtrData({
+      top_links: [{
+        date: "2026-05-01",
+        post_title: "Edição 01 de maio",
+        anchor: "GPT-5 supera humanos no MMLU",
+        highlight_title: null,
+        base_url: "https://openai.com/gpt5",
+        category: "Destaque",
+        ctr_pct: 7.0,
+        unique_verified_clicks: 14,
+      }],
+    });
+    const html = renderCtrSection(data);
+    assert.ok(html.includes("GPT-5 supera humanos no MMLU"), "deve exibir o anchor como está (já é o título)");
+  });
+});
+
+// ─── Regressão #2556: buildHighlightTitleIndex popula corretamente ─────────────
+
+import { mkdirSync as mkdirSyncForTest, writeFileSync as writeFileSyncForTest, rmSync as rmSyncForTest } from "node:fs";
+import { join as joinForTest } from "node:path";
+import { tmpdir } from "node:os";
+
+describe("regressão #2556: buildHighlightTitleIndex", () => {
+  test("índice vazio quando editionsDir não existe", async () => {
+    const { buildHighlightTitleIndex } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const idx = buildHighlightTitleIndex("/tmp/nao-existe-editions-xyzzy-2556");
+    assert.equal(idx.size, 0, "índice deve ser vazio quando dir não existe");
+  });
+
+  test("indexa highlight_title de approved.json corretamente", async () => {
+    const { buildHighlightTitleIndex } = await import("../scripts/build-diaria-dashboard-data.ts");
+
+    const tmpDir = joinForTest(tmpdir(), "diaria-test-editions-2556");
+    const editionDir = joinForTest(tmpDir, "260110", "_internal");
+    mkdirSyncForTest(editionDir, { recursive: true });
+
+    const approved = {
+      highlights: [
+        {
+          url: "https://openai.com/gpt5",
+          title: "GPT-5 supera expectativas",
+          article: { url: "https://openai.com/gpt5", title: "GPT-5 supera expectativas" },
+        },
+        {
+          url: "https://techcrunch.com/ai-news",
+          title: "Anthropic anuncia Claude 4",
+        },
+      ],
+    };
+    writeFileSyncForTest(joinForTest(editionDir, "01-approved.json"), JSON.stringify(approved));
+
+    const idx = buildHighlightTitleIndex(tmpDir);
+    assert.ok(idx.size >= 1, "índice deve ter pelo menos 1 entrada");
+    // Verifica que a URL foi indexada (canonicalize pode remover trailing slashes, etc.)
+    const hasOpenAI = [...idx.values()].includes("GPT-5 supera expectativas");
+    assert.ok(hasOpenAI, "deve indexar o título do highlight de openai.com/gpt5");
+
+    // Cleanup
+    rmSyncForTest(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ─── Regressão #2557: tooltips nos símbolos da coluna Resultado do overnight ──
+
+describe("regressão #2557: renderOvernightSection — tooltips por grupo na célula Resultado", () => {
+  type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+
+  function makeOvernightData(run: import("../workers/diaria-dashboard/src/types.ts").OvernightRun): DashData {
+    return {
+      generated_at: "2026-06-25T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null,
+      overnight: { runs: [run], total_runs: 1 },
+      stubs: [],
+    };
+  }
+
+  test("row com merged=2, draft=1, pulada=1, in_progress=1 → cada grupo tem title= correto", async () => {
+    const { renderOvernightSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeOvernightData({
+      edition: "260625",
+      started_at: "2026-06-25T01:00:00Z",
+      total_issues: 5,
+      merged: 2,
+      draft: 1,
+      pulada: 1,
+      in_progress: 1,
+      duration_ms: 3600000,
+      slowest_unit: null,
+    });
+    const html = renderOvernightSection(data);
+    // Verifica title= por grupo
+    assert.ok(html.includes('title="2 mergeadas"'), "deve ter title para merged=2");
+    assert.ok(html.includes('title="1 draft"'), "deve ter title para draft=1");
+    assert.ok(html.includes('title="1 pulada"'), "deve ter title para pulada=1");
+    assert.ok(html.includes('title="1 em andamento"'), "deve ter title para in_progress=1");
+  });
+
+  test("tooltip do header menciona o formato N✓", async () => {
+    const { renderOvernightSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeOvernightData({
+      edition: "260625",
+      started_at: null,
+      total_issues: 1,
+      merged: 1,
+      draft: 0,
+      pulada: 0,
+      in_progress: 0,
+      duration_ms: null,
+      slowest_unit: null,
+    });
+    const html = renderOvernightSection(data);
+    // O header deve mencionar "N✓" para explicar que o número prefixo é contagem
+    assert.ok(html.includes("N✓"), "header deve mencionar formato N✓");
+    assert.ok(html.includes("N↩"), "header deve mencionar formato N↩");
+    assert.ok(html.includes("N⊘"), "header deve mencionar formato N⊘");
+    assert.ok(html.includes("N⏳"), "header deve mencionar formato N⏳");
+  });
+
+  test("grupos com contagem 0 (draft, pulada, in_progress) NÃO aparecem na célula <td>", async () => {
+    const { renderOvernightSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeOvernightData({
+      edition: "260620",
+      started_at: "2026-06-20T01:00:00Z",
+      total_issues: 3,
+      merged: 3,
+      draft: 0,
+      pulada: 0,
+      in_progress: 0,
+      duration_ms: 1800000,
+      slowest_unit: null,
+    });
+    const html = renderOvernightSection(data);
+    // Só merged=3 deve aparecer
+    assert.ok(html.includes("3✓"), "deve incluir 3✓ para merged=3");
+    // Os símbolos NÃO devem aparecer em <span> (apenas na célula de dados).
+    // O header tooltip pode mencionar os símbolos — verificamos que não há <span> com esses símbolos.
+    assert.ok(!html.includes('<span title="0 draft'), "span de draft NÃO deve existir quando draft=0");
+    assert.ok(!html.includes('<span title="0 pulada'), "span de pulada NÃO deve existir quando pulada=0");
+    assert.ok(!html.includes('<span title="0 em andamento'), "span de in_progress NÃO deve existir quando in_progress=0");
+  });
+});
