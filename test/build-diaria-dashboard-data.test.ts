@@ -1106,6 +1106,83 @@ describe("regressao #2558: buildTopClickedRecent -- janela 5 edicoes, cliques ab
   });
 });
 
+// ─── #2570: buildTopClickedRecent — edition = edicao de max cliques ──────────
+
+describe("regressao #2570: buildTopClickedRecent -- edition = edicao de max cliques, nao first-seen", () => {
+  test("edition reflete a edicao com mais cliques (nao a primeira vista no CSV)", async () => {
+    // Cenario: mesmo link aparece em 2 edicoes dentro da janela de 5.
+    // Edicao B (2026-02-01, 20 cliques) vem ANTES de Edicao A (2026-03-01, 30 cliques) no CSV.
+    // Se a logica fosse first-seen, edition seria B (2026-02-01).
+    // Comportamento correto: edition = A (2026-03-01), cliques totais = 50.
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = [
+      // Edicao B (first-seen) com 20 cliques -- deve ser substituida por A no campo edition
+      "2026-02-01,Ed Fev,Destaques,LinkX,https://x.example.com,x.example.com,200,20,20,10.00,Destaque,INT",
+      // Edicao A (second-seen) com 30 cliques -- deve virar a edition do item agregado
+      "2026-03-01,Ed Mar,Destaques,LinkX,https://x.example.com,x.example.com,200,30,30,15.00,Destaque,INT",
+      // Link diferente pra preencher a janela de 5 edicoes
+      "2026-04-01,Ed Abr,Radar,LinkY,https://y.example.com,y.example.com,200,5,5,2.50,Radar,INT",
+      "2026-05-01,Ed Mai,Radar,LinkZ,https://z.example.com,z.example.com,200,3,3,1.50,Radar,INT",
+      "2026-06-01,Ed Jun,Radar,LinkW,https://w.example.com,w.example.com,200,1,1,0.50,Radar,INT",
+    ];
+    const csv = [header, ...rows].join("\n");
+
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const csvPath = j(td(), "diaria-test-tcr-2570-maxedition.csv");
+    wf(csvPath, csv, "utf8");
+
+    const result = buildTopClickedRecent(csvPath);
+    rm(csvPath, { force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    const linkX = result!.top_items.find((r) => r.base_url === "https://x.example.com");
+    assert.ok(linkX !== undefined, "LinkX deve aparecer nos resultados");
+    assert.equal(linkX!.unique_verified_clicks, 50, "cliques devem ser somados (20+30=50)");
+    assert.equal(
+      linkX!.edition,
+      "2026-03-01",
+      "edition deve ser 2026-03-01 (max 30 cliques), nao 2026-02-01 (first-seen 20 cliques)",
+    );
+  });
+
+  test("em empate de cliques, edition mais recente vence", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = [
+      // Ambas as edicoes com 25 cliques -- a mais recente (2026-04-01) deve vencer
+      "2026-03-01,Ed Mar,Destaques,LinkTie,https://tie.example.com,tie.example.com,200,25,25,12.50,Destaque,INT",
+      "2026-04-01,Ed Abr,Destaques,LinkTie,https://tie.example.com,tie.example.com,200,25,25,12.50,Destaque,INT",
+      // Links extras para preencher 5 edicoes distintas na janela
+      "2026-05-01,Ed Mai,Radar,LinkP,https://p.example.com,p.example.com,200,1,1,0.50,Radar,INT",
+      "2026-06-01,Ed Jun,Radar,LinkQ,https://q.example.com,q.example.com,200,1,1,0.50,Radar,INT",
+      "2026-02-01,Ed Fev,Radar,LinkR,https://r.example.com,r.example.com,200,1,1,0.50,Radar,INT",
+    ];
+    const csv = [header, ...rows].join("\n");
+
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const csvPath = j(td(), "diaria-test-tcr-2570-tie.csv");
+    wf(csvPath, csv, "utf8");
+
+    const result = buildTopClickedRecent(csvPath);
+    rm(csvPath, { force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    const linkTie = result!.top_items.find((r) => r.base_url === "https://tie.example.com");
+    assert.ok(linkTie !== undefined, "LinkTie deve aparecer nos resultados");
+    assert.equal(linkTie!.unique_verified_clicks, 50, "cliques devem ser somados (25+25=50)");
+    assert.equal(
+      linkTie!.edition,
+      "2026-04-01",
+      "em empate, edition mais recente (2026-04-01) deve vencer sobre 2026-03-01",
+    );
+  });
+});
+
 // ─── #2560: buildAudienceSummary — parse de audience-profile.md ──────────────
 
 import { writeFileSync as writeFileSyncForAud, rmSync as rmSyncForAud } from "node:fs";
