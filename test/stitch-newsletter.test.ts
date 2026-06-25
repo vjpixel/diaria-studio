@@ -156,7 +156,7 @@ describe("stitchNewsletter (#1463)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
       });
-      // Ordem canonical (#1569): coverage > D1 > D2 > É IA? > D3 > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
+      // Ordem canonical (#2546): coverage > D1 > D2 > D3 > É IA? > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
       // RADAR mergea radar + radar em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
       const d2Pos = result.indexOf("DESTAQUE 2");
@@ -166,9 +166,9 @@ describe("stitchNewsletter (#1463)", () => {
       const erroPos = result.indexOf("ERRO INTENCIONAL");
       const sortPos = result.indexOf("SORTEIO");
       const encerrarPos = result.indexOf("PARA ENCERRAR");
-      assert.ok(d2Pos > 0 && d2Pos < eiaPos, `D2 antes de É IA? (d2=${d2Pos} eia=${eiaPos})`);
-      assert.ok(eiaPos < d3Pos, "É IA? antes de D3");
-      assert.ok(d3Pos < radarPos, "D3 antes de RADAR");
+      assert.ok(d2Pos > 0 && d2Pos < d3Pos, `D2 antes de D3 (d2=${d2Pos} d3=${d3Pos})`);
+      assert.ok(d3Pos < eiaPos, "D3 antes de É IA? (#2546)");
+      assert.ok(eiaPos < radarPos, "É IA? antes de RADAR (#2546)");
       assert.ok(radarPos < erroPos, "RADAR antes de ERRO");
       assert.ok(erroPos < sortPos, "ERRO antes de SORTEIO");
       assert.ok(sortPos < encerrarPos, "SORTEIO antes de PARA ENCERRAR");
