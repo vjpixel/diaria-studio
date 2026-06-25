@@ -185,3 +185,52 @@ describe("checkSecondaryItemsHaveSummary — boundary cases", () => {
     assert.equal(result.errors.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regressão #2579: descrição que começa com link markdown não é falso-positivo
+// ---------------------------------------------------------------------------
+
+describe("checkSecondaryItemsHaveSummary — regressão #2579 (descrição começa com link)", () => {
+  it("ok: descrição inicia com [Fonte](url) + texto — não é título pelado", () => {
+    // A linha de descrição começa com um link markdown, mas tem texto após ele.
+    // O lint NÃO deve acusar — é uma descrição válida, não um item sem descrição.
+    const md = lancamentoSection(
+      `**[Ferramenta Nova](https://nova.com)**\n[The Verge](https://theverge.com/x) explica que a ferramenta automatiza deploys com IA.\n`,
+    );
+    const result = checkSecondaryItemsHaveSummary(md);
+    assert.equal(result.ok, true, "descrição iniciando com link não deve acusar falso-positivo");
+    assert.equal(result.errors.length, 0);
+  });
+
+  it("ok: descrição RADAR inicia com link markdown + texto longo", () => {
+    const md = radarSection(
+      `**[Pesquisa sobre LLMs](https://arxiv.org/abs/9999)**\n[MIT Technology Review](https://technologyreview.com/x) analisa os resultados e aponta limitações.\n`,
+    );
+    const result = checkSecondaryItemsHaveSummary(md);
+    assert.equal(result.ok, true);
+    assert.equal(result.errors.length, 0);
+  });
+
+  it("erro: item sem descrição ainda é detectado (não-regressão do #2545)", () => {
+    // Item realmente pelado (sem nenhuma linha de descrição) AINDA deve acusar.
+    const md = lancamentoSection(
+      `**[Ferramenta Pelada](https://pelada.com)**\n`,
+    );
+    const result = checkSecondaryItemsHaveSummary(md);
+    assert.equal(result.ok, false, "item sem descrição deve continuar sendo detectado");
+    assert.equal(result.errors.length, 1);
+    assert.ok(result.errors[0].titleExcerpt.includes("Ferramenta Pelada"));
+  });
+
+  it("erro: item pelado seguido de USE MELHOR canonical ainda detectado", () => {
+    // Um item pelado (link-only) seguido de outro item USE MELHOR bolded+inline
+    // deve ser flagged — o segundo item NÃO é a descrição do primeiro.
+    const md = useMelhorSection(
+      `**[Guia A](https://a.com)**\n**[Guia B](https://b.com)** Descrição B aqui.\n`,
+    );
+    const result = checkSecondaryItemsHaveSummary(md);
+    assert.equal(result.ok, false, "item pelado antes de outro item inline deve acusar");
+    assert.equal(result.errors.length, 1);
+    assert.ok(result.errors[0].titleExcerpt.includes("Guia A"));
+  });
+});

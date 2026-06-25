@@ -106,11 +106,20 @@ export function checkSecondaryItemsHaveSummary(
 
     // Formato canônico de produção (link + descrição inline): sempre válido
     // Ex: `**[Título](URL)** Descrição... (5 min)` — tem descrição na mesma linha.
+    // \*{0,2} tolera com ou sem bold; aceita qualquer link+texto como item válido.
     const INLINE_LINK_WITH_TEXT_RE = /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+\S/;
     if (INLINE_LINK_WITH_TEXT_RE.test(raw)) {
       // Item com link + descrição inline: tem descrição, OK
       continue;
     }
+
+    // Formato canônico de item USE MELHOR com descrição inline (BOLDED title):
+    // `**[Título](URL)** Descrição...`. Usado apenas para verificar se a PRÓXIMA
+    // linha é outro item de seção (não uma descrição que começa com link).
+    // Distinção importante (#2579): uma descrição que começa com `[Fonte](url) texto`
+    // NÃO tem asteriscos bold ao redor do link e NÃO é outro item — é descrição válida.
+    const INLINE_LINK_BOLDED_ITEM_RE =
+      /^\s*\*\*\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*\*\s+\S/;
 
     // Linha contendo APENAS um inline link (título do item)
     if (INLINE_LINK_ONLY_RE.test(raw)) {
@@ -120,8 +129,8 @@ export function checkSecondaryItemsHaveSummary(
 
       const noDescription =
         j >= lines.length || // EOF
-        INLINE_LINK_ONLY_RE.test(lines[j]) || // próxima é outro link
-        INLINE_LINK_WITH_TEXT_RE.test(lines[j]) || // próxima é link+desc inline
+        INLINE_LINK_ONLY_RE.test(lines[j]) || // próxima é outro link (título pelado)
+        INLINE_LINK_BOLDED_ITEM_RE.test(lines[j]) || // próxima é item USE MELHOR bolded+desc inline
         ANY_SECTION_HEADER_RE.test(lines[j].trim()) || // próxima é header
         /^(?:\*\*)?DESTAQUE\s+\d+/.test(lines[j].trim()) || // próxima é DESTAQUE
         lines[j].trim() === "---"; // próxima é separador
