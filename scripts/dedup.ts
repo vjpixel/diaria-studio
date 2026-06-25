@@ -127,6 +127,28 @@ export function extractPastUrls(md: string, window: number): Set<string> {
 }
 
 /**
+ * #2548 (Furo 1): extrai URLs de TODAS as edições passadas sem limitar por janela.
+ * Usado para dedup de conteúdo evergreen (use_melhor/video), que é re-descoberto
+ * semanas ou meses depois e precisaria de uma janela muito maior que as notícias
+ * efêmeras (radar/lancamento).
+ *
+ * Analogia: `extractPastUrls(md, Infinity)` — sem `.slice(0, window)`.
+ */
+export function extractPastUrlsUnbounded(md: string): Set<string> {
+  const urls = new Set<string>();
+  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)); // sem .slice(0, window)
+  for (const section of editionSections) {
+    for (const line of section.split("\n")) {
+      const m = line.match(/^-\s+(https?:\/\/\S+)/);
+      if (m) urls.add(canonicalize(m[1].replace(/[.,);]+$/, "")));
+    }
+  }
+  return urls;
+}
+
+/**
  * Extrai títulos das últimas `window` edições publicadas (#231 defense-in-depth).
  * Captura o título de cada edição (`## YYYY-MM-DD — "Título"`) para comparação
  * de similaridade com artigos candidatos.

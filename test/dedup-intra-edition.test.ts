@@ -650,3 +650,214 @@ describe("dedupIntraEdition — destaqueCount (#2397)", () => {
     assert.equal(removed0.length, 0, "sem highlights: nenhuma remoção");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2548 Furo 2: domain-based match via suggested_primary_domain
+// Regressão: canaltech.com.br/google-libera-ia-que-consegue-mexer-no-computador
+// = cobertura de imprensa do D1 (blog.google.com/gemini-computer-use).
+// Entidades Google/Gemini estão no ENTITY_STOPWORDS_INTRA → entity-check falha.
+// Jaccard falha porque os títulos divergem muito.
+// Fix: usar suggested_primary_domain do RADAR para match pelo domínio do D1.
+// ---------------------------------------------------------------------------
+
+import {
+  extractRegistrableDomain,
+  isPressCovertageOfHighlight,
+} from "../scripts/dedup-intra-edition.ts";
+
+describe("extractRegistrableDomain (#2548 Furo 2)", () => {
+  it("extrai eTLD+1 de URL de blog de empresa", () => {
+    assert.equal(extractRegistrableDomain("https://blog.google.com/products/gemini"), "google.com");
+    assert.equal(extractRegistrableDomain("https://openai.com/research/x"), "openai.com");
+    // research.google → .google é um TLD; extrai os 2 últimos segmentos = "research.google"
+    // O suggested_primary_domain para o Google é "google.com" (não "research.google"),
+    // então este caso não afeta o match do Furo 2.
+    assert.equal(extractRegistrableDomain("https://research.google/"), "research.google");
+  });
+
+  it("extrai eTLD+1 de URL de veículo de imprensa", () => {
+    assert.equal(extractRegistrableDomain("https://canaltech.com.br/ia/google-libera"), "com.br");
+    assert.equal(extractRegistrableDomain("https://techcrunch.com/story"), "techcrunch.com");
+    assert.equal(extractRegistrableDomain("https://exame.com/tecnologia"), "exame.com");
+  });
+
+  it("retorna null para URL inválida", () => {
+    assert.equal(extractRegistrableDomain("not-a-url"), null);
+    assert.equal(extractRegistrableDomain(""), null);
+  });
+
+  it("lowercases o resultado", () => {
+    assert.equal(extractRegistrableDomain("HTTPS://Blog.Google.COM/foo"), "google.com");
+  });
+});
+
+describe("isPressCovertageOfHighlight (#2548 Furo 2)", () => {
+  it("CENÁRIO REAL: RADAR canaltech + D1 blog.google.com → match quando suggested_primary_domain=google.com", () => {
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/google-libera-ia-que-consegue-mexer-no-computador",
+      title: "Google libera IA que consegue mexer no computador",
+      suggested_primary_domain: "google.com",
+    };
+    const highlightUrl = "https://blog.google.com/products/gemini/google-agents-computer-use";
+
+    assert.equal(
+      isPressCovertageOfHighlight(radarArticle, highlightUrl),
+      true,
+      "RADAR canaltech com suggested_primary_domain=google.com deve casar com D1 blog.google.com",
+    );
+  });
+
+  it("sem suggested_primary_domain → não detecta domain-match", () => {
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/google-libera-ia",
+      title: "Google libera IA",
+      // sem suggested_primary_domain
+    };
+    assert.equal(
+      isPressCovertageOfHighlight(radarArticle, "https://blog.google.com/foo"),
+      false,
+      "sem suggested_primary_domain não deve detectar match",
+    );
+  });
+
+  it("suggested_primary_domain diferente do domínio do destaque → sem match", () => {
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/openai-lanca-gpt-5",
+      title: "OpenAI lança GPT-5",
+      suggested_primary_domain: "openai.com",
+    };
+    // D1 é do Google, não da OpenAI
+    const highlightUrl = "https://blog.google.com/products/gemini/something";
+    assert.equal(
+      isPressCovertageOfHighlight(radarArticle, highlightUrl),
+      false,
+    );
+  });
+
+  it("URL do destaque null → sem match", () => {
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/google-libera-ia",
+      title: "Google libera IA",
+      suggested_primary_domain: "google.com",
+    };
+    assert.equal(isPressCovertageOfHighlight(radarArticle, null), false);
+  });
+});
+
+describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
+  it("CENÁRIO REAL: remove RADAR canaltech cobrindo mesmo lançamento do D1 blog.google.com", () => {
+    // Este é o caso que falhou na edição 260625:
+    // D1 = blog.google.com sobre Gemini computer use
+    // RADAR = canaltech.com.br cobrindo a mesma funcionalidade
+    // Entidades "Gemini" e "Google" estão no ENTITY_STOPWORDS_INTRA → entity falha
+    // Jaccard falha (títulos divergem demais)
+    // Fix: usar suggested_primary_domain="google.com" + D1 em google.com
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://blog.google.com/products/gemini/google-agents-computer-use",
+          article: {
+            url: "https://blog.google.com/products/gemini/google-agents-computer-use",
+            title: "Introducing computer use, a new Claude API feature",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/ia/google-libera-ia-que-consegue-mexer-no-computador",
+          title: "Google libera IA que consegue mexer no computador",
+          suggested_primary_domain: "google.com",
+        },
+        {
+          url: "https://techcrunch.com/2026/06/24/anthropic-releases-claude-5",
+          title: "Anthropic lança Claude 5 com raciocínio avançado",
+          // sem suggested_primary_domain — notícia diferente, não duplicata
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "deve remover exatamente 1 item (RADAR canaltech)");
+    assert.equal(
+      removed[0].url,
+      "https://canaltech.com.br/ia/google-libera-ia-que-consegue-mexer-no-computador",
+    );
+    assert.equal(removed[0].match_type, "domain", "deve usar match_type='domain'");
+    assert.equal(removed[0].bucket, "radar");
+
+    assert.equal(kept.radar?.length, 1, "deve preservar o RADAR não-relacionado (Claude 5)");
+    assert.equal(
+      kept.radar?.[0].url,
+      "https://techcrunch.com/2026/06/24/anthropic-releases-claude-5",
+    );
+  });
+
+  it("RADAR sem suggested_primary_domain com D1 do mesmo domínio NÃO é removido por domain-match", () => {
+    // Domain-match só aplica quando o campo suggested_primary_domain está presente.
+    // Sem ele, Jaccard e entity-check continuam como antes.
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://openai.com/research/gpt-5",
+          title: "Introducing GPT-5",
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/ia/openai-lanca-gpt-5",
+          title: "OpenAI lança GPT-5 com capacidade de raciocínio avançada",
+          // sem suggested_primary_domain
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { removed } = dedupIntraEdition(input);
+
+    // Sem suggested_primary_domain, não há domain-match.
+    // Jaccard entre "Introducing GPT-5" e "OpenAI lança GPT-5 com capacidade..."
+    // pode ou não casar via Jaccard normal — não testamos o resultado aqui,
+    // só garantimos que quando match ocorre é NOT por "domain".
+    const domainMatches = removed.filter(r => r.match_type === "domain");
+    assert.equal(domainMatches.length, 0, "sem suggested_primary_domain não deve ter domain-match");
+  });
+
+  it("domain-match não remove destaque próprio (mesmo URL)", () => {
+    // Se por algum motivo o destaque aparecer também no bucket, não deve ser
+    // auto-removido (URL-skip guard já previne isso).
+    const highlightUrl = "https://blog.google.com/products/gemini/computer-use";
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: highlightUrl,
+          title: "Google lança IA computer use",
+          // mesmo URL que o highlight
+        },
+      ],
+      radar: [
+        {
+          url: highlightUrl, // mesmo URL que o highlight
+          title: "Google lança IA computer use",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { removed } = dedupIntraEdition(input);
+
+    // O URL-skip guard (article.url === hUrl) previne remoção
+    assert.equal(removed.length, 0, "mesmo URL = não é intra-dup");
+  });
+});

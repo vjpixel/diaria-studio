@@ -495,7 +495,7 @@ Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis che
 
 Salvar `data/editions/{AAMMDD}/_internal/01-categorized.json`.
 
-### 1u-bis. Dedup intra-edição (#2367, #2397)
+### 1u-bis. Dedup intra-edição (#2367, #2397, #2548)
 
 Após salvar `01-categorized.json`, remover dos buckets secundários itens que cobrem o mesmo evento que um destaque:
 ```bash
@@ -503,7 +503,15 @@ npx tsx scripts/dedup-intra-edition.ts \
   --in data/editions/{AAMMDD}/_internal/01-categorized.json \
   --out data/editions/{AAMMDD}/_internal/01-categorized.json
 ```
-Compara `radar`/`lancamento`/`use_melhor`/`video` contra os **top-3 destaques por rank** (não todos os 6 candidatos do scorer — #2397) por Jaccard ≥0.45 ou ≥2 entidades compartilhadas. O scorer retorna 6 candidatos e o editor seleciona ≤3 no gate; comparar contra os 6 removeria pré-gate itens que casam com candidato rank 4–6 não-promovido. O default `--destaque-count 3` é o pré-gate correto (o editor nunca promove mais que 3). O entity/Jaccard-check strip sufixo de veículo ("- Finsiders Brasil", "- Exame") e o entity-check não pula a 1ª palavra do título (captura "SpaceX" no início). Remoções logadas em stderr. `01-categorized.json` reescrito in-place.
+Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por rank** por Jaccard ≥0.45, ≥2 entidades ou **domain-match** (#2548 Furo 2: RADAR com `suggested_primary_domain=google.com` + D1 em blog.google.com → cobertura de imprensa do mesmo lançamento). Strip sufixo de veículo. `01-categorized.json` reescrito in-place.
+
+### 1u-ter. Dedup evergreen pós-categorização (#2548 — Furo 1)
+
+Dedup sem janela para `use_melhor`/`video` (janela de 4 do dedup.ts é curta para evergreen re-descoberto meses depois):
+```bash
+npx tsx scripts/dedup-evergreen-buckets.ts --in data/editions/{AAMMDD}/_internal/01-categorized.json --out data/editions/{AAMMDD}/_internal/01-categorized.json --past-editions data/past-editions.md
+```
+Verifica URL de `use_melhor`/`video` em **qualquer** edição passada. `radar`/`lancamento` não tocados.
 
 ### 1v. Renderizar 01-categorized.md
 
