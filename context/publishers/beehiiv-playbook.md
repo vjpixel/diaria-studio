@@ -612,7 +612,7 @@ const action = classifyInsertResult(result);
 })()
 ```
 
-⚠️ **Crítico (#1054 + #2550)**: o ÚNICO método validado que persiste após autosave + reload é inserção via ProseMirror transaction. Em 260625, `tr.insertText` confirmou-se como o método correto (evita o freeze). Métodos descartados:
+⚠️ **Crítico (#1054 + #2550)**: o ÚNICO método validado que persiste após autosave + reload é inserção via ProseMirror transaction. Em 260625, `tr.insertText` confirmou-se como o método correto (evita o freeze). Ver lista de métodos descartados mais abaixo.
 
 **Aguardar autosave e verificar persistência antes de navegar (#2375)**: após o paste via `tr.insertText`, **NÃO navegar imediatamente para `?step=review` ou qualquer outra URL**. O TipTap autosalva via `onChange` após debounce — se `navigate()` ocorre antes do debounce/fetch de autosave completar, o servidor não tem o conteúdo atualizado e o test email é enviado do conteúdo anterior, causando fix-loops desnecessários (incidente 260619: 4 iterações + 2 sem email = ~90min no Stage 5).
 
