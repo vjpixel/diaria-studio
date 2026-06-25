@@ -745,7 +745,9 @@ export function buildTopClickedRecent(
 
   // Aggregate clicks per link within the window
   // Key: base_url + "||" + anchor (to distinguish same URL with different anchors)
+  // maxClicksMap tracks per-key the single-edition click count for max-edition selection
   const linkMap = new Map<string, TopClickedRecentItem>();
+  const maxClicksMap = new Map<string, number>(); // key → clicks of the max-clicks edition so far
 
   for (const line of lines.slice(1)) {
     try {
@@ -763,6 +765,13 @@ export function buildTopClickedRecent(
       const existing = linkMap.get(key);
       if (existing) {
         existing.unique_verified_clicks += clicks;
+        // Update edition to the one with the most clicks; on tie, prefer the most recent date
+        const prevMax = maxClicksMap.get(key) ?? 0;
+        if (clicks > prevMax || (clicks === prevMax && date > existing.edition)) {
+          existing.edition = date;
+          existing.post_title = (cols[postTitleIdx] ?? "").trim();
+          maxClicksMap.set(key, clicks);
+        }
       } else {
         linkMap.set(key, {
           edition: date,
@@ -772,6 +781,7 @@ export function buildTopClickedRecent(
           category: (cols[categoryIdx] ?? "Outro").trim() || "Outro",
           unique_verified_clicks: clicks,
         });
+        maxClicksMap.set(key, clicks);
       }
     } catch {
       // skip
