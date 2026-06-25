@@ -478,6 +478,17 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
     ```
     Exit 1 = title-picker mexeu na estrutura (removeu `---`, moveu ERRO INTENCIONAL, etc — caso 260517). **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu estrutura — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro.
 
+  - **Validar frontmatter YAML (#2553).** Após title-picker (e após restauração de snapshot, se houver), validar que o frontmatter `intentional_error` está bem-formado como YAML multi-linha com as 5 chaves obrigatórias:
+    ```bash
+    npx tsx scripts/validate-frontmatter-yaml.ts \
+      --md data/editions/{AAMMDD}/02-reviewed.md
+    ```
+    Detecta 2 formas de corrupção:
+    - Bloco `intentional_error` colapsado em 1 linha (caso real 260625: title-picker reescreveu o arquivo com `## intentional_error: description: "..." ...` em vez de mapping YAML indentado).
+    - Chaves ausentes (`description`, `location`, `category`, `correct_value`, `reveal`).
+
+    Exit 1 = **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu o frontmatter YAML — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro. (Note: `validate-section-structure.ts` compara contagem de seções, não valida YAML — essa check é complementar, não redundante.)
+
   - **Validar 1 título por destaque (#178).** Após o title-picker:
     ```bash
     npx tsx scripts/lint-newsletter-md.ts \
