@@ -11,9 +11,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import {
   extractDestaquesFromSocialMd,
   extractPostText,
@@ -503,5 +505,83 @@ describe("splitIntoThreadChunks chunk vazio (#2522 Bug 2)", () => {
     }
     // Verificar que todos os chars estão presentes (sem perda)
     assert.ok(chunks.join("").replace(/\s/g, "").length > 0);
+  });
+});
+
+// ─── Regression #2540 P2: --dry-run subprocess guard (ausência de side-effect) ─
+
+describe("--dry-run subprocess guard (#2540 P2)", () => {
+  /**
+   * Regression for #2540 P2:
+   * O teste anterior (scan estático) verificava que `if (isDryRun)` aparece antes
+   * de `await publishThread(` no source. Isso é necessário mas insuficiente: um
+   * guard sintaticamente correto mas semanticamente quebrado (ex: condição invertida,
+   * variável errada) passaria no scan estático.
+   *
+   * Este teste executa `--dry-run` como subprocess real em um tmpdir isolado e
+   * asserta que `06-social-published.json` NÃO é criado — provando que nenhum
+   * side-effect de publicação ocorreu.
+   *
+   * ⚠️ PUBLICATION GUARD: fake credentials no env → as chamadas de fetch NUNCA
+   * chegam à Threads API. O script faz early-exit(0) se creds ausentes, portanto
+   * providenciamos creds fake + --dry-run para exercitar o caminho completo do
+   * guard sem tocar o serviço real.
+   */
+
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  /** Minimal 03-social.md com seção Threads para que o script chegue ao loop. */
+  const SOCIAL_MD = `# Threads\n\n## d1\nPost de teste para dry-run.\n\n## d2\nPost d2 dry-run.\n\n## d3\nPost d3 dry-run.\n`;
+
+  it("--dry-run: 06-social-published.json NÃO é criado (sem side-effect)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-dryrun-"));
+    const internalDir = join(tmpDir, "_internal");
+    try {
+      // Criar estrutura de edição mínima
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), SOCIAL_MD, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT,
+          "--edition-dir", tmpDir,
+          "--dry-run",
+        ],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            // Fake credentials: script passa pelo guard de credenciais e chega ao loop.
+            // Em --dry-run, nenhuma chamada fetch é emitida — estas creds nunca são usadas.
+            THREADS_USER_ID: "fake_user_id_dryrun_test",
+            THREADS_ACCESS_TOKEN: "fake_access_token_dryrun_test",
+          },
+        },
+      );
+
+      // Script deve sair com 0 (dry-run não é erro)
+      assert.equal(r.status, 0, `publish-threads --dry-run deve sair com 0; stderr: ${r.stderr}`);
+
+      // REGRESSÃO PRINCIPAL: o arquivo de side-effect NÃO deve existir
+      const internalJsonPath = join(internalDir, "06-social-published.json");
+      const rootJsonPath = join(tmpDir, "06-social-published.json");
+      assert.ok(
+        !existsSync(internalJsonPath),
+        `--dry-run não deve criar _internal/06-social-published.json (encontrado: ${internalJsonPath})`,
+      );
+      assert.ok(
+        !existsSync(rootJsonPath),
+        `--dry-run não deve criar 06-social-published.json na raiz (encontrado: ${rootJsonPath})`,
+      );
+
+      // Saída deve mencionar DRY-RUN (confirmação de que o path correto foi tomado)
+      assert.ok(
+        r.stdout.includes("DRY-RUN") || r.stderr.includes("DRY-RUN"),
+        `stdout/stderr deve mencionar DRY-RUN; stdout: ${r.stdout.slice(0, 300)}`,
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

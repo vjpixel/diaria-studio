@@ -869,6 +869,7 @@ export function lintAntithesisReveal(md: string): AntithesisRevealResult {
     // Padrão 1: de verdade, não só
     ANTITHESIS_DE_VERDADE_RE.lastIndex = 0;
     if (ANTITHESIS_DE_VERDADE_RE.test(line)) {
+      ANTITHESIS_DE_VERDADE_RE.lastIndex = 0; // reset após test() para que exec() capture o 1º match
       const m = ANTITHESIS_DE_VERDADE_RE.exec(line) ?? line.match(ANTITHESIS_DE_VERDADE_RE);
       const idx = m ? line.indexOf(m[0]) : 0;
       matches.push({
@@ -882,6 +883,7 @@ export function lintAntithesisReveal(md: string): AntithesisRevealResult {
     // Padrão 3: chama atenção (testar antes do padrão 2 pra evitar dupla flag)
     ANTITHESIS_CHAMA_ATENCAO_RE.lastIndex = 0;
     if (ANTITHESIS_CHAMA_ATENCAO_RE.test(line)) {
+      ANTITHESIS_CHAMA_ATENCAO_RE.lastIndex = 0; // reset após test() para que exec() capture o 1º match
       const m = ANTITHESIS_CHAMA_ATENCAO_RE.exec(line) ?? line.match(ANTITHESIS_CHAMA_ATENCAO_RE);
       const idx = m ? line.indexOf(m[0]) : 0;
       matches.push({
@@ -895,6 +897,7 @@ export function lintAntithesisReveal(md: string): AntithesisRevealResult {
     // Padrão 2: não é X, é Y
     ANTITHESIS_NAO_E_RE.lastIndex = 0;
     if (ANTITHESIS_NAO_E_RE.test(line)) {
+      ANTITHESIS_NAO_E_RE.lastIndex = 0; // reset após test() para que exec() capture o 1º match
       const m = ANTITHESIS_NAO_E_RE.exec(line) ?? line.match(ANTITHESIS_NAO_E_RE);
       const idx = m ? line.indexOf(m[0]) : 0;
       matches.push({

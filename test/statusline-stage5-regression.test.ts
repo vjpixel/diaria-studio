@@ -266,8 +266,8 @@ describe("#2525 reconcileRunningStages: orphaned running→failed", () => {
     const barBefore = renderEditionBar(doc);
     assert.ok(barBefore.includes("4/7"), `antes: deve mostrar 4/7: ${barBefore}`);
 
-    // Após reconcile: stages running→failed; done agora inclui 0,1,3,4 = 4 done
-    // (stages 2 e 5 viraram failed, que são terminais — done sobe para 6)
+    // Após reconcile: stages running→failed; done (status literal) = 0,1,3,4 = 4 estágios
+    // (stages 2 e 5 viraram failed; failed é terminal e conta pro progresso — contagem sobe para 6)
     const { doc: reconciledDoc } = reconcileRunningStages(doc, "2026-06-19T15:00:00.000Z");
     const barAfter = renderEditionBar(reconciledDoc);
 
@@ -444,5 +444,66 @@ describe("#2525 regressão real 260622/260623: 5:running 6:pending → 5:done 6:
     const barEncerrada = renderEditionBar(docEncerrada);
     assert.ok(barEncerrada.includes("7/7"), `estado 4: deve mostrar 7/7: ${barEncerrada}`);
     assert.ok(barEncerrada.includes("████████████"), `estado 4: barra deve estar cheia: ${barEncerrada}`);
+  });
+});
+
+// ─── Regression #2540: status normalizado case-insensitive ────────────────────
+// Typos like "Skipped" (capital S) ou "skip" (sem "ped") NÃO devem bloquear
+// o fechamento do Stage 5 silenciosamente.
+
+describe("#2540 blockReasonForMarkingStageDone: status normalizado (case-insensitive)", () => {
+  function makeSkippedFile(dir: string, status: string): void {
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(
+      join(internalDir, "05-published.json"),
+      JSON.stringify({ status, review_completed: false, review_status: "pending" }),
+      "utf8",
+    );
+  }
+
+  it("status:'Skipped' (capital S) → normalizado para 'skipped' → NÃO bloqueia", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "block-skipped-capital-"));
+    try {
+      makeSkippedFile(tmpDir, "Skipped");
+      const reason = blockReasonForMarkingStageDone(tmpDir, 5);
+      assert.equal(reason, null, `status:'Skipped' deve ser normalizado e permitir done; got: ${reason}`);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("status:'SKIPPED' (all caps) → normalizado para 'skipped' → NÃO bloqueia", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "block-skipped-allcaps-"));
+    try {
+      makeSkippedFile(tmpDir, "SKIPPED");
+      const reason = blockReasonForMarkingStageDone(tmpDir, 5);
+      assert.equal(reason, null, `status:'SKIPPED' deve ser normalizado e permitir done; got: ${reason}`);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("status:'skip' (sem sufixo) → NÃO é 'skipped' → bloqueia (não deve silenciar)", () => {
+    // "skip" !== "skipped" mesmo normalizado — não deve ser aceito como skipped
+    const tmpDir = mkdtempSync(join(tmpdir(), "block-skip-short-"));
+    try {
+      makeSkippedFile(tmpDir, "skip");
+      const reason = blockReasonForMarkingStageDone(tmpDir, 5);
+      assert.ok(reason !== null, `status:'skip' (diferente de 'skipped') deve BLOQUEAR — sem aceitação silenciosa de typos não-intencionais`);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("status:' skipped ' (espaços extras) → normalizado (trim) → NÃO bloqueia", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "block-skipped-spaces-"));
+    try {
+      makeSkippedFile(tmpDir, " skipped ");
+      const reason = blockReasonForMarkingStageDone(tmpDir, 5);
+      assert.equal(reason, null, `status:' skipped ' com espaços deve ser normalizado; got: ${reason}`);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

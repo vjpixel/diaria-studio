@@ -400,10 +400,12 @@ export function blockReasonForMarkingStageDone(
         // #2525: também aceita status:"skipped" (newsletter não publicada,
         // ex: Chrome MCP indisponível, degradação #2495) — sem newsletter,
         // não há email de teste pra revisar; stage deve poder fechar como done.
+        const rawStatus = (pub as { status?: string }).status;
+        const normalizedStatus = typeof rawStatus === "string" ? rawStatus.toLowerCase().trim() : undefined;
         const explicitTerminal =
           pub.review_status === "issues_unfixable" ||
           pub.review_status === "inconclusive" ||
-          (pub as { status?: string }).status === "skipped"; // newsletter skipped (#2525)
+          normalizedStatus === "skipped"; // newsletter skipped (#2525, normalized to tolerate typos like "Skipped")
         if (!pub.review_completed && !explicitTerminal) {
           return (
             `Stage 5 cannot be marked done without review-test-email loop ` +

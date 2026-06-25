@@ -149,3 +149,38 @@ describe("lintAntithesisReveal (#2526) — WARN-ONLY: ok sempre true", () => {
     assert.ok(r.matches.length >= 2, `Esperava detectar ao menos 2 padrões; matches: ${JSON.stringify(r.matches)}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression #2540: lastIndex reset — 2 matches na mesma linha, contexto correto
+// ---------------------------------------------------------------------------
+
+describe("lintAntithesisReveal (#2540) — lastIndex reset: contexto correto com 2 matches na linha", () => {
+  it("linha com 2 ocorrências do padrão 'não é X, é Y': contexto aponta para o 1º match", () => {
+    // Bug: RE.test(line) avançava lastIndex → RE.exec(line) capturava o 2º match.
+    // Fix: lastIndex = 0 antes do exec(). O contexto deve incluir o INÍCIO da linha
+    // (onde está o 1º match), não a 2ª ocorrência.
+    //
+    // Linha com 2 matches do padrão nao_e_e:
+    // "Não é custo, é investimento. Não é despesa, é aposta."
+    // 1º match começa na posição 0; 2º match começa ~32 chars depois.
+    const twoMatches = "Não é custo, é investimento. Não é despesa, é aposta.";
+    const md = mkMd(twoMatches);
+    const r = lintAntithesisReveal(md);
+    assert.equal(r.ok, true);
+    // Deve detectar ao menos 1 match (pode capturar 1 ou 2 dependendo do greedy)
+    assert.ok(r.matches.length >= 1, `Deve detectar matches na linha dupla; got 0`);
+    // O context do 1º match deve incluir texto do início da linha (1º ocorrência)
+    // e NÃO deve ser deslocado para apenas a 2ª ocorrência ("Não é despesa").
+    // Verifica que o context NÃO começa direto em "despesa" (seria o 2º match).
+    const firstCtx = r.matches[0].context;
+    assert.ok(
+      !firstCtx.startsWith("despesa") && !firstCtx.startsWith("Não é despesa"),
+      `contexto do 1º match deslocado para o 2º match: "${firstCtx}" — lastIndex não foi resetado antes do exec()`,
+    );
+    // O context deve incluir algo do início: "custo" ou "Não é custo"
+    assert.ok(
+      firstCtx.includes("custo") || firstCtx.includes("é investimento"),
+      `contexto deve incluir o 1º match ("custo"/"é investimento"); got: "${firstCtx}"`,
+    );
+  });
+});

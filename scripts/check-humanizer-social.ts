@@ -233,9 +233,9 @@ function logTicLintEvent(editionDir: string, result: TicLintResult): void {
   });
 
   try {
-    spawnSync(
+    const r = spawnSync(
       process.execPath,
-      ["--import", "tsx/esm", logScriptPath,
+      ["--import", "tsx", logScriptPath,
         "--edition", edition,
         "--stage", "4",
         "--agent", "check-humanizer-social",
@@ -245,8 +245,16 @@ function logTicLintEvent(editionDir: string, result: TicLintResult): void {
       ],
       { encoding: "utf8", stdio: "ignore" },
     );
-  } catch {
+    // Surface spawn errors (e.g. tsx resolver failure on Windows) without breaking prod.
+    if (r.error) {
+      console.warn(`[check-humanizer-social] logTicLintEvent: spawn falhou — ${r.error.message} (tic log perdido)`);
+    } else if (r.status !== 0 && r.status !== null) {
+      console.warn(`[check-humanizer-social] logTicLintEvent: log-event.ts saiu com status ${r.status} (tic log pode estar incompleto)`);
+    }
+  } catch (e: unknown) {
     // fire-and-forget: never block on log failure
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[check-humanizer-social] logTicLintEvent: erro inesperado — ${msg} (tic log perdido)`);
   }
 }
 
