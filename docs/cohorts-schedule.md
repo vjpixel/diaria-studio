@@ -21,14 +21,48 @@ acrescenta stdout/stderr a `data/clarice-subscribers/cohorts/task.log`.
 ## Registrar a Task (1× por máquina)
 
 ```powershell
-$action  = New-ScheduledTaskAction  -Execute 'C:\Users\pixel\Projects\diaria-studio\scripts\run-cohorts-crawl.cmd'
-$trigger = New-ScheduledTaskTrigger -Daily -At 9pm
+$action   = New-ScheduledTaskAction  -Execute 'C:\Users\pixel\Projects\diaria-studio\scripts\run-cohorts-crawl.cmd'
+$trigger  = New-ScheduledTaskTrigger -Daily -At 9pm
+$settings = New-ScheduledTaskSettingsSet `
+  -StartWhenAvailable `
+  -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries `
+  -MultipleInstances Queue `
+  -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask -TaskName 'DiariaCohortsCrawl' -Action $action -Trigger $trigger `
+  -Settings $settings `
   -Description 'Crawl diario de coortes de engajamento Clarice -> KV clarice-dashboard (#2426)' -Force
 ```
 
 Ajustar o path do `-Execute` ao clone local. O `-At 9pm` é horário local da
 máquina (timezone BRT = "E. South America Standard Time").
+
+### Racional de cada flag de energia/concorrência (#2555, incidente 260624)
+
+| Flag | Por quê |
+|---|---|
+| `-StartWhenAvailable` | Se a máquina dormiu ou estava desligada às 21h, roda assim que voltar (catch-up) em vez de pular o dia inteiro. |
+| `-AllowStartIfOnBatteries` | Não bloqueia o disparo quando o notebook estiver na bateria (o comportamento padrão seria não iniciar). |
+| `-DontStopIfGoingOnBatteries` | Em 260624 o crawl foi morto às 21:07 (`ERROR_PROCESS_ABORTED 0x8007042B`) porque o notebook desplugou; com esta flag, um crawl já iniciado termina mesmo na bateria (~22 min, tradeoff aceito). |
+| `-MultipleInstances Queue` | Substitui `IgnoreNew`; evita o estado "Queued" travado quando um run anterior abortou sem registrar término (instância-fantasma). |
+| `-ExecutionTimeLimit (New-TimeSpan -Hours 1)` | Limita o runtime máximo a 1 hora (folga para o crawl atual de ~22 min com universo de ~21,5k contatos crescendo). |
+
+## Re-aplicar numa task já registrada
+
+Para atualizar as settings sem apagar e re-criar a task:
+
+```powershell
+$t = Get-ScheduledTask -TaskName 'DiariaCohortsCrawl'
+$t.Settings.StartWhenAvailable        = $true
+$t.Settings.DisallowStartIfOnBatteries = $false
+$t.Settings.StopIfGoingOnBatteries    = $false
+$t.Settings.MultipleInstances         = 'Queue'
+Set-ScheduledTask -TaskName 'DiariaCohortsCrawl' -Settings $t.Settings
+```
+
+Útil quando o snippet `Register-ScheduledTask` foi executado antes do hardening
+(incidente 260624 / #2555) ou ao migrar para uma nova máquina com task importada
+de backup.
 
 ## Operação
 
