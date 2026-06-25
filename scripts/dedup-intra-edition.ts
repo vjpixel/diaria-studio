@@ -152,6 +152,11 @@ export function extractNamedEntitiesIntra(title: string): Set<string> {
 interface Article {
   url: string;
   title?: string;
+  /** Domínio oficial sugerido por `enrich-primary-source.ts` (#487).
+   *  Ex: "google.com" para RADAR item cobrindo lançamento do Google.
+   *  Usado pelo dedup intra-edição (Furo 2, #2548) para detectar cobertura de
+   *  imprensa de um lançamento que já aparece como destaque. */
+  suggested_primary_domain?: string;
   [key: string]: unknown;
 }
 
@@ -178,7 +183,7 @@ export interface IntraEditionDedupResult {
     url: string;
     title?: string;
     bucket: string;
-    match_type: "jaccard" | "entity";
+    match_type: "jaccard" | "entity" | "domain";
     matched_highlight: string;
     score: number;
   }>;
@@ -222,10 +227,69 @@ export function highlightUrl(h: HighlightEntry): string | null {
 }
 
 /**
+ * Extrai o registrable domain (eTLD+1) de uma URL, normalizado lowercase.
+ * Ex: "https://blog.google.com/foo" → "google.com"
+ *     "https://openai.com/research/x" → "openai.com"
+ *
+ * Usado para comparar `suggested_primary_domain` do artigo RADAR com o
+ * domínio da URL do destaque (Furo 2, #2548).
+ *
+ * Implementação simples (não usa Public Suffix List completa): pega os
+ * últimos 2 segmentos do hostname (cobre .com, .net, .org, .io, .ai, etc.).
+ * Casos como ".co.uk" ou ".com.br" podem divergir, mas são raros no corpus
+ * de fontes oficiais de tech. Falso-negativo nesses casos é aceitável — o
+ * dedup só perde um match, não gera falso-positivo.
+ */
+export function extractRegistrableDomain(url: string): string | null {
+  try {
+    const { hostname } = new URL(url);
+    const parts = hostname.toLowerCase().split(".");
+    if (parts.length < 2) return null;
+    return parts.slice(-2).join(".");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #2548 (Furo 2): Retorna true se a URL do destaque pertence ao
+ * `suggested_primary_domain` do artigo RADAR.
+ *
+ * Caso real: RADAR = canaltech.com.br (suggested_primary_domain = "google.com"),
+ * D1 = blog.google.com → extractRegistrableDomain("blog.google.com") = "google.com"
+ * → match → RADAR é cobertura de imprensa do mesmo lançamento que D1.
+ *
+ * Só aplica quando o artigo tem `suggested_primary_domain` definido (campo
+ * adicionado por `enrich-primary-source.ts` apenas a itens com verbo de
+ * lançamento + empresa conhecida no título). Sem esse campo, o check é no-op.
+ */
+export function isPressCovertageOfHighlight(
+  article: Article,
+  highlightUrl: string | null,
+): boolean {
+  const suggestedDomain = article.suggested_primary_domain;
+  if (!suggestedDomain || !highlightUrl) return false;
+
+  const hDomain = extractRegistrableDomain(highlightUrl);
+  if (!hDomain) return false;
+
+  // suggested_primary_domain já é o domínio registrável (ex: "google.com").
+  // Comparar diretamente.
+  return hDomain === suggestedDomain.toLowerCase();
+}
+
+/**
  * Checa se um artigo é duplicata intra-edição de qualquer destaque.
  *
  * #2397: usa `extractNamedEntitiesIntra` (local) em vez de `extractNamedEntities`
  * do dedup.ts — strip de sufixo de veículo + não pula index-0.
+ *
+ * #2548 (Furo 2): adiciona check de domínio via `suggested_primary_domain`.
+ * Quando um item RADAR tem `suggested_primary_domain` = X (campo adicionado por
+ * `enrich-primary-source.ts` para cobertura de imprensa de lançamento), e o
+ * destaque tem URL do domínio X, o item é flagrado como cobertura-de-imprensa
+ * do mesmo lançamento. Caso real: RADAR canaltech.com.br/google-libera-ia-que...
+ * (suggested_primary_domain="google.com") + D1 blog.google.com/gemini-computer-use.
  *
  * @returns match info se duplicata, null caso contrário.
  */
@@ -237,7 +301,7 @@ export function isIntraEditionDuplicate(
     entityMinShared?: number;
   } = {},
 ): {
-  match_type: "jaccard" | "entity";
+  match_type: "jaccard" | "entity" | "domain";
   matched_highlight: string;
   score: number;
 } | null {
@@ -264,6 +328,20 @@ export function isIntraEditionDuplicate(
     // Skip exact-same URL (destaque pode aparecer no bucket também — não é intra-dup)
     const hUrl = highlightUrl(h);
     if (hUrl && article.url === hUrl) continue;
+
+    // (c) #2548 Furo 2: domain-based match via suggested_primary_domain.
+    // Roda ANTES de Jaccard/entity pois é sinal muito mais preciso: o campo
+    // suggested_primary_domain só existe quando enrich-primary-source detectou
+    // verbo de lançamento + empresa conhecida no título RADAR. Se o domínio
+    // oficial bate com o domínio do destaque, é quase certamente cobertura de
+    // imprensa do mesmo evento.
+    if (isPressCovertageOfHighlight(article, hUrl ?? null)) {
+      return {
+        match_type: "domain",
+        matched_highlight: hTitle,
+        score: 1.0,
+      };
+    }
 
     // (a) Jaccard sobre tokens normalizados (sufixo de veículo já stripado)
     const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
