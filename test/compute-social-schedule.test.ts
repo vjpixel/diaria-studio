@@ -11,6 +11,10 @@ import {
 // do bloco "observability + safety guards" abaixo desabilita temporariamente
 // pra capturar e validar o log.
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+// #2565 — Testes legados usam editionDates históricas que ficam sempre no passado.
+// Suprimir o shift de past-slot nesses testes (independente do QUIET_LOG, que é só-log).
+// Testes do #2552 deletam esta var explicitamente para testar o shift com `now` injetado.
+process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
 
 const baseConfig = {
   publishing: {
@@ -270,6 +274,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         restore();
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
     });
 
@@ -292,6 +297,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         restore();
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1"; // restaurar pra suprimir nos demais
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
     });
 
@@ -316,14 +322,54 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         restore();
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
     });
 
-    it("DIARIA_QUIET_SCHEDULE_LOG=1 suprime tudo (CI/teste)", () => {
+    it("DIARIA_QUIET_SCHEDULE_LOG=1 suprime logs mas NÃO o shift (só-log, #2565)", () => {
+      // Com QUIET_LOG=1 e DISABLE_PASTSLOT_SHIFT NÃO setado:
+      // - O shift de past-slot DEVE acontecer (guard ativo)
+      // - O log do WARN NÃO deve aparecer (suprimido por QUIET_LOG)
+      // Isso verifica o desacoplamento do #2565: QUIET_LOG não desativa o guard.
       process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
+      const restore = startCapture();
+      const nowFake = new Date("2026-01-01T12:00:00Z").getTime(); // now injetado
+      let iso: string;
+      try {
+        // editionDate "230101" no passado → slot no passado → shift esperado
+        iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: "230101",
+          destaque: "d1",
+          platform: "linkedin",
+          now: nowFake,
+        });
+        // Slot DEVE ter sido shiftado (now+15min)
+        const expectedMs = nowFake + 15 * 60_000;
+        const actualMs = new Date(iso).getTime();
+        assert.ok(
+          Math.abs(actualMs - expectedMs) <= 1000,
+          `QUIET_LOG=1 NÃO deve desativar o shift: esperado now+15min (${new Date(expectedMs).toISOString()}), got ${iso}`,
+        );
+        // Log NÃO deve ter sido emitido (suprimido por QUIET_LOG)
+        const warnLines = stderrCapture.filter((l) => l.includes("WARN (#2552)"));
+        assert.equal(warnLines.length, 0,
+          `QUIET_LOG=1 deve suprimir o log do WARN, got: ${stderrCapture.join("|")}`);
+      } finally {
+        restore();
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1"; // restaurar global
+        // QUIET_LOG já está "1" (era o estado inicial global — mantém)
+      }
+    });
+
+    it("DIARIA_DISABLE_PASTSLOT_SHIFT=1 suprime o shift (testes legados/CI)", () => {
+      // Com DISABLE_PASTSLOT_SHIFT=1: o shift NÃO acontece (slot histórico é retornado)
+      process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       const restore = startCapture();
       try {
-        computeScheduledAt({
+        const iso = computeScheduledAt({
           config: baseConfig,
           editionDate: "230101",
           destaque: "d1",
@@ -331,9 +377,13 @@ describe("computeScheduledAt (#270)", () => {
           dayOffsetOverride: 1,
         });
         assert.equal(stderrCapture.length, 0, "should be silent");
+        // Slot retornado deve ser o calculado original (sem shift) = 2023-01-02T09:00:00
+        assert.match(iso, /^2023-01-02T09:00:00/, `DISABLE_PASTSLOT_SHIFT=1 deve retornar slot original, got ${iso}`);
       } finally {
         restore();
-        delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+        // Restaurar ambas as vars pro estado global (ambas "1")
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
     });
   });
@@ -362,12 +412,13 @@ describe("computeScheduledAt (#270)", () => {
     const edition = "260625"; // 2026-06-25
     const nowBrt11h = new Date("2026-06-25T14:00:00Z").getTime(); // 11:00 BRT = 14:00 UTC
 
-    // Os testes deste bloco precisam que DIARIA_QUIET_SCHEDULE_LOG não esteja setado
-    // (o guard é suprimido por ela, como os testes #1140 fazem). Cada teste
-    // gerencia a env var via setup/restore no mesmo padrão dos testes #1140.
+    // Os testes deste bloco precisam que DIARIA_QUIET_SCHEDULE_LOG e
+    // DIARIA_DISABLE_PASTSLOT_SHIFT não estejam setados: o shift deve estar ativo
+    // e o WARN deve aparecer. Cada teste gerencia as env vars via setup/restore.
 
     it("d1 (09:00, passado) → shiftado p/ now+15min com WARN no stderr", () => {
       delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
       const stderrLines: string[] = [];
       const origErr = console.error;
       console.error = (...args: unknown[]) => stderrLines.push(args.map(String).join(" "));
@@ -384,6 +435,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         console.error = origErr;
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
 
       // Slot shiftado deve ser agora + 15min = 11:15 BRT (14:15 UTC)
@@ -403,32 +455,45 @@ describe("computeScheduledAt (#270)", () => {
     });
 
     it("d2 (12:30, futuro) → inalterado (>10min no futuro)", () => {
-      const iso = computeScheduledAt({
-        config: baseConfig,
-        editionDate: edition,
-        destaque: "d2",
-        platform: "linkedin",
-        now: nowBrt11h,
-      });
-      // 12:30 BRT = 2026-06-25T12:30:00-03:00
-      assert.match(iso, /^2026-06-25T12:30:00-03:00$/, `d2 deve ser 12:30 BRT, got ${iso}`);
+      // Guard ativo (DISABLE_PASTSLOT_SHIFT não setado), mas slot no futuro → sem shift
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
+      try {
+        const iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: edition,
+          destaque: "d2",
+          platform: "linkedin",
+          now: nowBrt11h,
+        });
+        // 12:30 BRT = 2026-06-25T12:30:00-03:00
+        assert.match(iso, /^2026-06-25T12:30:00-03:00$/, `d2 deve ser 12:30 BRT, got ${iso}`);
+      } finally {
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
+      }
     });
 
     it("d3 (17:00, futuro) → inalterado (>10min no futuro)", () => {
-      const iso = computeScheduledAt({
-        config: baseConfig,
-        editionDate: edition,
-        destaque: "d3",
-        platform: "facebook",
-        now: nowBrt11h,
-      });
-      // 17:00 BRT = 2026-06-25T17:00:00-03:00
-      assert.match(iso, /^2026-06-25T17:00:00-03:00$/, `d3 deve ser 17:00 BRT, got ${iso}`);
+      // Guard ativo (DISABLE_PASTSLOT_SHIFT não setado), mas slot no futuro → sem shift
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
+      try {
+        const iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: edition,
+          destaque: "d3",
+          platform: "facebook",
+          now: nowBrt11h,
+        });
+        // 17:00 BRT = 2026-06-25T17:00:00-03:00
+        assert.match(iso, /^2026-06-25T17:00:00-03:00$/, `d3 deve ser 17:00 BRT, got ${iso}`);
+      } finally {
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
+      }
     });
 
     it("slot exatamente now+5min (abaixo do piso FB de 10min) → shiftado p/ now+15min", () => {
       // now = 11:00 BRT, d2_time ajustado para 11:05 BRT → só 5min no futuro (< piso)
       delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
       const cfgWith11h05 = JSON.parse(JSON.stringify(baseConfig)) as typeof baseConfig;
       cfgWith11h05.publishing.social.fallback_schedule.d2_time = "11:05";
 
@@ -448,6 +513,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         console.error = origErr;
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
 
       const expectedShiftedMs = nowBrt11h + 15 * 60_000;
@@ -465,6 +531,7 @@ describe("computeScheduledAt (#270)", () => {
     it("slot now+10min exato (margem justa, no piso) → aceito sem shift", () => {
       // now = 11:00, slot = 11:10 (exatamente 10min = não passa do filtro < minFutureMs)
       delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
       const cfgWith11h10 = JSON.parse(JSON.stringify(baseConfig)) as typeof baseConfig;
       cfgWith11h10.publishing.social.fallback_schedule.d1_time = "11:10";
 
@@ -484,6 +551,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         console.error = origErr;
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
 
       // 11:10 BRT = exatamente nowMs + 10min = NOT strictly less than minFutureCutoffMs (600_000)
@@ -503,6 +571,7 @@ describe("computeScheduledAt (#270)", () => {
       // Garantia de DI: slot de 09:00 de uma edição futura + now injetado em 10:00
       // → deve shiftar (slot passado em relação ao now injetado, mesmo sendo futuro em relação ao hoje real)
       delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      delete process.env.DIARIA_DISABLE_PASTSLOT_SHIFT;
       const futureEdition = "270625"; // 2027-06-25 (futuro real)
       const nowFake10h = new Date("2027-06-25T13:00:00Z").getTime(); // 10:00 BRT (antes de 09:00 → passado)
       // d1 = 09:00 em 2027-06-25 = 2027-06-25T12:00:00Z → 1h antes do nowFake10h
@@ -523,6 +592,7 @@ describe("computeScheduledAt (#270)", () => {
       } finally {
         console.error = origErr;
         process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+        process.env.DIARIA_DISABLE_PASTSLOT_SHIFT = "1";
       }
 
       const expectedMs = nowFake10h + 15 * 60_000;
