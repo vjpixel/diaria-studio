@@ -1319,4 +1319,81 @@ describe("regressao #2560: buildAudienceSummary -- parse de audience-profile.md"
     assert.ok(html.includes("audience"), "deve ter id audience mesmo sem dados");
     assert.ok(html.includes("audience-profile.md"), "deve mencionar arquivo ausente");
   });
+
+  // ─── Regressão #2582: section-gating do CTR por categoria ────────────────────
+  test("regressao #2582: ctr_by_category exclui combos origem e fontes das subseções", async () => {
+    // Fixture que replica o formato real de audience-profile.md com todas as subseções
+    // problemáticas: "### Destaques por categoria + origem" tem combos como "Treinamento INT"
+    // e "### CTR por fonte" tem domínios como "claude.com" — ambos usam o mesmo formato de linha
+    // que as categorias diretas, então sem section-gating eles vazam para ctr_by_category.
+    const FIXTURE_WITH_SUBSECTIONS = [
+      "# Perfil de Audiencia",
+      "",
+      "**updated_at:** 2026-06-25",
+      "**subscribers ativos:** 500",
+      "",
+      "## 1. Engajamento real (CTR por categoria)",
+      "",
+      "CTR medio geral: 0.46%",
+      "",
+      "- **Treinamento** -- CTR 1.80% | 20 links",
+      "- **Impacto** -- CTR 1.16% | 41 links",
+      "- **Lançamento** -- CTR 0.52% | 487 links",
+      "",
+      "### Destaques por categoria + origem",
+      "",
+      "- **Treinamento INT** -- CTR 3.02% | 14 links",
+      "- **Impacto BR** -- CTR 2.74% | 11 links",
+      "",
+      "### Engajamento por origem",
+      "",
+      "- **BR** -- CTR 0.51% | 341 links (20.2% do total)",
+      "- **INT** -- CTR 0.44% | 1347 links (79.8% do total)",
+      "",
+      "### CTR por fonte (minimo 3 links)",
+      "",
+      "- **claude.com** -- CTR 1.65% | 7 links",
+      "- **github.com** -- CTR 1.06% | 6 links",
+      "",
+      "## 2. Preferencias declaradas (survey)",
+      "",
+      "### Conteudo preferido",
+      "",
+      "- **Tutoriais** -- weight 0.176 (50 respostas)",
+    ].join("\n");
+
+    const { buildAudienceSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpPath = joinForAud(tmpdirAud(), "diaria-test-aud-2582.md");
+    writeFileSyncForAud(tmpPath, FIXTURE_WITH_SUBSECTIONS, "utf8");
+    const result = buildAudienceSummary(tmpPath);
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+
+    // Deve conter SÓ as 3 categorias diretas da seção principal
+    assert.equal(result!.ctr_by_category.length, 3,
+      `ctr_by_category deve ter 3 categorias diretas, mas tem ${result!.ctr_by_category.length}: ${result!.ctr_by_category.map((r) => r.category).join(", ")}`);
+
+    // Categorias reais devem estar presentes
+    const cats = result!.ctr_by_category.map((r) => r.category);
+    assert.ok(cats.includes("Treinamento"), "deve incluir categoria Treinamento");
+    assert.ok(cats.includes("Impacto"), "deve incluir categoria Impacto");
+    assert.ok(cats.includes("Lançamento"), "deve incluir categoria Lancamento");
+
+    // Combos origem NÃO devem aparecer (ex: "Treinamento INT", "Impacto BR")
+    assert.ok(!cats.includes("Treinamento INT"),
+      "ctr_by_category NAO deve incluir combo 'Treinamento INT' (subseção Destaques por categoria + origem)");
+    assert.ok(!cats.includes("Impacto BR"),
+      "ctr_by_category NAO deve incluir combo 'Impacto BR' (subseção Destaques por categoria + origem)");
+
+    // Origens puras NÃO devem aparecer (ex: "BR", "INT")
+    assert.ok(!cats.includes("BR"),
+      "ctr_by_category NAO deve incluir origem 'BR' (subseção Engajamento por origem)");
+
+    // Fontes NÃO devem aparecer (ex: "claude.com")
+    assert.ok(!cats.includes("claude.com"),
+      "ctr_by_category NAO deve incluir fonte 'claude.com' (subseção CTR por fonte)");
+    assert.ok(!cats.includes("github.com"),
+      "ctr_by_category NAO deve incluir fonte 'github.com' (subseção CTR por fonte)");
+
+    rmSyncForAud(tmpPath, { force: true });
+  });
 });

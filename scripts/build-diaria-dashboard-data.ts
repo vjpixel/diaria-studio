@@ -854,8 +854,23 @@ export function buildAudienceSummary(
 
   // --- CTR por categoria ---
   // Lines like: `- **Categoria** — CTR X.XX% | N links`
+  // Section-gated (#2582): only capture lines inside "## 1. Engajamento real (CTR por categoria)",
+  // stopping at the first `###` or next `##` heading (excludes "Destaques por categoria + origem",
+  // "Engajamento por origem", and "CTR por fonte" sub-sections which have the same line format).
   const ctr_by_category: AudienceCtrCategoryRow[] = [];
+  let inCtrSection = false;
   for (const line of lines) {
+    if (line.startsWith("## ")) {
+      // Enter the target section; exit any other ## section
+      inCtrSection = /engajamento\s+real/i.test(line);
+      continue;
+    }
+    if (line.startsWith("###")) {
+      // Any sub-section ends the direct-category block
+      inCtrSection = false;
+      continue;
+    }
+    if (!inCtrSection) continue;
     const m = line.match(/^-\s+\*\*([^*]+)\*\*\s+(?:—|-{1,2})\s+CTR\s+([\d.,]+)%\s+\|\s+(\d+)\s+links/i);
     if (m) {
       ctr_by_category.push({
