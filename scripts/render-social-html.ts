@@ -20,6 +20,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
 
@@ -143,9 +144,10 @@ export function isPostPixel(destaque: string): boolean {
   return /^post.?pixel/i.test(destaque.trim());
 }
 
-function getImageUrl(destaque: string, imageUrls: ImageMap): string {
-  // #1690: post_pixel reusa a imagem do D1 (é o post standalone de D1).
-  const dNum = isPostPixel(destaque) ? "1" : destaque.replace(/\D/g, "");
+function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = "1"): string {
+  // #1690: post_pixel reusa a imagem do D1 por padrão; #2549: override per-edição
+  // (quando o post pessoal cobre outro destaque, ex: D2) via marker.
+  const dNum = isPostPixel(destaque) ? postPixelImageNum : destaque.replace(/\D/g, "");
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
@@ -165,8 +167,8 @@ export function countImgTags(html: string): number {
   return (html.match(/<img\b/g) ?? []).length;
 }
 
-function renderPost(post: Post, color: string, imageUrls: ImageMap): string {
-  const imgUrl = getImageUrl(post.destaque, imageUrls);
+function renderPost(post: Post, color: string, imageUrls: ImageMap, postPixelImageNum = "1"): string {
+  const imgUrl = getImageUrl(post.destaque, imageUrls, postPixelImageNum);
   const imgHtml = imgUrl
     ? `<div class="post-image"><img src="${escHtml(imgUrl)}" alt="${escHtml(post.destaque)}" /></div>`
     : "";
@@ -191,9 +193,10 @@ function renderPost(post: Post, color: string, imageUrls: ImageMap): string {
     comments += `<details class="comment"><summary>💬 Comentário Pixel (pessoal)</summary><p>${cp}</p></details>`;
   }
 
-  // #1690: label claro pro post pessoal (vjpixel) no preview.
+  // #1690: label claro pro post pessoal (vjpixel) no preview. #2549: o destaque
+  // referenciado segue o override (default D1).
   const headerLabel = isPostPixel(post.destaque)
-    ? "📣 POST PESSOAL — vjpixel (D1)"
+    ? `📣 POST PESSOAL — vjpixel (D${postPixelImageNum})`
     : post.destaque;
 
   return `
@@ -208,7 +211,7 @@ function renderPost(post: Post, color: string, imageUrls: ImageMap): string {
     </div>`;
 }
 
-export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap): string {
+export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1"): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -320,7 +323,7 @@ ${platforms.map(p => {
   <div class="platform">
     <div class="platform-header ${cls}">${icon} ${escHtml(p.name)}</div>
     ${p.note ? `<div class="platform-note">${escHtml(p.note)}</div>` : ""}
-    ${p.posts.map(post => renderPost(post, color, imageUrls)).join("\n")}
+    ${p.posts.map(post => renderPost(post, color, imageUrls, postPixelImageNum)).join("\n")}
   </div>`;
 }).join("\n")}
 </body>
@@ -344,8 +347,18 @@ function main(): void {
   const md = readFileSync(mdPath, "utf8");
   const { map: imageUrls, warnings } = loadImageMap(imagesPath);
 
+  // #2549: override per-edição da imagem/label do post_pixel (default "1" = D1,
+  // #1690). Marker `_internal/post-pixel-image.txt` contém o destaque (ex: "d2")
+  // quando o post pessoal cobre outro destaque que não o D1.
+  let postPixelImageNum = "1";
+  const ppMarker = resolve(dirname(mdPath), "_internal/post-pixel-image.txt");
+  if (existsSync(ppMarker)) {
+    const v = readFileSync(ppMarker, "utf8").trim().replace(/\D/g, "");
+    if (v) postPixelImageNum = v;
+  }
+
   const platforms = parsePlatforms(md);
-  const html = buildSocialHtml(platforms, imageUrls);
+  const html = buildSocialHtml(platforms, imageUrls, postPixelImageNum);
   writeFileSync(outPath, html);
 
   // #1800: validação pós-render — preview com menos <img> que posts de destaque

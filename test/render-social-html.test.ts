@@ -171,4 +171,27 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
     // d1 + post_pixel = 2 posts esperando imagem
     assert.equal(expectedImageCount(platforms), 2);
   });
+
+  it("#2549: override postPixelImageNum=2 → post_pixel usa imagem do D2 + label (D2)", () => {
+    const images = {
+      d1: { url: "https://img.example/d1.jpg" },
+      d2: { url: "https://img.example/d2.jpg" },
+    };
+    const platforms = parsePlatforms(MD_PIXEL);
+    const html = buildSocialHtml(platforms, images, "2");
+    assert.match(html, /POST PESSOAL — vjpixel \(D2\)/, "label reflete o destaque do override");
+    // post_pixel agora aponta pra imagem do d2 (não a do d1).
+    assert.match(html, /img\.example\/d2\.jpg/, "post_pixel usa a imagem do d2");
+  });
+
+  it("#2549: default (sem override) preserva #1690 — post_pixel usa imagem do D1", () => {
+    const images = {
+      d1: { url: "https://img.example/d1.jpg" },
+      d2: { url: "https://img.example/d2.jpg" },
+    };
+    const platforms = parsePlatforms(MD_PIXEL);
+    const html = buildSocialHtml(platforms, images); // sem 3º arg → "1"
+    assert.match(html, /POST PESSOAL — vjpixel \(D1\)/, "default continua D1");
+    assert.ok((html.match(/img\.example\/d1\.jpg/g) ?? []).length >= 2, "post_pixel reusa imagem do d1 por default");
+  });
 });
