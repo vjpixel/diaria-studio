@@ -25,6 +25,7 @@ import { parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
+import { dohFetch } from "./lib/doh-fetch.ts"; // #2551: stats fetch via DoH quando DNS local filtra
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
@@ -103,9 +104,9 @@ async function pingWorker(edition: string): Promise<{
     }
     return { ok: false, total: 0, correct_answer: null, local_dns_filtered: reachability.local_dns_filtered };
   }
-  // Worker UP — fazer chamada pra extrair stats
+  // Worker UP — fazer chamada pra extrair stats via dohFetch (suporta DNS local filtrado)
   try {
-    const res = await fetch(url);
+    const res = await dohFetch(url);
     if (!res.ok) return { ok: false, total: 0, correct_answer: null };
     const data = (await res.json()) as {
       total?: number;
