@@ -34,6 +34,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env + .e
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
+import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -228,7 +229,7 @@ export function runPreflight(
   return { decision: decide(edition, outcomes), outcomes };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const { values } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
   if (!edition || !isValidEditionDir(edition)) {
@@ -239,6 +240,34 @@ function main(): void {
   console.error(
     `[preflight-poll-dispatch] ${edition}: maintain-valid-editions → smoke-test-vote (gate duro)`,
   );
+
+  // #2551: pre-check de reachability com DoH fallback — antes de correr os
+  // child scripts, detecta se DNS local está filtrando poll.diaria.workers.dev.
+  const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  const reach = await isWorkerReachable(`${POLL_WORKER_URL}/health`);
+  if (!reach.up) {
+    if (reach.local_dns_filtered) {
+      console.error(
+        `[preflight-poll-dispatch] ⚠️  DNS local filtrando ${new URL(POLL_WORKER_URL).hostname} ` +
+          `— DoH resolve mas anycast não respondeu. Worker pode estar realmente down ou sem rota anycast. ` +
+          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
+      );
+    } else {
+      console.error(
+        `[preflight-poll-dispatch] ⚠️  Worker inacessível (DNS + DoH ambos falharam). ` +
+          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
+      );
+    }
+    console.error(
+      `[preflight-poll-dispatch] Continuando smoke-test (resultado autoritativo para gate duro)...`,
+    );
+  } else if (reach.local_dns_filtered) {
+    console.error(
+      `[preflight-poll-dispatch] ℹ️  DNS local filtra ${new URL(POLL_WORKER_URL).hostname} ` +
+        `mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`,
+    );
+  }
+
   const { decision, outcomes } = runPreflight(edition);
   console.log(JSON.stringify({ edition, outcomes, decision }, null, 2));
 
@@ -270,5 +299,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((e) => {
+    console.error(`[preflight-poll-dispatch] unexpected error: ${(e as Error).message}`);
+    process.exit(1);
+  });
 }
