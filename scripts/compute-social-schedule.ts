@@ -237,21 +237,11 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
 
   if (calculatedMs < minFutureCutoffMs && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
     const shiftedMs = nowMs + pastSlotShiftMs;
-    const shiftedIso = new Date(shiftedMs).toISOString();
-    // Incluir o offset de TZ na ISO shiftada para consistência com o formato original.
-    // Usar o offset calculado da data original (acurado pro timezone correto).
     const shiftedDate = new Date(shiftedMs);
-    const shiftedDateStr =
-      `${shiftedDate.getFullYear()}-` +
-      String(shiftedDate.getMonth() + 1).padStart(2, "0") +
-      "-" +
-      String(shiftedDate.getDate()).padStart(2, "0");
-    const shiftedH = String(shiftedDate.getHours()).padStart(2, "0");
-    const shiftedMin = String(shiftedDate.getMinutes()).padStart(2, "0");
-    const shiftedSec = String(shiftedDate.getSeconds()).padStart(2, "0");
     // Calcular offset do timezone pra data shiftada (pode diferir por DST)
     const shiftedOffsetStr = timezoneOffsetIso(shiftedDate, tz);
-    // Converter shiftedDate pra hora local do timezone alvo
+    // Converter shiftedDate pra hora local do timezone alvo via Intl.DateTimeFormat
+    // (mesmo padrão de timezoneOffsetIso — não usa .getHours() que retorna local do runner)
     const localFmt = new Intl.DateTimeFormat("en-US", {
       timeZone: tz,
       year: "numeric",
