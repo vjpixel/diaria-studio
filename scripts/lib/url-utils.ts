@@ -35,6 +35,14 @@ export function canonicalize(url: string): string {
     }
     // remove fragment
     u.hash = "";
+    // #2581: colapsar double-slash no pathname (ex: /writing//x/ → /writing/x/).
+    // Só no pathname — NÃO no scheme (https://) que é normalizado separadamente.
+    // Causa: URLs com // no path publicadas em past-editions.md vs re-descobertas
+    // com / produziam canonicalize() divergentes → dedup evergreen silenciosamente
+    // falhava para o mesmo conteúdo.
+    if (u.pathname.includes("//")) {
+      u.pathname = u.pathname.replace(/\/{2,}/g, "/");
+    }
     // remove trailing slash no pathname (exceto root "/")
     if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
       u.pathname = u.pathname.slice(0, -1);

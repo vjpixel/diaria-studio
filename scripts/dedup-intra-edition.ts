@@ -41,6 +41,7 @@ import {
   tokenizeForJaccard,
   jaccardSimilarity,
 } from "./dedup.ts";
+import { detectLaunchCandidate } from "./lib/launch-detect.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -227,8 +228,40 @@ export function highlightUrl(h: HighlightEntry): string | null {
 }
 
 /**
+ * #2580: Alias map para normalizar multi-domínio de empresas com TLDs especiais.
+ *
+ * O Google usa tanto `.google` (gTLD próprio, ex: blog.google, deepmind.google,
+ * ai.google) quanto `.com` (ex: cloud.google.com). A heurística de 2-labels
+ * produz resultados inconsistentes:
+ *   - blog.google  → "blog.google"  (hostname tem 2 labels → result = hostname)
+ *   - cloud.google.com → "google.com"  (hostname tem 3 labels → result = last 2)
+ * Isso quebra o match de `suggested_primary_domain` contra URLs de destaque.
+ *
+ * Fix: normalizar o resultado de 2-labels para o domínio canônico da empresa
+ * quando o hostname inteiro é um sub-TLD conhecido. Mantém a lista mínima —
+ * só aliases de hostnames que aparecem em `official-domains.ts` como primary_domain
+ * ou domains[] com gTLD próprio (não .com/.net/.org).
+ *
+ * NÃO inclui `research.google` (não é primary_domain de nenhuma entrada;
+ * o comentário antigo em extractRegistrableDomain usava domínio inexistente
+ * "blog.google.com" — o blog real do Google é "blog.google" sem .com).
+ */
+export const DOMAIN_ALIASES: Record<string, string> = {
+  // Google usa .google como TLD próprio. Os 3 abaixo aparecem em official-domains.ts
+  // como domains[] ou primary_domain:
+  //   - "blog.google"    → primary_domain da entry "Google (blog)"
+  //   - "deepmind.google" → domains[] da entry "DeepMind / Google"
+  //   - "ai.google"      → domains[] da entry "DeepMind / Google"
+  // Todos são propriedades da mesma entidade (Google) para fins de dedup.
+  "blog.google": "google.com",
+  "deepmind.google": "google.com",
+  "ai.google": "google.com",
+};
+
+/**
  * Extrai o registrable domain (eTLD+1) de uma URL, normalizado lowercase.
  * Ex: "https://blog.google.com/foo" → "google.com"
+ *     "https://blog.google/foo"     → "google.com"  (via alias, #2580)
  *     "https://openai.com/research/x" → "openai.com"
  *
  * Usado para comparar `suggested_primary_domain` do artigo RADAR com o
@@ -239,43 +272,94 @@ export function highlightUrl(h: HighlightEntry): string | null {
  * Casos como ".co.uk" ou ".com.br" podem divergir, mas são raros no corpus
  * de fontes oficiais de tech. Falso-negativo nesses casos é aceitável — o
  * dedup só perde um match, não gera falso-positivo.
+ *
+ * #2580: pós-normalização, aplica `DOMAIN_ALIASES` pra reconciliar entidades
+ * com multi-domínio (ex: Google com blog.google + cloud.google.com).
  */
 export function extractRegistrableDomain(url: string): string | null {
   try {
     const { hostname } = new URL(url);
     const parts = hostname.toLowerCase().split(".");
     if (parts.length < 2) return null;
-    return parts.slice(-2).join(".");
+    const twoLabel = parts.slice(-2).join(".");
+    // #2580: normalizar para domínio canônico quando é um alias conhecido.
+    return DOMAIN_ALIASES[twoLabel] ?? twoLabel;
   } catch {
     return null;
   }
 }
 
 /**
- * #2548 (Furo 2): Retorna true se a URL do destaque pertence ao
- * `suggested_primary_domain` do artigo RADAR.
+ * Normaliza um domínio (hostname ou eTLD+1) através do alias map.
+ * Suporta tanto hostnames completos (ex: "blog.google.com") quanto
+ * domínios já extraídos (ex: "blog.google").
  *
- * Caso real: RADAR = canaltech.com.br (suggested_primary_domain = "google.com"),
- * D1 = blog.google.com → extractRegistrableDomain("blog.google.com") = "google.com"
+ * Usado para comparar `suggested_primary_domain` (que pode ser o hostname
+ * completo como "blog.google" — primary_domain do Google em official-domains.ts)
+ * com o `extractRegistrableDomain()` do destaque (que aplica o alias map).
+ * Sem normalização bilateral, "blog.google" ≠ "google.com" mesmo após o fix #2580.
+ */
+function normalizeDomainForMatch(domain: string): string {
+  const lower = domain.toLowerCase();
+  // Verificar se é hostname com path (ex: "blog.google.com/products") — pegar só o host
+  const host = lower.split("/")[0];
+  // Tentar extrair registrable domain (pega os 2 últimos labels) e aplicar alias.
+  const parts = host.split(".");
+  if (parts.length >= 2) {
+    const twoLabel = parts.slice(-2).join(".");
+    return DOMAIN_ALIASES[twoLabel] ?? twoLabel;
+  }
+  return host;
+}
+
+/**
+ * #2548 (Furo 2): Retorna true se a URL do destaque pertence ao domínio oficial
+ * do lançamento que o artigo RADAR cobre.
+ *
+ * Caso real: RADAR = canaltech.com.br (suggested_primary_domain = "blog.google"),
+ * D1 = blog.google.com → extractRegistrableDomain → "google.com" (via alias #2580)
+ * normalizeDomainForMatch("blog.google") → "google.com" (via alias #2580)
  * → match → RADAR é cobertura de imprensa do mesmo lançamento que D1.
  *
- * Só aplica quando o artigo tem `suggested_primary_domain` definido (campo
- * adicionado por `enrich-primary-source.ts` apenas a itens com verbo de
- * lançamento + empresa conhecida no título). Sem esse campo, o check é no-op.
+ * Fonte do domínio (preferência decrescente):
+ *   1. `article.suggested_primary_domain` — campo setado por `enrich-primary-source.ts`
+ *      no passo 1m (sobre `tmp-categorized.json`). Quando presente é o mais barato.
+ *   2. Re-derivação via `detectLaunchCandidate` (#2578) — fallback quando o campo
+ *      não sobreviveu ao pipeline (scorer/assemble drop de campos extra que o LLM
+ *      não escreveu de volta). Aplica os mesmos critérios que `enrich-primary-source`.
+ *
+ * Sem nenhum dos dois, o check é no-op (retorna false graciosamente).
  */
 export function isPressCovertageOfHighlight(
   article: Article,
   highlightUrl: string | null,
 ): boolean {
-  const suggestedDomain = article.suggested_primary_domain;
-  if (!suggestedDomain || !highlightUrl) return false;
+  if (!highlightUrl) return false;
+
+  // Fonte 1: campo persistido pelo pipeline (quando sobrevive ao scorer).
+  let suggestedDomain = article.suggested_primary_domain;
+
+  // Fonte 2 (#2578): re-derivar via detectLaunchCandidate quando o campo foi
+  // stripado (não-determinístico — LLM do scorer pode não preservar campos extras).
+  // Mesmo critério de enrich-primary-source.ts: verbo de lançamento + empresa.
+  if (!suggestedDomain) {
+    const det = detectLaunchCandidate(article);
+    if (det.is_candidate && det.suggested_domain) {
+      suggestedDomain = det.suggested_domain;
+    }
+  }
+
+  if (!suggestedDomain) return false;
 
   const hDomain = extractRegistrableDomain(highlightUrl);
   if (!hDomain) return false;
 
-  // suggested_primary_domain já é o domínio registrável (ex: "google.com").
-  // Comparar diretamente.
-  return hDomain === suggestedDomain.toLowerCase();
+  // #2580: normalizar `suggestedDomain` pelo mesmo alias map do extractRegistrableDomain.
+  // `suggested_primary_domain` pode ser "blog.google" (primary_domain do Google em
+  // official-domains.ts) — sem normalização, "blog.google" ≠ "google.com" (resultado
+  // de cloud.google.com), então o match falharia para destaques em cloud.google.com.
+  const normalizedSuggested = normalizeDomainForMatch(suggestedDomain);
+  return hDomain === normalizedSuggested;
 }
 
 /**

@@ -301,3 +301,90 @@ describe("dedupEvergreenBuckets — regressão #2548 Furo 1", () => {
     assert.equal(kept.lancamento?.length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2581: dedup evergreen casa URL com double-slash no pathname
+// Regressão: eugeneyan.com//writing/working-with-ai/ aparecia em past-editions.md
+// com // mas a URL re-descoberta tinha / simples → canonicalize() produzia strings
+// diferentes → dedup sem janela não pegava o duplicado.
+// Fix: canonicalize() agora colapsa // para / no pathname (url-utils.ts).
+// ---------------------------------------------------------------------------
+
+const PAST_MD_WITH_DOUBLE_SLASH = `# Últimas edições publicadas
+
+## 2026-06-17 — "Edição com double-slash"
+
+Links usados:
+- https://eugeneyan.com//writing/working-with-ai/
+
+---
+`;
+
+describe("dedupEvergreenBuckets — regressão #2581 double-slash no pathname", () => {
+  it("CENÁRIO REAL: casa URL com // em past-editions vs / simples no artigo atual", () => {
+    // past-editions.md registrou a URL com // (double-slash) no path.
+    // O artigo re-descoberto tem / simples. Sem o fix, canonicalize() produzia
+    // strings diferentes → dedup não removia o duplicado.
+    const pastUrls2581 = extractPastUrlsUnbounded(PAST_MD_WITH_DOUBLE_SLASH);
+
+    // A URL com // deve estar no set (canonicalizada para /)
+    assert.ok(
+      pastUrls2581.has("https://eugeneyan.com/writing/working-with-ai"),
+      "URL com // deve ser canonicalizada e encontrada no set",
+    );
+
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          // Artigo re-descoberto com / simples — mesmo conteúdo, URL diferente
+          url: "https://eugeneyan.com/writing/working-with-ai",
+          title: "Working with AI: A Practical Guide",
+        },
+      ],
+      video: [],
+    };
+
+    const { kept, removed } = dedupEvergreenBuckets(input, pastUrls2581);
+
+    assert.equal(
+      removed.length,
+      1,
+      "URL com / simples deve ser removida quando past-editions tem a mesma URL com //",
+    );
+    assert.equal(kept.use_melhor?.length, 0);
+  });
+
+  it("CENÁRIO INVERSO: URL com // no artigo atual casa contra / simples no past", () => {
+    // Variante: past tem / simples, artigo atual tem //
+    const pastUrlsSingle = extractPastUrlsUnbounded(`## 2026-06-17 — "X"
+
+Links usados:
+- https://eugeneyan.com/writing/working-with-ai/
+
+---
+`);
+
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://eugeneyan.com//writing/working-with-ai/",
+          title: "Working with AI (double-slash variant)",
+        },
+      ],
+      video: [],
+    };
+
+    const { kept, removed } = dedupEvergreenBuckets(input, pastUrlsSingle);
+
+    assert.equal(
+      removed.length,
+      1,
+      "URL com // no artigo atual deve casar com past-editions com / simples",
+    );
+    assert.equal(kept.use_melhor?.length, 0);
+  });
+});
