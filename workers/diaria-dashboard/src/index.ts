@@ -21,7 +21,7 @@
  */
 
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
-import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary } from "./types.ts";
+import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary } from "./types.ts";
 
 // ─── Helpers inline (espelham scripts/lib/ctr-utils.ts) ──────────────────────
 // Duplicar em vez de importar — o Worker não tem acesso a scripts/lib/ no bundle.
@@ -38,7 +38,7 @@ export interface Env {
 
 // ─── Re-export types para testes ─────────────────────────────────────────────
 
-export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary };
+export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -481,6 +481,162 @@ export function renderPollEiaSection(data: DashboardData): string {
 </section>`;
 }
 
+// ─── #2558: Top links por cliques absolutos — últimas 5 edições ──────────────
+
+export function renderTopClickedRecentSection(data: DashboardData): string {
+  const tcr = data.top_clicked_recent;
+  if (!tcr) {
+    return `<section class="dash-section" id="top-clicked-recent">
+  <h2 class="section-title">Top 10 links mais clicados (últimas 5 edições)</h2>
+  <p class="section-note muted">Arquivo <code>data/link-ctr-table.csv</code> não encontrado ou vazio. Rode <code>npm run build-link-ctr</code> para gerar.</p>
+</section>`;
+  }
+
+  const windowLabel = (tcr.window_editions ?? []).length > 0
+    ? `Janela: ${escHtml((tcr.window_editions ?? []).join(", "))}`
+    : "Janela: —";
+
+  const rows = (tcr.top_items ?? []).map((r, i) => {
+    const safeHref = safeHttpHref(r.base_url);
+    const linkCell = safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
+      : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    return `<tr>
+    <td>${i + 1}</td>
+    <td>${escHtml(r.edition)}</td>
+    <td><small>${escHtml(r.category)}</small></td>
+    <td>${escHtml(r.anchor)}</td>
+    <td class="metric">${r.unique_verified_clicks}</td>
+    <td>${linkCell}</td>
+  </tr>`;
+  }).join("\n");
+
+  return `<section class="dash-section" id="top-clicked-recent">
+  <h2 class="section-title">Top 10 links mais clicados (últimas 5 edições)</h2>
+  <p class="section-note">${windowLabel} · por cliques absolutos (<code>unique_verified_clicks</code>)</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Posição">#</th>
+        <th title="Edição (AAMMDD) onde o link apareceu pela primeira vez na janela">Edição</th>
+        <th title="Categoria do link">Categoria</th>
+        <th title="Âncora do link (título ou label)">Âncora</th>
+        <th title="Cliques únicos verificados (soma da janela de 5 edições)">Cliques</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  </div>
+  <p class="section-note muted">Distinto do Top 10 por CTR (all-time). Esta seção usa cliques absolutos nas últimas 5 edições.</p>
+</section>`;
+}
+
+// ─── #2560: Perfil de audiência ───────────────────────────────────────────────
+
+export function renderAudienceSection(data: DashboardData): string {
+  const audience = data.audience;
+  if (!audience) {
+    return `<section class="dash-section" id="audience">
+  <h2 class="section-title">Perfil de audiência</h2>
+  <p class="section-note muted">Arquivo <code>context/audience-profile.md</code> não encontrado. Rode <code>npx tsx scripts/update-audience.ts</code> para gerar.</p>
+</section>`;
+  }
+
+  // Metadata strip
+  const metaParts: string[] = [];
+  if (audience.subscribers !== null) metaParts.push(`${audience.subscribers} assinantes ativos`);
+  if (audience.survey_respondents !== null) metaParts.push(`${audience.survey_respondents} respondentes survey`);
+  if (audience.links_analyzed !== null) metaParts.push(`${audience.links_analyzed} links analisados`);
+  if (audience.updated_at) metaParts.push(`atualizado ${escHtml(audience.updated_at)}`);
+  const metaLine = metaParts.join(" · ");
+
+  // CTR por categoria
+  const ctrRows = (audience.ctr_by_category ?? []).map((r) => `<tr>
+    <td>${escHtml(r.category)}</td>
+    <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
+    <td>${r.link_count}</td>
+  </tr>`).join("\n");
+
+  const avgCtrLine = audience.avg_ctr_pct !== null
+    ? `<p class="section-note">CTR médio geral: <strong>${audience.avg_ctr_pct.toFixed(2)}%</strong></p>`
+    : "";
+
+  // Survey: content preferences
+  const contentRows = (audience.content_preferences ?? []).slice(0, 8).map((r) => `<tr>
+    <td>${escHtml(r.label)}</td>
+    <td class="metric">${(r.weight * 100).toFixed(1)}%</td>
+    <td><small>${r.count}</small></td>
+  </tr>`).join("\n");
+
+  // Survey: knowledge levels
+  const knowledgeRows = (audience.knowledge_levels ?? []).map((r) => `<tr>
+    <td>${escHtml(r.label)}</td>
+    <td class="metric">${(r.weight * 100).toFixed(1)}%</td>
+    <td><small>${r.count}</small></td>
+  </tr>`).join("\n");
+
+  // Survey: sectors (top 10)
+  const sectorRows = (audience.sectors ?? []).slice(0, 10).map((r) => `<tr>
+    <td>${escHtml(r.label)}</td>
+    <td class="metric">${(r.weight * 100).toFixed(1)}%</td>
+    <td><small>${r.count}</small></td>
+  </tr>`).join("\n");
+
+  const surveyHeader = `
+    <thead>
+      <tr>
+        <th title="Opção de resposta">Opção</th>
+        <th title="Peso relativo (% dos respondentes)">Peso</th>
+        <th title="Respostas">N</th>
+      </tr>
+    </thead>`;
+
+  return `<section class="dash-section" id="audience">
+  <h2 class="section-title">Perfil de audiência</h2>
+  ${metaLine ? `<p class="section-note">${metaLine}</p>` : ""}
+
+  ${ctrRows ? `<h3 class="subsection-title">Engajamento por categoria (CTR)</h3>
+  ${avgCtrLine}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Categoria do link">Categoria</th>
+        <th title="CTR médio da categoria (com decaimento temporal)">CTR</th>
+        <th title="Total de links analisados">Links</th>
+      </tr>
+    </thead>
+    <tbody>${ctrRows}</tbody>
+  </table>
+  </div>` : ""}
+
+  ${contentRows ? `<h3 class="subsection-title" style="margin-top:16px">Conteúdo preferido (survey)</h3>
+  <div class="table-wrap">
+  <table>${surveyHeader}
+    <tbody>${contentRows}</tbody>
+  </table>
+  </div>` : ""}
+
+  ${knowledgeRows ? `<h3 class="subsection-title" style="margin-top:16px">Nível de conhecimento em IA (survey)</h3>
+  <div class="table-wrap">
+  <table>${surveyHeader}
+    <tbody>${knowledgeRows}</tbody>
+  </table>
+  </div>` : ""}
+
+  ${sectorRows ? `<h3 class="subsection-title" style="margin-top:16px">Setores (survey, top 10)</h3>
+  <div class="table-wrap">
+  <table>${surveyHeader}
+    <tbody>${sectorRows}</tbody>
+  </table>
+  </div>` : ""}
+
+  <p class="section-note muted">Fonte primária: CTR comportamental (<code>data/link-ctr-table.csv</code>). Fonte secundária: survey declarativo (<code>data/audience-raw.json</code>). Dados de <code>context/audience-profile.md</code>.</p>
+</section>`;
+}
+
 export function renderStubsSection(stubs: StubSection[]): string {
   if (stubs.length === 0) return "";
 
@@ -517,6 +673,8 @@ export function renderDashboardHtml(data: DashboardData): string {
   const overnightSection = renderOvernightSection(data);
   const useMelhorSection = renderUseMelhorSection(data);
   const pollEiaSection = renderPollEiaSection(data);
+  const topClickedRecentSection = renderTopClickedRecentSection(data);
+  const audienceSection = renderAudienceSection(data);
   const stubsSection = renderStubsSection(data.stubs ?? []);
 
   return `<!DOCTYPE html>
@@ -568,6 +726,8 @@ export function renderDashboardHtml(data: DashboardData): string {
 
 <nav class="nav">
   <a href="#ctr">CTR por categoria</a>
+  <a href="#top-clicked-recent">Top clicados</a>
+  <a href="#audience">Audiência</a>
   <a href="#use-melhor">Use Melhor</a>
   <a href="#poll-eia">É IA?</a>
   <a href="#overnight">Overnight</a>
@@ -576,6 +736,8 @@ export function renderDashboardHtml(data: DashboardData): string {
 </nav>
 
 ${ctrSection}
+${topClickedRecentSection}
+${audienceSection}
 ${useMelhorSection}
 ${pollEiaSection}
 ${overnightSection}

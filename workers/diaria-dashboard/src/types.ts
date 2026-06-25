@@ -162,6 +162,65 @@ export interface PollEiaSummary {
   updated_at: string | null;
 }
 
+// ─── Top links por cliques absolutos — últimas 5 edições (#2558) ─────────────
+
+export interface TopClickedRecentItem {
+  /** Data da edição (AAMMDD) */
+  edition: string;
+  /** Título da edição (post_title do CSV) */
+  post_title: string;
+  /** Âncora do link (anchor do CSV) */
+  anchor: string;
+  /** URL base do link */
+  base_url: string;
+  /** Categoria do link */
+  category: string;
+  /** Cliques únicos verificados */
+  unique_verified_clicks: number;
+}
+
+export interface TopClickedRecentSummary {
+  /** As últimas 5 edições (AAMMDD) usadas como janela */
+  window_editions: string[];
+  /** Top 10 links por cliques absolutos nas últimas 5 edições */
+  top_items: TopClickedRecentItem[];
+}
+
+// ─── Perfil de audiência (#2560) ─────────────────────────────────────────────
+
+export interface AudienceCtrCategoryRow {
+  category: string;
+  ctr_pct: number;
+  link_count: number;
+}
+
+export interface AudienceSurveyItem {
+  label: string;
+  weight: number;
+  count: number;
+}
+
+export interface AudienceSummary {
+  /** Data de atualização (YYYY-MM-DD) */
+  updated_at: string | null;
+  /** Assinantes ativos */
+  subscribers: number | null;
+  /** Respondentes do survey */
+  survey_respondents: number | null;
+  /** Links analisados */
+  links_analyzed: number | null;
+  /** CTR por categoria, ordenado por CTR desc */
+  ctr_by_category: AudienceCtrCategoryRow[];
+  /** CTR médio geral */
+  avg_ctr_pct: number | null;
+  /** Preferências declaradas de conteúdo (survey) */
+  content_preferences: AudienceSurveyItem[];
+  /** Nível de conhecimento em IA (survey) */
+  knowledge_levels: AudienceSurveyItem[];
+  /** Setores de atuação (survey) */
+  sectors: AudienceSurveyItem[];
+}
+
 // ─── Seções stub (dados não disponíveis localmente ainda) ────────────────────
 
 export interface StubSection {
@@ -202,6 +261,12 @@ export interface DashboardData {
 
   /** Poll É IA? por edição — null se dados não disponíveis (requer push do workers/poll) */
   poll_eia: PollEiaSummary | null;
+
+  /** Top 10 links por cliques absolutos nas últimas 5 edições — null se CSV ausente (#2558) */
+  top_clicked_recent: TopClickedRecentSummary | null;
+
+  /** Perfil de audiência extraído de context/audience-profile.md (#2560) — null se arquivo ausente */
+  audience: AudienceSummary | null;
 
   /** Seções que ainda não têm dados disponíveis */
   stubs: StubSection[];
