@@ -140,8 +140,11 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 ```bash
 npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --md data/editions/{AAMMDD}/02-reviewed.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
+npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md data/editions/{AAMMDD}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
+
+`secondary-items-have-summary` (#2545): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR sem descrição renderiza título pelado no email. Ação: editar `02-reviewed.md` e adicionar descrição plain text (1 frase) abaixo de cada item pelado, ou re-rodar Etapa 1 (se a causa foi cache-miss no enrich).
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash

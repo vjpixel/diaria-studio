@@ -273,6 +273,14 @@ export interface EnrichOptions {
 }
 
 /**
+ * #2545: cap de fallback fetches para non-inbox cache-miss. Limita o custo de
+ * rede a no máximo N GETs por edição, mesmo que haja muitos cache-misses.
+ * Valor conservador: típico é <5 cache-misses por edição (itens secundários que
+ * não passaram pelo 1i com body persistido). 10 garante cobertura sem blast.
+ */
+export const NON_INBOX_FALLBACK_FETCH_CAP = 10;
+
+/**
  * Pure-ish: takes a list of articles and a fetcher (so tests can mock).
  * Returns mutated articles + per-URL outcomes.
  *
@@ -280,14 +288,19 @@ export interface EnrichOptions {
  * intra-edição body cache populated by `verify-accessibility.ts` before
  * falling back to the network fetcher. The same URL was already fetched in
  * step 1i, so the cache hit eliminates a duplicate GET. Disabled when null.
+ *
+ * `nonInboxFallbackFetchCap` (#2545): cap de fallback fetches para non-inbox
+ * com summary vazio e cache-miss. Default = NON_INBOX_FALLBACK_FETCH_CAP.
+ * Bounded: tipicamente <5/edição — evita blast em caso de cache frio.
  */
 export async function enrichArticles(
   articles: InboxArticle[],
   fetcher: (url: string) => Promise<string | null>,
-  opts: { concurrency?: number; bodiesDir?: string | null } = {},
+  opts: { concurrency?: number; bodiesDir?: string | null; nonInboxFallbackFetchCap?: number } = {},
 ): Promise<{ articles: InboxArticle[]; outcomes: EnrichOutcome[]; stats: EnrichStats }> {
   const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
   const bodiesDir = opts.bodiesDir ?? null;
+  const fallbackCap = opts.nonInboxFallbackFetchCap ?? NON_INBOX_FALLBACK_FETCH_CAP;
   const outcomes: EnrichOutcome[] = [];
   const stats: EnrichStats = { cache_hits: 0, cache_misses: 0 };
   const out = articles.map((a) => ({ ...a }));
@@ -297,6 +310,10 @@ export async function enrichArticles(
     .filter(({ article }) => needsEnrichment(article));
 
   let cursor = 0;
+  // #2545: contador compartilhado de fallback fetches para non-inbox. Protegido
+  // por event-loop (JavaScript single-threaded) — sem race entre workers.
+  let nonInboxFallbackFetchCount = 0;
+
   async function worker(): Promise<void> {
     while (cursor < targets.length) {
       const job = targets[cursor++];
@@ -312,23 +329,32 @@ export async function enrichArticles(
           stats.cache_misses++;
         }
       }
-      // #1696: cache-miss → só faz network fetch pra artigos do INBOX. Fonte
-      // regular (summary-only enrichment) é cache-only: bound do custo (sem
-      // fetch ilimitado pro pool inteiro) e o body já foi cacheado no 1i pros
-      // acessíveis. Non-inbox cache-miss → pula (summary fica vazio, sem dano).
-      if (html === null && isInboxArticle(job.article)) {
-        html = await fetcher(job.article.url);
+      // Inbox: sempre faz network fetch em cache-miss (comportamento original #109).
+      // Non-inbox: #2545 — fallback bounded (cap) para artigos secundários sem summary
+      // que tiveram cache-miss. Custo limitado: só os cache-misses (tipicamente <5/edição)
+      // e apenas até o cap (NON_INBOX_FALLBACK_FETCH_CAP). Antes (#1696) era cache-only
+      // e summary ficava vazio silenciosamente; agora tenta 1 GET curto pra og:description.
+      if (html === null) {
+        if (isInboxArticle(job.article)) {
+          html = await fetcher(job.article.url);
+        } else if (nonInboxFallbackFetchCount < fallbackCap) {
+          // #2545: fallback bounded para non-inbox
+          nonInboxFallbackFetchCount++;
+          html = await fetcher(job.article.url);
+        }
       }
       if (!html) {
-        // #1696: non-inbox cache-only — body não estava no cache e não fetchamos.
-        // Sem submitted_subject (é inbox-only); só registra o skip (summary vazio).
+        // Non-inbox cache-only sem fallback (cap esgotado ou bodiesDir nulo):
+        // registra o skip (summary fica vazio — será detectado pelo lint
+        // secondary-items-have-summary no Stage 4).
         if (!isInboxArticle(job.article)) {
+          const capExhausted = nonInboxFallbackFetchCount >= fallbackCap;
           outcomes.push({
             url: job.article.url,
             enriched: false,
             title_updated: false,
             summary_updated: false,
-            reason: "cache_miss_skipped_non_inbox",
+            reason: capExhausted ? "cache_miss_cap_exhausted_non_inbox" : "cache_miss_skipped_non_inbox",
             ...(bodiesDir !== null ? { cache_hit: false } : {}),
           });
           continue;

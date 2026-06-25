@@ -60,6 +60,11 @@ import { checkSectionItemFormat } from "./lib/lint-checks/section-item-format.ts
 import {
   checkUseMelhorTempo,
 } from "./lib/lint-checks/use-melhor-tempo.ts";
+import {
+  checkSecondaryItemsHaveSummary,
+  type SecondaryItemSummaryError,
+  type SecondaryItemSummaryReport,
+} from "./lib/lint-checks/secondary-items-have-summary.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -129,6 +134,11 @@ export {
   type UseMelhorTempoError,
   type UseMelhorTempoReport,
 } from "./lib/lint-checks/use-melhor-tempo.ts";
+export {
+  checkSecondaryItemsHaveSummary,
+  type SecondaryItemSummaryError,
+  type SecondaryItemSummaryReport,
+} from "./lib/lint-checks/secondary-items-have-summary.ts";
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -718,6 +728,42 @@ intentional_error:
     return;
   }
 
+  // Modo --check secondary-items-have-summary (#2545) — item de seção secundária
+  // (LANÇAMENTOS/RADAR/USE MELHOR) sem descrição. Acusa ANTES do gate Stage 4
+  // para que o editor possa corrigir antes de publicar.
+  if (args.check === "secondary-items-have-summary") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkSecondaryItemsHaveSummary(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ secondary-items-have-summary: ${result.errors.length} item(ns) sem descrição nas seções secundárias:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  ${e.section} linha ${e.titleLine}: "${e.titleExcerpt}"`);
+      }
+      console.error(
+        `\nFix: adicione uma linha de descrição (plain text, 1 frase) abaixo de cada título pelado.`,
+      );
+      console.error(
+        `Causa provável: cache-miss no enrich-inbox-articles (body não cacheado no 1i). Re-rodar Etapa 1 ou adicionar descrição manualmente.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -764,7 +810,8 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check erro-intencional-narrative-generico --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>",
     );
     process.exit(2);
   }
