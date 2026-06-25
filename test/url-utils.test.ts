@@ -75,6 +75,42 @@ describe("canonicalize", () => {
     assert.equal(canonicalize("not a url"), "not a url");
     assert.equal(canonicalize(""), "");
   });
+
+  // #2581: colapso de double-slash no pathname
+  it("#2581: colapsа double-slash no pathname para igualdade de canonicalize", () => {
+    // Caso real: eugeneyan.com//writing/working-with-ai/ (// no path)
+    // aparecia em past-editions.md mas era re-descoberto com / simples.
+    // Sem o fix, canonicalize produzia strings diferentes → dedup evergreen falhava.
+    assert.equal(
+      canonicalize("https://eugeneyan.com//writing/working-with-ai/"),
+      canonicalize("https://eugeneyan.com/writing/working-with-ai/"),
+      "// no path deve ser colapsado para / — mesma canonical que URL com / simples",
+    );
+  });
+
+  it("#2581: dedup evergreen casa URL com double-slash vs URL com slash simples", () => {
+    // Confirma que o fix resolve o cenário end-to-end do dedup evergreen.
+    const withDoubleSlash = canonicalize("https://eugeneyan.com//writing/working-with-ai/");
+    const withSingleSlash = canonicalize("https://eugeneyan.com/writing/working-with-ai/");
+    assert.equal(withDoubleSlash, withSingleSlash);
+    // Também confirma que o scheme https:// NÃO é afetado (só pathname).
+    assert.ok(withSingleSlash.startsWith("https://"), "scheme https:// deve ser preservado");
+  });
+
+  it("#2581: triple-slash no pathname também é colapsado", () => {
+    assert.equal(
+      canonicalize("https://example.com///deep///path/"),
+      "https://example.com/deep/path",
+    );
+  });
+
+  it("#2581: URL sem double-slash no pathname fica inalterada", () => {
+    // Garantir que o fix é aditivo e não regride URLs normais.
+    assert.equal(
+      canonicalize("https://example.com/normal/path"),
+      "https://example.com/normal/path",
+    );
+  });
 });
 
 describe("extractHost", () => {

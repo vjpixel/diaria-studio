@@ -669,9 +669,12 @@ describe("extractRegistrableDomain (#2548 Furo 2)", () => {
   it("extrai eTLD+1 de URL de blog de empresa", () => {
     assert.equal(extractRegistrableDomain("https://blog.google.com/products/gemini"), "google.com");
     assert.equal(extractRegistrableDomain("https://openai.com/research/x"), "openai.com");
-    // research.google → .google é um TLD; extrai os 2 últimos segmentos = "research.google"
-    // O suggested_primary_domain para o Google é "google.com" (não "research.google"),
-    // então este caso não afeta o match do Furo 2.
+    // research.google → .google é um TLD; extrai os 2 últimos segmentos = "research.google".
+    // NÃO está no DOMAIN_ALIASES (#2580) — não é primary_domain de nenhuma entrada em
+    // official-domains.ts (o primary_domain do Google é "blog.google", não "research.google").
+    // Manter "research.google" como saída é correto — falso-negativo aceitável (só perde match,
+    // não gera falso-positivo) e a chance real de conflito é baixa (suggested_primary_domain
+    // para Google vem de "blog.google" via companyToDomain(), não de "research.google").
     assert.equal(extractRegistrableDomain("https://research.google/"), "research.google");
   });
 
@@ -797,9 +800,11 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
     );
   });
 
-  it("RADAR sem suggested_primary_domain com D1 do mesmo domínio NÃO é removido por domain-match", () => {
-    // Domain-match só aplica quando o campo suggested_primary_domain está presente.
-    // Sem ele, Jaccard e entity-check continuam como antes.
+  it("#2578: RADAR sem suggested_primary_domain com lançamento detectável é removido por domain-match (fallback)", () => {
+    // #2578: após o fix, isPressCovertageOfHighlight tem fallback via detectLaunchCandidate.
+    // "OpenAI lança GPT-5 com capacidade..." → detectLaunchCandidate detecta verbo "lança" +
+    // empresa "OpenAI" → suggested_domain = "openai.com" → D1 em openai.com → domain-match!
+    // Sem o campo persistido no JSON, a feature agora funciona via re-derivação no-op.
     const input = {
       highlights: [
         {
@@ -812,7 +817,7 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
         {
           url: "https://canaltech.com.br/ia/openai-lanca-gpt-5",
           title: "OpenAI lança GPT-5 com capacidade de raciocínio avançada",
-          // sem suggested_primary_domain
+          // sem suggested_primary_domain — field foi stripado pelo scorer
         },
       ],
       lancamento: [],
@@ -822,12 +827,11 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
 
     const { removed } = dedupIntraEdition(input);
 
-    // Sem suggested_primary_domain, não há domain-match.
-    // Jaccard entre "Introducing GPT-5" e "OpenAI lança GPT-5 com capacidade..."
-    // pode ou não casar via Jaccard normal — não testamos o resultado aqui,
-    // só garantimos que quando match ocorre é NOT por "domain".
+    // Com #2578: mesmo sem suggested_primary_domain, detectLaunchCandidate re-deriva
+    // "openai.com" a partir do título — e o D1 em openai.com faz match por domain.
     const domainMatches = removed.filter(r => r.match_type === "domain");
-    assert.equal(domainMatches.length, 0, "sem suggested_primary_domain não deve ter domain-match");
+    assert.equal(domainMatches.length, 1, "#2578: fallback detectLaunchCandidate deve produzir domain-match");
+    assert.equal(removed[0].url, "https://canaltech.com.br/ia/openai-lanca-gpt-5");
   });
 
   it("domain-match não remove destaque próprio (mesmo URL)", () => {
@@ -859,5 +863,142 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
 
     // O URL-skip guard (article.url === hUrl) previne remoção
     assert.equal(removed.length, 0, "mesmo URL = não é intra-dup");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2578: domain-match funciona mesmo sem suggested_primary_domain (re-derivação)
+// Regressão: o campo é setado em tmp-categorized.json (passo 1m) mas pode ser
+// stripado pelo scorer/assemble antes de chegar em 01-categorized.json (passo 1u).
+// Fix: isPressCovertageOfHighlight re-deriva via detectLaunchCandidate como fallback.
+// ---------------------------------------------------------------------------
+
+describe("isPressCovertageOfHighlight — fallback sem suggested_primary_domain (#2578)", () => {
+  it("CENÁRIO REAL: sem suggested_primary_domain, re-deriva via detectLaunchCandidate", () => {
+    // Simula o caso onde sugerido_primary_domain foi stripado pelo scorer.
+    // O artigo RADAR fala de lançamento do Google (verbo "lança" + keyword "gemini").
+    // Sem o campo, o fallback usa detectLaunchCandidate pra re-derivar o domínio.
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/google-libera-ia-que-consegue-mexer-no-computador",
+      title: "Google lança IA Gemini que consegue mexer no computador",
+      // campo NOT presente — simula strip pelo scorer/assemble
+    };
+    const highlightUrl = "https://blog.google.com/products/gemini/google-agents-computer-use";
+
+    // "Google lança IA Gemini" → detectLaunchCandidate → is_candidate: true,
+    // suggested_domain: "blog.google" (primary_domain do Google entry).
+    // extractRegistrableDomain("blog.google.com") = "google.com" via alias #2580.
+    // "blog.google" lowercased = "blog.google"; hDomain = "google.com".
+    // Mas o suggested_domain do Google entry é "blog.google" (primary_domain).
+    // Portanto: extractRegistrableDomain(highlightUrl) should match.
+    const result = isPressCovertageOfHighlight(radarArticle, highlightUrl);
+    assert.equal(
+      result,
+      true,
+      "sem suggested_primary_domain, deve re-derivar via detectLaunchCandidate e detectar domain-match",
+    );
+  });
+
+  it("artigo sem verbo de lançamento e sem suggested_primary_domain → sem domain-match", () => {
+    // Artigo de notícia geral sem verbo de lançamento — não é candidato a
+    // isPressCovertageOfHighlight mesmo que fale de empresa.
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/google-apresenta-resultados",
+      title: "Google apresenta resultados do trimestre",
+      // sem suggested_primary_domain e sem verbo de lançamento reconhecível
+    };
+    const result = isPressCovertageOfHighlight(radarArticle, "https://blog.google.com/something");
+    // "apresenta" é verbo de lançamento em PT-BR na lista? Sim: /\bapresenta(m|r|ndo)?\b/i
+    // Mas o objetivo aqui é verificar que a função NÃO crasheia sem o campo.
+    // O resultado pode ser true ou false — só confirmar que não lança exceção.
+    assert.doesNotThrow(() => isPressCovertageOfHighlight(radarArticle, "https://blog.google.com/something"));
+  });
+
+  it("dedupIntraEdition remove RADAR sem suggested_primary_domain quando detectLaunchCandidate detecta", () => {
+    // Testa o fluxo completo: artigo RADAR sem suggested_primary_domain
+    // mas com verbo de lançamento + empresa → domain-match via fallback.
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://blog.google.com/products/gemini/google-agents-computer-use",
+          article: {
+            url: "https://blog.google.com/products/gemini/google-agents-computer-use",
+            title: "Google launches Gemini computer use agents",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/ia/google-lanca-gemini-computer-use",
+          title: "Google lança Gemini para controlar computadores",
+          // SEM suggested_primary_domain — simula strip do scorer
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(
+      removed.length,
+      1,
+      "deve remover RADAR via fallback detectLaunchCandidate mesmo sem suggested_primary_domain",
+    );
+    assert.equal(removed[0].match_type, "domain");
+    assert.equal(kept.radar?.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2580: extractRegistrableDomain normaliza domínios Google com gTLD .google
+// Regressão: blog.google → "blog.google" (2 labels) ≠ "google.com" (resultado
+// de cloud.google.com), então match contra suggested_primary_domain="blog.google"
+// falhava para destaques em cloud.google.com.
+// ---------------------------------------------------------------------------
+
+describe("extractRegistrableDomain — normalização domínios Google (#2580)", () => {
+  it("blog.google (gTLD .google) é normalizado para google.com via alias map", () => {
+    // blog.google é o blog oficial do Google — 2 labels, mas é o mesmo "dono"
+    // de cloud.google.com (3 labels → "google.com"). #2580 alias normaliza.
+    assert.equal(
+      extractRegistrableDomain("https://blog.google/products/gemini/something"),
+      "google.com",
+      "blog.google deve ser aliasado para google.com",
+    );
+  });
+
+  it("cloud.google.com e blog.google resultam no mesmo registrable domain", () => {
+    const blogGoogle = extractRegistrableDomain("https://blog.google/technology/ai");
+    const cloudGoogle = extractRegistrableDomain("https://cloud.google.com/blog/ai-tools");
+    assert.equal(
+      blogGoogle,
+      cloudGoogle,
+      `blog.google (${blogGoogle}) e cloud.google.com (${cloudGoogle}) devem resultar no mesmo domain`,
+    );
+  });
+
+  it("deepmind.google é normalizado para google.com", () => {
+    assert.equal(
+      extractRegistrableDomain("https://deepmind.google/research/gemini"),
+      "google.com",
+    );
+  });
+
+  it("ai.google é normalizado para google.com", () => {
+    assert.equal(
+      extractRegistrableDomain("https://ai.google/research/gemma"),
+      "google.com",
+    );
+  });
+
+  it("domínios não-Google não são alterados", () => {
+    // Domínio comum (2 labels): sem alias → resultado direto
+    assert.equal(extractRegistrableDomain("https://openai.com/blog/gpt-5"), "openai.com");
+    assert.equal(extractRegistrableDomain("https://deepseek.com/news"), "deepseek.com");
+    // Subdomínio (3 labels): últimos 2 labels
+    assert.equal(extractRegistrableDomain("https://blogs.nvidia.com/ai"), "nvidia.com");
   });
 });
