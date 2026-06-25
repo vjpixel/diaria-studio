@@ -32,7 +32,7 @@
  * Output: mesmo JSON com itens duplicados removidos de use_melhor e video.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize, readPastEditionsMd, extractPastUrlsUnbounded } from "./dedup.ts";
 
