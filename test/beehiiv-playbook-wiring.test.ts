@@ -177,4 +177,70 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
       "hide img/iframe/video deve aparecer ANTES da chamada screenshot (workaround pré-probe)",
     );
   });
+
+  it("#2550: §5.2 Fase 3 referencia buildInsertTextJs + beehiiv-insert-text", () => {
+    // Regressão: se o helper for renomeado/movido, este guard falha antes que o bug
+    // chegue em runtime (onde a referência morta causaria TypeError em runtime).
+    assert.match(
+      playbook,
+      /buildInsertTextJs/,
+      "playbook deve referenciar buildInsertTextJs",
+    );
+    assert.match(
+      playbook,
+      /beehiiv-insert-text/,
+      "playbook deve referenciar scripts/lib/beehiiv-insert-text",
+    );
+  });
+
+  it("#2550: §5.2 Fase 3 usa tr.insertText como método padrão (não insertContent)", () => {
+    // Guard contra regressão para o método que causava freeze (#2495):
+    // editor.commands.insertContent NÃO deve aparecer como método primário de paste.
+    // tr.insertText DEVE aparecer como o método padrão.
+    const fase3 = playbook.match(/\*\*Fase 3[^*]*\*\*[\s\S]*?(?=\n\*\*Fase |\n####|\n---\n|$)/);
+    assert.ok(fase3, "Fase 3 deve existir no playbook");
+    const f3 = fase3![0];
+
+    assert.match(
+      f3,
+      /tr\.insertText/,
+      "Fase 3 deve documentar tr.insertText como método de paste",
+    );
+  });
+
+  it("#2550: TLDR menciona --no-wrap para fragmento bruto", () => {
+    // Guard: o TLDR deve orientar o uso de --no-wrap para preservar {{email}}.
+    // Sem --no-wrap, o wrapper de preview vai para o email enviado.
+    assert.match(
+      playbook,
+      /--no-wrap/,
+      "playbook deve mencionar --no-wrap para upload do fragmento bruto",
+    );
+  });
+
+  it("#2550: fallback chunked mantido no apêndice (não removido)", () => {
+    // Regra do briefing: KEEP chunked base64 como fallback documentado.
+    assert.match(
+      playbook,
+      /Fallback chunked/i,
+      "apêndice de fallback chunked deve permanecer no playbook",
+    );
+    assert.match(
+      playbook,
+      /__b64chunks/,
+      "apêndice deve manter a implementação chunked (__b64chunks)",
+    );
+  });
+
+  it("#2550: aviso #2495 softened — presente mas não como bloqueador", () => {
+    // O warning do #2495 deve existir mas NÃO deve dizer "usar o fallback chunked"
+    // como instrução principal (foi rebaixado para nota histórica).
+    assert.match(playbook, /#2495/, "referência ao #2495 deve permanecer");
+    // A instrução atual deve ser o novo fluxo, não o fallback como padrão.
+    assert.match(
+      playbook,
+      /Novo fluxo padr[ãa]o desde 260625|novo fluxo padr[ãa]o.*#2550/i,
+      "TLDR deve apresentar o novo fluxo (#2550) como padrão, não o chunked",
+    );
+  });
 });

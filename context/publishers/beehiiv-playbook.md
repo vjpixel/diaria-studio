@@ -4,16 +4,18 @@ Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como *
 
 ## TLDR (#1327)
 
-> **⚠️ DEGRADADO desde 260623 (#2495).** O fluxo canônico abaixo (upload Worker + fetch na Fase 3) está parcialmente quebrado: o `fetch()` do Worker **fica pendurado** dentro do `javascript_tool` na página `app.beehiiv.com` (bloqueio CSP `connect-src`). Além disso, após o paste do snippet completo (~34KB + imagens), **a página congela** e a automação de UI subsequente (subject, preview, slug, capa, test email) torna-se inoperante. O editor precisa finalizar esses passos manualmente na UI do Beehiiv. Workaround usado em 260623: injetar HTML via base64 inline (chunks via `javascript_tool` → `atob` + `TextDecoder` → `insertContent`) — veja fallback chunked no apêndice. Ver follow-ups #2500 (CSP) e #2501 (edit_post gated) para as ações necessárias.
+> **Novo fluxo padrão desde 260625 (#2550):** upload Worker com `--no-wrap` + `fetch()` in-page + `tr.insertText(html, snippetPos+1)` via `javascript_tool`. O `fetch()` funciona in-page (o bloqueio CSP do #2495 não se confirmou como permanente após re-teste em 260625). O `tr.insertText` — em vez de `editor.commands.insertContent` — evita o congelamento do renderer que ocorria em 260623. Fallback chunked base64 disponível enquanto a estabilidade do fetch+insertText é validada (2-3 sessões) — ver Apêndice.
+>
+> **Nota histórica #2495 (260623):** naquela sessão o `fetch()` ficou pendurado e o `insertContent` congelou a página. O novo fluxo endereça ambos: `--no-wrap` sobe o fragmento bruto (preservando `{{email}}`); `tr.insertText` insere sem parsing HTML. Se o fetch voltar a pendurar, acione o fallback chunked manualmente.
 
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
-1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker. **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
-2. Single `javascript_tool` no Chrome (fetch + `editor.commands.insertContent({type:'text', text:html})`) — ver §5.2 Fase 3.
+1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD --no-wrap` — sobe o fragmento HTML **bruto** pro Worker (sem wrapper de preview, preservando `{{email}}`). **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
+2. Single `javascript_tool` no Chrome (`fetch(url)` + `tr.insertText(html, snippetPos+1)`) — ver §5.2 Fase 3. Helper: `buildInsertTextJs(url)` de `scripts/lib/beehiiv-insert-text.ts`.
 
 Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
 
-**Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe como fallback automático se o Worker falhar. **Atenção (#2495):** enquanto o bloqueio CSP da Fase 3 persistir, o chunked base64 é o caminho que de fato funciona e precisa ser selecionado **manualmente** — o auto-fallback dispara no exit não-zero de `upload-html-public.ts`, mas a falha atual é um `fetch()` pendurado (exit 0), que o auto-fallback **não** detecta.
+**Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe como fallback se o Worker ou o fetch falharem.
 
 **Histórico do arquivo**: este arquivo era `.claude/agents/publish-newsletter.md` até #1114 (2026-05-12). Movido pra `context/publishers/` pra refletir o que ele é de fato: um **playbook lido pelo top-level Claude Code**, não um subagent dispatchável. Razão técnica original em #1054: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes não conseguem chamá-la. E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent completaria o passo 5.
 
@@ -507,14 +509,16 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 
 **Raiz do problema (#2283):** o template "HTML" do Beehiiv persiste o htmlSnippet entre usos — salvar o template enquanto com conteúdo carrega esse conteúdo na próxima criação de post. **Mitigação permanente:** nunca salvar o template "HTML" enquanto o snippet tem conteúdo (editor deve limpar manualmente antes de "Save as template" se precisar atualizar o template).
 
-**Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
+**Fase 2 — Upload HTML pro Cloudflare Worker (#1178, #2550)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
-> **⚠️ DEGRADADO desde 260623 (#2495).** O upload para o Worker (este passo) ainda funciona. Porém o `fetch()` da Fase 3 — que busca o HTML do Worker de dentro da página `app.beehiiv.com` — **fica pendurado sem resolver nem rejeitar** (bloqueio de CSP `connect-src`). Use o fallback chunked (apêndice) enquanto este bloqueio não for resolvido. Follow-up: #2500.
+> **Fluxo padrão desde 260625 (#2550):** usar `--no-wrap` para subir o fragmento HTML **bruto** (sem o wrapper de preview). O wrapper adicionado pelo default `upload-html-public.ts` é útil para revisão visual no browser, mas não deve ir para o email enviado. O fragmento bruto preserva `{{email}}` e as merge-tags de poll. Se `--no-wrap` não estiver disponível (versão antiga do script), use o wrapper e remova-o manualmente antes do paste.
+>
+> **Nota histórica #2495 (260623):** o `fetch()` desta Fase 3 ficou pendurado naquela sessão. Re-testado em 260625: funciona in-page. Se o fetch voltar a pendurar, acione o fallback chunked (apêndice) manualmente — o auto-fallback detecta apenas exit não-zero do `upload-html-public.ts`.
 
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD}
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap
 ```
 
 Stdout (JSON) — **`url` é versionada com hash do conteúdo (#1494, #1511)**:
@@ -539,47 +543,80 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 
 **Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
 
-**Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
+**Fase 3 — Fetch + paste via `tr.insertText` (#1178, #2550)**:
 
-> **⚠️ DEGRADADO desde 260623 (#2495) — fase bloqueada por CSP.** O `fetch('{DRAFT_PREVIEW_URL}')` executado dentro do `javascript_tool` na página `app.beehiiv.com` **fica pendurado indefinidamente** (confirmado 3× em 260623, incluindo fetch de controle). Comportamento de bloqueio de `connect-src` no CSP do Beehiiv, apertado desde a validação do #1054. **Usar o fallback chunked base64 (apêndice)** enquanto este bloqueio não for resolvido. Adicionalmente: após inserir o snippet completo (~34KB + imagens), **a página trava o renderer** — `computer` (screenshot/click) e `javascript_tool` retornam `CDP timed out after 45000ms / renderer may be frozen`. Isso impede toda automação de UI subsequente (subject, preview, slug, capa, test email). O editor deve finalizar esses passos manualmente na UI do Beehiiv. **Reload da página NÃO resolve o congelamento.** Nota: o corpo (e título/subtítulo, se já inseridos) costuma ter sido autosalvo antes do freeze (#2375) — o que normalmente falta é só a metadata. Follow-up: #2500 (CSP) e #2501 (edit_post gated).
+> **Fluxo padrão desde 260625 (#2550).** Browser baixa o fragmento bruto do Worker via `fetch()` e insere no TipTap via `tr.insertText(html, snippetPos+1)` — em vez de `editor.commands.insertContent`. O `tr.insertText` evita o congelamento do renderer que ocorria com o `insertContent` após ~34KB + imagens (#2495). O `fetch()` foi re-validado como funcional in-page em 260625 (o bloqueio CSP de 260623 não se replicou).
+>
+> **Se o fetch pendurar novamente:** usar o fallback chunked base64 (apêndice). O auto-fallback detecta apenas exit não-zero do `upload-html-public.ts`; se o `fetch()` pendurar sem erro (exit 0), selecione o chunked manualmente.
 
-Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
+Browser baixa HTML direto do Worker e insere no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
+
+**Helper recomendado** (`scripts/lib/beehiiv-insert-text.ts`):
+
+```typescript
+import { buildInsertTextJs, verifyFragmentPreserved, classifyInsertResult } from "scripts/lib/beehiiv-insert-text.ts";
+
+// Antes do paste: validar que o fragmento baixado do Worker tem {{email}}
+// (confirma que --no-wrap foi usado e o renderer preservou as merge-tags)
+// Nota: verifyFragmentPreserved opera sobre o fragmento BAIXADO — não é necessário
+// baixar previamente; a validação está embutida na varredura pós-paste (hasEmail).
+
+// Construir e executar o snippet
+const snippet = buildInsertTextJs(DRAFT_PREVIEW_URL);
+const result = await mcp__claude-in-chrome__javascript_tool({ code: snippet });
+
+// Classificar resultado e decidir ação
+const action = classifyInsertResult(result);
+// "ok"            → continuar para §5.3
+// "verify_only"   → javascript_tool retornou {} (async longa) → varredura extra
+// "retry_chunked" → acionar fallback chunked base64 (apêndice)
+```
+
+**Snippet manual equivalente** (para referência / debug):
 
 ```js
-// (1 chamada javascript_tool — fetch + decode + insertContent)
 // IMPORTANTE: usar a URL versionada retornada por upload-html-public.ts (#1511)
 // NÃO usar 'https://draft.diaria.workers.dev/{edition}' sem hash — retorna 404
 (async () => {
   const res = await fetch('{DRAFT_PREVIEW_URL}'); // ex: https://draft.diaria.workers.dev/260514-a3b2c1
-  if (!res.ok) return { error: `fetch ${res.status}` };
+  if (!res.ok) return { error: 'fetch ' + res.status };
   const html = await res.text();
 
   const pm = document.querySelector('.tiptap.ProseMirror');
   const editor = pm?.editor;
   if (!editor) return { error: 'no editor' };
 
-  let htmlSnippetPos = null;
+  let snippetPos = null;
   editor.state.doc.descendants((node, pos) => {
     if (node.type.name === 'htmlSnippet') {
-      htmlSnippetPos = pos;
+      snippetPos = pos;
       return false;
     }
   });
-  if (htmlSnippetPos === null) return { error: 'no htmlSnippet' };
+  if (snippetPos === null) return { error: 'no htmlSnippet' };
 
+  // tr.insertText insere como texto literal — sem parsing HTML, sem freeze (#2550)
   const tr = editor.state.tr;
-  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
-  tr.setSelection(editor.state.selection.constructor.near($pos));
-  editor.view.dispatch(tr);
+  editor.view.dispatch(tr.insertText(html, snippetPos + 1));
 
-  const ok = editor.commands.insertContent({ type: 'text', text: html });
-  return { inserted: ok, htmlBytes: html.length, docSize: editor.state.doc.content.size };
+  // Varredura direcionada (#1766): NÃO serializar o doc inteiro (timeout CDP 45s)
+  let hasEmail = false, hasPollA = false, hasPollB = false;
+  editor.state.doc.descendants((n) => {
+    if (n.isText && n.text) {
+      if (n.text.includes('{{email}}'))       hasEmail = true;
+      if (n.text.includes('{{poll_a_url}}'))  hasPollA = true;
+      if (n.text.includes('{{poll_b_url}}'))  hasPollB = true;
+    }
+  });
+  return { inserted: true, htmlBytes: html.length, docSize: editor.state.doc.content.size, hasEmail, hasPollA, hasPollB };
 })()
 ```
 
-**Aguardar autosave e verificar persistência antes de navegar (#2375)**: após `insertContent`, **NÃO navegar imediatamente para `?step=review` ou qualquer outra URL**. O TipTap autosalva via `onChange` após debounce — se `navigate()` ocorre antes do debounce/fetch de autosave completar, o servidor não tem o conteúdo atualizado e o test email é enviado do conteúdo anterior, causando fix-loops desnecessários (incidente 260619: 4 iterações + 2 sem email = ~90min no Stage 5).
+⚠️ **Crítico (#1054 + #2550)**: o ÚNICO método validado que persiste após autosave + reload é inserção via ProseMirror transaction. Em 260625, `tr.insertText` confirmou-se como o método correto (evita o freeze). Ver lista de métodos descartados mais abaixo.
 
-**Passo obrigatório antes de qualquer navigate pós-insertContent:**
+**Aguardar autosave e verificar persistência antes de navegar (#2375)**: após o paste via `tr.insertText`, **NÃO navegar imediatamente para `?step=review` ou qualquer outra URL**. O TipTap autosalva via `onChange` após debounce — se `navigate()` ocorre antes do debounce/fetch de autosave completar, o servidor não tem o conteúdo atualizado e o test email é enviado do conteúdo anterior, causando fix-loops desnecessários (incidente 260619: 4 iterações + 2 sem email = ~90min no Stage 5).
+
+**Passo obrigatório antes de qualquer navigate pós-paste:**
 
 1. Aguardar debounce do autosave (2s fora do `javascript_tool`):
    ```
@@ -596,7 +633,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
    });
    ({ hasPollA, docSize: editor?.state.doc.content.size });
    ```
-   Se `hasPollA: false` ou `docSize` for muito pequeno, o insertContent não persistiu — **não prosseguir** antes de re-paste.
+   Se `hasPollA: false` ou `docSize` for muito pequeno, o paste não persistiu — **não prosseguir** antes de re-paste.
 
 3. Forçar flush do autosave via blur do editor:
    ```js
@@ -609,15 +646,16 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 
 4. **Somente após os passos 1–3** navegar para `?step=review` ou salvar o draft.
 
-**Resumo**: debounce (2s) → JS verify → blur → flush wait (1.5s) → navigate. Total ~3.5s garantidos pós-insertContent antes de qualquer navigate. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
+**Resumo**: debounce (2s) → JS verify → blur → flush wait (1.5s) → navigate. Total ~3.5s garantidos pós-paste antes de qualquer navigate. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
 
-⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
+Métodos descartados (histórico #1054 + #2550):
 
 - ❌ `ClipboardEvent` synthetic dispatch — `defaultPrevented: false`, content nem entra no DOM
 - ❌ `document.execCommand('insertText', false, html)` — atualiza DOM (codeLen=16K) mas NÃO atualiza ProseMirror state. Autosave captura state → reload mostra apenas 78 chars (estado pré-paste)
 - ❌ `editor.commands.insertContent(htmlString)` — TipTap parseia como HTML, falha em `RangeError: Invalid content for node tableCell` por causa do schema
+- ❌ `editor.commands.insertContent({ type: 'text', text: html })` — validado em #1054 como persistente, mas **causa congelamento do renderer** em ~34KB + imagens (#2495/260623)
 
-A solução validada: passar como **text node literal** (`{ type: 'text', text: ... }`) — TipTap não parseia, htmlSnippet armazena raw HTML como texto puro.
+A solução validada desde 260625 (#2550): `tr.insertText(html, snippetPos+1)` — insere via transaction diretamente, sem commands API, sem freeze.
 
 Detalhes do caminho chunked-base64 (fallback legacy) estão no apêndice no fim deste arquivo.
 
@@ -1052,11 +1090,13 @@ Ou, no caso de envio imediato:
 
 ## Apêndice: Fallback chunked (base64 inline)
 
-> **Status (#2495):** rotulado "legacy", mas enquanto o bloqueio CSP da Fase 3 persistir (260623+) **este é o caminho que de fato funciona** para inserir o corpo — selecione-o manualmente. Volta a ser apenas fallback quando o fetch do Worker for desbloqueado.
+> **Status (#2550, 260625):** o novo fluxo padrão (fetch + `tr.insertText`) tornou este caminho um fallback. Acionar manualmente quando: (a) o `fetch()` da Fase 3 ficar pendurado (re-aparecimento do comportamento de 260623), ou (b) `classifyInsertResult` retornar `"retry_chunked"`. O auto-fallback detecta apenas exit não-zero de `upload-html-public.ts` — falha silenciosa do `fetch()` (exit 0) requer seleção manual.
+>
+> **Histórico #2495 (260623):** naquela sessão este era o único caminho funcional. Com o novo fluxo (#2550), o chunked volta ao seu papel original de fallback de last-resort.
 
-⚠️ **Atenção (#1327):** este caminho consome ~80K tokens vs ~5K do Worker-hosted (Fase 2). Só usar quando `upload-html-public.ts` falhar e o fallback automático ativar — nunca como primeira opção em runtime.
+⚠️ **Atenção (#1327):** este caminho consome ~80K tokens vs ~5K do Worker-hosted (Fase 2 + Fase 3). Só usar quando o fluxo fetch+insertText falhar — nunca como primeira opção em runtime.
 
-**Por que existe:** se o Cloudflare Worker estiver offline (deploy quebrado, 5xx, KV down), precisamos de um caminho que não dependa de fetch externo. Chunked base64 transmite o HTML via `javascript_tool` em pedaços de 2500 chars acumulados em `window.__b64chunks[]`.
+**Por que existe:** se o Cloudflare Worker estiver offline (deploy quebrado, 5xx, KV down) ou se o `fetch()` in-page ficar pendurado, precisamos de um caminho que não dependa de fetch externo. Chunked base64 transmite o HTML via `javascript_tool` em pedaços de 2500 chars acumulados em `window.__b64chunks[]`.
 
 **Quando ativa:** automaticamente via `Fallback automático Worker→chunked` (§5.2). Nunca proponha manualmente.
 
