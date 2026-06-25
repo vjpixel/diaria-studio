@@ -353,6 +353,186 @@ describe("computeScheduledAt (#270)", () => {
     });
     assert.equal(liIso, fbIso);
   });
+
+  describe("#2552 — past-slot guard (dispatch depois do 1º slot)", () => {
+    // Fixture: edição 260625, dispatch rodando às 11:00 BRT.
+    // slots: d1=09:00 (passado), d2=12:30 (futuro), d3=17:00 (futuro).
+    // Slots no Brasil em horário padrão: 2026-06-25T09:00:00-03:00, etc.
+    // `now` injetado como Unix ms correspondente a 11:00 BRT = 14:00 UTC.
+    const edition = "260625"; // 2026-06-25
+    const nowBrt11h = new Date("2026-06-25T14:00:00Z").getTime(); // 11:00 BRT = 14:00 UTC
+
+    // Os testes deste bloco precisam que DIARIA_QUIET_SCHEDULE_LOG não esteja setado
+    // (o guard é suprimido por ela, como os testes #1140 fazem). Cada teste
+    // gerencia a env var via setup/restore no mesmo padrão dos testes #1140.
+
+    it("d1 (09:00, passado) → shiftado p/ now+15min com WARN no stderr", () => {
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const stderrLines: string[] = [];
+      const origErr = console.error;
+      console.error = (...args: unknown[]) => stderrLines.push(args.map(String).join(" "));
+
+      let iso: string;
+      try {
+        iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: edition,
+          destaque: "d1",
+          platform: "linkedin",
+          now: nowBrt11h,
+        });
+      } finally {
+        console.error = origErr;
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+
+      // Slot shiftado deve ser agora + 15min = 11:15 BRT (14:15 UTC)
+      const expectedShiftedMs = nowBrt11h + 15 * 60_000;
+      const actualMs = new Date(iso).getTime();
+      // Tolerância de 1 segundo para parsing e arredondamentos.
+      assert.ok(
+        Math.abs(actualMs - expectedShiftedMs) <= 1000,
+        `shiftado para ${iso} (esperado ≈ ${new Date(expectedShiftedMs).toISOString()})`,
+      );
+
+      // Deve ter emitido WARN no stderr
+      const warn = stderrLines.find((l) => l.includes("WARN (#2552)") && l.includes("linkedin/d1"));
+      assert.ok(warn, `expected WARN no stderr, got: ${stderrLines.join("|")}`);
+      assert.ok(warn.includes("260625"), "warn deve incluir editionDate");
+      assert.ok(warn.includes("slot no passado"), "warn deve citar motivo");
+    });
+
+    it("d2 (12:30, futuro) → inalterado (>10min no futuro)", () => {
+      const iso = computeScheduledAt({
+        config: baseConfig,
+        editionDate: edition,
+        destaque: "d2",
+        platform: "linkedin",
+        now: nowBrt11h,
+      });
+      // 12:30 BRT = 2026-06-25T12:30:00-03:00
+      assert.match(iso, /^2026-06-25T12:30:00-03:00$/, `d2 deve ser 12:30 BRT, got ${iso}`);
+    });
+
+    it("d3 (17:00, futuro) → inalterado (>10min no futuro)", () => {
+      const iso = computeScheduledAt({
+        config: baseConfig,
+        editionDate: edition,
+        destaque: "d3",
+        platform: "facebook",
+        now: nowBrt11h,
+      });
+      // 17:00 BRT = 2026-06-25T17:00:00-03:00
+      assert.match(iso, /^2026-06-25T17:00:00-03:00$/, `d3 deve ser 17:00 BRT, got ${iso}`);
+    });
+
+    it("slot exatamente now+5min (abaixo do piso FB de 10min) → shiftado p/ now+15min", () => {
+      // now = 11:00 BRT, d2_time ajustado para 11:05 BRT → só 5min no futuro (< piso)
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const cfgWith11h05 = JSON.parse(JSON.stringify(baseConfig)) as typeof baseConfig;
+      cfgWith11h05.publishing.social.fallback_schedule.d2_time = "11:05";
+
+      const stderrLines: string[] = [];
+      const origErr = console.error;
+      console.error = (...args: unknown[]) => stderrLines.push(args.map(String).join(" "));
+
+      let iso: string;
+      try {
+        iso = computeScheduledAt({
+          config: cfgWith11h05,
+          editionDate: edition,
+          destaque: "d2",
+          platform: "facebook",
+          now: nowBrt11h,
+        });
+      } finally {
+        console.error = origErr;
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+
+      const expectedShiftedMs = nowBrt11h + 15 * 60_000;
+      const actualMs = new Date(iso).getTime();
+      assert.ok(
+        Math.abs(actualMs - expectedShiftedMs) <= 1000,
+        `slot 11:05 (5min no futuro) deve ser shiftado p/ now+15min, got ${iso}`,
+      );
+
+      const warn = stderrLines.find((l) => l.includes("WARN (#2552)") && l.includes("facebook/d2"));
+      assert.ok(warn, `expected WARN para slot below FB floor, got: ${stderrLines.join("|")}`);
+      assert.ok(warn.includes("abaixo do piso mínimo"), "warn deve citar motivo (abaixo do piso)");
+    });
+
+    it("slot now+10min exato (margem justa, no piso) → aceito sem shift", () => {
+      // now = 11:00, slot = 11:10 (exatamente 10min = não passa do filtro < minFutureMs)
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const cfgWith11h10 = JSON.parse(JSON.stringify(baseConfig)) as typeof baseConfig;
+      cfgWith11h10.publishing.social.fallback_schedule.d1_time = "11:10";
+
+      const stderrLines: string[] = [];
+      const origErr = console.error;
+      console.error = (...args: unknown[]) => stderrLines.push(args.map(String).join(" "));
+
+      let iso: string;
+      try {
+        iso = computeScheduledAt({
+          config: cfgWith11h10,
+          editionDate: edition,
+          destaque: "d1",
+          platform: "facebook",
+          now: nowBrt11h,
+        });
+      } finally {
+        console.error = origErr;
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+
+      // 11:10 BRT = exatamente nowMs + 10min = NOT strictly less than minFutureCutoffMs (600_000)
+      // calculatedMs === nowMs + 10*60_000 → calculatedMs < nowMs + 10*60_000 is false
+      // → portanto NÃO deve shiftar (slot exatamente no piso é aceito)
+      const slotMs = new Date(iso).getTime();
+      const expectedMs = nowBrt11h + 10 * 60_000;
+      assert.ok(
+        Math.abs(slotMs - expectedMs) <= 1000,
+        `slot exatamente em now+10min (no piso) deve ser aceito sem shift, got ${iso}`,
+      );
+      assert.equal(stderrLines.filter(l => l.includes("WARN (#2552)")).length, 0,
+        "slot no piso exato NÃO deve emitir WARN");
+    });
+
+    it("past-slot shift: now injetável (não usa Date.now() real)", () => {
+      // Garantia de DI: slot de 09:00 de uma edição futura + now injetado em 10:00
+      // → deve shiftar (slot passado em relação ao now injetado, mesmo sendo futuro em relação ao hoje real)
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const futureEdition = "270625"; // 2027-06-25 (futuro real)
+      const nowFake10h = new Date("2027-06-25T13:00:00Z").getTime(); // 10:00 BRT (antes de 09:00 → passado)
+      // d1 = 09:00 em 2027-06-25 = 2027-06-25T12:00:00Z → 1h antes do nowFake10h
+      // Logo está no passado em relação ao now injetado.
+      const stderrLines: string[] = [];
+      const origErr = console.error;
+      console.error = (...args: unknown[]) => stderrLines.push(args.map(String).join(" "));
+
+      let iso: string;
+      try {
+        iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: futureEdition,
+          destaque: "d1",
+          platform: "linkedin",
+          now: nowFake10h,
+        });
+      } finally {
+        console.error = origErr;
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+
+      const expectedMs = nowFake10h + 15 * 60_000;
+      const actualMs = new Date(iso).getTime();
+      assert.ok(Math.abs(actualMs - expectedMs) <= 1000,
+        `DI: slot deve usar now injetado, got ${iso}`);
+      const warn = stderrLines.find((l) => l.includes("WARN (#2552)"));
+      assert.ok(warn, "DI: must warn when shifted");
+    });
+  });
 });
 
 describe("parseCliArgs", () => {

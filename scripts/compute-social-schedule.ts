@@ -54,6 +54,24 @@ export interface ComputeScheduleInput {
    *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma. */
   platform: "linkedin" | "facebook";
   dayOffsetOverride?: number;
+  /**
+   * Injetável para testes (#2552). Defaults para `Date.now()`.
+   * Usado pela lógica de past-slot: se o slot calculado estiver no passado
+   * ou abaixo da margem mínima de 10min (piso do Facebook), o slot é
+   * shiftado para `now + 15min` com warn visível no stderr.
+   */
+  now?: number;
+  /**
+   * Margem mínima de segurança em ms (#2552). Defaults para 10 min (600_000ms —
+   * piso exigido pelo Facebook Graph API). Slots calculados com menos que
+   * essa margem relativa a `now` são shiftados para `now + pastSlotShiftMs`.
+   */
+  minFutureMs?: number;
+  /**
+   * Offset do shift quando o slot está no passado ou abaixo do piso (#2552).
+   * Defaults para 15 min (900_000ms) — acima do piso de 10min do Facebook.
+   */
+  pastSlotShiftMs?: number;
 }
 
 /**
@@ -111,10 +129,27 @@ export function timezoneOffsetIso(date: Date, timezone: string): string {
 /**
  * Calcula o ISO datetime do agendamento. **Sempre** baseado em `editionDate`
  * (parse de AAMMDD), nunca `Date.now()` (#270).
+ *
+ * (#2552) Quando o slot calculado está no passado (ou abaixo da margem mínima
+ * de 10min exigida pelo Facebook), o slot é shiftado para `now + 15min` com
+ * um WARN explícito no stderr. Isso evita:
+ *   - LinkedIn caindo silenciosamente em `make_now` (post ao vivo imediato)
+ *   - Facebook retornando `status: failed` (rejeita scheduled_publish_time no passado)
+ *
+ * `now`, `minFutureMs` e `pastSlotShiftMs` são injetáveis para testes (DI).
  */
 export function computeScheduledAt(input: ComputeScheduleInput): string {
   // platform mantido na assinatura por compat (#345 — schedule unificado)
-  const { config, editionDate, destaque, platform, dayOffsetOverride } = input;
+  const {
+    config,
+    editionDate,
+    destaque,
+    platform,
+    dayOffsetOverride,
+    now: nowOverride,
+    minFutureMs = 10 * 60 * 1000,    // 10 min — piso do Facebook Graph API
+    pastSlotShiftMs = 15 * 60 * 1000, // 15 min — acima do piso de 10min (#2552)
+  } = input;
 
   const social = config.publishing?.social;
   if (!social) throw new Error("config.publishing.social ausente.");
@@ -182,7 +217,73 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
 
   const [h, m] = time.split(":");
   const offsetStr = timezoneOffsetIso(target, tz);
-  return `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
+  const calculatedIso = `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
+
+  // (#2552) Past-slot guard: se o slot calculado está no passado ou abaixo do
+  // piso mínimo de plataforma (10min — Facebook Graph API), shiftar para
+  // now + 15min (acima do piso) e emitir WARN explícito no stderr.
+  //
+  // Evita 2 falhas silenciosas observadas na edição 260625:
+  //   - LinkedIn d1 caiu em `make_now` (post ao vivo imediato, sem agendamento)
+  //   - Facebook d1 retornou `status: failed` (rejeita scheduled_publish_time no passado)
+  //
+  // Suprimido por DIARIA_QUIET_SCHEDULE_LOG=1: em CI, testes usam editionDates
+  // históricas que ficariam sempre no passado — suprimir permite que testes
+  // legados testem a lógica original sem o shift. Testes de regressão do #2552
+  // injetam `now` explicitamente pra testar o comportamento correto.
+  const nowMs = nowOverride ?? Date.now();
+  const calculatedMs = Date.parse(calculatedIso);
+  const minFutureCutoffMs = nowMs + minFutureMs;
+
+  if (calculatedMs < minFutureCutoffMs && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+    const shiftedMs = nowMs + pastSlotShiftMs;
+    const shiftedIso = new Date(shiftedMs).toISOString();
+    // Incluir o offset de TZ na ISO shiftada para consistência com o formato original.
+    // Usar o offset calculado da data original (acurado pro timezone correto).
+    const shiftedDate = new Date(shiftedMs);
+    const shiftedDateStr =
+      `${shiftedDate.getFullYear()}-` +
+      String(shiftedDate.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(shiftedDate.getDate()).padStart(2, "0");
+    const shiftedH = String(shiftedDate.getHours()).padStart(2, "0");
+    const shiftedMin = String(shiftedDate.getMinutes()).padStart(2, "0");
+    const shiftedSec = String(shiftedDate.getSeconds()).padStart(2, "0");
+    // Calcular offset do timezone pra data shiftada (pode diferir por DST)
+    const shiftedOffsetStr = timezoneOffsetIso(shiftedDate, tz);
+    // Converter shiftedDate pra hora local do timezone alvo
+    const localFmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    const parts = localFmt.formatToParts(shiftedDate);
+    const getP = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+    const localDateStr = `${getP("year")}-${getP("month")}-${getP("day")}`;
+    const localTimeStr = `${getP("hour").replace("24", "00")}:${getP("minute")}:${getP("second")}`;
+    const finalShiftedIso = `${localDateStr}T${localTimeStr}${shiftedOffsetStr}`;
+
+    const minsAhead = Math.round((shiftedMs - nowMs) / 60_000);
+    const reason =
+      calculatedMs <= nowMs
+        ? `slot no passado (${calculatedIso})`
+        : `slot a ${Math.round((calculatedMs - nowMs) / 60_000)}min de now, abaixo do piso mínimo de ${Math.round(minFutureMs / 60_000)}min`;
+
+    console.error(
+      `[compute-schedule] WARN (#2552): ${platform}/${destaque} — ${reason}. ` +
+      `Slot shiftado para now+${minsAhead}min → ${finalShiftedIso}. ` +
+      `(slot original: ${calculatedIso}, edition: ${editionDate})`,
+    );
+
+    return finalShiftedIso;
+  }
+
+  return calculatedIso;
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
