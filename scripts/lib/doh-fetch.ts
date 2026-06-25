@@ -189,6 +189,27 @@ function wrapResponse(res: Response): DohFetchResponse {
 }
 
 /**
+ * Faz fetch HTTPS conectando diretamente num IP já resolvido, preservando
+ * o hostname original no Host header + SNI. Útil quando o caller já tem o IP
+ * (ex: de resolveViaDoH) e quer evitar uma 3ª tentativa de DNS nativo.
+ *
+ * @param url URL HTTPS original (hostname usado pra SNI + Host header)
+ * @param resolvedIp IP pré-resolvido para conectar (bypassa DNS)
+ * @param init opções de request (method, headers, body, signal)
+ */
+export async function fetchViaIp(
+  url: string,
+  resolvedIp: string,
+  init: DohFetchInit = {},
+): Promise<DohFetchResponse> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") {
+    throw new Error(`fetchViaIp só suporta HTTPS; recebido ${parsed.protocol}`);
+  }
+  return connectWithIp(parsed, resolvedIp, init);
+}
+
+/**
  * Fallback path: resolve hostname via DoH e usa node:https.request com
  * createConnection que conecta no IP resolvido + servername correto pra SNI.
  */
@@ -198,7 +219,14 @@ async function dohFallback(url: string, init: DohFetchInit): Promise<DohFetchRes
     throw new Error(`dohFetch fallback só suporta HTTPS; recebido ${parsed.protocol}`);
   }
   const ip = await resolveViaDoH(parsed.hostname);
+  return connectWithIp(parsed, ip, init);
+}
 
+/**
+ * Núcleo de conexão: usa node:https.request + createConnection com IP pré-resolvido.
+ * Separado pra ser reutilizado por dohFallback e fetchViaIp sem duplicar lógica.
+ */
+function connectWithIp(parsed: URL, ip: string, init: DohFetchInit): Promise<DohFetchResponse> {
   return new Promise<DohFetchResponse>((resolve, reject) => {
     const headers: Record<string, string> = {
       Host: parsed.host,
