@@ -71,6 +71,7 @@ Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, m
 ## Regras invariáveis
 
 - **Não mudar nada além da poda de títulos.** Especificamente: NÃO alterar:
+  - **Bloco de frontmatter YAML (`---` ... `---` no topo) — preservar BYTE-A-BYTE.** Caso real 260625: agent reescreveu o arquivo com `intentional_error` colapsado numa única linha (`## intentional_error: description: "..." ...`) em vez de YAML multi-linha válido. Isso quebrou o `render-erro-intencional.ts` da edição seguinte ao tentar ler `intentional_error.reveal`. NUNCA reformatar, colapsar ou alterar o bloco YAML entre os `---` iniciais.
   - Categoria do destaque (`DESTAQUE N | CATEGORIA`)
   - Corpo dos parágrafos
   - "Por que isso importa:"
