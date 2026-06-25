@@ -1001,3 +1001,245 @@ describe("regressão #2557: renderOvernightSection — tooltips por grupo na cé
     assert.ok(!html.includes('<span title="0 em andamento'), "span de in_progress NÃO deve existir quando in_progress=0");
   });
 });
+
+// ─── #2558: buildTopClickedRecent — ultimas 5 edicoes, cliques absolutos ─────
+
+import { writeFileSync as writeFileSyncForTestTCR, rmSync as rmSyncForTestTCR } from "node:fs";
+import { join as joinForTestTCR } from "node:path";
+import { tmpdir as tmpdirTCR } from "node:os";
+
+describe("regressao #2558: buildTopClickedRecent -- janela 5 edicoes, cliques absolutos, max 10", () => {
+  function makeCsvContent(): string {
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = [
+      // Edicao mais antiga -- deve ser excluida da janela das ultimas 5
+      "2026-01-01,Ed Jan,Destaques,LinkAntigo,https://old.example.com,old.example.com,100,5,5,5.00,Destaque,INT",
+      // 5 edicoes recentes + links extras para cobrir max-10
+      "2026-02-01,Ed Fev,Destaques,LinkA,https://a.example.com,a.example.com,200,30,30,15.00,Destaque,INT",
+      "2026-03-01,Ed Mar,Destaques,LinkA,https://a.example.com,a.example.com,200,20,20,10.00,Destaque,INT",
+      "2026-04-01,Ed Abr,Radar,LinkB,https://b.example.com,b.example.com,200,25,25,12.50,Radar,INT",
+      "2026-05-01,Ed Mai,Use Melhor,LinkC,https://c.example.com,c.example.com,200,40,40,20.00,Use Melhor,INT",
+      "2026-06-01,Ed Jun,Destaques,LinkD,https://d.example.com,d.example.com,200,15,15,7.50,Destaque,BR",
+      "2026-02-01,Ed Fev,Radar,LinkE,https://e.example.com,e.example.com,200,8,8,4.00,Radar,INT",
+      "2026-03-01,Ed Mar,Radar,LinkF,https://f.example.com,f.example.com,200,6,6,3.00,Radar,INT",
+      "2026-04-01,Ed Abr,Destaque,LinkG,https://g.example.com,g.example.com,200,4,4,2.00,Destaque,INT",
+      "2026-05-01,Ed Mai,Destaque,LinkH,https://h.example.com,h.example.com,200,3,3,1.50,Destaque,INT",
+      "2026-06-01,Ed Jun,Radar,LinkI,https://i.example.com,i.example.com,200,2,2,1.00,Radar,INT",
+      "2026-02-01,Ed Fev,Use Melhor,LinkJ,https://j.example.com,j.example.com,200,1,1,0.50,Use Melhor,INT",
+    ];
+    return [header, ...rows].join("\n");
+  }
+
+  test("inclui apenas links das ultimas 5 edicoes (exclui a mais antiga)", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-2558a.csv");
+    writeFileSyncForTestTCR(csvPath, makeCsvContent(), "utf8");
+    const result = buildTopClickedRecent(csvPath);
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.equal(result!.window_editions.length, 5, "janela deve ter 5 edicoes");
+    assert.ok(!result!.window_editions.includes("2026-01-01"), "edicao mais antiga nao deve estar na janela");
+    const antigo = result!.top_items.find((r) => r.base_url === "https://old.example.com");
+    assert.equal(antigo, undefined, "link da edicao excluida nao deve aparecer nos resultados");
+    rmSyncForTestTCR(csvPath, { force: true });
+  });
+
+  test("ordena por cliques absolutos desc e retorna no maximo 10 itens", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-2558b.csv");
+    writeFileSyncForTestTCR(csvPath, makeCsvContent(), "utf8");
+    const result = buildTopClickedRecent(csvPath);
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.ok(result!.top_items.length <= 10, "deve retornar no maximo 10 itens");
+    for (let i = 1; i < result!.top_items.length; i++) {
+      assert.ok(
+        result!.top_items[i - 1].unique_verified_clicks >= result!.top_items[i].unique_verified_clicks,
+        "itens devem estar ordenados por cliques desc",
+      );
+    }
+    // LinkA acumula 30+20=50 nas edicoes Fev+Mar -> topo esperado
+    const topItem = result!.top_items[0];
+    assert.ok(topItem.unique_verified_clicks >= 40, "item topo deve ter >= 40 cliques");
+    rmSyncForTestTCR(csvPath, { force: true });
+  });
+
+  test("retorna null quando CSV ausente", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const result = buildTopClickedRecent("/tmp/nao-existe-tcr-2558-xyzzy.csv");
+    assert.equal(result, null, "deve retornar null quando CSV ausente");
+  });
+
+  test("renderTopClickedRecentSection com dados reais renderiza tabela", async () => {
+    const { renderTopClickedRecentSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "2026-06-25T00:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: {
+        window_editions: ["2026-06-01", "2026-05-01", "2026-04-01", "2026-03-01", "2026-02-01"],
+        top_items: [
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkD", base_url: "https://d.example.com", category: "Destaque", unique_verified_clicks: 50 },
+          { edition: "2026-05-01", post_title: "Ed Mai", anchor: "LinkC", base_url: "https://c.example.com", category: "Use Melhor", unique_verified_clicks: 40 },
+        ],
+      },
+      audience: null,
+    };
+    const html = renderTopClickedRecentSection(data);
+    assert.ok(html.includes("top-clicked-recent"), "deve ter id top-clicked-recent");
+    assert.ok(html.includes("ltimas 5"), "deve mencionar ultimas 5 edicoes");
+    assert.ok(html.includes("LinkD"), "deve incluir ancora do top item");
+    assert.ok(html.includes("50"), "deve incluir contagem de cliques");
+  });
+
+  test("renderTopClickedRecentSection com null mostra stub", async () => {
+    const { renderTopClickedRecentSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: null, audience: null,
+    };
+    const html = renderTopClickedRecentSection(data);
+    assert.ok(html.includes("top-clicked-recent"), "deve ter id mesmo com dados ausentes");
+    assert.ok(html.includes("link-ctr-table.csv"), "deve mencionar CSV ausente");
+  });
+});
+
+// ─── #2560: buildAudienceSummary — parse de audience-profile.md ──────────────
+
+import { writeFileSync as writeFileSyncForAud, rmSync as rmSyncForAud } from "node:fs";
+import { join as joinForAud } from "node:path";
+import { tmpdir as tmpdirAud } from "node:os";
+
+describe("regressao #2560: buildAudienceSummary -- parse de audience-profile.md", () => {
+  const FIXTURE_MD = [
+    "# Perfil de Audiencia",
+    "",
+    "**updated_at:** 2026-06-18",
+    "**subscribers ativos:** 487",
+    "**respondentes survey:** 167",
+    "**links analisados:** 1688 (174 edicoes)",
+    "",
+    "## 1. Engajamento real (CTR por categoria)",
+    "",
+    "CTR medio geral: 0.46%",
+    "",
+    "- **Treinamento** -- CTR 1.80% | 20 links (acima da media)",
+    "- **Impacto** -- CTR 1.16% | 41 links (acima da media)",
+    "- **Outro** -- CTR 0.69% | 95 links (acima da media)",
+    "",
+    "## 2. Preferencias declaradas (survey)",
+    "",
+    "### Conteudo preferido",
+    "",
+    "- **Tutoriais praticos** -- weight 0.176 (107 respostas)",
+    "- **Curadoria de novas ferramentas** -- weight 0.168 (102 respostas)",
+    "",
+    "### Nivel de conhecimento em IA",
+    "",
+    "- **Uso casual (uso ferramentas eventualmente)** -- weight 0.293 (49 respostas)",
+    "- **Entusiasta** -- weight 0.251 (42 respostas)",
+    "",
+    "## 3. Quem sao (demographics)",
+    "",
+    "### Setores",
+    "",
+    "- **Tecnologia** -- weight 0.175 (71 respostas)",
+    "- **Educacao** -- weight 0.103 (42 respostas)",
+  ].join("\n");
+
+  test("parseia metadados corretamente", async () => {
+    const { buildAudienceSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpPath = joinForAud(tmpdirAud(), "diaria-test-aud-2560a.md");
+    writeFileSyncForAud(tmpPath, FIXTURE_MD, "utf8");
+    const result = buildAudienceSummary(tmpPath);
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.equal(result!.updated_at, "2026-06-18", "deve parsear updated_at");
+    assert.equal(result!.subscribers, 487, "deve parsear subscribers");
+    assert.equal(result!.survey_respondents, 167, "deve parsear survey_respondents");
+    assert.equal(result!.links_analyzed, 1688, "deve parsear links_analyzed");
+    assert.ok(Math.abs((result!.avg_ctr_pct ?? 0) - 0.46) < 0.001, "deve parsear avg_ctr_pct");
+    rmSyncForAud(tmpPath, { force: true });
+  });
+
+  test("parseia CTR por categoria corretamente", async () => {
+    const { buildAudienceSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpPath = joinForAud(tmpdirAud(), "diaria-test-aud-2560b.md");
+    writeFileSyncForAud(tmpPath, FIXTURE_MD, "utf8");
+    const result = buildAudienceSummary(tmpPath);
+    assert.ok(result !== null);
+    assert.ok(result!.ctr_by_category.length >= 3, "deve ter pelo menos 3 categorias CTR");
+    const trein = result!.ctr_by_category.find((r) => r.category === "Treinamento");
+    assert.ok(trein, "deve ter categoria Treinamento");
+    assert.ok(Math.abs(trein!.ctr_pct - 1.80) < 0.01, "CTR de Treinamento deve ser 1.80");
+    assert.equal(trein!.link_count, 20, "link_count de Treinamento deve ser 20");
+    rmSyncForAud(tmpPath, { force: true });
+  });
+
+  test("parseia survey (conteudo preferido, conhecimento, setores) corretamente", async () => {
+    const { buildAudienceSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpPath = joinForAud(tmpdirAud(), "diaria-test-aud-2560c.md");
+    writeFileSyncForAud(tmpPath, FIXTURE_MD, "utf8");
+    const result = buildAudienceSummary(tmpPath);
+    assert.ok(result !== null);
+    assert.ok(result!.content_preferences.length >= 2, "deve ter preferencias de conteudo");
+    const tut = result!.content_preferences.find((r) => r.label.includes("Tutoriais"));
+    assert.ok(tut, "deve ter Tutoriais praticos");
+    assert.ok(Math.abs(tut!.weight - 0.176) < 0.001, "weight de Tutoriais deve ser 0.176");
+    assert.equal(tut!.count, 107);
+    assert.ok(result!.knowledge_levels.length >= 2, "deve ter niveis de conhecimento");
+    assert.ok(result!.sectors.length >= 2, "deve ter setores");
+    const tec = result!.sectors.find((r) => r.label === "Tecnologia");
+    assert.ok(tec, "deve ter setor Tecnologia");
+    assert.equal(tec!.count, 71);
+    rmSyncForAud(tmpPath, { force: true });
+  });
+
+  test("retorna null quando arquivo ausente (sem crash)", async () => {
+    const { buildAudienceSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const result = buildAudienceSummary("/tmp/nao-existe-audience-profile-2560-xyzzy.md");
+    assert.equal(result, null, "deve retornar null quando arquivo ausente");
+  });
+
+  test("renderAudienceSection com dados reais renderiza tabelas corretamente", async () => {
+    const { renderAudienceSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "2026-06-25T00:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: null,
+      audience: {
+        updated_at: "2026-06-18", subscribers: 487, survey_respondents: 167, links_analyzed: 1688, avg_ctr_pct: 0.46,
+        ctr_by_category: [{ category: "Treinamento", ctr_pct: 1.80, link_count: 20 }],
+        content_preferences: [{ label: "Tutoriais praticos", weight: 0.176, count: 107 }],
+        knowledge_levels: [{ label: "Uso casual", weight: 0.293, count: 49 }],
+        sectors: [{ label: "Tecnologia", weight: 0.175, count: 71 }],
+      },
+    };
+    const html = renderAudienceSection(data);
+    assert.ok(html.includes("audience"), "deve ter id audience");
+    assert.ok(html.includes("487 assinantes ativos"), "deve incluir contagem de assinantes");
+    assert.ok(html.includes("Treinamento"), "deve incluir categoria CTR");
+    assert.ok(html.includes("1.80%"), "deve incluir CTR de Treinamento");
+    assert.ok(html.includes("Tutoriais praticos"), "deve incluir preferencia de conteudo");
+    assert.ok(html.includes("Uso casual"), "deve incluir nivel de conhecimento");
+    assert.ok(html.includes("Tecnologia"), "deve incluir setor");
+    assert.ok(html.includes("2026-06-18"), "deve incluir data de atualizacao");
+  });
+
+  test("renderAudienceSection com audience null mostra stub sem crash", async () => {
+    const { renderAudienceSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: null, audience: null,
+    };
+    const html = renderAudienceSection(data);
+    assert.ok(html.includes("audience"), "deve ter id audience mesmo sem dados");
+    assert.ok(html.includes("audience-profile.md"), "deve mencionar arquivo ausente");
+  });
+});

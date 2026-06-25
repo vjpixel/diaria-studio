@@ -64,6 +64,11 @@ import type {
   UseMelhorSummary,
   UseMelhorEditionEntry,
   PollEiaSummary,
+  TopClickedRecentSummary,
+  TopClickedRecentItem,
+  AudienceSummary,
+  AudienceCtrCategoryRow,
+  AudienceSurveyItem,
 } from "../workers/diaria-dashboard/src/types.ts";
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -686,6 +691,228 @@ export function buildPollEiaSummary(
   }
 }
 
+// ─── Fonte 5: Top links por cliques absolutos — últimas 5 edições (#2558) ────
+
+/**
+ * buildTopClickedRecent (#2558)
+ *
+ * Identifica as últimas 5 edições distintas no CSV (por data), agrega
+ * unique_verified_clicks por link nessa janela, e retorna os top 10.
+ * Distinto de top_links (que é por CTR all-time).
+ */
+export function buildTopClickedRecent(
+  csvPath: string = join(DATA_DIR, "link-ctr-table.csv"),
+): TopClickedRecentSummary | null {
+  if (!existsSync(csvPath)) return null;
+
+  let raw: string;
+  try {
+    raw = readFileSync(csvPath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return null;
+
+  const header = parseCsvLine(lines[0]);
+  const dateIdx = header.indexOf("date");
+  const postTitleIdx = header.indexOf("post_title");
+  const anchorIdx = header.indexOf("anchor");
+  const baseUrlIdx = header.indexOf("base_url");
+  const categoryIdx = header.indexOf("category");
+  const clicksIdx = header.indexOf("unique_verified_clicks");
+
+  if (dateIdx < 0 || clicksIdx < 0) return null;
+
+  // Collect all distinct editions sorted desc
+  const editionDates = new Set<string>();
+  for (const line of lines.slice(1)) {
+    try {
+      const cols = parseCsvLine(line);
+      const date = (cols[dateIdx] ?? "").trim();
+      if (date) editionDates.add(date);
+    } catch {
+      // skip
+    }
+  }
+
+  if (editionDates.size === 0) return null;
+
+  // Sort desc and take last 5
+  const sortedDates = [...editionDates].sort((a, b) => (b > a ? 1 : -1));
+  const windowSet = new Set(sortedDates.slice(0, 5));
+
+  // Aggregate clicks per link within the window
+  // Key: base_url + "||" + anchor (to distinguish same URL with different anchors)
+  const linkMap = new Map<string, TopClickedRecentItem>();
+
+  for (const line of lines.slice(1)) {
+    try {
+      const cols = parseCsvLine(line);
+      const date = (cols[dateIdx] ?? "").trim();
+      if (!windowSet.has(date)) continue;
+
+      const clicks = parseInt(cols[clicksIdx] ?? "0", 10);
+      if (!clicks || clicks <= 0) continue;
+
+      const baseUrl = (cols[baseUrlIdx] ?? "").trim();
+      const anchor = (cols[anchorIdx] ?? "").trim();
+      const key = `${baseUrl}||${anchor}`;
+
+      const existing = linkMap.get(key);
+      if (existing) {
+        existing.unique_verified_clicks += clicks;
+      } else {
+        linkMap.set(key, {
+          edition: date,
+          post_title: (cols[postTitleIdx] ?? "").trim(),
+          anchor,
+          base_url: baseUrl,
+          category: (cols[categoryIdx] ?? "Outro").trim() || "Outro",
+          unique_verified_clicks: clicks,
+        });
+      }
+    } catch {
+      // skip
+    }
+  }
+
+  if (linkMap.size === 0) return null;
+
+  const top_items = [...linkMap.values()]
+    .sort((a, b) => b.unique_verified_clicks - a.unique_verified_clicks)
+    .slice(0, 10);
+
+  return {
+    window_editions: [...windowSet].sort((a, b) => (b > a ? 1 : -1)),
+    top_items,
+  };
+}
+
+// ─── Fonte 6: Perfil de audiência (#2560) ────────────────────────────────────
+
+/**
+ * buildAudienceSummary (#2560)
+ *
+ * Parseia context/audience-profile.md para extrair dados estruturados
+ * do perfil de audiência. Tolera ausência do arquivo (retorna null).
+ *
+ * Extrai:
+ *   - Metadados: updated_at, subscribers, survey_respondents, links_analyzed
+ *   - CTR por categoria (seção 1)
+ *   - Preferências de conteúdo, nível de conhecimento (seção 2)
+ *   - Setores (seção 3)
+ */
+export function buildAudienceSummary(
+  mdPath: string = join(ROOT, "context", "audience-profile.md"),
+): AudienceSummary | null {
+  if (!existsSync(mdPath)) return null;
+
+  let raw: string;
+  try {
+    raw = readFileSync(mdPath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = raw.split(/\r?\n/);
+
+  // --- Metadata ---
+  let updated_at: string | null = null;
+  let subscribers: number | null = null;
+  let survey_respondents: number | null = null;
+  let links_analyzed: number | null = null;
+  let avg_ctr_pct: number | null = null;
+
+  for (const line of lines) {
+    const updatedMatch = line.match(/\*\*updated_at:\*\*\s*(\S+)/);
+    if (updatedMatch) updated_at = updatedMatch[1];
+
+    const subsMatch = line.match(/\*\*subscribers\s+ativos:\*\*\s*(\d+)/);
+    if (subsMatch) subscribers = parseInt(subsMatch[1], 10);
+
+    const respMatch = line.match(/\*\*respondentes\s+survey:\*\*\s*(\d+)/);
+    if (respMatch) survey_respondents = parseInt(respMatch[1], 10);
+
+    const linksMatch = line.match(/\*\*links\s+analisados:\*\*\s*(\d+)/);
+    if (linksMatch) links_analyzed = parseInt(linksMatch[1], 10);
+
+    const avgCtrMatch = line.match(/CTR\s+m[eé]dio\s+geral[:\s]+(\d+[\.,]\d+)%/i);
+    if (avgCtrMatch) avg_ctr_pct = parseFloat(avgCtrMatch[1].replace(",", "."));
+  }
+
+  // --- CTR por categoria ---
+  // Lines like: `- **Categoria** — CTR X.XX% | N links`
+  const ctr_by_category: AudienceCtrCategoryRow[] = [];
+  for (const line of lines) {
+    const m = line.match(/^-\s+\*\*([^*]+)\*\*\s+(?:—|-{1,2})\s+CTR\s+([\d.,]+)%\s+\|\s+(\d+)\s+links/i);
+    if (m) {
+      ctr_by_category.push({
+        category: m[1].trim(),
+        ctr_pct: parseFloat(m[2].replace(",", ".")),
+        link_count: parseInt(m[3], 10),
+      });
+    }
+  }
+
+  // --- Survey sections ---
+  // Content preferences: inside "### Conteúdo preferido" block
+  // Knowledge levels: inside "### Nível de conhecimento em IA" block
+  // Sectors: inside "### Setores" block
+  // Format: `- **Label** — weight X.XXX (N respostas)`
+  const content_preferences: AudienceSurveyItem[] = [];
+  const knowledge_levels: AudienceSurveyItem[] = [];
+  const sectors: AudienceSurveyItem[] = [];
+
+  type SurveySection = "content" | "knowledge" | "sectors" | null;
+  let currentSection: SurveySection = null;
+
+  for (const line of lines) {
+    const lowerLine = line.toLowerCase();
+    if (line.startsWith("###")) {
+      // Detect subsection headings (case-insensitive, tolerant of accents stripped in fixtures)
+      if (lowerLine.includes("conte") && lowerLine.includes("preferid")) { currentSection = "content"; continue; }
+      if (lowerLine.includes("nível") || lowerLine.includes("nivel") || lowerLine.includes("conhecimento")) { currentSection = "knowledge"; continue; }
+      if (lowerLine.includes("setor")) { currentSection = "sectors"; continue; }
+      // Unknown ### subsection: reset survey tracking
+      currentSection = null;
+      continue;
+    }
+    // Top-level ## resets survey tracking
+    if (line.startsWith("##")) { currentSection = null; continue; }
+
+    if (currentSection) {
+      const m = line.match(/^-\s+\*\*(.+?)\*\*\s+(?:—|-{1,2})\s+weight\s+([\d.]+)\s+\((\d+)\s+respostas?\)/i);
+      if (m) {
+        const item: AudienceSurveyItem = {
+          label: m[1].trim(),
+          weight: parseFloat(m[2]),
+          count: parseInt(m[3], 10),
+        };
+        if (currentSection === "content") content_preferences.push(item);
+        else if (currentSection === "knowledge") knowledge_levels.push(item);
+        else if (currentSection === "sectors") sectors.push(item);
+      }
+    }
+  }
+
+  // Return null only if we got absolutely nothing
+  if (!updated_at && !subscribers && ctr_by_category.length === 0) return null;
+
+  return {
+    updated_at,
+    subscribers,
+    survey_respondents,
+    links_analyzed,
+    avg_ctr_pct,
+    ctr_by_category,
+    content_preferences,
+    knowledge_levels,
+    sectors,
+  };
+}
+
 // ─── Agrega tudo ─────────────────────────────────────────────────────────────
 
 export function buildDashboardData(): DashboardData {
@@ -701,6 +928,8 @@ export function buildDashboardData(): DashboardData {
     overnight: buildOvernightSummary(),
     use_melhor: buildUseMelhorSummary(),
     poll_eia: buildPollEiaSummary(),
+    top_clicked_recent: buildTopClickedRecent(),
+    audience: buildAudienceSummary(),
     stubs: STUBS,
   };
 }
@@ -793,6 +1022,16 @@ async function main() {
     console.log(`  • Poll IA?: ${data.poll_eia.editions.length} edicoes, fonte=${data.poll_eia.source}`);
   } else {
     console.log(`  • Poll IA?: nao disponivel (data/poll-eia-summary.json ausente -- requer push do workers/poll)`);
+  }
+  if (data.top_clicked_recent) {
+    console.log(`  • Top clicados recentes: ${data.top_clicked_recent.top_items.length} links (janela: ${data.top_clicked_recent.window_editions.join(", ")})`);
+  } else {
+    console.log(`  • Top clicados recentes: nao disponivel (data/link-ctr-table.csv ausente)`);
+  }
+  if (data.audience) {
+    console.log(`  • Audiencia: ${data.audience.subscribers ?? "?"} assinantes, ${data.audience.ctr_by_category.length} categorias CTR`);
+  } else {
+    console.log(`  • Audiencia: nao disponivel (context/audience-profile.md ausente)`);
   }
   console.log(`  • Stubs: ${data.stubs.length}`);
 
