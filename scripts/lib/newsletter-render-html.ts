@@ -863,7 +863,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       parts.push(renderDivulgacaoSeparator());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
-    if (includeEia && !eiaInserted && i === 1) {
+    // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
+    // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
+    if (includeEia && !eiaInserted && i === content.destaques.length - 1) {
       parts.push(renderEIA(content.eia));
       eiaInserted = true;
     }

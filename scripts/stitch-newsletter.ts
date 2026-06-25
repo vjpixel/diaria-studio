@@ -336,10 +336,6 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
     "---",
     "",
-    eiaBlock,
-    "",
-    "---",
-    "",
   );
   // #2343: D3 is optional. For 2-destaque editions, omit the D3 block entirely.
   if (d3 !== null) {
@@ -350,6 +346,14 @@ export function stitchNewsletter(input: StitchInput): string {
       "",
     );
   }
+  // #2546: È IA? renderiza APÓS o último destaque (D3 em edições de 3
+  // destaques; D2 em edições de 2). Antes ficava fixo entre D2 e D3.
+  parts.push(
+    eiaBlock,
+    "",
+    "---",
+    "",
+  );
 
   // #1752: USE MELHOR antes de LANÇAMENTOS (decisão editorial 260603).
   if (useMelhor) {

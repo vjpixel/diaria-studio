@@ -63,7 +63,7 @@ const SNAPSHOT_PATH = resolve(
  *   - Destaque 1          (com imagem hero)
  *   - midCallout          (com imagem — régua "Divulgação" antes do box)
  *   - Destaque 2
- *   - É IA?               (entre D2 e D3)
+ *   - É IA?               (após o último destaque, #2546)
  *   - Destaque 3
  *   - LANÇAMENTOS         (seção)
  *   - OUTRAS NOTÍCIAS     (seção)
@@ -295,7 +295,7 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   // que aparecem na ordem correta no HTML composto.
   //
   // Ordem esperada (alinhada ao renderHTML):
-  //   INTRO → coverageLine → introCallout → D1 → midCallout → D2 → É IA? →
+  //   INTRO → coverageLine → introCallout → D1 → midCallout → D2 → D3 → É IA? →
   //   D3 → seções → SORTEIO → ERRO INTENCIONAL → PARA ENCERRAR
 
   it("composição: coverageLine antes do primeiro Destaque", () => {
@@ -319,8 +319,8 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assertOrder(html, "<!-- Destaque 2 -->", "<!-- É IA? (poll) -->");
   });
 
-  it("composição: É IA? antes do Destaque 3", () => {
-    assertOrder(html, "<!-- É IA? (poll) -->", "<!-- Destaque 3 -->");
+  it("composição: Destaque 3 antes do É IA? (#2546)", () => {
+    assertOrder(html, "<!-- Destaque 3 -->", "<!-- É IA? (poll) -->");
   });
 
   it("composição: Destaque 3 antes das seções secundárias", () => {
@@ -408,12 +408,13 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     );
   });
 
-  // ── Composição: É IA? posicionado entre D2 e D3 ──────────────────────────
+  // ── Composição: É IA? posicionado após o último destaque (#2546) ──────────
 
-  it("É IA? está entre Destaque 2 e Destaque 3 (posição canônica #1077)", () => {
+  it("É IA? está após o Destaque 3, antes das seções secundárias (#2546)", () => {
     const d2Idx = html.indexOf("<!-- Destaque 2 -->");
     const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
     const d3Idx = html.indexOf("<!-- Destaque 3 -->");
+    const lancIdx = html.indexOf("<!-- LANÇAMENTOS -->");
     assert.ok(
       d2Idx !== -1,
       "comentário '<!-- Destaque 2 -->' ausente",
@@ -427,8 +428,13 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
       "comentário '<!-- Destaque 3 -->' ausente",
     );
     assert.ok(
-      d2Idx < eiaIdx && eiaIdx < d3Idx,
-      `Posição incorreta: D2(${d2Idx}) < ÉIA(${eiaIdx}) < D3(${d3Idx})`,
+      lancIdx !== -1,
+      "comentário '<!-- LANÇAMENTOS -->' ausente",
+    );
+    // #2546: ordem D2 < D3 < É IA? < seções secundárias.
+    assert.ok(
+      d2Idx < d3Idx && d3Idx < eiaIdx && eiaIdx < lancIdx,
+      `Posição incorreta: D2(${d2Idx}) < D3(${d3Idx}) < ÉIA(${eiaIdx}) < LANÇ(${lancIdx})`,
     );
   });
 
