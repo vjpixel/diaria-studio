@@ -195,6 +195,41 @@ export function needsReschedule(
   return Math.abs(aTs - eTs) > toleranceSec;
 }
 
+/**
+ * (#2591) Verifica se um post de canônico-no-passado que já está agendado no
+ * futuro (via shift inicial do #2552) deve ser pulado no --reschedule.
+ *
+ * O agendamento INICIAL grava `scheduled_at` com o valor SHIFTADO (now₀+15min)
+ * quando o slot canônico está no passado. O caminho de COMPARAÇÃO usa
+ * `canonicalISO` (disablePastSlotShift=true), então a comparação via
+ * `needsReschedule(stored, canonical)` sempre difere → churn (#2591).
+ *
+ * Retorna `true` (pular) quando:
+ *   - slot canônico está no passado (<= now), E
+ *   - `storedISO` é futuro válido (> now + piso FB de 10min).
+ *
+ * Retorna `false` (avaliar via needsReschedule) quando:
+ *   - slot canônico está no futuro (drift de canônico futuro → reschedule normal), OU
+ *   - `storedISO` está no passado (expirou → deve ser reagendado), OU
+ *   - `storedISO` é nulo/inválido (needsReschedule cobre este caso).
+ *
+ * Pure — exportado pra tests.
+ */
+export function isValidShiftedSchedule(
+  canonicalISO: string,
+  storedISO: string | null,
+  nowMs: number,
+  minFutureMs = 10 * 60 * 1000, // 10 min — piso do Facebook Graph API
+): boolean {
+  if (!storedISO) return false;
+  const canonicalMs = Date.parse(canonicalISO);
+  const storedMs = Date.parse(storedISO);
+  if (isNaN(canonicalMs) || isNaN(storedMs)) return false;
+  const canonicalIsInPast = canonicalMs <= nowMs;
+  const storedIsValidFuture = storedMs > nowMs + minFutureMs;
+  return canonicalIsInPast && storedIsValidFuture;
+}
+
 async function deleteFacebookPost(
   pageToken: string,
   apiVersion: string,
@@ -265,6 +300,11 @@ async function rescheduleFacebookPosts(opts: {
   dayOffsetOverride?: number;
   /** #1056 — when true, tag entries com is_test:true */
   isTest?: boolean;
+  /**
+   * Injetável para testes (#2591). Defaults para `Date.now()`.
+   * Usado na checagem "canônico-passado + stored-futuro-válido → skip".
+   */
+  now?: number;
 }): Promise<{ rescheduled: number; skipped: number; failed: number; posts: PostEntry[] }> {
   const published = loadPublished(opts.publishedPath);
   const fbPosts = published.posts.filter(
@@ -280,6 +320,9 @@ async function rescheduleFacebookPosts(opts: {
   let skipped = 0;
   let failed = 0;
   const results: PostEntry[] = [];
+  const nowMs = opts.now ?? Date.now();
+  // Piso mínimo do Facebook Graph API (10min) em ms.
+  const FB_MIN_FUTURE_MS = 10 * 60 * 1000;
 
   for (const existing of fbPosts) {
     const d = existing.destaque;
@@ -303,6 +346,33 @@ async function rescheduleFacebookPosts(opts: {
       opts.dayOffsetOverride,
       /* disablePastSlotShift */ false,
     );
+
+    // #2591: fix do fix ineficaz do #2575.
+    //
+    // Problema: o agendamento INICIAL grava `existing.scheduled_at` com o valor
+    // SHIFTADO (now₀+15min) quando o slot canônico está no passado. O caminho de
+    // COMPARAÇÃO usa `expectedAt = canônico` (disablePastSlotShift=true), então a
+    // comparação real é `shiftado-futuro vs canônico-passado` → sempre difere
+    // (>60s) → needsReschedule=true → DELETE + repost a cada --reschedule → churn.
+    //
+    // Fix: quando o slot canônico está no passado (<= now) E `existing.scheduled_at`
+    // já é um futuro válido (> now + piso FB de 10min), o post foi agendado
+    // corretamente via shift inicial e NÃO deve ser rescheduleado.
+    //
+    // Só rescheduleia quando o stored é genuinamente errado:
+    //   (a) stored no passado (expirou sem publicar — raro mas possível), OU
+    //   (b) slot canônico está no FUTURO e driftou do stored (canônico != stored)
+    //
+    // (a) + (b) são cobertas por needsReschedule depois desta checagem.
+    if (isValidShiftedSchedule(expectedAt, existing.scheduled_at, nowMs, FB_MIN_FUTURE_MS)) {
+      console.log(
+        `SKIP facebook/${d} — canônico (${expectedAt}) está no passado mas stored (${existing.scheduled_at}) ` +
+        `é futuro válido — agendado corretamente via shift inicial (#2591)`,
+      );
+      skipped += 1;
+      results.push(existing);
+      continue;
+    }
 
     if (!needsReschedule(existing.scheduled_at, expectedAt)) {
       console.log(`SKIP facebook/${d} — já no horário (${existing.scheduled_at})`);
