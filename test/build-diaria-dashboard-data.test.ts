@@ -878,6 +878,7 @@ describe("regressão #2556: renderCtrSection — coluna Tema + Aprofunde→títu
 
 import { mkdirSync as mkdirSyncForTest, writeFileSync as writeFileSyncForTest, rmSync as rmSyncForTest } from "node:fs";
 import { join as joinForTest } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("regressão #2556: buildHighlightTitleIndex", () => {
   test("índice vazio quando editionsDir não existe", async () => {
@@ -889,7 +890,7 @@ describe("regressão #2556: buildHighlightTitleIndex", () => {
   test("indexa highlight_title de approved.json corretamente", async () => {
     const { buildHighlightTitleIndex } = await import("../scripts/build-diaria-dashboard-data.ts");
 
-    const tmpDir = "C:/Users/pixel/AppData/Local/Temp/claude/C--Users-pixel-Projects-diaria-studio/9bb9b6b6-3f72-4399-99e8-713070ae2337/scratchpad/test-editions-2556";
+    const tmpDir = joinForTest(tmpdir(), "diaria-test-editions-2556");
     const editionDir = joinForTest(tmpDir, "260110", "_internal");
     mkdirSyncForTest(editionDir, { recursive: true });
 
