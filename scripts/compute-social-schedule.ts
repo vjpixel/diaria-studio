@@ -227,15 +227,23 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   //   - LinkedIn d1 caiu em `make_now` (post ao vivo imediato, sem agendamento)
   //   - Facebook d1 retornou `status: failed` (rejeita scheduled_publish_time no passado)
   //
-  // Suprimido por DIARIA_QUIET_SCHEDULE_LOG=1: em CI, testes usam editionDates
-  // históricas que ficariam sempre no passado — suprimir permite que testes
-  // legados testem a lógica original sem o shift. Testes de regressão do #2552
-  // injetam `now` explicitamente pra testar o comportamento correto.
+  // (#2565) O shift é controlado por DIARIA_DISABLE_PASTSLOT_SHIFT (separado de
+  // DIARIA_QUIET_SCHEDULE_LOG que controla apenas logs). Isso evita o footgun de
+  // alguém setar QUIET_LOG=1 em prod pra reduzir ruído de log e desativar o
+  // guard de segurança silenciosamente.
+  //
+  // DIARIA_DISABLE_PASTSLOT_SHIFT=1: suprime o shift (usado em CI/testes legados
+  // que usam editionDates históricas que ficariam sempre no passado). Nunca setar
+  // em produção — desativa o guard de segurança contra slots no passado.
+  // Testes de regressão do #2552 injetam `now` explicitamente pra testar o
+  // comportamento correto sem precisar dessa var.
+  //
+  // O log do WARN é controlado separadamente por DIARIA_QUIET_SCHEDULE_LOG !== "1".
   const nowMs = nowOverride ?? Date.now();
   const calculatedMs = Date.parse(calculatedIso);
   const minFutureCutoffMs = nowMs + minFutureMs;
 
-  if (calculatedMs < minFutureCutoffMs && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+  if (calculatedMs < minFutureCutoffMs && process.env.DIARIA_DISABLE_PASTSLOT_SHIFT !== "1") {
     const shiftedMs = nowMs + pastSlotShiftMs;
     const shiftedDate = new Date(shiftedMs);
     // Calcular offset do timezone pra data shiftada (pode diferir por DST)
@@ -264,11 +272,14 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
         ? `slot no passado (${calculatedIso})`
         : `slot a ${Math.round((calculatedMs - nowMs) / 60_000)}min de now, abaixo do piso mínimo de ${Math.round(minFutureMs / 60_000)}min`;
 
-    console.error(
-      `[compute-schedule] WARN (#2552): ${platform}/${destaque} — ${reason}. ` +
-      `Slot shiftado para now+${minsAhead}min → ${finalShiftedIso}. ` +
-      `(slot original: ${calculatedIso}, edition: ${editionDate})`,
-    );
+    // Log do WARN é controlado por DIARIA_QUIET_SCHEDULE_LOG (só-log, independente do shift)
+    if (process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+      console.error(
+        `[compute-schedule] WARN (#2552): ${platform}/${destaque} — ${reason}. ` +
+        `Slot shiftado para now+${minsAhead}min → ${finalShiftedIso}. ` +
+        `(slot original: ${calculatedIso}, edition: ${editionDate})`,
+      );
+    }
 
     return finalShiftedIso;
   }
