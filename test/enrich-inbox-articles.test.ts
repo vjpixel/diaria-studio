@@ -9,6 +9,7 @@ import {
   mergeMetadata,
   enrichArticles,
   titleFromSubmittedSubject,
+  NON_INBOX_FALLBACK_FETCH_CAP,
 } from "../scripts/enrich-inbox-articles.ts";
 import { bodyCacheFilename } from "../scripts/lib/url-body-cache.ts";
 
@@ -621,8 +622,30 @@ describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () 
     }
   });
 
-  it("#1696: non-inbox sem summary + cache MISS → NÃO faz network (cache-only), summary fica vazio", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "enrich-1696-miss-"));
+  it("#2545: non-inbox sem summary + cache MISS → faz network (fallback bounded), summary preenchido", async () => {
+    // #2545 inverte o comportamento de #1696 para cache-miss: agora faz 1 GET curto
+    // pra preencher og:description em vez de deixar summary vazio (que causa título pelado).
+    const dir = mkdtempSync(join(tmpdir(), "enrich-2545-miss-"));
+    try {
+      const articles = [{ url: "https://huggingface.co/blog/local-models-pr-triage", title: "We got local models to triage the OpenClaw repo for FREE!", summary: "" }];
+      let fetcherCalls = 0;
+      const fetcher = async (): Promise<string | null> => {
+        fetcherCalls++;
+        return `<meta property="og:description" content="Triagem automática de PRs com modelos locais."/>`;
+      };
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
+      assert.equal(fetcherCalls, 1, "#2545: non-inbox cache-miss AGORA faz 1 network GET (fallback bounded)");
+      assert.equal(out[0].summary, "Triagem automática de PRs com modelos locais.", "summary preenchido");
+      assert.equal(outcomes[0].summary_updated, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2545: non-inbox cache-miss com cap=0 → NÃO faz network, reason=cache_miss_cap_exhausted_non_inbox", async () => {
+    // cap=0 simula cap esgotado: fica comportamento antigo (summary vazio).
+    // O lint secondary-items-have-summary detecta no Stage 4.
+    const dir = mkdtempSync(join(tmpdir(), "enrich-2545-cap0-"));
     try {
       const articles = [{ url: "https://blogs.nvidia.com/uncached", title: "Título real", summary: "" }];
       let fetcherCalls = 0;
@@ -630,10 +653,40 @@ describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () 
         fetcherCalls++;
         return `<meta property="og:description" content="NÃO deveria ser usado"/>`;
       };
-      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
-      assert.equal(fetcherCalls, 0, "non-inbox cache-miss NÃO faz network (bound de custo)");
-      assert.ok(!out[0].summary, "summary fica vazio (sem dano — render usa fallback/lint avisa)");
-      assert.equal(outcomes[0].reason, "cache_miss_skipped_non_inbox");
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, { bodiesDir: dir, nonInboxFallbackFetchCap: 0 });
+      assert.equal(fetcherCalls, 0, "cap=0: non-inbox NÃO faz network");
+      assert.ok(!out[0].summary, "summary fica vazio quando cap=0");
+      assert.equal(outcomes[0].reason, "cache_miss_cap_exhausted_non_inbox");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2545: cap de fallback respeita limite — após N fetches, próximos skippam", async () => {
+    // Testa que o cap=2 limita exatamente 2 fetches para non-inbox cache-miss.
+    // Usa concurrency=1 para garantir ordem sequencial e comportamento determinístico do cap.
+    const dir = mkdtempSync(join(tmpdir(), "enrich-2545-capN-"));
+    try {
+      const articles = [
+        { url: "https://a.com/art", title: "Artigo A", summary: "" },
+        { url: "https://b.com/art", title: "Artigo B", summary: "" },
+        { url: "https://c.com/art", title: "Artigo C", summary: "" }, // deve ser skippado (cap=2)
+      ];
+      let fetcherCalls = 0;
+      const fetcher = async (url: string): Promise<string | null> => {
+        fetcherCalls++;
+        return `<meta property="og:description" content="Desc de ${url}"/>`;
+      };
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, {
+        bodiesDir: dir,
+        nonInboxFallbackFetchCap: 2,
+        concurrency: 1, // sequencial para comportamento determinístico do cap
+      });
+      assert.equal(fetcherCalls, 2, "exatamente 2 fetches (cap=2)");
+      assert.ok(out[0].summary, "A: summary preenchido (fetch 1)");
+      assert.ok(out[1].summary, "B: summary preenchido (fetch 2)");
+      assert.ok(!out[2].summary, "C: summary vazio (cap esgotado)");
+      assert.equal(outcomes[2].reason, "cache_miss_cap_exhausted_non_inbox");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -654,5 +707,12 @@ describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("NON_INBOX_FALLBACK_FETCH_CAP — constante exportada (#2545)", () => {
+  it("cap padrão é um valor positivo e razoável (1–20)", () => {
+    assert.ok(NON_INBOX_FALLBACK_FETCH_CAP > 0, "cap > 0");
+    assert.ok(NON_INBOX_FALLBACK_FETCH_CAP <= 20, "cap <= 20 (conservador)");
   });
 });
