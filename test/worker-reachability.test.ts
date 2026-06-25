@@ -7,6 +7,8 @@
  *   3. DNS local filtra + DoH também falha → up=false, local_dns_filtered=false
  *   4. DNS local funciona normalmente → up=true, via="direct"
  *   5. DNS local funciona mas HTTP 500 → up=false, via="direct"
+ *   6. (#2574) AbortError (timeout do AbortController) → trata como DNS-filter candidate → aciona DoH
+ *   7. (#2577) resolvedIp passado ao anycastFetch — DI confirma que o IP resolvido é reusado
  */
 
 import { describe, it } from "node:test";
@@ -95,5 +97,59 @@ describe("isWorkerReachable (#2551)", () => {
     assert.equal(result.local_dns_filtered, false);
     assert.equal(result.via, "none");
     assert.equal(dohCalled, false, "DoH não deve ser tentado para erros não-DNS");
+  });
+
+  // Regressão #2574: AbortError (do AbortController de timeout) deve acionar DoH fallback,
+  // não declarar down. DNS filtrado por drop de pacotes UDP/53 (silent hang) chega aqui —
+  // é o cenário real que o módulo deveria cobrir mas não cobria antes do fix.
+  it("#2574: AbortError (timeout nativo) → trata como DNS-filter → aciona DoH → up=true", async () => {
+    const abortErr = Object.assign(new Error("The operation was aborted"), {
+      name: "AbortError",
+    });
+    let dohCalled = false;
+    const result = await isWorkerReachable(WORKER_URL, {
+      nativeFetch: async () => { throw abortErr; },
+      dohResolve: async () => { dohCalled = true; return "104.21.39.165"; },
+      anycastFetch: async () => ({ ok: true, status: 200 }),
+    });
+    assert.equal(result.up, true, "AbortError de timeout deve acionar DoH e retornar up=true quando anycast responde 200");
+    assert.equal(result.local_dns_filtered, true, "deve sinalizar filtro DNS local");
+    assert.equal(result.via, "doh_anycast");
+    assert.equal(dohCalled, true, "DoH deve ser chamado (antes do fix não era)");
+  });
+
+  // Regressão #2574: DOMException com code numérico 20 (variante de AbortError) também
+  // deve acionar DoH — cobre o caso de DOMException legado.
+  it("#2574: erro com code numérico 20 (AbortError numérico) → aciona DoH", async () => {
+    const abortErr = Object.assign(new Error("aborted"), { name: "AbortError", code: 20 });
+    let dohCalled = false;
+    const result = await isWorkerReachable(WORKER_URL, {
+      nativeFetch: async () => { throw abortErr; },
+      dohResolve: async () => { dohCalled = true; return "104.21.39.165"; },
+      anycastFetch: async () => ({ ok: true, status: 200 }),
+    });
+    assert.equal(result.up, true, "AbortError (code 20) deve acionar DoH");
+    assert.equal(result.local_dns_filtered, true);
+    assert.equal(dohCalled, true, "DoH deve ser chamado");
+  });
+
+  // Regressão #2577: no caminho DoH, o IP resolvido deve ser passado ao anycastFetch.
+  // Verifica via DI spy que anycastFetch recebe o IP correto (sem 3ª resolução redundante).
+  it("#2577: resolvedIp do DoH é passado ao anycastFetch (sem re-resolução redundante)", async () => {
+    const EXPECTED_IP = "104.21.39.165";
+    let capturedIp: string | undefined;
+
+    const result = await isWorkerReachable(WORKER_URL, {
+      nativeFetch: async () => { throw makeDnsError(); },
+      dohResolve: async () => EXPECTED_IP,
+      anycastFetch: async (u, ip) => {
+        capturedIp = ip;
+        return { ok: true, status: 200 };
+      },
+    });
+
+    assert.equal(result.up, true);
+    assert.equal(result.local_dns_filtered, true);
+    assert.equal(capturedIp, EXPECTED_IP, `anycastFetch deve receber o IP resolvido pelo DoH (${EXPECTED_IP}), recebeu: ${capturedIp}`);
   });
 });

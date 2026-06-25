@@ -26,7 +26,7 @@
  *   }
  */
 
-import { isDnsOrConnectError, resolveViaDoH, dohFetch } from "./doh-fetch.ts";
+import { isDnsOrConnectError, resolveViaDoH, fetchViaIp } from "./doh-fetch.ts";
 
 export interface WorkerReachabilityResult {
   up: boolean;
@@ -101,9 +101,17 @@ export async function isWorkerReachable(
       ...(!res.ok ? { error: `HTTP ${res.status}` } : {}),
     };
   } catch (err) {
-    // Não é erro de DNS/connect — é outro problema (timeout de resposta, TLS, etc).
+    // AbortError (name === 'AbortError') acontece quando o AbortController de timeout
+    // acima dispara — causado por DNS filtrado por drop de pacotes UDP/53 (silent hang).
+    // Esse cenário NÃO é reconhecido por isDnsOrConnectError (que só checa string codes
+    // como ENOTFOUND/ETIMEDOUT), mas é igualmente candidato a filtro DNS local.
+    // Tratar como DNS-filter candidate para acionar o retry via DoH (#2574).
+    const isAbortError =
+      err instanceof Error && (err.name === "AbortError" || (err as { code?: unknown }).code === 20);
+
+    // Não é erro de DNS/connect nem AbortError — é outro problema (TLS, etc).
     // Tratar como down sem suspeita de filtro DNS.
-    if (!isDnsOrConnectError(err)) {
+    if (!isDnsOrConnectError(err) && !isAbortError) {
       return {
         up: false,
         local_dns_filtered: false,
@@ -133,9 +141,10 @@ export async function isWorkerReachable(
   // Step 3: DoH resolveu → confirmar via anycast IP
   const anycastFetchImpl =
     deps.anycastFetch ??
-    (async (u: string, _ip: string) => {
-      // dohFetch já usa o DoH fallback internamente (inclui SNI correto via IP)
-      const res = await dohFetch(u);
+    (async (u: string, ip: string) => {
+      // Usa o IP já resolvido no step 2 para conectar diretamente, sem 3ª tentativa
+      // de DNS nativo. fetchViaIp preserva o hostname original no Host header + SNI (#2577).
+      const res = await fetchViaIp(u, ip);
       return { ok: res.ok, status: res.status };
     });
 
