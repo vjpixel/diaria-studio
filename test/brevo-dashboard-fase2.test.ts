@@ -15,7 +15,11 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { SENDS as EDITION_SENDS } from "../scripts/clarice-build-edition-sends.ts";
+import { computeMvStatus } from "../scripts/clarice-mv-status.ts";
 import {
   parseClariceCampaignKey,
   aggregateAbcSummary,
@@ -41,7 +45,11 @@ import {
   ENVIOS_TOOLTIP,
   aggregateDaySummary,
   renderDaySummarySection,
+  WEEKDAY_MIN_AGE_HOURS,
+  renderMvStatusSection,
+  MV_STATUS_KV_KEY,
 } from "../workers/brevo-dashboard/src/index.ts";
+import type { MvStatus } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -987,11 +995,13 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
 
   test("seção day-summary aparece quando há campanhas Clarice News (#2523)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    // #2523: id foi renomeado de "abc-summary" para "day-summary" em renderDaySummarySection
-    // para não colidir com o id da legada renderAbcSection (que mantém "abc-summary").
-    // #2208 (item 4): ancorando em id= para não casar href/nav que pudesse vir antes.
+    // #2523: renderDaySummarySection usa id="day-summary" (não "abc-summary"), para não colidir
+    // com renderAbcSection que mantém id="abc-summary". #2600 restaurou ambas as seções.
     assert.match(html, /id="day-summary"/, "deve conter a seção day-summary com id= (#2523)");
-    assert.doesNotMatch(html, /id="abc-summary"/, "renderDaySummarySection não deve mais usar id=abc-summary (#2523)");
+    // #2600: renderAbcSection está de volta, então id="abc-summary" agora aparece no HTML da página.
+    // Verificar que renderDaySummarySection por si só não usa abc-summary:
+    const daySummarySection = renderDaySummarySection(aggregateDaySummary(cycle2605Campaigns, "2605"));
+    assert.doesNotMatch(daySummarySection, /id="abc-summary"/, "renderDaySummarySection não deve usar id=abc-summary (#2523)");
     // #2492: seção agora mostra breakdown D1–D5 em vez de A/B/C por célula
     assert.match(html, /Resumo D1–D5/, "deve ter título 'Resumo D1–D5'");
   });
@@ -1114,7 +1124,7 @@ describe("aggregateByWeekday (#2134)", () => {
   // Células A/B/C por dia → por weekday: qua tem 3 campanhas (A+B+C), qui tem 3.
 
   test("agrega corretamente por weekday para ciclo ativo (qua e qui presentes)", () => {
-    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
     const qua = rows.find((r) => r.weekday === 2); // Qua
     const qui = rows.find((r) => r.weekday === 3); // Qui
     assert.ok(qua, "deve ter linha para Qua");
@@ -1130,7 +1140,7 @@ describe("aggregateByWeekday (#2134)", () => {
   });
 
   test("openRate calculado corretamente (opens / delivered)", () => {
-    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
     const qua = rows.find((r) => r.weekday === 2)!;
     const expectedRate = (82 / 347) * 100;
     assert.ok(Math.abs(qua.openRate - expectedRate) < 0.01,
@@ -1138,7 +1148,7 @@ describe("aggregateByWeekday (#2134)", () => {
   });
 
   test("smallSample=false quando count >= 2", () => {
-    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
     // count=3 pra qua e qui
     for (const r of rows) {
       assert.equal(r.smallSample, false, `weekday ${r.label} com count=${r.count} não deve ser smallSample`);
@@ -1148,13 +1158,13 @@ describe("aggregateByWeekday (#2134)", () => {
   test("smallSample=true quando count = 1", () => {
     // Apenas 1 campanha na qua
     const single = [cycle2605Campaigns[0]]; // d01-A (qua)
-    const rows = aggregateByWeekday(single, "2605");
+    const { rows } = aggregateByWeekday(single, "2605");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].smallSample, true, "count=1 deve ser smallSample");
   });
 
   test("retorna [] quando ciclo não tem campanhas", () => {
-    const rows = aggregateByWeekday(cycle2605Campaigns, "9999");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "9999");
     assert.equal(rows.length, 0);
   });
 
@@ -1164,7 +1174,7 @@ describe("aggregateByWeekday (#2134)", () => {
       makeCampaign(99, "Clarice News 2604 d01-A (qui)", "2026-05-02T09:00:00Z",
         { sent: 500, delivered: 495, uniqueViews: 200 }),
     ];
-    const rows = aggregateByWeekday(mixed, "2605");
+    const { rows } = aggregateByWeekday(mixed, "2605");
     // Campanha 2604 não deve entrar — verificar que delivered de Qui é só d02 (2605)
     const qui = rows.find((r) => r.weekday === 3)!;
     assert.equal(qui.delivered, 182 + 182 + 183, "campanha 2604 não deve entrar no ciclo 2605");
@@ -1183,7 +1193,7 @@ describe("aggregateByWeekday (#2134)", () => {
         globalStats: undefined,
       },
     };
-    const rows = aggregateByWeekday([csOnly], "2605");
+    const { rows } = aggregateByWeekday([csOnly], "2605");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].delivered, 97, "deve usar campaignStats.delivered quando globalStats ausente");
     assert.equal(rows[0].opens, 40, "deve usar campaignStats.uniqueViews quando globalStats ausente");
@@ -1191,7 +1201,7 @@ describe("aggregateByWeekday (#2134)", () => {
 
   test("omite campanhas sem sentDate", () => {
     const noDate = { ...makeCampaign(88, "Clarice News 2605 d01-A (qua)", ""), sentDate: null };
-    const rows = aggregateByWeekday([noDate], "2605");
+    const { rows } = aggregateByWeekday([noDate], "2605");
     assert.equal(rows.length, 0, "campanha sem sentDate não deve gerar linha");
   });
 
@@ -1200,7 +1210,7 @@ describe("aggregateByWeekday (#2134)", () => {
       ...makeCampaign(89, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"),
       statistics: { globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0 }) },
     };
-    const rows = aggregateByWeekday([zeroStats], "2605");
+    const { rows } = aggregateByWeekday([zeroStats], "2605");
     assert.equal(rows.length, 0, "campanha com sent=0 não deve gerar linha");
   });
 
@@ -1210,7 +1220,7 @@ describe("aggregateByWeekday (#2134)", () => {
       makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T09:00:00Z"),
       makeCampaign(2, "Clarice News 2605 d04-A (seg)", "2026-06-15T09:00:00Z"),
     ];
-    const rows = aggregateByWeekday(outOfOrder, "2605");
+    const { rows } = aggregateByWeekday(outOfOrder, "2605");
     assert.equal(rows.length, 2);
     assert.equal(rows[0].weekday, 0, "Seg (0) deve vir antes de Qui (3)");
     assert.equal(rows[1].weekday, 3, "Qui (3) deve vir depois de Seg (0)");
@@ -1229,7 +1239,7 @@ describe("aggregateByWeekday (#2134)", () => {
   test("cycle=null agrega todas as campanhas (cross-ciclo)", () => {
     // allCampaigns inclui 2605 e T1 (T1 não é Clarice News — filtradas pelo ciclo null)
     // Mas T1 campaigns têm sentDate e stats → devem entrar quando cycle=null
-    const rows = aggregateByWeekday(allCampaigns, null);
+    const { rows } = aggregateByWeekday(allCampaigns, null);
     assert.ok(rows.length > 0, "deve ter rows quando cycle=null");
     // T1 campaigns: 2026-05-08 (sex=4), 2026-05-15 (sex=4) → devem aparecer
     const sex = rows.find((r) => r.weekday === 4);
@@ -1263,11 +1273,11 @@ describe("renderWeekdaySection (#2134)", () => {
   // #2201.4: removido param `overrides` inutilizado — nunca era passado e
   // aggregateByWeekday não aceita overrides por campanha individual.
   function makeRows() {
-    return aggregateByWeekday(cycle2605Campaigns, "2605");
+    return aggregateByWeekday(cycle2605Campaigns, "2605").rows;
   }
 
-  test("retorna string vazia quando rows está vazio", () => {
-    assert.equal(renderWeekdaySection([], "ciclo 2605"), "");
+  test("retorna string vazia quando rows está vazio e sem excluídos", () => {
+    assert.equal(renderWeekdaySection([], "ciclo 2605", []), "");
   });
 
   test("ordena dias do melhor pro pior open rate", () => {
@@ -1381,7 +1391,7 @@ describe("renderWeekdaySection (#2134)", () => {
     // cycle2605Campaigns:
     //   Qua d01: A(views=20)+B(32)+C(30) = 82
     //   Qui d02: A(35)+B(39)+C(30) = 104
-    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
     const html = renderWeekdaySection(rows, "ciclo 2605");
     // #2201.2: regex apertada — verifica valor 82/104 em célula <td>, não substring solta.
     assert.match(html, /<td[^>]*>82<\/td>/, "deve mostrar 82 opens para Qua em célula <td>");
@@ -1391,7 +1401,7 @@ describe("renderWeekdaySection (#2134)", () => {
   test("#2185 Open rate permanece inalterado (denominador preserved = delivered)", () => {
     // Open rate = opens / delivered, NÃO usa sent como denominador
     // Qua: 82 opens / 347 delivered ≈ 23.6%
-    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
     const qua = rows.find((r) => r.weekday === 2)!;
     const expectedRate = (82 / 347) * 100;
     assert.ok(Math.abs(qua.openRate - expectedRate) < 0.01,
@@ -1422,7 +1432,7 @@ describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent un
       { sent: undefined as unknown as number, delivered: 100, uniqueViews: 30 });
     const campaigns = [campaignWithUndefinedSent, ...cycle2605Campaigns];
 
-    const rows = aggregateByWeekday(campaigns, "2605");
+    const { rows } = aggregateByWeekday(campaigns, "2605");
 
     // Nenhuma row deve ter openRate NaN
     for (const row of rows) {
@@ -1446,7 +1456,7 @@ describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent un
       { sent: null as unknown as number, delivered: 50, uniqueViews: 10 });
     const campaigns = [campaignWithNullSent, ...cycle2605Campaigns];
 
-    const rows = aggregateByWeekday(campaigns, "2605");
+    const { rows } = aggregateByWeekday(campaigns, "2605");
 
     for (const row of rows) {
       assert.ok(!isNaN(row.openRate), `openRate para ${row.label} não deve ser NaN`);
@@ -1497,7 +1507,7 @@ describe("regressão #2198 Bug 2: aggregateByWeekday exclui campanha com sent un
       },
     };
     const campaigns = [campaignCsUndefinedSent, ...cycle2605Campaigns];
-    const rows = aggregateByWeekday(campaigns, "2605");
+    const { rows } = aggregateByWeekday(campaigns, "2605");
 
     for (const row of rows) {
       assert.ok(!isNaN(row.openRate),
@@ -2033,5 +2043,310 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(html, /:checked/, "CSS deve conter :checked para tab switching sem JS");
     // Confirma presença do radio+label pattern (não un script external para tabs)
     assert.match(html, /type="radio"/, "deve usar radio inputs para tab state");
+  });
+});
+
+// ─── #2600: Resumo A/B/C restaurado como seção principal ─────────────────────
+
+describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
+  test("renderDashboardHtml inclui seção 'Resumo A/B/C' (não apenas D1-D5)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.match(html, /Resumo A\/B\/C/i, "deve conter seção Resumo A/B/C");
+  });
+
+  test("renderDashboardHtml inclui TAMBÉM seção D1-D5 como seção separada", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.match(html, /Resumo D1.D5/i, "deve conter seção D1-D5 como seção adicional");
+  });
+
+  test("seção A/B/C tem células A, B, C (não rótulos D1, D2)", () => {
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const html = renderAbcSection(rows);
+    assert.match(html, /Célula A/i, "deve mostrar Célula A");
+    assert.match(html, /Célula B/i, "deve mostrar Célula B");
+    assert.match(html, /Célula C/i, "deve mostrar Célula C");
+    assert.doesNotMatch(html, />D1</, "seção A/B/C não deve ter rótulo D1");
+    assert.doesNotMatch(html, />D2</, "seção A/B/C não deve ter rótulo D2");
+  });
+
+  test("seção A/B/C preserva ordem de colunas Delivered/Opens (#2424)", () => {
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const html = renderAbcSection(rows);
+    const idxDel = html.indexOf("Delivered");
+    const idxOp = html.indexOf("Opens");
+    assert.ok(idxDel < idxOp, "Delivered deve aparecer antes de Opens no header (#2424)");
+  });
+});
+
+// ─── #2609: Status MillionVerifier ────────────────────────────────────────────
+
+describe("regressão #2609: renderMvStatusSection", () => {
+  test("MV_STATUS_KV_KEY é 'mv:status'", () => {
+    assert.equal(MV_STATUS_KV_KEY, "mv:status");
+  });
+
+  test("stub gracioso quando mvStatus é null", () => {
+    const html = renderMvStatusSection(null);
+    assert.match(html, /id="mv-status"/, "deve ter âncora mv-status");
+    assert.match(html, /clarice-mv-status\.ts/, "deve indicar o script para gerar dados");
+    assert.doesNotMatch(html, /undefined/, "não deve ter 'undefined' no HTML");
+  });
+
+  test("regressão #2619: stub gracioso também quando groups está vazio (não tabela vazia)", () => {
+    const html = renderMvStatusSection({ generatedAt: "2026-06-25T10:00:00Z", groups: [] });
+    assert.match(html, /clarice-mv-status\.ts/, "groups vazio deve mostrar orientação, não tbody vazia");
+    assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
+  });
+
+  test("renderiza badge 'N/A — validado por pagamento Stripe' para T01", () => {
+    const mvStatus: MvStatus = {
+      generatedAt: "2026-06-25T10:00:00Z",
+      groups: [
+        { group: "t01-assinantes-ativos", cycle: "2605-06", status: "t01", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 },
+      ],
+    };
+    const html = renderMvStatusSection(mvStatus);
+    assert.match(html, /validado por pagamento Stripe/, "T01 deve ter nota de validação Stripe");
+    assert.doesNotMatch(html, /MV pendente/, "T01 não deve mostrar 'MV pendente'");
+  });
+
+  test("renderiza badge '✓ MV {data}' para grupo verificado (T02+)", () => {
+    const mvStatus: MvStatus = {
+      generatedAt: "2026-06-25T10:00:00Z",
+      groups: [
+        {
+          group: "t02-ex-assinantes",
+          cycle: "2605-06",
+          status: "verified",
+          verifiedAt: "2026-06-20T08:00:00Z",
+          verified: 950,
+          rejected: 30,
+          unknown: 20,
+        },
+      ],
+    };
+    const html = renderMvStatusSection(mvStatus);
+    assert.match(html, /✓ MV/, "deve ter badge ✓ MV para grupo verificado");
+    assert.match(html, /950/, "deve mostrar contagem de verificados");
+    assert.match(html, /30/, "deve mostrar contagem de rejeitados");
+    assert.match(html, /excluídos/, "deve usar rótulo 'excluídos'");
+  });
+
+  test("renderiza 'MV pendente' para grupo T02+ sem verificação", () => {
+    const mvStatus: MvStatus = {
+      generatedAt: "2026-06-25T10:00:00Z",
+      groups: [
+        { group: "t02-ex-assinantes", cycle: "2605-06", status: "pending", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 },
+      ],
+    };
+    const html = renderMvStatusSection(mvStatus);
+    assert.match(html, /MV pendente/, "deve mostrar 'MV pendente' quando não verificado");
+  });
+});
+
+// ─── #2611: aggregateByWeekday exclui envios <48h ─────────────────────────────
+
+describe("regressão #2611: aggregateByWeekday filtra envios <48h", () => {
+  test("WEEKDAY_MIN_AGE_HOURS é 48", () => {
+    assert.equal(WEEKDAY_MIN_AGE_HOURS, 48);
+  });
+
+  function makeCampaignHoursAgo(id: number, hoursAgo: number, now: Date): typeof cycle2605Campaigns[0] {
+    const sentDate = new Date(now.getTime() - hoursAgo * 3600 * 1000).toISOString();
+    return makeCampaign(id, `Clarice News 2605 d0${id}-A (seg)`, sentDate, { sent: 100, delivered: 90, uniqueViews: 20 });
+  }
+
+  test("envio de 50h atrás é incluído no agregado", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c50h = makeCampaignHoursAgo(1, 50, now);
+    const { rows, excluded } = aggregateByWeekday([c50h], null, now);
+    assert.equal(excluded.length, 0, "50h não deve estar no excluded");
+    assert.equal(rows.length, 1, "50h deve gerar linha no agregado");
+  });
+
+  test("envio de 10h atrás é excluído (open rate instável)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c10h = makeCampaignHoursAgo(2, 10, now);
+    const { rows, excluded } = aggregateByWeekday([c10h], null, now);
+    assert.equal(rows.length, 0, "10h não deve gerar linha no agregado");
+    assert.equal(excluded.length, 1, "10h deve estar no excluded");
+  });
+
+  test("envio de 47h atrás (borda) é excluído (<48h)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c47h = makeCampaignHoursAgo(3, 47, now);
+    const { rows, excluded } = aggregateByWeekday([c47h], null, now);
+    assert.equal(rows.length, 0, "47h (borda) não deve gerar linha no agregado");
+    assert.equal(excluded.length, 1, "47h deve estar no excluded");
+  });
+
+  test("mix: 50h incluído, 10h excluído — agregado contém só o de 50h", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c50h = makeCampaignHoursAgo(1, 50, now);
+    const c10h = makeCampaignHoursAgo(2, 10, now);
+    const { rows, excluded } = aggregateByWeekday([c50h, c10h], null, now);
+    assert.equal(excluded.length, 1, "apenas 10h deve estar no excluded");
+    assert.equal(rows.length, 1, "apenas 50h deve gerar linha");
+    assert.equal(rows[0].count, 1, "agregado deve ter 1 campanha (a de 50h)");
+  });
+
+  test("renderWeekdaySection inclui nota com nome do excluído quando há <48h", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c10h = makeCampaignHoursAgo(2, 10, now);
+    const { rows, excluded } = aggregateByWeekday([c10h], null, now);
+    const html = renderWeekdaySection(rows, "todos os envios", excluded);
+    assert.match(html, /48h/, "nota deve mencionar o threshold de 48h");
+    assert.match(html, /Clarice News 2605 d02-A \(seg\)/, "nota deve citar o nome do envio excluído");
+  });
+
+  test("renderWeekdaySection sem excluídos não mostra nota de <48h", () => {
+    const now = new Date("2026-06-01T12:00:00Z"); // passado — todas as campanhas são ≥48h
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605", now);
+    const html = renderWeekdaySection(rows, "todos os envios", []);
+    assert.doesNotMatch(html, /estabilizando/, "sem excluídos não deve ter nota de estabilizando");
+  });
+
+  // Regressão #2619 bug B: seção de weekday aparecia em branco quando todos envios eram <48h.
+  // O caller (renderDashboardHtml) passava a guardar `renderWeekdaySection` atrás de
+  // `weekdayRows.length > 0`, nunca chamando a função quando rows=[] mas excluded não-vazio.
+  // A função em si renderiza o stub corretamente — o teste abaixo garante isso.
+  test("regressão #2619: renderWeekdaySection com rows=[] e excluded não-vazio retorna HTML com stub", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const recent = makeCampaignHoursAgo(1, 5, now); // 5h atrás → excluído
+    const { rows, excluded } = aggregateByWeekday([recent], null, now);
+    assert.equal(rows.length, 0);
+    assert.equal(excluded.length, 1);
+    const html = renderWeekdaySection(rows, "todos os envios", excluded);
+    assert.ok(html.length > 0, "deve retornar HTML mesmo com rows=[]");
+    assert.match(html, /estabilizando/, "stub deve mencionar 'estabilizando'");
+    assert.match(html, /48h/, "stub deve mencionar o threshold 48h");
+  });
+});
+
+// ─── #2619: renderMvStatusSection — formato de data no badge ─────────────────
+
+describe("regressão #2619 bug C: renderMvStatusSection — data no badge em DD/MM/YYYY", () => {
+  test("badge '✓ MV' mostra data em DD/MM/YYYY sem abreviação de dia da semana", () => {
+    const mvStatus: MvStatus = {
+      generatedAt: "2026-06-25T10:00:00Z",
+      groups: [
+        {
+          group: "t02-ex-assinantes",
+          cycle: "2605-06",
+          status: "verified",
+          verifiedAt: "2026-06-20T08:00:00Z",
+          verified: 950,
+          rejected: 30,
+          unknown: 20,
+        },
+      ],
+    };
+    const html = renderMvStatusSection(mvStatus);
+    // Deve aparecer como "20/06/2026" (toLocaleDateString pt-BR com year)
+    assert.match(html, /20\/06\/2026/, "data deve ser DD/MM/YYYY completo");
+    // Não deve ter abreviação de dia da semana como "sex.," (bug anterior: fmtTimeBRT.slice(0,10))
+    assert.doesNotMatch(html, /sex\.,/, "não deve incluir abreviação do dia da semana");
+    assert.doesNotMatch(html, /\/0"/, "não deve ter string truncada como '26/0'");
+  });
+});
+
+// ─── #2619: computeMvStatus — emissão de status "pending" ────────────────────
+
+describe("regressão #2619 bug D: computeMvStatus emite 'pending' quando ciclo existe sem arquivo verificado", () => {
+  let testBase: string;
+
+  function setup() {
+    testBase = join(tmpdir(), `mv-status-test-${Date.now()}`);
+    mkdirSync(testBase, { recursive: true });
+  }
+
+  function teardown() {
+    rmSync(testBase, { recursive: true, force: true });
+  }
+
+  test("ciclo sem mv-export-*-verified.csv gera entrada 'pending' para grupos T02+ conhecidos", () => {
+    setup();
+    try {
+      // Base files: T01 (pula) + T02 (deve gerar pending)
+      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
+      // Ciclo válido sem arquivos verificados
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 1, "deve ter 1 entrada pending para t02-ex-assinantes");
+      assert.equal(pending[0].group, "t02-ex-assinantes");
+      assert.equal(pending[0].cycle, "2605-06");
+      assert.equal(pending[0].verifiedAt, null);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("T01 da base aparece com status 't01', nunca 'pending'", () => {
+    setup();
+    try {
+      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const t01 = result.groups.filter((g) => g.status === "t01");
+      assert.ok(t01.length > 0, "deve ter entrada t01");
+      assert.equal(t01[0].group, "t01-assinantes-ativos");
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 0, "T01 nunca deve ser pending");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("ciclo com mv-export verificado gera status 'verified', não 'pending'", () => {
+    setup();
+    try {
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+      writeFileSync(
+        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
+        "email\ne@f.com\ng@h.com\n",
+      );
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const verified = result.groups.filter((g) => g.status === "verified");
+      assert.equal(verified.length, 1, "deve ter 1 entrada verified");
+      assert.equal(verified[0].group, "t02-ex-assinantes");
+      assert.equal(verified[0].verified, 2, "2 linhas de dados = 2 verificados");
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 0, "não deve ter pending quando arquivo verificado existe");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("verificação PARCIAL: grupo T02+ sem arquivo verificado vira 'pending' mesmo com outro grupo verificado no mesmo ciclo", () => {
+    setup();
+    try {
+      // Dois grupos T02+ na base; só um deles verificado no ciclo.
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\na@b.com\n");
+      writeFileSync(join(testBase, "stripe-export-t03-leads.csv"), "email\nc@d.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+      writeFileSync(
+        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
+        "email\ne@f.com\n",
+      );
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const t02 = result.groups.find((g) => g.group === "t02-ex-assinantes");
+      assert.equal(t02?.status, "verified", "t02 verificado");
+      const t03 = result.groups.find((g) => g.group === "t03-leads");
+      assert.equal(t03?.status, "pending", "t03 não-verificado deve aparecer como pending, não sumir");
+      assert.equal(t03?.cycle, "2605-06");
+    } finally {
+      teardown();
+    }
   });
 });

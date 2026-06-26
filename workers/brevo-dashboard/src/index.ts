@@ -159,6 +159,26 @@ export interface EngagementCohorts {
 }
 
 
+// #2609: status MillionVerifier por grupo de contatos.
+export interface MvGroupStatus {
+  /** Identificador do grupo (ex: "t01-assinantes-ativos", "t02-ex-assinantes"). */
+  group: string;
+  /** Ciclo em que a verificação foi feita (ex: "2605-06"). */
+  cycle: string;
+  /** "verified" = tem mv-export-*-verified.csv; "t01" = N/A por pagamento Stripe; "pending" = sem arquivo. */
+  status: "verified" | "t01" | "pending";
+  /** ISO date do mtime do arquivo verified.csv (ou null). */
+  verifiedAt: string | null;
+  verified: number;
+  rejected: number;
+  unknown: number;
+}
+
+export interface MvStatus {
+  generatedAt: string;
+  groups: MvGroupStatus[];
+}
+
 // ─── #2144: helpers de controle de concorrência e cache ──────────────────────
 
 /**
@@ -261,6 +281,8 @@ export const RECENT_STATS_TTL = 1800; // segundos (30min) — #2282
 // scripts/clarice-engagement-cohorts.ts. Mantida em sincronia com COHORTS_KV_KEY
 // daquele script (bundles separados não compartilham constantes).
 export const COHORTS_KV_KEY = "cohorts:engagement";
+// #2609: chave KV do status MillionVerifier por grupo, gravada por scripts/clarice-mv-status.ts.
+export const MV_STATUS_KV_KEY = "mv:status";
 
 export const LASTGOOD_KEY = "dash:lastgood:html";
 export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
@@ -1139,6 +1161,7 @@ export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
   cohorts: EngagementCohorts | null = null, // #2426: pré-computado via KV
+  mvStatus: MvStatus | null = null, // #2609: status MV por grupo
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -1247,10 +1270,13 @@ export function renderDashboardHtml(
   const activeCycle = detectActiveCycle(campaigns);
   const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
   const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
-  // #2492: breakdown D1–D5 por dia (substitui Resumo A/B/C por célula no dashboard).
-  // aggregateAbcSummary e renderAbcSection são mantidos para compatibilidade e testes unitários.
+  // #2600: restaura Resumo A/B/C como seção principal (revertendo #2492 que havia substituído).
+  // D1–D5 mantido como seção SEPARADA logo após.
+  const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
+  const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
+  // #2492: breakdown D1–D5 por dia — mantido como seção adicional (valor próprio).
   const daySummaryRows = activeCycle ? aggregateDaySummary(campaigns, activeCycle) : [];
-  const abcSection = activeCycle ? renderDaySummarySection(daySummaryRows) : "";
+  const daySummarySection = activeCycle ? renderDaySummarySection(daySummaryRows) : "";
   // #2134: tabela de open rate por dia da semana (ciclo ativo).
   // Escopo: ciclo ativo quando detectado; fallback "todas as campanhas" quando
   // não há campanha Clarice News (activeCycle=null). Linha all-time separada
@@ -1258,8 +1284,11 @@ export function renderDashboardHtml(
   // mas optamos por manter UI simples: 1 tabela por view. Revisitar se editor
   // pedir comparação cross-ciclo explícita.
   const weekdayScopeLabel = "todos os envios"; // #2134 follow-up: editor pediu histórico completo, não só o ciclo ativo
-  const weekdayRows = aggregateByWeekday(campaigns, null);
-  const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel) : "";
+  const weekdayNow = new Date(); // #2611: injetável nos testes via parâmetro; produção usa Date atual
+  const { rows: weekdayRows, excluded: weekdayExcluded } = aggregateByWeekday(campaigns, null, weekdayNow);
+  const weekdaySection = weekdayRows.length > 0 || weekdayExcluded.length > 0
+    ? renderWeekdaySection(weekdayRows, weekdayScopeLabel, weekdayExcluded)
+    : "";
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
@@ -1273,6 +1302,8 @@ export function renderDashboardHtml(
   const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
   const cohortsSection = renderEngagementCohortsSection(cohorts);
+  // #2609: status MillionVerifier por grupo (pré-computado via KV).
+  const mvStatusSection = renderMvStatusSection(mvStatus);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -1485,11 +1516,13 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </section>
   </div><!-- /panel-visaogeral -->
 
-  <!-- Aba 2: Engajamento — coortes + weekday + resumo D1-D5 -->
+  <!-- Aba 2: Engajamento — coortes + weekday + resumo A/B/C + D1-D5 -->
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${cohortsSection}
+${mvStatusSection}
 ${weekdaySection}
 ${abcSection}
+${daySummarySection}
   </div><!-- /panel-engajamento -->
 
   <!-- Aba 3: Links / CTR — links agregados do período -->
@@ -1788,11 +1821,23 @@ export function monthKeyBRT(iso: string): string | null {
   return `${year}-${month}`; // "2026-06"
 }
 
+// #2611: envios com menos de 48h têm open rate instável — excluí-los evita conclusões prematuras.
+export const WEEKDAY_MIN_AGE_HOURS = 48;
+
+/** Metadado de campanha excluída por <48h (para nota no render). */
+export interface WeekdayExcluded {
+  name: string;
+  sentDate: string;
+}
+
 /**
  * Agrega open rate por dia da semana (seg–dom, BRT) para as campanhas do
  * ciclo ativo. Inclui apenas campanhas com stats reais (mesmo fallback do
  * render principal: globalStats primário, campaignStats[0] como fallback, ?? 0
  * defensivo para campos ausentes).
+ *
+ * #2611: exclui campanhas com sentDate < 48h antes de `now` (open rate instável).
+ * `now` é injetável para testes; produção passa `new Date()`.
  *
  * Retorna apenas os weekdays que tiveram ao menos 1 campanha, ordenados seg→dom.
  * Weekdays com count < 2 são marcados com smallSample=true.
@@ -1800,14 +1845,18 @@ export function monthKeyBRT(iso: string): string | null {
  * @param campaigns - lista de campanhas (todas, filtradas internamente por ciclo)
  * @param cycle     - filtro por ciclo (ex: "2605"); produção passa SEMPRE null (todos os envios,
  *                    decisão do editor 2026-06-11) — o filtro vive pra testes/uso futuro
- * @returns array de WeekdaySummary ordenado por weekday (0=Seg..6=Dom)
+ * @param now       - instante de referência (injetável para testes)
+ * @returns { rows: WeekdaySummary[], excluded: WeekdayExcluded[] }
  */
 export function aggregateByWeekday(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string | null,
-): WeekdaySummary[] {
+  now: Date = new Date(),
+): { rows: WeekdaySummary[]; excluded: WeekdayExcluded[] } {
   type Acc = { count: number; delivered: number; opens: number };
   const acc: Record<number, Acc> = {};
+  const excluded: WeekdayExcluded[] = [];
+  const minAgeMs = WEEKDAY_MIN_AGE_HOURS * 3600 * 1000;
 
   for (const c of campaigns) {
     // Filtro por ciclo ativo (quando passado)
@@ -1817,6 +1866,14 @@ export function aggregateByWeekday(
     }
 
     if (!c.sentDate) continue;
+
+    // #2611: excluir envios com menos de 48h (open rate ainda estabilizando).
+    const sentMs = new Date(c.sentDate).getTime();
+    if (isNaN(sentMs)) continue;
+    if (now.getTime() - sentMs < minAgeMs) {
+      excluded.push({ name: c.name, sentDate: c.sentDate });
+      continue;
+    }
 
     // #2254: fonte única (globalStats → campaignStats). #2256: uniqueViews é
     // MPP-inclusivo nas DUAS fontes (verificado 2026-06-14) → não há mistura de
@@ -1835,7 +1892,7 @@ export function aggregateByWeekday(
   }
 
   // Ordenar seg→dom (chave 0..6) e construir WeekdaySummary
-  return Object.keys(acc)
+  const rows = Object.keys(acc)
     .map(Number)
     .sort((a, b) => a - b)
     .map((wk) => {
@@ -1850,6 +1907,8 @@ export function aggregateByWeekday(
         smallSample: d.count < 2,
       };
     });
+
+  return { rows, excluded };
 }
 
 /**
@@ -1862,8 +1921,17 @@ export function aggregateByWeekday(
 export function renderWeekdaySection(
   rows: WeekdaySummary[],
   scopeLabel: string,
+  excluded: WeekdayExcluded[] = [],
 ): string {
-  if (rows.length === 0) return "";
+  if (rows.length === 0 && excluded.length === 0) return "";
+  if (rows.length === 0) {
+    const excList = excluded.map((e) => escHtml(e.name)).join(", ");
+    return `
+<section class="phase2-section" id="weekday-openrate">
+  <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
+  <p class="section-note">Envios ainda não computados (open rate &lt; ${WEEKDAY_MIN_AGE_HOURS}h, estabilizando): ${excList}.</p>
+</section>`;
+  }
 
   // Calcula melhor dia (max openRate entre rows com count >= 1)
   // Empate: nenhuma linha recebe tag
@@ -1912,10 +1980,15 @@ export function renderWeekdaySection(
     ? `Melhor dia provisório: <strong style="color:${DS.brand}">${WEEKDAY_LABELS[winnerWk]}</strong> — aguardar mais dados para conclusão.`
     : `Dados insuficientes para comparação.`;
 
+  const excludedNote =
+    excluded.length > 0
+      ? `\n  <p class="section-note"><small>Envios ainda não computados (open rate &lt; ${WEEKDAY_MIN_AGE_HOURS}h, estabilizando): ${excluded.map((e) => escHtml(e.name)).join(", ")}.</small></p>`
+      : "";
+
   return `
 <section class="phase2-section" id="weekday-openrate">
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
-  <p class="section-note">${statusNote}</p>
+  <p class="section-note">${statusNote}</p>${excludedNote}
   <div class="table-wrap">
   <table>
     <thead>
@@ -2545,6 +2618,60 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
 }
 
 /**
+ * #2609: renderiza seção de status MillionVerifier por grupo.
+ * Stub gracioso quando `mvStatus` é null (KV não populado ainda).
+ * Exportado pra teste unitário.
+ */
+export function renderMvStatusSection(mvStatus: MvStatus | null): string {
+  // Trata payload vazio (groups:[]) como não-gerado: mesma orientação acionável, em vez
+  // de renderizar uma <tbody> vazia sem contexto.
+  if (!mvStatus || mvStatus.groups.length === 0) {
+    return `
+<section class="phase2-section" id="mv-status">
+  <h2 class="section-title">Status MillionVerifier por grupo</h2>
+  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-mv-status.ts</code> para popular.</p>
+</section>`;
+  }
+
+  const genBRT = fmtTimeBRT(mvStatus.generatedAt);
+
+  const tableRows = mvStatus.groups.map((g) => {
+    let badge: string;
+    if (g.status === "t01") {
+      badge = `<span style="color:${DS.ink};opacity:0.6">N/A — validado por pagamento Stripe</span>`;
+    } else if (g.status === "verified" && g.verifiedAt) {
+      const dateFmt = new Date(g.verifiedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+      badge = `<span style="color:${DS.brand}">✓ MV ${dateFmt} — ${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos</span>`;
+    } else {
+      badge = `<span style="color:var(--alert)">MV pendente</span>`;
+    }
+    return `<tr>
+      <td><strong>${escHtml(g.group)}</strong></td>
+      <td>${escHtml(g.cycle)}</td>
+      <td>${badge}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `
+<section class="phase2-section" id="mv-status">
+  <h2 class="section-title">Status MillionVerifier por grupo</h2>
+  <p class="section-note">Verificação de e-mails (MillionVerifier) por grupo/tier. T01 pula verificação — pagamento Stripe valida implicitamente. Gerado às ${genBRT} BRT.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Grupo de contatos (tier ou cohort)">Grupo</th>
+        <th title="Ciclo do disparo (conteúdo-envio)">Ciclo</th>
+        <th title="Status da verificação MillionVerifier">Status MV</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
  * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
  * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
@@ -2677,7 +2804,11 @@ export default {
         const cohorts = env.STATS_CACHE
           ? ((await env.STATS_CACHE.get(COHORTS_KV_KEY, "json").catch(() => null)) as EngagementCohorts | null)
           : null;
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts);
+        // #2609: status MillionVerifier por grupo (pré-computado via KV).
+        const mvStatus = env.STATS_CACHE
+          ? ((await env.STATS_CACHE.get(MV_STATUS_KV_KEY, "json").catch(() => null)) as MvStatus | null)
+          : null;
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
