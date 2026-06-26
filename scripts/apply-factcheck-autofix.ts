@@ -2,7 +2,7 @@
  * apply-factcheck-autofix.ts (#2598)
  *
  * Pré-aplica correções determinísticas de claims DIVERGENT do fact-checker em
- * `02-reviewed.md` e `03-social.md` ANTES de montar o gate do Stage 4.
+ * `02-reviewed.md` ANTES de montar o gate do Stage 4.
  *
  * Regras de aplicação:
  *   1. Só claims com `verdict === "DIVERGENT"` E `suggested_fix` presente.
@@ -11,8 +11,10 @@
  *   3. NOT_FOUND_IN_SOURCE nunca recebe suggested_fix → não é processado.
  *   4. Pular claim cujo `destaque` bate com o destaque do `intentional_error`
  *      declarado no frontmatter de `02-reviewed.md` (não tocar erro intencional).
- *   5. Substituição é cirúrgica: substitui a primeira ocorrência de `claim.text`
- *      nos arquivos relevantes (sources: newsletter, social, ou ambos).
+ *   5. Substituição é SCOPED ao bloco do destaque correto — evita clobberar
+ *      o intentional_error de outro destaque com mesmo texto (#2617).
+ *   6. Apenas `02-reviewed.md` é modificado. `03-social.md` NÃO é tocado —
+ *      qualquer edição em social invalida o sentinel do humanizador (#2617).
  *
  * Output:
  *   `_internal/fact-check-autofix.json` — log de cada correção aplicada/pulada.
@@ -32,6 +34,7 @@ import { join, resolve } from "node:path";
 import type { FactClaim, FactCheckResult } from "./run-fact-checker.ts";
 import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts";
 import { destaqueFromLocation } from "./lib/intentional-errors.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,7 +44,7 @@ export type AutofixStatus =
   | "applied"       // substituição feita
   | "skipped_intentional_error"  // claim pertence ao destaque do erro intencional
   | "skipped_superlative"        // claim_type superlative — nunca auto-fix
-  | "skipped_no_fix"             // sem suggested_fix no claim
+  | "skipped_no_fix"             // sem suggested_fix no claim (ou texto/fix vazio)
   | "skipped_text_not_found";    // texto do claim não encontrado nos arquivos
 
 export interface AutofixEntry {
@@ -76,6 +79,9 @@ export interface AutofixResult {
 /**
  * Extrai o destaque do `intentional_error` do frontmatter de `02-reviewed.md`.
  * Retorna null se não houver frontmatter ou intentional_error declarado.
+ *
+ * A extração de `location:` é SCOPED ao bloco `intentional_error` para evitar
+ * match de outras chaves `location:` no frontmatter (#2617).
  */
 export function extractIntentionalErrorDestaque(md: string): number | string | null {
   const fm = extractFrontmatter(md);
@@ -85,11 +91,16 @@ export function extractIntentionalErrorDestaque(md: string): number | string | n
   // Aceitar `intentional_error: none` (#2016)
   if (/intentional_error\s*:\s*(none|null)\s*(\n|$)/i.test(fm)) return null;
 
-  // Extrair location do bloco mapping
-  const locationMatch = fm.match(/location\s*:\s*(.+)/);
+  // Extrair location SCOPED ao bloco mapping de intentional_error (#2617)
+  // O regex captura o bloco indentado após "intentional_error:" e extrai "location:" de lá.
+  const ieBlockMatch = fm.match(/intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:.*\n?)+)/);
+  if (!ieBlockMatch) return null;
+
+  const ieBlock = ieBlockMatch[1];
+  const locationMatch = ieBlock.match(/[ \t]+location\s*:\s*(.+)/);
   if (!locationMatch) return null;
 
-  const location = locationMatch[1].trim();
+  const location = locationMatch[1].trim().replace(/^['"]|['"]$/g, "");
   const destaque = destaqueFromLocation(location);
   return destaque !== "" ? destaque : null;
 }
@@ -109,15 +120,64 @@ export function isIntentionalErrorClaim(
 }
 
 /**
- * Aplica substituição cirúrgica de `oldText` por `newText` em `content`.
- * Substitui apenas a primeira ocorrência — conservador para evitar side effects.
+ * Encontra o range (start, end) do bloco "DESTAQUE N" no conteúdo, excluindo
+ * o frontmatter. Retorna null se o destaque não for encontrado.
+ *
+ * Resolve o bug de indexOf destaque-blind: substitui apenas dentro do bloco
+ * correto, não na primeira ocorrência do documento inteiro (#2617).
+ */
+export function findDestaqueBodyRange(
+  content: string,
+  destaque: number,
+): { start: number; end: number } | null {
+  // Pular frontmatter
+  let bodyStart = 0;
+  const fmMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  if (fmMatch) {
+    bodyStart = fmMatch[0].length;
+  }
+  const body = content.slice(bodyStart);
+
+  // Encontrar marcador "DESTAQUE N" no início de linha
+  const markerRe = new RegExp(`(?:^|\\n)(DESTAQUE\\s+${destaque}(?:\\s|$))`, "i");
+  const markerMatch = markerRe.exec(body);
+  if (!markerMatch) return null;
+
+  // start = posição do "DESTAQUE N" no content completo
+  const matchOffset = markerMatch.index + (markerMatch[0].startsWith("\n") ? 1 : 0);
+  const blockStart = bodyStart + matchOffset;
+
+  // end = início do próximo "DESTAQUE \d" ou fim do arquivo
+  const afterStart = body.slice(matchOffset + markerMatch[1].length);
+  const nextMatch = /\nDESTAQUE\s+\d+/i.exec(afterStart);
+  const blockEnd = nextMatch
+    ? blockStart + markerMatch[1].length + nextMatch.index
+    : content.length;
+
+  return { start: blockStart, end: blockEnd };
+}
+
+/**
+ * Aplica substituição cirúrgica de `oldText` por `newText` em `content`,
+ * LIMITADA ao range [scope.start, scope.end).
  * Retorna { changed: boolean; content: string }.
+ *
+ * Quando scope é omitido, opera no conteúdo inteiro (comportamento legado —
+ * manter para uso em testes unitários de applyTextSubstitution).
  */
 export function applyTextSubstitution(
   content: string,
   oldText: string,
   newText: string,
+  scope?: { start: number; end: number },
 ): { changed: boolean; content: string } {
+  if (scope) {
+    const region = content.slice(scope.start, scope.end);
+    const idx = region.indexOf(oldText);
+    if (idx === -1) return { changed: false, content };
+    const newRegion = region.slice(0, idx) + newText + region.slice(idx + oldText.length);
+    return { changed: true, content: content.slice(0, scope.start) + newRegion + content.slice(scope.end) };
+  }
   const idx = content.indexOf(oldText);
   if (idx === -1) return { changed: false, content };
   const updated = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
@@ -151,20 +211,8 @@ export function planAutofixes(
       };
     }
 
-    // Regra 3/4 (combinadas): sem suggested_fix = não há correção disponível
-    if (!c.suggested_fix) {
-      return {
-        destaque: c.destaque,
-        claim_type: c.claim_type,
-        text: c.text,
-        suggested_fix: undefined,
-        sources: c.sources,
-        status: "skipped_no_fix",
-        note: "Sem suggested_fix — fact-checker não identificou correção determinística.",
-      };
-    }
-
     // Regra 4: pular se o claim pertence ao destaque do erro intencional
+    // DEVE vir antes do check de suggested_fix para logar o motivo correto (#2617).
     if (isIntentionalErrorClaim(c, intentionalDestaque)) {
       return {
         destaque: c.destaque,
@@ -174,6 +222,25 @@ export function planAutofixes(
         sources: c.sources,
         status: "skipped_intentional_error",
         note: `Claim no D${c.destaque} — mesmo destaque do intentional_error declarado. Não auto-corrigir.`,
+      };
+    }
+
+    // Regra 3: sem suggested_fix, ou texto/fix vazio/whitespace = não há correção
+    const textTrimmed = (c.text ?? "").trim();
+    const fixTrimmed = (c.suggested_fix ?? "").trim();
+    if (!c.suggested_fix || !textTrimmed || !fixTrimmed) {
+      return {
+        destaque: c.destaque,
+        claim_type: c.claim_type,
+        text: c.text,
+        suggested_fix: c.suggested_fix,
+        sources: c.sources,
+        status: "skipped_no_fix",
+        note: !textTrimmed
+          ? "text vazio — claim ignorado."
+          : !fixTrimmed
+          ? "suggested_fix vazio ou só whitespace — ignorado para evitar deleção acidental."
+          : "Sem suggested_fix — fact-checker não identificou correção determinística.",
       };
     }
 
@@ -193,29 +260,13 @@ export function planAutofixes(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-        out[key] = argv[i + 1];
-        i++;
-      } else {
-        out[key] = "true";
-      }
-    }
-  }
-  return out;
-}
-
 function extractEditionId(editionDir: string): string {
   const parts = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/);
   return parts[parts.length - 1] ?? "unknown";
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
     console.error("Uso: apply-factcheck-autofix.ts --edition-dir data/editions/AAMMDD/ [--dry-run]");
     process.exit(1);
@@ -223,11 +274,10 @@ async function main(): Promise<void> {
 
   const editionDir = resolve(process.cwd(), args["edition-dir"]);
   const edition = args.edition ?? extractEditionId(editionDir);
-  const isDryRun = args["dry-run"] === "true";
+  const isDryRun = flags.has("dry-run");
 
   const factCheckPath = join(editionDir, "_internal", "fact-check.json");
   const newsletterPath = join(editionDir, "02-reviewed.md");
-  const socialPath = join(editionDir, "03-social.md");
   const internalDir = join(editionDir, "_internal");
   const outPath = join(internalDir, "fact-check-autofix.json");
 
@@ -237,14 +287,9 @@ async function main(): Promise<void> {
     console.error("  Rodar o subagente fact-checker antes do apply-factcheck-autofix.");
     process.exit(1);
   }
-  for (const [label, p] of [
-    ["02-reviewed.md", newsletterPath],
-    ["03-social.md", socialPath],
-  ] as const) {
-    if (!existsSync(p)) {
-      console.error(`[apply-factcheck-autofix] ERRO: ${label} não encontrado em ${p}`);
-      process.exit(1);
-    }
+  if (!existsSync(newsletterPath)) {
+    console.error(`[apply-factcheck-autofix] ERRO: 02-reviewed.md não encontrado em ${newsletterPath}`);
+    process.exit(1);
   }
 
   mkdirSync(internalDir, { recursive: true });
@@ -252,7 +297,6 @@ async function main(): Promise<void> {
   // Ler inputs
   const factCheck = JSON.parse(readFileSync(factCheckPath, "utf8")) as FactCheckResult;
   let newsletter = readFileSync(newsletterPath, "utf8");
-  let social = readFileSync(socialPath, "utf8");
 
   // Extrair destaque do erro intencional do frontmatter
   const intentionalDestaque = extractIntentionalErrorDestaque(newsletter);
@@ -260,45 +304,48 @@ async function main(): Promise<void> {
   // Planejar autofixes
   const entries = planAutofixes(factCheck.claims, intentionalDestaque);
 
-  // Aplicar substituições (exceto dry-run)
+  // Aplicar substituições (scoped ao bloco do destaque correto)
   const filesModifiedSet = new Set<string>();
   for (const entry of entries) {
     if (entry.status !== "applied") continue;
     if (!entry.suggested_fix) continue; // guard (planAutofixes garante, mas TS)
 
-    const filesToCheck: Array<{ label: "newsletter" | "social"; content: string; path: string }> = [];
-    if (entry.sources.includes("newsletter")) {
-      filesToCheck.push({ label: "newsletter", content: newsletter, path: newsletterPath });
-    }
-    if (entry.sources.includes("social")) {
-      filesToCheck.push({ label: "social", content: social, path: socialPath });
-    }
-
-    let foundInAny = false;
-    const modifiedFiles: string[] = [];
-
-    for (const file of filesToCheck) {
-      const { changed, content: newContent } = applyTextSubstitution(
-        file.content,
-        entry.text,
-        entry.suggested_fix,
-      );
-      if (changed) {
-        foundInAny = true;
-        modifiedFiles.push(file.label);
-        if (!isDryRun) {
-          if (file.label === "newsletter") newsletter = newContent;
-          else social = newContent;
-          filesModifiedSet.add(file.path);
-        }
-      }
-    }
-
-    if (!foundInAny) {
+    // Apenas newsletter — social não é tocado (invalidaria o sentinel do humanizador)
+    // Claims com sources: ["social"] only são documentados como skipped no log.
+    const hasNewsletter = entry.sources.includes("newsletter");
+    if (!hasNewsletter) {
       entry.status = "skipped_text_not_found";
-      entry.note = `Texto "${entry.text}" não encontrado em ${entry.sources.join(", ")}.`;
+      entry.note = "Claim apenas em social — auto-fix restrito a 02-reviewed.md para preservar sentinel do humanizador (#2617).";
+      continue;
+    }
+
+    // Encontrar o bloco do destaque para substituição scoped (#2617)
+    const scope = findDestaqueBodyRange(newsletter, entry.destaque);
+    if (!scope) {
+      console.warn(`[apply-factcheck-autofix] WARN: bloco DESTAQUE ${entry.destaque} não encontrado em 02-reviewed.md — pulando claim "${entry.text}"`);
+      entry.status = "skipped_text_not_found";
+      entry.note = `Bloco DESTAQUE ${entry.destaque} não encontrado no corpo de 02-reviewed.md.`;
+      continue;
+    }
+
+    const { changed, content: newContent } = applyTextSubstitution(
+      newsletter,
+      entry.text,
+      entry.suggested_fix,
+      scope,
+    );
+
+    if (changed) {
+      // Atualizar in-memory SEMPRE (inclusive dry-run) para que substituições
+      // sequenciais reflitam o estado real do documento (#2617).
+      newsletter = newContent;
+      entry.files_modified = ["newsletter"];
+      if (!isDryRun) {
+        filesModifiedSet.add(newsletterPath);
+      }
     } else {
-      entry.files_modified = modifiedFiles;
+      entry.status = "skipped_text_not_found";
+      entry.note = `Texto "${entry.text}" não encontrado no bloco DESTAQUE ${entry.destaque} de 02-reviewed.md.`;
     }
   }
 
@@ -306,7 +353,6 @@ async function main(): Promise<void> {
   if (!isDryRun) {
     for (const path of filesModifiedSet) {
       if (path === newsletterPath) writeFileSync(path, newsletter, "utf8");
-      else if (path === socialPath) writeFileSync(path, social, "utf8");
     }
   }
 

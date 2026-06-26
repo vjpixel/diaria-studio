@@ -21,8 +21,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join } from "node:path";
+import { parseArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -292,20 +292,28 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
   const obj = raw as Record<string, unknown>;
 
   const claims: FactClaim[] = Array.isArray(obj.claims)
-    ? (obj.claims as FactClaim[]).filter(
-        // destaque: validar que é um número finito (#2468 finding 2 + code-review).
-        // O check antigo (`c.destaque` truthy) descartava destaque=0 — bug original.
-        // `!= null` corrige isso mas aceitaria "" / NaN de um subagente que alucina
-        // (renderizam como "D"/"DNaN" no gate). FactClaim.destaque é `number`, então
-        // exigir number finito é o fix no nível certo do boundary unknown→FactClaim.
-        (c) =>
-          c &&
-          typeof c === "object" &&
-          c.text &&
-          c.verdict &&
-          typeof c.destaque === "number" &&
-          Number.isFinite(c.destaque),
-      )
+    ? (obj.claims as FactClaim[])
+        .filter(
+          // destaque: validar que é um número finito (#2468 finding 2 + code-review).
+          // O check antigo (`c.destaque` truthy) descartava destaque=0 — bug original.
+          // `!= null` corrige isso mas aceitaria "" / NaN de um subagente que alucina
+          // (renderizam como "D"/"DNaN" no gate). FactClaim.destaque é `number`, então
+          // exigir number finito é o fix no nível certo do boundary unknown→FactClaim.
+          (c) =>
+            c &&
+            typeof c === "object" &&
+            c.text &&
+            c.verdict &&
+            typeof c.destaque === "number" &&
+            Number.isFinite(c.destaque),
+        )
+        .map((c) => ({
+          ...c,
+          // Coerce suggested_fix: o LLM pode emitir número (ex: 24.99) em vez de string.
+          // Conversão implícita produziria "24.99" quando o correto é "R$ 24,99" — bug
+          // silencioso. Dropamos valores não-string; o autofix trata ausência como skipped_no_fix.
+          suggested_fix: typeof c.suggested_fix === "string" ? c.suggested_fix : undefined,
+        }))
     : [];
 
   const summary: FactCheckSummary = {
@@ -330,22 +338,6 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-        out[key] = argv[i + 1];
-        i++;
-      } else {
-        out[key] = "true";
-      }
-    }
-  }
-  return out;
-}
-
 function extractEditionId(editionDir: string): string {
   // Extrai AAMMDD do path (ex: data/editions/260622/ → 260622)
   const parts = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/);
@@ -353,7 +345,7 @@ function extractEditionId(editionDir: string): string {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
     console.error("Uso: run-fact-checker.ts --edition-dir data/editions/AAMMDD/");
     process.exit(1);
@@ -387,7 +379,7 @@ async function main(): Promise<void> {
 
   // Modo dry-run: só extrai claims heurísticos sem invocar o subagente.
   // Output schema: DryRunOutput (alinhado com ExtractedClaim — #2468 finding 1).
-  if (args["dry-run"] === "true") {
+  if (flags.has("dry-run")) {
     const newsletter = readFileSync(newsletterPath, "utf8");
     const social = readFileSync(socialPath, "utf8");
     const allText = `${newsletter}\n${social}`;

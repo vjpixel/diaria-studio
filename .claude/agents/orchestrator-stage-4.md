@@ -237,14 +237,35 @@ npx tsx scripts/apply-factcheck-autofix.ts --edition-dir data/editions/{AAMMDD}/
 ```
 
 Exit code handling:
-- `0` → capturar stdout; incluir no gate quando `summary.applied > 0` (seção "CORREÇÕES AUTOMÁTICAS").
+- `0` → capturar stdout e JSON `_internal/fact-check-autofix.json`.
 - `1` → logar warn; continuar sem auto-fix (não bloqueia gate).
+
+**⚠️ Re-render obrigatório quando `applied > 0` (#2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Se `fact-check-autofix.json` mostra `summary.applied > 0`, re-rodar render + substitute + upload para garantir que o HTML publicado contenha o texto corrigido:
+
+```bash
+# Re-render newsletter HTML com o 02-reviewed.md já corrigido
+npx tsx scripts/render-newsletter-html.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/substitute-image-urls.ts --edition-dir data/editions/{AAMMDD}/ \
+  --in data/editions/{AAMMDD}/_internal/newsletter-draft.html \
+  --out data/editions/{AAMMDD}/_internal/newsletter-final.html \
+  --images data/editions/{AAMMDD}/06-public-images.json
+# Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
+  --html data/editions/{AAMMDD}/_internal/newsletter-final.html \
+  --persist-to data/editions/{AAMMDD}/_internal/04-newsletter-url.json \
+  --field newsletter_url
+```
+
+Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
 
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
+- Apenas `02-reviewed.md` (newsletter) — `03-social.md` NÃO é tocado para preservar o sentinel do humanizador.
 - Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
 - Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
 - Nunca o destaque do `intentional_error` declarado no frontmatter — preserva o erro intencional proposital.
+- Substituição scoped ao bloco do destaque correto — evita clobberar erros intencionais de outros destaques com mesmo texto.
+- Claims em `sources: ["social"]` only → logados como `skipped` (precisa correção manual em 03-social.md, seguindo §4d.1 passo 6 para re-humanizar e re-selar sentinel).
 
 **No gate:** apresentar como "já corrigido (diff X→Y) — confirme ou reverta". Se `fact-check-autofix.json` mostra `summary.applied > 0`, incluir bloco no gate (antes do `{fact_check_block}`):
 
