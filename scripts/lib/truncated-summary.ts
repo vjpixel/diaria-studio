@@ -5,90 +5,68 @@
  *
  * Muitos veículos (ex: Exame) truncam sua og:description com "…" no servidor,
  * produzindo frases incompletas que chegam até o render da newsletter. Este
- * helper identifica de forma conservadora quando um summary termina em reticências
- * de truncamento (distinguindo de reticências intencionais de estilo).
+ * helper identifica quando um summary termina em reticências de truncamento
+ * (distinguindo de reticências intencionais de estilo).
  *
- * Heurística (conservadora — falso-negativo é preferível a falso-positivo):
+ * ESTRATÉGIA (ação (c) — só sinaliza warning no Stage 4, nunca DROP/auto-fix;
+ * custo de falso-positivo é BAIXO, custo de falso-negativo é o bug da issue):
  *
- *   FLAG como truncado se:
- *     1. O texto (após trim) termina em `…` (U+2026) ou em `...` (3 pontos ASCII).
- *     2. A palavra imediatamente antes do ellipsis NÃO é uma conjunção/preposição/
- *        advérbio de lista, pois nesses casos o truncamento é evidente.
- *        OU a palavra indica fim-de-frase incompleto (conjunção pendente, preposição,
- *        artigo, pronome relativo — palavra que não fecha ideia).
+ *   FLAG como truncado quando o texto (após trim) termina em `…` (U+2026) ou
+ *   em `...` (3 pontos ASCII) — exceto quando reconhecidamente intencional.
  *
- *   NÃO flag (reticências intencionais) se:
- *     - A palavra antes do ellipsis fecha ideia: verbo, substantivo, adjetivo,
- *       numeral ou qualquer palavra que não seja gatilho claro de incompletude.
- *     - Ou seja: só flagra quando a palavra-gatilho antes do ellipsis indica
- *       que a frase foi cortada no meio de um sintagma pendente.
+ *   O caso central da issue #2596 — Exame "...conformidade…" — DEVE disparar:
+ *   um substantivo seguido de "…" sem pontuação final é exatamente o sintoma
+ *   de og:description cortada na fonte.
+ *
+ *   CARVE-OUT (reticências intencionais que NÃO disparam):
+ *     1. Reticências precedidas de pontuação final válida (`.`, `!`, `?`) —
+ *        ex: "fim de frase.…" sinaliza fechamento intencional.
+ *     2. Idiomas de suspense reconhecidos no fim — ex: "e por aí vai…",
+ *        "e assim por diante…", "etc…".
  *
  * Exemplos:
- *   "...conformidade…"      → TRUNCADO (última palavra "conformidade" + "…": parece cortado?)
- *   "e por aí vai..."       → NÃO truncado ("vai" é verbo, fecha ideia)
- *   "crescimento, inovação e..." → TRUNCADO ("e" é conjunção pendente)
- *   "regulação de..."        → TRUNCADO ("de" é preposição pendente)
- *   "tudo isso..."           → NÃO truncado ("isso" é pronome, fecha ideia)
- *
- * NOTA: A heurística é conservadora: só dispara quando há evidência clara de frase
- * incompleta. Reticências ao final de substantivo ou verbo = intencional → não flag.
+ *   "...conformidade…"           → TRUNCADO (substantivo + "…", sem pontuação)
+ *   "Novas regras de…"           → TRUNCADO (preposição pendente)
+ *   "crescimento, inovação e…"   → TRUNCADO (conjunção pendente)
+ *   "e por aí vai..."            → NÃO truncado (idioma de suspense)
+ *   "e assim por diante…"        → NÃO truncado (idioma de suspense)
+ *   "Texto completo."            → NÃO truncado (sem reticências)
  */
 
 /**
- * Conjunções, preposições, artigos e pronomes relativos que, ao aparecer imediatamente
- * antes de "…"/"...", indicam truncamento involuntário (a frase foi cortada no meio
- * de um sintagma).
+ * Idiomas de suspense em PT-BR que terminam legitimamente em reticências.
+ * Comparados contra o fim do texto (case-insensitive), permitindo flagrar
+ * reticências de truncamento sem pegar fechamentos estilísticos comuns.
  *
- * Atenção: mantemos esta lista pequena e focada — palavras que sozinhas não fecham
- * ideia alguma. Ampliar com cautela.
+ * Mantemos a lista pequena e ancorada — só expressões que de fato fecham
+ * ideia com reticências por estilo. Ampliar com cautela.
  */
-const PENDING_WORDS_PT = new Set([
-  // conjunções coordenativas
-  "e", "ou", "mas", "porém", "contudo", "todavia", "entretanto",
-  "nem", "seja", "quer",
-  // conjunções subordinativas comuns (cortadas no início do próximo termo)
-  "que", "se", "como", "quando", "porque", "pois", "embora", "para",
-  // preposições simples
-  "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
-  "a", "ao", "à", "às", "por", "pelo", "pela", "pelos", "pelas",
-  "com", "sem", "sob", "sobre", "ante", "após", "até", "contra", "desde",
-  "entre", "perante", "segundo", "trás",
-  // artigos
-  "o", "a", "os", "as", "um", "uma", "uns", "umas",
-  // pronomes relativos / demonstrativos "pendurados"
-  "cujo", "cuja", "cujos", "cujas", "cujo", "onde", "quem",
-]);
-
-const PENDING_WORDS_EN = new Set([
-  "and", "or", "but", "nor", "so", "yet", "for",
-  "that", "which", "who", "whom", "whose", "where", "when",
-  "of", "in", "on", "at", "to", "by", "for", "with", "from",
-  "the", "a", "an", "its", "their", "our", "your", "his", "her",
-  "as", "if", "than", "because", "since", "though", "although",
-]);
-
-/** Combina ambos os conjuntos de palavras pendentes. */
-const PENDING_WORDS = new Set([...PENDING_WORDS_PT, ...PENDING_WORDS_EN]);
+const INTENTIONAL_ELLIPSIS_ENDINGS = [
+  "e por aí vai",
+  "e assim por diante",
+  "e por aí",
+  "entre outros",
+  "entre outras",
+  "etc",
+];
 
 /**
  * Retorna `true` se o summary parece truncado involuntariamente.
  *
- * Critérios:
- *   1. Termina em `…` (U+2026) ou `...` (3 ASCII dots).
- *   2. A palavra imediatamente anterior ao ellipsis é uma conjunção, preposição,
- *      artigo ou pronome relativo (indica que a frase foi cortada no meio de
- *      um sintagma — a palavra não fecha ideia).
+ * Critério principal: termina em `…` (U+2026) ou `...` (3 ASCII dots).
  *
- * Casos que retornam `false` (não truncado):
+ * Casos que retornam `false`:
  *   - Não termina em ellipsis.
- *   - Termina em ellipsis mas a palavra antes é substantivo, verbo ou adjetivo
- *     (reticências intencionais de estilo).
+ *   - Só reticências (sem texto antes).
+ *   - Antes do ellipsis há pontuação final válida (`.`/`!`/`?`).
+ *   - O fim do texto bate com um idioma de suspense reconhecido
+ *     (`INTENTIONAL_ELLIPSIS_ENDINGS`).
  */
 export function isTruncatedSummary(summary: string): boolean {
   const trimmed = summary.trim();
   if (!trimmed) return false;
 
-  // 1. Detectar sufixo de ellipsis (U+2026 ou 3 ASCII dots)
+  // 1. Detectar sufixo de ellipsis (U+2026 ou 3 ASCII dots).
   let withoutEllipsis: string;
   if (trimmed.endsWith("…")) {
     withoutEllipsis = trimmed.slice(0, -1).trimEnd();
@@ -98,15 +76,24 @@ export function isTruncatedSummary(summary: string): boolean {
     return false;
   }
 
-  // 2. Extrair a última palavra antes do ellipsis
-  const lastWordMatch = withoutEllipsis.match(/[\wÀ-ÿ]+(?:['''][\wÀ-ÿ]+)*$/u);
-  if (!lastWordMatch) {
-    // Sem palavra antes do ellipsis (só pontuação) → não flagrar
-    return false;
+  // Só reticências (sem texto antes) → não há frase a truncar.
+  if (!withoutEllipsis) return false;
+
+  // 2. Carve-out: pontuação final válida antes do ellipsis = fechamento
+  //    intencional (ex: "frase completa.…").
+  if (/[.!?]$/.test(withoutEllipsis)) return false;
+
+  // 3. Carve-out: idioma de suspense reconhecido no fim do texto.
+  //    Comparação case-insensitive contra o sufixo normalizado (sem pontuação
+  //    residual nas bordas).
+  const tail = withoutEllipsis
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+$/u, "")
+    .trimEnd();
+  for (const ending of INTENTIONAL_ELLIPSIS_ENDINGS) {
+    if (tail.endsWith(ending)) return false;
   }
 
-  const lastWord = lastWordMatch[0].toLowerCase();
-
-  // 3. Flag apenas se a última palavra é conjunção/preposição/artigo pendente
-  return PENDING_WORDS.has(lastWord);
+  // 4. Caso contrário: termina em "…"/"..." sem fechamento → truncado.
+  return true;
 }

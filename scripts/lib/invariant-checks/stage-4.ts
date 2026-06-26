@@ -13,7 +13,10 @@ import { lintIntroCount } from "../newsletter-count.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE } from "../lint-checks/section-item-format.ts";
+import {
+  INLINE_LINK_ONLY_RE,
+  URL_WITH_BALANCED_PARENS_RE_PART,
+} from "../lint-checks/section-item-format.ts";
 import {
   extractDestaqueUrls,
   extractPromptUrl,
@@ -678,6 +681,13 @@ const ANY_SECTION_HEADER_RE_S4 = sectionHeaderRegex(
   String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|DESTAQUES?`,
   { capture: "none", flags: "u" },
 );
+// Formato canônico (link + descrição na mesma linha) com captura da descrição.
+// Usa URL_WITH_BALANCED_PARENS_RE_PART (#2413/#2596) pra tolerar URLs Wikipedia
+// `/wiki/X_(model)` — `[^\s)]+` simples pararia no 1º `)` e o item escaparia o check.
+const INLINE_LINK_WITH_TEXT_RE = new RegExp(
+  String.raw`^\s*\*{0,2}\s*\[[^\]]+\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(.+)$`,
+  "u",
+);
 
 function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
@@ -707,8 +717,6 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
     if (!currentSection) continue;
 
     // Formato canônico: link + texto na mesma linha — checar texto inline
-    const INLINE_LINK_WITH_TEXT_RE =
-      /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+(.+)$/u;
     const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
     if (inlineMatch) {
       const desc = inlineMatch[1].trim();
@@ -839,4 +847,5 @@ export {
   checkImageContentFresh,
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
+  checkTruncatedSecondaryItemSummary,
 };

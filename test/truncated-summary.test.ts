@@ -3,12 +3,12 @@
  *
  * Testes de regressão para `isTruncatedSummary`.
  *
- * Caso real: Exame — descrição termina em "...conformidade…" (palavra
- * "conformidade" + "…"; mas "conformidade" é substantivo, fecha ideia →
- * NÃO deve ser flagrado pela heurística conservadora).
+ * Caso real (issue #2596): Exame — descrição termina em "...conformidade…".
+ * A og:description vem cortada na fonte; substantivo + "…" sem pontuação final
+ * é o sintoma → DEVE ser sinalizado como truncado (ação (c): warning no Stage 4).
  *
- * Casos truncados reais: frase cortada com conjunção/preposição pendente.
- * Casos intencionais: reticências após verbo/substantivo/adjETIVO (ideia fechada).
+ * Carve-out: reticências intencionais de estilo ("e por aí vai…") e fechamentos
+ * com pontuação final NÃO devem disparar.
  */
 
 import { describe, it } from "node:test";
@@ -17,150 +17,126 @@ import { isTruncatedSummary } from "../scripts/lib/truncated-summary.ts";
 
 describe("isTruncatedSummary (#2596)", () => {
   // ------------------------------------------------------------------ //
-  //  Casos que NÃO devem ser flagrados (reticências intencionais)         //
+  //  Caso central da issue + truncamentos involuntários (DEVEM disparar) //
   // ------------------------------------------------------------------ //
 
-  it("reticências após substantivo = intencional → false", () => {
-    // Caso real Exame: "...conformidade…" — substantivo fecha ideia
+  it("CASO DA ISSUE: Exame 'conformidade…' → TRUNCADO", () => {
     assert.equal(
-      isTruncatedSummary(
-        "A empresa anunciou nova política de conformidade…",
-      ),
-      false,
+      isTruncatedSummary("A empresa anunciou nova política de conformidade…"),
+      true,
     );
   });
 
-  it('"e por aí vai..." — verbo fecha ideia → false', () => {
-    assert.equal(isTruncatedSummary("O mercado cresceu e por aí vai..."), false);
-  });
-
-  it("reticências após adjetivo → false", () => {
+  it("substantivo + '...' ASCII sem pontuação → TRUNCADO", () => {
     assert.equal(
-      isTruncatedSummary("O produto é inovador, robusto e seguro..."),
-      false,
+      isTruncatedSummary("Relatório aponta crescimento no setor de tecnologia..."),
+      true,
     );
   });
 
-  it("reticências após numeral → false", () => {
-    assert.equal(
-      isTruncatedSummary("A empresa tem mais de 500 funcionários..."),
-      false,
-    );
+  it("preposição 'de' pendente → TRUNCADO", () => {
+    assert.equal(isTruncatedSummary("Novas regras de…"), true);
   });
 
-  it("sem reticências → false", () => {
-    assert.equal(
-      isTruncatedSummary("Texto terminando com ponto final."),
-      false,
-    );
-  });
-
-  it("string vazia → false", () => {
-    assert.equal(isTruncatedSummary(""), false);
-  });
-
-  it("reticências após pronome 'isso' (pronome fecha ideia) → false", () => {
-    assert.equal(
-      isTruncatedSummary("O estudo mostra tudo isso..."),
-      false,
-    );
-  });
-
-  // ------------------------------------------------------------------ //
-  //  Casos que DEVEM ser flagrados (truncamento involuntário)             //
-  // ------------------------------------------------------------------ //
-
-  it("frase cortada com conjunção 'e' pendente → true", () => {
-    // "crescimento, inovação e..." — "e" é conjunção pendente
+  it("conjunção 'e' pendente → TRUNCADO", () => {
     assert.equal(
       isTruncatedSummary("A empresa promove crescimento, inovação e…"),
       true,
     );
   });
 
-  it("frase cortada com preposição 'de' pendente → true", () => {
-    assert.equal(
-      isTruncatedSummary("Novas regras de conformidade afetam empresas de…"),
-      true,
-    );
-  });
-
-  it("frase cortada com preposição 'para' pendente → true", () => {
+  it("preposição 'para' pendente → TRUNCADO", () => {
     assert.equal(
       isTruncatedSummary("A proposta visa preparar o setor para…"),
       true,
     );
   });
 
-  it("frase cortada com conjunção 'ou' pendente → true", () => {
-    assert.equal(
-      isTruncatedSummary("O usuário pode aceitar ou..."),
-      true,
-    );
-  });
-
-  it("frase cortada com conjunção subordinativa 'que' pendente → true", () => {
-    assert.equal(
-      isTruncatedSummary("O relatório aponta que..."),
-      true,
-    );
-  });
-
-  it("frase cortada com artigo 'o' pendente → true", () => {
+  it("artigo 'o' pendente → TRUNCADO", () => {
     assert.equal(
       isTruncatedSummary("Especialistas recomendam consultar o…"),
       true,
     );
   });
 
-  it("frase cortada com preposição 'em' + artigo 'no' pendente → true", () => {
-    // "no" = em + o
+  it("verbo + '...' (frase cortada no meio) → TRUNCADO", () => {
+    // og:description cortada após verbo também é truncamento involuntário
     assert.equal(
-      isTruncatedSummary("A regulação impacta diretamente no…"),
+      isTruncatedSummary("O novo modelo da OpenAI consegue gerar..."),
       true,
     );
   });
 
-  it("frase cortada com conjunção 'mas' pendente → true", () => {
+  it("ellipsis U+2026 após verbo auxiliar → TRUNCADO", () => {
     assert.equal(
-      isTruncatedSummary("O produto é bom mas…"),
-      true,
-    );
-  });
-
-  it("ASCII '...' em truncamento com preposição → true", () => {
-    assert.equal(
-      isTruncatedSummary("Novas regras de..."),
-      true,
-    );
-  });
-
-  it("ellipsis U+2026 em truncamento com conjunção → true", () => {
-    assert.equal(
-      isTruncatedSummary("O setor precisa se adaptar e…"),
+      isTruncatedSummary("Um produto inovador, robusto e seguro que será…"),
       true,
     );
   });
 
   // ------------------------------------------------------------------ //
-  //  Edge cases                                                           //
+  //  Carve-out: reticências INTENCIONAIS (NÃO devem disparar)            //
   // ------------------------------------------------------------------ //
 
-  it("apenas reticências → false (sem palavra antes)", () => {
+  it('"e por aí vai..." — idioma de suspense → NÃO truncado', () => {
+    assert.equal(isTruncatedSummary("O mercado cresceu e por aí vai..."), false);
+  });
+
+  it('"e assim por diante…" — idioma de suspense → NÃO truncado', () => {
+    assert.equal(
+      isTruncatedSummary("Inclui texto, imagem, áudio e assim por diante…"),
+      false,
+    );
+  });
+
+  it('"entre outros…" — idioma de enumeração → NÃO truncado', () => {
+    assert.equal(
+      isTruncatedSummary("Suporta Python, Go, Rust entre outros…"),
+      false,
+    );
+  });
+
+  it('"etc…" → NÃO truncado', () => {
+    assert.equal(
+      isTruncatedSummary("Ferramentas como ChatGPT, Claude, Gemini etc…"),
+      false,
+    );
+  });
+
+  it("pontuação final válida antes do ellipsis → NÃO truncado", () => {
+    assert.equal(isTruncatedSummary("A frase termina corretamente.…"), false);
+  });
+
+  // ------------------------------------------------------------------ //
+  //  Casos sem reticências (NÃO disparam)                                //
+  // ------------------------------------------------------------------ //
+
+  it("sem reticências → NÃO truncado", () => {
+    assert.equal(isTruncatedSummary("Texto terminando com ponto final."), false);
+  });
+
+  it("string vazia → NÃO truncado", () => {
+    assert.equal(isTruncatedSummary(""), false);
+  });
+
+  it("só whitespace → NÃO truncado", () => {
+    assert.equal(isTruncatedSummary("    "), false);
+  });
+
+  // ------------------------------------------------------------------ //
+  //  Edge cases                                                          //
+  // ------------------------------------------------------------------ //
+
+  it("apenas reticências (sem texto antes) → NÃO truncado", () => {
     assert.equal(isTruncatedSummary("…"), false);
+    assert.equal(isTruncatedSummary("..."), false);
   });
 
-  it("texto com trailing whitespace antes de reticências — trimmed → detecta", () => {
-    assert.equal(
-      isTruncatedSummary("O projeto visa implementar e   "),
-      false, // sem reticências, só whitespace
-    );
+  it("texto truncado com trailing whitespace após ellipsis → TRUNCADO", () => {
+    assert.equal(isTruncatedSummary("O projeto visa implementar e…   "), true);
   });
 
-  it("texto terminado em reticências com trailing whitespace → lida corretamente", () => {
-    assert.equal(
-      isTruncatedSummary("O projeto visa implementar e…   "),
-      true,
-    );
+  it("texto sem ellipsis com trailing whitespace → NÃO truncado", () => {
+    assert.equal(isTruncatedSummary("O projeto visa implementar e   "), false);
   });
 });
