@@ -277,7 +277,7 @@ describe("#2207-2: colspan no-stats — contagem de <th> só no <thead> da tabel
 
 describe("#2211: renderWeekdaySection — Opens antes de Open rate no header e nas linhas", () => {
   function makeWeekdayRows() {
-    return aggregateByWeekday(cycle2605Campaigns, "2605");
+    return aggregateByWeekday(cycle2605Campaigns, "2605").rows;
   }
 
   test("header: Opens aparece ANTES de Open rate no <thead>", () => {

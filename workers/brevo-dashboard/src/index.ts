@@ -1286,7 +1286,9 @@ export function renderDashboardHtml(
   const weekdayScopeLabel = "todos os envios"; // #2134 follow-up: editor pediu histórico completo, não só o ciclo ativo
   const weekdayNow = new Date(); // #2611: injetável nos testes via parâmetro; produção usa Date atual
   const { rows: weekdayRows, excluded: weekdayExcluded } = aggregateByWeekday(campaigns, null, weekdayNow);
-  const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel, weekdayExcluded) : "";
+  const weekdaySection = weekdayRows.length > 0 || weekdayExcluded.length > 0
+    ? renderWeekdaySection(weekdayRows, weekdayScopeLabel, weekdayExcluded)
+    : "";
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
@@ -2636,7 +2638,7 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
     if (g.status === "t01") {
       badge = `<span style="color:${DS.ink};opacity:0.6">N/A — validado por pagamento Stripe</span>`;
     } else if (g.status === "verified" && g.verifiedAt) {
-      const dateFmt = fmtTimeBRT(g.verifiedAt).slice(0, 10);
+      const dateFmt = new Date(g.verifiedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
       badge = `<span style="color:${DS.brand}">✓ MV ${dateFmt} — ${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos</span>`;
     } else {
       badge = `<span style="color:var(--alert)">MV pendente</span>`;

@@ -15,7 +15,11 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { SENDS as EDITION_SENDS } from "../scripts/clarice-build-edition-sends.ts";
+import { computeMvStatus } from "../scripts/clarice-mv-status.ts";
 import {
   parseClariceCampaignKey,
   aggregateAbcSummary,
@@ -2194,5 +2198,125 @@ describe("regressão #2611: aggregateByWeekday filtra envios <48h", () => {
     const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605", now);
     const html = renderWeekdaySection(rows, "todos os envios", []);
     assert.doesNotMatch(html, /estabilizando/, "sem excluídos não deve ter nota de estabilizando");
+  });
+
+  // Regressão #2619 bug B: seção de weekday aparecia em branco quando todos envios eram <48h.
+  // O caller (renderDashboardHtml) passava a guardar `renderWeekdaySection` atrás de
+  // `weekdayRows.length > 0`, nunca chamando a função quando rows=[] mas excluded não-vazio.
+  // A função em si renderiza o stub corretamente — o teste abaixo garante isso.
+  test("regressão #2619: renderWeekdaySection com rows=[] e excluded não-vazio retorna HTML com stub", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const recent = makeCampaignHoursAgo(1, 5, now); // 5h atrás → excluído
+    const { rows, excluded } = aggregateByWeekday([recent], null, now);
+    assert.equal(rows.length, 0);
+    assert.equal(excluded.length, 1);
+    const html = renderWeekdaySection(rows, "todos os envios", excluded);
+    assert.ok(html.length > 0, "deve retornar HTML mesmo com rows=[]");
+    assert.match(html, /estabilizando/, "stub deve mencionar 'estabilizando'");
+    assert.match(html, /48h/, "stub deve mencionar o threshold 48h");
+  });
+});
+
+// ─── #2619: renderMvStatusSection — formato de data no badge ─────────────────
+
+describe("regressão #2619 bug C: renderMvStatusSection — data no badge em DD/MM/YYYY", () => {
+  test("badge '✓ MV' mostra data em DD/MM/YYYY sem abreviação de dia da semana", () => {
+    const mvStatus: MvStatus = {
+      generatedAt: "2026-06-25T10:00:00Z",
+      groups: [
+        {
+          group: "t02-ex-assinantes",
+          cycle: "2605-06",
+          status: "verified",
+          verifiedAt: "2026-06-20T08:00:00Z",
+          verified: 950,
+          rejected: 30,
+          unknown: 20,
+        },
+      ],
+    };
+    const html = renderMvStatusSection(mvStatus);
+    // Deve aparecer como "20/06/2026" (toLocaleDateString pt-BR com year)
+    assert.match(html, /20\/06\/2026/, "data deve ser DD/MM/YYYY completo");
+    // Não deve ter abreviação de dia da semana como "sex.," (bug anterior: fmtTimeBRT.slice(0,10))
+    assert.doesNotMatch(html, /sex\.,/, "não deve incluir abreviação do dia da semana");
+    assert.doesNotMatch(html, /\/0"/, "não deve ter string truncada como '26/0'");
+  });
+});
+
+// ─── #2619: computeMvStatus — emissão de status "pending" ────────────────────
+
+describe("regressão #2619 bug D: computeMvStatus emite 'pending' quando ciclo existe sem arquivo verificado", () => {
+  let testBase: string;
+
+  function setup() {
+    testBase = join(tmpdir(), `mv-status-test-${Date.now()}`);
+    mkdirSync(testBase, { recursive: true });
+  }
+
+  function teardown() {
+    rmSync(testBase, { recursive: true, force: true });
+  }
+
+  test("ciclo sem mv-export-*-verified.csv gera entrada 'pending' para grupos T02+ conhecidos", () => {
+    setup();
+    try {
+      // Base files: T01 (pula) + T02 (deve gerar pending)
+      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
+      // Ciclo válido sem arquivos verificados
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 1, "deve ter 1 entrada pending para t02-ex-assinantes");
+      assert.equal(pending[0].group, "t02-ex-assinantes");
+      assert.equal(pending[0].cycle, "2605-06");
+      assert.equal(pending[0].verifiedAt, null);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("T01 da base aparece com status 't01', nunca 'pending'", () => {
+    setup();
+    try {
+      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const t01 = result.groups.filter((g) => g.status === "t01");
+      assert.ok(t01.length > 0, "deve ter entrada t01");
+      assert.equal(t01[0].group, "t01-assinantes-ativos");
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 0, "T01 nunca deve ser pending");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("ciclo com mv-export verificado gera status 'verified', não 'pending'", () => {
+    setup();
+    try {
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+      writeFileSync(
+        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
+        "email\ne@f.com\ng@h.com\n",
+      );
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const verified = result.groups.filter((g) => g.status === "verified");
+      assert.equal(verified.length, 1, "deve ter 1 entrada verified");
+      assert.equal(verified[0].group, "t02-ex-assinantes");
+      assert.equal(verified[0].verified, 2, "2 linhas de dados = 2 verificados");
+      const pending = result.groups.filter((g) => g.status === "pending");
+      assert.equal(pending.length, 0, "não deve ter pending quando arquivo verificado existe");
+    } finally {
+      teardown();
+    }
   });
 });

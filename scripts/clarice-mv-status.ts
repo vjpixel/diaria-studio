@@ -26,7 +26,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -74,6 +74,18 @@ export function computeMvStatus(
 
   const entries = readdirSync(clariceBase, { withFileTypes: true });
 
+  // Pré-computar grupos T02+ a partir de stripe-export-t{02+}-*.csv no base dir.
+  // Usado para emitir status "pending" quando ciclo existe mas verificação ainda não rodou.
+  const t02PlusBaseGroups = entries
+    .filter(
+      (e) =>
+        !e.isDirectory() &&
+        e.name.startsWith("stripe-export-t") &&
+        !e.name.startsWith("stripe-export-t01") &&
+        e.name.endsWith(".csv"),
+    )
+    .map((e) => e.name.replace(/^stripe-export-/, "").replace(/\.csv$/, ""));
+
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const cycle = entry.name;
@@ -88,7 +100,10 @@ export function computeMvStatus(
     );
 
     if (verifiedFiles.length === 0) {
-      // Ciclo sem nenhum arquivo verificado — não adicionamos entrada (sem grupo conhecido)
+      // Ciclo existe mas verificação ainda não rodou — emitir "pending" para grupos T02+ conhecidos.
+      for (const group of t02PlusBaseGroups) {
+        groups.push({ group, cycle, status: "pending", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 });
+      }
       continue;
     }
 
@@ -98,33 +113,25 @@ export function computeMvStatus(
       const rejectedPath = resolve(cycleDir, `mv-export-${group}-rejected.csv`);
       const unknownPath = resolve(cycleDir, `mv-export-${group}-unknown.csv`);
 
-      const mtime = statSync(verifiedPath).mtime.toISOString();
-      const verified = countCsvRows(verifiedPath);
-      const rejected = countCsvRows(rejectedPath);
-      const unknown = countCsvRows(unknownPath);
-
       if (isT01Group(group)) {
         groups.push({ group, cycle, status: "t01", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 });
       } else {
+        const mtime = statSync(verifiedPath).mtime.toISOString();
+        const verified = countCsvRows(verifiedPath);
+        const rejected = countCsvRows(rejectedPath);
+        const unknown = countCsvRows(unknownPath);
         groups.push({ group, cycle, status: "verified", verifiedAt: mtime, verified, rejected, unknown });
       }
     }
-
-    // Identificar grupos T01 que aparecem em outros arquivos base (stripe-export-t01-*.csv)
-    // e ainda não têm entrada neste ciclo (add como t01 explicitamente)
   }
 
-  // Adicionar grupos T01 da base (stripe-export-t01-*.csv) que não têm entrada ainda
-  const baseFiles = readdirSync(clariceBase).filter(
-    (f) => f.startsWith("stripe-export-t01") && f.endsWith(".csv"),
-  );
-  for (const bf of baseFiles) {
-    const group = bf.replace(/^stripe-export-/, "").replace(/\.csv$/, "");
-    // Só adicionar se não houver já uma entrada t01 (evitar duplicatas se por algum motivo
-    // o editor tiver rodado o MV em t01 — semanticamente proibido, mas defensivo).
+  // Adicionar grupos T01 da base (stripe-export-t01-*.csv) que não têm entrada ainda.
+  // Usa entries já lida (evita segundo readdirSync no mesmo diretório).
+  for (const e of entries) {
+    if (e.isDirectory() || !e.name.startsWith("stripe-export-t01") || !e.name.endsWith(".csv")) continue;
+    const group = e.name.replace(/^stripe-export-/, "").replace(/\.csv$/, "");
     const alreadyPresent = groups.some((g) => g.group === group && g.status === "t01");
     if (!alreadyPresent) {
-      // T01 sem ciclo específico (é base, não por-ciclo)
       groups.push({ group, cycle: "—", status: "t01", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 });
     }
   }
