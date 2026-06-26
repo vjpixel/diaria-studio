@@ -228,6 +228,57 @@ npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/ \
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`), mas pular a apresentação no gate (que é pulado inteiramente). O arquivo fica disponível para auditoria pós-edição.
 
+**4c.6b — Auto-fix de DIVERGENT determinístico (#2598):**
+
+Após o subagente gravar `_internal/fact-check.json`, aplicar correções automáticas de claims `DIVERGENT` com `suggested_fix` presente — antes de montar o gate:
+
+```bash
+npx tsx scripts/apply-factcheck-autofix.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit code handling:
+- `0` → capturar stdout e JSON `_internal/fact-check-autofix.json`.
+- `1` → logar warn; continuar sem auto-fix (não bloqueia gate).
+
+**⚠️ Re-render obrigatório quando `applied > 0` (#2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Se `fact-check-autofix.json` mostra `summary.applied > 0`, re-rodar render + substitute + upload para garantir que o HTML publicado contenha o texto corrigido:
+
+```bash
+# Re-render newsletter HTML com o 02-reviewed.md já corrigido
+npx tsx scripts/render-newsletter-html.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/substitute-image-urls.ts --edition-dir data/editions/{AAMMDD}/ \
+  --in data/editions/{AAMMDD}/_internal/newsletter-draft.html \
+  --out data/editions/{AAMMDD}/_internal/newsletter-final.html \
+  --images data/editions/{AAMMDD}/06-public-images.json
+# Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
+  --html data/editions/{AAMMDD}/_internal/newsletter-final.html \
+  --persist-to data/editions/{AAMMDD}/_internal/04-newsletter-url.json \
+  --field newsletter_url
+```
+
+Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
+
+**O que é auto-corrigido:**
+- Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
+- Apenas `02-reviewed.md` (newsletter) — `03-social.md` NÃO é tocado para preservar o sentinel do humanizador.
+- Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
+- Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
+- Nunca o destaque do `intentional_error` declarado no frontmatter — preserva o erro intencional proposital.
+- Substituição scoped ao bloco do destaque correto — evita clobberar erros intencionais de outros destaques com mesmo texto.
+- Claims em `sources: ["social"]` only → logados como `skipped` (precisa correção manual em 03-social.md, seguindo §4d.1 passo 6 para re-humanizar e re-selar sentinel).
+
+**No gate:** apresentar como "já corrigido (diff X→Y) — confirme ou reverta". Se `fact-check-autofix.json` mostra `summary.applied > 0`, incluir bloco no gate (antes do `{fact_check_block}`):
+
+```
+━━━ FACT-CHECK AUTO-CORRIGIDO (#2598) ━━━━━━━━━━
+  ✅ {N} correção(ões) aplicada(s) automaticamente:
+    D{N} [{tipo}] "{texto_original}" → "{suggested_fix}" ({arquivo(s)})
+  Para reverter: editar o arquivo e usar a opção "ajustar" no gate.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`); o gate é pulado.
+
 ### 4d. Gate humano (#1694)
 
 **Sync push antes do gate (#507):** Subir outputs pra o editor revisar no Drive antes de aprovar:

@@ -60,8 +60,8 @@ b. Tentar fetch da URL (GET, timeout implícito ~10s): `WebFetch(url, max_length
 
    **Estratégia de verificação:**
    - **SUSTAINED**: claim está explicitamente confirmado na fonte (mesma cifra, mesma frase, mesma data)
-   - **DIVERGENT**: claim está na fonte mas com valor diferente (ex: fonte diz R$ 24,99, texto diz R$ 99)
-   - **NOT_FOUND_IN_SOURCE**: claim não encontrado na fonte primária (pode estar em fonte secundária não verificável aqui)
+   - **DIVERGENT**: claim está na fonte mas com valor diferente (ex: fonte diz R$ 24,99, texto diz R$ 99). Quando o valor correto for determinístico e extraído verbatim da fonte (nome/versão de modelo, número exato, data), preencher `suggested_fix` com o valor correto. Não preencher `suggested_fix` se a correção for ambígua ou se `claim_type === "superlative"`.
+   - **NOT_FOUND_IN_SOURCE**: claim não encontrado na fonte primária (pode estar em fonte secundária não verificável aqui). **Nunca emitir `suggested_fix` para NOT_FOUND_IN_SOURCE** — a ausência de suporte não implica qual seria o valor correto.
    - **SOURCE_UNREACHABLE**: URL não respondeu; incluir mas marcar como não verificado
    - **INFERRED**: claim parece ser inferência/arredondamento de valor da fonte (ex: fonte diz "a partir de R$ 25", texto diz "R$ 25/mês") — marcar como INFERRED com nota
 
@@ -89,7 +89,8 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
       "verdict": "SUSTAINED|DIVERGENT|NOT_FOUND_IN_SOURCE|SOURCE_UNREACHABLE|INFERRED",
       "source_url": "https://...",
       "source_text": "trecho da fonte que sustenta ou contradiz o claim",
-      "note": "Fonte diz R$ 24,99; texto diz R$ 99"
+      "note": "Fonte diz R$ 24,99; texto diz R$ 99",
+      "suggested_fix": "R$ 24,99"
     }
   ],
   "summary": {
@@ -115,6 +116,6 @@ Isso garante que um superlativo NOT_FOUND_IN_SOURCE é contado UMA vez (como sup
 - **Sem auto-bloqueio.** Seu output é informativo — o editor decide o que fazer com cada finding.
 - **Conservadorismo.** Se não encontrou o claim na fonte mas a verificação foi incompleta (URL inacessível, página dinâmica), classificar como NOT_FOUND_IN_SOURCE mas adicionar note explicando.
 - **Não inventar.** Se não conseguiu verificar, dizer exatamente isso. Nunca inventar um "SUSTAINED" sem trecho da fonte.
-- **Priorizar divergências.** Se encontrar DIVERGENT, extrair o trecho exato da fonte como `source_text`.
+- **Priorizar divergências.** Se encontrar DIVERGENT, extrair o trecho exato da fonte como `source_text`. Quando o valor correto for determinístico e extraído verbatim da fonte (nome/versão de modelo como "GPT-5.4", preço exato "R$ 24,99", data), preencher `suggested_fix`. Exemplos de DETERMINÍSTICO: versões de modelo, preços com unidade, datas específicas, percentuais exatos. Exemplos de NÃO-DETERMINÍSTICO: ineditismo ("primeiro a…"), afirmações comparativas genéricas. Superlativos NUNCA recebem `suggested_fix` mesmo sendo DIVERGENT.
 - **Superlativos são prioridade.** Claims com "primeiro", "inédito", "pela primeira vez", "pioneiro" devem ser todos verificados, mesmo que trabalhoso.
 - **Limite de claims por destaque**: máximo 10 claims por destaque (foco nos mais relevantes para o editor). Priorize: DIVERGENT > superlatives > preços/cifras > datas/durações > outros números.
