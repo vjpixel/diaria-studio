@@ -515,7 +515,7 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
       // Identifica linhas de Use Melhor por section_title (primário) ou category (fallback).
       const sectionTitle = sectionTitleIdx >= 0 ? (cols[sectionTitleIdx] ?? "").trim() : "";
       const cat = catIdx >= 0 ? (cols[catIdx] ?? "").trim() : "";
-      const isUseMelhor = /use melhor/i.test(sectionTitle) || cat === "Use Melhor";
+      const isUseMelhor = /^use melhor$/i.test(sectionTitle) || cat === "Use Melhor";
       if (!isUseMelhor) continue;
       const url = (cols[baseUrlIdx] ?? "").trim();
       if (!url) continue;
@@ -567,19 +567,23 @@ export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<strin
   } catch {
     return null;
   }
+  // Normaliza CRLF para LF (Windows pode gravar 02-reviewed.md com CRLF)
+  const content = raw.replace(/\r\n/g, "\n");
   // Encontra seção USE MELHOR (pode ter prefixo emoji como "🛠️ USE MELHOR" ou "**USE MELHOR**")
-  // Delimita até o próximo heading (## ou **HEADING**) ou fim do arquivo.
-  const sectionMatch = raw.match(/(?:^|\n)[^\n]*USE MELHOR[^\n]*(?:\n(?![*#])[^\n]*|$)*/i);
+  // Exclui "USE MELHOR DO MÊS" (heading de edição mensal). Delimita até o próximo heading.
+  const sectionMatch = content.match(/(?:^|\n)[^\n]*USE MELHOR(?! DO M)[^\n]*(?:\n(?![*#])[^\n]*|$)*/i);
   if (!sectionMatch) return null;
   const sectionText = sectionMatch[0];
-  // Extrai todas as URLs do texto da seção
+  // Extrai todas as URLs do texto da seção.
+  // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —
+  // null é reservado para "arquivo não encontrado" (edição sem Stage 2 completo).
   const urls = new Set<string>();
   const urlRe = /https?:\/\/[^\s\)>"']+/g;
   let m: RegExpExecArray | null;
   while ((m = urlRe.exec(sectionText)) !== null) {
     urls.add(normalizeUrlForJoin(m[0]));
   }
-  return urls.size > 0 ? urls : null;
+  return urls;
 }
 
 /**

@@ -1547,12 +1547,10 @@ describe("regressao #2603: buildCtrIndexByUrl -- Use Melhor por section_title (n
 
     // Mesmo com url presente no CSV, a linha é de Destaque (section_title != USE MELHOR)
     // → não entra no índice CTR → ctr_matched = 0
-    if (result !== null) {
-      const ed = result.editions.find((e) => e.edition === "260601");
-      if (ed) {
-        assert.equal(ed.ctr_matched, 0, "link de Destaque nao deve entrar no indice de Use Melhor");
-      }
-    }
+    assert.ok(result !== null, "buildUseMelhorSummary deve retornar resultado nao-nulo");
+    const ed = result!.editions.find((e) => e.edition === "260601");
+    assert.ok(ed !== undefined, "edicao 260601 deve aparecer no resultado");
+    assert.equal(ed!.ctr_matched, 0, "link de Destaque nao deve entrar no indice de Use Melhor");
   });
 });
 
@@ -1743,5 +1741,46 @@ describe("regressao #2603: extractPublishedUseMelhorUrls", () => {
     const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
     const result = extractPublishedUseMelhorUrls("/tmp/nao-existe-reviewed-2603-xyzzy.md");
     assert.equal(result, null, "deve retornar null quando arquivo ausente");
+  });
+});
+
+// Regressão: bugs corrigidos em #2620
+import { writeFileSync as writeFileSyncReg, rmSync as rmSyncReg } from "node:fs";
+import { join as joinReg } from "node:path";
+import { tmpdir as tmpdirReg } from "node:os";
+
+describe("regressao #2620: extractPublishedUseMelhorUrls", () => {
+  test("secao presente mas sem URLs retorna Set vazio (nao null)", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-empty-urls.md");
+    writeFileSyncReg(p, "## USE MELHOR\n\nNenhum item esta semana.\n\n## LANCAMENTOS\n", "utf8");
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.ok(result !== null, "deve retornar Set (nao null) quando secao existe mas sem URLs");
+    assert.equal(result!.size, 0, "Set deve estar vazio");
+  });
+
+  test("heading mensal 'USE MELHOR DO MES' nao e detectado como secao diaria", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-monthly.md");
+    writeFileSyncReg(
+      p,
+      "## USE MELHOR DO MÊS\n\nhttps://cursor.com/monthly-tutorial\n\n## DESTAQUES\n",
+      "utf8"
+    );
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.equal(result, null, "heading mensal nao deve ser detectado como secao diaria Use Melhor");
+  });
+
+  test("arquivo com CRLF extrai URLs corretamente", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-crlf.md");
+    const crlf = "## USE MELHOR\r\n\r\nhttps://cursor.com/crlf-tutorial\r\n\r\n## LANCAMENTOS\r\n";
+    writeFileSyncReg(p, crlf, "utf8");
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.ok(result !== null, "deve retornar Set nao-nulo com CRLF");
+    assert.ok([...result!].some((u) => u.includes("cursor.com")), "deve incluir URL da secao com CRLF");
   });
 });
