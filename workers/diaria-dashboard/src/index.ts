@@ -719,8 +719,9 @@ export function renderDashboardHtml(data: DashboardData): string {
   /* #2602: tab navigation — CSS-only via radio+label+:checked (mesmo padrão do brevo-dashboard #2542) */
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
-  .tab-radios { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; flex-wrap: wrap; }
+  .tab-radios { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
+  /* flex-wrap: nowrap + overflow-x: auto evita que a borda da aba ativa quebre ao mudar de linha em telas estreitas */
+  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; flex-wrap: nowrap; overflow-x: auto; }
   .tab-label {
     display: inline-block; padding: 8px 18px; font-size: 0.85rem; font-weight: 600;
     cursor: pointer; border: 1px solid transparent; border-bottom: 2px solid transparent;
@@ -775,7 +776,7 @@ export function renderDashboardHtml(data: DashboardData): string {
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-audiencia">
 
 <!-- tab bar -->
-<div class="tab-bar" role="tablist">
+<div class="tab-bar" role="tablist" aria-label="Seções do dashboard">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
   <label class="tab-label" id="tablabel-ctr" for="tab-ctr" role="tab" aria-controls="panel-ctr">CTR</label>
   <label class="tab-label" id="tablabel-toplinks" for="tab-toplinks" role="tab" aria-controls="panel-toplinks">Top links</label>
