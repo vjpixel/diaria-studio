@@ -599,8 +599,9 @@ describe("renderDashboardHtml com use_melhor e poll_eia (#2474, #2475)", () => {
 
     assert.ok(html.includes('id="use-melhor"'), "deve ter seção use-melhor");
     assert.ok(html.includes('id="poll-eia"'), "deve ter seção poll-eia");
-    assert.ok(html.includes('href="#use-melhor"'), "nav deve ter link para use-melhor");
-    assert.ok(html.includes('href="#poll-eia"'), "nav deve ter link para poll-eia");
+    // #2602: nav links substituídos por abas — verificar label de aba em vez de href
+    assert.ok(html.includes('for="tab-usemelhor"'), "deve ter label de aba Use Melhor");
+    assert.ok(html.includes('for="tab-eia"'), "deve ter label de aba É IA?");
   });
 
   test("HTML válido com as novas seções: doctype, lang, viewport", async () => {
@@ -623,25 +624,140 @@ describe("renderDashboardHtml com use_melhor e poll_eia (#2474, #2475)", () => {
     assert.ok(html!.includes("poll-eia"), "deve incluir id da seção poll-eia mesmo no stub");
   });
 
-  test("seções aparecem na ordem: CTR < Use Melhor < Poll EIA < Overnight < Saúde", async () => {
+  test("todas as seções principais estão presentes no HTML (#2602: reorg em abas não perde seções)", async () => {
+    // #2602: ordem relativa entre seções de abas diferentes não faz sentido checar —
+    // cada seção vive em seu próprio panel. Checar que todas existem no HTML.
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeFullData());
 
-    const idxCtr = html.indexOf('id="ctr"');
-    const idxUseMelhor = html.indexOf('id="use-melhor"');
-    const idxPollEia = html.indexOf('id="poll-eia"');
-    const idxOvernight = html.indexOf('id="overnight"');
-    const idxSourceHealth = html.indexOf('id="source-health"');
+    assert.ok(html.includes('id="ctr"'), "seção ctr deve existir");
+    assert.ok(html.includes('id="use-melhor"'), "seção use-melhor deve existir");
+    assert.ok(html.includes('id="poll-eia"'), "seção poll-eia deve existir");
+    assert.ok(html.includes('id="overnight"'), "seção overnight deve existir");
+    assert.ok(html.includes('id="source-health"'), "seção source-health deve existir");
+    assert.ok(html.includes('id="top-clicked-recent"'), "seção top-clicked-recent deve existir");
+    assert.ok(html.includes('id="audience"'), "seção audience deve existir");
+  });
+});
 
-    assert.ok(idxCtr > -1, "seção ctr deve existir");
-    assert.ok(idxUseMelhor > -1, "seção use-melhor deve existir");
-    assert.ok(idxPollEia > -1, "seção poll-eia deve existir");
-    assert.ok(idxOvernight > -1, "seção overnight deve existir");
-    assert.ok(idxSourceHealth > -1, "seção source-health deve existir");
+// ─── #2602: tab navigation — estrutura HTML das 6 abas ───────────────────────
 
-    assert.ok(idxCtr < idxUseMelhor, "CTR deve aparecer antes de Use Melhor");
-    assert.ok(idxUseMelhor < idxPollEia, "Use Melhor deve aparecer antes de Poll EIA");
-    assert.ok(idxPollEia < idxOvernight, "Poll EIA deve aparecer antes de Overnight");
-    assert.ok(idxOvernight < idxSourceHealth, "Overnight deve aparecer antes de Saúde");
+describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
+  function makeMinimalData(): import("../workers/diaria-dashboard/src/types.ts").DashboardData {
+    return {
+      generated_at: "2026-06-26T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null,
+      overnight: { runs: [], total_runs: 0 },
+      use_melhor: null,
+      poll_eia: null,
+      top_clicked_recent: null,
+      audience: null,
+      stubs: [],
+    };
+  }
+
+  test("HTML contém 6 inputs radio para as abas (tab state)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
+    assert.equal(radioMatches.length, 6, "deve ter exatamente 6 radio inputs para as 6 abas");
+  });
+
+  test("HTML contém 6 labels de aba com textos corretos e na ordem certa", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    // Verificar presença de todos os labels
+    assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(html, /\bCTR\b/, "deve ter label 'CTR'");
+    assert.match(html, /Top links/, "deve ter label 'Top links'");
+    assert.match(html, /Use Melhor/, "deve ter label 'Use Melhor'");
+    assert.match(html, /É IA\?/, "deve ter label 'É IA?'");
+    assert.match(html, /Audiência/, "deve ter label 'Audiência'");
+    // Verificar ordem: posição de cada label na tab-bar
+    const posVisaoGeral = html.indexOf('for="tab-visaogeral"');
+    const posCtr = html.indexOf('for="tab-ctr"');
+    const posTopLinks = html.indexOf('for="tab-toplinks"');
+    const posUseMelhor = html.indexOf('for="tab-usemelhor"');
+    const posEia = html.indexOf('for="tab-eia"');
+    const posAudiencia = html.indexOf('for="tab-audiencia"');
+    assert.ok(posVisaoGeral < posCtr, "Visão geral deve vir antes de CTR");
+    assert.ok(posCtr < posTopLinks, "CTR deve vir antes de Top links");
+    assert.ok(posTopLinks < posUseMelhor, "Top links deve vir antes de Use Melhor");
+    assert.ok(posUseMelhor < posEia, "Use Melhor deve vir antes de É IA?");
+    assert.ok(posEia < posAudiencia, "É IA? deve vir antes de Audiência");
+  });
+
+  test("1ª aba (Visão geral) tem checked por default", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    assert.match(html, /id="tab-visaogeral"[^>]*checked/, "aba Visão geral deve estar checked por default");
+  });
+
+  test("panel-visaogeral contém overnight e source-health", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-ctr")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-visaogeral deve existir");
+    assert.ok(panel.includes('id="overnight"'), "overnight deve estar no panel Visão geral");
+    assert.ok(panel.includes('id="source-health"'), "source-health deve estar no panel Visão geral");
+  });
+
+  test("panel-ctr contém seção ctr", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-ctr"[\s\S]*?(?=id="panel-toplinks")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-ctr deve existir");
+    assert.ok(panel.includes('id="ctr"'), "seção ctr deve estar no panel CTR");
+  });
+
+  test("panel-toplinks contém top-clicked-recent", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-toplinks"[\s\S]*?(?=id="panel-usemelhor")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-toplinks deve existir");
+    assert.ok(panel.includes('id="top-clicked-recent"'), "top-clicked-recent deve estar no panel Top links");
+  });
+
+  test("panel-usemelhor contém use-melhor", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-usemelhor"[\s\S]*?(?=id="panel-eia")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-usemelhor deve existir");
+    assert.ok(panel.includes('id="use-melhor"'), "use-melhor deve estar no panel Use Melhor");
+  });
+
+  test("panel-eia contém poll-eia", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-eia"[\s\S]*?(?=id="panel-audiencia")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-eia deve existir");
+    assert.ok(panel.includes('id="poll-eia"'), "poll-eia deve estar no panel É IA?");
+  });
+
+  test("panel-audiencia contém audience", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-audiencia"[\s\S]*?<\/div><!-- \/tab-panels -->/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-audiencia deve existir");
+    assert.ok(panel.includes('id="audience"'), "audience deve estar no panel Audiência");
+  });
+
+  test("CSS das abas usa :checked (sem JS externo para tab switching)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    assert.match(html, /:checked/, "CSS deve conter :checked para tab switching sem JS");
+    assert.match(html, /type="radio"/, "deve usar radio inputs para tab state");
+  });
+
+  test("nenhuma seção ficou fora dos panels (overnight, source-health, ctr, top-clicked-recent, use-melhor, poll-eia, audience todos estão em algum panel)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const tabPanelsBlock = html.match(/<div class="tab-panels">[\s\S]*?<\/div><!-- \/tab-panels -->/)?.[0] ?? "";
+    assert.ok(tabPanelsBlock.length > 0, "bloco tab-panels deve existir");
+    for (const sectionId of ["overnight", "source-health", "ctr", "top-clicked-recent", "use-melhor", "poll-eia", "audience"]) {
+      assert.ok(tabPanelsBlock.includes(`id="${sectionId}"`), `seção id="${sectionId}" deve estar dentro do bloco tab-panels`);
+    }
   });
 });

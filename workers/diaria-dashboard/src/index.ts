@@ -711,18 +711,54 @@ export function renderDashboardHtml(data: DashboardData): string {
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
   td.metric { font-weight: 600; color: var(--brand); }
-  .nav { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 24px 0; font-size: 0.85rem; }
-  .nav a { color: var(--brand); text-decoration: none; padding: 4px 10px; border: 1px solid var(--rule); border-radius: 4px; }
-  .nav a:hover { background: var(--paper-alt); }
   ul { padding-left: 20px; }
   li { margin: 6px 0; font-size: 0.9rem; }
   code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
   .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 32px; text-align: center; padding-top: 16px; border-top: 1px solid var(--rule); }
   small { color: var(--ink); opacity: 0.6; font-size: 0.8em; }
+  /* #2602: tab navigation — CSS-only via radio+label+:checked (mesmo padrão do brevo-dashboard #2542) */
+  /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
+     removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
+  .tab-radios { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; flex-wrap: wrap; }
+  .tab-label {
+    display: inline-block; padding: 8px 18px; font-size: 0.85rem; font-weight: 600;
+    cursor: pointer; border: 1px solid transparent; border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0; color: var(--ink); opacity: 0.65;
+    margin-bottom: -2px; user-select: none;
+    transition: opacity 0.1s;
+  }
+  .tab-label:hover { opacity: 1; background: var(--paper-alt); }
+  #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-ctr:checked ~ .tab-bar label[for="tab-ctr"],
+  #tab-toplinks:checked ~ .tab-bar label[for="tab-toplinks"],
+  #tab-usemelhor:checked ~ .tab-bar label[for="tab-usemelhor"],
+  #tab-eia:checked ~ .tab-bar label[for="tab-eia"],
+  #tab-audiencia:checked ~ .tab-bar label[for="tab-audiencia"] {
+    background: var(--paper); border-color: var(--rule); opacity: 1;
+    color: var(--brand); border-bottom-color: var(--paper);
+  }
+  /* Foco de teclado: o radio focado projeta um contorno no seu label irmão. */
+  #tab-visaogeral:focus-visible ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-ctr:focus-visible ~ .tab-bar label[for="tab-ctr"],
+  #tab-toplinks:focus-visible ~ .tab-bar label[for="tab-toplinks"],
+  #tab-usemelhor:focus-visible ~ .tab-bar label[for="tab-usemelhor"],
+  #tab-eia:focus-visible ~ .tab-bar label[for="tab-eia"],
+  #tab-audiencia:focus-visible ~ .tab-bar label[for="tab-audiencia"] {
+    outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
+  }
+  .tab-panel { display: none; padding-top: 8px; }
+  #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
+  #tab-ctr:checked ~ .tab-panels #panel-ctr,
+  #tab-toplinks:checked ~ .tab-panels #panel-toplinks,
+  #tab-usemelhor:checked ~ .tab-panels #panel-usemelhor,
+  #tab-eia:checked ~ .tab-panels #panel-eia,
+  #tab-audiencia:checked ~ .tab-panels #panel-audiencia { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
     th, td { padding: 6px 4px; }
+    .tab-label { padding: 6px 10px; font-size: 0.8rem; }
   }
 </style>
 </head>
@@ -730,25 +766,60 @@ export function renderDashboardHtml(data: DashboardData): string {
 <h1>Diar.ia — Dashboard Operacional</h1>
 <p class="sub">Dados locais (last push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
 
-<nav class="nav">
-  <a href="#ctr">CTR por categoria</a>
-  <a href="#top-clicked-recent">Top clicados</a>
-  <a href="#audience">Audiência</a>
-  <a href="#use-melhor">Use Melhor</a>
-  <a href="#poll-eia">É IA?</a>
-  <a href="#overnight">Overnight</a>
-  <a href="#source-health">Saúde das fontes</a>
-  ${data.stubs?.length ? '<a href="#stubs">Em breve</a>' : ""}
-</nav>
+<!-- #2602: tab state inputs (hidden, CSS-only — mesmo padrão do brevo-dashboard #2542) -->
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-ctr">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-toplinks">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-usemelhor">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-eia">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-audiencia">
 
-${ctrSection}
-${topClickedRecentSection}
-${audienceSection}
-${useMelhorSection}
-${pollEiaSection}
+<!-- tab bar -->
+<div class="tab-bar" role="tablist">
+  <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
+  <label class="tab-label" id="tablabel-ctr" for="tab-ctr" role="tab" aria-controls="panel-ctr">CTR</label>
+  <label class="tab-label" id="tablabel-toplinks" for="tab-toplinks" role="tab" aria-controls="panel-toplinks">Top links</label>
+  <label class="tab-label" id="tablabel-usemelhor" for="tab-usemelhor" role="tab" aria-controls="panel-usemelhor">Use Melhor</label>
+  <label class="tab-label" id="tablabel-eia" for="tab-eia" role="tab" aria-controls="panel-eia">É IA?</label>
+  <label class="tab-label" id="tablabel-audiencia" for="tab-audiencia" role="tab" aria-controls="panel-audiencia">Audiência</label>
+</div>
+
+<!-- tab panels -->
+<div class="tab-panels">
+
+  <!-- Aba 1: Visão geral — overnight + saúde das fontes + em breve -->
+  <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
 ${overnightSection}
 ${sourceSection}
 ${stubsSection}
+  </div><!-- /panel-visaogeral -->
+
+  <!-- Aba 2: CTR por categoria de link -->
+  <div class="tab-panel" id="panel-ctr" role="tabpanel" aria-labelledby="tablabel-ctr">
+${ctrSection}
+  </div><!-- /panel-ctr -->
+
+  <!-- Aba 3: Top links por cliques absolutos -->
+  <div class="tab-panel" id="panel-toplinks" role="tabpanel" aria-labelledby="tablabel-toplinks">
+${topClickedRecentSection}
+  </div><!-- /panel-toplinks -->
+
+  <!-- Aba 4: Use Melhor -->
+  <div class="tab-panel" id="panel-usemelhor" role="tabpanel" aria-labelledby="tablabel-usemelhor">
+${useMelhorSection}
+  </div><!-- /panel-usemelhor -->
+
+  <!-- Aba 5: É IA? (poll) -->
+  <div class="tab-panel" id="panel-eia" role="tabpanel" aria-labelledby="tablabel-eia">
+${pollEiaSection}
+  </div><!-- /panel-eia -->
+
+  <!-- Aba 6: Perfil de audiência -->
+  <div class="tab-panel" id="panel-audiencia" role="tabpanel" aria-labelledby="tablabel-audiencia">
+${audienceSection}
+  </div><!-- /panel-audiencia -->
+
+</div><!-- /tab-panels -->
 
 <p class="footer">
   Dashboard Operacional Diar.ia — dados locais via KV push (<code>build-diaria-dashboard-data.ts --push</code>).<br>
