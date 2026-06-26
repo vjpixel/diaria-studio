@@ -2623,7 +2623,9 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
  * Exportado pra teste unitário.
  */
 export function renderMvStatusSection(mvStatus: MvStatus | null): string {
-  if (!mvStatus) {
+  // Trata payload vazio (groups:[]) como não-gerado: mesma orientação acionável, em vez
+  // de renderizar uma <tbody> vazia sem contexto.
+  if (!mvStatus || mvStatus.groups.length === 0) {
     return `
 <section class="phase2-section" id="mv-status">
   <h2 class="section-title">Status MillionVerifier por grupo</h2>

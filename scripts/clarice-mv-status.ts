@@ -31,9 +31,29 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag } from "./lib/cli-args.ts";
-import type { MvStatus, MvGroupStatus } from "../workers/brevo-dashboard/src/index.ts";
 
 loadProjectEnv();
+
+// NOTA: tipos e KV key são DUPLICADOS do worker (workers/brevo-dashboard/src/index.ts),
+// NÃO importados. Importar do worker arrastaria index.ts (que usa KVNamespace/CacheStorage de
+// @cloudflare/workers-types) pro programa tsc deste bundle — cujo tsconfig só inclui
+// scripts/**/*.ts e não carrega os types do Worker —, quebrando o typecheck do CI. Mesmo padrão
+// de scripts/clarice-engagement-cohorts.ts: bundles separados não compartilham tipos. O worker
+// (reader) mantém as defs canônicas; aqui (writer) é cópia sincronizada à mão.
+export interface MvGroupStatus {
+  group: string;
+  cycle: string;
+  status: "verified" | "t01" | "pending";
+  verifiedAt: string | null;
+  verified: number;
+  rejected: number;
+  unknown: number;
+}
+
+export interface MvStatus {
+  generatedAt: string;
+  groups: MvGroupStatus[];
+}
 
 export const DASHBOARD_KV_NAMESPACE_ID = "2f87d65d735c499ab8f465774d0167e2";
 export const MV_STATUS_KV_KEY = "mv:status";
@@ -99,16 +119,10 @@ export function computeMvStatus(
       (f) => f.startsWith("mv-export-") && f.endsWith("-verified.csv"),
     );
 
-    if (verifiedFiles.length === 0) {
-      // Ciclo existe mas verificação ainda não rodou — emitir "pending" para grupos T02+ conhecidos.
-      for (const group of t02PlusBaseGroups) {
-        groups.push({ group, cycle, status: "pending", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 });
-      }
-      continue;
-    }
-
+    const verifiedGroups = new Set<string>();
     for (const vFile of verifiedFiles) {
       const group = groupFromVerifiedFile(vFile);
+      verifiedGroups.add(group);
       const verifiedPath = resolve(cycleDir, vFile);
       const rejectedPath = resolve(cycleDir, `mv-export-${group}-rejected.csv`);
       const unknownPath = resolve(cycleDir, `mv-export-${group}-unknown.csv`);
@@ -122,6 +136,14 @@ export function computeMvStatus(
         const unknown = countCsvRows(unknownPath);
         groups.push({ group, cycle, status: "verified", verifiedAt: mtime, verified, rejected, unknown });
       }
+    }
+
+    // Emitir "pending" para grupos T02+ conhecidos (da base) que NÃO têm arquivo verificado
+    // neste ciclo. Cobre tanto o caso de ciclo sem nenhum verificado quanto o de verificação
+    // parcial (ex: t02 verificado mas t03 ainda não) — senão grupos não-verificados sumiam.
+    for (const group of t02PlusBaseGroups) {
+      if (verifiedGroups.has(group)) continue;
+      groups.push({ group, cycle, status: "pending", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 });
     }
   }
 
@@ -152,6 +174,17 @@ async function main(): Promise<void> {
   if (isDryRun) {
     console.log("[clarice-mv-status] --dry-run: não gravou no KV.");
     return;
+  }
+
+  // Guard: nunca sobrescrever o KV de produção com payload vazio. Em máquina sem a junction
+  // OneDrive (CLARICE_BASE ausente), computeMvStatus retorna groups:[] — gravar isso apagaria
+  // os dados válidos e todo visitante do dashboard veria a tabela vazia. Abortar com erro.
+  if (status.groups.length === 0) {
+    console.error(
+      `[clarice-mv-status] 0 grupos computados (CLARICE_BASE existe? ${CLARICE_BASE}). ` +
+        `Abortando upload para não sobrescrever KV de produção. Use --dry-run para inspecionar.`,
+    );
+    process.exit(1);
   }
 
   await uploadTextToWorkerKV(json, MV_STATUS_KV_KEY, {

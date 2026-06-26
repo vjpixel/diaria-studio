@@ -2092,6 +2092,12 @@ describe("regressão #2609: renderMvStatusSection", () => {
     assert.doesNotMatch(html, /undefined/, "não deve ter 'undefined' no HTML");
   });
 
+  test("regressão #2619: stub gracioso também quando groups está vazio (não tabela vazia)", () => {
+    const html = renderMvStatusSection({ generatedAt: "2026-06-25T10:00:00Z", groups: [] });
+    assert.match(html, /clarice-mv-status\.ts/, "groups vazio deve mostrar orientação, não tbody vazia");
+    assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
+  });
+
   test("renderiza badge 'N/A — validado por pagamento Stripe' para T01", () => {
     const mvStatus: MvStatus = {
       generatedAt: "2026-06-25T10:00:00Z",
@@ -2315,6 +2321,30 @@ describe("regressão #2619 bug D: computeMvStatus emite 'pending' quando ciclo e
       assert.equal(verified[0].verified, 2, "2 linhas de dados = 2 verificados");
       const pending = result.groups.filter((g) => g.status === "pending");
       assert.equal(pending.length, 0, "não deve ter pending quando arquivo verificado existe");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("verificação PARCIAL: grupo T02+ sem arquivo verificado vira 'pending' mesmo com outro grupo verificado no mesmo ciclo", () => {
+    setup();
+    try {
+      // Dois grupos T02+ na base; só um deles verificado no ciclo.
+      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\na@b.com\n");
+      writeFileSync(join(testBase, "stripe-export-t03-leads.csv"), "email\nc@d.com\n");
+      mkdirSync(join(testBase, "2605-06"), { recursive: true });
+      writeFileSync(
+        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
+        "email\ne@f.com\n",
+      );
+
+      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+
+      const t02 = result.groups.find((g) => g.group === "t02-ex-assinantes");
+      assert.equal(t02?.status, "verified", "t02 verificado");
+      const t03 = result.groups.find((g) => g.group === "t03-leads");
+      assert.equal(t03?.status, "pending", "t03 não-verificado deve aparecer como pending, não sumir");
+      assert.equal(t03?.cycle, "2605-06");
     } finally {
       teardown();
     }
