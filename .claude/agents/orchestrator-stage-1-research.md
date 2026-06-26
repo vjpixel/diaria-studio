@@ -503,7 +503,7 @@ npx tsx scripts/dedup-intra-edition.ts \
   --in data/editions/{AAMMDD}/_internal/01-categorized.json \
   --out data/editions/{AAMMDD}/_internal/01-categorized.json
 ```
-Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por rank** por Jaccard ≥0.45, ≥2 entidades ou **domain-match** (#2548 Furo 2: RADAR com `suggested_primary_domain=google.com` + D1 em blog.google.com → cobertura de imprensa do mesmo lançamento). Strip sufixo de veículo. `01-categorized.json` reescrito in-place.
+Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por rank** por Jaccard ≥0.45, ≥2 entidades ou **domain-match** (#2548 Furo 2: RADAR com `suggested_primary_domain=google.com` + D1 em blog.google.com → cobertura de imprensa do mesmo lançamento). **#2587:** o domain-match exige um **segundo sinal** de mesmo-lançamento — `≥1 entidade-de-produto compartilhada além do nome da empresa` OU `Jaccard de título ≥0.2` — para não remover dois lançamentos DIFERENTES da mesma empresa (D1=produto A + RADAR=produto B no mesmo domínio). O caminho de entidade-de-produto cobre cobertura cross-lingual (D1 inglês + RADAR português, Jaccard ~0, mas ambos citam o produto). Strip sufixo de veículo. `01-categorized.json` reescrito in-place.
 
 ### 1u-ter. Dedup evergreen pós-categorização (#2548 — Furo 1)
 
