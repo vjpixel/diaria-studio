@@ -36,6 +36,8 @@ export interface BraveSearchResponse {
   status: "ok" | "rate_limited" | "error";
   error_message?: string;
   http_status?: number;
+  // (#2608 C) quota header from Brave API — X-RateLimit-Remaining
+  quota_remaining?: number;
 }
 
 /**
@@ -63,8 +65,15 @@ export async function braveSearch(
       },
     });
 
+    // (#2608 C) capture quota header to enable delta reconciliation (defensive: mock/test may lack headers)
+    const quotaHeader = res.headers?.get?.("X-RateLimit-Remaining") ?? res.headers?.get?.("X-Ratelimit-Remaining") ?? null;
+    const quota_remaining = quotaHeader !== null ? parseInt(quotaHeader, 10) : undefined;
+    const quotaField = typeof quota_remaining === "number" && !isNaN(quota_remaining)
+      ? { quota_remaining }
+      : {};
+
     if (res.status === 429) {
-      return { results: [], query, status: "rate_limited", http_status: 429 };
+      return { results: [], query, status: "rate_limited", http_status: 429, ...quotaField };
     }
 
     if (res.status >= 400) {
@@ -75,6 +84,7 @@ export async function braveSearch(
         status: "error",
         http_status: res.status,
         error_message: body.slice(0, 200),
+        ...quotaField,
       };
     }
 
@@ -83,7 +93,7 @@ export async function braveSearch(
     };
 
     const results = data.web?.results ?? [];
-    return { results, query, status: "ok", http_status: res.status };
+    return { results, query, status: "ok", http_status: res.status, ...quotaField };
   } catch (e) {
     return {
       results: [],

@@ -204,6 +204,8 @@ async function runQuery(
       query,
       status: response.status,
       http_status: response.http_status,
+      // (#2608 C) persist quota header for delta reconciliation
+      ...(typeof response.quota_remaining === "number" ? { quota_remaining: response.quota_remaining } : {}),
     });
   }
 

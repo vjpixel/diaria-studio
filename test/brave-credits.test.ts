@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   recordBraveCredit,
+  recordBraveCreditEstimate,
   computeBraveCreditStats,
 } from "../scripts/lib/brave-credits.ts";
 
@@ -38,6 +39,66 @@ describe("recordBraveCredit", () => {
     recordBraveCredit({ query: "q1", status: "ok" }, path);
     assert.ok(existsSync(path));
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordBraveCreditEstimate (#2608 A)
+// ---------------------------------------------------------------------------
+
+describe("recordBraveCreditEstimate (#2608)", () => {
+  it("escreve count entradas com estimated:true", () => {
+    const path = makeTmpPath();
+    recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: 3 }, path);
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(lines.length, 3, "deve gravar exatamente 3 linhas");
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      assert.equal(entry.estimated, true, "estimated deve ser true");
+      assert.equal(entry.source, "stage1-agents");
+      assert.equal(entry.edition, "260627");
+    }
+    rmSync(path, { force: true });
+  });
+
+  it("count=0 é no-op (nenhuma linha gravada)", () => {
+    const path = makeTmpPath();
+    recordBraveCreditEstimate({ source: "stage1-agents", count: 0 }, path);
+    assert.ok(!existsSync(path), "arquivo não deve ser criado para count=0");
+  });
+
+  it("Path B: K source-researchers × 2 + L discovery + J launch → stats não-zero", () => {
+    const path = makeTmpPath();
+    const K = 3, L = 5, J = 2;
+    const total = K * 2 + L + J; // 13
+    recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: total }, path);
+    const now = new Date("2026-06-27T12:00:00Z");
+    const stats = computeBraveCreditStats("260627", path, now);
+    assert.ok(stats.queries_this_month >= total, "queries_this_month deve ser >= count");
+    assert.ok(stats.queries_this_edition >= total, "queries_this_edition deve ser >= count");
+    assert.equal(stats.queries_this_month_estimated, total, "estimated deve ser exatamente count");
+    assert.equal(stats.queries_this_month_real, 0, "real deve ser 0 (sem Path A)");
+    rmSync(path, { force: true });
+  });
+
+  it("relatório distingue reais de estimadas (queries_this_month_estimated > 0)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-27T12:00:00Z");
+    // 2 reais + 5 estimadas
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ timestamp: "2026-06-27T10:00:00Z", query: "q1", status: "ok" }),
+        JSON.stringify({ timestamp: "2026-06-27T10:01:00Z", query: "q2", status: "ok" }),
+      ].join("\n") + "\n",  // trailing newline to avoid concat with appendFileSync
+      "utf8",
+    );
+    recordBraveCreditEstimate({ source: "stage1-agents", count: 5 }, path);
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month_real, 2);
+    assert.equal(stats.queries_this_month_estimated, 5);
+    assert.equal(stats.queries_this_month, 7);
+    rmSync(path, { force: true });
   });
 });
 
@@ -164,6 +225,49 @@ describe("computeBraveCreditStats", () => {
     const stats = computeBraveCreditStats(null, path, now);
     // Only q1 matches monthPrefix "2026-06"
     assert.equal(stats.queries_this_month, 1);
+    rmSync(path, { force: true });
+  });
+
+  // (#2608 A) breakdown real vs estimated
+  it("queries_this_month_real e _estimated separados", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-01T12:00:00Z");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ timestamp: "2026-06-01T10:00:00Z", query: "q1", status: "ok" }),
+        JSON.stringify({ timestamp: "2026-06-01T10:01:00Z", query: "[estimated:stage1-agents:1/3]", status: "ok", estimated: true, source: "stage1-agents" }),
+        JSON.stringify({ timestamp: "2026-06-01T10:01:00Z", query: "[estimated:stage1-agents:2/3]", status: "ok", estimated: true, source: "stage1-agents" }),
+        JSON.stringify({ timestamp: "2026-06-01T10:01:00Z", query: "[estimated:stage1-agents:3/3]", status: "ok", estimated: true, source: "stage1-agents" }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month_real, 1, "real deve ser 1");
+    assert.equal(stats.queries_this_month_estimated, 3, "estimated deve ser 3");
+    assert.equal(stats.queries_this_month, 4, "total deve ser 4");
+    rmSync(path, { force: true });
+  });
+
+  // (#2608 C) delta_untracked via quota_remaining header
+  it("delta_untracked = real_used - local_real quando quota_remaining presente", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-01T12:00:00Z");
+    // local real = 5, free_tier=2000, quota_remaining=1990 → real_used=10, delta=5
+    writeFileSync(
+      path,
+      [
+        // 5 real entries, last one has quota_remaining=1990
+        ...Array.from({ length: 4 }, (_, i) =>
+          JSON.stringify({ timestamp: "2026-06-01T10:00:00Z", query: `q${i}`, status: "ok" })
+        ),
+        JSON.stringify({ timestamp: "2026-06-01T10:05:00Z", query: "q5", status: "ok", quota_remaining: 1990 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.quota_remaining_last_seen, 1990, "deve capturar quota_remaining");
+    assert.equal(stats.delta_untracked, 5, "delta deve ser 2000-1990-5=5 (5 queries nao-contadas Path B)");
     rmSync(path, { force: true });
   });
 
