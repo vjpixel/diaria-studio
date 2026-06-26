@@ -442,13 +442,11 @@ export function renderPollEiaSection(data: DashboardData): string {
 
   const updatedAt = poll.updated_at ? fmtTimeBRT(poll.updated_at) : "—";
 
-  return `<section class="dash-section" id="poll-eia">
-  <h2 class="section-title">É IA? (poll)</h2>
-  <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
-  <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
-
-  <h3 class="subsection-title">Por edição</h3>
-  <div class="table-wrap">
+  // #2604: quando editions está vazio (script rodou mas nenhuma edição tem votos ainda)
+  // mostrar mensagem em vez de tabela vazia silenciosa.
+  const editionsSection = editions.length === 0
+    ? `<p class="section-note muted">Sem dados de edições ainda. Rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> e depois <code>npx tsx scripts/build-diaria-dashboard-data.ts --push</code>.</p>`
+    : `<div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -461,7 +459,15 @@ export function renderPollEiaSection(data: DashboardData): string {
     </thead>
     <tbody>${edRows}</tbody>
   </table>
-  </div>
+  </div>`;
+
+  return `<section class="dash-section" id="poll-eia">
+  <h2 class="section-title">É IA? (poll)</h2>
+  <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
+  <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
+
+  <h3 class="subsection-title">Por edição</h3>
+  ${editionsSection}
 
   <h3 class="subsection-title" style="margin-top:16px">Leaderboard (top 10)</h3>
   ${lbRows ? `<div class="table-wrap">
@@ -481,13 +487,13 @@ export function renderPollEiaSection(data: DashboardData): string {
 </section>`;
 }
 
-// ─── #2558: Top links por cliques absolutos — últimas 5 edições ──────────────
+// ─── #2558: Top links por cliques absolutos — últimas 20 edições (#2601) ─────
 
 export function renderTopClickedRecentSection(data: DashboardData): string {
   const tcr = data.top_clicked_recent;
   if (!tcr) {
     return `<section class="dash-section" id="top-clicked-recent">
-  <h2 class="section-title">Top 10 links mais clicados (últimas 5 edições)</h2>
+  <h2 class="section-title">Top 10 links mais clicados (últimas 20 edições)</h2>
   <p class="section-note muted">Arquivo <code>data/link-ctr-table.csv</code> não encontrado ou vazio. Rode <code>npm run build-link-ctr</code> para gerar.</p>
 </section>`;
   }
@@ -512,24 +518,24 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
   }).join("\n");
 
   return `<section class="dash-section" id="top-clicked-recent">
-  <h2 class="section-title">Top 10 links mais clicados (últimas 5 edições)</h2>
+  <h2 class="section-title">Top 10 links mais clicados (últimas 20 edições)</h2>
   <p class="section-note">${windowLabel} · por cliques absolutos (<code>unique_verified_clicks</code>)</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Posição">#</th>
-        <th title="Edição com mais cliques do link na janela de 5 edições">Edição</th>
+        <th title="Edição com mais cliques do link na janela de 20 edições">Edição</th>
         <th title="Categoria do link">Categoria</th>
         <th title="Âncora do link (título ou label)">Âncora</th>
-        <th title="Cliques únicos verificados (soma da janela de 5 edições)">Cliques</th>
+        <th title="Cliques únicos verificados (soma da janela de 20 edições)">Cliques</th>
         <th>Link</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   </div>
-  <p class="section-note muted">Distinto do Top 10 por CTR (all-time). Esta seção usa cliques absolutos nas últimas 5 edições.</p>
+  <p class="section-note muted">Distinto do Top 10 por CTR (all-time). Esta seção usa cliques absolutos nas últimas 20 edições.</p>
 </section>`;
 }
 

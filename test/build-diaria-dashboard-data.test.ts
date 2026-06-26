@@ -1008,11 +1008,11 @@ import { writeFileSync as writeFileSyncForTestTCR, rmSync as rmSyncForTestTCR } 
 import { join as joinForTestTCR } from "node:path";
 import { tmpdir as tmpdirTCR } from "node:os";
 
-describe("regressao #2558: buildTopClickedRecent -- janela 5 edicoes, cliques absolutos, max 10", () => {
+describe("regressao #2558: buildTopClickedRecent -- janela 20 edicoes (#2601), cliques absolutos, max 10", () => {
   function makeCsvContent(): string {
+    // 6 edicoes distintas: todas entram na janela de 20 (menos de 20 disponíveis)
     const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
     const rows = [
-      // Edicao mais antiga -- deve ser excluida da janela das ultimas 5
       "2026-01-01,Ed Jan,Destaques,LinkAntigo,https://old.example.com,old.example.com,100,5,5,5.00,Destaque,INT",
       // 5 edicoes recentes + links extras para cobrir max-10
       "2026-02-01,Ed Fev,Destaques,LinkA,https://a.example.com,a.example.com,200,30,30,15.00,Destaque,INT",
@@ -1030,16 +1030,16 @@ describe("regressao #2558: buildTopClickedRecent -- janela 5 edicoes, cliques ab
     return [header, ...rows].join("\n");
   }
 
-  test("inclui apenas links das ultimas 5 edicoes (exclui a mais antiga)", async () => {
+  test("inclui todos os links quando ha menos de 20 edicoes (#2601)", async () => {
     const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
     const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-2558a.csv");
     writeFileSyncForTestTCR(csvPath, makeCsvContent(), "utf8");
     const result = buildTopClickedRecent(csvPath);
     assert.ok(result !== null, "deve retornar resultado nao-nulo");
-    assert.equal(result!.window_editions.length, 5, "janela deve ter 5 edicoes");
-    assert.ok(!result!.window_editions.includes("2026-01-01"), "edicao mais antiga nao deve estar na janela");
-    const antigo = result!.top_items.find((r) => r.base_url === "https://old.example.com");
-    assert.equal(antigo, undefined, "link da edicao excluida nao deve aparecer nos resultados");
+    // Com janela de 20 e apenas 6 edicoes, todas sao incluidas
+    assert.equal(result!.window_editions.length, 6, "janela deve ter 6 edicoes (todas disponiveis, janela max=20)");
+    // Jan NÃO é mais excluída (só seria excluída se houvesse > 20 edições)
+    assert.ok(result!.window_editions.includes("2026-01-01"), "edicao mais antiga deve estar na janela (6 < 20)");
     rmSyncForTestTCR(csvPath, { force: true });
   });
 
@@ -1086,7 +1086,7 @@ describe("regressao #2558: buildTopClickedRecent -- janela 5 edicoes, cliques ab
     };
     const html = renderTopClickedRecentSection(data);
     assert.ok(html.includes("top-clicked-recent"), "deve ter id top-clicked-recent");
-    assert.ok(html.includes("ltimas 5"), "deve mencionar ultimas 5 edicoes");
+    assert.ok(html.includes("ltimas 20"), "deve mencionar ultimas 20 edicoes (#2601)");
     assert.ok(html.includes("LinkD"), "deve incluir ancora do top item");
     assert.ok(html.includes("50"), "deve incluir contagem de cliques");
   });
@@ -1395,5 +1395,392 @@ describe("regressao #2560: buildAudienceSummary -- parse de audience-profile.md"
       "ctr_by_category NAO deve incluir fonte 'github.com' (subseção CTR por fonte)");
 
     rmSyncForAud(tmpPath, { force: true });
+  });
+});
+
+// ─── #2601: buildTopClickedRecent — janela ampliada para 20 edições ───────────
+
+import { writeFileSync as writeFileSyncTCR20, rmSync as rmSyncTCR20 } from "node:fs";
+import { join as joinTCR20 } from "node:path";
+import { tmpdir as tmpdirTCR20 } from "node:os";
+
+describe("regressao #2601: buildTopClickedRecent -- janela 20 edicoes (ampliada de 5)", () => {
+  function make21EditionsCsv(): string {
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    // 21 edições em ordem decrescente para testar que a 21ª é excluída
+    const rows: string[] = [];
+    for (let i = 1; i <= 21; i++) {
+      const mm = String(i).padStart(2, "0");
+      // Usamos datas fictícias com mês sequencial; a mais antiga é 2025-01-01
+      const date = i === 21 ? "2025-01-01" : `2026-${mm}-01`;
+      rows.push(`${date},Ed ${i},Destaques,Link${i},https://link${i}.example.com,link${i}.example.com,200,${i},${i},${i}.00,Destaque,INT`);
+    }
+    return [header, ...rows].join("\n");
+  }
+
+  test("janela inclui ate 20 edicoes (exclui a 21a mais antiga)", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const csvPath = joinTCR20(tmpdirTCR20(), "diaria-test-tcr-2601a.csv");
+    writeFileSyncTCR20(csvPath, make21EditionsCsv(), "utf8");
+    const result = buildTopClickedRecent(csvPath);
+    rmSyncTCR20(csvPath, { force: true });
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.equal(result!.window_editions.length, 20, "janela deve ter 20 edicoes");
+    assert.ok(!result!.window_editions.includes("2025-01-01"), "edicao mais antiga (21a) nao deve estar na janela");
+    const oldest = result!.top_items.find((r) => r.base_url === "https://link21.example.com");
+    assert.equal(oldest, undefined, "link da 21a edicao nao deve aparecer nos resultados");
+  });
+
+  test("degrada graciosamente com menos de 20 edicoes (retorna o que tiver)", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = [
+      "2026-01-01,Ed Jan,Destaques,LinkA,https://a.example.com,a.example.com,200,10,10,5.00,Destaque,INT",
+      "2026-02-01,Ed Fev,Destaques,LinkB,https://b.example.com,b.example.com,200,20,20,10.00,Destaque,INT",
+    ];
+    const csvPath = joinTCR20(tmpdirTCR20(), "diaria-test-tcr-2601b.csv");
+    writeFileSyncTCR20(csvPath, [header, ...rows].join("\n"), "utf8");
+    const result = buildTopClickedRecent(csvPath);
+    rmSyncTCR20(csvPath, { force: true });
+    assert.ok(result !== null, "deve retornar resultado nao-nulo mesmo com menos de 20 edicoes");
+    assert.equal(result!.window_editions.length, 2, "janela deve ter 2 edicoes (o que tiver)");
+  });
+
+  test("renderTopClickedRecentSection inclui label 'ultimas 20 edicoes' no titulo e tooltip", async () => {
+    const { renderTopClickedRecentSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "2026-06-26T00:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [], top_clicked_recent: null,
+    };
+    const htmlStub = renderTopClickedRecentSection(data);
+    assert.ok(htmlStub.includes("20 edições") || htmlStub.includes("20 edi"), `stub deve mencionar 20 edicoes (got: ${htmlStub.slice(0, 200)})`);
+
+    const dataWithItems: DD = {
+      ...data,
+      top_clicked_recent: {
+        window_editions: Array.from({ length: 20 }, (_, i) => `2026-${String(i + 1).padStart(2, "0")}-01`),
+        top_items: [
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkA", base_url: "https://a.example.com", category: "Destaque", unique_verified_clicks: 99 },
+        ],
+      },
+    };
+    const htmlFull = renderTopClickedRecentSection(dataWithItems);
+    assert.ok(htmlFull.includes("20 edições") || htmlFull.includes("20 edi"), `render completo deve mencionar 20 edicoes`);
+    assert.ok(!htmlFull.includes("últimas 5") && !htmlFull.includes("janela de 5"), "nao deve mencionar 5 edicoes");
+  });
+});
+
+// ─── #2603: buildUseMelhorSummary — cliques por section_title + fonte publicada ─
+
+import { writeFileSync as writeFileSyncUM, rmSync as rmSyncUM, mkdirSync as mkdirSyncUM } from "node:fs";
+import { join as joinUM } from "node:path";
+import { tmpdir as tmpdirUM } from "node:os";
+
+describe("regressao #2603: buildCtrIndexByUrl -- Use Melhor por section_title (nao category)", () => {
+  function makeUseMelhorCsv(): string {
+    // Simula o CSV real: category nunca é "Use Melhor" (vem de categorize()),
+    // mas section_title é "🛠️ USE MELHOR" para links da seção
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    return [header,
+      // Link de Use Melhor — section_title = "🛠️ USE MELHOR", category = "Treinamento"
+      "2026-06-01,Ed Jun,🛠️ USE MELHOR,Como usar Cursor,https://cursor.com/tutorial,cursor.com,500,45,45,9.00,Treinamento,INT",
+      // Outro link de Use Melhor — section_title = "USE MELHOR" (sem emoji)
+      "2026-06-01,Ed Jun,USE MELHOR,Prompt Engineering,https://promptingguide.ai,promptingguide.ai,500,30,30,6.00,Ferramenta,INT",
+      // Link de Destaque — NÃO é Use Melhor
+      "2026-06-01,Ed Jun,Destaque 1,IA muda tudo,https://techcrunch.com/ai,techcrunch.com,500,20,20,4.00,Impacto,INT",
+    ].join("\n");
+  }
+
+  test("buildCtrIndexByUrl captura links por section_title contendo USE MELHOR (com emoji)", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-2603a");
+    mkdirSyncUM(tmpDir, { recursive: true });
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    writeFileSyncUM(csvPath, makeUseMelhorCsv(), "utf8");
+
+    // Criar edição fictícia com 01-approved.json contendo use_melhor
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    const approved = {
+      use_melhor: [
+        { url: "https://cursor.com/tutorial", title: "Como usar Cursor" },
+        { url: "https://promptingguide.ai", title: "Prompt Engineering" },
+      ],
+    };
+    writeFileSyncUM(joinUM(edDir, "01-approved.json"), JSON.stringify(approved), "utf8");
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+
+    // Limpar
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    const ed = result!.editions.find((e) => e.edition === "260601");
+    assert.ok(ed !== undefined, "deve ter entrada para edicao 260601");
+    // Os 2 itens de Use Melhor devem ter cliques (matched), não zeros
+    const matched = ed!.items.filter((i) => i.unique_verified_clicks !== null && i.unique_verified_clicks > 0);
+    assert.ok(matched.length >= 1, `pelo menos 1 item deve ter cliques (matched=${ed!.ctr_matched}; itens: ${JSON.stringify(ed!.items)})`);
+    assert.equal(result!.coverage.matched, matched.length, "coverage.matched deve refletir os matches");
+  });
+
+  test("buildCtrIndexByUrl exclui links de outras secoes que nao sao Use Melhor", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-2603b");
+    mkdirSyncUM(tmpDir, { recursive: true });
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    writeFileSyncUM(csvPath, makeUseMelhorCsv(), "utf8");
+
+    // Edição com 01-approved.json onde use_melhor tem o destaque (não Use Melhor)
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    const approved = {
+      use_melhor: [
+        { url: "https://techcrunch.com/ai", title: "IA muda tudo" }, // é destaque, não Use Melhor
+      ],
+    };
+    writeFileSyncUM(joinUM(edDir, "01-approved.json"), JSON.stringify(approved), "utf8");
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    // Mesmo com url presente no CSV, a linha é de Destaque (section_title != USE MELHOR)
+    // → não entra no índice CTR → ctr_matched = 0
+    assert.ok(result !== null, "buildUseMelhorSummary deve retornar resultado nao-nulo");
+    const ed = result!.editions.find((e) => e.edition === "260601");
+    assert.ok(ed !== undefined, "edicao 260601 deve aparecer no resultado");
+    assert.equal(ed!.ctr_matched, 0, "link de Destaque nao deve entrar no indice de Use Melhor");
+  });
+});
+
+describe("regressao #2603: buildUseMelhorSummary -- filtra itens publicados via 02-reviewed.md", () => {
+  test("itens presentes em 02-reviewed.md aparecem; itens dropados no gate sao excluidos", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-2603c");
+    mkdirSyncUM(tmpDir, { recursive: true });
+
+    // CSV sem cliques (para isolar o teste de filtro de gate)
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    writeFileSyncUM(csvPath, header, "utf8"); // CSV vazio (só header)
+
+    // 01-approved.json com 3 itens (pré-gate)
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    const edRootDir = joinUM(tmpDir, "editions", "260601");
+    const approved = {
+      use_melhor: [
+        { url: "https://cursor.com/tutorial", title: "Cursor Tutorial" },
+        { url: "https://v0.dev/guide", title: "v0.dev Guide" },
+        { url: "https://dropped.example.com/tool", title: "Item Dropado" }, // dropado no gate
+      ],
+    };
+    writeFileSyncUM(joinUM(edDir, "01-approved.json"), JSON.stringify(approved), "utf8");
+
+    // 02-reviewed.md com apenas 2 itens (o 3o foi dropado no gate)
+    const reviewedMd = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "Cursor Tutorial https://cursor.com/tutorial",
+      "",
+      "v0.dev Guide https://v0.dev/guide",
+      "",
+      "**LANÇAMENTOS**",
+    ].join("\n");
+    writeFileSyncUM(joinUM(edRootDir, "02-reviewed.md"), reviewedMd, "utf8");
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    assert.ok(result !== null, "deve retornar resultado");
+    const ed = result!.editions.find((e) => e.edition === "260601");
+    assert.ok(ed !== undefined, "deve ter entrada para edicao 260601");
+    assert.equal(ed!.items.length, 2, "deve ter 2 itens (dropado excluido pelo gate)");
+    const dropped = ed!.items.find((i) => i.url === "https://dropped.example.com/tool");
+    assert.equal(dropped, undefined, "item dropado no gate nao deve aparecer");
+  });
+
+  test("quando 02-reviewed.md ausente usa todos de 01-approved.json (backwards compat)", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-2603d");
+    mkdirSyncUM(tmpDir, { recursive: true });
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    writeFileSyncUM(csvPath, header, "utf8");
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    const approved = {
+      use_melhor: [
+        { url: "https://cursor.com/tutorial", title: "Cursor Tutorial" },
+        { url: "https://v0.dev/guide", title: "v0.dev Guide" },
+      ],
+    };
+    writeFileSyncUM(joinUM(edDir, "01-approved.json"), JSON.stringify(approved), "utf8");
+    // SEM 02-reviewed.md
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    assert.ok(result !== null, "deve retornar resultado");
+    const ed = result!.editions.find((e) => e.edition === "260601");
+    assert.ok(ed !== undefined);
+    assert.equal(ed!.items.length, 2, "deve usar todos os itens de 01-approved.json quando 02-reviewed.md ausente");
+  });
+});
+
+// ─── #2604: renderPollEiaSection — estado vazio mostra mensagem (nao tabela vazia) ─
+
+describe("regressao #2604: renderPollEiaSection -- dados presentes mas editions vazio mostra msg", () => {
+  test("poll_eia null retorna stub com instrucoes de push", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [], top_clicked_recent: null,
+      poll_eia: null,
+    };
+    const html = renderPollEiaSection(data);
+    assert.ok(html.includes("poll-eia"), "deve ter id poll-eia");
+    assert.ok(html.includes("build-poll-eia-data.ts"), "stub deve mencionar o script de push");
+  });
+
+  test("poll_eia com editions vazio mostra mensagem sem tabela vazia (#2604)", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    type PollEia = import("../workers/diaria-dashboard/src/types.ts").PollEiaSummary;
+    const pollEmpty: PollEia = {
+      source: "push",
+      last_edition: null,
+      editions: [],
+      leaderboard: [],
+      updated_at: "2026-06-26T10:00:00Z",
+    };
+    const data: DD = {
+      generated_at: "2026-06-26T10:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [], top_clicked_recent: null,
+      poll_eia: pollEmpty,
+    };
+    const html = renderPollEiaSection(data);
+    assert.ok(html.includes("poll-eia"), "deve ter id poll-eia");
+    // Deve mostrar mensagem, nao tabela com tbody vazio
+    assert.ok(html.includes("Sem dados") || html.includes("build-poll-eia-data"), "deve mostrar mensagem quando editions vazio");
+    // Nao deve ter uma tabela com body vazio (que confunde o leitor)
+    assert.ok(!html.includes("<tbody></tbody>"), "nao deve ter tbody vazio silencioso");
+  });
+
+  test("poll_eia com editions populadas renderiza tabela corretamente", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    type PollEia = import("../workers/diaria-dashboard/src/types.ts").PollEiaSummary;
+    const pollWithData: PollEia = {
+      source: "push",
+      last_edition: "260625",
+      editions: [
+        { edition: "260625", total_votes: 42, voted_a: 30, voted_b: 12, pct_correct: 71.4, correct_choice: "A" },
+        { edition: "260624", total_votes: 38, voted_a: 15, voted_b: 23, pct_correct: 60.5, correct_choice: "B" },
+      ],
+      leaderboard: [
+        { display_name: "Participante1", correct: 10, total: 12, streak: 3 },
+      ],
+      updated_at: "2026-06-26T10:00:00Z",
+    };
+    const data: DD = {
+      generated_at: "2026-06-26T10:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [], top_clicked_recent: null,
+      poll_eia: pollWithData,
+    };
+    const html = renderPollEiaSection(data);
+    assert.ok(html.includes("poll-eia"), "deve ter id poll-eia");
+    assert.ok(html.includes("260625"), "deve mostrar edicao mais recente");
+    assert.ok(html.includes("71.4%"), "deve mostrar percentual de acerto");
+    assert.ok(html.includes("Participante1"), "deve mostrar participante no leaderboard");
+    assert.ok(html.includes("2 edições"), "deve mostrar contagem de edicoes");
+  });
+});
+
+// ─── #2603: extractPublishedUseMelhorUrls — extração de URLs de 02-reviewed.md ─
+
+describe("regressao #2603: extractPublishedUseMelhorUrls", () => {
+  test("extrai URLs da secao USE MELHOR de 02-reviewed.md", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const mdPath = j(td(), "diaria-test-extpub-2603.md");
+    wf(mdPath, [
+      "**🛠️ USE MELHOR**",
+      "",
+      "Cursor Tutorial https://cursor.com/tutorial",
+      "v0.dev Guide https://v0.dev/guide",
+      "",
+      "**LANÇAMENTOS**",
+      "",
+      "https://openai.com/news/gpt5 — GPT-5 lançado",
+    ].join("\n"), "utf8");
+
+    const urls = extractPublishedUseMelhorUrls(mdPath);
+    rm(mdPath, { force: true });
+
+    assert.ok(urls !== null, "deve retornar Set nao-nulo");
+    // URLs da secao Use Melhor devem estar presentes
+    const hasUrl = (u: string) => [...urls!].some((pu) => pu.includes("cursor.com") || pu === u);
+    assert.ok([...urls!].some((u) => u.includes("cursor.com")), "deve incluir cursor.com/tutorial");
+    assert.ok([...urls!].some((u) => u.includes("v0.dev")), "deve incluir v0.dev/guide");
+    // URL de LANCAMENTOS nao deve estar (seção diferente)
+    const hasOpenAi = [...urls!].some((u) => u.includes("openai.com"));
+    // openai.com aparece depois de LANCAMENTOS — fora da seção USE MELHOR
+    // O parser pega a seção USE MELHOR até o próximo heading-like
+    assert.ok(!hasOpenAi, "URL de LANCAMENTOS nao deve estar no Set de Use Melhor");
+  });
+
+  test("retorna null quando arquivo ausente", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const result = extractPublishedUseMelhorUrls("/tmp/nao-existe-reviewed-2603-xyzzy.md");
+    assert.equal(result, null, "deve retornar null quando arquivo ausente");
+  });
+});
+
+// Regressão: bugs corrigidos em #2620
+import { writeFileSync as writeFileSyncReg, rmSync as rmSyncReg } from "node:fs";
+import { join as joinReg } from "node:path";
+import { tmpdir as tmpdirReg } from "node:os";
+
+describe("regressao #2620: extractPublishedUseMelhorUrls", () => {
+  test("secao presente mas sem URLs retorna Set vazio (nao null)", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-empty-urls.md");
+    writeFileSyncReg(p, "## USE MELHOR\n\nNenhum item esta semana.\n\n## LANCAMENTOS\n", "utf8");
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.ok(result !== null, "deve retornar Set (nao null) quando secao existe mas sem URLs");
+    assert.equal(result!.size, 0, "Set deve estar vazio");
+  });
+
+  test("heading mensal 'USE MELHOR DO MES' nao e detectado como secao diaria", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-monthly.md");
+    writeFileSyncReg(
+      p,
+      "## USE MELHOR DO MÊS\n\nhttps://cursor.com/monthly-tutorial\n\n## DESTAQUES\n",
+      "utf8"
+    );
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.equal(result, null, "heading mensal nao deve ser detectado como secao diaria Use Melhor");
+  });
+
+  test("arquivo com CRLF extrai URLs corretamente", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const p = joinReg(tmpdirReg(), "test-2620-crlf.md");
+    const crlf = "## USE MELHOR\r\n\r\nhttps://cursor.com/crlf-tutorial\r\n\r\n## LANCAMENTOS\r\n";
+    writeFileSyncReg(p, crlf, "utf8");
+    const result = extractPublishedUseMelhorUrls(p);
+    rmSyncReg(p, { force: true });
+    assert.ok(result !== null, "deve retornar Set nao-nulo com CRLF");
+    assert.ok([...result!].some((u) => u.includes("cursor.com")), "deve incluir URL da secao com CRLF");
   });
 });

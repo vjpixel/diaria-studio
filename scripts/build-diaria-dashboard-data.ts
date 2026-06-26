@@ -501,14 +501,22 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
   const ctrIdx = header.indexOf("ctr_pct");
   const clicksIdx = header.indexOf("unique_verified_clicks");
   const catIdx = header.indexOf("category");
+  // #2603: section_title é o sinal primário para identificar linhas de Use Melhor.
+  // A coluna `category` vem de categorize() que NUNCA retorna "Use Melhor" — a seção
+  // tem categoria editorial (Treinamento, Ferramenta, etc.), não o bucket. O sinal
+  // correto é o heading da seção na newsletter ("🛠️ USE MELHOR"). Aceitar também
+  // category === "Use Melhor" como fallback forward-compat.
+  const sectionTitleIdx = header.indexOf("section_title");
   if (baseUrlIdx < 0 || ctrIdx < 0 || clicksIdx < 0) return index;
 
   for (const line of lines.slice(1)) {
     try {
       const cols = parseCsvLine(line);
-      // Apenas linhas de Use Melhor
+      // Identifica linhas de Use Melhor por section_title (primário) ou category (fallback).
+      const sectionTitle = sectionTitleIdx >= 0 ? (cols[sectionTitleIdx] ?? "").trim() : "";
       const cat = catIdx >= 0 ? (cols[catIdx] ?? "").trim() : "";
-      if (cat !== "Use Melhor") continue;
+      const isUseMelhor = /^use melhor$/i.test(sectionTitle) || cat === "Use Melhor";
+      if (!isUseMelhor) continue;
       const url = (cols[baseUrlIdx] ?? "").trim();
       if (!url) continue;
       // #2511 self-review (Angles A+D): célula ctr_pct em branco NÃO é 0% medido — é
@@ -546,12 +554,46 @@ export function normalizeUrlForJoin(url: string): string {
 }
 
 /**
- * buildUseMelhorSummary (#2474)
+ * Extrai URLs presentes na seção Use Melhor de 02-reviewed.md (fonte publicada).
+ * Retorna null quando o arquivo não existe (edição sem Stage 2 completo → usar
+ * 01-approved.json sem filtro de gate como antes).
+ * #2603: itens removidos no gate do Stage 2 não devem aparecer no dashboard.
+ */
+export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<string> | null {
+  if (!existsSync(reviewedMdPath)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(reviewedMdPath, "utf8");
+  } catch {
+    return null;
+  }
+  // Normaliza CRLF para LF (Windows pode gravar 02-reviewed.md com CRLF)
+  const content = raw.replace(/\r\n/g, "\n");
+  // Encontra seção USE MELHOR (pode ter prefixo emoji como "🛠️ USE MELHOR" ou "**USE MELHOR**")
+  // Exclui "USE MELHOR DO MÊS" (heading de edição mensal). Delimita até o próximo heading.
+  const sectionMatch = content.match(/(?:^|\n)[^\n]*USE MELHOR(?! DO M)[^\n]*(?:\n(?![*#])[^\n]*|$)*/i);
+  if (!sectionMatch) return null;
+  const sectionText = sectionMatch[0];
+  // Extrai todas as URLs do texto da seção.
+  // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —
+  // null é reservado para "arquivo não encontrado" (edição sem Stage 2 completo).
+  const urls = new Set<string>();
+  const urlRe = /https?:\/\/[^\s\)>"']+/g;
+  let m: RegExpExecArray | null;
+  while ((m = urlRe.exec(sectionText)) !== null) {
+    urls.add(normalizeUrlForJoin(m[0]));
+  }
+  return urls;
+}
+
+/**
+ * buildUseMelhorSummary (#2474, publicado corrigido #2603)
  *
  * Varre data/editions/{AAMMDD}/_internal/01-approved.json, extrai o bucket use_melhor,
- * e faz join com o CTR CSV por URL. O join e intencialmente lossy — a URL de
- * pesquisa (approved.json) difere da URL publicada (CTR CSV); surfacamos a
- * cobertura via coverage em vez de silenciar o gap.
+ * e faz join com o CTR CSV por URL. Quando 02-reviewed.md existe, filtra para mostrar
+ * apenas itens que foram efetivamente publicados (itens dropados no gate são excluídos).
+ * O join e intencalmente lossy — a URL de pesquisa (approved.json) difere da URL
+ * publicada (CTR CSV); surfaçamos a cobertura via coverage em vez de silenciar o gap.
  */
 export function buildUseMelhorSummary(
   // #2511 self-review (Angle Altitude): params opcionais p/ isolar testes do DATA_DIR
@@ -590,7 +632,19 @@ export function buildUseMelhorSummary(
       continue;
     }
 
-    const items = approved.use_melhor ?? [];
+    // #2603: usar 02-reviewed.md como filtro de itens publicados (pós-gate).
+    // Se o arquivo existe, itens não presentes nele foram dropados no gate e não devem
+    // aparecer no dashboard. Se não existe (Stage 2 não rodou), usar todos de 01-approved.json.
+    const reviewedMdPath = join(editionsDir, edition, "02-reviewed.md");
+    const publishedUrls = extractPublishedUseMelhorUrls(reviewedMdPath);
+
+    const allItems = approved.use_melhor ?? [];
+    const items = publishedUrls !== null
+      ? allItems.filter((item) => {
+          const normUrl = normalizeUrlForJoin((item.url ?? "").trim());
+          return publishedUrls.has(normUrl);
+        })
+      : allItems;
     if (items.length === 0) continue;
 
     let edMatched = 0;
@@ -691,14 +745,15 @@ export function buildPollEiaSummary(
   }
 }
 
-// ─── Fonte 5: Top links por cliques absolutos — últimas 5 edições (#2558) ────
+// ─── Fonte 5: Top links por cliques absolutos — últimas 20 edições (#2558, #2601) ────
 
 /**
- * buildTopClickedRecent (#2558)
+ * buildTopClickedRecent (#2558, ampliado para 20 edições em #2601)
  *
- * Identifica as últimas 5 edições distintas no CSV (por data), agrega
+ * Identifica as últimas 20 edições distintas no CSV (por data), agrega
  * unique_verified_clicks por link nessa janela, e retorna os top 10.
  * Distinto de top_links (que é por CTR all-time).
+ * Degrada graciosamente se houver menos de 20 edições com dados.
  */
 export function buildTopClickedRecent(
   csvPath: string = join(DATA_DIR, "link-ctr-table.csv"),
@@ -739,9 +794,9 @@ export function buildTopClickedRecent(
 
   if (editionDates.size === 0) return null;
 
-  // Sort desc and take last 5
+  // Sort desc and take last 20 (#2601: ampliado de 5 para 20)
   const sortedDates = [...editionDates].sort((a, b) => (b > a ? 1 : -1));
-  const windowSet = new Set(sortedDates.slice(0, 5));
+  const windowSet = new Set(sortedDates.slice(0, 20));
 
   // Aggregate clicks per link within the window
   // Key: base_url + "||" + anchor (to distinguish same URL with different anchors)
