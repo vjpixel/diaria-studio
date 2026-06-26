@@ -615,13 +615,17 @@ describe("ordem das seções (#2193)", () => {
     // O <nav class="nav"> com âncoras foi substituído por abas CSS-only (#2602).
     assert.ok(!html.includes('<nav class="nav">'), "nav antigo não deve mais existir");
 
-    // tab-bar com 6 labels, na ordem editorial confirmada.
-    const idxVisaoGeral = html.indexOf('for="tab-visaogeral"');
-    const idxCtr = html.indexOf('for="tab-ctr"');
-    const idxTopLinks = html.indexOf('for="tab-toplinks"');
-    const idxUseMelhor = html.indexOf('for="tab-usemelhor"');
-    const idxEia = html.indexOf('for="tab-eia"');
-    const idxAudiencia = html.indexOf('for="tab-audiencia"');
+    // tab-bar com 6 labels, na ordem editorial confirmada. Escopar à tab-bar do
+    // body: for="tab-X" também aparece no CSS (label[for="tab-X"]) no <head>, então
+    // indexOf contra o html inteiro pegaria a posição no CSS (falso-positivo).
+    const tabBar = html.match(/<div class="tab-bar"[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(tabBar.length > 0, "tab-bar deve existir no body");
+    const idxVisaoGeral = tabBar.indexOf('for="tab-visaogeral"');
+    const idxCtr = tabBar.indexOf('for="tab-ctr"');
+    const idxTopLinks = tabBar.indexOf('for="tab-toplinks"');
+    const idxUseMelhor = tabBar.indexOf('for="tab-usemelhor"');
+    const idxEia = tabBar.indexOf('for="tab-eia"');
+    const idxAudiencia = tabBar.indexOf('for="tab-audiencia"');
 
     assert.ok(idxVisaoGeral > -1, "label aba Visão geral deve existir");
     assert.ok(idxCtr > -1, "label aba CTR deve existir");

@@ -599,9 +599,11 @@ describe("renderDashboardHtml com use_melhor e poll_eia (#2474, #2475)", () => {
 
     assert.ok(html.includes('id="use-melhor"'), "deve ter seção use-melhor");
     assert.ok(html.includes('id="poll-eia"'), "deve ter seção poll-eia");
-    // #2602: nav links substituídos por abas — verificar label de aba em vez de href
-    assert.ok(html.includes('for="tab-usemelhor"'), "deve ter label de aba Use Melhor");
-    assert.ok(html.includes('for="tab-eia"'), "deve ter label de aba É IA?");
+    // #2602: nav links substituídos por abas — verificar label de aba em vez de href.
+    // Escopar à tab-bar do body (for="tab-X" também aparece no CSS do <head>).
+    const tabBar = html.match(/<div class="tab-bar"[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(tabBar.includes('for="tab-usemelhor"'), "deve ter label de aba Use Melhor");
+    assert.ok(tabBar.includes('for="tab-eia"'), "deve ter label de aba É IA?");
   });
 
   test("HTML válido com as novas seções: doctype, lang, viewport", async () => {
@@ -668,20 +670,27 @@ describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
   test("HTML contém 6 labels de aba com textos corretos e na ordem certa", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData());
-    // Verificar presença de todos os labels
-    assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
-    assert.match(html, /\bCTR\b/, "deve ter label 'CTR'");
-    assert.match(html, /Top links/, "deve ter label 'Top links'");
-    assert.match(html, /Use Melhor/, "deve ter label 'Use Melhor'");
-    assert.match(html, /É IA\?/, "deve ter label 'É IA?'");
-    assert.match(html, /Audiência/, "deve ter label 'Audiência'");
-    // Verificar ordem: posição de cada label na tab-bar
-    const posVisaoGeral = html.indexOf('for="tab-visaogeral"');
-    const posCtr = html.indexOf('for="tab-ctr"');
-    const posTopLinks = html.indexOf('for="tab-toplinks"');
-    const posUseMelhor = html.indexOf('for="tab-usemelhor"');
-    const posEia = html.indexOf('for="tab-eia"');
-    const posAudiencia = html.indexOf('for="tab-audiencia"');
+    // IMPORTANTE: escopar à <div class="tab-bar"> do body. O atributo for="tab-X"
+    // também aparece no CSS (label[for="tab-X"]) no <head>, então asserts contra o
+    // html inteiro seriam falso-positivos (passariam mesmo sem os <label>). A tab-bar
+    // não tem <div> aninhado, então o 1º </div> a fecha.
+    const tabBar = html.match(/<div class="tab-bar"[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(tabBar.length > 0, "tab-bar deve existir no body");
+    // Verificar presença de todos os labels (texto) dentro da tab-bar
+    assert.match(tabBar, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(tabBar, /\bCTR\b/, "deve ter label 'CTR'");
+    assert.match(tabBar, /Top links/, "deve ter label 'Top links'");
+    assert.match(tabBar, /Use Melhor/, "deve ter label 'Use Melhor'");
+    assert.match(tabBar, /É IA\?/, "deve ter label 'É IA?'");
+    assert.match(tabBar, /Audiência/, "deve ter label 'Audiência'");
+    // Verificar ordem: posição de cada label DENTRO da tab-bar (não no CSS)
+    const posVisaoGeral = tabBar.indexOf('for="tab-visaogeral"');
+    const posCtr = tabBar.indexOf('for="tab-ctr"');
+    const posTopLinks = tabBar.indexOf('for="tab-toplinks"');
+    const posUseMelhor = tabBar.indexOf('for="tab-usemelhor"');
+    const posEia = tabBar.indexOf('for="tab-eia"');
+    const posAudiencia = tabBar.indexOf('for="tab-audiencia"');
+    assert.ok(posVisaoGeral > -1 && posCtr > -1 && posTopLinks > -1 && posUseMelhor > -1 && posEia > -1 && posAudiencia > -1, "todos os 6 labels devem existir na tab-bar");
     assert.ok(posVisaoGeral < posCtr, "Visão geral deve vir antes de CTR");
     assert.ok(posCtr < posTopLinks, "CTR deve vir antes de Top links");
     assert.ok(posTopLinks < posUseMelhor, "Top links deve vir antes de Use Melhor");
