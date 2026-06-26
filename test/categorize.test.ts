@@ -2519,11 +2519,14 @@ describe("categorize() — #1544 non-launch items on official blogs", () => {
 // #2595: HF blog posts misclassified as LANÇAMENTOS
 describe("categorize() — #2595 HF blog misclassified", () => {
   it("huggingface.co/blog/vllm-jobs (tutorial how-to) → tutorial (USE_MELHOR)", () => {
+    // Sem summary de propósito: o título "Run X ... with one command" sozinho deve
+    // disparar a nova regra imperativa. Um summary com "how to deploy" mascararia o
+    // teste (já casava o pattern antigo) — o caso real do #2595 não tinha keyword
+    // canônica em lugar nenhum.
     assert.equal(
       categorize({
         url: "https://huggingface.co/blog/vllm-jobs",
         title: "Run a vLLM server with one command",
-        summary: "Learn how to deploy a vLLM inference server in a single step.",
       }),
       "tutorial",
     );
