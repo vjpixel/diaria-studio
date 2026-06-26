@@ -28,8 +28,10 @@ import {
   highlightUrl,
   INTRA_JACCARD_THRESHOLD,
   INTRA_ENTITY_MIN_SHARED,
+  INTRA_DOMAIN_JACCARD_MIN,
   DEFAULT_INTRA_DESTAQUE_COUNT,
   extractNamedEntitiesIntra,
+  extractProductEntitiesIntra,
   stripVehicleSuffix,
 } from "../scripts/dedup-intra-edition.ts";
 
@@ -514,6 +516,40 @@ describe("extractNamedEntitiesIntra (#2397)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2587: extractProductEntitiesIntra — inclui produto, exclui só empresa+genérico
+// ---------------------------------------------------------------------------
+
+describe("extractProductEntitiesIntra (#2587)", () => {
+  it("INCLUI nome de produto (Gemini) que extractNamedEntitiesIntra exclui", () => {
+    const general = extractNamedEntitiesIntra("Google lança Gemini computer use");
+    const product = extractProductEntitiesIntra("Google lança Gemini computer use");
+    assert.ok(!general.has("gemini"), "entity-geral exclui 'gemini' (stopword de produto)");
+    assert.ok(product.has("gemini"), "entity-de-produto INCLUI 'gemini'");
+  });
+
+  it("EXCLUI nome de empresa (Google/Microsoft) — empresa já vem do domínio", () => {
+    const product = extractProductEntitiesIntra("Google e Microsoft anunciam GPT-5 juntos");
+    assert.ok(!product.has("google"), "'google' é stopword de empresa");
+    assert.ok(!product.has("microsoft"), "'microsoft' é stopword de empresa");
+    assert.ok(product.has("gpt5"), "'gpt5' (produto) é capturado");
+  });
+
+  it("EXCLUI termos genéricos (IA, dias, meses)", () => {
+    const product = extractProductEntitiesIntra("IA da Segunda em Janeiro muda tudo");
+    assert.ok(!product.has("ia"), "'ia' é genérico");
+    assert.ok(!product.has("segunda"), "dia-da-semana é genérico");
+    assert.ok(!product.has("janeiro"), "mês é genérico");
+  });
+
+  it("2 lançamentos da mesma empresa não compartilham entidade de produto", () => {
+    const a = extractProductEntitiesIntra("Google lança Pixel 9 Pro");
+    const b = extractProductEntitiesIntra("Google anuncia Android 16");
+    const shared = [...a].filter(e => b.has(e));
+    assert.equal(shared.length, 0, `não deve compartilhar produto, got: [${shared.join(", ")}]`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2397: destaqueCount — dedup só contra top-N highlights por rank
 // ---------------------------------------------------------------------------
 
@@ -745,16 +781,37 @@ describe("isPressCovertageOfHighlight (#2548 Furo 2)", () => {
     };
     assert.equal(isPressCovertageOfHighlight(radarArticle, null), false);
   });
+
+  it("#2586: suggested_primary_domain='deepmind.com' casa D1 do Google (alias DeepMind/Google)", () => {
+    // Integração do alias deepmind.com→google.com (#2586): um RADAR cuja fonte
+    // primária sugerida é deepmind.com deve casar contra um D1 em blog.google.com,
+    // pois deepmind.com é domains[] da entry "DeepMind / Google" em official-domains.ts.
+    const radarArticle = {
+      url: "https://canaltech.com.br/ia/deepmind-lanca-alphafold-4",
+      title: "DeepMind lança AlphaFold 4",
+      suggested_primary_domain: "deepmind.com",
+    };
+    const highlightUrl = "https://blog.google.com/technology/google-deepmind/alphafold-4";
+    assert.equal(
+      isPressCovertageOfHighlight(radarArticle, highlightUrl),
+      true,
+      "deepmind.com (alias) deve casar com blog.google.com (ambos → google.com)",
+    );
+  });
 });
 
 describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
-  it("CENÁRIO REAL: remove RADAR canaltech cobrindo mesmo lançamento do D1 blog.google.com", () => {
+  it("CENÁRIO REAL: remove RADAR canaltech cobrindo mesmo lançamento do D1 blog.google.com (via entidade de produto, Jaccard ~0)", () => {
     // Este é o caso que falhou na edição 260625:
-    // D1 = blog.google.com sobre Gemini computer use
-    // RADAR = canaltech.com.br cobrindo a mesma funcionalidade
-    // Entidades "Gemini" e "Google" estão no ENTITY_STOPWORDS_INTRA → entity falha
-    // Jaccard falha (títulos divergem demais)
-    // Fix: usar suggested_primary_domain="google.com" + D1 em google.com
+    // D1 = blog.google.com sobre Gemini computer use (título EM INGLÊS)
+    // RADAR = canaltech.com.br cobrindo a mesma funcionalidade (título EM PORTUGUÊS)
+    //
+    // #2587: domain-match sozinho não basta. Mas as línguas divergem (EN vs PT) →
+    // Jaccard de título ≈ 0 (sem token comum significativo). O que salva é o
+    // SEGUNDO SINAL via ENTIDADE DE PRODUTO: ambos citam "Gemini" (produto), que
+    // NÃO é stopword de empresa → entidade-de-produto compartilhada → mesmo evento.
+    // "Google" é stopword de empresa (já estabelecida pelo domain-match) e NÃO conta.
+    // Isto prova que o fix #2587 NÃO regride o #2548 sem trapaça de Jaccard.
     const input = {
       highlights: [
         {
@@ -762,14 +819,16 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
           url: "https://blog.google.com/products/gemini/google-agents-computer-use",
           article: {
             url: "https://blog.google.com/products/gemini/google-agents-computer-use",
-            title: "Introducing computer use, a new Claude API feature",
+            // Título oficial em inglês — diverge lexicalmente do título PT do RADAR.
+            title: "Introducing Gemini agents that use your computer",
           },
         },
       ],
       radar: [
         {
           url: "https://canaltech.com.br/ia/google-libera-ia-que-consegue-mexer-no-computador",
-          title: "Google libera IA que consegue mexer no computador",
+          // Título de imprensa em português — só "Gemini" coincide com o D1.
+          title: "Google libera Gemini que consegue mexer no computador sozinho",
           suggested_primary_domain: "google.com",
         },
         {
@@ -805,12 +864,14 @@ describe("dedup-intra-edition — regressão #2548 Furo 2 domain-match", () => {
     // "OpenAI lança GPT-5 com capacidade..." → detectLaunchCandidate detecta verbo "lança" +
     // empresa "OpenAI" → suggested_domain = "openai.com" → D1 em openai.com → domain-match!
     // Sem o campo persistido no JSON, a feature agora funciona via re-derivação no-op.
+    // #2587: segundo sinal satisfeito por DUAS vias aqui — entidade de produto
+    // compartilhada ("gpt5") E Jaccard ≥ 0.2 — qualquer uma confirma o mesmo evento.
     const input = {
       highlights: [
         {
           rank: 1,
           url: "https://openai.com/research/gpt-5",
-          title: "Introducing GPT-5",
+          title: "OpenAI launches GPT-5 with advanced reasoning",
         },
       ],
       radar: [
@@ -886,11 +947,11 @@ describe("isPressCovertageOfHighlight — fallback sem suggested_primary_domain 
     const highlightUrl = "https://blog.google.com/products/gemini/google-agents-computer-use";
 
     // "Google lança IA Gemini" → detectLaunchCandidate → is_candidate: true,
-    // suggested_domain: "blog.google" (primary_domain do Google entry).
-    // extractRegistrableDomain("blog.google.com") = "google.com" via alias #2580.
-    // "blog.google" lowercased = "blog.google"; hDomain = "google.com".
-    // Mas o suggested_domain do Google entry é "blog.google" (primary_domain).
-    // Portanto: extractRegistrableDomain(highlightUrl) should match.
+    // "gemini" casa a entry "DeepMind / Google" (detection_keywords: /\b(deepmind|gemini)\b/i),
+    // cujo primary_domain é "deepmind.google".
+    // normalizeDomainForMatch("deepmind.google") → DOMAIN_ALIASES → "google.com".
+    // extractRegistrableDomain(highlightUrl "blog.google.com") → "google.com" (via alias #2580).
+    // "google.com" === "google.com" → domain-match!
     const result = isPressCovertageOfHighlight(radarArticle, highlightUrl);
     assert.equal(
       result,
@@ -908,10 +969,15 @@ describe("isPressCovertageOfHighlight — fallback sem suggested_primary_domain 
       // sem suggested_primary_domain e sem verbo de lançamento reconhecível
     };
     const result = isPressCovertageOfHighlight(radarArticle, "https://blog.google.com/something");
-    // "apresenta" é verbo de lançamento em PT-BR na lista? Sim: /\bapresenta(m|r|ndo)?\b/i
-    // Mas o objetivo aqui é verificar que a função NÃO crasheia sem o campo.
-    // O resultado pode ser true ou false — só confirmar que não lança exceção.
-    assert.doesNotThrow(() => isPressCovertageOfHighlight(radarArticle, "https://blog.google.com/something"));
+    // "apresenta" é verbo de lançamento e detectLaunchCandidate pode derivar google.com.
+    // Mas isPressCovertageOfHighlight só verifica domain — a decisão de remoção em
+    // isIntraEditionDuplicate (#2587) exige segundo sinal (entidade-de-produto OU
+    // Jaccard ≥ 0.2). Este teste cobre só isPressCovertageOfHighlight isoladamente.
+    // "Google apresenta resultados do trimestre" → "google" casa entry "Google (blog)"
+    // detection_keywords /\b(google ai|gemma)\b/i → NÃO casa (sem "google ai" ou "gemma").
+    // Nenhuma entry com detection_keywords que case "google" sozinho → is_candidate = false.
+    // Sem suggested_primary_domain e sem detecção → retorna false.
+    assert.equal(result, false, "artigo sem verbo de lançamento reconhecível não deve ter domain-match");
   });
 
   it("dedupIntraEdition remove RADAR sem suggested_primary_domain quando detectLaunchCandidate detecta", () => {
@@ -987,6 +1053,17 @@ describe("extractRegistrableDomain — normalização domínios Google (#2580)",
     );
   });
 
+  it("#2586: deepmind.com é normalizado para google.com (alias faltando em #2585)", () => {
+    // deepmind.com está listado em official-domains.ts como domains[] da entry
+    // "DeepMind / Google" (junto com deepmind.google e ai.google), mas não estava
+    // em DOMAIN_ALIASES → extractRegistrableDomain("deepmind.com") retornava
+    // "deepmind.com" em vez de "google.com", quebrando match contra D1s do Google.
+    assert.equal(
+      extractRegistrableDomain("https://deepmind.com/research/alphafold"),
+      "google.com",
+    );
+  });
+
   it("ai.google é normalizado para google.com", () => {
     assert.equal(
       extractRegistrableDomain("https://ai.google/research/gemma"),
@@ -1000,5 +1077,133 @@ describe("extractRegistrableDomain — normalização domínios Google (#2580)",
     assert.equal(extractRegistrableDomain("https://deepseek.com/news"), "deepseek.com");
     // Subdomínio (3 labels): últimos 2 labels
     assert.equal(extractRegistrableDomain("https://blogs.nvidia.com/ai"), "nvidia.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2587: domain-match sozinho não remove — exige segundo sinal:
+//   (≥1 entidade-de-PRODUTO compartilhada além do nome da empresa)
+//   OR (Jaccard de título ≥ INTRA_DOMAIN_JACCARD_MIN).
+// Regressão potencial: "Google lança produto A" (D1) + "Google lança produto B"
+// (RADAR) compartilham domínio google.com, mas são eventos DIFERENTES → RADAR
+// deve ser preservado (sem entidade-de-produto nem Jaccard compartilhados).
+// ---------------------------------------------------------------------------
+
+describe("dedup-intra-edition — #2587 domain-match exige segundo sinal", () => {
+  it("(a) 2 lançamentos Google DIFERENTES: RADAR preservado quando sem produto nem Jaccard compartilhado além de 'google'", () => {
+    // D1 = Google lança Pixel 9 Pro. RADAR = Google anuncia Android 16.
+    // Os dois são da mesma empresa (google.com) mas são produtos distintos.
+    // Só "google" coincide ("anuncia" ≠ "lança") → Jaccard ≈ 0.11 < 0.2, e
+    // "pixel"/"android" não se cruzam ("google" é stopword de empresa) → 0
+    // entidades de produto compartilhadas. Nenhum segundo sinal → RADAR preservado.
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://blog.google.com/products/pixel/introducing-pixel-9-pro",
+          title: "Google lança Pixel 9 Pro com câmera aprimorada",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/android/google-lanca-android-16",
+          title: "Google anuncia Android 16 para desenvolvedores",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(
+      removed.length,
+      0,
+      "#2587: 2 lançamentos diferentes da mesma empresa NÃO devem ser removidos pelo domain-match sozinho",
+    );
+    assert.equal(kept.radar?.length, 1, "RADAR deve ser preservado");
+    assert.equal(
+      kept.radar?.[0].url,
+      "https://canaltech.com.br/android/google-lanca-android-16",
+    );
+  });
+
+  it("(b) ENTIDADE de produto compartilhada com Jaccard < 0.2 (cross-lingual): RADAR removido", () => {
+    // D1 = Google lança Gemini computer use (EN). RADAR = canaltech cobrindo o
+    // MESMO Gemini (PT). Línguas divergem → Jaccard ≈ 0.07 < 0.2, então o caminho
+    // de Jaccard NÃO dispara. O que remove é a ENTIDADE DE PRODUTO compartilhada
+    // ("gemini") — exatamente o caminho que evita regredir o #2548 sem trapaça.
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://blog.google.com/products/gemini/computer-use-launch",
+          title: "Introducing Gemini agents that use your computer",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/ia/google-gemini-computer-use",
+          title: "Google libera Gemini que consegue mexer no computador sozinho",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(
+      removed.length,
+      1,
+      "#2587: entidade de produto 'gemini' compartilhada (Jaccard < 0.2) deve remover via caminho de entidade",
+    );
+    assert.equal(removed[0].match_type, "domain");
+    assert.equal(removed[0].score, 1.0, "entidade compartilhada → score 1.0");
+    assert.equal(kept.radar?.length, 0);
+  });
+
+  it("(c) JACCARD ≥ 0.2 sem entidade de produto compartilhada: RADAR removido", () => {
+    // Mesmo lançamento, ambos PT, sem nome de produto (ou produto idêntico
+    // textual) → Jaccard alto carrega o segundo sinal sozinho. Score = Jaccard.
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://blog.google.com/products/ai/google-lanca-modo-agente",
+          title: "Google lança modo agente que controla o navegador",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/ia/google-modo-agente",
+          title: "Google lança modo agente que controla o navegador do usuário",
+          suggested_primary_domain: "google.com",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { removed } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "#2587: Jaccard ≥ 0.2 deve remover mesmo sem entidade de produto");
+    assert.equal(removed[0].match_type, "domain");
+    assert.ok(
+      removed[0].score >= INTRA_DOMAIN_JACCARD_MIN && removed[0].score < 1.0,
+      `score deve refletir o Jaccard real (${removed[0].score}), não 1.0`,
+    );
+  });
+
+  it("INTRA_DOMAIN_JACCARD_MIN exportado é 0.2", () => {
+    assert.equal(INTRA_DOMAIN_JACCARD_MIN, 0.2);
   });
 });

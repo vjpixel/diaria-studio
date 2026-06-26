@@ -90,20 +90,49 @@ export function stripVehicleSuffix(title: string): string {
   return title.replace(VEHICLE_SUFFIX_RE, "");
 }
 
-/** Termos comuns no domínio IA que NÃO contam como entidade discriminante.
- *  #2406: inclui big-tech de alta frequência (microsoft, google, meta, etc.)
- *  além dos nomes de IA — em edições com 2+ itens da mesma empresa, "Microsoft"
- *  sozinho não deve disparar entity-match entre histórias diferentes (o evento
- *  específico precisa de uma 2ª entidade discriminante). Mantém paridade com o
- *  espírito do GENERIC_THEME_WORDS de dedup.ts. */
-const ENTITY_STOPWORDS_INTRA = new Set([
-  "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini", "openai",
-  "inteligencia", "artificial", "machine", "learning",
-  "diaria", "newsletter", "edicao",
-  // big-tech de alta frequência — bloquear por nome só não discrimina evento
+/** Nomes de EMPRESA de alta frequência (#2406). NUNCA contam como entidade
+ *  discriminante de evento: em edições com 2+ itens da mesma empresa, "Microsoft"
+ *  sozinho não distingue histórias diferentes. Excluídos em TODOS os contextos
+ *  de entity-match — inclusive o segundo-sinal do domain-match (#2587), onde a
+ *  empresa já está estabelecida pelo próprio domain-match. */
+const COMPANY_STOPWORDS_INTRA = new Set([
   "microsoft", "google", "apple", "amazon", "meta", "nvidia",
   "anthropic", "deepmind", "deepseek", "mistral", "cohere",
-  "copilot", "alexa", "siri", "grok", "perplexity",
+  "openai", "perplexity",
+]);
+
+/** Nomes de PRODUTO/modelo de IA + termos genéricos do domínio + dias/meses.
+ *  Excluídos do entity-match GERAL (2-entidade, #2406) porque um produto
+ *  sozinho ("Gemini") cobre muitas histórias do dia. MAS, no segundo-sinal do
+ *  domain-match (#2587), o nome do produto É o discriminador de evento que a
+ *  issue pede ("≥1 entidade nomeada compartilhada ALÉM do nome da empresa"):
+ *  a empresa já vem do domínio, então "Gemini"/"GPT" compartilhado confirma o
+ *  mesmo lançamento. Por isso `extractProductEntitiesIntra` re-inclui estes. */
+const PRODUCT_STOPWORDS_INTRA = new Set([
+  "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini",
+  "inteligencia", "artificial", "machine", "learning",
+  "diaria", "newsletter", "edicao",
+  "copilot", "alexa", "siri", "grok",
+  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
+  "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]);
+
+/** Termos comuns no domínio IA que NÃO contam como entidade discriminante no
+ *  entity-match GERAL (2-entidade). União de empresa + produto/genéricos.
+ *  Mantém o comportamento histórico de `extractNamedEntitiesIntra` (#2406). */
+const ENTITY_STOPWORDS_INTRA = new Set([
+  ...COMPANY_STOPWORDS_INTRA,
+  ...PRODUCT_STOPWORDS_INTRA,
+]);
+
+/** Termos puramente genéricos (não-produto, não-empresa) — sempre excluídos,
+ *  inclusive no segundo-sinal do domain-match. Evita que "IA"/dia-da-semana
+ *  contem como produto-discriminador. Subconjunto de PRODUCT_STOPWORDS_INTRA. */
+const GENERIC_STOPWORDS_INTRA = new Set([
+  "ia", "ai", "ml", "llm",
+  "inteligencia", "artificial", "machine", "learning",
+  "diaria", "newsletter", "edicao",
   "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
   "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
@@ -124,7 +153,10 @@ const ENTITY_STOPWORDS_INTRA = new Set([
  *
  * Não altera `extractNamedEntities` do dedup.ts (cross-edition dedup).
  */
-export function extractNamedEntitiesIntra(title: string): Set<string> {
+function extractEntitiesWithStopwords(
+  title: string,
+  stopwords: Set<string>,
+): Set<string> {
   const cleaned = stripVehicleSuffix(title);
   const entities = new Set<string>();
   const words = cleaned.split(/\s+/);
@@ -140,10 +172,39 @@ export function extractNamedEntitiesIntra(title: string): Set<string> {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[̀-ͯ]/g, "");
-    if (ENTITY_STOPWORDS_INTRA.has(normalized)) continue;
+    if (stopwords.has(normalized)) continue;
     entities.add(normalized);
   }
   return entities;
+}
+
+/** Entity-match GERAL (2-entidade, #2406): exclui empresa + produto + genéricos.
+ *  Um produto sozinho ("Gemini") cobre muitas histórias do dia → não discrimina. */
+export function extractNamedEntitiesIntra(title: string): Set<string> {
+  return extractEntitiesWithStopwords(title, ENTITY_STOPWORDS_INTRA);
+}
+
+/**
+ * Entity-match para o SEGUNDO-SINAL do domain-match (#2587).
+ *
+ * Re-inclui nomes de PRODUTO/modelo (Gemini, GPT, Claude, Copilot…) como
+ * entidades discriminantes, excluindo só nomes de EMPRESA e termos genéricos.
+ *
+ * Racional: no contexto do domain-match, a empresa já está estabelecida (o
+ * `suggested_primary_domain` do RADAR bate com o domínio do destaque). O que a
+ * issue #2587 pede como segundo sinal é "≥1 entidade nomeada compartilhada
+ * ALÉM do nome da empresa" — i.e. o nome do PRODUTO/feature. Então:
+ *   - D1 "Google lança Gemini computer use" + RADAR "canaltech: Google libera
+ *     Gemini que mexe no PC" → compartilham "gemini" (produto) → MESMO evento.
+ *   - D1 "Google lança Pixel 9" + RADAR "Google anuncia Android 16" →
+ *     "pixel"/"android" não se cruzam, "google" é stopword de empresa →
+ *     0 entidades compartilhadas → eventos DIFERENTES (preserva).
+ */
+export function extractProductEntitiesIntra(title: string): Set<string> {
+  return extractEntitiesWithStopwords(
+    title,
+    new Set([...COMPANY_STOPWORDS_INTRA, ...GENERIC_STOPWORDS_INTRA]),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +270,18 @@ export const INTRA_JACCARD_THRESHOLD = 0.45;
  */
 export const INTRA_ENTITY_MIN_SHARED = 2;
 
+/**
+ * Threshold de Jaccard mínimo aceito como SEGUNDO SINAL quando domain-match
+ * é positivo (#2587), no caminho OR `(entidade-de-produto compartilhada) OR
+ * (Jaccard ≥ este valor)`. Baixo o suficiente para confirmar mesmo evento com
+ * 1–2 tokens específicos compartilhados, alto o suficiente para rejeitar dois
+ * lançamentos diferentes da mesma empresa sem token comum além do nome da
+ * companhia. O caminho de entidade-de-produto cobre o caso cross-lingual
+ * (D1 inglês + RADAR português) onde o Jaccard de título é ~0 mas ambos citam
+ * o nome do produto (ex: "Gemini").
+ */
+export const INTRA_DOMAIN_JACCARD_MIN = 0.2;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -256,6 +329,10 @@ export const DOMAIN_ALIASES: Record<string, string> = {
   "blog.google": "google.com",
   "deepmind.google": "google.com",
   "ai.google": "google.com",
+  // #2586: deepmind.com é listado em official-domains.ts como domains[] da entry
+  // "DeepMind / Google" (junto com deepmind.google e ai.google), mas estava faltando
+  // aqui. Adicionar para que extractRegistrableDomain("https://deepmind.com/...") → "google.com".
+  "deepmind.com": "google.com",
 };
 
 /**
@@ -298,6 +375,12 @@ export function extractRegistrableDomain(url: string): string | null {
  * completo como "blog.google" — primary_domain do Google em official-domains.ts)
  * com o `extractRegistrableDomain()` do destaque (que aplica o alias map).
  * Sem normalização bilateral, "blog.google" ≠ "google.com" mesmo após o fix #2580.
+ *
+ * #2586: NÃO delega a `extractRegistrableDomain` porque a entrada aqui é um
+ * domínio já normalizado (sem scheme "https://"), e `extractRegistrableDomain`
+ * espera uma URL completa (chama `new URL(url)` que exige scheme). Extrair o
+ * eTLD+1 inline é necessário. O alias map compartilhado (`DOMAIN_ALIASES`) garante
+ * consistência de comportamento entre as duas funções.
  */
 function normalizeDomainForMatch(domain: string): string {
   const lower = domain.toLowerCase();
@@ -373,7 +456,16 @@ export function isPressCovertageOfHighlight(
  * `enrich-primary-source.ts` para cobertura de imprensa de lançamento), e o
  * destaque tem URL do domínio X, o item é flagrado como cobertura-de-imprensa
  * do mesmo lançamento. Caso real: RADAR canaltech.com.br/google-libera-ia-que...
- * (suggested_primary_domain="google.com") + D1 blog.google.com/gemini-computer-use.
+ * (suggested_primary_domain="blog.google") + D1 blog.google.com/gemini-computer-use.
+ *
+ * #2587: domain-match sozinho NÃO é suficiente — dois lançamentos DIFERENTES da
+ * mesma empresa (D1=Google A + RADAR=Google B) compartilham o domínio sem ser o
+ * mesmo evento. Exige um SEGUNDO SINAL, conforme a issue:
+ *   (≥1 entidade-de-PRODUTO compartilhada além do nome da empresa)
+ *   OR (Jaccard de título ≥ INTRA_DOMAIN_JACCARD_MIN).
+ * O caminho de entidade (via `extractProductEntitiesIntra`) é o que faz o caso
+ * real do #2548 passar sem trapaça: D1 inglês + RADAR português têm Jaccard ~0,
+ * mas ambos citam o produto ("Gemini") → entidade compartilhada → mesmo evento.
  *
  * @returns match info se duplicata, null caso contrário.
  */
@@ -404,6 +496,9 @@ export function isIntraEditionDuplicate(
   // alinhado com o entity-check.
   const artTokens = tokenizeForJaccard(stripVehicleSuffix(artTitle));
   const artEntities = extractNamedEntitiesIntra(artTitle);
+  // #2587: entidades de PRODUTO (inclui Gemini/GPT, exclui só empresa+genéricos)
+  // pro segundo-sinal do domain-match — capturadas 1× fora do loop.
+  const artProductEntities = extractProductEntitiesIntra(artTitle);
 
   for (const h of highlights) {
     const hTitle = highlightTitle(h);
@@ -413,23 +508,44 @@ export function isIntraEditionDuplicate(
     const hUrl = highlightUrl(h);
     if (hUrl && article.url === hUrl) continue;
 
+    // (a) + (c) — computar Jaccard e domain-match antes da decisão.
+    // Jaccard é necessário tanto para o check (a) quanto como segundo sinal do (c).
+    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
+    const jaccard = jaccardSimilarity(artTokens, hTokens);
+
     // (c) #2548 Furo 2: domain-based match via suggested_primary_domain.
-    // Roda ANTES de Jaccard/entity pois é sinal muito mais preciso: o campo
-    // suggested_primary_domain só existe quando enrich-primary-source detectou
-    // verbo de lançamento + empresa conhecida no título RADAR. Se o domínio
-    // oficial bate com o domínio do destaque, é quase certamente cobertura de
-    // imprensa do mesmo evento.
-    if (isPressCovertageOfHighlight(article, hUrl ?? null)) {
-      return {
-        match_type: "domain",
-        matched_highlight: hTitle,
-        score: 1.0,
-      };
+    // O campo suggested_primary_domain só existe quando enrich-primary-source detectou
+    // verbo de lançamento + empresa conhecida no título RADAR. Se o domínio oficial
+    // bate com o domínio do destaque, o item PODE ser cobertura de imprensa.
+    //
+    // #2587: domain-match sozinho é insuficiente — dois lançamentos DIFERENTES
+    // da mesma empresa ("Google lança produto A" + "Google lança produto B")
+    // compartilham o domínio mas não são o mesmo evento. Exige um SEGUNDO SINAL
+    // de mesmo-lançamento, exatamente como a issue pede:
+    //   (≥1 entidade-de-PRODUTO compartilhada além do nome da empresa)
+    //   OR (Jaccard de título ≥ INTRA_DOMAIN_JACCARD_MIN).
+    // O caminho de entidade-de-produto é o que faz o caso real do #2548 passar
+    // SEM trapaça: D1 em inglês + RADAR em português têm Jaccard ~0, mas ambos
+    // citam o produto ("Gemini") → entidade compartilhada → mesmo evento.
+    if (isPressCovertageOfHighlight(article, hUrl)) {
+      const hProductEntities = extractProductEntitiesIntra(hTitle);
+      const sharedProduct = [...artProductEntities].filter((e) =>
+        hProductEntities.has(e),
+      );
+      const hasEntitySignal = sharedProduct.length >= 1;
+      const hasJaccardSignal = jaccard >= INTRA_DOMAIN_JACCARD_MIN;
+      if (hasEntitySignal || hasJaccardSignal) {
+        return {
+          match_type: "domain",
+          matched_highlight: hTitle,
+          // Score reflete a força do segundo sinal (não 1.0 fixo): entidade de
+          // produto compartilhada → 1.0; senão o Jaccard que disparou.
+          score: hasEntitySignal ? 1.0 : jaccard,
+        };
+      }
     }
 
     // (a) Jaccard sobre tokens normalizados (sufixo de veículo já stripado)
-    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
-    const jaccard = jaccardSimilarity(artTokens, hTokens);
     if (jaccard >= jThreshold) {
       return {
         match_type: "jaccard",
