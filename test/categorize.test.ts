@@ -2516,6 +2516,47 @@ describe("categorize() — #1544 non-launch items on official blogs", () => {
   });
 });
 
+// #2595: HF blog posts misclassified as LANÇAMENTOS
+describe("categorize() — #2595 HF blog misclassified", () => {
+  it("huggingface.co/blog/vllm-jobs (tutorial how-to) → tutorial (USE_MELHOR)", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/vllm-jobs",
+        title: "Run a vLLM server with one command",
+        summary: "Learn how to deploy a vLLM inference server in a single step.",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("huggingface.co/blog/allenai/hybrid-token-prediction (research from Ai2) → noticias (RADAR)", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/allenai/hybrid-token-prediction",
+        title: "Hybrid Token Prediction: Unifying Discrete and Continuous Language Models",
+        summary: "AllenAI research on hybrid token prediction combining discrete and continuous representations.",
+      }),
+      "noticias",
+    );
+  });
+
+  it("huggingface.co/blog/vllm-jobs imperative tutorial rule does NOT fire for 'Running costs'", () => {
+    // Regression: gerúndio "Running" should not trigger imperative-verb tutorial rule.
+    const result = categorize({
+      url: "https://huggingface.co/blog/running-costs",
+      title: "Running costs of LLM inference in one chart",
+    });
+    // This is not a tutorial (no imperative verb + "in one X"); may be lancamento or noticias.
+    assert.notEqual(result, "tutorial");
+  });
+
+  it("#2595: HF blog/{org}/{slug} with org NOT in KNOWN_COMPANY_SLUGS → noticias", () => {
+    // allenai is not a known company slug but should still be treated as third-party.
+    assert.equal(isThirdPartyBlogAboutOtherCompany("https://huggingface.co/blog/allenai/hybrid-token-prediction"), true);
+    assert.equal(isThirdPartyBlogAboutOtherCompany("https://huggingface.co/blog/vllm-jobs"), false);
+  });
+});
+
 describe("#1759 — recência de lançamento (produto re-anunciado → noticias)", () => {
   describe("hasPreExistenceSignal — sinais textuais de pré-existência", () => {
     const yes: Array<[string, Article]> = [

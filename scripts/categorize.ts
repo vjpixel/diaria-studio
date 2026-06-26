@@ -835,11 +835,14 @@ export function isThirdPartyBlogAboutOtherCompany(url: string): boolean {
     const host = u.hostname.replace(/^www\./, "");
     if (!THIRD_PARTY_BLOG_HOSTS.has(host)) return false;
     const segments = u.pathname.split("/").filter(Boolean);
-    // huggingface.co/blog/{company}/{slug} — check if segment after "blog" is a known company
+    // huggingface.co/blog/{company}/{slug} — 2+ segments after "blog" signals
+    // third-party authorship (org subdir). huggingface.co/blog/{slug} (1 segment)
+    // is HF's own blog and does NOT match this rule (#2595).
     const blogIdx = segments.indexOf("blog");
-    if (blogIdx < 0 || blogIdx + 1 >= segments.length) return false;
-    const companySegment = segments[blogIdx + 1].toLowerCase();
-    return KNOWN_COMPANY_SLUGS.has(companySegment);
+    // huggingface.co/blog/{org}/{slug}: 2+ segments after "blog" → third-party.
+    // huggingface.co/blog/{slug} (1 segment only) is HF's own blog → false (#2595).
+    if (blogIdx < 0 || blogIdx + 2 >= segments.length) return false;
+    return true;
   } catch {
     return false;
   }
@@ -1037,7 +1040,7 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // "buyer guide" ou "productivity guide" (não acionáveis).
 // "techniques for" e "patterns for" exigem preposição por analogia.
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
