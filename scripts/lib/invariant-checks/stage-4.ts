@@ -11,6 +11,12 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
+import { isTruncatedSummary } from "../truncated-summary.ts";
+import { sectionHeaderRegex } from "../section-naming.ts";
+import {
+  INLINE_LINK_ONLY_RE,
+  URL_WITH_BALANCED_PARENS_RE_PART,
+} from "../lint-checks/section-item-format.ts";
 import {
   extractDestaqueUrls,
   extractPromptUrl,
@@ -657,6 +663,115 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   return [];
 }
 
+/**
+ * #2596: detecta itens de seção secundária (LANÇAMENTOS/RADAR/USE MELHOR)
+ * cuja descrição vem truncada de `og:description` — terminando em reticências
+ * (…/...) com palavra pendente (conjunção/preposição/artigo) antes delas.
+ *
+ * Ação: warning (não bloqueante). O editor decide se reescreve a descrição ou
+ * aceita o item assim. Alinhado ao padrão "flag não DROP" do repo.
+ *
+ * Seções É IA? e VÍDEOS são excluídas — formato próprio sem descrição inline.
+ */
+const TARGET_SECONDARY_SECTION_RE = sectionHeaderRegex(
+  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
+  { capture: "none", flags: "u" },
+);
+const ANY_SECTION_HEADER_RE_S4 = sectionHeaderRegex(
+  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|DESTAQUES?`,
+  { capture: "none", flags: "u" },
+);
+// Formato canônico (link + descrição na mesma linha) com captura da descrição.
+// Usa URL_WITH_BALANCED_PARENS_RE_PART (#2413/#2596) pra tolerar URLs Wikipedia
+// `/wiki/X_(model)` — `[^\s)]+` simples pararia no 1º `)` e o item escaparia o check.
+const INLINE_LINK_WITH_TEXT_RE = new RegExp(
+  String.raw`^\s*\*{0,2}\s*\[[^\]]+\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(.+)$`,
+  "u",
+);
+
+function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+
+  const violations: InvariantViolation[] = [];
+  let currentSection: string | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const t = raw.trim();
+
+    if (TARGET_SECONDARY_SECTION_RE.test(t)) {
+      currentSection = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
+      continue;
+    }
+    if (ANY_SECTION_HEADER_RE_S4.test(t) || /^(?:\*\*)?DESTAQUE\s+\d+/.test(t)) {
+      currentSection = null;
+      continue;
+    }
+    if (t === "---") {
+      currentSection = null;
+      continue;
+    }
+    if (!currentSection) continue;
+
+    // Formato canônico: link + texto na mesma linha — checar texto inline
+    const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
+    if (inlineMatch) {
+      const desc = inlineMatch[1].trim();
+      if (isTruncatedSummary(desc)) {
+        violations.push({
+          rule: "truncated-secondary-item-summary",
+          message:
+            `Seção ${currentSection} linha ${i + 1}: descrição parece truncada (termina em reticências ` +
+            `com palavra pendente): "${desc.slice(-60)}". ` +
+            `Origem provável: og:description truncada na fonte. ` +
+            `Fix: reescrever a descrição ou aceitar o item com ressalva editorial.`,
+          source_issue: "#2596",
+          severity: "warning",
+          file: path,
+          line: i + 1,
+        });
+      }
+      continue;
+    }
+
+    // Formato de 2 linhas: link sozinho + próxima linha é a descrição
+    if (INLINE_LINK_ONLY_RE.test(raw)) {
+      let j = i + 1;
+      while (j < lines.length && lines[j].trim() === "") j++;
+      if (j < lines.length) {
+        const descLine = lines[j].trim();
+        // Só checar se a próxima linha é texto simples (não é outro link nem header)
+        if (
+          descLine &&
+          !INLINE_LINK_ONLY_RE.test(lines[j]) &&
+          !ANY_SECTION_HEADER_RE_S4.test(descLine) &&
+          descLine !== "---"
+        ) {
+          if (isTruncatedSummary(descLine)) {
+            violations.push({
+              rule: "truncated-secondary-item-summary",
+              message:
+                `Seção ${currentSection} linha ${j + 1}: descrição parece truncada (termina em reticências ` +
+                `com palavra pendente): "${descLine.slice(-60)}". ` +
+                `Origem provável: og:description truncada na fonte. ` +
+                `Fix: reescrever a descrição ou aceitar o item com ressalva editorial.`,
+              source_issue: "#2596",
+              severity: "warning",
+              file: path,
+              line: j + 1,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return violations;
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -707,6 +822,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkNarrativeNotGenericPlaceholder,
   },
+  {
+    id: "truncated-secondary-item-summary",
+    description: "descrição de item secundário não termina em reticências de truncamento (#2596)",
+    source_issue: "#2596",
+    stage: 4,
+    run: checkTruncatedSecondaryItemSummary,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -725,4 +847,5 @@ export {
   checkImageContentFresh,
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
+  checkTruncatedSecondaryItemSummary,
 };
