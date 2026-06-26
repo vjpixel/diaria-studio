@@ -586,7 +586,11 @@ describe("ordem das seções (#2193)", () => {
     };
   }
 
-  test("seções aparecem na ordem: CTR < Overnight < Saúde < Em breve", async () => {
+  test("#2602: dentro do panel Visão geral, ordem Overnight < Saúde < Em breve", async () => {
+    // #2602: reorg em abas — overnight, source-health e stubs vivem todos no
+    // panel-visaogeral. CTR migrou para seu próprio panel (panel-ctr), então a
+    // ordem global CTR < Overnight não vale mais (panel-visaogeral vem antes de
+    // panel-ctr). Checamos a ordem intra-panel das 3 seções da Visão geral.
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeFullData());
 
@@ -600,33 +604,41 @@ describe("ordem das seções (#2193)", () => {
     assert.ok(idxSourceHealth > -1, "secao #source-health deve estar presente");
     assert.ok(idxStubs > -1, "secao #stubs deve estar presente");
 
-    assert.ok(idxCtr < idxOvernight, `CTR (${idxCtr}) deve aparecer antes de Overnight (${idxOvernight})`);
     assert.ok(idxOvernight < idxSourceHealth, `Overnight (${idxOvernight}) deve aparecer antes de Saúde (${idxSourceHealth})`);
     assert.ok(idxSourceHealth < idxStubs, `Saúde (${idxSourceHealth}) deve aparecer antes de Em breve (${idxStubs})`);
   });
 
-  test("nav reflete a mesma ordem: CTR < Overnight < Saúde < Em breve", async () => {
+  test("#2602: navegação por abas substituiu o nav — 6 labels de aba presentes", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeFullData());
 
-    const navStart = html.indexOf('<nav class="nav">');
-    assert.ok(navStart > -1, "nav deve estar presente");
-    const navEnd = html.indexOf("</nav>", navStart);
-    const navHtml = html.slice(navStart, navEnd);
+    // O <nav class="nav"> com âncoras foi substituído por abas CSS-only (#2602).
+    assert.ok(!html.includes('<nav class="nav">'), "nav antigo não deve mais existir");
 
-    const idxNavCtr = navHtml.indexOf('href="#ctr"');
-    const idxNavOvernight = navHtml.indexOf('href="#overnight"');
-    const idxNavSourceHealth = navHtml.indexOf('href="#source-health"');
-    const idxNavStubs = navHtml.indexOf('href="#stubs"');
+    // tab-bar com 6 labels, na ordem editorial confirmada. Escopar à tab-bar do
+    // body: for="tab-X" também aparece no CSS (label[for="tab-X"]) no <head>, então
+    // indexOf contra o html inteiro pegaria a posição no CSS (falso-positivo).
+    const tabBar = html.match(/<div class="tab-bar"[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(tabBar.length > 0, "tab-bar deve existir no body");
+    const idxVisaoGeral = tabBar.indexOf('for="tab-visaogeral"');
+    const idxCtr = tabBar.indexOf('for="tab-ctr"');
+    const idxTopLinks = tabBar.indexOf('for="tab-toplinks"');
+    const idxUseMelhor = tabBar.indexOf('for="tab-usemelhor"');
+    const idxEia = tabBar.indexOf('for="tab-eia"');
+    const idxAudiencia = tabBar.indexOf('for="tab-audiencia"');
 
-    assert.ok(idxNavCtr > -1, "link #ctr deve estar no nav");
-    assert.ok(idxNavOvernight > -1, "link #overnight deve estar no nav");
-    assert.ok(idxNavSourceHealth > -1, "link #source-health deve estar no nav");
-    assert.ok(idxNavStubs > -1, "link #stubs deve estar no nav");
+    assert.ok(idxVisaoGeral > -1, "label aba Visão geral deve existir");
+    assert.ok(idxCtr > -1, "label aba CTR deve existir");
+    assert.ok(idxTopLinks > -1, "label aba Top links deve existir");
+    assert.ok(idxUseMelhor > -1, "label aba Use Melhor deve existir");
+    assert.ok(idxEia > -1, "label aba É IA? deve existir");
+    assert.ok(idxAudiencia > -1, "label aba Audiência deve existir");
 
-    assert.ok(idxNavCtr < idxNavOvernight, `nav: CTR (${idxNavCtr}) deve aparecer antes de Overnight (${idxNavOvernight})`);
-    assert.ok(idxNavOvernight < idxNavSourceHealth, `nav: Overnight (${idxNavOvernight}) deve aparecer antes de Saúde (${idxNavSourceHealth})`);
-    assert.ok(idxNavSourceHealth < idxNavStubs, `nav: Saúde (${idxNavSourceHealth}) deve aparecer antes de Em breve (${idxNavStubs})`);
+    assert.ok(idxVisaoGeral < idxCtr, "Visão geral antes de CTR");
+    assert.ok(idxCtr < idxTopLinks, "CTR antes de Top links");
+    assert.ok(idxTopLinks < idxUseMelhor, "Top links antes de Use Melhor");
+    assert.ok(idxUseMelhor < idxEia, "Use Melhor antes de É IA?");
+    assert.ok(idxEia < idxAudiencia, "É IA? antes de Audiência");
   });
 });
 
