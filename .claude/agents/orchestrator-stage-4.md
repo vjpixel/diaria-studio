@@ -228,6 +228,36 @@ npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/ \
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`), mas pular a apresentação no gate (que é pulado inteiramente). O arquivo fica disponível para auditoria pós-edição.
 
+**4c.6b — Auto-fix de DIVERGENT determinístico (#2598):**
+
+Após o subagente gravar `_internal/fact-check.json`, aplicar correções automáticas de claims `DIVERGENT` com `suggested_fix` presente — antes de montar o gate:
+
+```bash
+npx tsx scripts/apply-factcheck-autofix.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit code handling:
+- `0` → capturar stdout; incluir no gate quando `summary.applied > 0` (seção "CORREÇÕES AUTOMÁTICAS").
+- `1` → logar warn; continuar sem auto-fix (não bloqueia gate).
+
+**O que é auto-corrigido:**
+- Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
+- Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
+- Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
+- Nunca o destaque do `intentional_error` declarado no frontmatter — preserva o erro intencional proposital.
+
+**No gate:** apresentar como "já corrigido (diff X→Y) — confirme ou reverta". Se `fact-check-autofix.json` mostra `summary.applied > 0`, incluir bloco no gate (antes do `{fact_check_block}`):
+
+```
+━━━ FACT-CHECK AUTO-CORRIGIDO (#2598) ━━━━━━━━━━
+  ✅ {N} correção(ões) aplicada(s) automaticamente:
+    D{N} [{tipo}] "{texto_original}" → "{suggested_fix}" ({arquivo(s)})
+  Para reverter: editar o arquivo e usar a opção "ajustar" no gate.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`); o gate é pulado.
+
 ### 4d. Gate humano (#1694)
 
 **Sync push antes do gate (#507):** Subir outputs pra o editor revisar no Drive antes de aprovar:

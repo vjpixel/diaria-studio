@@ -1,0 +1,514 @@
+/**
+ * test/apply-factcheck-autofix.test.ts (#2598)
+ *
+ * Testes para scripts/apply-factcheck-autofix.ts.
+ *
+ * Cenários cobertos:
+ *   1. DIVERGENT com suggested_fix → aplicado em newsletter + social (caso real: GPT-4o → GPT-5.4)
+ *   2. NOT_FOUND_IN_SOURCE → nunca auto-corrigido (non-divergent)
+ *   3. DIVERGENT superlativo → não auto-corrigido (only tone)
+ *   4. intentional_error declarado no frontmatter → claim do mesmo destaque é pulado
+ *   5. DIVERGENT sem suggested_fix → skipped_no_fix
+ *   6. Texto não encontrado nos arquivos → skipped_text_not_found
+ *   7. Dry-run não modifica arquivos mas grava fact-check-autofix.json
+ *   8. Multiple DIVERGENT com fixes → todos aplicados, log correto
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+
+import {
+  extractIntentionalErrorDestaque,
+  isIntentionalErrorClaim,
+  applyTextSubstitution,
+  planAutofixes,
+  type AutofixEntry,
+} from "../scripts/apply-factcheck-autofix.ts";
+import type { FactClaim } from "../scripts/run-fact-checker.ts";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeClaim(
+  overrides: Partial<FactClaim> & { verdict: FactClaim["verdict"] },
+): FactClaim {
+  return {
+    destaque: 1,
+    claim_type: "number",
+    text: "GPT-4o",
+    context: "comparou com GPT-4o",
+    sources: ["newsletter"],
+    ...overrides,
+  };
+}
+
+function runCli(editionDir: string, extraArgs: string[] = []) {
+  const projectRoot = join(import.meta.dirname, "..");
+  const scriptPath = join(projectRoot, "scripts", "apply-factcheck-autofix.ts");
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", scriptPath, "--edition-dir", editionDir, ...extraArgs],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
+}
+
+interface Fixture {
+  dir: string;
+  newsletterPath: string;
+  socialPath: string;
+  factCheckPath: string;
+  autofixPath: string;
+}
+
+function createFixture(
+  opts: {
+    newsletterContent?: string;
+    socialContent?: string;
+    factCheckClaims?: Partial<FactClaim>[];
+  } = {},
+): Fixture {
+  const dir = mkdtempSync(join(tmpdir(), "factcheck-autofix-"));
+  const internalDir = join(dir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+
+  const newsletterContent =
+    opts.newsletterContent ??
+    `DESTAQUE 1\n\nO modelo GPT-4o foi comparado com o novo lançamento.\n\nPor que isso importa: teste.\n`;
+  const socialContent =
+    opts.socialContent ??
+    `# LinkedIn\n\n## d1\n\nO GPT-4o foi superado pelo novo modelo.\n`;
+
+  writeFileSync(join(dir, "02-reviewed.md"), newsletterContent, "utf8");
+  writeFileSync(join(dir, "03-social.md"), socialContent, "utf8");
+  writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify({ highlights: [] }), "utf8");
+
+  const claims = (opts.factCheckClaims ?? []).map((c) => makeClaim(c as Parameters<typeof makeClaim>[0]));
+  const factCheck = {
+    edition: "260626",
+    checked_at: new Date().toISOString(),
+    claims,
+    summary: {
+      total: claims.length,
+      sustained: 0,
+      divergent: claims.filter((c) => c.verdict === "DIVERGENT").length,
+      not_found_in_source: 0,
+      source_unreachable: 0,
+      inferred: 0,
+      attention_items: 0,
+    },
+  };
+  writeFileSync(join(internalDir, "fact-check.json"), JSON.stringify(factCheck), "utf8");
+
+  return {
+    dir,
+    newsletterPath: join(dir, "02-reviewed.md"),
+    socialPath: join(dir, "03-social.md"),
+    factCheckPath: join(internalDir, "fact-check.json"),
+    autofixPath: join(internalDir, "fact-check-autofix.json"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// extractIntentionalErrorDestaque
+// ---------------------------------------------------------------------------
+
+describe("extractIntentionalErrorDestaque (#2598)", () => {
+  it("retorna null quando não há frontmatter", () => {
+    const md = "DESTAQUE 1\n\nTexto sem frontmatter.\n";
+    assert.equal(extractIntentionalErrorDestaque(md), null);
+  });
+
+  it("retorna null quando frontmatter não tem intentional_error", () => {
+    const md = "---\ntitulo: Edição\n---\n\nTexto.\n";
+    assert.equal(extractIntentionalErrorDestaque(md), null);
+  });
+
+  it("retorna null quando intentional_error: none (#2016)", () => {
+    const md = "---\nintentional_error: none\n---\n\nTexto.\n";
+    assert.equal(extractIntentionalErrorDestaque(md), null);
+  });
+
+  it("retorna 1 quando location é 'DESTAQUE 1, parágrafo 2'", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: 'GPT-4o onde deveria ser GPT-5.4'",
+      "  location: 'DESTAQUE 1, parágrafo 2'",
+      "  category: version_inconsistency",
+      "  correct_value: GPT-5.4",
+      "---",
+      "",
+      "Texto.",
+    ].join("\n");
+    assert.equal(extractIntentionalErrorDestaque(md), 1);
+  });
+
+  it("retorna 2 quando location é 'DESTAQUE 2'", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: 'ano errado'",
+      "  location: 'DESTAQUE 2, parágrafo 1'",
+      "  category: numeric",
+      "  correct_value: 2024",
+      "---",
+      "",
+      "Texto.",
+    ].join("\n");
+    assert.equal(extractIntentionalErrorDestaque(md), 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isIntentionalErrorClaim
+// ---------------------------------------------------------------------------
+
+describe("isIntentionalErrorClaim (#2598)", () => {
+  it("retorna false quando intentionalDestaque é null", () => {
+    const claim = makeClaim({ verdict: "DIVERGENT", destaque: 1 });
+    assert.equal(isIntentionalErrorClaim(claim, null), false);
+  });
+
+  it("retorna true quando destaque do claim bate com intentional_error", () => {
+    const claim = makeClaim({ verdict: "DIVERGENT", destaque: 1 });
+    assert.equal(isIntentionalErrorClaim(claim, 1), true);
+  });
+
+  it("retorna false quando destaque do claim é diferente", () => {
+    const claim = makeClaim({ verdict: "DIVERGENT", destaque: 2 });
+    assert.equal(isIntentionalErrorClaim(claim, 1), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyTextSubstitution
+// ---------------------------------------------------------------------------
+
+describe("applyTextSubstitution (#2598)", () => {
+  it("substitui primeira ocorrência e retorna changed=true", () => {
+    const result = applyTextSubstitution("O modelo GPT-4o é rápido.", "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    assert.equal(result.content, "O modelo GPT-5.4 é rápido.");
+  });
+
+  it("retorna changed=false quando texto não encontrado", () => {
+    const result = applyTextSubstitution("Texto sem o claim.", "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, false);
+    assert.equal(result.content, "Texto sem o claim.");
+  });
+
+  it("substitui apenas a primeira ocorrência (conservador)", () => {
+    const result = applyTextSubstitution("GPT-4o vs GPT-4o", "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    // Apenas o primeiro deve ser substituído
+    assert.equal(result.content, "GPT-5.4 vs GPT-4o");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planAutofixes — lógica de decisão pura
+// ---------------------------------------------------------------------------
+
+describe("planAutofixes (#2598)", () => {
+  it("DIVERGENT com suggested_fix → status applied (sem intentional_error)", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      text: "GPT-4o",
+      suggested_fix: "GPT-5.4",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], null);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].status, "applied");
+  });
+
+  it("DIVERGENT superlativo → skipped_superlative (mesmo com suggested_fix)", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      claim_type: "superlative",
+      text: "primeiro do Brasil",
+      suggested_fix: "segundo do Brasil",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], null);
+    assert.equal(entries[0].status, "skipped_superlative");
+  });
+
+  it("DIVERGENT sem suggested_fix → skipped_no_fix", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      text: "GPT-4o",
+      suggested_fix: undefined,
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], null);
+    assert.equal(entries[0].status, "skipped_no_fix");
+  });
+
+  it("DIVERGENT do mesmo destaque do intentional_error → skipped_intentional_error", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      destaque: 1,
+      text: "GPT-4o",
+      suggested_fix: "GPT-5.4",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], 1); // intentional_error no destaque 1
+    assert.equal(entries[0].status, "skipped_intentional_error");
+  });
+
+  it("DIVERGENT de destaque diferente do intentional_error → applied", () => {
+    const claim = makeClaim({
+      verdict: "DIVERGENT",
+      destaque: 2,
+      text: "R$ 99",
+      suggested_fix: "R$ 24,99",
+      sources: ["newsletter"],
+    });
+    const entries = planAutofixes([claim], 1); // intentional_error no destaque 1, não no 2
+    assert.equal(entries[0].status, "applied");
+  });
+
+  it("NOT_FOUND_IN_SOURCE → não entra em planAutofixes (filtra apenas DIVERGENT)", () => {
+    const claim = makeClaim({
+      verdict: "NOT_FOUND_IN_SOURCE",
+      text: "primeira vez",
+      sources: ["social"],
+    });
+    const entries = planAutofixes([claim], null);
+    // NOT_FOUND_IN_SOURCE não é DIVERGENT → não processa
+    assert.equal(entries.length, 0);
+  });
+
+  it("mix de DIVERGENT e NOT_FOUND → só DIVERGENT processado", () => {
+    const c1 = makeClaim({ verdict: "DIVERGENT", text: "GPT-4o", suggested_fix: "GPT-5.4", sources: ["newsletter"] });
+    const c2 = makeClaim({ verdict: "NOT_FOUND_IN_SOURCE", claim_type: "superlative", text: "primeiro", sources: ["social"] });
+    const entries = planAutofixes([c1, c2], null);
+    assert.equal(entries.length, 1, "só o DIVERGENT deve ser retornado");
+    assert.equal(entries[0].text, "GPT-4o");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI integration — cenário real: GPT-4o → GPT-5.4
+// ---------------------------------------------------------------------------
+
+describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#2598)", () => {
+  it("aplica correção DIVERGENT em newsletter + social e grava autofix.json", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nO modelo GPT-4o foi comparado.\n",
+      socialContent: "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n",
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["newsletter", "social"],
+          note: "Fonte compara com GPT-5.4, não GPT-4o",
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0 esperado. stderr: ${result.stderr}`);
+
+      // Verificar que os arquivos foram modificados
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      const social = readFileSync(fixture.socialPath, "utf8");
+      assert.ok(newsletter.includes("GPT-5.4"), "newsletter deve ter GPT-5.4 após autofix");
+      assert.ok(!newsletter.includes("GPT-4o"), "newsletter não deve mais ter GPT-4o");
+      assert.ok(social.includes("GPT-5.4"), "social deve ter GPT-5.4 após autofix");
+
+      // Verificar fact-check-autofix.json
+      assert.ok(existsSync(fixture.autofixPath), "fact-check-autofix.json deve existir");
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.applied, 1, "1 correção aplicada");
+      assert.equal(autofix.entries[0].status, "applied");
+      assert.equal(autofix.entries[0].text, "GPT-4o");
+      assert.equal(autofix.entries[0].suggested_fix, "GPT-5.4");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("NOT_FOUND_IN_SOURCE (superlativo) não é auto-corrigido", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 2\n\nPela primeira vez uma operadora distribui IA.\n",
+      socialContent: "# LinkedIn\n\n## d2\n\nPrimeira operadora com IA.\n",
+      factCheckClaims: [
+        {
+          verdict: "NOT_FOUND_IN_SOURCE",
+          claim_type: "superlative",
+          text: "primeira vez",
+          suggested_fix: undefined, // fact-checker não emite fix pra NOT_FOUND
+          sources: ["newsletter", "social"],
+          destaque: 2,
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      // Arquivos não devem ter sido modificados
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.ok(newsletter.includes("primeira vez"), "NOT_FOUND_IN_SOURCE não deve ser alterado");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.applied, 0, "nenhuma correção aplicada para NOT_FOUND_IN_SOURCE");
+      assert.equal(autofix.summary.total_divergent, 0, "NOT_FOUND_IN_SOURCE não entra em total_divergent");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("intentional_error no destaque 1 → claim DIVERGENT do D1 é pulado", () => {
+    const newsletterWithFm = [
+      "---",
+      "intentional_error:",
+      "  description: 'GPT-4o onde deveria ser GPT-5.4 (erro intencional)'",
+      "  location: 'DESTAQUE 1, corpo'",
+      "  category: version_inconsistency",
+      "  correct_value: GPT-5.4",
+      "---",
+      "",
+      "DESTAQUE 1",
+      "",
+      "O modelo GPT-4o foi comparado com o novo lançamento.",
+      "",
+    ].join("\n");
+
+    const fixture = createFixture({
+      newsletterContent: newsletterWithFm,
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          destaque: 1,
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["newsletter"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      // Newsletter NÃO deve ter sido modificada — o erro intencional deve ser preservado
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.ok(newsletter.includes("GPT-4o"), "GPT-4o deve permanecer intacto (é o erro intencional)");
+      assert.ok(!newsletter.includes("GPT-5.4") || newsletter.indexOf("GPT-5.4") < newsletter.indexOf("DESTAQUE"), "não deve ter substituído o erro intencional");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.applied, 0, "nenhuma correção aplicada quando é erro intencional");
+      assert.equal(autofix.entries[0].status, "skipped_intentional_error");
+      assert.ok(autofix.intentional_error_destaque === 1, "deve registrar o destaque do erro intencional");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não modifica arquivos mas grava fact-check-autofix.json", () => {
+    const originalContent = "DESTAQUE 1\n\nO modelo GPT-4o foi comparado.\n";
+    const fixture = createFixture({
+      newsletterContent: originalContent,
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["newsletter"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir, ["--dry-run"]);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      // Arquivo não deve ter sido modificado
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.equal(newsletter, originalContent, "dry-run não deve modificar arquivos");
+
+      // Mas o JSON deve ter sido gravado
+      assert.ok(existsSync(fixture.autofixPath), "fact-check-autofix.json deve existir em dry-run");
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.dry_run, true, "dry_run deve ser true");
+      assert.equal(autofix.summary.applied, 1, "dry-run conta correção como aplicada (plano)");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("DIVERGENT sem suggested_fix → skipped_no_fix, arquivo intacto", () => {
+    const originalContent = "DESTAQUE 1\n\nO modelo GPT-4o foi comparado.\n";
+    const fixture = createFixture({
+      newsletterContent: originalContent,
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          text: "GPT-4o",
+          suggested_fix: undefined, // sem suggested_fix
+          sources: ["newsletter"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0);
+
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.equal(newsletter, originalContent, "sem suggested_fix não deve modificar");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.applied, 0);
+      assert.equal(autofix.entries[0].status, "skipped_no_fix");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falha com exit 1 se fact-check.json não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "factcheck-autofix-missing-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), "DESTAQUE 1\n\nTexto.\n", "utf8");
+    writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n\n## d1\nPost.\n", "utf8");
+    // fact-check.json ausente
+    try {
+      const result = runCli(dir);
+      assert.equal(result.status, 1, "deve falhar com exit 1 quando fact-check.json ausente");
+      assert.ok(result.stderr.includes("fact-check.json"), "stderr deve mencionar o arquivo ausente");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate presentation — autofix no bloco do gate
+// ---------------------------------------------------------------------------
+
+describe("autofix gate presentation helpers (#2598)", () => {
+  it("planAutofixes retorna entries só para DIVERGENT (exclui SUSTAINED, SOURCE_UNREACHABLE)", () => {
+    const claims = [
+      makeClaim({ verdict: "DIVERGENT", text: "GPT-4o", suggested_fix: "GPT-5.4", sources: ["newsletter"] }),
+      makeClaim({ verdict: "SUSTAINED", text: "R$ 99", sources: ["newsletter"] }),
+      makeClaim({ verdict: "SOURCE_UNREACHABLE", text: "primeiro", claim_type: "superlative", sources: ["social"] }),
+      makeClaim({ verdict: "INFERRED", text: "~R$ 25", sources: ["newsletter"] }),
+    ];
+    const entries = planAutofixes(claims, null);
+    // Só o DIVERGENT deve entrar
+    assert.equal(entries.length, 1, "só claims DIVERGENT entram em planAutofixes");
+    assert.equal(entries[0].text, "GPT-4o");
+    assert.equal(entries[0].status, "applied");
+  });
+});

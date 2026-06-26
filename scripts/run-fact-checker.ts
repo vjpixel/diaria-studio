@@ -46,6 +46,15 @@ export interface FactClaim {
   source_url?: string;
   source_text?: string;
   note?: string;
+  /**
+   * (#2598) Para claims DIVERGENT com correção determinística clara (nome/versão
+   * de modelo, número, data): valor correto a substituir em `text`.
+   * Só emitido pelo fact-checker quando há certeza do valor correto (extraído
+   * verbatim da fonte). Ausente = sem correção automática disponível.
+   * Ex: se text="GPT-4o" e fonte diz "GPT-5.4", suggested_fix="GPT-5.4".
+   * NOT_FOUND_IN_SOURCE e superlativos NUNCA recebem suggested_fix.
+   */
+  suggested_fix?: string;
 }
 
 export interface FactCheckSummary {
