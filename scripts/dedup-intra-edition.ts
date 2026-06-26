@@ -209,6 +209,15 @@ export const INTRA_JACCARD_THRESHOLD = 0.45;
  */
 export const INTRA_ENTITY_MIN_SHARED = 2;
 
+/**
+ * Threshold de Jaccard mínimo exigido como SEGUNDO SINAL quando domain-match
+ * é positivo (#2587). Baixo o suficiente para confirmar mesmo evento com
+ * apenas 1–2 tokens específicos compartilhados (nome do produto/feature),
+ * alto o suficiente para rejeitar dois lançamentos diferentes da mesma empresa
+ * que não compartilham token algum além do nome da companhia.
+ */
+export const INTRA_DOMAIN_JACCARD_MIN = 0.2;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -256,6 +265,10 @@ export const DOMAIN_ALIASES: Record<string, string> = {
   "blog.google": "google.com",
   "deepmind.google": "google.com",
   "ai.google": "google.com",
+  // #2586: deepmind.com é listado em official-domains.ts como domains[] da entry
+  // "DeepMind / Google" (junto com deepmind.google e ai.google), mas estava faltando
+  // aqui. Adicionar para que extractRegistrableDomain("https://deepmind.com/...") → "google.com".
+  "deepmind.com": "google.com",
 };
 
 /**
@@ -298,6 +311,12 @@ export function extractRegistrableDomain(url: string): string | null {
  * completo como "blog.google" — primary_domain do Google em official-domains.ts)
  * com o `extractRegistrableDomain()` do destaque (que aplica o alias map).
  * Sem normalização bilateral, "blog.google" ≠ "google.com" mesmo após o fix #2580.
+ *
+ * #2586: NÃO delega a `extractRegistrableDomain` porque a entrada aqui é um
+ * domínio já normalizado (sem scheme "https://"), e `extractRegistrableDomain`
+ * espera uma URL completa (chama `new URL(url)` que exige scheme). Extrair o
+ * eTLD+1 inline é necessário. O alias map compartilhado (`DOMAIN_ALIASES`) garante
+ * consistência de comportamento entre as duas funções.
  */
 function normalizeDomainForMatch(domain: string): string {
   const lower = domain.toLowerCase();
@@ -373,7 +392,13 @@ export function isPressCovertageOfHighlight(
  * `enrich-primary-source.ts` para cobertura de imprensa de lançamento), e o
  * destaque tem URL do domínio X, o item é flagrado como cobertura-de-imprensa
  * do mesmo lançamento. Caso real: RADAR canaltech.com.br/google-libera-ia-que...
- * (suggested_primary_domain="google.com") + D1 blog.google.com/gemini-computer-use.
+ * (suggested_primary_domain="blog.google") + D1 blog.google.com/gemini-computer-use.
+ *
+ * #2587: domain-match sozinho não é suficiente — exige segundo sinal (Jaccard
+ * ≥ 0.2 entre os títulos) para evitar falso-positivo quando dois lançamentos
+ * DIFERENTES da mesma empresa aparecem juntos (D1=Google A + RADAR=Google B).
+ * O Jaccard baixo (~0.2) só precisa de 1–2 tokens compartilhados além do nome
+ * da empresa — suficiente para confirmar que é o mesmo evento.
  *
  * @returns match info se duplicata, null caso contrário.
  */
@@ -413,13 +438,23 @@ export function isIntraEditionDuplicate(
     const hUrl = highlightUrl(h);
     if (hUrl && article.url === hUrl) continue;
 
+    // (a) + (c) — computar Jaccard e domain-match antes da decisão.
+    // Jaccard é necessário tanto para o check (a) quanto como segundo sinal do (c).
+    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
+    const jaccard = jaccardSimilarity(artTokens, hTokens);
+
     // (c) #2548 Furo 2: domain-based match via suggested_primary_domain.
-    // Roda ANTES de Jaccard/entity pois é sinal muito mais preciso: o campo
-    // suggested_primary_domain só existe quando enrich-primary-source detectou
+    // O campo suggested_primary_domain só existe quando enrich-primary-source detectou
     // verbo de lançamento + empresa conhecida no título RADAR. Se o domínio
-    // oficial bate com o domínio do destaque, é quase certamente cobertura de
-    // imprensa do mesmo evento.
-    if (isPressCovertageOfHighlight(article, hUrl ?? null)) {
+    // oficial bate com o domínio do destaque E há um segundo sinal de mesmo-lançamento
+    // (Jaccard ≥ 0.2 — ao menos 1 token significativo compartilhado além da empresa),
+    // o item é cobertura de imprensa do mesmo evento.
+    //
+    // #2587: domain-match sozinho (sem segundo sinal) é insuficiente — dois
+    // lançamentos DIFERENTES da mesma empresa (ex: "Google lança produto A" +
+    // "Google lança produto B") compartilham o domínio mas não são o mesmo evento.
+    // Jaccard ≥ 0.2 basta para 1–2 tokens específicos do produto/feature.
+    if (isPressCovertageOfHighlight(article, hUrl ?? null) && jaccard >= INTRA_DOMAIN_JACCARD_MIN) {
       return {
         match_type: "domain",
         matched_highlight: hTitle,
@@ -428,8 +463,6 @@ export function isIntraEditionDuplicate(
     }
 
     // (a) Jaccard sobre tokens normalizados (sufixo de veículo já stripado)
-    const hTokens = tokenizeForJaccard(stripVehicleSuffix(hTitle));
-    const jaccard = jaccardSimilarity(artTokens, hTokens);
     if (jaccard >= jThreshold) {
       return {
         match_type: "jaccard",
