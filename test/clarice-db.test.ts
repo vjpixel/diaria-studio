@@ -205,10 +205,12 @@ test("recomputeDerived: aplica optin + pontos + elegibilidade nas linhas", () =>
   assert.equal(bea.priority_optin, 1);
 
   const caio = db
-    .prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?")
+    .prepare("SELECT send_eligible, ineligible_reason, priority_points FROM clarice_users WHERE email = ?")
     .get("caio@x.com") as any;
   assert.equal(caio.send_eligible, 0);
   assert.equal(caio.ineligible_reason, "unsubscribed");
+  // pontos são computados mesmo pra inelegíveis (auditoria): recebeu 1, não abriu → −10
+  assert.equal(caio.priority_points, -10);
 
   db.close();
 });

@@ -144,6 +144,15 @@ export function computePriorityPoints(i: PriorityInput): number {
 // Ordem de prioridade (primeira condição que bate vira a razão). Soft bounce é
 // transitório (caixa cheia / indisponibilidade temporária) → só exclui após
 // SOFT_BOUNCE_LIMIT repetidos, pra não perder contato bom por hiccup do servidor.
+//
+// ⚠️ NÃO-AUTORITATIVO ATÉ O SYNC DO BREVO (#2647 follow-up): as colunas de
+// supressão do Brevo (unsubscribed/hard_bounced/complained/email_blacklisted)
+// ficam no DEFAULT 0 até o sync ao vivo existir. Logo `send_eligible` hoje só
+// reflete MV (mv_rejected) + dispute — NÃO captura descadastro/bounce do Brevo.
+// Não usar `send_eligible=1` como único gate de envio enquanto o sync não rodar;
+// o `clarice-build-waves.ts` continua excluindo `emailBlacklisted` do Brevo no
+// build da wave de forma independente. O builder emite warning quando o Brevo
+// nunca foi sincronizado.
 // ---------------------------------------------------------------------------
 
 export const SOFT_BOUNCE_LIMIT = 3;
@@ -223,31 +232,41 @@ export function recomputeDerived(db: DatabaseSync): number {
       WHERE email = ?`,
   );
 
+  // Transação única: a recomputação é all-or-nothing. Sem o wrap, um Ctrl+C no
+  // meio (ex: durante `clarice-optin add` numa base grande) deixaria parte das
+  // linhas com derivados novos e parte stale, sem detecção (#2649 review).
   let n = 0;
-  for (const r of rows) {
-    const isOptin = optin.has(r.email);
-    const points = computePriorityPoints({
-      priority_optin: isOptin,
-      opens_count: r.opens_count ?? 0,
-      sends_count: r.sends_count ?? 0,
-    });
-    const elig = classifyEligibility({
-      email_blacklisted: !!r.email_blacklisted,
-      unsubscribed: !!r.unsubscribed,
-      hard_bounced: !!r.hard_bounced,
-      complained: !!r.complained,
-      mv_bucket: r.mv_bucket,
-      dispute_losses: r.dispute_losses ?? 0,
-      soft_bounce_count: r.soft_bounce_count ?? 0,
-    });
-    update.run(
-      isOptin ? 1 : 0,
-      points,
-      elig.send_eligible ? 1 : 0,
-      elig.ineligible_reason,
-      r.email,
-    );
-    n++;
+  db.exec("BEGIN");
+  try {
+    for (const r of rows) {
+      const isOptin = optin.has(r.email);
+      const points = computePriorityPoints({
+        priority_optin: isOptin,
+        opens_count: r.opens_count ?? 0,
+        sends_count: r.sends_count ?? 0,
+      });
+      const elig = classifyEligibility({
+        email_blacklisted: !!r.email_blacklisted,
+        unsubscribed: !!r.unsubscribed,
+        hard_bounced: !!r.hard_bounced,
+        complained: !!r.complained,
+        mv_bucket: r.mv_bucket,
+        dispute_losses: r.dispute_losses ?? 0,
+        soft_bounce_count: r.soft_bounce_count ?? 0,
+      });
+      update.run(
+        isOptin ? 1 : 0,
+        points,
+        elig.send_eligible ? 1 : 0,
+        elig.ineligible_reason,
+        r.email,
+      );
+      n++;
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
   return n;
 }

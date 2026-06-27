@@ -613,6 +613,7 @@ export function buildUniverse(
       f.endsWith(".csv") &&
       !f.startsWith("kit-import-") &&
       !f.startsWith("brevo-import-") &&
+      !f.startsWith("mv-export-") && // outputs do MillionVerifier não são fonte Stripe
       !f.startsWith("stripe-export-"),
   );
 

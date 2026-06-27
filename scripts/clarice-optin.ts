@@ -22,19 +22,15 @@
  */
 
 import { openClariceDb, recomputeDerived, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { getArg, parseArgs } from "./lib/cli-args.ts";
 
 function normalizeEmail(e: string): string {
   return e.trim().toLowerCase();
 }
 
 export function main(argv: string[] = process.argv.slice(2)): void {
-  const dbIdx = argv.indexOf("--db");
-  const dbPath = dbIdx >= 0 ? argv[dbIdx + 1] : DEFAULT_DB_PATH;
-  const rest =
-    dbIdx >= 0
-      ? argv.filter((_, i) => i !== dbIdx && i !== dbIdx + 1)
-      : argv;
-  const [cmd, ...args] = rest;
+  const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
+  const [cmd, ...args] = parseArgs(argv).positional;
 
   if (!cmd || !["add", "remove", "list"].includes(cmd)) {
     console.error(

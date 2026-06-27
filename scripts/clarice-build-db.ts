@@ -27,6 +27,8 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { buildUniverse } from "./merge-clarice-subscribers.ts";
 import { classifyResult } from "./verify-emails-mv.ts";
+import { getArg } from "./lib/cli-args.ts";
+import { isValidCycle } from "./lib/clarice-paths.ts";
 import {
   openClariceDb,
   recomputeDerived,
@@ -36,8 +38,8 @@ import {
 const ROOT = resolve(import.meta.dirname, "..");
 const DATA_DIR = resolve(ROOT, "data/clarice-subscribers");
 
-/** Diretórios de ciclo `{conteúdo}-{envio}` (ex: 2605-06). */
-const CYCLE_RE = /^\d{4}-\d{2}$/;
+/** Forma de um diretório de ciclo (validação semântica via isValidCycle). */
+const CYCLE_FORMAT_RE = /^\d{4}-\d{2}$/;
 /** Bucket MV implícito no sufixo do arquivo. */
 const MV_FILE_RE = /^mv-export-.*-(verified|rejected|unknown)\.csv$/;
 
@@ -53,7 +55,7 @@ function ingestStripe(
   db: ReturnType<typeof openClariceDb>,
   dataDir: string,
   now: Date,
-): { kept: number; disputed: number; excluded: number } {
+): { kept: number; disputed: number; excluded_audit_only: number } {
   const { kept, excluded } = buildUniverse(dataDir, now);
   const upsert = db.prepare(
     `INSERT INTO clarice_users
@@ -107,7 +109,14 @@ function ingestStripe(
     );
   }
   db.exec("COMMIT");
-  return { kept: kept.length, disputed: disputed.length, excluded: excluded.length };
+  // `excluded_audit_only` exclui os disputados (que ENTRAM no store como
+  // inelegíveis) → conta só os realmente ausentes (invalid/low-quality/not_clrc_pt),
+  // sem double-count com `disputed` (#2649 review).
+  return {
+    kept: kept.length,
+    disputed: disputed.length,
+    excluded_audit_only: excluded.length - disputed.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +129,8 @@ function ingestMv(
 ): { rows: number; files: number } {
   // INSERT OR IGNORE garante a linha (caso o email não tenha vindo do Stripe),
   // depois UPDATE só nas colunas mv_* — nunca toca Stripe/Brevo/derivados.
+  // mv_subresult fica de fora: o verify-emails-mv só escreve RESULT/QUALITY/CODE
+  // nos CSVs (não persiste subresult), então a coluna fica NULL até a fonte expor.
   const ensure = db.prepare(
     "INSERT OR IGNORE INTO clarice_users (email) VALUES (?)",
   );
@@ -132,19 +143,36 @@ function ingestMv(
 
   let rows = 0;
   let files = 0;
-  const cycles = readdirSync(dataDir).filter((d) => {
-    if (!CYCLE_RE.test(d)) return false;
+  const dirs = readdirSync(dataDir).filter((d) => {
     try {
       return statSync(resolve(dataDir, d)).isDirectory();
     } catch {
       return false;
     }
   });
+  // isValidCycle valida forma + semântica (envio = conteúdo+1); um dir tipo
+  // `2605-08` ou `2605-00` tem forma de ciclo mas é mislabel → ignorar com aviso,
+  // não ingerir silenciosamente (#2649 review). Ordenado asc pra o ciclo
+  // cronologicamente mais novo ser processado por último (UPDATE later wins) —
+  // re-verificação recente sobrescreve a antiga.
+  const cycles = dirs.filter((d) => isValidCycle(d)).sort();
+  const mislabeled = dirs.filter(
+    (d) => CYCLE_FORMAT_RE.test(d) && !isValidCycle(d),
+  );
+  if (mislabeled.length > 0) {
+    console.error(
+      `⚠️  ${mislabeled.length} dir(s) com forma de ciclo mas semântica inválida ` +
+        `(ignorados — envio deve ser conteúdo+1): ${mislabeled.join(", ")}`,
+    );
+  }
 
   db.exec("BEGIN");
   for (const cycle of cycles) {
     const cycleDir = resolve(dataDir, cycle);
-    const mvFiles = readdirSync(cycleDir).filter((f) => MV_FILE_RE.test(f));
+    // sort() pra ordem de aplicação determinística dentro do ciclo também.
+    const mvFiles = readdirSync(cycleDir)
+      .filter((f) => MV_FILE_RE.test(f))
+      .sort();
     for (const f of mvFiles) {
       const path = resolve(cycleDir, f);
       const verifiedAt = statSync(path).mtime.toISOString();
@@ -184,10 +212,8 @@ function ingestMv(
 // ---------------------------------------------------------------------------
 
 export function main(argv: string[] = process.argv.slice(2)): void {
-  const dbIdx = argv.indexOf("--db");
-  const dataIdx = argv.indexOf("--data-dir");
-  const dbPath = dbIdx >= 0 ? argv[dbIdx + 1] : DEFAULT_DB_PATH;
-  const dataDir = dataIdx >= 0 ? argv[dataIdx + 1] : DATA_DIR;
+  const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
+  const dataDir = getArg(argv, "data-dir") || DATA_DIR;
   const now = new Date();
 
   if (!existsSync(dataDir)) {
@@ -202,16 +228,35 @@ export function main(argv: string[] = process.argv.slice(2)): void {
 
   console.error(`📦 ingerindo Stripe (universo completo)…`);
   const stripe = ingestStripe(db, dataDir, now);
-  console.error(`   kept=${stripe.kept} · excluded=${stripe.excluded}`);
+  console.error(
+    `   kept=${stripe.kept} · disputed=${stripe.disputed} (inelegível no store) · ` +
+      `excluded_audit_only=${stripe.excluded_audit_only}`,
+  );
 
   console.error(`🔎 ingerindo MV (mv-export-* por ciclo)…`);
   const mv = ingestMv(db, dataDir);
   console.error(`   ${mv.rows} emails de ${mv.files} arquivo(s)`);
 
-  console.error(
-    `📨 Brevo: sync de engajamento/supressão é follow-up (#2647) — ` +
-      `colunas opens/clicks/bounces/unsub ficam no default até o sync ao vivo.`,
-  );
+  // Brevo nunca sincronizado? (toda coluna de engajamento/supressão no default)
+  const brevoSynced =
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM clarice_users
+            WHERE opens_count > 0 OR sends_count > 0
+               OR email_blacklisted = 1 OR unsubscribed = 1
+               OR hard_bounced = 1 OR complained = 1`,
+        )
+        .get() as { n: number }
+    ).n > 0;
+
+  if (!brevoSynced) {
+    console.error(
+      `⚠️  Brevo NÃO sincronizado (follow-up #2647): supressão de ` +
+        `descadastro/bounce não está no store. \`send_eligible=1\` reflete só ` +
+        `MV + dispute — NÃO é gate de envio suficiente até o sync ao vivo rodar.`,
+    );
+  }
 
   console.error(`⚙️  recomputando priority_points + send_eligible…`);
   const derived = recomputeDerived(db);
@@ -238,6 +283,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         db: dbPath,
         users_total: total,
         send_eligible: eligible,
+        // send_eligible só é autoritativo após o sync do Brevo (#2647)
+        send_eligible_authoritative: brevoSynced,
+        brevo_synced: brevoSynced,
         priority_optin: optin,
         stripe,
         mv,

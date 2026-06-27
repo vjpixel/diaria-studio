@@ -59,6 +59,17 @@ primeira pela ordem:
 `unsubscribed` (ou `emailBlacklisted`) → `hard_bounce` → `complaint` →
 `mv_rejected` → `dispute` → `soft_bounce` (só após **3** soft bounces; transitório).
 
+> ⚠️ **`send_eligible` ainda não é autoritativo.** Enquanto o sync do Brevo não
+> existir, as colunas de supressão do Brevo ficam no default → `send_eligible`
+> só reflete MV + dispute, **não** captura descadastro/bounce. Não usar como
+> único gate de envio: o `clarice-build-waves.ts` continua excluindo
+> `emailBlacklisted` do Brevo de forma independente. O builder emite warning e
+> reporta `brevo_synced: false` no summary quando isso vale.
+>
+> Queries de wave devem exigir `tier IS NOT NULL` além de `send_eligible = 1` —
+> linhas só-de-MV (email no CSV do MV mas ausente do Stripe) entram com
+> `tier = NULL` e sem proveniência comercial.
+
 ## Scripts
 
 | Comando | O quê |
@@ -78,3 +89,11 @@ A lógica de priorização (pontos + elegibilidade) vive em `scripts/lib/clarice
   do store — rate-limited, MCP top-level (ver memória `brevo-hourly-ratelimit`).
 - `clarice-build-waves.ts` ler a priorização do store (tier p/ 1º envio,
   `priority_points` p/ re-envio, `send_eligible` p/ corte) em vez de CSVs soltos.
+- **Reconciliação de clientes que saíram da base:** o build é upsert-only — um
+  cliente removido do export Stripe não é apagado do store (linger). Hoje é
+  inofensivo (os exports são dumps completos: cancelados permanecem com
+  `status='canceled'`, não somem). Se um dia o export virar incremental, adicionar
+  tombstone/DELETE dos emails ausentes.
+- Migrar `main()` do `merge-clarice-subscribers.ts` pra chamar `buildUniverse`
+  (hoje há uma cópia inline da lógica, mantida intacta pra não tocar o caminho de
+  geração de CSV validado em produção).
