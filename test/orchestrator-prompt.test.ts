@@ -142,10 +142,11 @@ describe("orchestrator-prompt (#634)", () => {
     // 745→755 quando #2367 adicionou step 1u-bis (dedup-intra-edition).
     // 755→770 quando #2496 adicionou nota explicativa do --pool-out no passo 1q.1
     // e comentário no 1q.3 sobre o motivo da mudança de --categorized.
+    // 770→772 quando #2608 adicionou instrução de estimativa Path B em 1f.
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 770,
-        `${file} tem ${lines[file]} linhas (target ≤770)`,
+        lines[file] <= 772,
+        `${file} tem ${lines[file]} linhas (target ≤772)`,
       );
     }
   });

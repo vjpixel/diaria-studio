@@ -198,12 +198,16 @@ async function runQuery(
   const duration_ms = Date.now() - startedAt;
 
   // #1558: log credit usage (apenas pra status que CONTAM contra free tier)
+  // 4xx não-429 (ex: 400 bad request, 403 forbidden) não são registrados: a Brave não cobra
+  // queries que retornam erro de request (só cobra ok + rate_limited). Manter consistente.
   if (response.status === "ok" || response.status === "rate_limited") {
     recordBraveCredit({
       edition: args.edition,
       query,
       status: response.status,
       http_status: response.http_status,
+      // (#2608 C) persist quota header for delta reconciliation
+      ...(typeof response.quota_remaining === "number" ? { quota_remaining: response.quota_remaining } : {}),
     });
   }
 

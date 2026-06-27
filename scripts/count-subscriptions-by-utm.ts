@@ -2,10 +2,10 @@
  * count-subscriptions-by-utm.ts (#2457)
  *
  * Script de análise read-only: agrega assinantes do Beehiiv por `utm_source`
- * para rastrear quantos chegaram via newsletter mensal Clarice (Brevo).
+ * para rastrear quantos chegaram via newsletter mensal Clarice.
  *
  * O link de inscrição da diária que sai DENTRO da mensal deve carregar
- * `?utm_source=mensal-brevo` — assim este script consegue identificar os
+ * `?utm_source=clarice` — assim este script consegue identificar os
  * assinantes da diária que vieram por esse canal. Ver seção "Configuração"
  * abaixo sobre onde adicionar o parâmetro.
  *
@@ -14,8 +14,10 @@
  * O link de inscrição da diária que aparece no ENCERRAMENTO da mensal
  * (escrito pelo `writer-monthly`) deve usar:
  *
- *   https://diar.ia.br/?utm_source=mensal-brevo
+ *   https://diaria.beehiiv.com/?utm_source=clarice
  *
+ * Usar diaria.beehiiv.com diretamente (não diar.ia.br) porque o redirect
+ * Registro.br dropa a query string — causa raiz do #2613 resolvida em 260626.
  * Esse link não está hardcoded no código — o `writer-monthly` o gera via
  * `context/templates/newsletter-monthly.md` (seção ENCERRAMENTO). O editor
  * deve garantir que o rascunho e o template contenham essa URL com o parâmetro.
@@ -25,7 +27,7 @@
  * ## Uso
  *
  *   npx tsx scripts/count-subscriptions-by-utm.ts
- *   npx tsx scripts/count-subscriptions-by-utm.ts --source mensal-brevo
+ *   npx tsx scripts/count-subscriptions-by-utm.ts --source clarice
  *   npx tsx scripts/count-subscriptions-by-utm.ts --json
  *
  * Flags:
@@ -281,10 +283,10 @@ if (
       );
       process.stdout.write(formatCountsTable(counts, result.total) + "\n");
 
-      const mensal = result.counts["mensal-brevo"] ?? 0;
+      const mensal = result.counts["clarice"] ?? 0;
       const pct = result.total > 0 ? ((mensal / result.total) * 100).toFixed(1) : "0.0";
       process.stderr.write(
-        `\n[count-subscriptions-by-utm] via mensal-brevo: ${mensal} (${pct}% do total de ${result.total})\n`,
+        `\n[count-subscriptions-by-utm] via clarice: ${mensal} (${pct}% do total de ${result.total})\n`,
       );
     })
     .catch((err) => {

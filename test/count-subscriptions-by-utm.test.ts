@@ -11,6 +11,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   normalizeUtmSource,
@@ -218,6 +220,57 @@ describe("aggregateByUtmSource — mock resposta API Beehiiv (#2457)", () => {
     assert.equal(counts["mensal-brevo"], undefined, "mensal-brevo não deve aparecer se count=0");
     assert.equal(counts["__none__"] ?? 0, 1);
     assert.equal(counts["organic"] ?? 0, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2613 — utm_source=clarice (troca de mensal-brevo→clarice em 260626)
+// ---------------------------------------------------------------------------
+
+describe("aggregateByUtmSource — clarice (#2613)", () => {
+  it("conta clarice corretamente (novo utm_source desde 260626)", () => {
+    const subs = [
+      { id: "s1", utm_source: "clarice" },
+      { id: "s2", utm_source: "clarice" },
+      { id: "s3", utm_source: "twitter" },
+      { id: "s4", utm_source: null },
+    ];
+    const counts = aggregateByUtmSource(subs);
+    assert.equal(counts["clarice"], 2, "deve contar 2 via clarice");
+    assert.equal(counts["twitter"], 1);
+    assert.equal(counts["__none__"], 1);
+  });
+
+  it("clarice e mensal-brevo são fontes distintas (sem merge)", () => {
+    const subs = [
+      { id: "s1", utm_source: "clarice" },
+      { id: "s2", utm_source: "mensal-brevo" },
+    ];
+    const counts = aggregateByUtmSource(subs);
+    assert.equal(counts["clarice"], 1, "clarice = 1");
+    assert.equal(counts["mensal-brevo"], 1, "mensal-brevo = 1 (histórico)");
+    assert.equal(Object.keys(counts).length, 2, "devem ser entradas distintas");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2613 — template newsletter-monthly.md contém utm_source=clarice
+// ---------------------------------------------------------------------------
+
+describe("newsletter-monthly.md template (#2613)", () => {
+  it("template usa diaria.beehiiv.com com utm_source=clarice (não diar.ia.br antigo)", () => {
+    const template = readFileSync(
+      resolve(import.meta.dirname ?? "", "../context/templates/newsletter-monthly.md"),
+      "utf8",
+    );
+    assert.ok(
+      template.includes("https://diaria.beehiiv.com/?utm_source=clarice"),
+      "template deve conter o novo link com utm_source=clarice",
+    );
+    assert.ok(
+      !template.includes("diar.ia.br/?utm_source=mensal-brevo"),
+      "template não deve conter o link antigo diar.ia.br com mensal-brevo",
+    );
   });
 });
 
