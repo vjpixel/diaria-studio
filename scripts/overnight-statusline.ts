@@ -566,29 +566,117 @@ export function findMostRecentEditionId(cwd: string): string | null {
   }
 }
 
+// ─── função pura de composição (#2618) ───────────────────────────────────────
+
+/**
+ * Compõe a string de output da statusline a partir do estado pré-carregado.
+ *
+ * Função pura testável — não lê disco, não chama git. Toda I/O fica no CLI entrypoint.
+ *
+ * Precedência (#2255, atualizado #2618):
+ *   1. Edição EM CURSO (started, não encerrada) → renderEditionBar
+ *   2. Rodada overnight ativa/encerrada → renderOvernightBar
+ *   3. Edição CONCLUÍDA (todas terminais) + sem overnight → string vazia (#2618: barra some)
+ *   4. Idle sem edição → renderIdleBar (fallback padrão)
+ *
+ * #2618: quando a edição mais recente está concluída (todos stages terminais) e não há
+ * overnight ativa, a barra desaparece (retorna ""). A intenção é sinalizar "turno encerrado
+ * sem atividade" — diferente de "sem edição" (que mostra idle com "sem rodada ativa").
+ *
+ * @param editionDoc                  doc da edição EM CURSO (null quando nenhuma ou encerrada)
+ * @param plan                        plan.json overnight (null quando sem rodada)
+ * @param mostRecentEditionId         AAMMDD da edição mais recente em disco (ou null)
+ * @param mostRecentEditionEncerrada  true se a edição mais recente está 100% concluída
+ * @param branch                      branch git atual (ou "" em detached/sem repo)
+ * @returns                           string da statusline (pode ser "" quando edição concluída sem overnight)
+ */
+export function renderStatusline(
+  editionDoc: StageStatusDoc | null,
+  plan: Plan | null,
+  mostRecentEditionId: string | null,
+  mostRecentEditionEncerrada: boolean,
+  branch: string,
+): string {
+  // Source 1: Edição em curso (não encerrada).
+  const editionBar = renderEditionBar(editionDoc);
+
+  // Source 2: Rodada overnight — só quando sem edição em curso.
+  const overnightBar = editionBar ? "" : renderOvernightBar(plan);
+
+  // Source 3: fallback — depende do estado da edição mais recente.
+  let fallback: string;
+  if (editionBar || overnightBar) {
+    // Já tem bar — fallback não entra.
+    fallback = "";
+  } else if (mostRecentEditionEncerrada) {
+    // #2618: edição concluída, sem overnight → barra some (string vazia).
+    fallback = "";
+  } else {
+    // Sem edição concluída nem overnight → idle bar padrão (#2255).
+    fallback = renderIdleBar(mostRecentEditionId);
+  }
+
+  const bar = editionBar || overnightBar || fallback;
+
+  // Sem nenhuma barra → retornar só o branch (se houver), sem espaços extras.
+  if (!bar) return branch;
+
+  return branch ? `${branch}  ${bar}` : bar;
+}
+
+/**
+ * Lê a edição mais recente do disco (encerrada ou em curso) e retorna seu doc,
+ * independentemente do estado. Usado para checar se está encerrada (#2618).
+ *
+ * Difere de readCurrentEditionDoc: não filtra edições encerradas.
+ * Retorna null se não houver nenhuma edição no disco.
+ */
+export function readMostRecentEditionDoc(cwd: string): StageStatusDoc | null {
+  try {
+    const editionsDir = join(cwd, "data", "editions");
+    if (!existsSync(editionsDir)) return null;
+
+    const entries = readdirSync(editionsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse(); // most recent first
+
+    for (const dirName of entries) {
+      const editionDir = join(editionsDir, dirName);
+      const doc = readStageStatusFromDir(editionDir);
+      if (!doc) continue;
+      if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
+      return doc;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── CLI (entrypoint) ─────────────────────────────────────────────────────────
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cwd = process.cwd();
   const branch = currentBranch(cwd);
 
-  // Precedência (#2255): edição em curso > overnight > idle.
-  // Barra SEMPRE presente — nunca retorna string vazia para o statusLine.
-
-  // Source 1: Edition in progress (#2250).
-  // readCurrentEditionDoc returns non-null only for IN-PROGRESS editions (started but not encerrada).
-  // When edition is fully encerrada (all terminal), readCurrentEditionDoc returns null → overnight resumes.
+  // Load state — all I/O here, renderStatusline is pure.
   const editionDoc = readCurrentEditionDoc(cwd);
-  const editionBar = renderEditionBar(editionDoc);
+  const plan = readTodayPlan(cwd);
+  const mostRecentEditionId = findMostRecentEditionId(cwd);
 
-  // Source 2: Active/finished overnight round (only checked when no active edition bar).
-  const overnightBar = editionBar ? "" : renderOvernightBar(readTodayPlan(cwd));
+  // #2618: detect if the most recent edition is encerrada (all stages terminal).
+  // When editionDoc is non-null, the edition is in-progress (not encerrada), so no need
+  // to call readMostRecentEditionDoc — it can't be encerrada while in progress.
+  const mostRecentDoc = editionDoc ?? readMostRecentEditionDoc(cwd);
+  const mostRecentEditionEncerrada =
+    mostRecentDoc !== null &&
+    Array.isArray(mostRecentDoc.rows) &&
+    mostRecentDoc.rows.length > 0 &&
+    mostRecentDoc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status as StageStatus));
 
-  // Source 3: Idle — always present (#2255). Shows most recent edition date if one exists.
-  // renderIdleBar always returns a non-empty string — it is the guaranteed fallback.
-  const bar = editionBar || overnightBar || renderIdleBar(findMostRecentEditionId(cwd));
-
-  // Fix #4: only include separator when branch is non-empty
-  const output = branch ? `${branch}  ${bar}` : bar;
+  const output = renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentEditionEncerrada, branch);
   process.stdout.write(output + "\n");
 }
