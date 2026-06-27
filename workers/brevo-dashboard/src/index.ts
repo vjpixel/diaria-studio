@@ -1536,6 +1536,41 @@ ${aggregatedLinksSection}
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
 Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%).</p>
+<script>
+/* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
+(function () {
+  var radios = Array.prototype.slice.call(document.querySelectorAll('.tab-radios'));
+  if (!radios.length) return;
+  var labels = Array.prototype.slice.call(document.querySelectorAll('.tab-label'));
+  function panelOf(radio) {
+    var lbl = document.querySelector('.tab-label[for="' + radio.id + '"]');
+    return lbl ? lbl.getAttribute('aria-controls') : null;
+  }
+  function syncAria() {
+    labels.forEach(function (lbl) {
+      var r = document.getElementById(lbl.getAttribute('for'));
+      lbl.setAttribute('aria-selected', r && r.checked ? 'true' : 'false');
+    });
+  }
+  function applyHash() {
+    var h = (location.hash || '').replace(/^#/, '');
+    if (!h) return;
+    var matched = radios.filter(function (r) { return r.id === h || panelOf(r) === h; })[0];
+    if (matched) matched.checked = true;
+  }
+  radios.forEach(function (r) {
+    r.addEventListener('change', function () {
+      if (!r.checked) return;
+      var pid = panelOf(r);
+      if (pid && history.replaceState) history.replaceState(null, '', '#' + pid);
+      syncAria();
+    });
+  });
+  window.addEventListener('hashchange', function () { applyHash(); syncAria(); });
+  applyHash();
+  syncAria();
+})();
+</script>
 </body>
 </html>`;
 }

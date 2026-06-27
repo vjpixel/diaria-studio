@@ -826,6 +826,41 @@ ${audienceSection}
   Dashboard Operacional Diar.ia — dados locais via KV push (<code>build-diaria-dashboard-data.ts --push</code>).<br>
   Dados brutos em <a href="/api/data" style="color:var(--brand)">/api/data</a>. Schema v${data.schema_version ?? 1}.
 </p>
+<script>
+/* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
+(function () {
+  var radios = Array.prototype.slice.call(document.querySelectorAll('.tab-radios'));
+  if (!radios.length) return;
+  var labels = Array.prototype.slice.call(document.querySelectorAll('.tab-label'));
+  function panelOf(radio) {
+    var lbl = document.querySelector('.tab-label[for="' + radio.id + '"]');
+    return lbl ? lbl.getAttribute('aria-controls') : null;
+  }
+  function syncAria() {
+    labels.forEach(function (lbl) {
+      var r = document.getElementById(lbl.getAttribute('for'));
+      lbl.setAttribute('aria-selected', r && r.checked ? 'true' : 'false');
+    });
+  }
+  function applyHash() {
+    var h = (location.hash || '').replace(/^#/, '');
+    if (!h) return;
+    var matched = radios.filter(function (r) { return r.id === h || panelOf(r) === h; })[0];
+    if (matched) matched.checked = true;
+  }
+  radios.forEach(function (r) {
+    r.addEventListener('change', function () {
+      if (!r.checked) return;
+      var pid = panelOf(r);
+      if (pid && history.replaceState) history.replaceState(null, '', '#' + pid);
+      syncAria();
+    });
+  });
+  window.addEventListener('hashchange', function () { applyHash(); syncAria(); });
+  applyHash();
+  syncAria();
+})();
+</script>
 </body>
 </html>`;
 }
