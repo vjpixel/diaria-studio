@@ -252,6 +252,12 @@ async function main(): Promise<void> {
           `— DoH resolve mas anycast não respondeu. Worker pode estar realmente down ou sem rota anycast. ` +
           `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
       );
+    } else if (reach.abort_timeout) {
+      console.error(
+        `[preflight-poll-dispatch] ⚠️  Timeout de conexão com ${new URL(POLL_WORKER_URL).hostname} ` +
+          `(servidor lento ou DNS filtrado por drop de pacotes) — DoH/anycast também falhou. ` +
+          `Detalhes: ${reach.error ?? "(sem detalhe)"}`,
+      );
     } else {
       console.error(
         `[preflight-poll-dispatch] ⚠️  Worker inacessível (DNS + DoH ambos falharam). ` +
@@ -265,6 +271,11 @@ async function main(): Promise<void> {
     console.error(
       `[preflight-poll-dispatch] ℹ️  DNS local filtra ${new URL(POLL_WORKER_URL).hostname} ` +
         `mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`,
+    );
+  } else if (reach.abort_timeout) {
+    console.error(
+      `[preflight-poll-dispatch] ℹ️  Timeout no fetch nativo de ${new URL(POLL_WORKER_URL).hostname} ` +
+        `(servidor lento ou DNS filtrado por drop), mas Worker responde via DoH/anycast (up=${reach.up}, via=${reach.via}).`,
     );
   }
 

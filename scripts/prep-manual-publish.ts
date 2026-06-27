@@ -89,6 +89,7 @@ async function pingWorker(edition: string): Promise<{
   total: number;
   correct_answer: string | null;
   local_dns_filtered?: boolean;
+  abort_timeout?: boolean;
 }> {
   const url = `${POLL_WORKER_URL}/stats?edition=${edition}`;
   // #2551: usar isWorkerReachable (DoH fallback) em vez de fetch nativo,
@@ -101,8 +102,20 @@ async function pingWorker(edition: string): Promise<{
           `mas DoH/anycast também não respondeu. Pode ser filtro de rede sem acesso ao Worker. ` +
           `Detalhes: ${reachability.error ?? "(sem detalhe)"}`,
       );
+    } else if (reachability.abort_timeout) {
+      console.warn(
+        `[prep-manual-publish] ⚠️  Timeout de conexão com ${new URL(url).hostname} ` +
+          `(servidor lento ou DNS filtrado por drop) — DoH/anycast também falhou. ` +
+          `Detalhes: ${reachability.error ?? "(sem detalhe)"}`,
+      );
     }
-    return { ok: false, total: 0, correct_answer: null, local_dns_filtered: reachability.local_dns_filtered };
+    return {
+      ok: false,
+      total: 0,
+      correct_answer: null,
+      local_dns_filtered: reachability.local_dns_filtered,
+      abort_timeout: reachability.abort_timeout,
+    };
   }
   // Worker UP — fazer chamada pra extrair stats via dohFetch (suporta DNS local filtrado)
   try {
@@ -117,6 +130,7 @@ async function pingWorker(edition: string): Promise<{
       total: data.total ?? 0,
       correct_answer: data.correct_answer ?? null,
       local_dns_filtered: reachability.local_dns_filtered,
+      abort_timeout: reachability.abort_timeout,
     };
   } catch {
     return { ok: false, total: 0, correct_answer: null };
@@ -154,17 +168,23 @@ export function checkNewsletterHtml(editionDir: string): Check {
 async function checkWorker(edition: string): Promise<Check> {
   const result = await pingWorker(edition);
   if (!result.ok) {
-    // #2551: distinguir "DNS local filtrou mas Worker UP" de "Worker realmente down"
+    // #2551/#2592: distinguir "DNS filtrado", "timeout (servidor lento ou DNS drop)" e "Worker realmente down"
     const dnsSuffix = result.local_dns_filtered
       ? " (DNS local filtrou o hostname — Worker pode estar UP via DoH/anycast)"
-      : " — verificar deploy";
+      : result.abort_timeout
+        ? " (timeout — servidor lento ou DNS filtrado por drop de pacotes)"
+        : " — verificar deploy";
     return {
       name: "Worker poll",
       passed: false,
       detail: `${POLL_WORKER_URL} não responde${dnsSuffix}`,
     };
   }
-  const dnsSuffix = result.local_dns_filtered ? " (via DoH/anycast — DNS local filtrado)" : "";
+  const dnsSuffix = result.local_dns_filtered
+    ? " (via DoH/anycast — DNS local filtrado)"
+    : result.abort_timeout
+      ? " (via DoH/anycast — fetch nativo teve timeout)"
+      : "";
   return {
     name: "Worker disponível",
     passed: true,
