@@ -28,7 +28,7 @@ const TEAL = BRAND; // alias dos templates (acento + régua)
 const PAPER = "#FFFFFF"; // #1955 card branco (era COLORS.paper #FBFAF6)
 const SHELL = "#FFFFFF"; // #1955 página branca (era COLORS.paperAlt #EBE5D0)
 const BEGE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes recuados / É IA? / réguas — contraste, mantido)
-const FONT_SERIF = FONTS.serif; // Georgia (manchetes+corpo)
+const FONT_SERIF = FONTS.serif; // Georgia — manchetes/títulos (corpo é sans Geist, #2599)
 const FONT_SANS = FONTS.sans; // Geist (labels/kickers)
 
 /** Strip backslash escapes do export Drive (`\!` `\&` `\[` `\]`). */
@@ -178,7 +178,7 @@ export function renderParagraphs(text: string): string {
       }
 
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${inline}</p>`;
     })
     .filter(Boolean)
     .join("\n");
@@ -266,14 +266,14 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   const boxFor = (text: string): string =>
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
     `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">O fio condutor</p>` +
-    `<p style="margin:0;">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
+    `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
   let mainHtml = "";
   let conductorHtml = "";
   if (conductorText) {
-    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
     conductorHtml = boxFor(conductorText);
   } else if (mainParas.length) {
-    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
     conductorHtml = boxFor(mainParas[mainParas.length - 1]);
   }
 
@@ -298,7 +298,7 @@ export function renderIntro(body: string): string {
   const bodyHtml = paras
     .map((p) => {
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;font-size:16px;color:${INK};line-height:1.62;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};font-size:16px;color:${INK};line-height:1.62;">${inline}</p>`;
     })
     .join("\n");
   return renderKicker("Resumo do mês") + bodyHtml;
@@ -312,7 +312,7 @@ export function renderIntro(body: string): string {
 export function renderCtaButton(line: string): string {
   const text = line.replace(/^→\s*/, "").trim();
   const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
-  if (!linkM) return `<p style="margin:16px 0 0 0;color:${INK};">${renderInline(text)}</p>`;
+  if (!linkM) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(text)}</p>`;
   const idx = linkM.index ?? 0;
   const url = linkM[2];
   const linkText = linkM[1];
@@ -396,7 +396,7 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
       renderedBlocks.push(renderCtaButton(block.trim().replace(/\n/g, " ")));
     } else {
       const inline = renderInline(block.trim().replace(/\n/g, " "));
-      renderedBlocks.push(`<p style="margin:0 0 16px 0;color:${INK};">${inline}</p>`);
+      renderedBlocks.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};color:${INK};">${inline}</p>`);
     }
   }
 
@@ -466,7 +466,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
         ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2]))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
         : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
       return titleHtml + (desc
-        ? `<p style="margin:0 0 20px 0;color:${INK};">${renderInline(desc)}</p>`
+        ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(desc)}</p>`
         : `<div style="margin-bottom:20px;"></div>`);
     })
     .join("\n");
@@ -511,7 +511,7 @@ export function renderEncerramento(body: string): string {
   const parts: string[] = [renderKicker("Para encerrar")];
   const head = proseBlocks.slice(0, -1);
   const last = proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "";
-  for (const p of head) parts.push(`<p style="margin:0 0 16px 0;">${renderInline(p)}</p>`);
+  for (const p of head) parts.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p)}</p>`);
   if (pills.length) {
     parts.push(
       `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
@@ -522,7 +522,7 @@ export function renderEncerramento(body: string): string {
   }
   if (last) {
     parts.push(
-      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;">${renderInline(last)}</p></td></tr></table>`,
+      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;font-family:${FONT_SANS};">${renderInline(last)}</p></td></tr></table>`,
     );
   }
   return parts.join("\n");
