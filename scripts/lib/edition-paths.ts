@@ -13,7 +13,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 
 /**
  * Filenames cobertos pelo move pra _internal/.
@@ -75,4 +75,36 @@ export function existsInEditionDir(
     existsSync(resolve(editionDir, "_internal", name)) ||
     existsSync(resolve(editionDir, name))
   );
+}
+
+// ─── Construção do path da edição (#2463) ─────────────────────────────────────
+//
+// Centralização do path `data/editions/{AAMMDD}/` num único ponto. Hoje o
+// layout é FLAT; a futura reorg para `data/editions/{AAMM}/{AAMMDD}/` (#2463)
+// muda SÓ aqui — os call-sites passam a chamar `editionDir(aammdd)` em vez de
+// montar a string à mão. Este PR introduz o helper retornando o layout ATUAL
+// (flat); a migração dos call-sites + a troca de layout vêm em PRs seguintes.
+
+/**
+ * Raiz das edições, path RELATIVO (`data/editions`). Ponto único pra futura
+ * reorg #2463 (ex: `find-current-edition` varre a partir daqui).
+ */
+export function editionsRoot(): string {
+  return join("data", "editions");
+}
+
+/**
+ * Diretório de uma edição a partir do AAMMDD. Layout ATUAL = flat:
+ * `data/editions/{AAMMDD}`. É o ÚNICO ponto de construção desse path — a
+ * futura migração para `data/editions/{AAMM}/{AAMMDD}` (#2463) muda só aqui.
+ * Retorna path RELATIVO sem barra final, drop-in para os call-sites no padrão
+ * `data/editions/${aammdd}`. Valida o formato AAMMDD (exatamente 6 dígitos).
+ */
+export function editionDir(aammdd: string): string {
+  if (!/^\d{6}$/.test(aammdd)) {
+    throw new Error(
+      `editionDir: AAMMDD inválido: ${JSON.stringify(aammdd)} (esperado exatamente 6 dígitos)`,
+    );
+  }
+  return join(editionsRoot(), aammdd);
 }
