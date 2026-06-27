@@ -7,28 +7,38 @@
  * Responsabilidades deste módulo:
  *   1. `splitIntoChunks`: dividir texto em fronteiras seguras (parágrafo / seção `---`),
  *      nunca no meio de frase ou link markdown.
- *   2. `applyChunkSuggestions`: aplicar sugestões de um chunk ao texto completo, com
- *      política de ambiguidade (pular sugestão se `from` aparece mais de 1× no chunk).
- *   3. `mergeChunkSuggestions`: mesclar aplicações de todos os chunks em sequência.
+ *   2. `applyChunkSuggestions`: aplicar sugestões de UM chunk ao texto DESSE chunk
+ *      (chunk-local), com política de ambiguidade (pular sugestão se `from` aparece
+ *      ≠ 1× no chunk).
+ *   3. `mergeChunkSuggestions`: aplicar cada chunk localmente e concatenar de volta.
  *
  * IMPORTANTE: este módulo é PURO/determinístico — não chama o MCP nem rede.
- * O top-level orchestrator chama o MCP por chunk e usa estas funções para o remap.
+ * O top-level orchestrator chama o MCP por chunk e usa estas funções para o apply.
  *
  * Divisão de responsabilidade:
- *   - Orchestrator: lê texto → splitIntoChunks → para cada chunk: chama MCP → chama
- *     applyChunkSuggestions com o fullText acumulado → continua com o texto atualizado.
- *   - Este módulo: split + apply + policy de ambiguidade (sem I/O, sem MCP).
+ *   - Orchestrator: lê texto → splitIntoChunks → para cada chunk: chama MCP com
+ *     `chunk.text` → junta `{chunk, suggestions}` → chama `mergeChunkSuggestions`.
+ *   - Este módulo: split + apply chunk-local + policy de ambiguidade (sem I/O, sem MCP).
+ *
+ * Design chunk-local (sem aritmética de offset): como `splitIntoChunks` garante que a
+ * concatenação dos chunks reconstrói o texto original, aplicar as sugestões de cada chunk
+ * ao próprio `chunk.text` e re-concatenar produz o texto corrigido — sem precisar remapear
+ * offsets no texto completo (que sofreria drift conforme sugestões mudam o tamanho do texto).
+ * Cada sugestão do Clarice tem `from` contido em um único chunk (o chunk que o Clarice viu),
+ * então a aplicação local é sempre bem-definida.
  *
  * Threshold de ativação: CLARICE_CHUNK_THRESHOLD (default 9_000 chars).
  * Se o texto inteiro for ≤ threshold, retorna um único chunk (sem split).
  */
 
+import { countOccurrences } from "../clarice-apply.ts";
+
 export interface TextChunk {
   /** Conteúdo do chunk, pronto para enviar ao Clarice. */
   text: string;
   /**
-   * Offset (em chars) deste chunk no texto original.
-   * Usado para encontrar a região correta ao aplicar sugestões.
+   * Offset (em chars) deste chunk no texto original. Informativo/auditoria — o apply
+   * chunk-local não depende dele (a concatenação dos chunks reconstrói o original).
    */
   startOffset: number;
 }
@@ -123,141 +133,99 @@ export function splitIntoChunks(text: string, maxChars = CLARICE_CHUNK_THRESHOLD
 }
 
 /**
- * Aplica sugestões do Clarice (de um chunk) ao texto completo.
+ * Aplica as sugestões do Clarice ao texto de UM chunk (chunk-local).
  *
  * Política de ambiguidade (fix #2606):
  *   - Uma sugestão `{from, to}` é aplicada somente se `from` aparece EXATAMENTE
- *     1× no chunk.text (região do texto enviada ao Clarice).
- *   - Se `from` aparece 0× no chunk: skip ("from não encontrado no chunk").
- *   - Se `from` aparece 2+× no chunk: skip ("âncora ambígua — from aparece N× no chunk").
+ *     1× no estado ATUAL do texto do chunk (após sugestões anteriores do mesmo chunk).
+ *   - Se `from` aparece 0× no chunk: skip ("from não encontrado").
+ *   - Se `from` aparece 2+× no chunk: skip ("âncora ambígua").
  *   - Isso evita substituições globais indesejadas (ex: `"os"→""` aplicado em todo o texto).
  *
- * Aplicação é feita no fullText, mas restrita à região [chunk.startOffset, chunk.startOffset +
- * chunk.text.length] — a busca de `from` acontece no texto completo dentro dessa região.
+ * A aplicação é feita SOMENTE no `chunk.text` — não no texto completo. Isso elimina
+ * aritmética de offset (e o drift que ela sofreria quando sugestões mudam o tamanho do
+ * texto). `mergeChunkSuggestions` re-concatena os chunks corrigidos para formar o resultado.
  *
- * @param fullText Texto completo atual (pode já ter sugestões anteriores aplicadas)
- * @param chunk O chunk original enviado ao Clarice (com startOffset no texto original)
+ * Substituição via FORMA-FUNÇÃO `replace(from, () => to)` — evita que `$&`, `$'`, `` $` ``,
+ * `$1` etc. em `to` sejam interpretados como padrões de backreference pelo `String.replace`
+ * (mesma proteção de `clarice-apply.ts`).
+ *
+ * @param chunk O chunk enviado ao Clarice
  * @param suggestions Sugestões retornadas pelo Clarice para este chunk
  * @param log Função de log para sugestões puladas (default: console.warn)
+ * @returns ApplyResult com `text` = texto corrigido DESTE chunk
  */
 export function applyChunkSuggestions(
-  fullText: string,
   chunk: TextChunk,
   suggestions: ClariceChunkSuggestion[],
   log: (msg: string) => void = (msg) => console.warn(msg),
 ): ApplyResult {
   const applied: ClariceChunkSuggestion[] = [];
   const skipped: Array<ClariceChunkSuggestion & { reason: string }> = [];
-  let currentText = fullText;
+  let text = chunk.text;
 
   for (const suggestion of suggestions) {
     const { from, to } = suggestion;
 
-    if (!from || from === to) {
-      // Sugestão no-op ou vazia — pular silenciosamente
+    // Guarda whitespace-only além de vazio (paridade com clarice-apply.ts).
+    if (!from || !from.trim() || from === to) {
       skipped.push({ ...suggestion, reason: "sugestão vazia ou no-op" });
       continue;
     }
 
-    // Verificar ocorrências no chunk original (não no fullText completo)
-    // para determinar se a sugestão é ambígua.
-    const occurrencesInChunk = countOccurrences(chunk.text, from);
+    // Avaliar contra o estado ATUAL do texto do chunk (já com applies anteriores deste
+    // chunk). Igual à semântica de clarice-apply.ts — "manter"→"manter a" pode tornar
+    // uma sugestão subsequente unique ou ambiguous.
+    const count = countOccurrences(text, from);
 
-    if (occurrencesInChunk === 0) {
+    if (count === 0) {
       const reason = `"from" não encontrado no chunk (offset ${chunk.startOffset})`;
-      log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → não encontrado no chunk. ${reason}`);
-      skipped.push({ ...suggestion, reason });
-      continue;
-    }
-
-    if (occurrencesInChunk > 1) {
-      const reason = `âncora ambígua — "${from}" aparece ${occurrencesInChunk}× no chunk (pular para evitar replace global)`;
       log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${reason}`);
       skipped.push({ ...suggestion, reason });
       continue;
     }
 
-    // Exatamente 1 ocorrência no chunk — aplicar no fullText.
-    // A substituição deve ser feita apenas na região do chunk dentro do fullText.
-    // Como o fullText pode ter sido modificado por chunks anteriores (offsets podem
-    // ter mudado), procurar `from` no fullText todo mas verificar que encontra exatamente 1×.
-    const occurrencesInFull = countOccurrences(currentText, from);
-
-    if (occurrencesInFull === 0) {
-      const reason = `"from" não encontrado no texto completo (pode ter sido removido por sugestão anterior)`;
+    if (count > 1) {
+      const reason = `âncora ambígua — "${from}" aparece ${count}× no chunk (pular para evitar replace global)`;
       log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${reason}`);
       skipped.push({ ...suggestion, reason });
       continue;
     }
 
-    if (occurrencesInFull > 1) {
-      // Tentar restringir ao segmento do chunk no fullText atual.
-      // Usar um slice aproximado baseado no startOffset (pode ter drift por edições anteriores).
-      const regionStart = Math.max(0, chunk.startOffset - 50); // pequena margem
-      const regionEnd = Math.min(currentText.length, chunk.startOffset + chunk.text.length + 50);
-      const region = currentText.slice(regionStart, regionEnd);
-      const occurrencesInRegion = countOccurrences(region, from);
-
-      if (occurrencesInRegion !== 1) {
-        const reason = `âncora ambígua — "${from}" aparece ${occurrencesInFull}× no texto completo e ${occurrencesInRegion}× na região do chunk`;
-        log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${reason}`);
-        skipped.push({ ...suggestion, reason });
-        continue;
-      }
-
-      // Exatamente 1 na região — substituir apenas essa ocorrência
-      const regionUpdated = region.replace(from, to);
-      currentText = currentText.slice(0, regionStart) + regionUpdated + currentText.slice(regionEnd);
-      applied.push(suggestion);
-      continue;
-    }
-
-    // Exatamente 1 no fullText — substituição segura e direta
-    currentText = currentText.replace(from, to);
+    // Exatamente 1 ocorrência — substituição segura. Forma-função evita interpretação
+    // de $ patterns em `to`.
+    text = text.replace(from, () => to);
     applied.push(suggestion);
   }
 
-  return { text: currentText, applied, skipped };
+  return { text, applied, skipped };
 }
 
 /**
- * Mescla a aplicação de sugestões de múltiplos chunks em sequência.
- * Chama `applyChunkSuggestions` para cada chunk, passando o texto acumulado.
+ * Aplica as sugestões de cada chunk localmente e re-concatena para formar o texto completo
+ * corrigido. Como `splitIntoChunks` garante que `chunks.map(c => c.text).join("") === texto
+ * original`, concatenar os chunks corrigidos produz o texto final correto — sem aritmética
+ * de offset.
  *
- * @param fullText Texto original completo
- * @param chunkSuggestions Array de [chunk, suggestions] na mesma ordem de `splitIntoChunks`
+ * @param chunkSuggestions Array de `{chunk, suggestions}` na ordem de `splitIntoChunks`
  * @param log Função de log (default: console.warn)
  */
 export function mergeChunkSuggestions(
-  fullText: string,
   chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }>,
   log: (msg: string) => void = (msg) => console.warn(msg),
 ): ApplyResult {
-  let currentText = fullText;
+  const parts: string[] = [];
   const allApplied: ClariceChunkSuggestion[] = [];
   const allSkipped: Array<ClariceChunkSuggestion & { reason: string }> = [];
 
   for (const { chunk, suggestions } of chunkSuggestions) {
-    const result = applyChunkSuggestions(currentText, chunk, suggestions, log);
-    currentText = result.text;
+    const result = applyChunkSuggestions(chunk, suggestions, log);
+    parts.push(result.text);
     allApplied.push(...result.applied);
     allSkipped.push(...result.skipped);
   }
 
-  return { text: currentText, applied: allApplied, skipped: allSkipped };
-}
-
-// --- helpers internos ---
-
-function countOccurrences(text: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let pos = 0;
-  while ((pos = text.indexOf(needle, pos)) !== -1) {
-    count++;
-    pos += needle.length;
-  }
-  return count;
+  return { text: parts.join(""), applied: allApplied, skipped: allSkipped };
 }
 
 /**

@@ -118,111 +118,127 @@ describe("applyChunkSuggestions", () => {
     const suggestions: ClariceChunkSuggestion[] = [
       { from: "recentemente", to: "há pouco" },
     ];
-    const result = applyChunkSuggestions(fullText, chunk, suggestions);
+    const result = applyChunkSuggestions(chunk, suggestions);
     assert.ok(result.text.includes("há pouco"), "sugestão deve ser aplicada");
     assert.equal(result.applied.length, 1);
     assert.equal(result.skipped.length, 0);
   });
 
   it("sugestão com from ambíguo (2× no chunk) → SKIP", () => {
-    const fullText = "O modelo foi lançado. O modelo é novo.";
     const chunk: TextChunk = { text: "O modelo foi lançado. O modelo é novo.", startOffset: 0 };
     // "O modelo" aparece 2× no chunk — ambígua
     const suggestions: ClariceChunkSuggestion[] = [
       { from: "O modelo", to: "Esse modelo" },
     ];
-    const skipped: string[] = [];
-    const result = applyChunkSuggestions(fullText, chunk, suggestions, (msg) => skipped.push(msg));
+    const result = applyChunkSuggestions(chunk, suggestions, () => {});
     assert.equal(result.applied.length, 0, "sugestão ambígua não deve ser aplicada");
     assert.equal(result.skipped.length, 1);
     assert.ok(result.skipped[0].reason.includes("ambígua"), `reason deveria mencionar ambiguidade: ${result.skipped[0].reason}`);
-    assert.equal(result.text, fullText, "texto não deve ser alterado");
+    assert.equal(result.text, chunk.text, "texto não deve ser alterado");
   });
 
   it("sugestão com from ausente no chunk → SKIP", () => {
-    const fullText = "Texto simples sem a frase esperada.";
     const chunk: TextChunk = { text: "Texto simples sem a frase esperada.", startOffset: 0 };
     const suggestions: ClariceChunkSuggestion[] = [
       { from: "frase inexistente no chunk", to: "substituição" },
     ];
-    const result = applyChunkSuggestions(fullText, chunk, suggestions);
+    const result = applyChunkSuggestions(chunk, suggestions);
     assert.equal(result.applied.length, 0);
     assert.equal(result.skipped.length, 1);
-    assert.equal(result.text, fullText);
+    assert.equal(result.text, chunk.text);
   });
 
   it("sugestão no-op (from === to) → SKIP silencioso", () => {
-    const fullText = "Texto de exemplo.";
-    const chunk: TextChunk = { text: fullText, startOffset: 0 };
+    const chunk: TextChunk = { text: "Texto de exemplo.", startOffset: 0 };
     const suggestions: ClariceChunkSuggestion[] = [
       { from: "Texto", to: "Texto" },
     ];
-    const result = applyChunkSuggestions(fullText, chunk, suggestions);
+    const result = applyChunkSuggestions(chunk, suggestions);
     assert.equal(result.applied.length, 0);
     assert.equal(result.skipped.length, 1);
-    assert.equal(result.text, fullText);
+    assert.equal(result.text, chunk.text);
+  });
+
+  it("sugestão from whitespace-only → SKIP (paridade com clarice-apply)", () => {
+    const chunk: TextChunk = { text: "Algum texto com   espaços.", startOffset: 0 };
+    const suggestions: ClariceChunkSuggestion[] = [
+      { from: "   ", to: "" }, // from whitespace-only — não deve corromper espaços
+    ];
+    const result = applyChunkSuggestions(chunk, suggestions);
+    assert.equal(result.applied.length, 0, "from whitespace-only não deve ser aplicado");
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.text, chunk.text, "texto não deve ser alterado");
+  });
+
+  it("#2606: `to` com $ patterns ($&) não é interpretado como backreference", () => {
+    const chunk: TextChunk = { text: "O preço é caro hoje.", startOffset: 0 };
+    const suggestions: ClariceChunkSuggestion[] = [
+      { from: "caro", to: "R$ 50 ($&)" }, // contém $& — não deve expandir para o match
+    ];
+    const result = applyChunkSuggestions(chunk, suggestions);
+    assert.equal(result.applied.length, 1);
+    assert.ok(
+      result.text.includes("R$ 50 ($&)"),
+      `'$&' deve ser literal, não expandido para o match. Texto: ${result.text}`,
+    );
+    assert.ok(!result.text.includes("R$ 50 (caro)"), "$& NÃO deve expandir para 'caro'");
   });
 
   it("múltiplas sugestões: aplica únicas, pula ambíguas", () => {
-    const text = "A empresa cresceu. A empresa lucrou.";
-    const chunk: TextChunk = { text, startOffset: 0 };
+    const chunk: TextChunk = { text: "A empresa cresceu. A empresa lucrou.", startOffset: 0 };
     const suggestions: ClariceChunkSuggestion[] = [
       { from: "cresceu", to: "expandiu" },         // 1× no chunk → aplicar
       { from: "A empresa", to: "A companhia" },     // 2× no chunk → skip
     ];
-    const result = applyChunkSuggestions(text, chunk, suggestions);
+    const result = applyChunkSuggestions(chunk, suggestions);
     assert.equal(result.applied.length, 1, "só 1 sugestão deve ser aplicada");
     assert.equal(result.applied[0].from, "cresceu");
     assert.equal(result.skipped.length, 1, "sugestão ambígua deve ser pulada");
     assert.ok(result.text.includes("expandiu"), "substituição de 'cresceu' deve estar no texto");
     assert.ok(result.text.includes("A empresa"), "substituição ambígua NÃO deve ter sido feita");
   });
-
-  it("sugestão em chunk parcial (não o texto inteiro) → aplica na região correta", () => {
-    const fullText = "Seção 1: conteúdo inicial.\n\nSeção 2: conteúdo tardio com problema.";
-    const secondSection = "Seção 2: conteúdo tardio com problema.";
-    const offset = fullText.indexOf(secondSection);
-    const chunk: TextChunk = { text: secondSection, startOffset: offset };
-    const suggestions: ClariceChunkSuggestion[] = [
-      { from: "tardio", to: "posterior" },
-    ];
-    const result = applyChunkSuggestions(fullText, chunk, suggestions);
-    assert.ok(result.text.includes("posterior"), "substituição deve ser feita no fullText");
-    assert.ok(!result.text.includes("tardio"), "texto original deve ser substituído");
-    assert.equal(result.applied.length, 1);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// mergeChunkSuggestions
+// mergeChunkSuggestions (chunk-local: chunks corrigidos re-concatenados)
 // ---------------------------------------------------------------------------
 
 describe("mergeChunkSuggestions", () => {
-  it("dois chunks com sugestões únicas → ambas aplicadas", () => {
-    const fullText = "Primeira parte com erro1.\n\nSegunda parte com erro2.";
-    const chunk1: TextChunk = { text: "Primeira parte com erro1.", startOffset: 0 };
-    const chunk2: TextChunk = {
-      text: "Segunda parte com erro2.",
-      startOffset: "Primeira parte com erro1.\n\n".length,
-    };
-    const result = mergeChunkSuggestions(fullText, [
+  it("dois chunks com sugestões únicas → ambas aplicadas + reconstrução correta", () => {
+    // Chunks reconstroem o original ao concatenar (invariante de splitIntoChunks).
+    const chunk1: TextChunk = { text: "Primeira parte com erro1.\n\n", startOffset: 0 };
+    const chunk2: TextChunk = { text: "Segunda parte com erro2.", startOffset: chunk1.text.length };
+    const result = mergeChunkSuggestions([
       { chunk: chunk1, suggestions: [{ from: "erro1", to: "correção1" }] },
       { chunk: chunk2, suggestions: [{ from: "erro2", to: "correção2" }] },
     ]);
-    assert.ok(result.text.includes("correção1"));
-    assert.ok(result.text.includes("correção2"));
+    assert.equal(result.text, "Primeira parte com correção1.\n\nSegunda parte com correção2.");
     assert.equal(result.applied.length, 2);
     assert.equal(result.skipped.length, 0);
   });
 
+  it("integração: splitIntoChunks → merge reconstrói texto com correções aplicadas", () => {
+    const para = "Frase de teste editorial. ".repeat(20) + "\n\n";
+    let text = "ALVO_UNICO no início.\n\n";
+    while (text.length < 12_000) text += para;
+    const chunks = splitIntoChunks(text, 9_000);
+    assert.ok(chunks.length >= 2);
+    // Aplicar uma correção no primeiro chunk (ALVO_UNICO está no início, 1× global)
+    const chunkSuggestions = chunks.map((chunk, i) => ({
+      chunk,
+      suggestions: i === 0 ? [{ from: "ALVO_UNICO", to: "ALVO_CORRIGIDO" }] : [],
+    }));
+    const result = mergeChunkSuggestions(chunkSuggestions);
+    assert.ok(result.text.includes("ALVO_CORRIGIDO"));
+    assert.ok(!result.text.includes("ALVO_UNICO"));
+    // Texto restante (fora a substituição) preservado: comprimento bate com a diferença
+    assert.equal(result.text.length, text.length + ("ALVO_CORRIGIDO".length - "ALVO_UNICO".length));
+  });
+
   it("sugestão skip de um chunk não afeta sugestão válida do outro", () => {
-    const fullText = "Texto1 com ambíguo ambíguo.\n\nTexto2 com único.";
-    const chunk1: TextChunk = { text: "Texto1 com ambíguo ambíguo.", startOffset: 0 };
-    const chunk2: TextChunk = {
-      text: "Texto2 com único.",
-      startOffset: "Texto1 com ambíguo ambíguo.\n\n".length,
-    };
-    const result = mergeChunkSuggestions(fullText, [
+    const chunk1: TextChunk = { text: "Texto1 com ambíguo ambíguo.\n\n", startOffset: 0 };
+    const chunk2: TextChunk = { text: "Texto2 com único.", startOffset: chunk1.text.length };
+    const result = mergeChunkSuggestions([
       { chunk: chunk1, suggestions: [{ from: "ambíguo", to: "claro" }] }, // 2× no chunk → skip
       { chunk: chunk2, suggestions: [{ from: "único", to: "singular" }] }, // 1× → apply
     ]);
