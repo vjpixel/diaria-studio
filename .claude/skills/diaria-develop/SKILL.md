@@ -96,7 +96,7 @@ O **desbloqueio** (Gate 1, humano) é serial por natureza (um editor, uma decis�
 
 Roda só se houve ≥1 merge e o diff `{base_sha}..HEAD` > ~50 linhas. Um `/code-review` sem `--comment`; crítico-em-produção confirmado deterministicamente (`gh run list --branch master --limit 1`, #573) → hotfix imediato; demais → issues via `scripts/lib/auto-reporter-dedup.ts` (dedup, labels tipo + prioridade obrigatória) com label extra **`session-finding`** (label compartilhada entre overnight e develop, #2636) e corpo citando o PR de origem. **Sem a cadeia depth-2 do overnight** — se o editor quer atacar um finding na hora, ele vira a próxima issue da Fase 1. Fail-soft #738.
 
-> **Pré-requisito de label (one-time):** a label `session-finding` precisa existir no GitHub. É a renomeação de `overnight-finding` → `session-finding` (ação de repo-admin do editor — relabela as issues existentes e mantém overnight+develop consistentes). Até a renomeação acontecer, o filing de findings cai de volta em `overnight-finding`. Ver #2636.
+> **Label `session-finding`:** label compartilhada entre `/diaria-overnight` e `/diaria-develop` (renomeada de `overnight-finding`, #2636). Ambas as skills filam os findings do code-review consolidado com ela.
 
 ## Fase 2 — Relatório + handoff para o overnight
 
