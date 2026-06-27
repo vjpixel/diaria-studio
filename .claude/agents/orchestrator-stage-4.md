@@ -250,13 +250,17 @@ npx tsx scripts/substitute-image-urls.ts \
   --out data/editions/{AAMMDD}/_internal/newsletter-final.html \
   --images data/editions/{AAMMDD}/06-public-images.json
 # Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
+# --no-wrap é OBRIGATÓRIO (#2550): sobe o fragmento bruto, igual ao §4b/beehiiv-playbook.md.
+# Sem ele o Worker hospeda o HTML embrulhado no preview-wrapper → paste no Beehiiv quebra.
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
   --html data/editions/{AAMMDD}/_internal/newsletter-final.html \
   --persist-to data/editions/{AAMMDD}/_internal/04-newsletter-url.json \
   --field newsletter_url
 ```
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
+
+**⚠️ Atualizar `{newsletter_url}` após o re-upload:** o re-upload gera um novo hash de conteúdo (#1494) → nova URL. A URL capturada em §4b step 2 fica STALE. Re-ler `_internal/04-newsletter-url.json` e atualizar a variável `{newsletter_url}` ANTES de montar o gate (§4c.7) — senão o editor abre o preview da URL antiga (texto PRÉ-correção) e aprova conteúdo que não revisou.
 
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).

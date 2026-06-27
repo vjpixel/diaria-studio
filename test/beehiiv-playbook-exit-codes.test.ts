@@ -136,6 +136,60 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
     );
   });
 
+  it("orchestrator-stage-4.md §4c.6b: re-render pós-autofix usa flags que batem com o argv real (#2598 follow-up)", () => {
+    const stage4Src = readFileSync(
+      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
+      "utf8",
+    );
+
+    // Isolar o bloco de re-render do §4c.6b (entre o marcador #2617 e a tabela
+    // de exit codes #2335 que o segue). Garante que o assert mira nesse bloco,
+    // não em outra invocação dos scripts no arquivo.
+    const blockStart = stage4Src.indexOf("Re-render newsletter HTML");
+    assert.ok(blockStart >= 0, "bloco §4c.6b de re-render não encontrado");
+    const block = stage4Src.slice(blockStart, blockStart + 1200);
+
+    // render-newsletter-html.ts: edition-dir é POSICIONAL + escreve em arquivo via --out.
+    // O bug original (#2598 follow-up) usava --edition-dir (flag inexistente) e omitia
+    // --out → HTML ia pra stdout, newsletter-draft.html nunca era regenerado.
+    assert.doesNotMatch(
+      block,
+      /render-newsletter-html\.ts\s+--edition-dir/,
+      "render-newsletter-html.ts recebe edition-dir POSICIONAL, não --edition-dir",
+    );
+    assert.match(
+      block,
+      /render-newsletter-html\.ts\s+data\/editions\/\{AAMMDD\}\/[^\n]*--out\s+\S*newsletter-draft\.html/,
+      "render-newsletter-html.ts precisa de --out newsletter-draft.html (senão escreve em stdout)",
+    );
+
+    // substitute-image-urls.ts: lê --html (args.html), NÃO --in. Com --in o htmlArg
+    // fica undefined → process.exit(1) e o re-render falha silenciosamente.
+    assert.doesNotMatch(
+      block,
+      /substitute-image-urls\.ts[^#]*--in\b/,
+      "substitute-image-urls.ts lê --html, não --in (--in → exit 1)",
+    );
+    assert.doesNotMatch(
+      block,
+      /substitute-image-urls\.ts[^#]*--edition-dir\b/,
+      "substitute-image-urls.ts não aceita --edition-dir",
+    );
+    assert.match(
+      block,
+      /substitute-image-urls\.ts[\s\S]*?--html\s+\S*newsletter-draft\.html/,
+      "substitute-image-urls.ts precisa de --html newsletter-draft.html",
+    );
+
+    // upload-html-public.ts: --no-wrap é OBRIGATÓRIO (#2550) — sobe o fragmento bruto,
+    // igual ao §4b. Sem ele, o HTML re-uploadado vai embrulhado no preview-wrapper.
+    assert.match(
+      block,
+      /upload-html-public\.ts[\s\S]*?--no-wrap/,
+      "upload-html-public.ts no re-render precisa de --no-wrap (fragmento bruto, #2550)",
+    );
+  });
+
   it("beehiiv-playbook.md nota #1705: campo existe mas plan-gated — não diz mais 'não há via de API' (#2340)", () => {
     const playbookSrc = readFileSync(
       resolve(ROOT, "context/publishers/beehiiv-playbook.md"),
