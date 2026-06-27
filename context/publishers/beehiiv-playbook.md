@@ -362,6 +362,8 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 
 **⚠️ Verificação é DOM-only (#1705):** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente) — NÃO validar a capa via API. Os helpers já checam via DOM ("Add thumbnail" sumiu + thumbnail `beehiiv-images-production` presente) e `classifyCoverVerify` decide.
 
+**⚠️ Setar capa/metadados via API está plan-gated (#2501, #2340):** o schema do MCP expõe `thumbnail_image_url` + `email_settings` em `save_post`/`edit_post` (e `edit_post_content` cobriria o corpo) — em tese resolveria capa, subject, preview e slug sem Chrome. Mas **todo o grupo MCP Write é gated** no plano atual (Launch/free): qualquer write retorna *"Mcp Write is not available on your current plan"*. Tier mínimo = Scale (~$516/ano); o editor **descartou o upgrade em 260621** (princípio "zero custo recorrente"; decisão e estudo de custo/benefício registrados na #2340). **Conclusão operacional:** capa, subject, preview e slug seguem **exclusivamente via Chrome/DOM** (DataTransfer p/ capa, §6.5 p/ subject). Não reabrir a via de API sem reverter a decisão de plano.
+
 **Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem que `classifyCoverVerify` retorne `applied: true`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
 
 ```
