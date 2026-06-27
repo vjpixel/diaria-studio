@@ -452,7 +452,7 @@ export function renderHtmlReport(
       <tr><td>Queries esta edicao</td><td><strong>${braveCredits.queries_this_edition}</strong>${braveCredits.queries_this_edition_estimated > 0 ? ` (${braveCredits.queries_this_edition_real} reais + ${braveCredits.queries_this_edition_estimated} estimadas)` : ""}</td></tr>
       <tr><td>Queries este mes</td><td><strong>${braveCredits.queries_this_month}</strong> / ${braveCredits.free_tier_limit} (${braveCredits.percent_used}%)${braveCredits.queries_this_month_estimated > 0 ? ` <em>${braveCredits.queries_this_month_real} reais + ${braveCredits.queries_this_month_estimated} estimadas (Path B)</em>` : ""}</td></tr>
       ${braveCredits.projected_month_end !== null ? `<tr><td>Projecao fim do mes</td><td>~${braveCredits.projected_month_end}</td></tr>` : ""}
-      ${typeof braveCredits.delta_untracked === "number" ? `<tr><td>Queries nao-contadas (Path B / agentes)</td><td>${braveCredits.delta_untracked > 0 ? `<span class="warn">+${braveCredits.delta_untracked}</span>` : braveCredits.delta_untracked}</td></tr>` : ""}
+      ${typeof braveCredits.delta_untracked === "number" && braveCredits.delta_untracked !== 0 ? `<tr><td>Gap real vs. estimativa (Brave − local)</td><td>${braveCredits.delta_untracked > 0 ? `<span class="warn">+${braveCredits.delta_untracked}</span>` : braveCredits.delta_untracked}</td></tr>` : ""}
       <tr><td>Status</td><td class="${braveCredits.alert_level === "critical" ? "err" : braveCredits.alert_level === "warn" ? "warn" : ""}">${braveCredits.alert_level === "critical" ? "&#9888; Critical (&gt;95% free tier)" : braveCredits.alert_level === "warn" ? "&#9888; Warn (&gt;80% free tier)" : "&#10003; OK"}</td></tr>
     </tbody>
   </table>

@@ -271,6 +271,28 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
+  // (#2608 C) cross-month regression: quota_remaining from previous month must NOT pollute delta
+  it("delta_untracked ignora quota_remaining de mes anterior (cross-month boundary)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-01T12:00:00Z");
+    // Entry from May with quota_remaining=400 (1600 used in May).
+    // In June (now), no real entries yet → quota_remaining_last_seen must be undefined (no June entries with quota).
+    // Before fix: quota_remaining=400 from May would set quota_remaining_last_seen=400 → real_used=1600 → delta=1600 (spike).
+    // After fix: May entry is skipped (monthPrefix="2026-06"); no June entry has quota → delta absent.
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ timestamp: "2026-05-31T23:59:00Z", query: "q_may", status: "ok", quota_remaining: 400 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month, 0, "nenhuma query em junho");
+    assert.equal(stats.quota_remaining_last_seen, undefined, "quota de maio nao deve vazar pra junho");
+    assert.equal(stats.delta_untracked, undefined, "delta deve ser absent quando sem quota em junho");
+    rmSync(path, { force: true });
+  });
+
   // #2378: characterisation — error queries are never recorded (only ok/rate_limited count).
   // This is enforced at the call site (fetch-websearch-batch.ts), not here, but the
   // JSONL-only design means errors can never appear in the file by construction.

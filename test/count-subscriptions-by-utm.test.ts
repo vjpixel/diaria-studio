@@ -11,6 +11,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   normalizeUtmSource,
@@ -255,12 +257,9 @@ describe("aggregateByUtmSource — clarice (#2613)", () => {
 // #2613 — template newsletter-monthly.md contém utm_source=clarice
 // ---------------------------------------------------------------------------
 
-import { readFileSync as readFileSyncNode } from "node:fs";
-import { resolve } from "node:path";
-
 describe("newsletter-monthly.md template (#2613)", () => {
   it("template usa diaria.beehiiv.com com utm_source=clarice (não diar.ia.br antigo)", () => {
-    const template = readFileSyncNode(
+    const template = readFileSync(
       resolve(import.meta.dirname ?? "", "../context/templates/newsletter-monthly.md"),
       "utf8",
     );

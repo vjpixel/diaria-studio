@@ -59,14 +59,18 @@ export interface BraveCreditEntry {
  * Append uma entrada ao log de créditos. Cria dir/arquivo se ausente.
  * No-op silent se path inválido (defensive — counter não pode quebrar pipeline).
  */
+function ensureDir(fullPath: string): void {
+  const dir = dirname(fullPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
 export function recordBraveCredit(
   entry: Omit<BraveCreditEntry, "timestamp">,
   path: string = DEFAULT_PATH,
 ): void {
   try {
     const fullPath = resolve(process.cwd(), path);
-    const dir = dirname(fullPath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    ensureDir(fullPath);
     const fullEntry: BraveCreditEntry = {
       timestamp: new Date().toISOString(),
       ...entry,
@@ -98,11 +102,33 @@ export function recordBraveCreditEstimate(
   }: { edition?: string; source: string; count: number },
   path: string = DEFAULT_PATH,
 ): void {
-  if (count <= 0) return;
+  if (!Number.isFinite(count) || count <= 0) return;
+  count = Math.round(count);
   try {
     const fullPath = resolve(process.cwd(), path);
-    const dir = dirname(fullPath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    ensureDir(fullPath);
+    const monthPrefix = new Date().toISOString().slice(0, 7);
+    // Idempotency guard: skip if an estimated entry for this edition+source already exists this month
+    if (edition && source && existsSync(fullPath)) {
+      const existing = readFileSync(fullPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .some((l) => {
+          try {
+            const e = JSON.parse(l);
+            return (
+              e.estimated === true &&
+              e.edition === edition &&
+              e.source === source &&
+              typeof e.timestamp === "string" &&
+              e.timestamp.startsWith(monthPrefix)
+            );
+          } catch {
+            return false;
+          }
+        });
+      if (existing) return;
+    }
     const ts = new Date().toISOString();
     const lines: string[] = [];
     for (let i = 0; i < count; i++) {
@@ -187,12 +213,13 @@ export function computeBraveCreditStats(
     }
     if (typeof entry.timestamp !== "string") continue;
 
-    // (#2608 C) track last quota_remaining seen (across all time, not just this month)
+    if (!entry.timestamp.startsWith(monthPrefix)) continue;
+
+    // (#2608 C) track last quota_remaining seen — scoped to this month so cross-month
+    // values from previous billing cycles don't corrupt delta_untracked at cycle boundaries
     if (typeof entry.quota_remaining === "number") {
       quota_remaining_last_seen = entry.quota_remaining;
     }
-
-    if (!entry.timestamp.startsWith(monthPrefix)) continue;
 
     const isEstimated = entry.estimated === true;
     if (isEstimated) {
@@ -207,21 +234,23 @@ export function computeBraveCreditStats(
   const queries_this_month = queries_this_month_real + queries_this_month_estimated;
   const queries_this_edition = queries_this_edition_real + queries_this_edition_estimated;
 
-  // Projeção: extrapolar baseado no dia do mês (linear)
+  // Projeção: extrapolar baseado no dia do mês (linear), usando só queries reais (Path A).
+  // Estimativas são gravadas em lote único no dia do Stage 1, então incluí-las inflaria a
+  // projeção ~10× no início do mês (ex: 55 estimadas dia 1 → projeção 1650/mês = falso-critical).
   const dayOfMonth = now.getUTCDate();
   const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getDate();
   const projected_month_end =
     dayOfMonth > 0
-      ? Math.round((queries_this_month / dayOfMonth) * daysInMonth)
+      ? Math.round((queries_this_month_real / dayOfMonth) * daysInMonth)
       : null;
 
-  // (#2608 C) delta = queries cobradas pelo Brave − queries contadas localmente
+  // (#2608 C) delta = queries cobradas pelo Brave − (reais + estimadas locais)
   // real_used_this_month = free_tier_limit − quota_remaining_last_seen
-  // delta > 0 → há queries não-contadas localmente (Path B / agents)
+  // delta ≈ 0 → estimativas corretas; delta > 0 → gap não explicado (Path B > estimativa)
   let delta_untracked: number | undefined;
   if (typeof quota_remaining_last_seen === "number") {
     const real_used = FREE_TIER_LIMIT - quota_remaining_last_seen;
-    delta_untracked = real_used - queries_this_month_real;
+    delta_untracked = real_used - (queries_this_month_real + queries_this_month_estimated);
   }
 
   const percent_used = queries_this_month / FREE_TIER_LIMIT;
