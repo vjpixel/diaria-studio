@@ -1,8 +1,10 @@
 /**
- * test/edition-statusline.test.ts (#2250)
+ * test/edition-statusline.test.ts (#2250, #2618)
  *
  * Testes da função pura `renderEditionBar` e do detector `readCurrentEditionDoc`
  * que alimentam a statusLine do Claude Code durante uma edição em curso.
+ * #2618: + `renderStatusline` (composição pura) e `readMostRecentEditionDoc`
+ * (lê edição mais recente incluindo encerrada) — barra some após edição concluída.
  *
  * Coberturas obrigatórias (#633):
  *   - Edição em curso (stage running) → barra com label correto
@@ -28,6 +30,8 @@ import {
   readTodayPlan,
   renderIdleBar,
   findMostRecentEditionId,
+  renderStatusline,
+  readMostRecentEditionDoc,
   type Plan,
 } from "../scripts/overnight-statusline.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
@@ -726,5 +730,204 @@ describe("precedência completa: edição > overnight > idle (#2255)", () => {
       const bar = renderEditionBar(null) || renderOvernightBar(null) || renderIdleBar(null);
       assert.notEqual(bar, "", "barra nunca deve ser vazia mesmo com todos os inputs null");
     });
+  });
+});
+
+// ─── #2618: renderStatusline — barra some após edição concluída ───────────────
+
+/**
+ * Testes de regressão para #2618: renderStatusline não produz barra de progresso
+ * quando a edição mais recente está concluída (todos stages terminais) e não há
+ * overnight ativa.
+ *
+ * Coberturas obrigatórias (#633):
+ *   - Edição CONCLUÍDA + sem overnight → sem barra (output vazio ou só branch)
+ *   - Edição EM CURSO + sem overnight → barra de progresso presente
+ *   - Edição CONCLUÍDA + overnight ativo → barra de overnight presente (não some)
+ *   - Sem edição + sem overnight → idle bar presente (não some)
+ *   - renderStatusline é função pura (sem I/O) — testável diretamente
+ */
+
+// Reusa o helper makeDoc (topo do arquivo) — não duplicar a factory de StageStatusDoc.
+
+function makeActivePlanForStatusline(): Plan {
+  return {
+    started_at: "2026-06-26T22:00:00.000Z",
+    issues: [
+      { number: 1, status: "elegivel" },
+      { number: 2, status: "mergeada" },
+    ],
+  };
+}
+
+/** Doc de edição 100% concluída — equivalente ao que mostRecentDoc seria quando encerrada. */
+function makeEncerradaDoc(edition: string): StageStatusDoc {
+  return makeDoc(edition, Array(7).fill("done") as Array<"done">);
+}
+
+describe("renderStatusline — #2618: barra some após edição concluída", () => {
+  it("edição CONCLUÍDA (todos done) + sem overnight → output sem barra (só branch ou vazio)", () => {
+    // editionDoc=null porque readCurrentEditionDoc filtra edições encerradas;
+    // mostRecentDoc com todos done → encerrada detectada por construção (#2624 Finding 1).
+    const result = renderStatusline(
+      null,                       // editionDoc null (encerrada não aparece aqui — readCurrentEditionDoc skip)
+      null,                       // sem overnight
+      "260626",                   // mostRecentEditionId
+      makeEncerradaDoc("260626"), // mostRecentDoc com todos done (#2618 + #2624)
+      "master",
+    );
+    // #2618: barra some — output deve ser apenas "master" (sem barra de progresso)
+    assert.equal(result, "master", `edição concluída deve suprimir a barra: "${result}"`);
+    // Não deve conter caracteres de barra de progresso
+    assert.ok(!result.includes("["), `output não deve conter barra [: "${result}"`);
+    assert.ok(!result.includes("█"), `output não deve conter blocos cheios: "${result}"`);
+    assert.ok(!result.includes("░"), `output não deve conter blocos vazios: "${result}"`);
+  });
+
+  it("edição CONCLUÍDA sem branch + sem overnight → output vazio", () => {
+    const result = renderStatusline(null, null, "260626", makeEncerradaDoc("260626"), "");
+    // branch vazio + barra some = string vazia
+    assert.equal(result, "", `edição concluída sem branch deve retornar "": "${result}"`);
+  });
+
+  it("edição EM CURSO (tem stage running) + sem overnight → barra de progresso presente", () => {
+    // Stage 0 done, stage 1 running, demais pending = em curso
+    const inProgressDoc = makeDoc("260626", [
+      "done", "running", "pending", "pending", "pending", "pending", "pending",
+    ]);
+    const result = renderStatusline(
+      inProgressDoc,  // editionDoc não-null = em curso
+      null,
+      "260626",
+      inProgressDoc,  // mostRecentDoc = mesmo doc (encerrada=false por construção: editionDoc≠null)
+      "master",
+    );
+    // Deve conter barra de progresso da edição
+    assert.ok(result.includes("edição 260626"), `deve exibir a edição: "${result}"`);
+    assert.ok(result.includes("["), `deve conter barra [: "${result}"`);
+  });
+
+  it("edição CONCLUÍDA + overnight ATIVO → barra de overnight presente (não some)", () => {
+    // Edição encerrada, mas overnight tem issues em andamento → overnight bar deve aparecer
+    const activePlan = makeActivePlanForStatusline();
+    const result = renderStatusline(
+      null,                       // sem edição em curso
+      activePlan,                 // overnight ativo
+      "260626",
+      makeEncerradaDoc("260626"), // edição encerrada
+      "master",
+    );
+    // A barra de overnight deve aparecer (overnight tem prioridade sobre "barra some")
+    assert.ok(result.includes("["), `barra de overnight deve aparecer: "${result}"`);
+    // 1 mergeada de 2 issues → 50% exato (assert do valor, não só presença de '%')
+    assert.ok(result.includes("50%"), `deve mostrar progresso overnight 50%: "${result}"`);
+    assert.ok(result.includes("(1/2)"), `deve mostrar (1/2): "${result}"`);
+    assert.ok(!result.includes("edição 260626"), `não deve mostrar edição (encerrada): "${result}"`);
+  });
+
+  it("sem edição alguma + sem overnight → idle bar presente (não some)", () => {
+    // Sem nenhuma edição em disco: mostRecentDoc=null → encerrada=false por construção
+    const result = renderStatusline(
+      null,    // sem edição
+      null,    // sem overnight
+      null,    // sem edição recente
+      null,    // mostRecentDoc null (não há edição no disco)
+      "master",
+    );
+    // Deve mostrar idle bar (não suprimir)
+    assert.ok(result.includes("["), `idle bar deve aparecer: "${result}"`);
+    assert.ok(result.includes("Diar.ia"), `idle bar deve conter 'Diar.ia': "${result}"`);
+  });
+
+  it("edição CONCLUÍDA: renderStatusline é pura — chamadas repetidas produzem mesmo resultado", () => {
+    const encerradaDoc = makeEncerradaDoc("260625");
+    const args: Parameters<typeof renderStatusline> = [null, null, "260625", encerradaDoc, "feature/test"];
+    const r1 = renderStatusline(...args);
+    const r2 = renderStatusline(...args);
+    assert.equal(r1, r2, "função pura deve ser idempotente");
+    assert.equal(r1, "feature/test", `deve retornar só o branch: "${r1}"`);
+  });
+});
+
+// ─── #2618: readMostRecentEditionDoc — lê edição encerrada (não filtra) ──────
+
+describe("readMostRecentEditionDoc — lê última edição incluindo encerrada (#2618)", () => {
+  const tmpRoot = join(tmpdir(), `most-recent-edition-test-${Date.now()}`);
+
+  after(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("retorna doc de edição encerrada (readCurrentEditionDoc filtraria, esta não)", () => {
+    // Criar edição encerrada (todos done)
+    const editionDir = join(tmpRoot, "data", "editions", "260626");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    const doc: import("../scripts/update-stage-status.ts").StageStatusDoc = {
+      edition: "260626",
+      rows: Array.from({ length: 7 }, (_, i) => ({ stage: i, status: "done" as const })),
+      generated_at: "2026-06-26T08:00:00.000Z",
+    };
+    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(doc), "utf8");
+
+    // readCurrentEditionDoc retorna null (filtra encerrada)
+    const currentDoc = readCurrentEditionDoc(tmpRoot);
+    assert.equal(currentDoc, null, "readCurrentEditionDoc deve filtrar edição encerrada");
+
+    // readMostRecentEditionDoc retorna o doc mesmo encerrado
+    const mostRecentDoc = readMostRecentEditionDoc(tmpRoot);
+    assert.ok(mostRecentDoc !== null, "readMostRecentEditionDoc deve retornar doc encerrado");
+    assert.equal(mostRecentDoc!.edition, "260626");
+    assert.ok(mostRecentDoc!.rows.every((r) => r.status === "done"), "todos os rows devem ser done");
+  });
+
+  it("retorna null quando não há edições", () => {
+    const emptyRoot = join(tmpdir(), `most-recent-empty-${Date.now()}`);
+    mkdirSync(join(emptyRoot, "data", "editions"), { recursive: true });
+    try {
+      const doc = readMostRecentEditionDoc(emptyRoot);
+      assert.equal(doc, null, "sem edições deve retornar null");
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #2618: integração de disco — wiring completo do CLI (readers → renderStatusline) ─
+// O bug original (#2618) está no CLI: edição encerrada em disco deve fazer a barra sumir.
+// Este teste exercita a CADEIA real via I/O (não só as funções puras isoladas), espelhando
+// o entrypoint: readCurrentEditionDoc → null, readMostRecentEditionDoc → doc encerrado,
+// mostRecentEditionId derivado de mostRecentDoc.edition, mostRecentEditionEncerrada → true.
+
+describe("integração de disco #2618 — edição encerrada faz a barra sumir (wiring CLI)", () => {
+  const tmpRoot = join(tmpdir(), `statusline-cli-wiring-${Date.now()}`);
+
+  after(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Replica o wiring do entrypoint do CLI (sem git/process), de forma determinística.
+  function composeFromDisk(cwd: string, branch: string): string {
+    const editionDoc = readCurrentEditionDoc(cwd);
+    const plan = readTodayPlan(cwd);
+    const mostRecentDoc = editionDoc ?? readMostRecentEditionDoc(cwd);
+    const mostRecentEditionId = mostRecentDoc?.edition ?? findMostRecentEditionId(cwd);
+    // #2624 Finding 1: passa mostRecentDoc diretamente — renderStatusline deriva encerrada internamente.
+    return renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentDoc, branch);
+  }
+
+  it("edição encerrada em disco (todos done) + sem overnight → barra some (só branch)", () => {
+    const editionDir = join(tmpRoot, "data", "editions", "260626");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    const doc: import("../scripts/update-stage-status.ts").StageStatusDoc = {
+      edition: "260626",
+      rows: Array.from({ length: 7 }, (_, i) => ({ stage: i, status: "done" as const })),
+      generated_at: "2026-06-26T08:00:00.000Z",
+    };
+    writeFileSync(join(editionDir, "_internal", "stage-status.json"), JSON.stringify(doc), "utf8");
+
+    const output = composeFromDisk(tmpRoot, "master");
+    // #2618: a barra deve sumir — output é só o branch, sem barra de progresso
+    assert.equal(output, "master", `edição encerrada em disco deve suprimir a barra: "${output}"`);
+    assert.ok(!output.includes("["), `não deve conter barra: "${output}"`);
   });
 });
