@@ -4,6 +4,8 @@ import {
   resolveReadPath,
   resolveWritePath,
   existsInEditionDir,
+  editionsRoot,
+  editionDir,
 } from "../scripts/lib/edition-paths.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,5 +95,31 @@ describe("existsInEditionDir", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("editionsRoot / editionDir (#2463 — centralização do path da edição)", () => {
+  it("editionsRoot retorna data/editions (relativo)", () => {
+    assert.equal(editionsRoot(), join("data", "editions"));
+  });
+
+  it("editionDir retorna o path FLAT atual data/editions/{AAMMDD}", () => {
+    assert.equal(editionDir("260627"), join("data", "editions", "260627"));
+    assert.equal(editionDir("260101"), join("data", "editions", "260101"));
+  });
+
+  it("editionDir valida AAMMDD (exatamente 6 dígitos) — rejeita inválidos", () => {
+    assert.throws(() => editionDir("2606"), /AAMMDD inválido/);
+    assert.throws(() => editionDir("26062"), /AAMMDD inválido/);
+    assert.throws(() => editionDir("2606277"), /AAMMDD inválido/);
+    assert.throws(() => editionDir("26june"), /AAMMDD inválido/);
+    assert.throws(() => editionDir(""), /AAMMDD inválido/);
+  });
+
+  it("layout ainda é flat — sem subfolder AAMM (guard da migração futura #2463)", () => {
+    // Quando a migração #2463 trocar o layout para data/editions/{AAMM}/{AAMMDD},
+    // este guard muda junto com editionDir() — sinaliza que a troca foi feita.
+    assert.equal(editionDir("260627"), join("data", "editions", "260627"));
+    assert.ok(!editionDir("260627").includes(join("2606", "260627")), "ainda flat");
   });
 });
