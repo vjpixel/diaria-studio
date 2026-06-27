@@ -13,12 +13,16 @@
  *      "{branch}  [████████░░░░] 67%  (4/6)"
  *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
  *
- *   3. IDLE — barra SEMPRE presente mesmo sem edição nem overnight (#2255):
- *      Com edição passada: "{branch}  [████████████] Diar.ia · 260617 · pronto"
+ *   3. IDLE — barra presente sem edição nem overnight (#2255):
  *      Sem edição alguma:  "{branch}  [████████████] Diar.ia · sem rodada ativa"
  *
- * Precedência: edição em curso > overnight > idle. A barra é SEMPRE presente —
- * nunca retorna string vazia para o statusLine.
+ *   4. EDIÇÃO CONCLUÍDA sem overnight (#2618): barra SOME — só o branch (ou "" em
+ *      detached HEAD). Distinto do idle: "sem rodada ativa" é quando não há edição;
+ *      "barra some" é quando a última edição terminou (todos stages terminais).
+ *
+ * Precedência: edição em curso > overnight > idle > (edição concluída → barra some).
+ * NOTA (#2618): a barra NÃO é mais sempre presente — após uma edição concluir, sem
+ * overnight, o output é só o branch (ou vazio). A composição vive em `renderStatusline`.
  *
  * Critério de "rodada encerrada" overnight: TODAS as entradas de `issues` têm status
  * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando encerrada,
@@ -603,18 +607,11 @@ export function renderStatusline(
   // Source 2: Rodada overnight — só quando sem edição em curso.
   const overnightBar = editionBar ? "" : renderOvernightBar(plan);
 
-  // Source 3: fallback — depende do estado da edição mais recente.
-  let fallback: string;
-  if (editionBar || overnightBar) {
-    // Já tem bar — fallback não entra.
-    fallback = "";
-  } else if (mostRecentEditionEncerrada) {
-    // #2618: edição concluída, sem overnight → barra some (string vazia).
-    fallback = "";
-  } else {
-    // Sem edição concluída nem overnight → idle bar padrão (#2255).
-    fallback = renderIdleBar(mostRecentEditionId);
-  }
+  // Source 3: fallback — só entra quando não há editionBar nem overnightBar.
+  // #2618: se a edição mais recente está concluída → barra some (""); senão idle bar (#2255).
+  // (A primeira condição é redundante via short-circuit do `||` abaixo, mas torná-la
+  //  explícita evita computar renderIdleBar quando já há bar.)
+  const fallback = mostRecentEditionEncerrada ? "" : renderIdleBar(mostRecentEditionId);
 
   const bar = editionBar || overnightBar || fallback;
 
@@ -665,13 +662,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // Load state — all I/O here, renderStatusline is pure.
   const editionDoc = readCurrentEditionDoc(cwd);
   const plan = readTodayPlan(cwd);
-  const mostRecentEditionId = findMostRecentEditionId(cwd);
 
-  // #2618: detect if the most recent edition is encerrada (all stages terminal).
-  // When editionDoc is non-null, the edition is in-progress (not encerrada), so no need
-  // to call readMostRecentEditionDoc — it can't be encerrada while in progress.
+  // #2618: when editionDoc is non-null the edition is in-progress (readCurrentEditionDoc
+  // skips encerrada), so it can't be encerrada; only scan for the most-recent doc otherwise.
   const mostRecentDoc = editionDoc ?? readMostRecentEditionDoc(cwd);
+
+  // Derive the most-recent edition id from the SAME doc used for the encerrada check.
+  // (Previously a separate findMostRecentEditionId scan could disagree — e.g. a freshly
+  //  --init'd edition dir without a stage-status.json — producing an id from one edition
+  //  and an encerrada verdict from another. Deriving from mostRecentDoc keeps them in sync.)
+  const mostRecentEditionId = mostRecentDoc?.edition ?? findMostRecentEditionId(cwd);
+
+  // #2618: edition encerrada = all stages terminal. Short-circuit to false when an edition
+  // is in progress (editionDoc non-null) — it's guaranteed not encerrada by the reader's contract.
   const mostRecentEditionEncerrada =
+    !editionDoc &&
     mostRecentDoc !== null &&
     Array.isArray(mostRecentDoc.rows) &&
     mostRecentDoc.rows.length > 0 &&
