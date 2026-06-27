@@ -30,8 +30,22 @@ import { isDnsOrConnectError, resolveViaDoH, fetchViaIp } from "./doh-fetch.ts";
 
 export interface WorkerReachabilityResult {
   up: boolean;
-  /** true quando o resolver DNS local não resolveu mas DoH conseguiu */
+  /**
+   * true quando o resolver DNS local claramente falhou com erro hard (ENOTFOUND,
+   * ETIMEDOUT) E o DoH conseguiu resolver. Indica filtro DNS local provável.
+   *
+   * false quando o trigger foi AbortError de timeout (servidor lento OU DNS
+   * silencioso — não é possível distinguir). Ver `abort_timeout` para esse caso.
+   */
   local_dns_filtered: boolean;
+  /**
+   * true quando o trigger foi AbortError de timeout (nativeFetch demorou > timeoutMs).
+   * Pode indicar servidor lento (DNS funcionou, servidor não respondeu a tempo) OU
+   * DNS silencioso (drop de pacotes UDP/53). `local_dns_filtered` é false nesse caso
+   * pois não temos evidência suficiente para afirmar filtro DNS.
+   * Undefined quando o trigger não foi AbortError (outros caminhos).
+   */
+  abort_timeout?: boolean;
   /** como a confirmação foi feita */
   via: "direct" | "doh_anycast" | "none";
   /** HTTP status code quando disponível */
@@ -91,6 +105,11 @@ export async function isWorkerReachable(
       }
     });
 
+  // Track trigger type for honest labeling in subsequent steps.
+  // undefined = success (direct path), "hard_dns" = ENOTFOUND/ETIMEDOUT (DNS definitely failed),
+  // "abort_timeout" = AbortError (server-slow OR DNS-silent-hang — cannot distinguish).
+  let dohTrigger: "hard_dns" | "abort_timeout" | undefined;
+
   try {
     const res = await nativeFetchImpl(url);
     return {
@@ -102,16 +121,21 @@ export async function isWorkerReachable(
     };
   } catch (err) {
     // AbortError (name === 'AbortError') acontece quando o AbortController de timeout
-    // acima dispara — causado por DNS filtrado por drop de pacotes UDP/53 (silent hang).
-    // Esse cenário NÃO é reconhecido por isDnsOrConnectError (que só checa string codes
-    // como ENOTFOUND/ETIMEDOUT), mas é igualmente candidato a filtro DNS local.
-    // Tratar como DNS-filter candidate para acionar o retry via DoH (#2574).
+    // acima dispara. Pode ser DNS filtrado por drop de pacotes UDP/53 (silent hang)
+    // OU servidor lento (DNS resolveu, mas o servidor demorou > timeoutMs).
+    // Não temos como distinguir os dois casos aqui — acionar DoH como fallback (#2574)
+    // mas NÃO afirmar local_dns_filtered (seria enganoso no caso de servidor lento).
     const isAbortError =
       err instanceof Error && (err.name === "AbortError" || (err as { code?: unknown }).code === 20);
 
-    // Não é erro de DNS/connect nem AbortError — é outro problema (TLS, etc).
-    // Tratar como down sem suspeita de filtro DNS.
-    if (!isDnsOrConnectError(err) && !isAbortError) {
+    if (isAbortError) {
+      dohTrigger = "abort_timeout";
+    } else if (isDnsOrConnectError(err)) {
+      // Erro hard de DNS (ENOTFOUND, ETIMEDOUT, etc.) — DNS definitivamente falhou.
+      dohTrigger = "hard_dns";
+    } else {
+      // Não é erro de DNS/connect nem AbortError — é outro problema (TLS, etc).
+      // Tratar como down sem suspeita de filtro DNS.
       return {
         up: false,
         local_dns_filtered: false,
@@ -121,7 +145,7 @@ export async function isWorkerReachable(
     }
   }
 
-  // Step 2: DNS local falhou — tentar resolver via DoH
+  // Step 2: DNS local falhou ou timeout — tentar resolver via DoH
   const parsed = new URL(url);
   const dohResolveImpl = deps.dohResolve ?? resolveViaDoH;
 
@@ -148,11 +172,19 @@ export async function isWorkerReachable(
       return { ok: res.ok, status: res.status };
     });
 
+  // `local_dns_filtered` é true só quando temos evidência forte: erro hard de DNS
+  // (ENOTFOUND/ETIMEDOUT), não para AbortError de timeout (pode ser servidor lento).
+  // `abort_timeout` sinaliza o caso ambíguo para que callers possam usar mensagem mais
+  // honesta ("servidor lento ou DNS filtrado" em vez de "DNS filtrado").
+  const isDnsFilterCertain = dohTrigger === "hard_dns";
+  const isAbortTimeout = dohTrigger === "abort_timeout";
+
   try {
     const res = await anycastFetchImpl(url, resolvedIp);
     return {
       up: res.ok,
-      local_dns_filtered: true,
+      local_dns_filtered: isDnsFilterCertain,
+      ...(isAbortTimeout ? { abort_timeout: true } : {}),
       via: "doh_anycast",
       status: res.status,
       ...(!res.ok ? { error: `HTTP ${res.status} via anycast` } : {}),
@@ -160,9 +192,10 @@ export async function isWorkerReachable(
   } catch (anycastErr) {
     return {
       up: false,
-      local_dns_filtered: true,
+      local_dns_filtered: isDnsFilterCertain,
+      ...(isAbortTimeout ? { abort_timeout: true } : {}),
       via: "doh_anycast",
-      error: `local DNS filtered + anycast failed: ${anycastErr instanceof Error ? anycastErr.message : String(anycastErr)}`,
+      error: `${isDnsFilterCertain ? "local DNS filtered" : "local DNS timeout"} + anycast failed: ${anycastErr instanceof Error ? anycastErr.message : String(anycastErr)}`,
     };
   }
 }
