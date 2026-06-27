@@ -52,6 +52,7 @@ import {
 } from "./lib/source-runs.ts";
 import type { SourceEntry } from "./lib/source-runs.ts";
 import { canonicalize } from "./lib/url-utils.ts";
+import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
@@ -570,15 +571,27 @@ export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<strin
   // Normaliza CRLF para LF (Windows pode gravar 02-reviewed.md com CRLF)
   const content = raw.replace(/\r\n/g, "\n");
   // Encontra seção USE MELHOR (pode ter prefixo emoji como "🛠️ USE MELHOR" ou "**USE MELHOR**")
-  // Exclui "USE MELHOR DO MÊS" (heading de edição mensal). Delimita até o próximo heading.
-  const sectionMatch = content.match(/(?:^|\n)[^\n]*USE MELHOR(?! DO M)[^\n]*(?:\n(?![*#])[^\n]*|$)*/i);
-  if (!sectionMatch) return null;
-  const sectionText = sectionMatch[0];
-  // Extrai todas as URLs do texto da seção.
+  // Exclui "USE MELHOR DO MÊS" (heading de edição mensal).
+  // Delimita até a próxima linha de separação de seção: "---", heading "#", ou cabeçalho
+  // de seção "**emoji NOME**" (distinguido de item "**[Título](URL)**" por não ter "[" após "**").
+  // O regex anterior usava (?![*#]) como boundary de linha — mas itens Use Melhor começam
+  // com "**[..." (bold + link), então a seção era capturada vazia. (#2627)
+  const headerMatch = /(?:^|\n)[^\n]*USE MELHOR(?! DO M)[^\n]*/i.exec(content);
+  if (!headerMatch) return null;
+  const afterHeader = content.slice(headerMatch.index + headerMatch[0].length);
+  // Próximo boundary: --- separator, # heading, ou ** seção (não item link)
+  // Require ** section headers to close with ** on the same line (no intervening newline),
+  // so that inline bold like "**Importante:** note" doesn't terminate the section early.
+  // Section headers: **🛠️ USE MELHOR**  → closes with ** before EOL.
+  // Item format:     **[Título](URL)**   → excluded by (?!\[).
+  // Inline bold:     **Importante:** ... → ** closes mid-line, trailing text ≠ \s*(EOL).
+  const sectionEndMatch = /\n(?:---|#|\*\*(?!\[)[^\n]+\*\*\s*(?=\n|$))/i.exec(afterHeader);
+  const sectionText = sectionEndMatch ? afterHeader.slice(0, sectionEndMatch.index) : afterHeader;
+  // Extrai todas as URLs do texto da seção, tolerando parênteses balanceados (#2596).
   // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —
   // null é reservado para "arquivo não encontrado" (edição sem Stage 2 completo).
   const urls = new Set<string>();
-  const urlRe = /https?:\/\/[^\s\)>"']+/g;
+  const urlRe = new RegExp(URL_WITH_BALANCED_PARENS_RE_PART, "g");
   let m: RegExpExecArray | null;
   while ((m = urlRe.exec(sectionText)) !== null) {
     urls.add(normalizeUrlForJoin(m[0]));

@@ -313,6 +313,9 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
           // Conversão implícita produziria "24.99" quando o correto é "R$ 24,99" — bug
           // silencioso. Dropamos valores não-string; o autofix trata ausência como skipped_no_fix.
           suggested_fix: typeof c.suggested_fix === "string" ? c.suggested_fix : undefined,
+          // Guard: fact-checker pode omitir sources (#2628 gap 2) → default [] para
+          // evitar TypeError em entry.sources.includes() downstream.
+          sources: Array.isArray(c.sources) ? c.sources : [],
         }))
     : [];
 
