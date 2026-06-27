@@ -244,9 +244,9 @@ Exit code handling:
 
 ```bash
 # Re-render newsletter HTML com o 02-reviewed.md já corrigido
-npx tsx scripts/render-newsletter-html.ts --edition-dir data/editions/{AAMMDD}/
-npx tsx scripts/substitute-image-urls.ts --edition-dir data/editions/{AAMMDD}/ \
-  --in data/editions/{AAMMDD}/_internal/newsletter-draft.html \
+npx tsx scripts/render-newsletter-html.ts data/editions/{AAMMDD}/ --format html --out data/editions/{AAMMDD}/_internal/newsletter-draft.html
+npx tsx scripts/substitute-image-urls.ts \
+  --html data/editions/{AAMMDD}/_internal/newsletter-draft.html \
   --out data/editions/{AAMMDD}/_internal/newsletter-final.html \
   --images data/editions/{AAMMDD}/06-public-images.json
 # Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
