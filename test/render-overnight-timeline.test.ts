@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   buildTimelineRows,
   renderOvernightTimeline,
+  renderTimeline,
   type Plan,
   type PlanIssue,
 } from "../scripts/render-overnight-timeline.ts";
@@ -558,5 +559,102 @@ describe("countFixIterations dinâmico N (#2102 — item 4)", () => {
     ]);
     const rows = buildTimelineRows(plan);
     assert.equal(rows[0].fixIteracoes, 4, `deveria contar 4 fix-iterations, got ${rows[0].fixIteracoes}`);
+  });
+});
+
+// ─── renderTimeline fluxo-neutro (#2637) ──────────────────────────────────────
+
+describe("renderTimeline — back-compat do alias overnight (#2637)", () => {
+  it("renderOvernightTimeline(plan) === renderTimeline(plan) byte-a-byte", () => {
+    const plan = makePlan([
+      {
+        number: 17001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          fix_iteration_1: "2026-06-11T20:20:00.000Z",
+          merged: "2026-06-11T21:00:00.000Z",
+        },
+      },
+      {
+        number: 17002,
+        batch: "lote-bc",
+        timeline: { dispatch: "2026-06-11T21:05:00.000Z", merged: "2026-06-11T21:35:00.000Z" },
+      },
+      {
+        number: 17003,
+        batch: "lote-bc",
+        timeline: { dispatch: "2026-06-11T21:05:00.000Z", merged: "2026-06-11T21:35:00.000Z" },
+      },
+    ]);
+    // O alias deve produzir EXATAMENTE a mesma saída do default de renderTimeline.
+    assert.equal(renderOvernightTimeline(plan), renderTimeline(plan));
+  });
+
+  it("default de renderTimeline preserva os rótulos overnight ('noite'/'rodada')", () => {
+    const plan = makePlan([
+      { number: 17004, batch: null, timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:30:00.000Z" } },
+    ]);
+    const output = renderTimeline(plan);
+    assert.ok(output.includes("## Timeline da noite"), "default mantém título overnight");
+    assert.ok(output.includes("**Total da rodada:**"), "default mantém rótulo de total overnight");
+  });
+
+  it("plan vazio com default mantém o título overnight", () => {
+    const plan: Plan = { started_at: "2026-06-11T22:00:00.000Z", issues: [] };
+    const output = renderTimeline(plan);
+    assert.ok(output.includes("## Timeline da noite"));
+    assert.ok(output.includes("nenhuma unidade registrada"));
+  });
+});
+
+describe("renderTimeline — rótulos de sessão develop (#2637)", () => {
+  it("opts.title/totalLabel substituem os rótulos overnight", () => {
+    const plan = makePlan([
+      { number: 18001, batch: null, timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:30:00.000Z" } },
+    ]);
+    const output = renderTimeline(plan, { title: "Timeline da sessão", totalLabel: "Total da sessão" });
+    assert.ok(output.includes("## Timeline da sessão"), "título de sessão aplicado");
+    assert.ok(output.includes("**Total da sessão:**"), "rótulo de total de sessão aplicado");
+    // Não deve vazar os rótulos overnight quando custom é passado.
+    assert.ok(!output.includes("## Timeline da noite"), "não vaza título overnight");
+    assert.ok(!output.includes("**Total da rodada:**"), "não vaza rótulo overnight");
+  });
+
+  it("título custom também vale no caminho de plan vazio", () => {
+    const plan: Plan = { started_at: "2026-06-27T13:40:00.000Z", issues: [] };
+    const output = renderTimeline(plan, { title: "Timeline da sessão" });
+    assert.ok(output.includes("## Timeline da sessão"));
+    assert.ok(output.includes("nenhuma unidade registrada"));
+  });
+
+  it("plan.json no estilo develop (campos extras de desbloqueio) renderiza a tabela normalmente", () => {
+    // O plan.json do /diaria-develop reusa o schema overnight + campos próprios
+    // (block_category, unblock_status, wave, source). Devem ser ignorados
+    // graciosamente — o renderizador só lê `timeline`/`batch`/`number`.
+    const plan: Plan = {
+      started_at: "2026-06-27T13:40:00.000Z",
+      loop_estendido: true,
+      issues: [
+        {
+          number: 2483,
+          priority: "P3",
+          status: "mergeada",
+          batch: null,
+          pr: 9001,
+          block_category: "A",
+          block_label: "bloqueio-externo",
+          unblock_status: "desbloqueada-validada",
+          wave: 1,
+          source: "fresh-scan",
+          timeline: { dispatch: "2026-06-27T14:00:00.000Z", merged: "2026-06-27T14:40:00.000Z" },
+        } as unknown as PlanIssue,
+      ],
+    };
+    const output = renderTimeline(plan, { title: "Timeline da sessão", totalLabel: "Total da sessão" });
+    assert.ok(output.includes("## Timeline da sessão"));
+    assert.ok(output.includes("#2483"), "issue de develop aparece na tabela");
+    assert.ok(output.includes("| 40m |"), "duração calculada (14:00→14:40 = 40m)");
+    assert.ok(output.includes("**Unidade mais lenta:** #2483 (40m)"), "rodapé calculado normalmente");
   });
 });

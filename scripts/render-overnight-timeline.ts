@@ -1,18 +1,27 @@
 #!/usr/bin/env npx tsx
 /**
- * render-overnight-timeline.ts (#2099)
+ * render-overnight-timeline.ts (#2099, fluxo-neutro #2637)
  *
- * Lê `data/overnight/{AAMMDD}/plan.json` e imprime a tabela "Timeline da noite"
- * em markdown, derivada do campo `timeline` de cada issue.
+ * Lê o `plan.json` de uma sessão do coordenador (overnight OU develop) e imprime
+ * a tabela de timeline em markdown, derivada do campo `timeline` de cada issue.
+ * Serve qualquer plan.json com o schema de issues+timeline — a entrada é o path
+ * passado em `--plan`, agnóstica de fluxo.
  *
  * A tabela agrupa por unidade de trabalho (batch ou solo), calcula duração e
  * conta fix-iterations. Degrada graciosamente:
  * - issue sem campo `timeline` → duração "—" (rodada anterior ou interrompida)
  * - `started_at` sem `merged`/`draft`/`pulada` → fim "em andamento"
  *
+ * O título da seção e o rótulo do total são parametrizáveis (default = overnight:
+ * "Timeline da noite" / "Total da rodada"); `/diaria-develop` passa rótulos de
+ * sessão via `--title` / `--total-label`.
+ *
  * Uso:
  *   npx tsx scripts/render-overnight-timeline.ts \
  *     --plan data/overnight/260611/plan.json
+ *   npx tsx scripts/render-overnight-timeline.ts \
+ *     --plan data/develop/260627/plan.json \
+ *     --title "Timeline da sessão" --total-label "Total da sessão"
  *
  * Saída: markdown pra stdout.
  */
@@ -233,19 +242,32 @@ function buildRodadaTotal(plan: Plan): string {
 }
 
 
+/** Opções de rótulo do renderizador de timeline (fluxo-neutro #2637). */
+export interface RenderTimelineOpts {
+  /** Título da seção (markdown H2, sem o "## "). Default: "Timeline da noite". */
+  title?: string;
+  /** Rótulo do total da sessão/rodada. Default: "Total da rodada". */
+  totalLabel?: string;
+}
+
 /**
- * Renderiza a seção "Timeline da noite" em markdown.
+ * Renderiza a seção de timeline em markdown, derivada de um plan.json de sessão
+ * (overnight ou develop). O título e o rótulo do total são parametrizáveis; os
+ * defaults preservam o comportamento overnight byte-a-byte.
  * Exportado para uso em testes.
  */
-export function renderOvernightTimeline(plan: Plan): string {
+export function renderTimeline(plan: Plan, opts: RenderTimelineOpts = {}): string {
+  const title = opts.title ?? "Timeline da noite";
+  const totalLabel = opts.totalLabel ?? "Total da rodada";
+
   const rows = buildTimelineRows(plan);
 
   if (rows.length === 0) {
-    return "## Timeline da noite\n\n_(nenhuma unidade registrada)_\n";
+    return `## ${title}\n\n_(nenhuma unidade registrada)_\n`;
   }
 
   const lines: string[] = [];
-  lines.push("## Timeline da noite");
+  lines.push(`## ${title}`);
   lines.push("");
   lines.push("| Unidade | Início | Fim | Duração | Fix-iterations |");
   lines.push("|---------|--------|-----|---------|----------------|");
@@ -257,9 +279,9 @@ export function renderOvernightTimeline(plan: Plan): string {
 
   lines.push("");
 
-  // Rodada total
+  // Total da sessão/rodada
   const total = buildRodadaTotal(plan);
-  lines.push(`**Total da rodada:** ${total}`);
+  lines.push(`**${totalLabel}:** ${total}`);
 
   // Unidade mais lenta — usa durationMs armazenado na row (evita re-parse por regex
   // e o bug maxMs=-1 onde uma unidade de 0m vencia o sentinela).
@@ -280,6 +302,15 @@ export function renderOvernightTimeline(plan: Plan): string {
 
   lines.push("");
   return lines.join("\n");
+}
+
+/**
+ * @deprecated Alias fluxo-overnight de `renderTimeline` (back-compat, #2637).
+ * Mantido para os call-sites do `/diaria-overnight` (Fase 2). Use `renderTimeline`
+ * com `opts` para fluxos novos (ex: `/diaria-develop`).
+ */
+export function renderOvernightTimeline(plan: Plan): string {
+  return renderTimeline(plan);
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -303,5 +334,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stderr.write(`Erro ao parsear plan.json: ${e}\n`);
     process.exit(1);
   }
-  process.stdout.write(renderOvernightTimeline(plan));
+  const title = values["title"];
+  const totalLabel = values["total-label"];
+  process.stdout.write(
+    renderTimeline(plan, {
+      ...(title ? { title } : {}),
+      ...(totalLabel ? { totalLabel } : {}),
+    }),
+  );
 }
