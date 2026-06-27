@@ -1796,3 +1796,71 @@ describe("regressao #2620: extractPublishedUseMelhorUrls", () => {
     assert.ok([...result!].some((u) => u.includes("cursor.com")), "deve incluir URL da secao com CRLF");
   });
 });
+
+// ─── #2627: extractPublishedUseMelhorUrls — itens bold **[Título](URL)** ───────
+
+describe("regressao #2627: extractPublishedUseMelhorUrls — itens bold-link", () => {
+  test("captura URLs de itens **[Título](URL)** na secao USE MELHOR", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const mdPath = j(td(), "diaria-test-2627-bold-links.md");
+    // Formato canônico real: itens com **[Título](URL)** (começam com *)
+    // Uma URL com parênteses balanceados para testar o URL_WITH_BALANCED_PARENS fix.
+    wf(mdPath, [
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Como construir agentes de IA](https://tabnews.com.br/post/como-construir)** Passo a passo. (5 min)",
+      "",
+      "**[Context Windows vs Memory](https://machinelearning.com/article(2026)/context)** Por que são diferentes. (5 min)",
+      "",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTO**",
+      "",
+      "**[OpenAI lança GPT-5](https://openai.com/index/gpt5)**",
+    ].join("\n"), "utf8");
+
+    const urls = extractPublishedUseMelhorUrls(mdPath);
+    rm(mdPath, { force: true });
+
+    assert.ok(urls !== null, "deve retornar Set nao-nulo");
+    assert.ok(urls!.size >= 2, `deve ter pelo menos 2 URLs, mas tem ${urls!.size}`);
+    assert.ok([...urls!].some((u) => u.includes("tabnews.com.br")), "deve incluir tabnews.com.br");
+    // URL com parênteses balanceados não deve ser truncada
+    assert.ok(
+      [...urls!].some((u) => u.includes("machinelearning.com") && u.includes("2026")),
+      "URL com parênteses balanceados deve estar completa (nao truncada no primeiro '(')"
+    );
+    // URL de LANÇAMENTO nao deve vazar para o Set
+    assert.ok(![...urls!].some((u) => u.includes("openai.com")), "URL de LANCAMENTO nao deve aparecer em Use Melhor");
+  });
+
+  test("para no proximo header de secao sem vazar URLs de NOTICIAS", async () => {
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const mdPath = j(td(), "diaria-test-2627-boundary.md");
+    wf(mdPath, [
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Ferramenta A](https://ferramenta-a.com/path)**  Descricao. (3 min)",
+      "**[Ferramenta B](https://ferramenta-b.com/path)**  Descricao. (2 min)",
+      "",
+      "**📰 NOTÍCIAS**",
+      "",
+      "**[Noticia fora da secao](https://noticias.com/url)** Contexto.",
+    ].join("\n"), "utf8");
+
+    const urls = extractPublishedUseMelhorUrls(mdPath);
+    rm(mdPath, { force: true });
+
+    assert.ok(urls !== null, "deve retornar Set nao-nulo");
+    assert.ok([...urls!].some((u) => u.includes("ferramenta-a.com")), "deve incluir ferramenta-a");
+    assert.ok([...urls!].some((u) => u.includes("ferramenta-b.com")), "deve incluir ferramenta-b");
+    assert.ok(![...urls!].some((u) => u.includes("noticias.com")), "URL de NOTICIAS nao deve vazar para Use Melhor");
+  });
+});

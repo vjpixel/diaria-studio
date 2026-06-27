@@ -768,3 +768,95 @@ describe("planAutofixes guard order (#2617)", () => {
     assert.equal(entries[0].status, "skipped_no_fix");
   });
 });
+
+// ─── #2628 gap 1: findDestaqueBodyRange sem linha em branco entre DESTAQUEs ────
+
+describe("regressao #2628 gap1: findDestaqueBodyRange — DESTAQUEs adjacentes", () => {
+  it("D1 nao engloba D2 quando nao ha linha em branco entre eles", () => {
+    const content = [
+      "DESTAQUE 1",
+      "Texto do primeiro destaque com claim X.",
+      "DESTAQUE 2",
+      "Texto do segundo destaque com claim X.",
+    ].join("\n");
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    const rangeD2 = findDestaqueBodyRange(content, 2);
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    assert.ok(rangeD2 !== null, "range D2 deve existir");
+    // D1 nao deve se estender alem do inicio de D2
+    assert.ok(rangeD1!.end <= rangeD2!.start, `D1.end (${rangeD1!.end}) deve ser <= D2.start (${rangeD2!.start})`);
+    // Texto de D2 nao deve aparecer no slice do range D1
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(!d1Block.includes("segundo destaque"), "bloco D1 nao deve conter texto de D2");
+  });
+
+  it("substituicao em D1 nao toca D2 com claim identico em ambos", () => {
+    const content = [
+      "DESTAQUE 1",
+      "A empresa tem claim identico aqui.",
+      "DESTAQUE 2",
+      "A empresa tem claim identico aqui.",
+    ].join("\n");
+    // Simular substituicao dentro de D1 apenas
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    const block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(block.includes("claim identico"), "bloco D1 deve conter o claim");
+    // Verificar que D2 nao esta incluso no range D1
+    assert.ok(!block.includes("DESTAQUE 2"), "bloco D1 nao deve conter o marcador DESTAQUE 2");
+  });
+});
+
+// ─── #2628 gap 2: TypeError quando sources ausente no claim ──────────────────
+
+describe("regressao #2628 gap2: applyFactcheckAutofix — claim DIVERGENT sem campo sources", () => {
+  it("nao crasha (TypeError) quando fact-checker omite campo sources", () => {
+    // Simula o cenário real: o fact-checker emite um claim sem o campo "sources"
+    // (ex: modelo que não segue o schema completamente). Antes do fix, isso causava
+    // TypeError: Cannot read properties of undefined (reading 'includes') no loop principal.
+    const dir = mkdtempSync(join(tmpdir(), "factcheck-gap2-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+
+    writeFileSync(join(dir, "02-reviewed.md"), "DESTAQUE 1\n\nO modelo GPT-4 foi usado.\n", "utf8");
+    writeFileSync(join(dir, "03-social.md"), "## d1\n\nSocial content.\n", "utf8");
+    writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify({ highlights: [] }), "utf8");
+
+    // Claim DIVERGENT sem campo "sources" — simula saída de fact-checker incompleto
+    const factCheck = {
+      edition: "260626",
+      checked_at: new Date().toISOString(),
+      claims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          destaque: 1,
+          text: "GPT-4",
+          suggested_fix: "GPT-5",
+          context: "O modelo GPT-4 foi usado.",
+          // sources campo omitido propositalmente
+        },
+      ],
+      summary: { total: 1, sustained: 0, divergent: 1, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 0 },
+    };
+    writeFileSync(join(internalDir, "fact-check.json"), JSON.stringify(factCheck), "utf8");
+
+    try {
+      const projectRoot = join(import.meta.dirname, "..");
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(projectRoot, "scripts", "apply-factcheck-autofix.ts"), "--edition-dir", dir],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      // Antes do fix: exit code 1 com "TypeError: Cannot read properties of undefined (reading 'includes')"
+      // Apos o fix: exit code 0, claim tratado como sem-newsletter (skipped)
+      assert.ok(
+        !result.stderr.includes("TypeError"),
+        `nao deve lancar TypeError. stderr: ${result.stderr}`
+      );
+      assert.equal(result.status, 0, `exit code 0 esperado. stderr: ${result.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

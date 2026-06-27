@@ -147,9 +147,12 @@ export function findDestaqueBodyRange(
   const matchOffset = markerMatch.index + (markerMatch[0].startsWith("\n") ? 1 : 0);
   const blockStart = bodyStart + matchOffset;
 
-  // end = início do próximo "DESTAQUE \d" ou fim do arquivo
+  // end = início do próximo "DESTAQUE \d" ou fim do arquivo.
+  // Usar ^DESTAQUE com flag m (multiline) em vez de \nDESTAQUE — o \n exige linha
+  // em branco antes do próximo marcador; sem ela, nextMatch=null e o range de D1 engloba
+  // todo o restante incluindo D2 (#2628 gap 1).
   const afterStart = body.slice(matchOffset + markerMatch[1].length);
-  const nextMatch = /\nDESTAQUE\s+\d+/i.exec(afterStart);
+  const nextMatch = /^DESTAQUE\s+\d+/im.exec(afterStart);
   const blockEnd = nextMatch
     ? blockStart + markerMatch[1].length + nextMatch.index
     : content.length;
@@ -312,7 +315,8 @@ async function main(): Promise<void> {
 
     // Apenas newsletter — social não é tocado (invalidaria o sentinel do humanizador)
     // Claims com sources: ["social"] only são documentados como skipped no log.
-    const hasNewsletter = entry.sources.includes("newsletter");
+    // Guard: sources pode ser undefined se o fact-checker omitir o campo (#2628 gap 2).
+    const hasNewsletter = (entry.sources ?? []).includes("newsletter");
     if (!hasNewsletter) {
       entry.status = "skipped_text_not_found";
       entry.note = "Claim apenas em social — auto-fix restrito a 02-reviewed.md para preservar sentinel do humanizador (#2617).";
