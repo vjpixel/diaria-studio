@@ -549,7 +549,7 @@ export function tierOf(m: Merged, now: Date = new Date()): number {
 // Output
 // ---------------------------------------------------------------------------
 
-interface Scored extends Merged {
+export interface Scored extends Merged {
   score: number;
   verify_risk: number;
   open_probability: number;
@@ -577,6 +577,96 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
     NOME: r.name?.split(" ")[0] || "",
     OPEN_PROBABILITY: r.open_probability,
   };
+}
+
+// ---------------------------------------------------------------------------
+// buildUniverse — pipeline read→merge→filter→score→tier como função reutilizável.
+//
+// Extraído pra alimentar o store único da Clarice (#2647,
+// `scripts/clarice-build-db.ts`) sem reexecutar o `main()` (que também escreve
+// os CSVs de tier + faz logging). Retorna o universo completo com TODOS os
+// sinais do Stripe preservados (o `Scored` carrega os campos brutos do `Merged`),
+// ao contrário dos CSVs de tier que só guardam email/NOME/OPEN_PROBABILITY.
+//
+// NB (#2647): `main()` abaixo ainda tem uma cópia inline desta lógica (logging
+// per-arquivo + distribuições). Migrar `main()` pra chamar `buildUniverse` é
+// follow-up — mantido separado aqui pra não tocar o caminho de geração de CSV
+// já validado em produção. As duas cópias compartilham os mesmos helpers
+// (readCsv/normalizeRow/mergeRecord/computeScore/verifyRisk/tierOf).
+// ---------------------------------------------------------------------------
+
+export interface Universe {
+  kept: Scored[];
+  excluded: Array<Merged & { reason: string }>;
+  merged: Map<string, Merged>;
+  filesCount: number;
+  allRecordsCount: number;
+}
+
+export function buildUniverse(
+  dataDir: string = DATA_DIR,
+  now: Date = new Date(),
+  filterClrcPt = false,
+): Universe {
+  const files = readdirSync(dataDir).filter(
+    (f) =>
+      f.endsWith(".csv") &&
+      !f.startsWith("kit-import-") &&
+      !f.startsWith("brevo-import-") &&
+      !f.startsWith("stripe-export-"),
+  );
+
+  const merged = new Map<string, Merged>();
+  let allRecordsCount = 0;
+  for (const f of files) {
+    const { rows, filename } = readCsv(resolve(dataDir, f));
+    for (const row of rows) {
+      const rec = normalizeRow(row);
+      if (!rec) continue;
+      allRecordsCount++;
+      const existing = merged.get(rec.email);
+      if (!existing) {
+        merged.set(rec.email, {
+          ...rec,
+          stripe_ids: rec.id ? [rec.id] : [],
+          source_files: [filename],
+        });
+      } else {
+        mergeRecord(existing, rec, filename);
+      }
+    }
+  }
+
+  const kept: Scored[] = [];
+  const excluded: Array<Merged & { reason: string }> = [];
+  for (const m of merged.values()) {
+    if (!emailValid(m.email)) {
+      excluded.push({ ...m, reason: "invalid_email" });
+      continue;
+    }
+    const lqCheck = isLowQualityEmail(m.email);
+    if (lqCheck.bad) {
+      excluded.push({ ...m, reason: lqCheck.reason });
+      continue;
+    }
+    if (filterClrcPt && !hasClariceAudienceTag(m)) {
+      excluded.push({ ...m, reason: "not_clrc_pt" });
+      continue;
+    }
+    if (m.dispute_losses > 0) {
+      excluded.push({ ...m, reason: "dispute_losses" });
+      continue;
+    }
+    kept.push({
+      ...m,
+      score: computeScore(m, now),
+      verify_risk: verifyRisk(m, now),
+      open_probability: openProbability(m, now),
+      tier: tierOf(m, now),
+    });
+  }
+
+  return { kept, excluded, merged, filesCount: files.length, allRecordsCount };
 }
 
 // ---------------------------------------------------------------------------
