@@ -488,10 +488,15 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
  * @param cwd  Raiz do projeto (cwd)
  * @returns    StageStatusDoc da edição mais recente EM CURSO (não encerrada, não all-pending), ou null.
  */
-export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
+/**
+ * Varre data/editions/{AAMMDD}/ (desc) e retorna todos os docs com rows não-vazios.
+ * Helper compartilhado entre readCurrentEditionDoc e readMostRecentEditionDoc —
+ * elimina a duplicação do scan de diretório (Finding #2, #2624).
+ */
+function scanEditionDocs(cwd: string): StageStatusDoc[] {
   try {
     const editionsDir = join(cwd, "data", "editions");
-    if (!existsSync(editionsDir)) return null;
+    if (!existsSync(editionsDir)) return [];
 
     const entries = readdirSync(editionsDir, { withFileTypes: true })
       .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
@@ -499,27 +504,32 @@ export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
       .sort()
       .reverse(); // most recent first (lexicographic desc: 260615 > 260614 > ...)
 
-    if (entries.length === 0) return null;
-
+    const docs: StageStatusDoc[] = [];
     for (const dirName of entries) {
       const editionDir = join(editionsDir, dirName);
       const doc = readStageStatusFromDir(editionDir);
       if (!doc) continue;
       if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
-      // Skip all-pending editions (--init'd but not yet running).
-      const hasStarted = doc.rows.some((r) => r.status !== "pending");
-      if (!hasStarted) continue;
-      // Finding #1: skip fully-encerrada editions — overnight bar must resume when edition ends.
-      const isEncerrada = doc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status));
-      if (isEncerrada) continue;
-      // First in-progress edition → return it.
-      return doc;
+      docs.push(doc);
     }
-
-    return null;
+    return docs;
   } catch {
-    return null;
+    return [];
   }
+}
+
+export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
+  for (const doc of scanEditionDocs(cwd)) {
+    // Skip all-pending editions (--init'd but not yet running).
+    const hasStarted = doc.rows.some((r) => r.status !== "pending");
+    if (!hasStarted) continue;
+    // Finding #1: skip fully-encerrada editions — overnight bar must resume when edition ends.
+    const isEncerrada = doc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status));
+    if (isEncerrada) continue;
+    // First in-progress edition → return it.
+    return doc;
+  }
+  return null;
 }
 
 // ─── idle bar (#2255) ────────────────────────────────────────────────────────
@@ -587,20 +597,33 @@ export function findMostRecentEditionId(cwd: string): string | null {
  * overnight ativa, a barra desaparece (retorna ""). A intenção é sinalizar "turno encerrado
  * sem atividade" — diferente de "sem edição" (que mostra idle com "sem rodada ativa").
  *
- * @param editionDoc                  doc da edição EM CURSO (null quando nenhuma ou encerrada)
- * @param plan                        plan.json overnight (null quando sem rodada)
- * @param mostRecentEditionId         AAMMDD da edição mais recente em disco (ou null)
- * @param mostRecentEditionEncerrada  true se a edição mais recente está 100% concluída
- * @param branch                      branch git atual (ou "" em detached/sem repo)
- * @returns                           string da statusline (pode ser "" quando edição concluída sem overnight)
+ * @param editionDoc       doc da edição EM CURSO (null quando nenhuma ou encerrada)
+ * @param plan             plan.json overnight (null quando sem rodada)
+ * @param mostRecentEditionId  AAMMDD da edição mais recente em disco (ou null)
+ * @param mostRecentDoc    doc da edição mais recente em disco (encerrada ou em curso; null se nenhuma).
+ *                         Quando `editionDoc` é não-null, passar o mesmo doc (ou qualquer valor —
+ *                         o encerrada-check usa `editionDoc === null` por construção, eliminando
+ *                         o estado contraditório editionDoc≠null + encerrada=true (#2624 Finding 1)).
+ * @param branch           branch git atual (ou "" em detached/sem repo)
+ * @returns                string da statusline (pode ser "" quando edição concluída sem overnight)
  */
 export function renderStatusline(
   editionDoc: StageStatusDoc | null,
   plan: Plan | null,
   mostRecentEditionId: string | null,
-  mostRecentEditionEncerrada: boolean,
+  mostRecentDoc: StageStatusDoc | null,
   branch: string,
 ): string {
+  // #2624 Finding 1: derivar encerrada internamente garante consistência por construção.
+  // Quando editionDoc é não-null, a edição está em curso — encerrada é sempre false.
+  // Quando editionDoc é null, verificamos o mostRecentDoc para saber se está encerrada.
+  const mostRecentEditionEncerrada =
+    editionDoc === null &&
+    mostRecentDoc !== null &&
+    Array.isArray(mostRecentDoc.rows) &&
+    mostRecentDoc.rows.length > 0 &&
+    mostRecentDoc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status as StageStatus));
+
   // Source 1: Edição em curso (não encerrada).
   const editionBar = renderEditionBar(editionDoc);
 
@@ -629,28 +652,9 @@ export function renderStatusline(
  * Retorna null se não houver nenhuma edição no disco.
  */
 export function readMostRecentEditionDoc(cwd: string): StageStatusDoc | null {
-  try {
-    const editionsDir = join(cwd, "data", "editions");
-    if (!existsSync(editionsDir)) return null;
-
-    const entries = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
-      .map((e) => e.name)
-      .sort()
-      .reverse(); // most recent first
-
-    for (const dirName of entries) {
-      const editionDir = join(editionsDir, dirName);
-      const doc = readStageStatusFromDir(editionDir);
-      if (!doc) continue;
-      if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
-      return doc;
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
+  // Reusa scanEditionDocs — o predicado aqui é "qualquer edição com rows",
+  // que é exatamente o que o scan já filtra. Retorna o mais recente (índice 0).
+  return scanEditionDocs(cwd)[0] ?? null;
 }
 
 // ─── CLI (entrypoint) ─────────────────────────────────────────────────────────
@@ -673,15 +677,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   //  and an encerrada verdict from another. Deriving from mostRecentDoc keeps them in sync.)
   const mostRecentEditionId = mostRecentDoc?.edition ?? findMostRecentEditionId(cwd);
 
-  // #2618: edition encerrada = all stages terminal. Short-circuit to false when an edition
-  // is in progress (editionDoc non-null) — it's guaranteed not encerrada by the reader's contract.
-  const mostRecentEditionEncerrada =
-    !editionDoc &&
-    mostRecentDoc !== null &&
-    Array.isArray(mostRecentDoc.rows) &&
-    mostRecentDoc.rows.length > 0 &&
-    mostRecentDoc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status as StageStatus));
-
-  const output = renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentEditionEncerrada, branch);
+  // #2624 Finding 1: encerrada-check agora é derivado internamente em renderStatusline.
+  // Passamos mostRecentDoc diretamente — a função garante consistência por construção.
+  const output = renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentDoc, branch);
   process.stdout.write(output + "\n");
 }

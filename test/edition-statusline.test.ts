@@ -760,15 +760,20 @@ function makeActivePlanForStatusline(): Plan {
   };
 }
 
+/** Doc de edição 100% concluída — equivalente ao que mostRecentDoc seria quando encerrada. */
+function makeEncerradaDoc(edition: string): StageStatusDoc {
+  return makeDoc(edition, Array(7).fill("done") as Array<"done">);
+}
+
 describe("renderStatusline — #2618: barra some após edição concluída", () => {
   it("edição CONCLUÍDA (todos done) + sem overnight → output sem barra (só branch ou vazio)", () => {
     // editionDoc=null porque readCurrentEditionDoc filtra edições encerradas;
-    // a flag mostRecentEditionEncerrada=true carrega o estado "concluída" (#2618).
+    // mostRecentDoc com todos done → encerrada detectada por construção (#2624 Finding 1).
     const result = renderStatusline(
-      null,           // editionDoc null (encerrada não aparece aqui — readCurrentEditionDoc skip)
-      null,           // sem overnight
-      "260626",       // mostRecentEditionId
-      true,           // mostRecentEditionEncerrada = true (#2618)
+      null,                       // editionDoc null (encerrada não aparece aqui — readCurrentEditionDoc skip)
+      null,                       // sem overnight
+      "260626",                   // mostRecentEditionId
+      makeEncerradaDoc("260626"), // mostRecentDoc com todos done (#2618 + #2624)
       "master",
     );
     // #2618: barra some — output deve ser apenas "master" (sem barra de progresso)
@@ -780,7 +785,7 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
   });
 
   it("edição CONCLUÍDA sem branch + sem overnight → output vazio", () => {
-    const result = renderStatusline(null, null, "260626", true, "");
+    const result = renderStatusline(null, null, "260626", makeEncerradaDoc("260626"), "");
     // branch vazio + barra some = string vazia
     assert.equal(result, "", `edição concluída sem branch deve retornar "": "${result}"`);
   });
@@ -794,7 +799,7 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
       inProgressDoc,  // editionDoc não-null = em curso
       null,
       "260626",
-      false,          // mostRecentEditionEncerrada = false (ainda em curso)
+      inProgressDoc,  // mostRecentDoc = mesmo doc (encerrada=false por construção: editionDoc≠null)
       "master",
     );
     // Deve conter barra de progresso da edição
@@ -806,10 +811,10 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
     // Edição encerrada, mas overnight tem issues em andamento → overnight bar deve aparecer
     const activePlan = makeActivePlanForStatusline();
     const result = renderStatusline(
-      null,           // sem edição em curso
-      activePlan,     // overnight ativo
+      null,                       // sem edição em curso
+      activePlan,                 // overnight ativo
       "260626",
-      true,           // edição encerrada
+      makeEncerradaDoc("260626"), // edição encerrada
       "master",
     );
     // A barra de overnight deve aparecer (overnight tem prioridade sobre "barra some")
@@ -821,12 +826,12 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
   });
 
   it("sem edição alguma + sem overnight → idle bar presente (não some)", () => {
-    // Sem nenhuma edição em disco (mostRecentEditionEncerrada = false porque não há edição)
+    // Sem nenhuma edição em disco: mostRecentDoc=null → encerrada=false por construção
     const result = renderStatusline(
-      null,   // sem edição
-      null,   // sem overnight
-      null,   // sem edição recente
-      false,  // não encerrada (não há)
+      null,    // sem edição
+      null,    // sem overnight
+      null,    // sem edição recente
+      null,    // mostRecentDoc null (não há edição no disco)
       "master",
     );
     // Deve mostrar idle bar (não suprimir)
@@ -835,7 +840,8 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
   });
 
   it("edição CONCLUÍDA: renderStatusline é pura — chamadas repetidas produzem mesmo resultado", () => {
-    const args: Parameters<typeof renderStatusline> = [null, null, "260625", true, "feature/test"];
+    const encerradaDoc = makeEncerradaDoc("260625");
+    const args: Parameters<typeof renderStatusline> = [null, null, "260625", encerradaDoc, "feature/test"];
     const r1 = renderStatusline(...args);
     const r2 = renderStatusline(...args);
     assert.equal(r1, r2, "função pura deve ser idempotente");
@@ -905,13 +911,8 @@ describe("integração de disco #2618 — edição encerrada faz a barra sumir (
     const plan = readTodayPlan(cwd);
     const mostRecentDoc = editionDoc ?? readMostRecentEditionDoc(cwd);
     const mostRecentEditionId = mostRecentDoc?.edition ?? findMostRecentEditionId(cwd);
-    const mostRecentEditionEncerrada =
-      !editionDoc &&
-      mostRecentDoc !== null &&
-      Array.isArray(mostRecentDoc.rows) &&
-      mostRecentDoc.rows.length > 0 &&
-      mostRecentDoc.rows.every((r) => r.status === "done" || r.status === "failed");
-    return renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentEditionEncerrada, branch);
+    // #2624 Finding 1: passa mostRecentDoc diretamente — renderStatusline deriva encerrada internamente.
+    return renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentDoc, branch);
   }
 
   it("edição encerrada em disco (todos done) + sem overnight → barra some (só branch)", () => {
