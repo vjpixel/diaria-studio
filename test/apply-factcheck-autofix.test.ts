@@ -790,6 +790,23 @@ describe("regressao #2628 gap1: findDestaqueBodyRange — DESTAQUEs adjacentes",
     assert.ok(!d1Block.includes("segundo destaque"), "bloco D1 nao deve conter texto de D2");
   });
 
+  it("D1 SEM corpo (D2 imediatamente apos) — range D1 exclui D2 (trigger real do bug)", () => {
+    // Cenário que de fato dispara o bug: D1 sem corpo, D2 na linha seguinte.
+    // afterStart começa direto com "DESTAQUE 2" (sem \n antes) → o regex antigo
+    // /\nDESTAQUE/ não casava → blockEnd=EOF → range D1 englobava D2.
+    // O regex novo /^DESTAQUE/im (ancorado em início de linha) casa mesmo sem \n
+    // de separação. Este teste FALHA contra o código antigo e passa com o fix.
+    const content = "DESTAQUE 1\nDESTAQUE 2\nTexto do segundo destaque com claim X.";
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    const rangeD2 = findDestaqueBodyRange(content, 2);
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    assert.ok(rangeD2 !== null, "range D2 deve existir");
+    assert.ok(rangeD1!.end <= rangeD2!.start, `D1.end (${rangeD1!.end}) deve ser <= D2.start (${rangeD2!.start})`);
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(!d1Block.includes("DESTAQUE 2"), "bloco D1 nao deve conter o marcador DESTAQUE 2");
+    assert.ok(!d1Block.includes("segundo destaque"), "bloco D1 nao deve conter texto de D2");
+  });
+
   it("substituicao em D1 nao toca D2 com claim identico em ambos", () => {
     const content = [
       "DESTAQUE 1",

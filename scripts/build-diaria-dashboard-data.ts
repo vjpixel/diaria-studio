@@ -580,7 +580,12 @@ export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<strin
   if (!headerMatch) return null;
   const afterHeader = content.slice(headerMatch.index + headerMatch[0].length);
   // Próximo boundary: --- separator, # heading, ou ** seção (não item link)
-  const sectionEndMatch = /\n(?:---|#|\*\*(?!\[))/i.exec(afterHeader);
+  // Require ** section headers to close with ** on the same line (no intervening newline),
+  // so that inline bold like "**Importante:** note" doesn't terminate the section early.
+  // Section headers: **🛠️ USE MELHOR**  → closes with ** before EOL.
+  // Item format:     **[Título](URL)**   → excluded by (?!\[).
+  // Inline bold:     **Importante:** ... → ** closes mid-line, trailing text ≠ \s*(EOL).
+  const sectionEndMatch = /\n(?:---|#|\*\*(?!\[)[^\n]+\*\*\s*(?=\n|$))/i.exec(afterHeader);
   const sectionText = sectionEndMatch ? afterHeader.slice(0, sectionEndMatch.index) : afterHeader;
   // Extrai todas as URLs do texto da seção, tolerando parênteses balanceados (#2596).
   // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —
