@@ -1,0 +1,272 @@
+/**
+ * clarice-db.ts — store único de usuários da Clarice (#2647).
+ *
+ * Um SQLite local (keyed por email) que consolida os 3 papéis das fontes:
+ *   - Stripe = quem é / relacionamento comercial (snapshot estático)
+ *   - Brevo  = como se comporta com nossos emails (stream dinâmico)
+ *   - MV      = entregabilidade (risco de bounce)
+ *
+ * Achado validado (`data/clarice-subscribers/monday-drive-drafts.md`): atributos
+ * estáticos da base NÃO predizem abertura (score r=0,04 · recência r=0,049 ~ zero).
+ * O preditor real é histórico de abertura → por isso `score`/`OPEN_PROBABILITY`
+ * NÃO entram no store; a priorização de re-envio é por comportamento
+ * (`priority_points`, ver `computePriorityPoints`).
+ *
+ * Eixos de priorização:
+ *   - `tier` (T01–T10): decide QUANDO entra no primeiro envio (de status+created).
+ *   - `priority_points`: prioriza re-envios por comportamento de abertura passado.
+ *   - `send_eligible` + `ineligible_reason`: corte de supressão/entregabilidade.
+ *
+ * Usa `node:sqlite` (built-in no Node ≥22.5 / 24) — sem dependência nativa nova.
+ *
+ * O arquivo .db vive em `data/clarice-subscribers/` (OneDrive, gitignored como
+ * todo `data/`). Builder: `scripts/clarice-build-db.ts`. Optin manual:
+ * `scripts/clarice-optin.ts`.
+ */
+
+import { DatabaseSync } from "node:sqlite";
+import { resolve } from "node:path";
+
+// import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
+// deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
+// projeto rodam a partir da raiz, então ambos resolvem pra raiz do repo.
+const ROOT = import.meta.dirname
+  ? resolve(import.meta.dirname, "..", "..")
+  : process.cwd();
+export const DEFAULT_DB_PATH = resolve(
+  ROOT,
+  "data/clarice-subscribers/clarice-users.db",
+);
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+/**
+ * `clarice_users`: 1 linha por email (base Stripe completa, left-join Brevo/MV).
+ * `priority_optin`: flag manual gerida pela CLI (`clarice-optin.ts`), separada
+ *   pra sobreviver a rebuilds do store — o builder a lê via join, nunca a apaga.
+ */
+export const SCHEMA = `
+CREATE TABLE IF NOT EXISTS clarice_users (
+  email                TEXT PRIMARY KEY,
+  name                 TEXT,
+  stripe_ids           TEXT,            -- JSON array
+
+  -- Stripe (5 campos mantidos; plan/total_spend/payment_count/tag/description fora — #2647)
+  status               TEXT,
+  created              TEXT,            -- ISO date
+  delinquent           INTEGER,         -- 0 | 1 | NULL
+  dispute_losses       REAL DEFAULT 0,
+  refunded_volume      REAL DEFAULT 0,
+
+  tier                 INTEGER,         -- 1..10 (T01–T10)
+
+  -- MillionVerifier (ingestão total per-email)
+  mv_result            TEXT,            -- ok | catch_all | invalid | disposable | unknown
+  mv_resultcode        INTEGER,
+  mv_quality           TEXT,
+  mv_subresult         TEXT,
+  mv_bucket            TEXT,            -- verified | rejected | unknown (derivado)
+  mv_last_verified_at  TEXT,
+  mv_cycle             TEXT,            -- ciclo {conteúdo}-{envio}
+
+  -- Brevo (ingestão total per-contato)
+  recency_quartil      TEXT,
+  brevo_list_ids       TEXT,            -- JSON array
+  opens_count          INTEGER DEFAULT 0,
+  clicks_count         INTEGER DEFAULT 0,
+  sends_count          INTEGER DEFAULT 0,
+  soft_bounce_count    INTEGER DEFAULT 0,
+  last_open_at         TEXT,
+  last_click_at        TEXT,
+  last_sent_at         TEXT,
+  email_blacklisted    INTEGER DEFAULT 0,
+  unsubscribed         INTEGER DEFAULT 0,
+  hard_bounced         INTEGER DEFAULT 0,
+  complained           INTEGER DEFAULT 0,
+  brevo_created_at     TEXT,
+  brevo_modified_at    TEXT,
+
+  -- Priorização derivada (recomputada a cada build, ver recomputeDerived)
+  priority_optin       INTEGER DEFAULT 0,
+  priority_points      INTEGER DEFAULT 0,
+  send_eligible        INTEGER DEFAULT 1,
+  ineligible_reason    TEXT,
+
+  updated_at           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS priority_optin (
+  email     TEXT PRIMARY KEY,
+  added_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_tier        ON clarice_users(tier);
+CREATE INDEX IF NOT EXISTS idx_users_eligible    ON clarice_users(send_eligible);
+CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_points);
+`;
+
+/** Abre (ou cria) o DB e garante o schema. */
+export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec(SCHEMA);
+  return db;
+}
+
+// ---------------------------------------------------------------------------
+// priority_points — prioriza re-envios por comportamento de abertura (#2647)
+//
+//   +40  se priority_optin (pediu pra entrar na lista de prioridade; flag manual)
+//   +20  por email aberto
+//   -10  por email recebido e NÃO aberto
+//   quem não recebeu nenhum email → 0 (ponto de partida)
+//
+// Aditivo (não corte duro): um optin que ignora 4 emails decai pra 0
+// (40 − 10×4) — comportamento confirmado pelo editor.
+// ---------------------------------------------------------------------------
+
+export interface PriorityInput {
+  priority_optin: boolean;
+  opens_count: number;
+  sends_count: number;
+}
+
+export function computePriorityPoints(i: PriorityInput): number {
+  const notOpened = Math.max(0, i.sends_count - i.opens_count);
+  return (i.priority_optin ? 40 : 0) + 20 * i.opens_count - 10 * notOpened;
+}
+
+// ---------------------------------------------------------------------------
+// send_eligible / ineligible_reason — corte de supressão e entregabilidade
+//
+// Ordem de prioridade (primeira condição que bate vira a razão). Soft bounce é
+// transitório (caixa cheia / indisponibilidade temporária) → só exclui após
+// SOFT_BOUNCE_LIMIT repetidos, pra não perder contato bom por hiccup do servidor.
+//
+// ⚠️ NÃO-AUTORITATIVO ATÉ O SYNC DO BREVO (#2647 follow-up): as colunas de
+// supressão do Brevo (unsubscribed/hard_bounced/complained/email_blacklisted)
+// ficam no DEFAULT 0 até o sync ao vivo existir. Logo `send_eligible` hoje só
+// reflete MV (mv_rejected) + dispute — NÃO captura descadastro/bounce do Brevo.
+// Não usar `send_eligible=1` como único gate de envio enquanto o sync não rodar;
+// o `clarice-build-waves.ts` continua excluindo `emailBlacklisted` do Brevo no
+// build da wave de forma independente. O builder emite warning quando o Brevo
+// nunca foi sincronizado.
+// ---------------------------------------------------------------------------
+
+export const SOFT_BOUNCE_LIMIT = 3;
+
+export type IneligibleReason =
+  | "unsubscribed"
+  | "hard_bounce"
+  | "complaint"
+  | "mv_rejected"
+  | "dispute"
+  | "soft_bounce";
+
+export interface EligibilityInput {
+  email_blacklisted: boolean;
+  unsubscribed: boolean;
+  hard_bounced: boolean;
+  complained: boolean;
+  mv_bucket: string | null | undefined;
+  dispute_losses: number;
+  soft_bounce_count: number;
+}
+
+export function classifyEligibility(i: EligibilityInput): {
+  send_eligible: boolean;
+  ineligible_reason: IneligibleReason | null;
+} {
+  if (i.unsubscribed || i.email_blacklisted)
+    return { send_eligible: false, ineligible_reason: "unsubscribed" };
+  if (i.hard_bounced)
+    return { send_eligible: false, ineligible_reason: "hard_bounce" };
+  if (i.complained)
+    return { send_eligible: false, ineligible_reason: "complaint" };
+  if (i.mv_bucket === "rejected")
+    return { send_eligible: false, ineligible_reason: "mv_rejected" };
+  if (i.dispute_losses > 0)
+    return { send_eligible: false, ineligible_reason: "dispute" };
+  if (i.soft_bounce_count >= SOFT_BOUNCE_LIMIT)
+    return { send_eligible: false, ineligible_reason: "soft_bounce" };
+  return { send_eligible: true, ineligible_reason: null };
+}
+
+/**
+ * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
+ * `send_eligible`, `ineligible_reason`) pra todas as linhas a partir do estado
+ * atual de Brevo/MV/Stripe + tabela `priority_optin`. Idempotente — roda no
+ * fim de cada build e sempre que a flag de optin muda.
+ */
+export function recomputeDerived(db: DatabaseSync): number {
+  const optin = new Set<string>(
+    (db.prepare("SELECT email FROM priority_optin").all() as Array<{
+      email: string;
+    }>).map((r) => r.email),
+  );
+
+  const rows = db
+    .prepare(
+      `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained
+       FROM clarice_users`,
+    )
+    .all() as Array<{
+    email: string;
+    opens_count: number;
+    sends_count: number;
+    soft_bounce_count: number;
+    dispute_losses: number;
+    mv_bucket: string | null;
+    email_blacklisted: number;
+    unsubscribed: number;
+    hard_bounced: number;
+    complained: number;
+  }>;
+
+  const update = db.prepare(
+    `UPDATE clarice_users
+        SET priority_optin = ?, priority_points = ?, send_eligible = ?, ineligible_reason = ?
+      WHERE email = ?`,
+  );
+
+  // Transação única: a recomputação é all-or-nothing. Sem o wrap, um Ctrl+C no
+  // meio (ex: durante `clarice-optin add` numa base grande) deixaria parte das
+  // linhas com derivados novos e parte stale, sem detecção (#2649 review).
+  let n = 0;
+  db.exec("BEGIN");
+  try {
+    for (const r of rows) {
+      const isOptin = optin.has(r.email);
+      const points = computePriorityPoints({
+        priority_optin: isOptin,
+        opens_count: r.opens_count ?? 0,
+        sends_count: r.sends_count ?? 0,
+      });
+      const elig = classifyEligibility({
+        email_blacklisted: !!r.email_blacklisted,
+        unsubscribed: !!r.unsubscribed,
+        hard_bounced: !!r.hard_bounced,
+        complained: !!r.complained,
+        mv_bucket: r.mv_bucket,
+        dispute_losses: r.dispute_losses ?? 0,
+        soft_bounce_count: r.soft_bounce_count ?? 0,
+      });
+      update.run(
+        isOptin ? 1 : 0,
+        points,
+        elig.send_eligible ? 1 : 0,
+        elig.ineligible_reason,
+        r.email,
+      );
+      n++;
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return n;
+}
