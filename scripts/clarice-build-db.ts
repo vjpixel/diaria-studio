@@ -252,9 +252,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
 
   if (!brevoSynced) {
     console.error(
-      `⚠️  Brevo NÃO sincronizado (follow-up #2647): supressão de ` +
-        `descadastro/bounce não está no store. \`send_eligible=1\` reflete só ` +
-        `MV + dispute — NÃO é gate de envio suficiente até o sync ao vivo rodar.`,
+      `⚠️  Brevo NÃO sincronizado: supressão de descadastro/bounce não está no ` +
+        `store. \`send_eligible=1\` reflete só MV + dispute — NÃO é gate de envio ` +
+        `suficiente. Rode \`npx tsx scripts/clarice-sync-brevo.ts\` pra completar.`,
     );
   }
 

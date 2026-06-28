@@ -17,7 +17,7 @@ perder esse sinal e torna "priorizar envio" uma query, não um merge ad-hoc.
 | Fonte | Papel | Como entra |
 |---|---|---|
 | **Stripe** | quem é / relacionamento comercial (estático) | `buildUniverse()` do merge → 5 campos + tier |
-| **Brevo** | comportamento com nossos emails (dinâmico) | engajamento/supressão — *sync ao vivo é follow-up* |
+| **Brevo** | comportamento com nossos emails (dinâmico) | engajamento/supressão via `clarice-sync-brevo.ts` |
 | **MV** | entregabilidade (risco de bounce) | `mv-export-*` de cada ciclo `{conteúdo}-{envio}/` |
 
 > **Achado validado** (`monday-drive-drafts.md`): atributos estáticos da base não
@@ -59,16 +59,16 @@ primeira pela ordem:
 `unsubscribed` (ou `emailBlacklisted`) → `hard_bounce` → `complaint` →
 `mv_rejected` → `dispute` → `soft_bounce` (só após **3** soft bounces; transitório).
 
-> ⚠️ **`send_eligible` ainda não é autoritativo.** Enquanto o sync do Brevo não
-> existir, as colunas de supressão do Brevo ficam no default → `send_eligible`
-> só reflete MV + dispute, **não** captura descadastro/bounce. Não usar como
-> único gate de envio: o `clarice-build-waves.ts` continua excluindo
-> `emailBlacklisted` do Brevo de forma independente. O builder emite warning e
-> reporta `brevo_synced: false` no summary quando isso vale.
+> ⚠️ **`send_eligible` só é autoritativo após `clarice-sync-brevo.ts` rodar.**
+> Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam
+> no default → `send_eligible` reflete só MV + dispute, **não** captura
+> descadastro/bounce. O builder emite warning e reporta `brevo_synced: false`
+> nesse caso. Rode o sync do Brevo pra completar; até lá, o `clarice-build-waves.ts`
+> continua excluindo `emailBlacklisted` do Brevo de forma independente.
 >
 > Queries de wave devem exigir `tier IS NOT NULL` além de `send_eligible = 1` —
-> linhas só-de-MV (email no CSV do MV mas ausente do Stripe) entram com
-> `tier = NULL` e sem proveniência comercial.
+> linhas só-de-MV/Brevo (email ausente do Stripe) entram com `tier = NULL` e sem
+> proveniência comercial.
 
 ## Scripts
 
@@ -78,15 +78,25 @@ primeira pela ordem:
 | `npx tsx scripts/clarice-optin.ts add <email…>` | marca optin manual (+40), com `added_at`. |
 | `npx tsx scripts/clarice-optin.ts remove <email…>` | remove optin. |
 | `npx tsx scripts/clarice-optin.ts list` | lista optins. |
+| `npx tsx scripts/clarice-sync-brevo.ts [--db <p>] [--concurrency N] [--limit N]` | sincroniza engajamento/supressão do Brevo (opens/clicks/sends/bounces/unsub/last_*) → recomputa derivados. **Checkpoint-resumável** + rate-limit-aware. |
 
 A lógica de priorização (pontos + elegibilidade) vive em `scripts/lib/clarice-db.ts`
 (`computePriorityPoints`, `classifyEligibility`, `recomputeDerived`), testada em
-`test/clarice-db.test.ts`.
+`test/clarice-db.test.ts`. O parsing de contato Brevo vive em
+`scripts/lib/brevo-stats.ts` (`parseBrevoContact`), testado em `test/brevo-stats.test.ts`.
+
+### Sync do Brevo — operação
+
+⚠️ **Pesado + rate-limited.** A base toda são dezenas de milhares de contatos =
+1 GET por contato; a Brevo tem limite **horário** (memória `brevo-hourly-ratelimit`).
+O run é checkpoint-resumável: o progresso é durável no DB (upsert em batches
+transacionais) + `data/clarice-subscribers/.brevo-sync-checkpoint.json` de ids
+feitos. Se esgotar a cota / cair (exit 2), **re-rodar continua de onde parou**.
+Reusa o `brevoGet` de `clarice-build-waves.ts` (respeita `Retry-After`). Requer
+`BREVO_CLARICE_API_KEY`. Use `--limit N` pra um sync parcial / teste.
 
 ## Follow-up (ainda não feito)
 
-- Sync ao vivo do Brevo (atributos + `statistics` + `emailBlacklisted`) pra dentro
-  do store — rate-limited, MCP top-level (ver memória `brevo-hourly-ratelimit`).
 - `clarice-build-waves.ts` ler a priorização do store (tier p/ 1º envio,
   `priority_points` p/ re-envio, `send_eligible` p/ corte) em vez de CSVs soltos.
 - **Reconciliação de clientes que saíram da base:** o build é upsert-only — um

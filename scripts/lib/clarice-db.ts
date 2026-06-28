@@ -26,6 +26,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
+import type { BrevoColumns } from "./brevo-stats.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
@@ -269,4 +270,64 @@ export function recomputeDerived(db: DatabaseSync): number {
     throw e;
   }
   return n;
+}
+
+// ---------------------------------------------------------------------------
+// Brevo → upsert das colunas de engajamento/supressão (#2647 follow-up)
+//
+// INSERT OR IGNORE garante a linha (contato Brevo pode não ter vindo do Stripe),
+// depois UPDATE só nas colunas Brevo — não toca Stripe/MV/optin/derivados. Os
+// derivados (send_eligible/priority_points) são recomputados depois via
+// recomputeDerived, num passo separado, sobre a base inteira.
+// ---------------------------------------------------------------------------
+
+export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void {
+  const ensure = db.prepare(
+    "INSERT OR IGNORE INTO clarice_users (email) VALUES (?)",
+  );
+  // MAX-merge das flags de supressão e dos counts (colunas NOT-NULL DEFAULT 0):
+  // dois registros Brevo do MESMO email (re-add após unsub) ou um re-run não podem
+  // DES-suprimir — se qualquer registro é blacklisted/unsub/bounce, vale o
+  // conservador (mesma garantia do OR-merge em fetchBrevoEngagement). Counts da
+  // Brevo são cumulativos → MAX nunca regride. last_*/identity = overwrite com o
+  // valor fresco. updated_at sempre = agora (marca quando o Brevo foi sincronizado).
+  const update = db.prepare(
+    `UPDATE clarice_users SET
+       email_blacklisted = MAX(email_blacklisted, ?),
+       unsubscribed      = MAX(unsubscribed, ?),
+       hard_bounced      = MAX(hard_bounced, ?),
+       complained        = MAX(complained, ?),
+       opens_count       = MAX(opens_count, ?),
+       clicks_count      = MAX(clicks_count, ?),
+       sends_count       = MAX(sends_count, ?),
+       soft_bounce_count = MAX(soft_bounce_count, ?),
+       last_open_at = ?, last_click_at = ?, last_sent_at = ?,
+       recency_quartil = ?, brevo_list_ids = ?,
+       brevo_created_at = ?, brevo_modified_at = ?,
+       updated_at = ?
+     WHERE email = ?`,
+  );
+  return (c: BrevoColumns) => {
+    if (!c.email) return; // sem email → ignora (evita colisão na key "")
+    ensure.run(c.email);
+    update.run(
+      c.email_blacklisted,
+      c.unsubscribed,
+      c.hard_bounced,
+      c.complained,
+      c.opens_count,
+      c.clicks_count,
+      c.sends_count,
+      c.soft_bounce_count,
+      c.last_open_at,
+      c.last_click_at,
+      c.last_sent_at,
+      c.recency_quartil,
+      c.brevo_list_ids,
+      c.brevo_created_at,
+      c.brevo_modified_at,
+      new Date().toISOString(),
+      c.email,
+    );
+  };
 }
