@@ -285,13 +285,26 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
   const ensure = db.prepare(
     "INSERT OR IGNORE INTO clarice_users (email) VALUES (?)",
   );
+  // MAX-merge das flags de supressão e dos counts (colunas NOT-NULL DEFAULT 0):
+  // dois registros Brevo do MESMO email (re-add após unsub) ou um re-run não podem
+  // DES-suprimir — se qualquer registro é blacklisted/unsub/bounce, vale o
+  // conservador (mesma garantia do OR-merge em fetchBrevoEngagement). Counts da
+  // Brevo são cumulativos → MAX nunca regride. last_*/identity = overwrite com o
+  // valor fresco. updated_at sempre = agora (marca quando o Brevo foi sincronizado).
   const update = db.prepare(
     `UPDATE clarice_users SET
-       email_blacklisted = ?, unsubscribed = ?, hard_bounced = ?, complained = ?,
-       opens_count = ?, clicks_count = ?, sends_count = ?, soft_bounce_count = ?,
+       email_blacklisted = MAX(email_blacklisted, ?),
+       unsubscribed      = MAX(unsubscribed, ?),
+       hard_bounced      = MAX(hard_bounced, ?),
+       complained        = MAX(complained, ?),
+       opens_count       = MAX(opens_count, ?),
+       clicks_count      = MAX(clicks_count, ?),
+       sends_count       = MAX(sends_count, ?),
+       soft_bounce_count = MAX(soft_bounce_count, ?),
        last_open_at = ?, last_click_at = ?, last_sent_at = ?,
        recency_quartil = ?, brevo_list_ids = ?,
-       brevo_created_at = ?, brevo_modified_at = ?
+       brevo_created_at = ?, brevo_modified_at = ?,
+       updated_at = ?
      WHERE email = ?`,
   );
   return (c: BrevoColumns) => {
@@ -313,6 +326,7 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
       c.brevo_list_ids,
       c.brevo_created_at,
       c.brevo_modified_at,
+      new Date().toISOString(),
       c.email,
     );
   };

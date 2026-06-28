@@ -32,8 +32,15 @@ export interface BrevoColumns {
 /** Campos de timestamp que a Brevo usa em entradas de evento (variam por categoria). */
 const TIME_FIELDS = ["eventTime", "messageSentTime", "date", "time"];
 
+/**
+ * Normaliza coleções de eventos da Brevo. Aceita array (formato observado) E
+ * objeto keyed-por-campanha (`{ "123": {...} }`) → Object.values, pra não zerar
+ * a contagem se a Brevo devolver o formato object em alguma resposta.
+ */
 function asArray(v: unknown): any[] {
-  return Array.isArray(v) ? v : [];
+  if (Array.isArray(v)) return v;
+  if (v && typeof v === "object") return Object.values(v as object);
+  return [];
 }
 
 /** ISO do evento mais recente do array, ou null se vazio/sem timestamp parseável. */
@@ -43,16 +50,21 @@ export function latestEventTime(events: unknown): string | null {
   let best: string | null = null;
   for (const e of arr) {
     if (!e || typeof e !== "object") continue;
-    let raw: string | undefined;
+    let raw: string | number | undefined;
     for (const f of TIME_FIELDS) {
       const v = (e as Record<string, unknown>)[f];
+      // aceita ISO string OU epoch numérico (alguns endpoints devolvem millis)
       if (typeof v === "string" && v) {
         raw = v;
         break;
       }
+      if (typeof v === "number" && Number.isFinite(v)) {
+        raw = v;
+        break;
+      }
     }
-    if (!raw) continue;
-    const ms = new Date(raw).getTime();
+    if (raw === undefined) continue;
+    const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
     if (Number.isFinite(ms) && ms > bestMs) {
       bestMs = ms;
       best = new Date(ms).toISOString();

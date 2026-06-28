@@ -43,6 +43,8 @@ const CHECKPOINT = resolve(
   "data/clarice-subscribers/.brevo-sync-checkpoint.json",
 );
 const BATCH = 200; // flush no DB + checkpoint a cada N contatos (durabilidade)
+const PAGE_PACING_MS = 250; // pacing leve entre páginas do listing (memória brevo-hourly-ratelimit)
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 interface Checkpoint {
   listingComplete: boolean;
@@ -70,6 +72,7 @@ async function enumerateContacts(
 ): Promise<Checkpoint> {
   if (existing?.listingComplete) return existing;
   const ids: Array<{ id: number; email: string }> = existing?.ids ?? [];
+  const doneIds = existing?.doneIds ?? [];
   let offset = ids.length;
   for (;;) {
     const { body } = await brevoGet(
@@ -79,17 +82,16 @@ async function enumerateContacts(
     const cs = body?.contacts ?? [];
     for (const c of cs)
       ids.push({ id: c.id, email: String(c.email ?? "").toLowerCase() });
+    const complete = cs.length < 500;
+    // checkpoint POR PÁGINA → se o listing cair no meio (rate-limit), re-rodar
+    // retoma de offset=ids.length em vez de re-enumerar do zero.
+    saveCheckpoint({ listingComplete: complete, ids, doneIds });
     console.error(`📇 listando contatos… ${ids.length}`);
-    if (cs.length < 500) break;
+    if (complete) break;
     offset += 500;
+    await sleep(PAGE_PACING_MS);
   }
-  const cp: Checkpoint = {
-    listingComplete: true,
-    ids,
-    doneIds: existing?.doneIds ?? [],
-  };
-  saveCheckpoint(cp);
-  return cp;
+  return { listingComplete: true, ids, doneIds };
 }
 
 /** Pool de concorrência limitada (workers consomem um índice compartilhado). */
@@ -140,20 +142,23 @@ export async function main(
 
   const flush = (): void => {
     if (buffer.length === 0) return;
+    const batch = buffer;
+    buffer = [];
     db.exec("BEGIN");
     try {
-      for (const b of buffer) {
-        upsertBrevo(b.cols);
-        done.add(b.id);
-      }
+      for (const b of batch) upsertBrevo(b.cols);
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
+      // batch NÃO entra em done → re-run re-busca (idempotente). Não re-bufferiza
+      // pra não arriscar loop no mesmo erro persistente.
       throw e;
     }
+    // done/checkpoint só APÓS o COMMIT durável (senão um COMMIT que falha deixaria
+    // ids "feitos" sem linha no DB).
+    for (const b of batch) done.add(b.id);
     cp.doneIds = [...done];
     saveCheckpoint(cp);
-    buffer = [];
   };
 
   try {
@@ -169,7 +174,13 @@ export async function main(
     });
     flush();
   } catch (e) {
-    flush(); // persiste o que já veio antes de abortar
+    // persiste o que já veio antes de abortar; um flush que TAMBÉM falhe não pode
+    // escapar daqui (senão db.close()/exit 2 não rodam → exit 1 com stack).
+    try {
+      flush();
+    } catch (flushErr) {
+      console.error(`⚠️  flush final falhou: ${(flushErr as Error).message}`);
+    }
     console.error(
       `⚠️  sync interrompido (${(e as Error).message}). ${done.size}/${cp.ids.length} ` +
         `salvos no DB + checkpoint. Re-rode pra continuar de onde parou.`,

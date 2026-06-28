@@ -35,6 +35,12 @@ test("latestEventTime: tolera nomes alternativos de campo + ignora não-objetos"
   assert.equal(r, "2026-05-01T00:00:00.000Z");
 });
 
+test("latestEventTime: aceita timestamp epoch numérico (millis)", () => {
+  const ms = Date.UTC(2026, 5, 1); // 2026-06-01
+  const r = latestEventTime([{ eventTime: ms }]);
+  assert.equal(r, new Date(ms).toISOString());
+});
+
 // ---------------------------------------------------------------------------
 // parseBrevoContact
 // ---------------------------------------------------------------------------
@@ -73,6 +79,18 @@ test("parseBrevoContact: conta campanhas + extrai last_* + attributes + listIds"
   assert.equal(c.recency_quartil, "Q1");
   assert.equal(c.brevo_list_ids, "[3,7]");
   assert.equal(c.brevo_created_at, "2025-01-01T00:00:00Z");
+});
+
+test("parseBrevoContact: statistics object-keyed (não-array) também conta", () => {
+  // alguns endpoints devolvem statistics keyed por campanha em vez de array
+  const c = parseBrevoContact({
+    email: "a@x.com",
+    statistics: {
+      opened: { "123": { eventTime: "2026-01-01T00:00:00Z" }, "456": { eventTime: "2026-02-01T00:00:00Z" } },
+    },
+  });
+  assert.equal(c.opens_count, 2);
+  assert.equal(c.last_open_at, "2026-02-01T00:00:00.000Z");
 });
 
 test("parseBrevoContact: emailBlacklisted → unsubscribed=1 + email_blacklisted=1", () => {
@@ -130,9 +148,13 @@ test("upsert Brevo + recompute: descadastro do Brevo passa a suprimir", () => {
       email: "ana@x.com",
       emailBlacklisted: true,
       statistics: {
-        messagesSent: [{ eventTime: "1" }, { eventTime: "2" }, { eventTime: "3" }],
-        opened: [{ eventTime: "1" }, { eventTime: "2" }],
-        unsubscriptions: [{ eventTime: "3" }],
+        messagesSent: [
+          { eventTime: "2026-05-01T00:00:00Z" },
+          { eventTime: "2026-05-08T00:00:00Z" },
+          { eventTime: "2026-05-15T00:00:00Z" },
+        ],
+        opened: [{ eventTime: "2026-05-02T00:00:00Z" }, { eventTime: "2026-05-09T00:00:00Z" }],
+        unsubscriptions: [{ eventTime: "2026-05-16T00:00:00Z" }],
       },
     }),
   );
@@ -140,13 +162,54 @@ test("upsert Brevo + recompute: descadastro do Brevo passa a suprimir", () => {
 
   ana = db
     .prepare(
-      "SELECT send_eligible, ineligible_reason, opens_count, sends_count FROM clarice_users WHERE email = ?",
+      "SELECT send_eligible, ineligible_reason, opens_count, sends_count, last_sent_at, last_open_at FROM clarice_users WHERE email = ?",
     )
     .get("ana@x.com") as any;
   assert.equal(ana.send_eligible, 0);
   assert.equal(ana.ineligible_reason, "unsubscribed");
   assert.equal(ana.opens_count, 2);
   assert.equal(ana.sends_count, 3);
+  // last_* persistidos end-to-end (parse → upsert → DB)
+  assert.equal(ana.last_sent_at, "2026-05-15T00:00:00.000Z");
+  assert.equal(ana.last_open_at, "2026-05-09T00:00:00.000Z");
 
+  db.close();
+});
+
+test("makeBrevoUpsert: email duplicado não DES-suprime (OR/MAX-merge)", () => {
+  const db = openClariceDb(":memory:");
+  const upsert = makeBrevoUpsert(db);
+  // registro A: blacklisted + descadastrou
+  upsert(
+    parseBrevoContact({
+      email: "dup@x.com",
+      emailBlacklisted: true,
+      statistics: { unsubscriptions: [{ eventTime: "2026-01-01T00:00:00Z" }] },
+    }),
+  );
+  // registro B: re-add limpo (mesmo email, id diferente) chega DEPOIS
+  upsert(parseBrevoContact({ email: "dup@x.com", emailBlacklisted: false }));
+  recomputeDerived(db);
+
+  const r = db
+    .prepare(
+      "SELECT email_blacklisted, unsubscribed, send_eligible, ineligible_reason FROM clarice_users WHERE email = ?",
+    )
+    .get("dup@x.com") as any;
+  assert.equal(r.email_blacklisted, 1); // MAX preservou a supressão
+  assert.equal(r.unsubscribed, 1);
+  assert.equal(r.send_eligible, 0);
+  assert.equal(r.ineligible_reason, "unsubscribed");
+  db.close();
+});
+
+test("makeBrevoUpsert: contato 404/vazio ({}) não cria linha lixo", () => {
+  const db = openClariceDb(":memory:");
+  const upsert = makeBrevoUpsert(db);
+  upsert(parseBrevoContact({})); // email "" → guard ignora
+  const n = (
+    db.prepare("SELECT COUNT(*) AS n FROM clarice_users").get() as { n: number }
+  ).n;
+  assert.equal(n, 0);
   db.close();
 });
