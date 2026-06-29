@@ -23,9 +23,25 @@ test("renderContactsSummarySection: stub gracioso quando null", () => {
   assert.match(html, /clarice-db-summary\.ts/);
 });
 
-test("renderContactsSummarySection: total 0 também cai no stub", () => {
+test("renderContactsSummarySection: total 0 (objeto válido) renderiza, não vira stub", () => {
+  // store legitimamente vazio é dado válido, não ausência de dado (#2660 review)
   const html = renderContactsSummarySection({ ...sample, total: 0 });
-  assert.match(html, /Dados ainda não gerados/);
+  assert.doesNotMatch(html, /Dados ainda não gerados/);
+  assert.match(html, /Banco de contatos/);
+});
+
+test("renderContactsSummarySection: payload parcial/stale (sem subobjetos) não lança", () => {
+  // simula um contacts:summary de versão antiga do script — o handler casta sem
+  // validar shape; o render NÃO pode crashar e derrubar o dashboard.
+  const partial = { generated_at: "2026-06-29T12:00:00Z", total: 5 } as ContactsSummary;
+  assert.doesNotThrow(() => renderContactsSummarySection(partial));
+  assert.match(renderContactsSummarySection(partial), /Banco de contatos/);
+});
+
+test("renderDashboardHtml: CSS torna o painel Contatos visível quando selecionado", () => {
+  // regressão do bug crítico: o painel ficaria display:none sem a regra CSS
+  const html = renderDashboardHtml([], [], null, null, sample);
+  assert.match(html, /#tab-contatos:checked ~ \.tab-panels #panel-contatos/);
 });
 
 test("renderContactsSummarySection: renderiza tier/razões/pontos/mv/engajamento", () => {
@@ -35,8 +51,18 @@ test("renderContactsSummarySection: renderiza tier/razões/pontos/mv/engajamento
   assert.match(html, /sem tier/); // tier null
   assert.match(html, /mv_rejected/);
   assert.match(html, /41–80/); // faixa de priority_points
-  assert.match(html, /29\.600|29600/); // brevo synced (pt-BR ou raw)
-  assert.match(html, /2\.219|2219/); // engajamento with_opens
+  // locale-robusto: pt-BR "29.600", en-US "29,600" ou raw "29600" (small-icu no CI)
+  assert.match(html, /29[.,]?600/); // brevo synced
+  assert.match(html, /2[.,]?219/); // engajamento with_opens
+});
+
+test("renderContactsSummarySection: branch has_signal=false mostra alerta", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    brevo: { synced_rows: 0, has_signal: false },
+  });
+  assert.match(html, /sem sinal Brevo ainda/);
+  assert.match(html, /var\(--alert\)/);
 });
 
 test("renderDashboardHtml: inclui a aba Contatos (radio + label + panel)", () => {

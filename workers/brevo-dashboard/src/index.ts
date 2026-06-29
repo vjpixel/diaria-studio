@@ -285,8 +285,10 @@ export const COHORTS_KV_KEY = "cohorts:engagement";
 export const MV_STATUS_KV_KEY = "mv:status";
 
 // #2653: sumário do store único de contatos (#2647), gravado por
-// scripts/clarice-db-summary.ts. Tipo DUPLICADO do script (não importado — o
-// script puxa node:sqlite, indisponível no runtime do Worker).
+// scripts/clarice-db-summary.ts. Tipo DUPLICADO do script (mesmo padrão de
+// MvStatus): não importado porque o script puxa node:sqlite, indisponível no
+// runtime do Worker. MANTER EM SINCRONIA com StoreSummary do script (este = o
+// payload do KV = StoreSummary + generated_at).
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 export interface ContactsSummary {
@@ -1414,20 +1416,23 @@ export function renderDashboardHtml(
   .tab-label:hover { opacity: 1; background: var(--paper-alt); }
   #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
   #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
-  #tab-links:checked ~ .tab-bar label[for="tab-links"] {
+  #tab-links:checked ~ .tab-bar label[for="tab-links"],
+  #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"] {
     background: var(--paper); border-color: var(--rule); opacity: 1;
     color: var(--brand); border-bottom-color: var(--paper);
   }
   /* Foco de teclado: o radio focado projeta um contorno no seu label irmão. */
   #tab-visaogeral:focus-visible ~ .tab-bar label[for="tab-visaogeral"],
   #tab-engajamento:focus-visible ~ .tab-bar label[for="tab-engajamento"],
-  #tab-links:focus-visible ~ .tab-bar label[for="tab-links"] {
+  #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
+  #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"] {
     outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
   }
   .tab-panel { display: none; padding-top: 8px; }
   #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
   #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
-  #tab-links:checked ~ .tab-panels #panel-links { display: block; }
+  #tab-links:checked ~ .tab-panels #panel-links,
+  #tab-contatos:checked ~ .tab-panels #panel-contatos { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
@@ -2697,7 +2702,10 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
 export function renderContactsSummarySection(
   s: ContactsSummary | null,
 ): string {
-  if (!s || !s.total) {
+  // Stub quando a chave KV não existe (null) OU o payload está malformado (total
+  // não-numérico). NÃO usa `!s.total`: um store legitimamente vazio (total=0) é
+  // dado válido, não ausência de dado.
+  if (!s || typeof s.total !== "number") {
     return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
@@ -2705,16 +2713,24 @@ export function renderContactsSummarySection(
 </section>`;
   }
 
+  // Defaults defensivos: o handler casta o JSON do KV sem validar shape; um
+  // payload de uma versão antiga do script (sem algum subobjeto) NÃO pode lançar
+  // e derrubar o render do dashboard inteiro.
+  const brevo = s.brevo ?? { synced_rows: 0, has_signal: false };
+  const elig = s.eligibility ?? { eligible: 0, ineligible: 0, by_reason: {} };
+  const pp = s.priority_points ?? { lt0: 0, eq0: 0, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 };
+  const eng = s.engagement ?? { with_opens: 0, with_clicks: 0 };
+
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
-  const genBRT = fmtTimeBRT(s.generated_at);
+  const genBRT = escHtml(fmtTimeBRT(s.generated_at));
 
   // tabelinha {rótulo → contagem}, ordenada por contagem desc.
   const kvTable = (
     title: string,
-    map: Record<string, number>,
+    map: Record<string, number> | undefined,
     relabel: (k: string) => string = (k) => k,
   ): string => {
-    const rows = Object.entries(map)
+    const rows = Object.entries(map ?? {})
       .sort((a, b) => b[1] - a[1])
       .map(
         ([k, v]) =>
@@ -2727,7 +2743,6 @@ export function renderContactsSummarySection(
   };
 
   const tierLabel = (k: string): string => (k === "null" ? "sem tier" : `T${k.padStart(2, "0")}`);
-  const pp = s.priority_points;
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
     "zero (sem histórico)": pp.eq0,
@@ -2735,19 +2750,19 @@ export function renderContactsSummarySection(
     "41–80": pp.p41_80,
     ">80": pp.gt80,
   };
-  const brevoBadge = s.brevo.has_signal
-    ? `<span style="color:${DS.brand}">${n(s.brevo.synced_rows)} sincronizados</span>`
+  const brevoBadge = brevo.has_signal
+    ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
 
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
-  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(s.eligibility.eligible)}</strong> · inelegíveis: <strong>${n(s.eligibility.ineligible)}</strong> · optin: <strong>${n(s.priority_points.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
+  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
   ${kvTable("Por tier (1º envio)", s.by_tier, tierLabel)}
-  ${kvTable("Inelegíveis por razão", s.eligibility.by_reason)}
+  ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("priority_points (re-envio)", ppMap)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
-  <p class="section-note">Engajamento Brevo: ${n(s.engagement.with_opens)} com abertura · ${n(s.engagement.with_clicks)} com clique.</p>
+  <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
 </section>`;
 }
 
