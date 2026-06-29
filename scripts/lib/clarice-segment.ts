@@ -53,6 +53,8 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
   const excluded: Array<{ email: string; reason: string }> = [];
 
   for (const r of rows) {
+    // Fail-safe: send_eligible falsy (0 OU null de uma linha nunca recomputada)
+    // → CORTE. Na dúvida NÃO enviar é a direção segura pro pipeline de envio.
     if (!r.send_eligible) {
       excluded.push({ email: r.email, reason: r.ineligible_reason ?? "unknown" });
     } else if ((r.sends_count ?? 0) > 0) {
@@ -64,11 +66,17 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
 
   reSend.sort(
     (a, b) =>
-      b.priority_points - a.priority_points || a.email.localeCompare(b.email),
+      (b.priority_points ?? 0) - (a.priority_points ?? 0) ||
+      a.email.localeCompare(b.email),
   );
-  firstSend.sort(
-    (a, b) => tierRank(a.tier) - tierRank(b.tier) || a.email.localeCompare(b.email),
-  );
+  // Comparador explícito (não subtrai ranks) — tierRank pode ser +∞ e
+  // (+∞)−(+∞)=NaN quebraria a ordenação entre dois tiers nulos.
+  firstSend.sort((a, b) => {
+    const ra = tierRank(a.tier);
+    const rb = tierRank(b.tier);
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    return a.email.localeCompare(b.email);
+  });
 
   return { reSend, firstSend, excluded };
 }

@@ -85,6 +85,37 @@ test("sliceIntoWaves: maxSize<=0 → 1 wave com tudo; vazio → []", () => {
   assert.deepEqual(sliceIntoWaves([], 100), []);
 });
 
+test("sliceIntoWaves: tamanho múltiplo exato de maxSize → sem wave final menor", () => {
+  assert.deepEqual(sliceIntoWaves([1, 2, 3, 4], 2), [[1, 2], [3, 4]]);
+});
+
+test("sliceIntoWaves: maxSize=1 → cada elemento numa wave", () => {
+  assert.deepEqual(sliceIntoWaves([1, 2, 3], 1), [[1], [2], [3]]);
+});
+
+test("segmentFromStore: não muta o array de entrada", () => {
+  const input = [
+    row({ email: "b@x.com", sends_count: 1, priority_points: 10 }),
+    row({ email: "a@x.com", sends_count: 1, priority_points: 90 }),
+  ];
+  const snapshot = input.map((r) => r.email);
+  segmentFromStore(input);
+  assert.deepEqual(
+    input.map((r) => r.email),
+    snapshot,
+    "a ordem do input original deve permanecer intacta",
+  );
+});
+
+test("segmentFromStore: send_eligible null cai no corte (fail-safe)", () => {
+  const s = segmentFromStore([
+    { email: "x@x.com", tier: 1, priority_points: 0, send_eligible: null as any, ineligible_reason: null, sends_count: 0 },
+  ]);
+  assert.equal(s.firstSend.length, 0);
+  assert.equal(s.reSend.length, 0);
+  assert.deepEqual(s.excluded, [{ email: "x@x.com", reason: "unknown" }]);
+});
+
 // ---------------------------------------------------------------------------
 // loadStoreRows — integração com o store SQLite
 // ---------------------------------------------------------------------------
