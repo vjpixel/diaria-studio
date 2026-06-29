@@ -893,14 +893,27 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
-  // #1936/#1945 (DS): container do corpo, 600px (email-safe — Outlook corta
-  // acima disso, cf. checkWideTables). Texto mais largo vem do padding lateral
-  // reduzido (48 → 32px no `.pad`, #1945), não de container mais largo. Sem os
-  // "trilhos" bege laterais (#1945: removidos border-left/right RULE), fundo
-  // branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
-  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};">
+  // #1936/#1945 (DS): container do corpo, máx. 600px (email-safe — Outlook corta
+  // acima disso, cf. checkWideTables). **#260629:** `width="100%"` + `max-width:600px`
+  // como BASE (responsivo sem depender do `@media`). O Beehiiv às vezes remove o
+  // `<style>` do htmlSnippet no build do e-mail, então a media query `.container
+  // { width:100% }` não aplicava e o `width:600px` forçado ficava estreito/escalado
+  // no mobile (editor reportou "largura estreita" no Gmail mobile, 260629). Com
+  // `width:100%` o corpo preenche a largura disponível (mobile) e ainda cap em 600px
+  // no desktop — sem precisar da media query. Sem os "trilhos" bege laterais
+  // (#1945), fundo branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
+  const innerTable = `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:${PAPER};">
 ${parts.join("\n")}
 </table>`;
+  // #260629 (b): wrapper MSO. O Outlook desktop IGNORA `max-width` e respeita o
+  // atributo `width` — então com `width="100%"` o corpo iria a 100% da janela do
+  // Outlook (perde o cap de 600). O conditional `<!--[if mso]>` embrulha o corpo
+  // numa tabela fixa de 600 SÓ no Outlook; clientes modernos ignoram o comentário
+  // e usam a tabela `width:100%`/`max-width:600`. Se o Beehiiv remover o comentário
+  // (como faz com `<style>`), degrada pro `width:100%` — sem downside vs (a).
+  const container = `<!--[if mso]><table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"><tr><td width="600"><![endif]-->
+${innerTable}
+<!--[if mso]></td></tr></table><![endif]-->`;
 
   if (!opts.fullDocument) {
     // Fragmento pro Beehiiv: container + style (progressive enhancement).

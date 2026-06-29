@@ -285,7 +285,11 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   it("output não-vazio e tem estrutura de container email", () => {
     assert.ok(html.length > 5000, `HTML parece muito curto (${html.length} chars)`);
     assert.ok(html.includes('<table role="presentation"'), "container email ausente");
-    assert.ok(html.includes("width:600px"), "largura do container ausente");
+    assert.ok(html.includes("max-width:600px"), "cap de largura do container ausente");
+    assert.ok(html.includes('class="container" width="100%"'), "container responsivo (width 100%) ausente");
+    // #260629 (b): wrapper MSO cap 600 no Outlook (ignora max-width).
+    assert.ok(html.includes('<!--[if mso]><table role="presentation" align="center" width="600"'), "wrapper MSO 600 (Outlook cap) ausente");
+    assert.ok(html.includes("<!--[if mso]></td></tr></table><![endif]-->"), "fechamento do wrapper MSO ausente");
     assert.ok(html.includes("background:#FFFFFF"), "fundo paper ausente");
   });
 

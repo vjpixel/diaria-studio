@@ -52,9 +52,14 @@ describe("e-mail diário — fundo branco + laterais sem bege + largura (#1943/#
     assert.doesNotMatch(html, /class="container"[^>]*#FBFAF6/);
   });
 
-  it("#1945: container fica em 600px (email-safe) com padding lateral 32px", () => {
-    assert.match(html, /class="container" width="600"/);
-    assert.match(html, /width:600px;max-width:600px/);
+  it("#1945/#260629: container responsivo (width 100% + max-width 600) + wrapper MSO, padding lateral 32px", () => {
+    // #260629: base responsiva (preenche no mobile, cap 600 no desktop) —
+    // não mais width:600px fixo (que ficava estreito/escalado no Gmail mobile
+    // porque o Beehiiv remove a media query do htmlSnippet).
+    assert.match(html, /class="container" width="100%"/);
+    assert.match(html, /width:100%;max-width:600px/);
+    // wrapper MSO embrulha em 600 SÓ no Outlook (ignora max-width).
+    assert.match(html, /<!--\[if mso\]><table role="presentation" align="center" width="600"/);
     // texto mais largo vem do padding lateral reduzido (48 → 32px), não de
     // container > 600 (que o checkWideTables flaga / Outlook corta).
     assert.match(html, /class="pad" style="padding:[0-9]+px 32px/);
