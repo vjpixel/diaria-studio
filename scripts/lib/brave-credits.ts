@@ -163,6 +163,9 @@ export interface BraveCreditStats {
   // (#2608 C) reconciliação com quota real via header X-RateLimit-Remaining
   quota_remaining_last_seen?: number; // last value seen from Brave API header
   delta_untracked?: number; // real_used − local_counted (queries not tracked locally)
+  // base do alerta: o MAIOR entre contagem local e uso real do header Brave.
+  effective_used: number;
+  alert_basis: "local" | "brave_header";
 }
 
 const FREE_TIER_LIMIT = 2000;
@@ -191,6 +194,8 @@ export function computeBraveCreditStats(
       percent_used: 0,
       projected_month_end: null,
       alert_level: "ok",
+      effective_used: 0,
+      alert_basis: "local",
     };
   }
 
@@ -234,26 +239,43 @@ export function computeBraveCreditStats(
   const queries_this_month = queries_this_month_real + queries_this_month_estimated;
   const queries_this_edition = queries_this_edition_real + queries_this_edition_estimated;
 
-  // Projeção: extrapolar baseado no dia do mês (linear), usando só queries reais (Path A).
-  // Estimativas são gravadas em lote único no dia do Stage 1, então incluí-las inflaria a
-  // projeção ~10× no início do mês (ex: 55 estimadas dia 1 → projeção 1650/mês = falso-critical).
-  const dayOfMonth = now.getUTCDate();
-  const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getDate();
-  const projected_month_end =
-    dayOfMonth > 0
-      ? Math.round((queries_this_month_real / dayOfMonth) * daysInMonth)
-      : null;
+  // Uso real do header (clamp ≥ 0 — defensivo contra quota_remaining > limite,
+  // ex: mudança de API ou janela errada, que daria real_used negativo).
+  const real_used =
+    typeof quota_remaining_last_seen === "number"
+      ? Math.max(0, FREE_TIER_LIMIT - quota_remaining_last_seen)
+      : undefined;
 
-  // (#2608 C) delta = queries cobradas pelo Brave − (reais + estimadas locais)
-  // real_used_this_month = free_tier_limit − quota_remaining_last_seen
-  // delta ≈ 0 → estimativas corretas; delta > 0 → gap não explicado (Path B > estimativa)
-  let delta_untracked: number | undefined;
-  if (typeof quota_remaining_last_seen === "number") {
-    const real_used = FREE_TIER_LIMIT - quota_remaining_last_seen;
-    delta_untracked = real_used - (queries_this_month_real + queries_this_month_estimated);
+  // Alerta AUTORITATIVO: o header X-RateLimit-Remaining do Brave é a verdade —
+  // inclui o Path B (WebSearch dos agentes) que NÃO passa pelo counter local.
+  // Dirigir o alerta pelo MAIOR entre contagem local e uso real do header, pra
+  // nunca subnotificar. (Causa do esgotamento de jun/2026: local=999 mas Brave
+  // contava 1951; o alerta confiava nos 999 → "ok" → voamos pelo $5. O contador
+  // local sozinho subnotifica ~metade porque o estimate do Path B nunca dispara.)
+  let effective_used = queries_this_month;
+  let alert_basis: BraveCreditStats["alert_basis"] = "local";
+  if (real_used !== undefined && real_used > effective_used) {
+    effective_used = real_used;
+    alert_basis = "brave_header";
   }
 
-  const percent_used = queries_this_month / FREE_TIER_LIMIT;
+  // (#2608 C) delta = queries cobradas pelo Brave − (reais + estimadas locais).
+  // delta ≈ 0 → estimativas corretas; delta > 0 → gap não explicado (Path B > estimativa).
+  const delta_untracked =
+    real_used !== undefined ? real_used - queries_this_month : undefined;
+
+  // Projeção: extrapolar linear pelo dia do mês. Base = effective_used quando o
+  // header é autoritativo (senão a projeção contradiria o alerta: "97% crítico"
+  // + "projeção ~5"); senão só queries reais locais (estimativas vêm em lote
+  // único no Stage 1 → incluí-las inflaria ~10× a projeção no início do mês).
+  const dayOfMonth = now.getUTCDate();
+  const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getDate();
+  const projectionBase =
+    alert_basis === "brave_header" ? effective_used : queries_this_month_real;
+  const projected_month_end =
+    dayOfMonth > 0 ? Math.round((projectionBase / dayOfMonth) * daysInMonth) : null;
+
+  const percent_used = effective_used / FREE_TIER_LIMIT;
   const alert_level: BraveCreditStats["alert_level"] =
     percent_used >= CRITICAL_THRESHOLD
       ? "critical"
@@ -272,6 +294,8 @@ export function computeBraveCreditStats(
     percent_used: Math.round(percent_used * 10000) / 100, // 2 decimais como %
     projected_month_end,
     alert_level,
+    effective_used,
+    alert_basis,
     ...(typeof quota_remaining_last_seen === "number" ? { quota_remaining_last_seen } : {}),
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
   };

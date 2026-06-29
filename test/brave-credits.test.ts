@@ -271,6 +271,82 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
+  // REGRESSÃO: o bug de jun/2026. Contagem local baixa MAS header Brave alto →
+  // alerta deve ser CRITICAL pelo header, não "ok" pelo local subnotificado.
+  it("alerta dirigido pelo header quando local subnotifica (causa jun/2026)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-29T12:00:00Z");
+    // só 5 entradas locais (Path A), mas o header diz quota_remaining=49 →
+    // real_used = 2000-49 = 1951 (Path B não-contado). Local sozinho = 0,25% = "ok".
+    writeFileSync(
+      path,
+      [
+        ...Array.from({ length: 4 }, (_, i) =>
+          JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: `q${i}`, status: "ok" })
+        ),
+        JSON.stringify({ timestamp: "2026-06-29T10:05:00Z", query: "q5", status: "ok", quota_remaining: 49 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month, 5, "contagem local permanece 5 (informativa)");
+    assert.equal(stats.effective_used, 1951, "base do alerta = real_used do header (1951)");
+    assert.equal(stats.alert_basis, "brave_header");
+    assert.equal(stats.alert_level, "critical", "deve ser critical (1951/2000=97.5%), não 'ok'");
+    // projeção coerente com o header (≈1951/29*30≈2018), NÃO a local ~5
+    assert.ok(stats.projected_month_end! > 1900, `projeção (${stats.projected_month_end}) deve refletir o header, não a local`);
+    rmSync(path, { force: true });
+  });
+
+  it("max() mantém a contagem LOCAL quando ela é maior que o header (branch invertido)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-29T12:00:00Z");
+    // 20 locais, header quota_remaining=1995 → real_used=5 < 20 → effective = local 20
+    writeFileSync(
+      path,
+      Array.from({ length: 20 }, (_, i) =>
+        JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: `q${i}`, status: "ok", ...(i === 19 ? { quota_remaining: 1995 } : {}) })
+      ).join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.effective_used, 20, "max deve manter o local (20), não o header (5)");
+    assert.equal(stats.alert_basis, "local");
+    rmSync(path, { force: true });
+  });
+
+  it("real_used clampado em 0 quando quota_remaining > limite (defensivo)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-29T12:00:00Z");
+    writeFileSync(
+      path,
+      JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: "q", status: "ok", quota_remaining: 2500 }),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    // real_used = max(0, 2000-2500) = 0 → não vira negativo; delta = 0 - 1 = -1 (não -501)
+    assert.equal(stats.delta_untracked, -1, "delta com real_used clampado (0-1), não 2000-2500-1");
+    assert.equal(stats.effective_used, 1, "effective = local (1), header clampado não rebaixa");
+    rmSync(path, { force: true });
+  });
+
+  it("sem header: alerta continua pela contagem local (comportamento inalterado)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-29T12:00:00Z");
+    writeFileSync(
+      path,
+      Array.from({ length: 10 }, (_, i) =>
+        JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: `q${i}`, status: "ok" })
+      ).join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.alert_basis, "local");
+    assert.equal(stats.effective_used, 10);
+    assert.equal(stats.alert_level, "ok");
+    rmSync(path, { force: true });
+  });
+
   // (#2608 C) cross-month regression: quota_remaining from previous month must NOT pollute delta
   it("delta_untracked ignora quota_remaining de mes anterior (cross-month boundary)", () => {
     const path = makeTmpPath();
