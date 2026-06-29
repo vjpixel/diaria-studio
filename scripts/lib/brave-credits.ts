@@ -42,7 +42,7 @@
 import { appendFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
-const DEFAULT_PATH = "data/brave-credits.jsonl";
+export const DEFAULT_PATH = "data/brave-credits.jsonl";
 
 export interface BraveCreditEntry {
   timestamp: string; // ISO 8601
@@ -86,13 +86,14 @@ export function recordBraveCredit(
  * discovery-searcher via harness WebSearch), que não passam por recordBraveCredit().
  *
  * Escreve `count` entradas com `estimated: true` no JSONL. O campo `source` identifica
- * o passo que gerou a estimativa (ex: "stage1-agents"). As entradas são somadas em
- * `computeBraveCreditStats` junto das entradas reais, mas distinguidas em
- * `queries_this_month_estimated` vs `queries_this_month_real`.
+ * o passo que gerou a estimativa. Hoje a única fonte é `path-b-reconcile`
+ * (`scripts/reconcile-brave-path-b.ts`, #2668) — NÃO usar outro `source` pra a mesma
+ * edição/mês: o guard de idempotência é keyed em edition+source+mês, então duas
+ * fontes distintas pra a mesma edição contariam em dobro. As entradas são somadas em
+ * `computeBraveCreditStats` junto das reais, distinguidas em `_estimated` vs `_real`.
  *
- * Premissa load-bearing: cada chamada de WebSearch pelos agentes Haiku dispara
- * exatamente 1 query ao Brave Search API — não verificável via código (é comportamento
- * do runtime Claude), mas confirmado empiricamente via delta X-RateLimit-Remaining.
+ * `now` injetável (default new Date()) — usado p/ monthPrefix (idempotência) E
+ * timestamp das entradas, pra ambos ficarem no MESMO mês (sem split em virada de mês).
  */
 export function recordBraveCreditEstimate(
   {
@@ -101,13 +102,14 @@ export function recordBraveCreditEstimate(
     count,
   }: { edition?: string; source: string; count: number },
   path: string = DEFAULT_PATH,
+  now: Date = new Date(),
 ): void {
   if (!Number.isFinite(count) || count <= 0) return;
   count = Math.round(count);
   try {
     const fullPath = resolve(process.cwd(), path);
     ensureDir(fullPath);
-    const monthPrefix = new Date().toISOString().slice(0, 7);
+    const monthPrefix = now.toISOString().slice(0, 7);
     // Idempotency guard: skip if an estimated entry for this edition+source already exists this month
     if (edition && source && existsSync(fullPath)) {
       const existing = readFileSync(fullPath, "utf8")
@@ -129,7 +131,7 @@ export function recordBraveCreditEstimate(
         });
       if (existing) return;
     }
-    const ts = new Date().toISOString();
+    const ts = now.toISOString();
     const lines: string[] = [];
     for (let i = 0; i < count; i++) {
       const entry: BraveCreditEntry = {
