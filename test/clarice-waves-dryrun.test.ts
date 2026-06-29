@@ -60,13 +60,16 @@ test("computeWavesDryrun: vs_pipeline isola a supressão genuína (unsub via lis
   assert.equal(r.divergence.vs_pipeline.newly_sent, 0);
 });
 
-test("computeWavesDryrun: eligible_not_in_brevo conta o status-desconhecido (regressão-chave)", () => {
+test("computeWavesDryrun: eligible_not_in_brevo (informativo) + breakdown por tier", () => {
   const r = computeWavesDryrun([
-    row({ email: "novo@x.com", send_eligible: 1, in_brevo: 0 }), // elegível, nunca no Brevo
-    row({ email: "vet@x.com", send_eligible: 1, in_brevo: 1 }),
+    row({ email: "novo@x.com", send_eligible: 1, in_brevo: 0, tier: 5 }), // elegível, ainda não no Brevo
+    row({ email: "t1@x.com", send_eligible: 1, in_brevo: 0, tier: 1 }), // T1 ativo faltando (curioso)
+    row({ email: "vet@x.com", send_eligible: 1, in_brevo: 1, tier: 2 }),
   ]);
-  assert.equal(r.store.eligible, 2);
-  assert.equal(r.store.eligible_not_in_brevo, 1); // só novo@
+  assert.equal(r.store.eligible, 3);
+  assert.equal(r.store.eligible_not_in_brevo, 2); // novo@, t1@
+  assert.equal(r.store.eligible_not_in_brevo_by_tier["T05"], 1);
+  assert.equal(r.store.eligible_not_in_brevo_by_tier["T01"], 1);
 });
 
 test("computeWavesDryrun: caso real esperado — store == pipeline na supressão (sem divergência)", () => {
@@ -92,7 +95,8 @@ test("computeWavesDryrun: warning de derivados stale (blacklisted mas elegível)
 test("renderDryrunMarkdown: contém as seções-chave + caveats", () => {
   const md = renderDryrunMarkdown(computeWavesDryrun(sample));
   assert.match(md, /Limites do modelo/);
-  assert.match(md, /status desconhecido/i);
+  assert.match(md, /ainda NÃO no Brevo/);
+  assert.match(md, /estado normal/);
   assert.match(md, /vs pipeline atual/i);
   assert.match(md, /PII/);
 });

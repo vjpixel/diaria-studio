@@ -10,9 +10,11 @@
  *    (ativos) + T2 (ex-assinantes MV-verified) — ~milhares —, não a base toda.
  *    O cutover "swap total" passa a segmentar a BASE INTEIRA. São estratégias
  *    diferentes; aqui medimos quem é elegível/suprimido, não o tamanho da wave.
- *  - O pipeline atual EXCLUI T1 "não-encontrado no Brevo" (status de unsub
- *    desconhecido — `classifyT1`). O store inclui esses se não houver supressão.
- *    Reportamos `eligible_not_in_brevo` em destaque: é a regressão-chave a decidir.
+ *  - "Não está no Brevo" é o estado NORMAL: o editor só importa o cohort pro
+ *    Brevo na hora de AGENDAR o envio. Logo `eligible_not_in_brevo` é
+ *    informativo, NÃO regressão — quebrado por tier só pra sanity-check (ex:
+ *    algum T1 ativo faltando seria curioso, já que ativos costumam estar no
+ *    Brevo de envios passados). O guard `notFound` do `classifyT1` cobre T1.
  *  - O filtro MV do pipeline é por-tier (só T2); aqui é tratado universalmente.
  *
  * Modelos de supressão comparados:
@@ -55,8 +57,10 @@ export interface DryrunReport {
     unsubscribed_lista: number;
     re_send: number; // via segmentFromStore (a MESMA lógica do cutover)
     first_send: number;
-    /** elegível mas SEM registro no Brevo → status unsub desconhecido (regressão-chave). */
+    /** elegível mas ainda NÃO no Brevo (importado no agendamento — estado normal). */
     eligible_not_in_brevo: number;
+    /** o mesmo, por tier — sanity-check (T1 ativo faltando seria curioso). */
+    eligible_not_in_brevo_by_tier: Record<string, number>;
   };
   divergence: {
     vs_blast: DivergenceBlock;
@@ -104,6 +108,7 @@ export function computeWavesDryrun(
       re_send: seg.reSend.length,
       first_send: seg.firstSend.length,
       eligible_not_in_brevo: 0,
+      eligible_not_in_brevo_by_tier: {},
     },
     divergence: { vs_blast: emptyDiv(), vs_pipeline: emptyDiv() },
     warnings: { stale_derived: 0 },
@@ -140,7 +145,10 @@ export function computeWavesDryrun(
     else r.current_pipeline.suppressed++;
 
     if (storeSends) {
-      if (!row.in_brevo) r.store.eligible_not_in_brevo++;
+      if (!row.in_brevo) {
+        r.store.eligible_not_in_brevo++;
+        inc(r.store.eligible_not_in_brevo_by_tier, row.tier == null ? "null" : `T${String(row.tier).padStart(2, "0")}`);
+      }
       if (row.email_blacklisted) r.warnings.stale_derived++; // blacklisted mas elegível → stale
     } else {
       inc(r.store.ineligible_by_reason, row.ineligible_reason ?? "unknown");
@@ -193,8 +201,12 @@ ${staleNote}
 
 Segmentação do store (via \`segmentFromStore\`, a mesma do cutover): **${fmt(r.store.re_send)}** re-envio · **${fmt(r.store.first_send)}** 1º envio.
 
-## 🚩 Regressão-chave: elegíveis SEM registro no Brevo (status desconhecido): **${fmt(r.store.eligible_not_in_brevo)}**
-O pipeline atual EXCLUI T1 não-encontrado no Brevo ("excluir descadastrados"). O store os incluiria — esses contatos nunca foram carregados no Brevo, então o status de unsub é DESCONHECIDO. **Decisão necessária antes do cutover:** enviar pra status-desconhecido, ou exigir presença no Brevo / re-verificação?
+## ℹ️ Elegíveis ainda NÃO no Brevo: **${fmt(r.store.eligible_not_in_brevo)}** (estado normal)
+O editor só importa o cohort pro Brevo no AGENDAMENTO do envio — então não-estar-no-Brevo é o default esperado, NÃO uma regressão. Quebra por tier abaixo só pra sanity-check (T1 ativo faltando seria curioso — ativos costumam estar no Brevo de envios passados):
+
+| tier | não-no-Brevo |
+|---|---:|
+${reasonTable(r.store.eligible_not_in_brevo_by_tier)}
 
 ## Divergência de SUPRESSÃO vs pipeline atual
 - supressão genuinamente nova (pipeline envia, store corta): **${fmt(vp.newly_suppressed)}** — ex: unsub via lista não-blacklisted (${fmt(r.store.unsubscribed_lista)}), soft-bounce, complaint.
