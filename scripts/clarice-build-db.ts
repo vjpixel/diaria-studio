@@ -55,8 +55,13 @@ function ingestStripe(
   db: ReturnType<typeof openClariceDb>,
   dataDir: string,
   now: Date,
-): { kept: number; disputed: number; excluded_audit_only: number } {
-  const { kept, excluded } = buildUniverse(dataDir, now);
+): {
+  kept: number;
+  disputed: number;
+  excluded_audit_only: number;
+  skipped_files: string[];
+} {
+  const { kept, excluded, skippedFiles } = buildUniverse(dataDir, now);
   const upsert = db.prepare(
     `INSERT INTO clarice_users
        (email, name, stripe_ids, status, created, delinquent, dispute_losses, refunded_volume, tier, updated_at)
@@ -116,6 +121,7 @@ function ingestStripe(
     kept: kept.length,
     disputed: disputed.length,
     excluded_audit_only: excluded.length - disputed.length,
+    skipped_files: skippedFiles,
   };
 }
 
@@ -176,10 +182,19 @@ function ingestMv(
     for (const f of mvFiles) {
       const path = resolve(cycleDir, f);
       const verifiedAt = statSync(path).mtime.toISOString();
-      const parsed = Papa.parse<Record<string, string>>(
-        readFileSync(path, "utf8"),
-        { header: true, skipEmptyLines: true },
-      );
+      let content: string;
+      try {
+        content = readFileSync(path, "utf8");
+      } catch (e) {
+        // Mesmo tratamento do buildUniverse: placeholder OneDrive ilegível não
+        // crasha o build — pula com aviso (MV daquele ciclo fica de fora).
+        console.error(`⚠️  pulando MV ilegível ${cycle}/${f}: ${(e as Error).message}`);
+        continue;
+      }
+      const parsed = Papa.parse<Record<string, string>>(content, {
+        header: true,
+        skipEmptyLines: true,
+      });
       for (const row of parsed.data) {
         const email = (row["email"] || row["Email"] || "").trim().toLowerCase();
         if (!email) continue;
@@ -232,6 +247,13 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     `   kept=${stripe.kept} · disputed=${stripe.disputed} (inelegível no store) · ` +
       `excluded_audit_only=${stripe.excluded_audit_only}`,
   );
+  if (stripe.skipped_files.length > 0) {
+    console.error(
+      `⚠️  STORE PARCIAL: ${stripe.skipped_files.length} CSV(s) de fonte ilegíveis ` +
+        `(${stripe.skipped_files.join(", ")}) — faltam os contatos desses arquivos. ` +
+        `Hidrate-os (OneDrive) e re-rode pra completar.`,
+    );
+  }
 
   console.error(`🔎 ingerindo MV (mv-export-* por ciclo)…`);
   const mv = ingestMv(db, dataDir);
