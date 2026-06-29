@@ -113,6 +113,12 @@ export interface NewsletterContent {
    * tornar o box do meio mais proeminente: imagem + texto + botão CTA.
    * Lida de `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
   midCalloutImage?: string | null;
+  /** Box de produtos (estilo teal) posicionado ENTRE o 2º e o 3º destaque —
+   * ex: prateleira de afiliados Amazon com categorias e múltiplos links inline.
+   * Bloco iniciado por `🛒` colocado entre `**DESTAQUE 2` e `**DESTAQUE 3` no
+   * reviewed.md. Diferente do midCallout: preserva TODOS os links inline
+   * (não extrai um único CTA). Renderizado via renderIntroCallout. */
+  productBox?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -604,6 +610,64 @@ export function stripMidCalloutFromD1(text: string): string {
 }
 
 /**
+ * Box de produtos entre D2 e D3 (prateleira de afiliados). Localiza um bloco
+ * iniciado por `🛒` que vive na região DEPOIS do 2º marcador `**DESTAQUE` e
+ * ANTES do 3º (ou do fim/seções). Diferente do midCallout (📚/📣/🎉 entre D1 e
+ * D2): o box de produtos preserva TODOS os links inline. Multi-parágrafo
+ * (intro + categorias). Retorna o range pra extract/strip compartilharem a
+ * mesma lógica (análogo a locateMidCallout).
+ */
+function locateProductBox(
+  text: string,
+): { inner: string; matchStart: number; matchEnd: number } | null {
+  const markers = [...text.matchAll(/^\*\*DESTAQUE/gm)].map((m) => m.index ?? -1);
+  // O box é "entre D2 e D3" — só existe com ≥3 destaques. Com <3 a região iria
+  // até o EOF e um `🛒` numa seção (RADAR/USE MELHOR) ou no rodapé seria
+  // falsamente extraído (#review 260629). Exigir o 3º marcador delimita a região.
+  if (markers.length < 3) return null;
+  const regionStart = markers[1];
+  const regionEnd = markers[2];
+  const region = text.slice(regionStart, regionEnd);
+  // Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim
+  // da região). Linhas em branco entre categorias são preservadas. `\r?` torna
+  // o lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
+  const m = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m.exec(region);
+  if (!m) return null;
+  const matchStart = regionStart + m.index;
+  return { inner: m[0].trim(), matchStart, matchEnd: matchStart + m[0].length };
+}
+
+/** Lê o conteúdo do box de produtos (🛒) entre D2 e D3, ou null. */
+export function extractProductBox(text: string): string | null {
+  return locateProductBox(text)?.inner ?? null;
+}
+
+/**
+ * Remove o bloco do box de produtos ANTES do parse dos destaques. Sem isso, o
+ * texto do box (após a why do D2) é absorvido como corpo do D2 por
+ * `parseDestaques` e renderiza como markdown cru. Idempotente quando não há box.
+ * Colapsa `---` órfãos e linhas em branco triplas deixadas pela remoção.
+ */
+export function stripProductBox(text: string): string {
+  const loc = locateProductBox(text);
+  if (!loc) return text;
+  const before = text.slice(0, loc.matchStart);
+  const after = text.slice(loc.matchEnd);
+  // O box vivia (tipicamente) entre dois `---`: separador de abertura no fim de
+  // `before` e de fechamento no início de `after`. Removê-lo deixaria `---`
+  // duplo. Colapsa APENAS no seam — ancorado em `$` de before / `^` de after,
+  // nunca global, pra não fundir separadores `---` não-relacionados em outras
+  // partes do MD (#review 260629). CRLF-tolerante (`\r?`).
+  const openSep = /\n---[ \t]*\r?\n\s*$/;
+  const closeSep = /^\s*\r?\n---[ \t]*\r?\n/;
+  const joined =
+    openSep.test(before) && closeSep.test(after)
+      ? before + after.replace(closeSep, "\n")
+      : before + after;
+  return joined.replace(/(?:\r?\n){3,}/g, "\n\n");
+}
+
+/**
  * #2136: discrimina se o midCallout é o box de livros (📚 ou link para
  * livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE 📣).
  * A imagem livros_promo só deve ser associada ao box de livros.
@@ -666,7 +730,9 @@ export function extractContent(editionDir: string): NewsletterContent {
   // callout estiver colado antes do `---` de fechamento do D1, o parser o
   // absorveria no corpo/why do D1 (render duplicado). Strip → sai só como
   // midCallout (extraído abaixo do texto original). De-dup determinístico.
-  const destaquesText = stripMidCalloutFromD1(reviewedText);
+  // Strip do midCallout (entre D1-D2) E do box de produtos (entre D2-D3) antes
+  // do parse — ambos seriam absorvidos como corpo de destaque pelo parseDestaques.
+  const destaquesText = stripProductBox(stripMidCalloutFromD1(reviewedText));
 
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
   // #2316: aceita 2–3 destaques (o caso editorial legítimo é 2 quando o editor
@@ -746,6 +812,8 @@ export function extractContent(editionDir: string): NewsletterContent {
   // #2136: passa o texto do midCallout pra discriminar livros vs CLARICE.
   // Imagem só vai pro box de livros; box 📣 CLARICE recebe null (sem hero).
   const midCalloutImage = readMidCalloutImage(editionDir, midCallout);
+  // Box de produtos (🛒) entre D2 e D3 — prateleira de afiliados com links inline.
+  const productBox = extractProductBox(reviewedText);
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -771,6 +839,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     introCallout,
     midCallout,
     midCalloutImage,
+    productBox,
   };
 }
 
