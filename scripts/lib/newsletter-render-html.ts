@@ -863,6 +863,14 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       parts.push(renderDivulgacaoSeparator());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
+    // Box de produtos (🛒) entre D2 e D3 — prateleira de afiliados. Posicionado
+    // após o 2º destaque. Reusa renderIntroCallout (preserva TODOS os links
+    // inline, ao contrário do renderMidCallout que extrai um único CTA).
+    // Disclosure de afiliado (● DIVULGAÇÃO) antes do box.
+    if (i === 1 && content.productBox && content.destaques.length >= 3) {
+      parts.push(renderDivulgacaoSeparator());
+      parts.push(renderIntroCallout(content.productBox));
+    }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
     if (includeEia && !eiaInserted && i === content.destaques.length - 1) {
