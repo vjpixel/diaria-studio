@@ -1,19 +1,27 @@
 /**
  * clarice-waves-dryrun.ts — comparação READ-ONLY entre o método ATUAL de montar
  * waves e o modelo STORE-DRIVEN (#2656 cutover), pro editor validar antes do
- * cutover. NÃO dispara nada, NÃO faz fetch ao vivo — usa os dados do Brevo já
- * sincronizados no store (#2647) pra emular o método atual.
+ * cutover. NÃO dispara, NÃO faz fetch ao vivo — usa os dados do Brevo já
+ * sincronizados no store (#2647).
  *
- * Método atual (emulado): exclui só `email_blacklisted` (a supressão do
- * clarice-build-waves é "EXCLUI unsubscribes = emailBlacklisted de TODAS as
- * waves"); envia o resto.
- * Modelo store: corta por `send_eligible=0` (que cobre unsub-via-lista,
- * soft-bounce≥3, mv_rejected, dispute, hard-bounce, complaint — além de
- * blacklist), e segmenta re-envio por priority_points / 1º envio por tier.
+ * ⚠️ LIMITES DO MODELO (importante pra uma decisão de alto blast-radius):
+ *  - Compara a SUPRESSÃO/ELEGIBILIDADE do universo, NÃO a seleção de cohort por
+ *    ciclo. O pipeline atual (clarice-build-waves) envia, por ciclo, só T1
+ *    (ativos) + T2 (ex-assinantes MV-verified) — ~milhares —, não a base toda.
+ *    O cutover "swap total" passa a segmentar a BASE INTEIRA. São estratégias
+ *    diferentes; aqui medimos quem é elegível/suprimido, não o tamanho da wave.
+ *  - O pipeline atual EXCLUI T1 "não-encontrado no Brevo" (status de unsub
+ *    desconhecido — `classifyT1`). O store inclui esses se não houver supressão.
+ *    Reportamos `eligible_not_in_brevo` em destaque: é a regressão-chave a decidir.
+ *  - O filtro MV do pipeline é por-tier (só T2); aqui é tratado universalmente.
  *
- * O sinal-chave de validação: **quem o método atual ENVIA mas o store CORTA**
- * (ganhos de segurança) e o inverso (regressões — esperado ~0).
+ * Modelos de supressão comparados:
+ *  - blast (ingênuo): exclui só `email_blacklisted`.
+ *  - pipeline atual (fiel à supressão): blacklist + mv_rejected + dispute.
+ *  - store: `send_eligible=0` (consolida tudo acima + soft-bounce/complaint/list-unsub).
  */
+
+import { segmentFromStore } from "./clarice-segment.ts";
 
 export interface DryrunRow {
   email: string;
@@ -24,40 +32,39 @@ export interface DryrunRow {
   sends_count: number;
   opens_count: number;
   email_blacklisted: number; // 0 | 1
+  in_brevo: number; // 0 | 1 — tem registro no Brevo (brevo_list_ids não-nulo)
 }
 
 export interface DivergenceBlock {
-  /** Baseline ENVIA, store CORTA → supressão a mais do store. Por razão. */
   newly_suppressed: number;
   newly_suppressed_by_reason: Record<string, number>;
-  /** Store ENVIA, baseline CORTA → esperado 0 (store é mais conservador). */
   newly_sent: number;
-  /** Amostra (local-only) p/ spot-check do editor. */
   sample_newly_suppressed: Array<{ email: string; reason: string }>;
 }
 
 export interface DryrunReport {
   total: number;
-  /** Blast ingênuo: envia a todos menos blacklisted. */
   blast: { send_pool: number; suppressed: number };
-  /**
-   * Pipeline ATUAL real (fiel): além de blacklisted, já exclui mv_rejected (T2
-   * vem de CSV MV-verified) e dispute (no merge). Isola o que o store adiciona.
-   */
   current_pipeline: { send_pool: number; suppressed: number };
-  /** Modelo store: corta por send_eligible. */
   store: {
     eligible: number;
     ineligible: number;
     ineligible_by_reason: Record<string, number>;
-    re_send: number; // elegível com histórico (priority_points)
-    first_send: number; // elegível sem histórico (tier)
+    /** unsubscribed dividido: já-blacklisted (pipeline pega) vs só-lista (novo). */
+    unsubscribed_blacklist: number;
+    unsubscribed_lista: number;
+    re_send: number; // via segmentFromStore (a MESMA lógica do cutover)
+    first_send: number;
+    /** elegível mas SEM registro no Brevo → status unsub desconhecido (regressão-chave). */
+    eligible_not_in_brevo: number;
   };
   divergence: {
-    /** vs blast ingênuo (sobrestima: inclui mv/dispute que o pipeline real já corta). */
     vs_blast: DivergenceBlock;
-    /** vs pipeline atual real → a supressão GENUINAMENTE nova do store. */
     vs_pipeline: DivergenceBlock;
+  };
+  warnings: {
+    /** email_blacklisted=1 mas send_eligible=1 → recomputeDerived não rodou (dado stale). */
+    stale_derived: number;
   };
 }
 
@@ -81,18 +88,25 @@ export function computeWavesDryrun(
   rows: DryrunRow[],
   sampleSize = 20,
 ): DryrunReport {
+  // Segmentação do store via a MESMA função que o cutover usará (fidelidade).
+  const seg = segmentFromStore(rows);
+
   const r: DryrunReport = {
     total: rows.length,
     blast: { send_pool: 0, suppressed: 0 },
     current_pipeline: { send_pool: 0, suppressed: 0 },
     store: {
-      eligible: 0,
-      ineligible: 0,
+      eligible: seg.reSend.length + seg.firstSend.length,
+      ineligible: seg.excluded.length,
       ineligible_by_reason: {},
-      re_send: 0,
-      first_send: 0,
+      unsubscribed_blacklist: 0,
+      unsubscribed_lista: 0,
+      re_send: seg.reSend.length,
+      first_send: seg.firstSend.length,
+      eligible_not_in_brevo: 0,
     },
     divergence: { vs_blast: emptyDiv(), vs_pipeline: emptyDiv() },
+    warnings: { stale_derived: 0 },
   };
 
   const tally = (
@@ -126,12 +140,14 @@ export function computeWavesDryrun(
     else r.current_pipeline.suppressed++;
 
     if (storeSends) {
-      r.store.eligible++;
-      if ((row.sends_count ?? 0) > 0) r.store.re_send++;
-      else r.store.first_send++;
+      if (!row.in_brevo) r.store.eligible_not_in_brevo++;
+      if (row.email_blacklisted) r.warnings.stale_derived++; // blacklisted mas elegível → stale
     } else {
-      r.store.ineligible++;
       inc(r.store.ineligible_by_reason, row.ineligible_reason ?? "unknown");
+      if (reason === "unsubscribed") {
+        if (row.email_blacklisted) r.store.unsubscribed_blacklist++;
+        else r.store.unsubscribed_lista++;
+      }
     }
 
     tally(r.divergence.vs_blast, blastSends, storeSends, row);
@@ -151,49 +167,58 @@ function reasonTable(map: Record<string, number>): string {
   return rows || "| (nenhum) | 0 |";
 }
 
-/** Relatório markdown READ-ONLY (sem PII além da amostra de spot-check local). */
+/** Relatório markdown READ-ONLY. Contém amostra com emails (PII) — manter local. */
 export function renderDryrunMarkdown(r: DryrunReport): string {
   const vp = r.divergence.vs_pipeline;
   const vb = r.divergence.vs_blast;
+  const staleNote =
+    r.warnings.stale_derived > 0
+      ? `\n> ⚠️ **${fmt(r.warnings.stale_derived)} linhas com email_blacklisted=1 mas send_eligible=1** — derivados stale (rode \`clarice-build-db\`/\`sync-brevo\` que recomputam) antes de confiar nos números.\n`
+      : "";
   return `# Dry-run cutover de waves (#2656) — atual vs store
+${staleNote}
+> READ-ONLY. NÃO dispara, NÃO faz fetch. Usa o Brevo já no store (#2647). Total: **${fmt(r.total)}**.
+>
+> ⚠️ **Limites do modelo:** compara SUPRESSÃO/elegibilidade do universo, NÃO a
+> seleção de cohort por ciclo. O pipeline atual envia só T1+T2 (~milhares/ciclo);
+> o cutover "swap total" segmenta a base inteira. Aqui medimos quem é elegível,
+> não o tamanho da wave.
 
-> Comparação READ-ONLY. NÃO dispara nada, NÃO faz fetch ao vivo. Usa os dados do
-> Brevo já sincronizados no store (#2647). Total: **${fmt(r.total)}** contatos.
-
-## Pool de envio — 3 visões
+## Pool elegível (supressão) — 3 visões
 | | envia | corta |
 |---|---:|---:|
-| **blast** (blacklist-only, ingênuo) | ${fmt(r.blast.send_pool)} | ${fmt(r.blast.suppressed)} |
-| **pipeline atual** (blacklist + mv_rejected + dispute) | ${fmt(r.current_pipeline.send_pool)} | ${fmt(r.current_pipeline.suppressed)} |
-| **modelo store** (send_eligible) | ${fmt(r.store.eligible)} | ${fmt(r.store.ineligible)} |
+| blast (blacklist-only) | ${fmt(r.blast.send_pool)} | ${fmt(r.blast.suppressed)} |
+| pipeline atual (blacklist+mv_rejected+dispute) | ${fmt(r.current_pipeline.send_pool)} | ${fmt(r.current_pipeline.suppressed)} |
+| modelo store (send_eligible) | ${fmt(r.store.eligible)} | ${fmt(r.store.ineligible)} |
 
-Modelo store — segmentação do pool elegível: **${fmt(r.store.re_send)}** re-envio (priority_points DESC) · **${fmt(r.store.first_send)}** 1º envio (tier ASC).
+Segmentação do store (via \`segmentFromStore\`, a mesma do cutover): **${fmt(r.store.re_send)}** re-envio · **${fmt(r.store.first_send)}** 1º envio.
 
-## ⚠️ Divergência vs PIPELINE ATUAL (o que REALMENTE muda)
+## 🚩 Regressão-chave: elegíveis SEM registro no Brevo (status desconhecido): **${fmt(r.store.eligible_not_in_brevo)}**
+O pipeline atual EXCLUI T1 não-encontrado no Brevo ("excluir descadastrados"). O store os incluiria — esses contatos nunca foram carregados no Brevo, então o status de unsub é DESCONHECIDO. **Decisão necessária antes do cutover:** enviar pra status-desconhecido, ou exigir presença no Brevo / re-verificação?
 
-### Supressão genuinamente nova — pipeline atual ENVIA, store CORTA: **${fmt(vp.newly_suppressed)}**
-O pipeline real já exclui blacklist + mv_rejected + dispute; isto é o que SÓ o store pega (ex: descadastro via lista não-blacklisted, soft-bounce≥3, hard-bounce, complaint):
+## Divergência de SUPRESSÃO vs pipeline atual
+- supressão genuinamente nova (pipeline envia, store corta): **${fmt(vp.newly_suppressed)}** — ex: unsub via lista não-blacklisted (${fmt(r.store.unsubscribed_lista)}), soft-bounce, complaint.
+- regressão de supressão (store envia, pipeline corta): **${fmt(vp.newly_sent)}** (esperado 0 nesta dimensão; o status-desconhecido acima é tratado à parte).
 
-| razão | contatos |
+| razão (nova supressão) | contatos |
 |---|---:|
 ${reasonTable(vp.newly_suppressed_by_reason)}
-
-### Regressão — store ENVIA, pipeline atual CORTA: **${fmt(vp.newly_sent)}**
-(Esperado **0**. Se >0, o store estaria mandando pra quem o pipeline atual já exclui — investigar antes do cutover.)
-
-## Referência: divergência vs BLAST ingênuo (blacklist-only)
-Sobrestima (inclui mv_rejected/dispute que o pipeline atual JÁ corta a montante) — só pra dimensionar: **${fmt(vb.newly_suppressed)}** a mais que um blast cru.
-
-| razão | contatos |
-|---|---:|
-${reasonTable(vb.newly_suppressed_by_reason)}
 
 ## Inelegíveis no store, por razão
 | razão | contatos |
 |---|---:|
 ${reasonTable(r.store.ineligible_by_reason)}
 
-## Amostra p/ spot-check (local) — newly_suppressed vs pipeline
-${vp.sample_newly_suppressed.map((s) => `- ${s.email} → ${s.reason}`).join("\n") || "- (nenhum — store ≈ pipeline atual na supressão)"}
+> unsubscribed = ${fmt(r.store.unsubscribed_blacklist)} já-blacklisted (pipeline já pega) + ${fmt(r.store.unsubscribed_lista)} só-lista (supressão nova do store).
+
+## Referência: vs blast ingênuo (sobrestima — inclui mv/dispute que o pipeline já corta)
+**${fmt(vb.newly_suppressed)}** a mais que um blast cru:
+
+| razão | contatos |
+|---|---:|
+${reasonTable(vb.newly_suppressed_by_reason)}
+
+## Amostra p/ spot-check (local — contém emails/PII) — nova supressão vs pipeline
+${vp.sample_newly_suppressed.map((s) => `- ${s.email} → ${s.reason}`).join("\n") || "- (nenhuma)"}
 `;
 }

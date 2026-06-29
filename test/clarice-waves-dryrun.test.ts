@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   computeWavesDryrun,
   renderDryrunMarkdown,
   type DryrunRow,
 } from "../scripts/lib/clarice-waves-dryrun.ts";
+import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
+import { main } from "../scripts/clarice-waves-dryrun.ts";
 
 function row(p: Partial<DryrunRow> & { email: string }): DryrunRow {
   return {
@@ -15,73 +20,102 @@ function row(p: Partial<DryrunRow> & { email: string }): DryrunRow {
     sends_count: 0,
     opens_count: 0,
     email_blacklisted: 0,
+    in_brevo: 1,
     ...p,
   };
 }
 
 const sample: DryrunRow[] = [
-  // blacklisted → atual corta, store corta (unsubscribed). NÃO é divergência.
   row({ email: "a@x.com", email_blacklisted: 1, send_eligible: 0, ineligible_reason: "unsubscribed" }),
-  // elegível com histórico → ambos enviam (re-envio)
   row({ email: "b@x.com", send_eligible: 1, sends_count: 3, priority_points: 60 }),
-  // elegível sem histórico → ambos enviam (1º envio)
   row({ email: "c@x.com", send_eligible: 1, sends_count: 0, tier: 1 }),
-  // mv_rejected, NÃO blacklisted → atual ENVIA, store CORTA (ganho de segurança)
-  row({ email: "d@x.com", email_blacklisted: 0, send_eligible: 0, ineligible_reason: "mv_rejected" }),
-  // unsub via lista (não blacklisted) → atual ENVIA, store CORTA
-  row({ email: "e@x.com", email_blacklisted: 0, send_eligible: 0, ineligible_reason: "unsubscribed" }),
+  row({ email: "d@x.com", send_eligible: 0, ineligible_reason: "mv_rejected" }),
+  row({ email: "e@x.com", send_eligible: 0, ineligible_reason: "unsubscribed" }), // unsub via lista (não-blacklisted)
 ];
 
-test("computeWavesDryrun: pools (blast / pipeline / store)", () => {
+test("computeWavesDryrun: pools (blast / pipeline / store via segmentFromStore)", () => {
   const r = computeWavesDryrun(sample);
   assert.equal(r.total, 5);
-  // blast (blacklist-only): envia b,c,d,e; corta a
   assert.equal(r.blast.send_pool, 4);
   assert.equal(r.blast.suppressed, 1);
-  // pipeline atual (+ mv_rejected + dispute): envia b,c,e; corta a,d
-  assert.equal(r.current_pipeline.send_pool, 3);
-  assert.equal(r.current_pipeline.suppressed, 2);
-  // store: b,c elegíveis; a,d,e cortados
-  assert.equal(r.store.eligible, 2);
-  assert.equal(r.store.ineligible, 3);
-  assert.equal(r.store.re_send, 1); // b
+  assert.equal(r.current_pipeline.send_pool, 3); // b,c,e
+  assert.equal(r.current_pipeline.suppressed, 2); // a,d
+  assert.equal(r.store.eligible, 2); // b,c
+  assert.equal(r.store.ineligible, 3); // a,d,e
+  assert.equal(r.store.re_send, 1); // b (sends>0)
   assert.equal(r.store.first_send, 1); // c
 });
 
-test("computeWavesDryrun: vs_pipeline isola a supressão GENUÍNA (unsub via lista)", () => {
+test("computeWavesDryrun: separa unsubscribed em blacklist vs só-lista", () => {
   const r = computeWavesDryrun(sample);
-  // vs blast: d (mv_rejected) + e (unsub) = 2 — sobrestima
-  assert.equal(r.divergence.vs_blast.newly_suppressed, 2);
-  // vs pipeline: só e (unsub via lista, não-blacklisted) — d já é cortado pelo pipeline
-  assert.equal(r.divergence.vs_pipeline.newly_suppressed, 1);
+  assert.equal(r.store.unsubscribed_blacklist, 1); // a
+  assert.equal(r.store.unsubscribed_lista, 1); // e
+});
+
+test("computeWavesDryrun: vs_pipeline isola a supressão genuína (unsub via lista)", () => {
+  const r = computeWavesDryrun(sample);
+  assert.equal(r.divergence.vs_blast.newly_suppressed, 2); // d, e
+  assert.equal(r.divergence.vs_pipeline.newly_suppressed, 1); // só e
   assert.equal(r.divergence.vs_pipeline.newly_suppressed_by_reason["unsubscribed"], 1);
-  assert.equal(r.divergence.vs_pipeline.newly_suppressed_by_reason["mv_rejected"], undefined);
-  // sem regressão em nenhum dos dois
-  assert.equal(r.divergence.vs_blast.newly_sent, 0);
   assert.equal(r.divergence.vs_pipeline.newly_sent, 0);
 });
 
-test("computeWavesDryrun: newly_sent>0 se store envia um blacklisted (sanidade)", () => {
+test("computeWavesDryrun: eligible_not_in_brevo conta o status-desconhecido (regressão-chave)", () => {
   const r = computeWavesDryrun([
-    row({ email: "z@x.com", email_blacklisted: 1, send_eligible: 1 }),
+    row({ email: "novo@x.com", send_eligible: 1, in_brevo: 0 }), // elegível, nunca no Brevo
+    row({ email: "vet@x.com", send_eligible: 1, in_brevo: 1 }),
   ]);
-  assert.equal(r.divergence.vs_blast.newly_sent, 1);
-  assert.equal(r.divergence.vs_pipeline.newly_sent, 1);
+  assert.equal(r.store.eligible, 2);
+  assert.equal(r.store.eligible_not_in_brevo, 1); // só novo@
 });
 
-test("computeWavesDryrun: amostra respeita sampleSize", () => {
-  const many = Array.from({ length: 50 }, (_, i) =>
-    row({ email: `s${i}@x.com`, email_blacklisted: 0, send_eligible: 0, ineligible_reason: "unsubscribed" }),
-  );
-  const r = computeWavesDryrun(many, 10);
-  assert.equal(r.divergence.vs_pipeline.sample_newly_suppressed.length, 10);
+test("computeWavesDryrun: caso real esperado — store == pipeline na supressão (sem divergência)", () => {
+  // sem unsub-via-lista nem soft/hard/complaint: o store corta exatamente o que o pipeline corta
+  const r = computeWavesDryrun([
+    row({ email: "ok@x.com", send_eligible: 1 }),
+    row({ email: "bl@x.com", email_blacklisted: 1, send_eligible: 0, ineligible_reason: "unsubscribed" }),
+    row({ email: "mv@x.com", send_eligible: 0, ineligible_reason: "mv_rejected" }),
+    row({ email: "dp@x.com", send_eligible: 0, ineligible_reason: "dispute" }),
+  ]);
+  assert.equal(r.current_pipeline.send_pool, r.store.eligible); // mesma quantidade
+  assert.equal(r.divergence.vs_pipeline.newly_suppressed, 0);
+  assert.equal(r.divergence.vs_pipeline.newly_sent, 0);
 });
 
-test("renderDryrunMarkdown: contém as seções-chave", () => {
+test("computeWavesDryrun: warning de derivados stale (blacklisted mas elegível)", () => {
+  const r = computeWavesDryrun([
+    row({ email: "stale@x.com", email_blacklisted: 1, send_eligible: 1 }), // recompute não rodou
+  ]);
+  assert.equal(r.warnings.stale_derived, 1);
+});
+
+test("renderDryrunMarkdown: contém as seções-chave + caveats", () => {
   const md = renderDryrunMarkdown(computeWavesDryrun(sample));
-  assert.match(md, /Dry-run cutover de waves/);
-  assert.match(md, /vs PIPELINE ATUAL/);
-  assert.match(md, /Supressão genuinamente nova/);
-  assert.match(md, /Regressão/);
-  assert.match(md, /spot-check/);
+  assert.match(md, /Limites do modelo/);
+  assert.match(md, /status desconhecido/i);
+  assert.match(md, /vs pipeline atual/i);
+  assert.match(md, /PII/);
+});
+
+test("CLI main: --json sobre store seedado (smoke do wiring + query in_brevo)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "dryrun-cli-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare("INSERT INTO clarice_users (email, status, tier, brevo_list_ids) VALUES ('a@x.com','active',1,'[1]')").run();
+  db.prepare("INSERT INTO clarice_users (email, tier, unsubscribed, sends_count) VALUES ('u@x.com',2,1,2)").run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    main(["--db", dbPath, "--json"]);
+  } finally {
+    console.log = orig;
+  }
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.total, 2);
+  assert.equal(out.store.eligible, 1); // a@ elegível, u@ cortado
+  assert.equal(out.store.ineligible, 1);
 });

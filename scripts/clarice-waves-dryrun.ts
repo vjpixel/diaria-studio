@@ -30,11 +30,22 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const rows = db
     .prepare(
       `SELECT email, tier, priority_points, send_eligible, ineligible_reason,
-              sends_count, opens_count, email_blacklisted
+              sends_count, opens_count, email_blacklisted,
+              CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 0 END AS in_brevo
          FROM clarice_users`,
     )
     .all() as DryrunRow[];
   db.close();
+
+  // Guard: store vazio/ausente NÃO pode passar por "sem divergências = seguro".
+  // openClariceDb cria o schema se o path for novo → 0 linhas seria silencioso.
+  if (rows.length === 0) {
+    console.error(
+      `❌ store vazio (0 contatos) em ${dbPath} — rode clarice-build-db.ts + ` +
+        `clarice-sync-brevo.ts antes. Validar o cutover com store vazio é inútil.`,
+    );
+    process.exit(1);
+  }
 
   const report = computeWavesDryrun(rows);
 
@@ -46,7 +57,11 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const md = renderDryrunMarkdown(report);
   if (out) {
     writeFileSync(out, md, "utf8");
-    console.error(`[clarice-waves-dryrun] relatório gravado em ${out}`);
+    console.error(
+      `[clarice-waves-dryrun] relatório gravado em ${out}\n` +
+        `⚠️  CONTÉM EMAILS (PII) na amostra de spot-check — NÃO commitar/subir. ` +
+        `Grave em data/ (gitignored) ou apague após revisar.`,
+    );
   }
   console.log(md);
 }
