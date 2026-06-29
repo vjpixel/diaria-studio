@@ -24,10 +24,10 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+// Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
+// reusar evita drift se o namespace for rotacionado.
+import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
 
-// Namespace KV do dashboard (DUPLICADO do worker/clarice-mv-status, NÃO importado
-// — importar o worker arrastaria tipos Cloudflare). Mantém em sincronia.
-export const DASHBOARD_KV_NAMESPACE_ID = "2f87d65d735c499ab8f465774d0167e2";
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 export interface StoreSummary {
@@ -114,7 +114,10 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
         "SELECT COUNT(*) n FROM clarice_users WHERE priority_points BETWEEN 41 AND 80",
       ),
       gt80: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_points>80"),
-      optin: count(db, "SELECT COUNT(*) n FROM priority_optin"),
+      // priority_optin=1 NA clarice_users (quem de fato recebeu o +40 nesta
+      // distribuição) — não a tabela priority_optin crua, que pode ter emails
+      // ainda ausentes do store.
+      optin: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_optin=1"),
     },
     mv: groupCounts(
       db,
@@ -159,10 +162,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
     accountId,
     token,
+    contentType: "application/json",
   });
   console.error(`[clarice-db-summary] KV atualizado: ${CONTACTS_SUMMARY_KV_KEY}.`);
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
-  main();
+  main().catch((e) => {
+    console.error("[clarice-db-summary]", e);
+    process.exit(1);
+  });
 }

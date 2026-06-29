@@ -32,11 +32,16 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(s.eligibility.ineligible, 2);
   assert.equal(s.eligibility.by_reason["unsubscribed"], 1);
   assert.equal(s.eligibility.by_reason["dispute"], 1);
-  // priority_points: e tem optin (+40) → faixa 1–40; b tem 3 opens (+60) → 41–80
+  // priority_points: e tem optin (+40) → faixa 1–40 (prova que o boost propagou);
+  // b tem 3 opens (+60) → 41–80; a,d → 0 (eq0); c recebeu 2 não abriu → -20 (lt0)
   assert.equal(s.priority_points.optin, 1);
+  assert.equal(s.priority_points.p1_40, 1); // e: optin +40 propagado pra clarice_users
   assert.equal(s.priority_points.p41_80, 1); // b: 20×3=60
-  // c: recebeu 2 não abriu → -20 → lt0
-  assert.equal(s.priority_points.lt0, 1);
+  assert.equal(s.priority_points.eq0, 2); // a, d
+  assert.equal(s.priority_points.lt0, 1); // c
+  // invariante: as 5 faixas particionam o total (nenhuma linha cai fora — pega NULL)
+  const pp = s.priority_points;
+  assert.equal(pp.lt0 + pp.eq0 + pp.p1_40 + pp.p41_80 + pp.gt80, s.total);
   // mv: verified (a,b)=2; none (c,d,e)=3
   assert.equal(s.mv["verified"], 2);
   assert.equal(s.mv["none"], 3);
