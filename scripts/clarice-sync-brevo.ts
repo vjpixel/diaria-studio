@@ -25,7 +25,8 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoGet } from "./clarice-build-waves.ts";
+import { brevoGet } from "./lib/brevo-client.ts";
+import { pool } from "./lib/pool.ts";
 import { parseBrevoContact } from "./lib/brevo-stats.ts";
 import {
   openClariceDb,
@@ -94,20 +95,6 @@ async function enumerateContacts(
   return { listingComplete: true, ids, doneIds };
 }
 
-/** Pool de concorrência limitada (workers consomem um índice compartilhado). */
-async function pool<T>(
-  items: T[],
-  n: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let i = 0;
-  const run = async (): Promise<void> => {
-    while (i < items.length) await worker(items[i++]);
-  };
-  await Promise.all(
-    Array.from({ length: Math.max(1, Math.min(n, items.length)) }, run),
-  );
-}
 
 export async function main(
   argv: string[] = process.argv.slice(2),

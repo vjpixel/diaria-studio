@@ -272,3 +272,57 @@ export async function brevoListAllLists(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// brevoGet — GET v3 genérico por path que FALHA ALTO (#2651: consolidado aqui,
+// antes vivia em clarice-build-waves.ts; build-waves re-exporta p/ compat).
+// ---------------------------------------------------------------------------
+
+const RETRY_MS = [1000, 3000, 9000];
+
+/**
+ * GET na Brevo v3 que FALHA ALTO em vez de silenciar.
+ *
+ * Crítico: a versão anterior engolia qualquer status e devolvia body={}, então
+ * um 429/5xx (a) truncava a paginação de contatos (unsub vazava pro T2) e
+ * (b) marcava um opener real como `opened:false` (ia pro W2). Aqui:
+ *   - 429/5xx → retry com backoff header-aware, depois throw (aborta, não corrompe);
+ *   - 404 → {status:404, body:{}} (contato sumiu entre listar e buscar — não-fatal);
+ *   - outro 4xx (401/403) → throw (auth/config — re-tentar não ajuda);
+ *   - corpo não-JSON → throw.
+ */
+export async function brevoGet(
+  apiKey: string,
+  path: string,
+  _sleep: (ms: number) => Promise<void> = _defaultSleep, // injetável p/ teste (igual ao resto da lib)
+): Promise<{ status: number; body: any }> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
+    const r = await fetch(`https://api.brevo.com/v3${path}`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (r.status === 429 || r.status >= 500) {
+      // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
+      // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.
+      const waitMs = attempt < RETRY_MS.length
+        ? parseRetryAfterMs(r.headers, RETRY_MS[attempt])
+        : 0;
+      await r.body?.cancel().catch(() => {});
+      lastErr = new Error(`Brevo GET ${path} HTTP ${r.status}`);
+      if (attempt < RETRY_MS.length) await _sleep(waitMs);
+      continue;
+    }
+    if (r.status === 404) return { status: 404, body: {} };
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`Brevo GET ${path} falhou (${r.status}): ${t.slice(0, 200)}`);
+    }
+    const t = await r.text();
+    try {
+      return { status: r.status, body: t.length ? JSON.parse(t) : {} };
+    } catch {
+      throw new Error(`Brevo GET ${path}: resposta não-JSON`);
+    }
+  }
+  throw new Error(`Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`);
+}

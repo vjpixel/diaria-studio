@@ -47,7 +47,11 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { parseRetryAfterMs } from "./lib/brevo-client.ts";
+// #2651: brevoGet + pool consolidados na lib. Re-export de brevoGet mantém as 4
+// suites de teste que importam daqui (o código de produção já migrou pra lib).
+import { brevoGet } from "./lib/brevo-client.ts";
+import { pool } from "./lib/pool.ts";
+export { brevoGet };
 
 loadProjectEnv();
 
@@ -175,64 +179,6 @@ export function representativeSplit(
 // Brevo — engajamento per-contato (opens + blacklist)
 // ---------------------------------------------------------------------------
 
-const RETRY_MS = [1000, 3000, 9000];
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-// #2324: parseRetryAfterMs importado de scripts/lib/brevo-client.ts (eliminada cópia local).
-
-/**
- * GET na Brevo v3 que FALHA ALTO em vez de silenciar.
- *
- * Crítico: a versão anterior engolia qualquer status e devolvia body={}, então
- * um 429/5xx (a) truncava a paginação de contatos (unsub vazava pro T2) e
- * (b) marcava um opener real como `opened:false` (ia pro W2). Aqui:
- *   - 429/5xx → retry com backoff, depois throw (aborta o run, não corrompe);
- *   - 404 → {status:404, body:{}} (contato sumiu entre listar e buscar — não-fatal);
- *   - outro 4xx (401/403) → throw (auth/config — re-tentar não ajuda);
- *   - corpo não-JSON → throw.
- */
-export async function brevoGet(
-  apiKey: string,
-  path: string,
-): Promise<{ status: number; body: any }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
-    const r = await fetch(`https://api.brevo.com/v3${path}`, {
-      headers: { "api-key": apiKey, Accept: "application/json" },
-    });
-    if (r.status === 429 || r.status >= 500) {
-      // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
-      // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.
-      const waitMs = attempt < RETRY_MS.length
-        ? parseRetryAfterMs(r.headers, RETRY_MS[attempt])
-        : 0;
-      await r.body?.cancel().catch(() => {});
-      lastErr = new Error(`Brevo GET ${path} HTTP ${r.status}`);
-      if (attempt < RETRY_MS.length) await sleep(waitMs);
-      continue;
-    }
-    if (r.status === 404) return { status: 404, body: {} };
-    if (!r.ok) {
-      const t = await r.text().catch(() => "");
-      throw new Error(`Brevo GET ${path} falhou (${r.status}): ${t.slice(0, 200)}`);
-    }
-    const t = await r.text();
-    try {
-      return { status: r.status, body: t.length ? JSON.parse(t) : {} };
-    } catch {
-      throw new Error(`Brevo GET ${path}: resposta não-JSON`);
-    }
-  }
-  throw new Error(`Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`);
-}
-
-/** Pool de concorrência limitada (idêntico em forma a runBounded — #636: extrair pra lib é refactor à parte). */
-async function pool<T>(items: T[], n: number, worker: (item: T) => Promise<void>): Promise<void> {
-  let i = 0;
-  const run = async (): Promise<void> => {
-    while (i < items.length) await worker(items[i++]);
-  };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, run));
-}
 
 /**
  * Busca, da conta Brevo, por contato: abriu ≥1 campanha + está blacklisted.

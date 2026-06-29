@@ -51,7 +51,7 @@
 
 import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
-import { brevoGet } from "./clarice-build-waves.ts";
+import { brevoGet } from "./lib/brevo-client.ts"; // #2651: direto da lib (era via re-export do build-waves)
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { CLARICE_BASE } from "./lib/clarice-paths.ts";
