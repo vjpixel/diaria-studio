@@ -989,11 +989,18 @@ function main(): void {
   }
   if (prev) {
     if (prev.no_error) {
-      // #2078: edição anterior declarou explicitamente que não havia erro
-      // intencional (intentional_error: none). Usar frase natural em vez de
-      // reveal=null (que emitia a genérica "A edição anterior não trazia erro
-      // intencional declarado." — pouco informativa para o leitor do concurso).
-      reveal = "Na última edição, não havia erro intencional: quem respondeu que não há erro, acertou.";
+      // #2667: edição anterior declarou explicitamente que não havia erro
+      // intencional (intentional_error: none). Definir reveal=null para que
+      // renderSection exiba "A edição anterior não trazia erro intencional
+      // declarado." — texto neutro que não expõe nem revela nada sobre um
+      // erro que não existia. Antes (#2078) gerava "Na última edição, não
+      // havia erro intencional: quem respondeu que não há erro, acertou."
+      // mas isso propagava um reveal-fantasma quando o editor havia plantado
+      // um erro e depois decidiu cancelar (sem limpar o frontmatter), porque
+      // o reveal da edição subsequente ficava baseado em dados do erro
+      // cancelado. reveal=null usa o texto neutro de renderSection() em vez
+      // de começar com "Na última edição, ..." — evita o padrão de ghost reveal.
+      reveal = null;
     } else {
       reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
     }
