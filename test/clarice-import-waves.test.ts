@@ -10,8 +10,82 @@ import {
   parseArgs,
   findExistingConflicts,
   buildPlan,
+  loadWaveDefs,
   WAVES,
 } from "../scripts/clarice-import-waves.ts";
+
+describe("loadWaveDefs (#2656)", () => {
+  it("sem manifest → WAVES legado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-legacy-"));
+    try {
+      assert.deepEqual(loadWaveDefs(dir), WAVES);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("com waves-manifest.json → usa o manifest (store-driven)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-manifest-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([
+          { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)", count: 10 },
+          { key: "W2", file: "w2-store.csv", desc: "1º envio (T01–T05)", count: 8 },
+        ]),
+      );
+      const defs = loadWaveDefs(dir);
+      assert.equal(defs.length, 2);
+      assert.deepEqual(defs[0], { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" });
+      assert.equal(defs[1].file, "w2-store.csv");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("manifest malformado / não-array / sem campos → erro claro (não cryptic)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-bad-"));
+    try {
+      writeFileSync(join(dir, "waves-manifest.json"), "{ not json");
+      assert.throws(() => loadWaveDefs(dir), /inválido/);
+      writeFileSync(join(dir, "waves-manifest.json"), JSON.stringify({ key: "W1" }));
+      assert.throws(() => loadWaveDefs(dir), /array de waves/);
+      writeFileSync(join(dir, "waves-manifest.json"), JSON.stringify([{ key: "W1", desc: "x" }]));
+      assert.throws(() => loadWaveDefs(dir), /entrada 0 inválida/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("build store interrompido (w*-store.csv sem manifest) → erro, não fallback legado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-interrupted-"));
+    try {
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,A\n");
+      assert.throws(() => loadWaveDefs(dir), /incompleto/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildPlan via manifest (#2656)", () => {
+  it("lê as waves do manifest + conta contatos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bp-manifest-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([{ key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" }]),
+      );
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,Ana\nb@x.com,Bia\n");
+      const plans = buildPlan("Jun/2026", "2606-07", dir);
+      assert.equal(plans.length, 1);
+      assert.equal(plans[0].wave.key, "W1");
+      assert.equal(plans[0].count, 2);
+      assert.equal(plans[0].listName, "Clarice Jun/2026 W1 — re-envio (engajado)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("listNameFor", () => {
   it("nome determinístico por wave + label", () => {

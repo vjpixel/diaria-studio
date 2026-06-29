@@ -58,6 +58,51 @@ export const WAVES: WaveDef[] = [
   { key: "W5", file: "w5-mv-export-maio.csv", desc: "Leads maio (fresh)", optional: true },
 ];
 
+/**
+ * #2656: o builder store-driven (clarice-build-waves-store.ts) escreve um
+ * `waves-manifest.json` no dir de waves listando as waves daquele ciclo. Se
+ * existir, ele é a fonte de verdade (nº de waves é dinâmico no modelo novo);
+ * senão, cai no WAVES hardcoded (ciclos legados do build-waves cohort).
+ */
+export function loadWaveDefs(wavesDir: string): WaveDef[] {
+  const manifestPath = resolve(wavesDir, "waves-manifest.json");
+  if (!existsSync(manifestPath)) {
+    // Build store-driven INTERROMPIDO (escreveu CSVs mas não o manifest)? Não cair
+    // no WAVES legado em silêncio — os arquivos legados não existem e o erro
+    // mandaria rodar o script errado. Detecta CSVs store sem manifest.
+    if (existsSync(resolve(wavesDir, "w1-store.csv"))) {
+      throw new Error(
+        `há w*-store.csv mas falta waves-manifest.json em ${wavesDir} — build ` +
+          `store-driven incompleto. Re-rode 'clarice-build-waves-store.ts --cycle ...'.`,
+      );
+    }
+    return WAVES; // ciclo legado (cohort)
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch (e) {
+    throw new Error(`waves-manifest.json inválido (${manifestPath}): ${(e as Error).message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`waves-manifest.json deve ser um array de waves (${manifestPath}).`);
+  }
+  return parsed.map((e, i) => {
+    const entry = e as Record<string, unknown>;
+    if (
+      !entry ||
+      typeof entry.key !== "string" ||
+      typeof entry.file !== "string" ||
+      typeof entry.desc !== "string"
+    ) {
+      throw new Error(
+        `waves-manifest.json: entrada ${i} inválida (precisa key/file/desc string): ${JSON.stringify(e)}`,
+      );
+    }
+    return { key: entry.key, file: entry.file, desc: entry.desc };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -159,7 +204,7 @@ interface Plan {
 // `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
 export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
   const plans: Plan[] = [];
-  for (const wave of WAVES) {
+  for (const wave of loadWaveDefs(wavesDir)) { // #2656: manifest > WAVES legado
     const path = resolve(wavesDir, wave.file);
     if (!existsSync(path)) {
       // Opcional (ex: W5 maio) ausente → pula com aviso. Obrigatória ausente →
@@ -168,7 +213,10 @@ export function buildPlan(label: string, cycle: string, wavesDir: string = clari
         console.error(`ℹ️  wave opcional ausente, pulando: ${wave.key} (${wave.file})`);
         continue;
       }
-      throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --cycle ${cycle}' antes.`);
+      const builder = existsSync(resolve(wavesDir, "waves-manifest.json"))
+        ? "clarice-build-waves-store.ts"
+        : "clarice-build-waves.ts";
+      throw new Error(`wave faltando: ${path} — rode '${builder} --cycle ${cycle}' antes.`);
     }
     const raw = readFileSync(path, "utf-8");
     const csv = normalizeImportCsv(raw);
