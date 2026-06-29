@@ -163,6 +163,9 @@ export interface BraveCreditStats {
   // (#2608 C) reconciliação com quota real via header X-RateLimit-Remaining
   quota_remaining_last_seen?: number; // last value seen from Brave API header
   delta_untracked?: number; // real_used − local_counted (queries not tracked locally)
+  // base do alerta: o MAIOR entre contagem local e uso real do header Brave.
+  effective_used: number;
+  alert_basis: "local" | "brave_header";
 }
 
 const FREE_TIER_LIMIT = 2000;
@@ -191,6 +194,8 @@ export function computeBraveCreditStats(
       percent_used: 0,
       projected_month_end: null,
       alert_level: "ok",
+      effective_used: 0,
+      alert_basis: "local",
     };
   }
 
@@ -253,7 +258,23 @@ export function computeBraveCreditStats(
     delta_untracked = real_used - (queries_this_month_real + queries_this_month_estimated);
   }
 
-  const percent_used = queries_this_month / FREE_TIER_LIMIT;
+  // Alerta AUTORITATIVO: o header X-RateLimit-Remaining do Brave é a verdade —
+  // inclui o Path B (WebSearch dos agentes) que NÃO passa pelo counter local.
+  // Dirigir o alerta pelo MAIOR entre contagem local e uso real do header, pra
+  // nunca subnotificar. (Causa do esgotamento de jun/2026: local=999 mas Brave
+  // contava 1951; o alerta confiava nos 999 → "ok" → voamos pelo $5. O contador
+  // local sozinho subnotifica ~metade porque o estimate do Path B nunca dispara.)
+  let effective_used = queries_this_month;
+  let alert_basis: BraveCreditStats["alert_basis"] = "local";
+  if (typeof quota_remaining_last_seen === "number") {
+    const real_used = FREE_TIER_LIMIT - quota_remaining_last_seen;
+    if (real_used > effective_used) {
+      effective_used = real_used;
+      alert_basis = "brave_header";
+    }
+  }
+
+  const percent_used = effective_used / FREE_TIER_LIMIT;
   const alert_level: BraveCreditStats["alert_level"] =
     percent_used >= CRITICAL_THRESHOLD
       ? "critical"
@@ -272,6 +293,8 @@ export function computeBraveCreditStats(
     percent_used: Math.round(percent_used * 10000) / 100, // 2 decimais como %
     projected_month_end,
     alert_level,
+    effective_used,
+    alert_basis,
     ...(typeof quota_remaining_last_seen === "number" ? { quota_remaining_last_seen } : {}),
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
   };
