@@ -55,8 +55,13 @@ function ingestStripe(
   db: ReturnType<typeof openClariceDb>,
   dataDir: string,
   now: Date,
-): { kept: number; disputed: number; excluded_audit_only: number } {
-  const { kept, excluded } = buildUniverse(dataDir, now);
+): {
+  kept: number;
+  disputed: number;
+  excluded_audit_only: number;
+  skipped_files: string[];
+} {
+  const { kept, excluded, skippedFiles } = buildUniverse(dataDir, now);
   const upsert = db.prepare(
     `INSERT INTO clarice_users
        (email, name, stripe_ids, status, created, delinquent, dispute_losses, refunded_volume, tier, updated_at)
@@ -116,6 +121,7 @@ function ingestStripe(
     kept: kept.length,
     disputed: disputed.length,
     excluded_audit_only: excluded.length - disputed.length,
+    skipped_files: skippedFiles,
   };
 }
 
@@ -123,10 +129,10 @@ function ingestStripe(
 // MV → upsert colunas mv_* a partir dos mv-export-*.csv de cada ciclo
 // ---------------------------------------------------------------------------
 
-function ingestMv(
+export function ingestMv(
   db: ReturnType<typeof openClariceDb>,
   dataDir: string,
-): { rows: number; files: number } {
+): { rows: number; files: number; skipped: string[] } {
   // INSERT OR IGNORE garante a linha (caso o email não tenha vindo do Stripe),
   // depois UPDATE só nas colunas mv_* — nunca toca Stripe/Brevo/derivados.
   // mv_subresult fica de fora: o verify-emails-mv só escreve RESULT/QUALITY/CODE
@@ -143,6 +149,7 @@ function ingestMv(
 
   let rows = 0;
   let files = 0;
+  const skipped: string[] = [];
   const dirs = readdirSync(dataDir).filter((d) => {
     try {
       return statSync(resolve(dataDir, d)).isDirectory();
@@ -175,11 +182,23 @@ function ingestMv(
       .sort();
     for (const f of mvFiles) {
       const path = resolve(cycleDir, f);
-      const verifiedAt = statSync(path).mtime.toISOString();
-      const parsed = Papa.parse<Record<string, string>>(
-        readFileSync(path, "utf8"),
-        { header: true, skipEmptyLines: true },
-      );
+      // statSync E readFileSync no MESMO try: um placeholder OneDrive pode falhar
+      // em qualquer um dos dois; nenhum pode escapar e abortar a transação aberta
+      // (BEGIN acima) — senão TODO o MV já acumulado é descartado no rollback.
+      let verifiedAt: string;
+      let content: string;
+      try {
+        verifiedAt = statSync(path).mtime.toISOString();
+        content = readFileSync(path, "utf8");
+      } catch (e) {
+        console.error(`⚠️  pulando MV ilegível ${cycle}/${f}: ${(e as Error).message}`);
+        skipped.push(`${cycle}/${f}`);
+        continue;
+      }
+      const parsed = Papa.parse<Record<string, string>>(content, {
+        header: true,
+        skipEmptyLines: true,
+      });
       for (const row of parsed.data) {
         const email = (row["email"] || row["Email"] || "").trim().toLowerCase();
         if (!email) continue;
@@ -204,7 +223,7 @@ function ingestMv(
     }
   }
   db.exec("COMMIT");
-  return { rows, files };
+  return { rows, files, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,10 +251,24 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     `   kept=${stripe.kept} · disputed=${stripe.disputed} (inelegível no store) · ` +
       `excluded_audit_only=${stripe.excluded_audit_only}`,
   );
+  if (stripe.skipped_files.length > 0) {
+    console.error(
+      `⚠️  STORE PARCIAL: ${stripe.skipped_files.length} CSV(s) de fonte ilegíveis ` +
+        `(${stripe.skipped_files.join(", ")}) — faltam os contatos desses arquivos. ` +
+        `Hidrate-os (OneDrive) e re-rode pra completar.`,
+    );
+  }
 
   console.error(`🔎 ingerindo MV (mv-export-* por ciclo)…`);
   const mv = ingestMv(db, dataDir);
   console.error(`   ${mv.rows} emails de ${mv.files} arquivo(s)`);
+  if (mv.skipped.length > 0) {
+    console.error(
+      `⚠️  MV PARCIAL: ${mv.skipped.length} arquivo(s) MV ilegíveis ` +
+        `(${mv.skipped.join(", ")}) — verificação desses ciclos fora do store. ` +
+        `Hidrate-os (OneDrive) e re-rode.`,
+    );
+  }
 
   // Brevo nunca sincronizado? (toda coluna de engajamento/supressão no default)
   const brevoSynced =

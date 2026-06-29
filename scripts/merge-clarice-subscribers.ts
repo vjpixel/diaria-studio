@@ -601,6 +601,8 @@ export interface Universe {
   merged: Map<string, Merged>;
   filesCount: number;
   allRecordsCount: number;
+  /** CSVs que falharam ao ler (ex: placeholder OneDrive) → store fica parcial. */
+  skippedFiles: string[];
 }
 
 export function buildUniverse(
@@ -618,9 +620,21 @@ export function buildUniverse(
   );
 
   const merged = new Map<string, Merged>();
+  const skippedFiles: string[] = [];
   let allRecordsCount = 0;
   for (const f of files) {
-    const { rows, filename } = readCsv(resolve(dataDir, f));
+    let parsed: CsvFile;
+    try {
+      parsed = readCsv(resolve(dataDir, f));
+    } catch (e) {
+      // Um arquivo ilegível (ex: placeholder OneDrive não-hidratado / provedor de
+      // nuvem offline) não deve crashar o build inteiro — pula com aviso alto.
+      // O store fica PARCIAL (faltam os contatos desse arquivo); o caller reporta.
+      console.error(`⚠️  pulando CSV ilegível ${f}: ${(e as Error).message}`);
+      skippedFiles.push(f);
+      continue;
+    }
+    const { rows, filename } = parsed;
     for (const row of rows) {
       const rec = normalizeRow(row);
       if (!rec) continue;
@@ -667,7 +681,7 @@ export function buildUniverse(
     });
   }
 
-  return { kept, excluded, merged, filesCount: files.length, allRecordsCount };
+  return { kept, excluded, merged, filesCount: files.length, allRecordsCount, skippedFiles };
 }
 
 // ---------------------------------------------------------------------------
