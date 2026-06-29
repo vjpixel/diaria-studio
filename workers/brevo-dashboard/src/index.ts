@@ -284,6 +284,33 @@ export const COHORTS_KV_KEY = "cohorts:engagement";
 // #2609: chave KV do status MillionVerifier por grupo, gravada por scripts/clarice-mv-status.ts.
 export const MV_STATUS_KV_KEY = "mv:status";
 
+// #2653: sumário do store único de contatos (#2647), gravado por
+// scripts/clarice-db-summary.ts. Tipo DUPLICADO do script (não importado — o
+// script puxa node:sqlite, indisponível no runtime do Worker).
+export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
+
+export interface ContactsSummary {
+  generated_at: string;
+  total: number;
+  brevo: { synced_rows: number; has_signal: boolean };
+  by_tier: Record<string, number>;
+  eligibility: {
+    eligible: number;
+    ineligible: number;
+    by_reason: Record<string, number>;
+  };
+  priority_points: {
+    lt0: number;
+    eq0: number;
+    p1_40: number;
+    p41_80: number;
+    gt80: number;
+    optin: number;
+  };
+  mv: Record<string, number>;
+  engagement: { with_opens: number; with_clicks: number };
+}
+
 export const LASTGOOD_KEY = "dash:lastgood:html";
 export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
 
@@ -1162,6 +1189,7 @@ export function renderDashboardHtml(
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
   cohorts: EngagementCohorts | null = null, // #2426: pré-computado via KV
   mvStatus: MvStatus | null = null, // #2609: status MV por grupo
+  contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -1304,6 +1332,8 @@ export function renderDashboardHtml(
   const cohortsSection = renderEngagementCohortsSection(cohorts);
   // #2609: status MillionVerifier por grupo (pré-computado via KV).
   const mvStatusSection = renderMvStatusSection(mvStatus);
+  // #2653: sumário do store único de contatos (pré-computado via KV).
+  const contactsSummarySection = renderContactsSummarySection(contactsSummary);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -1414,12 +1444,14 @@ export function renderDashboardHtml(
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / CTR</label>
+  <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
 </div>
 
 <!-- tab panels -->
@@ -1529,6 +1561,11 @@ ${daySummarySection}
   <div class="tab-panel" id="panel-links" role="tabpanel" aria-labelledby="tablabel-links">
 ${aggregatedLinksSection}
   </div><!-- /panel-links -->
+
+  <!-- Aba 4: Contatos — sumário do store único (#2653) -->
+  <div class="tab-panel" id="panel-contatos" role="tabpanel" aria-labelledby="tablabel-contatos">
+${contactsSummarySection}
+  </div><!-- /panel-contatos -->
 
 </div><!-- /tab-panels -->
 
@@ -2653,6 +2690,68 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
 }
 
 /**
+ * #2653: renderiza o sumário do store único de contatos (#2647).
+ * Stub gracioso quando `contactsSummary` é null (KV não populado ainda).
+ * Exportado pra teste unitário.
+ */
+export function renderContactsSummarySection(
+  s: ContactsSummary | null,
+): string {
+  if (!s || !s.total) {
+    return `
+<section class="phase2-section" id="contacts-summary">
+  <h2 class="section-title">Banco de contatos (store)</h2>
+  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-db-summary.ts</code> para popular.</p>
+</section>`;
+  }
+
+  const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
+  const genBRT = fmtTimeBRT(s.generated_at);
+
+  // tabelinha {rótulo → contagem}, ordenada por contagem desc.
+  const kvTable = (
+    title: string,
+    map: Record<string, number>,
+    relabel: (k: string) => string = (k) => k,
+  ): string => {
+    const rows = Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .map(
+        ([k, v]) =>
+          `<tr><td>${escHtml(relabel(k))}</td><td style="text-align:right">${n(v)}</td></tr>`,
+      )
+      .join("\n");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>${escHtml(title)}</th><th style="text-align:right">contatos</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  };
+
+  const tierLabel = (k: string): string => (k === "null" ? "sem tier" : `T${k.padStart(2, "0")}`);
+  const pp = s.priority_points;
+  const ppMap: Record<string, number> = {
+    "negativo (<0)": pp.lt0,
+    "zero (sem histórico)": pp.eq0,
+    "1–40": pp.p1_40,
+    "41–80": pp.p41_80,
+    ">80": pp.gt80,
+  };
+  const brevoBadge = s.brevo.has_signal
+    ? `<span style="color:${DS.brand}">${n(s.brevo.synced_rows)} sincronizados</span>`
+    : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
+
+  return `
+<section class="phase2-section" id="contacts-summary">
+  <h2 class="section-title">Banco de contatos (store)</h2>
+  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(s.eligibility.eligible)}</strong> · inelegíveis: <strong>${n(s.eligibility.ineligible)}</strong> · optin: <strong>${n(s.priority_points.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
+  ${kvTable("Por tier (1º envio)", s.by_tier, tierLabel)}
+  ${kvTable("Inelegíveis por razão", s.eligibility.by_reason)}
+  ${kvTable("priority_points (re-envio)", ppMap)}
+  ${kvTable("MillionVerifier (bucket)", s.mv)}
+  <p class="section-note">Engajamento Brevo: ${n(s.engagement.with_opens)} com abertura · ${n(s.engagement.with_clicks)} com clique.</p>
+</section>`;
+}
+
+/**
  * #2609: renderiza seção de status MillionVerifier por grupo.
  * Stub gracioso quando `mvStatus` é null (KV não populado ainda).
  * Exportado pra teste unitário.
@@ -2843,7 +2942,11 @@ export default {
         const mvStatus = env.STATS_CACHE
           ? ((await env.STATS_CACHE.get(MV_STATUS_KV_KEY, "json").catch(() => null)) as MvStatus | null)
           : null;
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus);
+        // #2653: sumário do store de contatos (pré-computado via KV; null → stub).
+        const contactsSummary = env.STATS_CACHE
+          ? ((await env.STATS_CACHE.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null)) as ContactsSummary | null)
+          : null;
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
