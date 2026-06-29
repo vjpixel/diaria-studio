@@ -41,6 +41,50 @@ describe("loadWaveDefs (#2656)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("manifest malformado / não-array / sem campos → erro claro (não cryptic)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-bad-"));
+    try {
+      writeFileSync(join(dir, "waves-manifest.json"), "{ not json");
+      assert.throws(() => loadWaveDefs(dir), /inválido/);
+      writeFileSync(join(dir, "waves-manifest.json"), JSON.stringify({ key: "W1" }));
+      assert.throws(() => loadWaveDefs(dir), /array de waves/);
+      writeFileSync(join(dir, "waves-manifest.json"), JSON.stringify([{ key: "W1", desc: "x" }]));
+      assert.throws(() => loadWaveDefs(dir), /entrada 0 inválida/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("build store interrompido (w*-store.csv sem manifest) → erro, não fallback legado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-interrupted-"));
+    try {
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,A\n");
+      assert.throws(() => loadWaveDefs(dir), /incompleto/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildPlan via manifest (#2656)", () => {
+  it("lê as waves do manifest + conta contatos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bp-manifest-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([{ key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" }]),
+      );
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,Ana\nb@x.com,Bia\n");
+      const plans = buildPlan("Jun/2026", "2606-07", dir);
+      assert.equal(plans.length, 1);
+      assert.equal(plans[0].wave.key, "W1");
+      assert.equal(plans[0].count, 2);
+      assert.equal(plans[0].listName, "Clarice Jun/2026 W1 — re-envio (engajado)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("listNameFor", () => {

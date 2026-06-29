@@ -20,10 +20,11 @@
  * o plano sem escrever.
  *
  * Uso:
- *   npx tsx scripts/clarice-build-waves-store.ts --cycle 2605-06 [--budget 8000] [--wave-size 2000] [--dry-run]
+ *   npx tsx scripts/clarice-build-waves-store.ts --cycle 2605-06 --budget 8000 [--wave-size 2000] [--dry-run]
+ *   --budget N   OBRIGATÓRIO (>0) — contatos a enviar neste ciclo (lever de alcance).
  */
 
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
@@ -51,17 +52,27 @@ const pad = (t: number): string => `T${String(t).padStart(2, "0")}`;
 
 /** Rótulo curto da wave (vira nome da lista no import). Puro — testável. */
 export function describeWave(w: StoreRow[]): string {
-  const re = w.filter((r) => (r.sends_count ?? 0) > 0).length;
   if (w.length === 0) return "vazia";
-  if (re === w.length) return "re-envio (engajado)";
-  if (re === 0) {
+  const isRe = (r: StoreRow): boolean => (r.sends_count ?? 0) > 0;
+  const engaged = w.filter((r) => isRe(r) && (r.priority_points ?? 0) > 0).length;
+  const decayed = w.filter((r) => isRe(r) && (r.priority_points ?? 0) <= 0).length;
+  const first = w.length - engaged - decayed;
+  if (first === w.length) {
     const tiers = w.map((r) => r.tier).filter((t): t is number => t != null);
     if (tiers.length === 0) return "1º envio";
     const lo = Math.min(...tiers);
     const hi = Math.max(...tiers);
     return lo === hi ? `1º envio (${pad(lo)})` : `1º envio (${pad(lo)}–${pad(hi)})`;
   }
+  if (engaged === w.length) return "re-envio (engajado)";
+  if (decayed === w.length) return "re-envio (decaído)";
+  if (first === 0) return "re-envio (engajado+decaído)";
   return "misto (re-envio + 1º)";
+}
+
+/** 1º nome p/ personalização. Tira vírgula/espaço (ex: "Azevedo, Ana" → "Azevedo"). */
+function firstName(name: string | null): string {
+  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
 }
 
 /** Monta o manifest + os CSVs (puro: retorna os artefatos, não escreve). */
@@ -70,9 +81,7 @@ export function buildWaveArtifacts(
   budget: number,
   waveSize: number,
 ): { manifest: WaveManifestEntry[]; csvByFile: Record<string, string>; seg: ReturnType<typeof segmentFromStore> } {
-  const nameByEmail = new Map(
-    rows.map((r) => [r.email, (r.name ?? "").trim().split(" ")[0] || ""]),
-  );
+  const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
   const seg = segmentFromStore(rows);
   const queue = priorityQueue(seg);
   const selected = budget > 0 ? queue.slice(0, budget) : queue;
@@ -94,7 +103,18 @@ export function buildWaveArtifacts(
 export function main(argv: string[] = process.argv.slice(2)): void {
   const cycle = requireCycleArg(argv);
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
-  const budget = Number(getArg(argv, "budget")) || 8000;
+  // --budget é OBRIGATÓRIO (sem default mágico): controla quantos contatos
+  // recebem email no ciclo — lever de blast-radius, mesmo princípio do --cycle
+  // explícito. Sem isso, `--budget 0` cairia num default silencioso (0 é falsy).
+  const budgetArg = getArg(argv, "budget");
+  const budget = Number(budgetArg);
+  if (!budgetArg || !Number.isFinite(budget) || budget <= 0) {
+    console.error(
+      "❌ --budget N (>0) é obrigatório — quantos contatos enviar neste ciclo " +
+        "(lever de alcance). Ex: --budget 8000.",
+    );
+    process.exit(1);
+  }
   const waveSize = Number(getArg(argv, "wave-size")) || 2000;
   const dryRun = hasFlag(argv, "dry-run");
 
@@ -115,6 +135,16 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const { manifest, csvByFile, seg } = buildWaveArtifacts(rows, budget, waveSize);
   const selectedTotal = manifest.reduce((s, m) => s + m.count, 0);
 
+  // Guard: 0 waves = nenhum elegível selecionado (bug de send_eligible / store).
+  // NÃO escrever um manifest vazio em silêncio — o import mandaria nada/lista vazia.
+  if (manifest.length === 0) {
+    console.error(
+      `❌ 0 waves (nenhum contato elegível) — verifique send_eligible no store. ` +
+        `eligible_total=${seg.reSend.length + seg.firstSend.length}. Nada escrito.`,
+    );
+    process.exit(1);
+  }
+
   const summary = {
     cycle,
     source: "store-driven (#2656)",
@@ -131,6 +161,15 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!dryRun) {
     const wavesDir = clariceWavesDir(cycle);
     ensureDir(wavesDir);
+    // Limpa wN-store.csv stale de um run ANTERIOR (ex: budget maior gerou mais
+    // waves) que não estão neste manifest — senão o editor vê CSVs órfãos no dir.
+    const keep = new Set(Object.keys(csvByFile));
+    for (const f of readdirSync(wavesDir)) {
+      if (/^w\d+-store\.csv$/.test(f) && !keep.has(f)) {
+        unlinkSync(resolve(wavesDir, f));
+        console.error(`🧹 removido wave stale: ${f}`);
+      }
+    }
     for (const [file, csv] of Object.entries(csvByFile)) {
       writeFileSync(resolve(wavesDir, file), csv, "utf8");
     }

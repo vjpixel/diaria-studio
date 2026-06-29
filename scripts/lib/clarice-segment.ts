@@ -90,8 +90,11 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
  * por último. Determinístico (reSend/firstSend já vêm ordenados de segmentFromStore).
  */
 export function priorityQueue(seg: Segmentation): StoreRow[] {
-  const engagedReSend = seg.reSend.filter((r) => r.priority_points > 0);
-  const decayedReSend = seg.reSend.filter((r) => r.priority_points <= 0);
+  // `?? 0`: priority_points pode ser null (coluna sem NOT NULL / linha pré-recompute).
+  // Sem o coalesce, `null > 0` e `null <= 0` são AMBOS false → a linha sumiria da
+  // fila (perda silenciosa). null → 0 → cai em decaído.
+  const engagedReSend = seg.reSend.filter((r) => (r.priority_points ?? 0) > 0);
+  const decayedReSend = seg.reSend.filter((r) => (r.priority_points ?? 0) <= 0);
   return [...engagedReSend, ...seg.firstSend, ...decayedReSend];
 }
 

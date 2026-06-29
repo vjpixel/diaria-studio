@@ -66,13 +66,41 @@ export const WAVES: WaveDef[] = [
  */
 export function loadWaveDefs(wavesDir: string): WaveDef[] {
   const manifestPath = resolve(wavesDir, "waves-manifest.json");
-  if (!existsSync(manifestPath)) return WAVES;
-  const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as Array<{
-    key: string;
-    file: string;
-    desc: string;
-  }>;
-  return m.map((e) => ({ key: e.key, file: e.file, desc: e.desc }));
+  if (!existsSync(manifestPath)) {
+    // Build store-driven INTERROMPIDO (escreveu CSVs mas não o manifest)? Não cair
+    // no WAVES legado em silêncio — os arquivos legados não existem e o erro
+    // mandaria rodar o script errado. Detecta CSVs store sem manifest.
+    if (existsSync(resolve(wavesDir, "w1-store.csv"))) {
+      throw new Error(
+        `há w*-store.csv mas falta waves-manifest.json em ${wavesDir} — build ` +
+          `store-driven incompleto. Re-rode 'clarice-build-waves-store.ts --cycle ...'.`,
+      );
+    }
+    return WAVES; // ciclo legado (cohort)
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch (e) {
+    throw new Error(`waves-manifest.json inválido (${manifestPath}): ${(e as Error).message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`waves-manifest.json deve ser um array de waves (${manifestPath}).`);
+  }
+  return parsed.map((e, i) => {
+    const entry = e as Record<string, unknown>;
+    if (
+      !entry ||
+      typeof entry.key !== "string" ||
+      typeof entry.file !== "string" ||
+      typeof entry.desc !== "string"
+    ) {
+      throw new Error(
+        `waves-manifest.json: entrada ${i} inválida (precisa key/file/desc string): ${JSON.stringify(e)}`,
+      );
+    }
+    return { key: entry.key, file: entry.file, desc: entry.desc };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +213,10 @@ export function buildPlan(label: string, cycle: string, wavesDir: string = clari
         console.error(`ℹ️  wave opcional ausente, pulando: ${wave.key} (${wave.file})`);
         continue;
       }
-      throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --cycle ${cycle}' antes.`);
+      const builder = existsSync(resolve(wavesDir, "waves-manifest.json"))
+        ? "clarice-build-waves-store.ts"
+        : "clarice-build-waves.ts";
+      throw new Error(`wave faltando: ${path} — rode '${builder} --cycle ${cycle}' antes.`);
     }
     const raw = readFileSync(path, "utf-8");
     const csv = normalizeImportCsv(raw);

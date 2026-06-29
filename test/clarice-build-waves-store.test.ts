@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Papa from "papaparse";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   buildWaveArtifacts,
   describeWave,
+  main,
 } from "../scripts/clarice-build-waves-store.ts";
+import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 
 type BR = {
   email: string;
@@ -66,9 +71,51 @@ test("buildWaveArtifacts: fatia em waves de wave-size + CSV tem email,NOME (1º 
   assert.equal(eng.NOME, "Engajado");
 });
 
-test("describeWave: re-envio / 1º envio (tier range) / misto", () => {
-  assert.equal(describeWave([{ sends_count: 3, tier: 2 } as any, { sends_count: 1, tier: 1 } as any]), "re-envio (engajado)");
+test("describeWave: engajado vs DECAÍDO (não rotular decaído como engajado)", () => {
+  assert.equal(describeWave([{ sends_count: 3, priority_points: 60, tier: 2 } as any]), "re-envio (engajado)");
+  assert.equal(describeWave([{ sends_count: 2, priority_points: -20, tier: 2 } as any]), "re-envio (decaído)");
+  assert.equal(
+    describeWave([{ sends_count: 3, priority_points: 60 } as any, { sends_count: 2, priority_points: -20 } as any]),
+    "re-envio (engajado+decaído)",
+  );
+});
+
+test("describeWave: 1º envio (tier range) / misto", () => {
   assert.equal(describeWave([{ sends_count: 0, tier: 1 } as any, { sends_count: 0, tier: 5 } as any]), "1º envio (T01–T05)");
   assert.equal(describeWave([{ sends_count: 0, tier: 3 } as any]), "1º envio (T03)");
-  assert.equal(describeWave([{ sends_count: 3, tier: 1 } as any, { sends_count: 0, tier: 2 } as any]), "misto (re-envio + 1º)");
+  assert.equal(describeWave([{ sends_count: 3, priority_points: 9, tier: 1 } as any, { sends_count: 0, tier: 2 } as any]), "misto (re-envio + 1º)");
+});
+
+test("buildWaveArtifacts: 1º nome tira vírgula (Azevedo, Ana → Azevedo)", () => {
+  const { csvByFile } = buildWaveArtifacts(
+    [brow({ email: "x@x.com", name: "Azevedo, Ana", send_eligible: 1 })] as any,
+    0,
+    100,
+  );
+  const parsed = Papa.parse(csvByFile["w1-store.csv"], { header: true, skipEmptyLines: true }).data as any[];
+  assert.equal(parsed[0].NOME, "Azevedo");
+});
+
+test("main: --dry-run sobre store seedado não escreve, imprime summary correto", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare("INSERT INTO clarice_users (email, name, status, tier, opens_count, sends_count) VALUES ('e@x.com','Eng',NULL,2,3,3)").run();
+  db.prepare("INSERT INTO clarice_users (email, name, status, tier) VALUES ('f@x.com','Fre','active',1)").run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run"]);
+  } finally {
+    console.log = orig;
+  }
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.eligible_total, 2);
+  assert.equal(out.selected, 2);
+  assert.equal(out.re_send, 1); // e@ (sends>0)
+  assert.equal(out.first_send, 1); // f@
 });
