@@ -200,7 +200,7 @@ export function renderBodyParasInner(text: string): string {
     .filter((p) => p.trim())
     .map(
       (p, i) =>
-        bodyP(`${i === 0 ? "18px" : "8px"} 0 0`, escText(p.trim())),
+        bodyP(`${i === 0 ? "18px" : "8px"} 0 0`, renderBodyInline(p.trim())),
     )
     .join("\n  ");
 }
@@ -855,21 +855,26 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
-    // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
-    // do introCallout. Posicionado após o 1º destaque.
-    if (i === 0 && content.midCallout) {
+    // Box callout (📚/📣/🎉) — promo interna ou patrocinado. Reusa o estilo teal
+    // do introCallout. #2665: posicionado após o destaque da lacuna em que foi
+    // encontrado (default 0 = D1/D2, legado).
+    if (content.midCallout && i === (content.midCalloutAfter ?? 0)) {
       // 260611 (supersede #1940/#2069): TODO midCallout — patrocinado (📣) ou
       // promo interna (📚/🎉) — recebe o kicker "● DIVULGAÇÃO" antes do box.
       parts.push(renderDivulgacaoSeparator());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
-    // Box de produtos (🛒) entre D2 e D3 — prateleira de afiliados. Posicionado
-    // após o 2º destaque. Reusa renderIntroCallout (preserva TODOS os links
-    // inline, ao contrário do renderMidCallout que extrai um único CTA).
-    // Disclosure de afiliado (● DIVULGAÇÃO) antes do box.
-    if (i === 1 && content.productBox && content.destaques.length >= 3) {
+    // Box de produtos (🛒) — prateleira de afiliados. Reusa renderIntroCallout
+    // (preserva TODOS os links inline, ao contrário do renderMidCallout que
+    // extrai um único CTA). #2665: posicionado após o destaque da lacuna em que
+    // foi encontrado (default 1 = D2/D3, legado). O marcador 🛒 é estrutural
+    // (detecção) — removido do HTML pra não aparecer ao leitor, igual aos
+    // marcadores 📚/📣/🎉 que o renderMidCallout já remove.
+    if (content.productBox && i === (content.productBoxAfter ?? 1)) {
       parts.push(renderDivulgacaoSeparator());
-      parts.push(renderIntroCallout(content.productBox));
+      // `\r?\n?` cobre o 🛒 sozinho na própria linha (sem texto após), pra não
+      // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
+      parts.push(renderIntroCallout(content.productBox.replace(/^🛒[ \t]*\r?\n?/u, "")));
     }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
@@ -1040,7 +1045,29 @@ export function applyBrandWordmark(s: string): string {
  * CommonMark permite pares de parênteses balanceados no destino; aqui um `(`
  * aumenta a profundidade e só um `)` em profundidade 0 fecha o link.
  */
-export function processInlineLinks(s: string): string {
+/**
+ * #2665 follow-up: converte `**negrito**` em `<strong>` nos segmentos de TEXTO
+ * (não nos labels de link, já tratados). Roda DEPOIS do esc/wordmark — `*` não é
+ * escapado por esc(), então o par `**…**` sobrevive intacto. Non-greedy + sem
+ * `*` interno evita casar pares aninhados/cruzados. Antes, um `**Não compre**`
+ * num box (productBox/introCallout) vazava com asteriscos literais (260630).
+ */
+function applyInlineBold(html: string): string {
+  return html.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
+}
+
+/**
+ * Tokenizador inline compartilhado: varre `[label](url)` (destino com parênteses
+ * balanceados), chamando `onText` nos segmentos de TEXTO e `onLink` em cada link.
+ * Base de `processInlineLinks` (texto via esc+wordmark+bold) e de `renderBodyInline`
+ * (texto via escText — preserva itálico/word-joiner do corpo). `s` já passa por
+ * `unescapeMd` aqui; os callbacks recebem o segmento cru.
+ */
+function tokenizeInline(
+  s: string,
+  onText: (seg: string) => string,
+  onLink: (label: string, url: string) => string,
+): string {
   const input = unescapeMd(s);
   const parts: string[] = [];
   let lastIdx = 0;
@@ -1067,15 +1094,31 @@ export function processInlineLinks(s: string): string {
       linkStart.lastIndex = j + 1;
       continue;
     }
-    // #2532: wordmark só nos segmentos de TEXTO (não no label do link).
-    if (m.index > lastIdx) parts.push(applyBrandWordmark(esc(input.substring(lastIdx, m.index))));
-    // #2004: sem font-weight:bold — link inline fica só underline teal (decisão 2026-06-09).
-    parts.push(
-      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
-    );
+    if (m.index > lastIdx) parts.push(onText(input.substring(lastIdx, m.index)));
+    parts.push(onLink(m[1], url));
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
   }
-  if (lastIdx < input.length) parts.push(applyBrandWordmark(esc(input.substring(lastIdx))));
+  if (lastIdx < input.length) parts.push(onText(input.substring(lastIdx)));
   return parts.join("");
+}
+
+// #2004: link inline sem font-weight:bold — só underline teal (decisão 2026-06-09).
+function inlineLinkHtml(label: string, url: string): string {
+  return `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`;
+}
+
+export function processInlineLinks(s: string): string {
+  // #2532: wordmark só nos segmentos de TEXTO (não no label do link).
+  return tokenizeInline(s, (seg) => applyInlineBold(applyBrandWordmark(esc(seg))), inlineLinkHtml);
+}
+
+/**
+ * #2665 follow-up: inline do CORPO de destaque — preserva o pipeline do escText
+ * (itálico, word-joiner, wordmark) E renderiza links markdown `[label](url)`.
+ * Antes, `renderBodyParasInner` usava escText puro, então um link no corpo do
+ * destaque vazava como markdown literal (260630: `amazon.com.br/alexaplus`).
+ */
+function renderBodyInline(s: string): string {
+  return tokenizeInline(s, escText, inlineLinkHtml);
 }
