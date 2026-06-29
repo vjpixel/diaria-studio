@@ -207,6 +207,75 @@ describe("inferIsPublished (#600)", () => {
   });
 });
 
+describe("v25.0 regression (#600): post agendado não vira failed", () => {
+  // Cenário exato do bug #600: Graph API v25.0 não expõe o campo `is_published`
+  // (deprecated). Antes do fix, verify-facebook-posts.ts requestava esse campo e
+  // recebia `(#100) Tried accessing nonexisting field`, fazendo reconcilePost
+  // marcar posts perfeitamente agendados como `failed`.
+  //
+  // Depois do fix: defaultFetchPost usa safeFields (created_time + scheduled_publish_time)
+  // e chama inferIsPublished para derivar is_published por inferência — nunca pelo campo
+  // deprecated. Este describe testa o end-to-end desse caminho.
+
+  const nowUnix600 = Math.floor(now.getTime() / 1000);
+
+  it("response v25.0 sem is_published, scheduled_publish_time futuro → fica scheduled (não failed)", async () => {
+    const published: SocialPublished = {
+      posts: [scheduledEntry({ destaque: "d1" })],
+    };
+    // Simula o que defaultFetchPost retorna após chamar inferIsPublished:
+    // a Graph API v25.0 responde com created_time + scheduled_publish_time (futuro),
+    // sem is_published. inferIsPublished infere is_published=false.
+    const fetchPost = async (): Promise<GraphPostResponse> =>
+      inferIsPublished(
+        { created_time: "2026-04-24T10:00:00+0000", scheduled_publish_time: nowUnix600 + 7200 },
+        nowUnix600,
+      );
+    const { updated, changes } = await verifyPublished(published, "TOKEN", "v25.0", fetchPost, now);
+    assert.equal(changes, 0, "post agendado no futuro não deve gerar mudança de status");
+    assert.equal(
+      updated.posts[0].status,
+      "scheduled",
+      "post agendado v25.0 deve permanecer 'scheduled', não virar 'failed'",
+    );
+  });
+
+  it("response v25.0 sem is_published, scheduled_publish_time passado → vira published", async () => {
+    const published: SocialPublished = {
+      posts: [scheduledEntry({ destaque: "d1" })],
+    };
+    // scheduled_publish_time já passou → inferIsPublished infere is_published=true
+    const fetchPost = async (): Promise<GraphPostResponse> =>
+      inferIsPublished(
+        { created_time: "2026-04-24T10:30:00+0000", scheduled_publish_time: nowUnix600 - 3600 },
+        nowUnix600,
+      );
+    const { updated, changes } = await verifyPublished(published, "TOKEN", "v25.0", fetchPost, now);
+    assert.equal(changes, 1, "post publicado deve gerar mudança de status");
+    assert.equal(updated.posts[0].status, "published");
+  });
+
+  it("response v25.0 com error (#100 is_published deprecated) → vira failed com mensagem", async () => {
+    // Edge case: se por algum motivo a API ainda retornar o erro #100,
+    // o comportamento deve ser failed (erro real, não post ok).
+    const published: SocialPublished = {
+      posts: [scheduledEntry({ destaque: "d1" })],
+    };
+    const fetchPost = async (): Promise<GraphPostResponse> =>
+      inferIsPublished(
+        { error: { message: "(#100) Tried accessing nonexisting field (is_published)", code: 100 } },
+        nowUnix600,
+      );
+    const { updated, changes } = await verifyPublished(published, "TOKEN", "v25.0", fetchPost, now);
+    assert.equal(changes, 1, "erro da API deve gerar mudança de status");
+    assert.equal(updated.posts[0].status, "failed");
+    assert.ok(
+      updated.posts[0].failure_reason?.includes("(#100)"),
+      "failure_reason deve conter a mensagem de erro da API",
+    );
+  });
+});
+
 describe("resolveSocialPublishedPath (#920)", () => {
   it("prefere _internal/ quando existe (canonical write path de publish-facebook.ts)", () => {
     const root = mkdtempSync(join(tmpdir(), "verify-fb-path-"));
