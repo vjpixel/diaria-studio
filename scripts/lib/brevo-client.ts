@@ -294,6 +294,7 @@ const RETRY_MS = [1000, 3000, 9000];
 export async function brevoGet(
   apiKey: string,
   path: string,
+  _sleep: (ms: number) => Promise<void> = _defaultSleep, // injetável p/ teste (igual ao resto da lib)
 ): Promise<{ status: number; body: any }> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
@@ -308,7 +309,7 @@ export async function brevoGet(
         : 0;
       await r.body?.cancel().catch(() => {});
       lastErr = new Error(`Brevo GET ${path} HTTP ${r.status}`);
-      if (attempt < RETRY_MS.length) await _defaultSleep(waitMs);
+      if (attempt < RETRY_MS.length) await _sleep(waitMs);
       continue;
     }
     if (r.status === 404) return { status: 404, body: {} };

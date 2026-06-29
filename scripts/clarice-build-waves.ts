@@ -47,8 +47,8 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-// #2651: brevoGet + pool consolidados na lib. Re-export de brevoGet mantém os
-// importadores existentes (4 suites de teste importam daqui).
+// #2651: brevoGet + pool consolidados na lib. Re-export de brevoGet mantém as 4
+// suites de teste que importam daqui (o código de produção já migrou pra lib).
 import { brevoGet } from "./lib/brevo-client.ts";
 import { pool } from "./lib/pool.ts";
 export { brevoGet };
