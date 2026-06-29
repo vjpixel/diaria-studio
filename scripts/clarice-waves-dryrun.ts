@@ -34,7 +34,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
               CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 0 END AS in_brevo
          FROM clarice_users`,
     )
-    .all() as DryrunRow[];
+    .all() as unknown as DryrunRow[];
   db.close();
 
   // Guard: store vazio/ausente NÃO pode passar por "sem divergências = seguro".
