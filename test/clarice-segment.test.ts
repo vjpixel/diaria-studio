@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   segmentFromStore,
+  priorityQueue,
   sliceIntoWaves,
   loadStoreRows,
   type StoreRow,
@@ -75,6 +76,18 @@ test("segmentFromStore: separa re-envio de 1º envio por sends_count", () => {
 // ---------------------------------------------------------------------------
 // sliceIntoWaves
 // ---------------------------------------------------------------------------
+
+test("priorityQueue: engajado (points>0) → 1º envio (tier) → re-envio decaído (points<=0)", () => {
+  const seg = segmentFromStore([
+    row({ email: "eng@x.com", sends_count: 3, priority_points: 60 }),
+    row({ email: "decay@x.com", sends_count: 2, priority_points: -20 }),
+    row({ email: "fresh@x.com", sends_count: 0, tier: 1 }),
+  ]);
+  assert.deepEqual(
+    priorityQueue(seg).map((r) => r.email),
+    ["eng@x.com", "fresh@x.com", "decay@x.com"],
+  );
+});
 
 test("sliceIntoWaves: fatia em tamanhos de maxSize, última menor", () => {
   assert.deepEqual(sliceIntoWaves([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);

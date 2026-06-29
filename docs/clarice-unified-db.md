@@ -95,10 +95,22 @@ feitos. Se esgotar a cota / cair (exit 2), **re-rodar continua de onde parou**.
 Reusa o `brevoGet` de `clarice-build-waves.ts` (respeita `Retry-After`). Requer
 `BREVO_CLARICE_API_KEY`. Use `--limit N` pra um sync parcial / teste.
 
+## Cutover store-driven de waves (#2656) — FEITO
+
+`scripts/clarice-build-waves-store.ts` monta as waves a partir do store (base
+inteira), supera o `clarice-build-waves.ts` (cohort T1/T2 + fetch ao vivo):
+corte por `send_eligible`, re-envio por `priority_points`, 1º envio por `tier`.
+Fila (`priorityQueue`): engajado → 1º envio → re-envio decaído. Pega o topo até
+`--budget` (lever de expansão de alcance) e fatia em `--wave-size`. Escreve
+`wN-store.csv` + `waves-manifest.json`; o `clarice-import-waves.ts` lê o manifest
+(fallback no `WAVES` legado). Só escreve CSV — envio segue gated (import dry-run +
+schedule manual). Validado pelo dry-run comparativo (`clarice-waves-dryrun.ts`,
+#2662): na supressão é no-op vs o pipeline atual; o que muda é a segmentação.
+
+Uso: `npx tsx scripts/clarice-build-waves-store.ts --cycle 2606-07 [--budget 8000] [--wave-size 2000] [--dry-run]`.
+
 ## Follow-up (ainda não feito)
 
-- `clarice-build-waves.ts` ler a priorização do store (tier p/ 1º envio,
-  `priority_points` p/ re-envio, `send_eligible` p/ corte) em vez de CSVs soltos.
 - **Reconciliação de clientes que saíram da base:** o build é upsert-only — um
   cliente removido do export Stripe não é apagado do store (linger). Hoje é
   inofensivo (os exports são dumps completos: cancelados permanecem com

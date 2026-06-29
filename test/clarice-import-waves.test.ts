@@ -10,8 +10,38 @@ import {
   parseArgs,
   findExistingConflicts,
   buildPlan,
+  loadWaveDefs,
   WAVES,
 } from "../scripts/clarice-import-waves.ts";
+
+describe("loadWaveDefs (#2656)", () => {
+  it("sem manifest → WAVES legado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-legacy-"));
+    try {
+      assert.deepEqual(loadWaveDefs(dir), WAVES);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("com waves-manifest.json → usa o manifest (store-driven)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-manifest-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([
+          { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)", count: 10 },
+          { key: "W2", file: "w2-store.csv", desc: "1º envio (T01–T05)", count: 8 },
+        ]),
+      );
+      const defs = loadWaveDefs(dir);
+      assert.equal(defs.length, 2);
+      assert.deepEqual(defs[0], { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" });
+      assert.equal(defs[1].file, "w2-store.csv");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("listNameFor", () => {
   it("nome determinístico por wave + label", () => {

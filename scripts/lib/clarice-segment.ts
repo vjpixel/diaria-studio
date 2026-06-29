@@ -82,6 +82,20 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
 }
 
 /**
+ * Fila de prioridade de ENVIO a partir da segmentação (#2656 cutover). Ordem de
+ * warm-up: re-envio ENGAJADO primeiro (priority_points > 0, mais alto antes),
+ * depois 1º envio por tier (T01 ativo → leads), e por último o re-envio
+ * DECAÍDO (quem ignorou — priority_points ≤ 0). Assim quem prova engajamento
+ * encabeça a fila, contatos novos entram no meio, e re-tentar quem ignora fica
+ * por último. Determinístico (reSend/firstSend já vêm ordenados de segmentFromStore).
+ */
+export function priorityQueue(seg: Segmentation): StoreRow[] {
+  const engagedReSend = seg.reSend.filter((r) => r.priority_points > 0);
+  const decayedReSend = seg.reSend.filter((r) => r.priority_points <= 0);
+  return [...engagedReSend, ...seg.firstSend, ...decayedReSend];
+}
+
+/**
  * Fatia uma lista já ordenada em waves de no máximo `maxSize` (conveniência do
  * cutover). Preserva a ordem; a última wave pode ser menor. `maxSize <= 0` → 1
  * wave com tudo.

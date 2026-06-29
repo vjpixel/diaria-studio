@@ -58,6 +58,23 @@ export const WAVES: WaveDef[] = [
   { key: "W5", file: "w5-mv-export-maio.csv", desc: "Leads maio (fresh)", optional: true },
 ];
 
+/**
+ * #2656: o builder store-driven (clarice-build-waves-store.ts) escreve um
+ * `waves-manifest.json` no dir de waves listando as waves daquele ciclo. Se
+ * existir, ele é a fonte de verdade (nº de waves é dinâmico no modelo novo);
+ * senão, cai no WAVES hardcoded (ciclos legados do build-waves cohort).
+ */
+export function loadWaveDefs(wavesDir: string): WaveDef[] {
+  const manifestPath = resolve(wavesDir, "waves-manifest.json");
+  if (!existsSync(manifestPath)) return WAVES;
+  const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as Array<{
+    key: string;
+    file: string;
+    desc: string;
+  }>;
+  return m.map((e) => ({ key: e.key, file: e.file, desc: e.desc }));
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -159,7 +176,7 @@ interface Plan {
 // `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
 export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
   const plans: Plan[] = [];
-  for (const wave of WAVES) {
+  for (const wave of loadWaveDefs(wavesDir)) { // #2656: manifest > WAVES legado
     const path = resolve(wavesDir, wave.file);
     if (!existsSync(path)) {
       // Opcional (ex: W5 maio) ausente → pula com aviso. Obrigatória ausente →
