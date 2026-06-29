@@ -119,6 +119,12 @@ export interface NewsletterContent {
    * reviewed.md. Diferente do midCallout: preserva TODOS os links inline
    * (não extrai um único CTA). Renderizado via renderIntroCallout. */
   productBox?: string | null;
+  /** #2665: índice do destaque APÓS o qual o midCallout é renderizado (a lacuna
+   * em que o box `**📚/📣/🎉 …**` foi encontrado). Default 0 (D1/D2, legado). */
+  midCalloutAfter?: number;
+  /** #2665: índice do destaque APÓS o qual o productBox (🛒) é renderizado.
+   * Default 1 (D2/D3, legado). */
+  productBoxAfter?: number;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -563,20 +569,46 @@ const MID_CALLOUT_BLOCK = /^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m;
  * (remove o bloco do corpo do D1). Região = entre o 1º e o 2º `**DESTAQUE`
  * (mesma do split legado, mas preservando offsets pra poder fatiar).
  */
+/**
+ * #2665 (posição flexível): todas as lacunas ENTRE destaques consecutivos.
+ * Cada gap = região [marker[i], marker[i+1]) com `gapIndex = i` (o índice do
+ * destaque que PRECEDE a lacuna). A região DEPOIS do último destaque (onde
+ * vivem É IA? + seções) NÃO é uma lacuna — não é varrida. Isso permite que o
+ * midCallout (📚/📣/🎉) e o productBox (🛒) sejam detectados em QUALQUER lacuna
+ * entre destaques, não só nas posições fixas D1/D2 e D2/D3 (back-compat: o
+ * layout legado cai na mesma lacuna de sempre).
+ */
+function interDestaqueGaps(
+  text: string,
+): { start: number; end: number; gapIndex: number }[] {
+  const markers = [...text.matchAll(/^\*\*DESTAQUE/gm)].map((m) => m.index ?? -1)
+    .filter((i) => i >= 0);
+  const gaps: { start: number; end: number; gapIndex: number }[] = [];
+  for (let i = 0; i < markers.length - 1; i++) {
+    gaps.push({ start: markers[i], end: markers[i + 1], gapIndex: i });
+  }
+  return gaps;
+}
+
 function locateMidCallout(
   text: string,
-): { inner: string; matchStart: number; matchEnd: number } | null {
-  const firstMarker = text.search(MID_CALLOUT_MARKER);
-  if (firstMarker === -1) return null;
-  // 2º marcador (se houver) delimita o fim da região do D1.
-  const afterFirst = text.slice(firstMarker + 1);
-  const secondRel = afterFirst.search(MID_CALLOUT_MARKER);
-  const regionEnd = secondRel === -1 ? text.length : firstMarker + 1 + secondRel;
-  const region = text.slice(firstMarker, regionEnd);
-  const m = MID_CALLOUT_BLOCK.exec(region);
-  if (!m) return null;
-  const matchStart = firstMarker + m.index;
-  return { inner: m[1].trim(), matchStart, matchEnd: matchStart + m[0].length };
+): { inner: string; matchStart: number; matchEnd: number; gapIndex: number } | null {
+  // #2665: varre TODAS as lacunas entre destaques (não só D1/D2). Retorna o
+  // primeiro `**📚/📣/🎉 …**` encontrado, com a lacuna em que vive.
+  for (const g of interDestaqueGaps(text)) {
+    const region = text.slice(g.start, g.end);
+    const m = MID_CALLOUT_BLOCK.exec(region);
+    if (m) {
+      const matchStart = g.start + m.index;
+      return {
+        inner: m[1].trim(),
+        matchStart,
+        matchEnd: matchStart + m[0].length,
+        gapIndex: g.gapIndex,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -619,22 +651,29 @@ export function stripMidCalloutFromD1(text: string): string {
  */
 function locateProductBox(
   text: string,
-): { inner: string; matchStart: number; matchEnd: number } | null {
-  const markers = [...text.matchAll(/^\*\*DESTAQUE/gm)].map((m) => m.index ?? -1);
-  // O box é "entre D2 e D3" — só existe com ≥3 destaques. Com <3 a região iria
-  // até o EOF e um `🛒` numa seção (RADAR/USE MELHOR) ou no rodapé seria
-  // falsamente extraído (#review 260629). Exigir o 3º marcador delimita a região.
-  if (markers.length < 3) return null;
-  const regionStart = markers[1];
-  const regionEnd = markers[2];
-  const region = text.slice(regionStart, regionEnd);
-  // Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim
-  // da região). Linhas em branco entre categorias são preservadas. `\r?` torna
-  // o lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
-  const m = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m.exec(region);
-  if (!m) return null;
-  const matchStart = regionStart + m.index;
-  return { inner: m[0].trim(), matchStart, matchEnd: matchStart + m[0].length };
+): { inner: string; matchStart: number; matchEnd: number; gapIndex: number } | null {
+  // #2665: varre TODAS as lacunas entre destaques (não só D2/D3). Como cada
+  // gap é delimitado pelo próximo marcador `**DESTAQUE`, um `🛒` numa seção
+  // (RADAR/USE MELHOR/rodapé) — que vive DEPOIS do último destaque — nunca cai
+  // numa lacuna e não é falsamente extraído (substitui o antigo guard
+  // `markers.length < 3`, #review 260629).
+  for (const g of interDestaqueGaps(text)) {
+    const region = text.slice(g.start, g.end);
+    // Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim
+    // da região). Linhas em branco entre categorias são preservadas. `\r?` torna
+    // o lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
+    const m = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m.exec(region);
+    if (m) {
+      const matchStart = g.start + m.index;
+      return {
+        inner: m[0].trim(),
+        matchStart,
+        matchEnd: matchStart + m[0].length,
+        gapIndex: g.gapIndex,
+      };
+    }
+  }
+  return null;
 }
 
 /** Lê o conteúdo do box de produtos (🛒) entre D2 e D3, ou null. */
@@ -807,13 +846,18 @@ export function extractContent(editionDir: string): NewsletterContent {
     : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
-  // Box entre D1 e D2 (ex: promo da página de livros).
-  const midCallout = extractMidCallout(reviewedText);
+  // #2665: box callout (📚/📣/🎉) e box de produtos (🛒) em QUALQUER lacuna
+  // entre destaques — não mais presos a D1/D2 e D2/D3. `*After` carrega o índice
+  // do destaque que precede a lacuna pra o render posicionar corretamente.
+  const midLoc = locateMidCallout(reviewedText);
+  const midCallout = midLoc?.inner ?? null;
+  const midCalloutAfter = midLoc?.gapIndex ?? 0;
   // #2136: passa o texto do midCallout pra discriminar livros vs CLARICE.
   // Imagem só vai pro box de livros; box 📣 CLARICE recebe null (sem hero).
   const midCalloutImage = readMidCalloutImage(editionDir, midCallout);
-  // Box de produtos (🛒) entre D2 e D3 — prateleira de afiliados com links inline.
-  const productBox = extractProductBox(reviewedText);
+  const prodLoc = locateProductBox(reviewedText);
+  const productBox = prodLoc?.inner ?? null;
+  const productBoxAfter = prodLoc?.gapIndex ?? 1;
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -840,6 +884,8 @@ export function extractContent(editionDir: string): NewsletterContent {
     midCallout,
     midCalloutImage,
     productBox,
+    midCalloutAfter,
+    productBoxAfter,
   };
 }
 
