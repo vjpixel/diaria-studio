@@ -1022,11 +1022,14 @@ function escText(s: string): string {
  * idempotente. O caso bold é coberto aplicando o wordmark nos segmentos de
  * texto ANTES do passo de `**` (o `<b>` resultante envolve o span).
  */
+// #2665 follow-up (260630): wordmark em negrito, com `.` e `.br` no teal da marca.
 const BRAND_WORDMARK_HTML =
-  `diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span>`;
+  `<strong>diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span></strong>`;
 // Regex de módulo (não realocar por chamada). `replace` com flag `/g` é
 // stateless — reseta `lastIndex` a cada chamada — então o reuso é seguro.
-const BRAND_WORDMARK_RE = /\bDiar\.ia(?:\.br)?\b/g;
+// `i`: casa tanto `Diar.ia` (nome) quanto `diar.ia.br` (domínio em minúscula,
+// ex: linha de comissão) — ambos renderizam o mesmo wordmark.
+const BRAND_WORDMARK_RE = /\bdiar\.ia(?:\.br)?\b/gi;
 export function applyBrandWordmark(s: string): string {
   return s.replace(BRAND_WORDMARK_RE, BRAND_WORDMARK_HTML);
 }
