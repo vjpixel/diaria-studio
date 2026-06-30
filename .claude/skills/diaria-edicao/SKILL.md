@@ -22,6 +22,40 @@ Antes de iniciar, verifique:
 2. `context/sources.md` existe. Se não, rode `npm run sync-sources`.
 3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente via Beehiiv MCP no Stage 0.
 
+## Passo 0 — Sincronizar código com origin/master (#2686)
+
+**Antes de qualquer trabalho do Stage 0**, sincronizar o checkout local com `origin/master` para garantir que a edição rode com a versão mais recente do pipeline. Rodadas overnight/develop mergeiam frequentemente; código defasado re-introduz bugs corrigidos.
+
+```bash
+npx tsx scripts/sync-code.ts
+```
+
+O script imprime JSON com o resultado (campos `outcome`, `branch_before`, `warnings`). **Parsear o JSON do stdout** e extrair os valores individuais — nunca passar o blob inteiro pro `--details`. Logar via `log-event.ts`, escolhendo `--level info` para os 3 outcomes de sucesso e `--level warn` para os demais (coluna `--level` da tabela):
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
+  --level {info ou warn, conforme a tabela} --informational --message "git-sync: {outcome}" \
+  --details '{"outcome":"{outcome}","branch_before":"{branch_before}"}'
+```
+
+(`--informational` evita que warns de sync virem issues falsas no auto-reporter, análogo a §0k/§0l do preflight.)
+
+**Comportamento por outcome:**
+
+| outcome | `--level` | ação |
+|---|---|---|
+| `synced` / `synced_stashed` / `already_up_to_date` | `info` | ✅ prosseguir normalmente |
+| `fetch_failed` | `warn` | ⚠️ avisar editor ("offline — edição continua com código local") e prosseguir |
+| `ff_failed` | `warn` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente") e prosseguir |
+| `stash_failed` / `stash_pop_failed` | `warn` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
+| `checkout_failed` | `warn` | ⚠️ avisar editor ("estava em outra branch e não foi possível voltar para master") e prosseguir |
+
+**Regras invariáveis:**
+- **Nunca bloquear a edição por falha de sync** — `proceed` é sempre `true` no resultado. Falha de sync vira warning, nunca halt.
+- **Só no início, nunca mid-edição.** Distinto do #494 (pull de arquivos Drive mid-stage).
+- **Idempotente no resume.** Re-rodar `/diaria-edicao {mesmo AAMMDD}` faz o sync novamente sem efeito colateral indesejado.
+- **Nunca forçar merge.** Usa `--ff-only` exclusivamente; divergência vira warn.
+
 ## Passo 1 — Confirmar janela de publicação aceita
 
 Converter `$1` (AAMMDD) para ISO date interno:

@@ -97,6 +97,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Pipeline reproducible**: mudanças em agent prompts, config ou scripts devem ser committed + testadas; nunca rodadas direto de stash ou memória.
 
+- **Sync de código no início de cada edição (#2686).** O Passo 0 de `/diaria-edicao` roda `npx tsx scripts/sync-code.ts` (wrapper de `scripts/lib/git-sync.ts`) antes de qualquer trabalho do Stage 0. Garante que o pipeline rode com a versão mais recente do código — rodadas overnight/develop mergeiam frequentemente e código defasado re-introduz bugs. Comportamento: fetch origin → se dirty, stash → pull --ff-only → stash pop; se branch != master, checkout master primeiro. **Fail-soft invariável**: qualquer falha de sync (offline, divergência, conflito de stash) vira warning e a edição prossegue normalmente — nunca bloqueia. Só no início, nunca mid-edição; idempotente em resume.
+
 - **Data da edição é sempre explícita.** Skills `/diaria-*` que aceitam `AAMMDD` **nunca** inferem a partir de `today()` ou da edição mais recente em `data/editions/`. Se o usuário não passar a data, perguntar com sugestão de hoje/ontem como atalho mas exigir confirmação. Risco de rodar stage destrutivo/publicador (Stage 5) na edição errada é alto demais pra default silencioso.
 
   Exceção (#583): skills `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`, `/diaria-6-agendamento` aceitam AAMMDD opcional. Se omitido, rodar `npx tsx scripts/lib/find-current-edition.ts --stage N` e — se exatamente 1 edição estiver em curso (prereq do stage atendido + output faltando) — assumir essa edição com info log. Caso 0 candidatos: erro. Caso ≥2: perguntar como antes. Stage 1 não muda — cria a edição.
