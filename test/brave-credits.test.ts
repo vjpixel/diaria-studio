@@ -67,6 +67,35 @@ describe("recordBraveCreditEstimate (#2608)", () => {
     assert.ok(!existsSync(path), "arquivo não deve ser criado para count=0");
   });
 
+  // #2630 — regressão: count não-finito deve logar warn, não no-op silencioso.
+  // Causa: LLM gerava `count: NaN` quando J (launch_candidates) era undefined
+  // em `{N}*2+{M}+{J}`; o gap ficava invisível.
+  it("count não-finito (NaN/±Infinity) loga warn e não grava arquivo (#2630)", () => {
+    const path = makeTmpPath();
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(" "));
+    };
+    try {
+      recordBraveCreditEstimate({ source: "stage1-agents", edition: "260630", count: NaN }, path);
+      recordBraveCreditEstimate({ source: "stage1-agents", edition: "260630", count: Infinity }, path);
+      recordBraveCreditEstimate({ source: "stage1-agents", edition: "260630", count: -Infinity }, path);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warns.length, 3, "deve logar 1 warn por chamada com count não-finito");
+    assert.ok(
+      warns.every((w) => w.includes("não-finito")),
+      "mensagem de warn deve mencionar 'não-finito'",
+    );
+    assert.ok(
+      warns.every((w) => w.includes("stage1-agents")),
+      "mensagem de warn deve incluir source",
+    );
+    assert.ok(!existsSync(path), "arquivo não deve ser criado para count não-finito");
+  });
+
   it("Path B: K source-researchers × 2 + L discovery + J launch → stats não-zero", () => {
     const path = makeTmpPath();
     const K = 3, L = 5, J = 2;
