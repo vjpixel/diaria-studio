@@ -88,16 +88,17 @@ $Action = New-ScheduledTaskAction `
     -Argument "tsx `"$WatchdogTs`"" `
     -WorkingDirectory $RepoRoot
 
-# Trigger repetitivo: a cada 10 min, das 18:00 de hoje até 09:00 de amanhã.
-# Windows Task Scheduler não suporta "janela overnight direta" nativamente;
-# o workaround mais simples é: disparar às 18:00, repetir a cada 10 min por 15 h.
+# Trigger repetitivo: a cada 10 min, das 18:00 às 09:00 do dia seguinte (15 h), todo dia.
 # O watchdog é idempotente — quando não há rodada ativa, encerra imediatamente.
+# PowerShell gotcha (#2688 self-review): -RepetitionInterval/-RepetitionDuration pertencem
+# ao parameter set -Once, NÃO ao -Daily — combiná-los com -Daily lança
+# ParameterSetCannotBeResolved no Register/Set. Idioma canônico p/ "diário + repetição":
+# criar o trigger -Daily e enxertar a .Repetition de um trigger -Once descartável.
 $TriggerStart = (Get-Date -Hour 18 -Minute 0 -Second 0)
-$Trigger = New-ScheduledTaskTrigger `
-    -Daily `
-    -At $TriggerStart `
-    -RepetitionInterval  (New-TimeSpan -Minutes 10) `
-    -RepetitionDuration  (New-TimeSpan -Hours 15)
+$Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerStart
+$Trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $TriggerStart `
+    -RepetitionInterval (New-TimeSpan -Minutes 10) `
+    -RepetitionDuration (New-TimeSpan -Hours 15)).Repetition
 
 # Settings
 $Settings = New-ScheduledTaskSettingsSet `
