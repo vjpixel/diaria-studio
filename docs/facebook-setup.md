@@ -41,7 +41,7 @@ Resposta tem `access_token` long-lived (60 dias). Atualizar `.env`.
 
 ### Page ID
 
-Encontrar em https://www.facebook.com/diaria.br → **Sobre** → **ID da página**, ou via Graph API Explorer (`/me/accounts`).
+Encontrar em https://www.facebook.com/diar.ia.br → **Sobre** → **ID da página**, ou via Graph API Explorer (`/me/accounts`).
 
 ## Validação
 

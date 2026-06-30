@@ -491,7 +491,7 @@ describe("lintLinkedinSchema (#595)", () => {
     // comment_diaria: 200-400 chars tolerância. Inclui {edition_url} placeholder.
     const cd =
       "Edição completa com mais 9 destaques de IA do dia em {edition_url}" +
-      "\n\nSiga a Diar.ia no LinkedIn em linkedin.com/company/diaria" +
+      "\n\nSiga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br" +
       "\n\nMais sobre esse e outros casos.";
     // comment_pixel: 300-600 chars tolerância. ~400.
     const cp =
@@ -647,7 +647,7 @@ ${mainD1}
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -661,7 +661,7 @@ Texto do d2.
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -675,7 +675,7 @@ Texto do d3.
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -863,7 +863,7 @@ ${mainD1}
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -877,7 +877,7 @@ ${mainD2}
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -891,7 +891,7 @@ ${mainD3}
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -1306,12 +1306,12 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.ok(e, `esperava erro em post_pixel, achei: ${JSON.stringify(r.errors)}`);
   });
 
-  it("PASSA: comment_diaria com URL completa 'https://linkedin.com/company/diaria'", () => {
-    // Aceita qualquer forma que contenha 'linkedin.com/company/diaria'
+  it("PASSA: comment_diaria com URL completa 'https://linkedin.com/company/diar.ia.br'", () => {
+    // Aceita qualquer forma que contenha 'linkedin.com/company/diar.ia.br'
     const md = mkLinkedinMd({
-      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em https://linkedin.com/company/diaria",
-      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
-      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em https://linkedin.com/company/diar.ia.br",
+      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diar.ia.br",
+      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diar.ia.br",
     });
     const r = lintLinkedinPageLink(md);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
@@ -1324,7 +1324,7 @@ describe("lintLinkedinPageLink (#2458)", () => {
   });
 
   it("DIARIA_LINKEDIN_PAGE_SLUG aponta para slug canônico", () => {
-    assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diaria");
+    assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diar.ia.br");
   });
 
   it("CLI: exit 1 sem link da página, exit 0 com link da página", async () => {
@@ -1397,7 +1397,7 @@ Texto editorial sobre modelo de linguagem e estratégia da Anthropic.
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -1411,7 +1411,7 @@ Texto editorial sobre automação e impacto no mercado de trabalho.
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -1425,7 +1425,7 @@ Texto editorial sobre infraestrutura de computação e data centers.
 
 Edição completa em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 
@@ -1437,7 +1437,7 @@ Contexto de infraestrutura que pouca gente considera.
 
 ${postPixelBody}
 
-Siga a Diar.ia em linkedin.com/company/diaria
+Siga a Diar.ia em linkedin.com/company/diar.ia.br
 
 #IA #Tecnologia
 `;

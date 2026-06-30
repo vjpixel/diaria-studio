@@ -618,7 +618,7 @@ function extractSection(md: string, sectionTitle: string): string | null {
  * para o fluxo de publish; o teste de drift em lint-social-md.test.ts garante que
  * os dois não divergem.
  */
-export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diaria";
+export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diar.ia.br";
 
 export interface LinkedinPageLinkError {
   section: string;
@@ -635,7 +635,7 @@ export interface LinkedinPageLinkResult {
  *   - Cada `### comment_diaria` (CTA de follow da página)
  *   - O `## post_pixel` (CTA de follow no post pessoal)
  *
- * O link aceito: `linkedin.com/company/diaria` (sem https://, sem ponto).
+ * O link aceito: `linkedin.com/company/diar.ia.br` (sem https://, sem ponto).
  * Posts principais `## d{N}` ficam 100% editoriais (sem URL, conforme #595).
  */
 export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
@@ -643,7 +643,7 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
   const linkedinSection = extractPlatformSection(md, "linkedin");
   if (!linkedinSection) return { ok: true, errors };
 
-  const pageRe = /linkedin\.com\/company\/diaria/i;
+  const pageRe = /linkedin\.com\/company\/diar\.ia\.br/i;
 
   // --- Checar cada comment_diaria ---
   // #2458 fix (self-review): prefixar "\n" para casar `## d1` no início da seção
