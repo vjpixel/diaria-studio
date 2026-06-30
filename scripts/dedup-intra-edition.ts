@@ -42,6 +42,7 @@ import {
   jaccardSimilarity,
 } from "./dedup.ts";
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
+import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -581,7 +582,7 @@ export function isIntraEditionDuplicate(
 // Main dedup function
 // ---------------------------------------------------------------------------
 
-const SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"] as const;
+// SECONDARY_BUCKETS is imported from check-secondary-themes.ts (single source of truth).
 
 /**
  * Default number of top highlights to compare against in intra-edition dedup.

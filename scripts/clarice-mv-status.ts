@@ -27,6 +27,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -195,8 +196,9 @@ async function main(): Promise<void> {
   console.log(`[clarice-mv-status] KV atualizado: ${MV_STATUS_KV_KEY}.`);
 }
 
-// CLI guard — não executar ao ser importado em testes
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
+// CLI guard — não executar ao ser importado em testes.
+// Usa pathToFileURL para compatibilidade com Windows (endsWith sem file:/// pode falhar via npx tsx).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((e) => {
     console.error("[clarice-mv-status] erro:", e);
     process.exit(1);

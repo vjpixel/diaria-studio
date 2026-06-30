@@ -229,16 +229,14 @@ export function mergeChunkSuggestions(
 }
 
 /**
- * Encontra a última posição de corte em linha `---` dentro de `text[minCut..]`.
- * Retorna o índice imediatamente após a linha `---\n` (início do próximo bloco).
- * Retorna -1 se não encontrado.
+ * Núcleo compartilhado: encontra a última posição de corte para `re` dentro de
+ * `text`, considerando apenas posições ≥ `minCut`. Retorna -1 se não encontrado.
+ * `re` deve ter a flag `g` e ser criado em cada chamada (regex stateful via exec).
  */
-function findLastSectionBoundary(text: string, minCut: number): number {
-  // Procura `\n---\n` ou `\n---` no final — separador de seção editorial.
-  const pattern = /\n---\n/g;
+function findLastBoundary(text: string, re: RegExp, minCut: number): number {
   let lastMatch = -1;
   let m: RegExpExecArray | null;
-  while ((m = pattern.exec(text)) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const cutPos = m.index + m[0].length;
     if (cutPos >= minCut) {
       lastMatch = cutPos;
@@ -248,21 +246,22 @@ function findLastSectionBoundary(text: string, minCut: number): number {
 }
 
 /**
+ * Encontra a última posição de corte em linha `---` dentro de `text[minCut..]`.
+ * Retorna o índice imediatamente após a linha `---\n` (início do próximo bloco).
+ * Retorna -1 se não encontrado.
+ */
+function findLastSectionBoundary(text: string, minCut: number): number {
+  // Procura `\n---\n` — separador de seção editorial.
+  return findLastBoundary(text, /\n---\n/g, minCut);
+}
+
+/**
  * Encontra a última posição de corte em parágrafo vazio (`\n\n`) dentro de `text[minCut..]`.
  * Retorna o índice após os `\n\n`.
  * Retorna -1 se não encontrado.
  */
 function findLastParagraphBoundary(text: string, minCut: number): number {
-  const pattern = /\n\n/g;
-  let lastMatch = -1;
-  let m: RegExpExecArray | null;
-  while ((m = pattern.exec(text)) !== null) {
-    const cutPos = m.index + m[0].length;
-    if (cutPos >= minCut) {
-      lastMatch = cutPos;
-    }
-  }
-  return lastMatch;
+  return findLastBoundary(text, /\n\n/g, minCut);
 }
 
 /**
