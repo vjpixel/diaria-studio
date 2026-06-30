@@ -4,10 +4,22 @@ compatibility_date = "2026-01-01"
 workers_dev = true
 
 # Secrets (via `wrangler secret put`):
-#   BREVO_API_KEY → API key da conta Brevo da Clarice (xkeysib-...)
+#   BREVO_API_KEY   → API key da conta Brevo da Clarice (xkeysib-...)
+#   STRIPE_API_KEY  → chave restrita Stripe (read-only: Coupons/Customers/
+#                     Invoices/Subscriptions/Charges = Read). Necessária para
+#                     a tab de cupons (#2718). Nunca committed.
+#                     Setup: wrangler secret put STRIPE_API_KEY
 #
-# Dashboard é página pública (sem auth) — preferência do editor 2026-05-12.
-# Cache 5min via Cache API economiza quota Brevo.
+# Dashboard protegido por Cloudflare Access (OTP email) — ver
+# docs/clarice-dashboard-access-setup.md para instruções de setup.
+
+# Variáveis de ambiente (não-secretas). Secrets acima via wrangler secret put.
+[vars]
+# Tab de uso de cupons Stripe (#2718). Default OFF — emails de clientes (PII)
+# só são expostos após: (1) Cloudflare Access ativo, (2) STRIPE_API_KEY
+# configurada, (3) COUPONS_TAB_ENABLED = "true". Ver deploy ordering em
+# docs/clarice-dashboard-access-setup.md.
+COUPONS_TAB_ENABLED = "false"
 
 # KV namespace para cache de stats imutáveis (#2144).
 # id = namespace criado pelo coordenador via `wrangler kv:namespace create STATS_CACHE`.
