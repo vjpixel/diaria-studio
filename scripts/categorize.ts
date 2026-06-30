@@ -691,7 +691,13 @@ export function isNewsNotTutorial(article: Article): boolean {
   // um roundup com "veja como" no título (ex: "Newsletter: veja como usar X") deve
   // ir para RADAR, não para USE MELHOR. Caso real: langchain.com/blog/june-2026-langchain-newsletter.
   if (isRoundupSlug(article.url ?? "")) return true;
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug e roundup)
+  // #2666 (follow-up, HIGH 2): LANÇAMENTO confirmado pelo researcher NUNCA vira
+  // tutorial por keyword. Roda ANTES de isTutorialByKeyword — um anúncio cujo
+  // título termina em "veja como" ("OpenAI lança X; veja como") deve seguir para
+  // o bloco de LANÇAMENTO (#160), não para USE MELHOR. type_hint="noticia"/"opiniao"
+  // (abaixo) continua DEPOIS do how-to, preservando o reclassify de #2666.
+  if (article.type_hint === "lancamento") return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup e lançamento)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
@@ -1076,11 +1082,17 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 //   "aprenda a" + verbo — "aprenda a usar IA para X" (instrução direta)
 // Esses padrões cobrem headlines BR onde o how-to fica no final da manchete
 // em vez do imperativo no início ("Como fazer X").
+// #2666 (follow-up, gate): "veja como" SÓ conta como how-to quando é TERMINAL —
+// no fim do título/linha ou seguido de pontuação final ("...; veja como").
+// Sem o gate, o idioma jornalístico preditivo "veja como vai mudar / como funciona /
+// como o mercado reagiu" gerava falso-positivo (notícia analítica → tutorial) e
+// chegava a atropelar type_hint="noticia" e quebrar LANÇAMENTO. O verbo explícito
+// continua coberto pela alternativa "aprenda a + verbo".
 // PRECEDÊNCIA: roundup (isRoundupSlug/isNewsNotTutorial) vence esses sinais —
 // "Newsletter: veja como usar X" → isRoundupSlug retorna true, isTutorialByKeyword
 // nunca chega a vencer. Ver isNewsNotTutorial para a ordem de avaliação.
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\bveja\s+(como|o\s+prompt)\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\bveja\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;

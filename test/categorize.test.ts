@@ -3039,12 +3039,13 @@ describe("isRoundupSlug (#2663)", () => {
     assert.ok(!isRoundupSlug("https://newsletter.exemplo.com/posts/how-to-build-agents"));
   });
 
-  it("NÃO detecta tutorial legítimo que menciona newsletter no slug de conteúdo", () => {
-    // "how-to-build-a-newsletter-with-claude" — o topic é newsletter, mas o artigo É how-to
-    // NOTA: isRoundupSlug retorna true porque 'newsletter' está no slug, bloqueando a
-    // classificação como tutorial. Isso é o comportamento CORRETO e ESPERADO:
-    // um artigo com 'newsletter' no slug é tratado como roundup por precaução (conservador).
-    // O editor pode reclassificar no gate. FP documentado como limite da heurística.
+  it("FP documentado: slug com 'newsletter' é tratado como roundup mesmo em how-to sobre newsletter", () => {
+    // "how-to-build-a-newsletter-with-claude" — o topic é newsletter, mas o artigo É how-to.
+    // isRoundupSlug retorna TRUE (FP): a heurística slug-based é conservadora e trata
+    // qualquer 'newsletter' no slug como roundup. Aceito como trade-off (warn/precaução);
+    // o editor reclassifica no gate. O nome do teste reflete o comportamento ASSERTADO.
+    // Se a heurística for refinada para excluir 'how-to-build-a-newsletter', troque para
+    // assert.ok(!isRoundupSlug(...)) e renomeie.
     assert.ok(isRoundupSlug("https://example.com/how-to-build-a-newsletter-with-claude"));
   });
 
@@ -3129,6 +3130,38 @@ describe("categorize() — #2666: how-to em manchete PT-BR detectado como tutori
     };
     assert.notEqual(categorize(art), "tutorial", "anúncio sem sinal how-to não deve virar tutorial");
   });
+
+  it("#2666 (gate HIGH 1): 'veja como' PREDITIVO (não-terminal) NÃO vira tutorial", () => {
+    // Idioma jornalístico "veja como vai mudar / como funciona" é análise, não how-to.
+    // O gate terminal impede o falso-positivo: "veja como" só conta no fim do título.
+    const art: Article = {
+      url: "https://canaltech.com.br/inteligencia-artificial/openai-nova-funcao/",
+      title: "OpenAI anuncia nova função; veja como vai mudar o mercado de trabalho",
+    };
+    assert.equal(categorize(art), "noticias", "'veja como vai mudar...' é notícia analítica, não tutorial");
+  });
+
+  it("#2666 (gate HIGH 1): 'veja como funciona' no summary NÃO vira tutorial", () => {
+    // hay = título + summary; "veja como funciona" preditivo no summary não deve disparar.
+    const art: Article = {
+      url: "https://canaltech.com.br/inteligencia-artificial/anthropic-api-voz/",
+      title: "Anthropic lança API de voz",
+      summary: "A nova API chegou esta semana; veja como funciona para desenvolvedores.",
+    };
+    assert.equal(categorize(art), "noticias", "'veja como funciona' (preditivo) no summary não é tutorial");
+  });
+
+  it("#2666 (HIGH 2): LANÇAMENTO com 'veja como' terminal NÃO é atropelado para tutorial", () => {
+    // type_hint=lancamento (researcher leu a página) tem precedência sobre o sinal
+    // de how-to: um anúncio cujo título termina em "veja como" segue para LANÇAMENTO (#160),
+    // nunca para USE MELHOR. Sem o guard, isTutorialByKeyword roubaria a classificação.
+    const art: Article = {
+      url: "https://openai.com/index/gpt-5-disponivel/",
+      title: "OpenAI lança GPT-5; veja como",
+      type_hint: "lancamento",
+    };
+    assert.equal(categorize(art), "lancamento", "type_hint=lancamento vence how-to terminal (#160)");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3156,10 +3189,12 @@ describe("categorize() — #2663+#2666: precedência roundup > how-to", () => {
       url: "https://blog.langchain.dev/july-2026-langchain-newsletter",
       title: "Julho 2026: aprenda a usar LangGraph com os destaques do mês",
     };
-    assert.notEqual(
+    // #633: afirma o bucket CORRETO (noticias), não apenas "≠ tutorial" — assim
+    // uma regressão que rotear para outro bucket errado também é pega.
+    assert.equal(
       categorize(art),
-      "tutorial",
-      "slug 'newsletter' bloqueia o 'aprenda a' no título (roundup > how-to)",
+      "noticias",
+      "slug 'newsletter' bloqueia o 'aprenda a' no título → RADAR/noticias (roundup > how-to)",
     );
   });
 });

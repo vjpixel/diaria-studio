@@ -349,6 +349,17 @@ describe("isNewsletterRoundup (#2663)", () => {
     );
   });
 
+  it("#2666 follow-up: 'and more' MID-título (não-terminal) NÃO dispara (reduz FP)", () => {
+    // "and more efficient architectures" é adjetivo, não enumeração de roundup.
+    assert.ok(
+      !isNewsletterRoundup(
+        "https://example.com/posts/transformers-deep-dive",
+        "Understanding Transformers and More Efficient Architectures",
+      ),
+      "'and more' no meio do título não é sinal de roundup",
+    );
+  });
+
   it("detecta 'this week in' no título", () => {
     assert.ok(
       isNewsletterRoundup("https://example.com/posts/123", "This Week in AI: Models, Tools, and More"),
@@ -372,10 +383,10 @@ describe("isNewsletterRoundup (#2663)", () => {
       "https://example.com/how-to-build-a-newsletter-with-claude",
       "How to Build a Newsletter with Claude",
     );
-    // Este teste DOCUMENTA o FP atual, não o afirma como correto comportamento futuro.
-    // Se a heurística for refinada para excluir "how-to-build-a-newsletter",
-    // este teste deve ser atualizado para assert.ok(!result).
-    assert.equal(typeof result, "boolean"); // apenas confirma que não crasha
+    // #633: afirma o comportamento ATUAL (true — FP aceito porque 'newsletter' está
+    // no slug), em vez de só checar o tipo. Se a heurística for refinada para excluir
+    // "how-to-build-a-newsletter", troque para assert.ok(!result) e renomeie.
+    assert.ok(result, "FP aceito: 'newsletter' no slug dispara o guard mesmo em how-to sobre newsletter");
   });
 
   it("URL inválida retorna false sem crash", () => {
@@ -449,7 +460,9 @@ describe("reviewUseMelhor — guard de newsletter/roundup (#2663)", () => {
     // Isso é FP: o artigo é um tutorial SOBRE newsletter, não uma newsletter em si.
     // O guard é warn-only; o editor descarta. FP documentado como limite aceitável.
     const { suspicious } = reviewUseMelhor(items);
-    // Documentamos o comportamento atual (FP aceito como trade-off).
-    assert.equal(typeof suspicious.length, "number"); // não crasha
+    // #633: afirma o comportamento ATUAL — a URL TEM 'newsletter' no slug, então É
+    // flagada (warn-only, FP aceito). Pinar o número evita que uma regressão passe
+    // silenciosamente; se a heurística passar a excluir esse caso, troque para 0.
+    assert.equal(suspicious.length, 1, "FP aceito: 'newsletter' no slug flaga mesmo tutorial sobre newsletter");
   });
 });

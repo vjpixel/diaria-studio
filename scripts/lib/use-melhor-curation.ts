@@ -967,7 +967,7 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 // sinais — "Newsletter: veja como usar X" → isRoundupSlug retorna true →
 // isRadarHowToEligible retorna false antes de checar RADAR_HOWTO_PROMOTE_RE.
 const RADAR_HOWTO_PROMOTE_RE =
-  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b|veja\s+(?:como|o\s+prompt)\b|aprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b)/i;
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b|veja\s+como\b(?=\s*(?:$|[.!?]))|veja\s+o\s+prompt\b|aprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b)/i;
 
 /**
  * #2663: guard de roundup/newsletter para isRadarHowToEligible.

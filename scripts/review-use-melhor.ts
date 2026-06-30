@@ -33,7 +33,10 @@ import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curati
  * conservador por operar no path de classificação). Aqui o guard é warn-only,
  * então podemos incluir sinais mais fracos:
  *   - slug/título: newsletter, roundup, digest, this week in
- *   - título: "weekly [digest|recap|newsletter]", "monthly [digest|...]", "and more"
+ *   - título: "weekly [digest|recap|newsletter]", "monthly [digest|...]"
+ *   - título: "and more" SÓ quando TERMINAL (fim do título — enumeração de roundup
+ *     "X, Y, and More"). Mid-título ("and more efficient architectures") NÃO conta,
+ *     pra não flagar notícia/análise legítima (#2666 follow-up).
  *
  * PRECEDÊNCIA: newsletter/roundup > how-to (#2663 + #2666 coexistência).
  * Se um roundup contém "veja como" no título, o sinal de roundup VENCE e o
@@ -47,7 +50,7 @@ import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curati
  * o editor verá o alerta e pode descartar se for FP.
  */
 const NEWSLETTER_ROUNDUP_RE =
-  /\b(newsletter|roundup|this\s+week\s+in|weekly\s+(?:digest|recap|roundup|newsletter)|monthly\s+(?:digest|recap|roundup|newsletter)|and\s+more)\b/i;
+  /\b(?:newsletter|roundup|this\s+week\s+in|weekly\s+(?:digest|recap|roundup|newsletter)|monthly\s+(?:digest|recap|roundup|newsletter))\b|\band\s+more\b\s*[.!]?\s*$/i;
 
 /**
  * Detecta sinal de newsletter/roundup no slug ou título.
