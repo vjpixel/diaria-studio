@@ -24,12 +24,16 @@
  *
  * Saída:
  *   --out: JSON array de `{ from, to, rule?, explanation? }` — lista plana de todas as
- *     sugestões brutas coletadas de todos os chunks (auditoria / compat com clarice-apply.ts).
- *     Para textos > CLARICE_CHUNK_THRESHOLD (9k chars), as sugestões já foram aplicadas
- *     chunk-local via mergeChunkSuggestions (#2626); o texto corrigido fica em --corrected-out.
- *   --corrected-out (opcional): texto corrigido produzido pelo mergeChunkSuggestions
- *     (apply chunk-local). Quando presente, o orchestrator pode usá-lo diretamente
- *     sem re-aplicar as sugestões de --out.
+ *     sugestões brutas coletadas de todos os chunks (auditoria / diff / resume).
+ *     ⚠️ NÃO re-aplicar esta lista ao texto completo via clarice-apply.ts quando houver
+ *     >1 chunk: uma âncora `from` única DENTRO de um chunk pode aparecer 2+× no texto
+ *     inteiro, e clarice-apply.ts a pularia como "ambígua" (count≠1) — sub-corrigindo
+ *     silenciosamente vs. o resultado chunk-local. A compat com clarice-apply.ts só vale
+ *     para texto de 1 chunk (≤ CLARICE_CHUNK_THRESHOLD = 9k chars). Para textos maiores,
+ *     o resultado correto é o de --corrected-out (mergeChunkSuggestions, apply chunk-local).
+ *   --corrected-out: texto corrigido produzido pelo mergeChunkSuggestions (apply chunk-local).
+ *     É a ÚNICA saída que aplica todas as sugestões corretamente para textos multi-chunk —
+ *     o consumidor (orchestrator / SKILL) deve usá-lo diretamente em vez de re-aplicar --out.
  *
  * Exit codes:
  *   0 — sucesso
@@ -84,9 +88,14 @@ export interface CorrectOptions {
  * Por padrão: 3 tentativas, 60s timeout cada, backoff exponencial.
  * Backoff[i] = baseBackoffMs * 2^(i-1) pra tentativa i ≥ 2 (0ms na 1ª).
  *
- * Total máximo de espera (excluindo tempo de fetch):
+ * Total máximo de espera POR CHUNK (excluindo tempo de fetch):
  *   attempts=3, baseBackoffMs=5000 → 0 + 5s + 10s = 15s de espera entre tentativas
- *   + 3 × 60s de timeout = teto de ~3min15s por chamada.
+ *   + 3 × 60s de timeout = teto de ~3min15s por chunk.
+ *
+ * ⚠️ Em `withClariceRetryChunked` (#2626) o timeout é POR CHUNK, não total: um texto que
+ * divide em N chunks tem teto ~N × 3min15s. Ex: edição de 25k chars → ~3 chunks → ~9min45s.
+ * `--timeout-ms` também é por-tentativa-por-chunk. Quem roda em ambiente com wall-clock
+ * apertado (CI) deve dimensionar o limite considerando o chunkCount esperado.
  *
  * Exporta interface + factory para testabilidade: tests injetam `baseBackoffMs=0`
  * para não ter sleep real nos testes.
@@ -278,6 +287,13 @@ export interface ChunkedRetryResult extends ChunkedResult {
  * as gerou — isso evita replace global ambíguo de termos curtos como `"os"→""` que
  * apareceriam múltiplas vezes no texto completo mas são únicos em um chunk.
  *
+ * Falha parcial (fail-clean, por design): os chunks são processados em sequência. Se um
+ * chunk lançar (HTTP non-2xx, rede), a função propaga o erro e NÃO retorna resultado
+ * parcial — as sugestões dos chunks já processados são descartadas. Isso é intencional:
+ * um texto parcialmente corrigido (alguns chunks revisados, outros crus) é pior que um
+ * fail limpo, porque entraria silenciosamente na newsletter. O caller (main → exit 3)
+ * re-roda do zero. Não há checkpoint por chunk (custo de re-enviar 2-3 chunks é baixo).
+ *
  * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl` (para testes), `timeoutMs`
  * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
  */
@@ -312,6 +328,10 @@ export async function correctTextChunked(
  * fast-fail em 4xx). O `totalAttempts` acumula as tentativas de todos os chunks.
  *
  * Para textos ≤ threshold, comporta-se como `withClariceRetry` com 1 chunk.
+ *
+ * Falha parcial (fail-clean): igual a `correctTextChunked` — se um chunk esgotar os retries
+ * e lançar, o erro propaga e o trabalho dos chunks anteriores é descartado (sem resultado
+ * parcial). Ver justificativa no JSDoc de `correctTextChunked`.
  *
  * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl`, `timeoutMs`
  * @param policy RetryPolicy (default: DEFAULT_RETRY_POLICY)
@@ -475,6 +495,7 @@ async function main(): Promise<void> {
     JSON.stringify({
       suggestions_count: rawSuggestions.length,
       out: args.outPath,
+      ...(args.correctedOutPath ? { corrected_out: args.correctedOutPath } : {}),
       ...logExtra,
     }),
   );

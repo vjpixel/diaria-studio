@@ -12,6 +12,7 @@ import {
   type ChunkedRetryResult,
 } from "../scripts/clarice-correct.ts";
 import { CLARICE_CHUNK_THRESHOLD } from "../scripts/lib/clarice-chunk.ts";
+import { applyClariceSuggestions, countOccurrences } from "../scripts/clarice-apply.ts";
 
 function mockFetch(response: {
   status: number;
@@ -380,6 +381,76 @@ describe("correctTextChunked (#2626) — REST fallback com chunking", () => {
       result.correctedText,
       longText,
       "sem sugestões, correctedText deve ser byte-idêntico ao texto original",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2626 (regressão) — o caminho de fallback DEVE consumir --corrected-out.
+// Re-aplicar a lista plana --out (rawSuggestions) ao texto INTEIRO via
+// clarice-apply.ts sub-corrige textos multi-chunk: uma âncora única dentro de
+// um chunk pode aparecer 2+× no texto completo e é pulada como "ambígua".
+// Este teste fixa o motivo do fix nos playbooks (orchestrator + SKILL).
+// ---------------------------------------------------------------------------
+
+describe("correctTextChunked (#2626) — corrected-out vs re-aplicar --out (regressão)", () => {
+  /**
+   * Texto > threshold com a MESMA âncora "ZEBRA" aparecendo 1× em cada chunk
+   * (1× perto do início, 1× perto do fim) — única dentro do chunk, mas 2× no
+   * texto inteiro. `to: "GIRAFA"` não contém a âncora (evita match parcial).
+   */
+  function makeMultiChunkTextWithRepeatedAnchor(): string {
+    const filler = "Conteudo de preenchimento sem ancora para empurrar o tamanho do chunk. ".repeat(8).trimEnd() + "\n\n";
+    let text = "Paragrafo inicial contendo ZEBRA como ancora.\n\n";
+    while (text.length < CLARICE_CHUNK_THRESHOLD + 2_000) text += filler;
+    text += "Paragrafo final contendo ZEBRA novamente como ancora.\n\n";
+    return text;
+  }
+
+  it("corrected-out (chunk-local) corrige a âncora repetida; re-aplicar --out ao texto inteiro NÃO corrige (ambígua)", async () => {
+    const text = makeMultiChunkTextWithRepeatedAnchor();
+    assert.ok(text.length > CLARICE_CHUNK_THRESHOLD, "fixture deve exceder o threshold");
+    assert.equal(countOccurrences(text, "ZEBRA"), 2, "âncora deve aparecer 2× no texto inteiro (1× por chunk)");
+
+    // Mock content-aware: cada chunk que contém ZEBRA recebe a mesma sugestão
+    // (espelha o Clarice vendo cada chunk isoladamente) — robusto a chunkCount.
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      callCount++;
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const chunkText = parsed.paragraphs[0].description;
+      const resp = chunkText.includes("ZEBRA") ? [{ from: "ZEBRA", to: "GIRAFA" }] : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctTextChunked({ apiKey: "k", text, fetchImpl });
+
+    assert.ok(result.chunkCount >= 2, `deve dividir em ≥2 chunks; foi ${result.chunkCount}`);
+    assert.ok(callCount >= 2, `deve fazer ≥2 requests REST; fez ${callCount}`);
+    // 1 sugestão por chunk com âncora → 2 sugestões idênticas acumuladas em --out
+    assert.equal(result.rawSuggestions.length, 2, "rawSuggestions deve ter 1 sugestão por chunk (2 no total)");
+
+    // correctedText (--corrected-out) aplica AMBAS as ocorrências chunk-localmente
+    assert.equal(countOccurrences(result.correctedText, "GIRAFA"), 2, "corrected-out corrige ambas as ocorrências");
+    assert.equal(countOccurrences(result.correctedText, "ZEBRA"), 0, "corrected-out não deixa âncora crua");
+
+    // Re-aplicar a lista plana --out ao texto INTEIRO (o que o passo 3 fazia ANTES do fix #2626):
+    const reapply = applyClariceSuggestions(text, result.rawSuggestions);
+    assert.ok(
+      countOccurrences(reapply.patched, "ZEBRA") > 0,
+      "re-aplicar --out ao texto inteiro deixa âncora não corrigida (sub-correção)",
+    );
+    assert.ok(
+      reapply.skipped.some((s) => s.reason === "ambiguous"),
+      "clarice-apply.ts pula a âncora como ambígua no texto inteiro",
+    );
+
+    // A divergência é o motivo do fix: o fallback DEVE consumir corrected-out.
+    assert.notEqual(
+      result.correctedText,
+      reapply.patched,
+      "corrected-out (chunk-local) deve divergir de re-aplicar --out ao texto inteiro",
     );
   });
 });

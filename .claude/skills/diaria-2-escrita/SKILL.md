@@ -279,14 +279,20 @@ npx tsx scripts/lint-newsletter-md.ts \
 
 ### 3b. Clarice (inline)
 
-**⚠️ Fallback REST automático (#1329, substitui fail-fast de #738):** Se `<system-reminder>` indicar que o MCP Clarice ficou offline OU a chamada `mcp__clarice__correct_text` falhar com disconnect/unavailable, **não fazer halt** — cair direto no fallback REST:
+**⚠️ Fallback REST automático (#1329, substitui fail-fast de #738; chunking #2626):** Se `<system-reminder>` indicar que o MCP Clarice ficou offline OU a chamada `mcp__clarice__correct_text` falhar com disconnect/unavailable, **não fazer halt** — cair direto no fallback REST. **Sempre passar `--corrected-out` e `--retry`** (#2626): o script chunka textos > 9k e aplica as sugestões chunk-localmente via `mergeChunkSuggestions`, gravando o texto corrigido nesse arquivo:
 ```bash
 npx tsx scripts/clarice-correct.ts \
-  --in data/editions/$1/_internal/02-humanized.md \
-  --out data/editions/$1/_internal/02-clarice-suggestions.json
+  --in data/editions/$1/_internal/02-draft.md \
+  --out data/editions/$1/_internal/02-clarice-suggestions.json \
+  --corrected-out data/editions/$1/_internal/02-clarice-corrected.md \
+  --retry
 ```
-(Substitua `02-humanized.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.)
-Exit 0 = sucesso (seguir pro `clarice-apply.ts`). Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt.
+(Substitua `02-draft.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.)
+Exit 0 = sucesso. **Em sucesso, NÃO rodar o passo 4 (`clarice-apply.ts`)** — o texto corrigido já está pronto em `02-clarice-corrected.md` (chunk-applied). **Re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` sub-corrige textos multi-chunk** (âncora única dentro de um chunk pode aparecer 2+× no texto inteiro → pulada como ambígua). Copiar o corrigido diretamente para o working draft:
+```bash
+cp data/editions/$1/_internal/02-clarice-corrected.md data/editions/$1/_internal/02-draft.md
+```
+Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt.
 Sempre logar warn no run-log quando cair no fallback (não silenciar — o editor precisa saber que o caminho normal falhou, mesmo que o fallback tenha funcionado).
 
 Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.
