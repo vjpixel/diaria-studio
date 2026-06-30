@@ -1,117 +1,107 @@
-# Clarice Dashboard — Cloudflare Access + Tab de Cupons
+# clarice-dashboard — access setup
 
-Este documento cobre:
-1. Configurar Cloudflare Access (OTP por e-mail) para proteger o dashboard antes de habilitar a tab de cupons.
-2. A **ordem obrigatória de deploy** para garantir que PII (emails de clientes Stripe) nunca seja exposto sem autenticação.
-
----
-
-## Cloudflare Access — OTP por e-mail
-
-### Pré-requisitos
-
-- Conta Cloudflare com o Worker `clarice-dashboard` implantado.
-- Acesso ao painel [dash.cloudflare.com](https://dash.cloudflare.com) → **Zero Trust**.
-
-### Passo a passo
-
-1. Abra **Zero Trust → Access → Applications → Add an application**.
-2. Tipo: **Self-hosted**.
-3. **Application name**: `Clarice Dashboard`
-4. **Application domain**: `clarice-dashboard.diaria.workers.dev` (ajuste para o domínio real se usar custom domain).
-5. Em **Identity providers**, selecione **One-time PIN** (OTP por e-mail — nenhum IdP externo necessário).
-6. Em **Policies**, crie uma policy:
-   - **Policy name**: `editor-access`
-   - **Action**: Allow
-   - **Include → Emails**: `vjpixel@gmail.com`, `felipe@clarice.ai`
-7. Salve. O Cloudflare agora exige OTP por e-mail antes de servir qualquer rota do dashboard.
-8. **Confirme**: abra `https://clarice-dashboard.diaria.workers.dev/` num browser sem sessão ativa — deve aparecer a tela de OTP do Cloudflare Access.
+Cookie-token auth gates the entire dashboard.
+A single shared token is configured as a Worker secret and validated via a `cf-dash-auth` cookie (HttpOnly, Secure, SameSite=Strict, 30-day expiry).
+No Cloudflare Access zone required.
 
 ---
 
-## Ordem obrigatória de deploy para a tab de cupons
+## Initial setup
 
-> **CRÍTICO**: a tab de cupons exibe e-mails de clientes (PII). Habilitar antes de
-> restringir o acesso expõe dados pessoais publicamente. Siga EXATAMENTE esta ordem.
-
-### Passo 1 — Ativar Cloudflare Access (primeiro)
-
-Execute os passos acima e **confirme** que o dashboard exige login antes de continuar.
-
-Não prossiga para o passo 2 sem verificar isso.
-
-### Passo 2 — Configurar o secret STRIPE_API_KEY
-
-A chave Stripe deve ser **restrita** (read-only): permissões necessárias:
-- Coupons → Read
-- Customers → Read
-- Invoices → Read
-- Subscriptions → Read
-- Charges → Read
-
-Crie a chave em [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys) → **Create restricted key**.
-
-Configure como secret do Worker (nunca commitada):
+### 1. Generate a strong token
 
 ```bash
-wrangler secret put STRIPE_API_KEY
-# cole a chave quando solicitado
+openssl rand -hex 32
 ```
 
-### Passo 3 — Deploy
+Copy the output — this is your AUTH_TOKEN. Store it in 1Password or equivalent.
+
+### 2. Set the secret
 
 ```bash
 cd workers/brevo-dashboard
-npx wrangler deploy
+wrangler secret put AUTH_TOKEN
+# paste the token when prompted
 ```
 
-Neste ponto, a tab de cupons ainda está **OFF** (`COUPONS_TAB_ENABLED = "false"` no `wrangler.toml`). O deploy é seguro.
+### 3. Deploy
 
-### Passo 4 — Habilitar a tab de cupons
-
-Somente após confirmar que o Access está ativo (passo 1), a chave Stripe está configurada (passo 2) e o deploy foi feito (passo 3):
-
-**Opção A** — via `wrangler.toml` + novo deploy:
-```toml
-[vars]
-COUPONS_TAB_ENABLED = "true"
-```
 ```bash
-npx wrangler deploy
+wrangler deploy
 ```
 
-**Opção B** — via Cloudflare Dashboard (sem novo deploy):
-Workers & Pages → `clarice-dashboard` → Settings → Variables → adicionar `COUPONS_TAB_ENABLED = true`.
+### 4. Verify login
 
-Após o passo 4, a tab "Cupons" aparece no dashboard e o endpoint `/api/coupons` retorna dados.
+Open `https://clarice-dashboard.diaria.workers.dev` in a private window.
+The login page should appear.
+Enter the token → you should be redirected to the dashboard.
+
+Both `vjpixel@gmail.com` and `felipe@clarice.ai` use the same shared token — share it via 1Password or secure channel.
 
 ---
 
-## Por que essa ordem importa
+## Mandatory deploy ordering — coupon tab (PII guard)
 
-A tab de cupons exibe e-mails de clientes (PII). O Worker implementa um guard duplo:
-- `COUPONS_TAB_ENABLED !== "true"` → tab invisível, `/api/coupons` retorna 404.
-- `STRIPE_API_KEY` ausente → idem.
+The coupon tab shows customer emails. Never enable it before auth is confirmed working.
 
-Mas esse guard só funciona **em conjunto** com o Cloudflare Access. Se a tab for habilitada antes do Access estar ativo, qualquer visitante anônimo veria os e-mails. Por isso o Access deve ser o **primeiro passo**, não o último.
+1. **Set AUTH_TOKEN + deploy** (steps 1–3 above) → dashboard now requires login
+2. **Verify login works** (step 4) — do not proceed until confirmed
+3. **Set Stripe key**
+   ```bash
+   wrangler secret put STRIPE_API_KEY
+   ```
+4. **Deploy**
+   ```bash
+   wrangler deploy
+   ```
+5. **Enable coupon tab** — in `wrangler.toml` under `[vars]`:
+   ```toml
+   COUPONS_TAB_ENABLED = "true"
+   ```
+   Then deploy again:
+   ```bash
+   wrangler deploy
+   ```
+6. **Verify** — open dashboard, log in, confirm coupon tab is visible and loads data
 
 ---
 
-## Desabilitando a tab de cupons (rollback)
-
-Se precisar desabilitar a tab após tê-la ativado:
-
-1. Defina `COUPONS_TAB_ENABLED = "false"` (via `wrangler.toml` + deploy, ou via dashboard).
-2. **Purgue o cache KV** — o Worker persiste o último HTML renderizado em `LASTGOOD_KEY` (`dash:lastgood:html`) com TTL de 1h para degradação graciosa em caso de rate-limit da Brevo. Esse snapshot pode conter a tab de cupons com e-mails. Sem a purga, um request com rate-limit nos próximos 60 minutos serviria o HTML antigo.
+## Rollback
 
 ```bash
-# Listar namespaces para encontrar o ID correto:
-npx wrangler kv namespace list
+# Clear cached state — required before disabling coupon tab.
+# The Worker caches the last successful render in KV (dash:lastgood:html, TTL 1h)
+# as a fallback served to authenticated users when Brevo returns a rate-limit error.
+# If the coupon tab was enabled and rendered customer emails into that cache,
+# it must be purged here — otherwise stale PII could be served for up to 1 hour
+# even after the tab is disabled.
+# Run these from the workers/brevo-dashboard/ directory.
+wrangler kv key delete --binding=STATS_CACHE "dash:lastgood:html"
+wrangler kv key delete --binding=STATS_CACHE "dash:lastgood:hash"
+wrangler kv key delete --binding=STATS_CACHE "coupons:usage"
 
-# Deletar as chaves de last-good e coupon cache:
-npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "dash:lastgood:html"
-npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "dash:lastgood:hash"
-npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "coupons:usage"
+# Disable coupon tab (set COUPONS_TAB_ENABLED=false in wrangler.toml or Cloudflare dashboard)
+wrangler deploy
 ```
 
-Após a purga, novos renders não incluirão a tab de cupons. O LASTGOOD_KEY será sobrescrito com HTML sem a tab no primeiro request bem-sucedido.
+---
+
+## Revoking access
+
+Generate a new token and overwrite the secret:
+
+```bash
+openssl rand -hex 32
+wrangler secret put AUTH_TOKEN   # paste new token
+```
+
+The old cookie becomes instantly invalid — all sessions are logged out automatically.
+Distribute the new token to `vjpixel@gmail.com` and `felipe@clarice.ai`.
+
+---
+
+## Dev mode
+
+If `AUTH_TOKEN` is not set, auth is bypassed — the dashboard is fully open.
+This is the default for local `wrangler dev` without secrets.
+Never leave `AUTH_TOKEN` unset in production.
