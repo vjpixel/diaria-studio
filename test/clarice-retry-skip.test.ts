@@ -407,4 +407,17 @@ describe("parseCliArgs (#2320 self-review findings #4 and #8)", () => {
     assert.equal(r!.maxAttempts, 3);
     assert.equal(r!.retry, true);
   });
+
+  // #2626 — --corrected-out flag
+  it("#2626: --corrected-out parsed correctly", () => {
+    const r = parseCliArgs([...BASE, "--corrected-out", "corrected.md"]);
+    assert.ok(r !== null);
+    assert.equal(r!.correctedOutPath, "corrected.md");
+  });
+
+  it("#2626: sem --corrected-out → correctedOutPath é undefined", () => {
+    const r = parseCliArgs([...BASE]);
+    assert.ok(r !== null);
+    assert.equal(r!.correctedOutPath, undefined);
+  });
 });

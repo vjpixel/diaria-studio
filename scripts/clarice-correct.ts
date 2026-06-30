@@ -17,20 +17,26 @@
  *   npx tsx scripts/clarice-correct.ts \
  *     --in data/editions/{AAMMDD}/_internal/02-humanized.md \
  *     --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
- *     [--retry]           # habilita retry com backoff exponencial (recomendado)
- *     [--timeout-ms N]    # timeout por tentativa em ms (default: 60000 com --retry, 30000 sem)
- *     [--max-attempts N]  # número máximo de tentativas com --retry (default: 3)
+ *     [--corrected-out path]  # (opcional) grava o texto corrigido (pós-apply chunk-local)
+ *     [--retry]               # habilita retry com backoff exponencial (recomendado)
+ *     [--timeout-ms N]        # timeout por tentativa em ms (default: 60000 com --retry, 30000 sem)
+ *     [--max-attempts N]      # número máximo de tentativas com --retry (default: 3)
  *
- * Saída: `--out` recebe JSON array de `{ from, to, rule?, explanation? }` —
- * mesmo shape que `mcp__clarice__correct_text` retorna, então o
- * `clarice-apply.ts` consome sem mudança.
+ * Saída:
+ *   --out: JSON array de `{ from, to, rule?, explanation? }` — lista plana de todas as
+ *     sugestões brutas coletadas de todos os chunks (auditoria / compat com clarice-apply.ts).
+ *     Para textos > CLARICE_CHUNK_THRESHOLD (9k chars), as sugestões já foram aplicadas
+ *     chunk-local via mergeChunkSuggestions (#2626); o texto corrigido fica em --corrected-out.
+ *   --corrected-out (opcional): texto corrigido produzido pelo mergeChunkSuggestions
+ *     (apply chunk-local). Quando presente, o orchestrator pode usá-lo diretamente
+ *     sem re-aplicar as sugestões de --out.
  *
  * Exit codes:
  *   0 — sucesso
  *   1 — args inválidos
  *   2 — env CLARICE_API_KEY ausente
  *   3 — HTTP non-2xx da API Clarice (todas as tentativas esgotadas)
- *   4 — I/O (read --in ou write --out)
+ *   4 — I/O (read --in ou write --out/--corrected-out)
  */
 
 import "dotenv/config";
@@ -38,6 +44,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import type { ClariceSuggestions } from "./lib/schemas/clarice-suggestions.ts";
 import { parseClariceSuggestions } from "./lib/schemas/clarice-suggestions.ts";
+import {
+  splitIntoChunks,
+  mergeChunkSuggestions,
+  CLARICE_CHUNK_THRESHOLD,
+  type TextChunk,
+  type ClariceChunkSuggestion,
+} from "./lib/clarice-chunk.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 
@@ -223,9 +236,130 @@ function flatten(raw: unknown): unknown[] {
   return [];
 }
 
+// ---------------------------------------------------------------------------
+// Chunked REST fallback (#2626)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resultado de `correctTextChunked`.
+ *
+ * - `correctedText`: texto com sugestões aplicadas chunk-local via `mergeChunkSuggestions`.
+ *   Para texto ≤ threshold, equivale a aplicar as sugestões do único chunk ao texto.
+ * - `rawSuggestions`: lista plana de TODAS as sugestões brutas coletadas de todos os chunks,
+ *   na ordem de chegada. Compatível com `clarice-apply.ts` e com o formato de
+ *   `02-clarice-suggestions.json` (auditoria / resume).
+ * - `chunkCount`: número de chunks processados (1 = texto ≤ threshold, sem split).
+ */
+export interface ChunkedResult {
+  correctedText: string;
+  rawSuggestions: ClariceSuggestions;
+  chunkCount: number;
+}
+
+/**
+ * Resultado de `withClariceRetryChunked`.
+ */
+export interface ChunkedRetryResult extends ChunkedResult {
+  /** Total de tentativas somadas de todos os chunks (cada chunk pode ter ≥1 tentativa). */
+  totalAttempts: number;
+}
+
+/**
+ * Versão com chunking de `correctTextViaREST` (#2626).
+ *
+ * Para textos > `chunkThreshold` (default: CLARICE_CHUNK_THRESHOLD = 9.000 chars),
+ * divide em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha) via
+ * `splitIntoChunks`, faz 1 request REST por chunk, e usa `mergeChunkSuggestions`
+ * para aplicar as sugestões chunk-localmente (sem aritmética de offset).
+ *
+ * Para textos ≤ threshold, faz 1 request único (sem overhead de chunking).
+ *
+ * Cuidado central do merge: sugestões são aplicadas somente no chunk onde o Clarice
+ * as gerou — isso evita replace global ambíguo de termos curtos como `"os"→""` que
+ * apareceriam múltiplas vezes no texto completo mas são únicos em um chunk.
+ *
+ * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl` (para testes), `timeoutMs`
+ * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
+ */
+export async function correctTextChunked(
+  opts: CorrectOptions,
+  chunkThreshold = CLARICE_CHUNK_THRESHOLD,
+): Promise<ChunkedResult> {
+  const chunks = splitIntoChunks(opts.text, chunkThreshold);
+  const chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }> = [];
+  const rawSuggestions: ClariceSuggestions = [];
+
+  for (const chunk of chunks) {
+    const suggestions = await correctTextViaREST({ ...opts, text: chunk.text });
+    chunkSuggestions.push({ chunk, suggestions: suggestions as ClariceChunkSuggestion[] });
+    rawSuggestions.push(...suggestions);
+  }
+
+  const mergeResult = mergeChunkSuggestions(chunkSuggestions);
+
+  return {
+    correctedText: mergeResult.text,
+    rawSuggestions,
+    chunkCount: chunks.length,
+  };
+}
+
+/**
+ * Versão com chunking + retry de `withClariceRetry` (#2626).
+ *
+ * Combina a divisão em chunks de `correctTextChunked` com a política de retry de
+ * `withClariceRetry`: cada chunk é enviado com retry independente (backoff exponencial,
+ * fast-fail em 4xx). O `totalAttempts` acumula as tentativas de todos os chunks.
+ *
+ * Para textos ≤ threshold, comporta-se como `withClariceRetry` com 1 chunk.
+ *
+ * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl`, `timeoutMs`
+ * @param policy RetryPolicy (default: DEFAULT_RETRY_POLICY)
+ * @param sleepFn Injetável para testes (default: setTimeout)
+ * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
+ */
+export async function withClariceRetryChunked(
+  opts: CorrectOptions,
+  policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+  sleepFn: (ms: number) => Promise<void> = (ms) =>
+    new Promise((r) => setTimeout(r, ms)),
+  chunkThreshold = CLARICE_CHUNK_THRESHOLD,
+): Promise<ChunkedRetryResult> {
+  const chunks = splitIntoChunks(opts.text, chunkThreshold);
+  const chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }> = [];
+  const rawSuggestions: ClariceSuggestions = [];
+  let totalAttempts = 0;
+
+  for (const chunk of chunks) {
+    const result = await withClariceRetry(
+      { ...opts, text: chunk.text },
+      policy,
+      sleepFn,
+    );
+    chunkSuggestions.push({ chunk, suggestions: result.suggestions as ClariceChunkSuggestion[] });
+    rawSuggestions.push(...result.suggestions);
+    totalAttempts += result.attempts;
+  }
+
+  const mergeResult = mergeChunkSuggestions(chunkSuggestions);
+
+  return {
+    correctedText: mergeResult.text,
+    rawSuggestions,
+    chunkCount: chunks.length,
+    totalAttempts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
 export interface CliArgs {
   inPath: string;
   outPath: string;
+  /** Caminho opcional para gravar o texto corrigido (pós-apply chunk-local). */
+  correctedOutPath?: string;
   retry: boolean;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -241,6 +375,7 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
     const value = argv[i + 1]?.startsWith("--") ? undefined : argv[i + 1];
     if (flag === "--in" && value) { out.inPath = value; i++; }
     else if (flag === "--out" && value) { out.outPath = value; i++; }
+    else if (flag === "--corrected-out" && value) { out.correctedOutPath = value; i++; }
     else if (flag === "--retry") { out.retry = true; }
     else if (flag === "--timeout-ms" && value) {
       const n = Number(value);
@@ -269,7 +404,7 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--retry] [--timeout-ms N] [--max-attempts N]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N]",
     );
     process.exit(1);
   }
@@ -287,7 +422,9 @@ async function main(): Promise<void> {
     process.exit(4);
   }
 
-  let suggestions: ClariceSuggestions;
+  let rawSuggestions: ClariceSuggestions;
+  let correctedText: string;
+  let logExtra: Record<string, unknown> = {};
 
   try {
     if (args.retry) {
@@ -296,44 +433,51 @@ async function main(): Promise<void> {
         timeoutMs: args.timeoutMs ?? DEFAULT_RETRY_POLICY.timeoutMs,
         baseBackoffMs: DEFAULT_RETRY_POLICY.baseBackoffMs,
       };
-      const result = await withClariceRetry({ apiKey, text }, policy);
-      suggestions = result.suggestions;
-      try {
-        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
-      } catch (e) {
-        console.error(`erro escrevendo --out: ${(e as Error).message}`);
-        process.exit(4);
-      }
-      console.log(
-        JSON.stringify({
-          suggestions_count: suggestions.length,
-          out: args.outPath,
-          attempts_used: result.attempts,
-        }),
+      const result = await withClariceRetryChunked(
+        { apiKey, text, timeoutMs: args.timeoutMs },
+        policy,
       );
+      rawSuggestions = result.rawSuggestions;
+      correctedText = result.correctedText;
+      logExtra = { attempts_used: result.totalAttempts, chunks: result.chunkCount };
     } else {
-      suggestions = await correctTextViaREST({
+      const result = await correctTextChunked({
         apiKey,
         text,
         timeoutMs: args.timeoutMs,
       });
-      try {
-        writeFileSync(args.outPath, JSON.stringify(suggestions, null, 2), "utf8");
-      } catch (e) {
-        console.error(`erro escrevendo --out: ${(e as Error).message}`);
-        process.exit(4);
-      }
-      console.log(
-        JSON.stringify({
-          suggestions_count: suggestions.length,
-          out: args.outPath,
-        }),
-      );
+      rawSuggestions = result.rawSuggestions;
+      correctedText = result.correctedText;
+      logExtra = { chunks: result.chunkCount };
     }
   } catch (e) {
     console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
     process.exit(3);
   }
+
+  try {
+    writeFileSync(args.outPath, JSON.stringify(rawSuggestions, null, 2), "utf8");
+  } catch (e) {
+    console.error(`erro escrevendo --out: ${(e as Error).message}`);
+    process.exit(4);
+  }
+
+  if (args.correctedOutPath) {
+    try {
+      writeFileSync(args.correctedOutPath, correctedText, "utf8");
+    } catch (e) {
+      console.error(`erro escrevendo --corrected-out: ${(e as Error).message}`);
+      process.exit(4);
+    }
+  }
+
+  console.log(
+    JSON.stringify({
+      suggestions_count: rawSuggestions.length,
+      out: args.outPath,
+      ...logExtra,
+    }),
+  );
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
