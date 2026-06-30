@@ -313,13 +313,20 @@ const metaDesc = seoMetaDescription(title, subtitle); // ≤155ch
 
 Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Método primário — `buildCoverDataTransferJs` (#1500) — SEMPRE o primeiro, inclusive em replace (#2341).** DataTransfer no `input[type=file]` do editor + `.click()` na img recém-subida, que aplica **automático** (sem botão Insert) — porque o upload veio do próprio input do editor (user-activation context). Validado ao vivo 260602/260604. **Funciona para cover nova E para replace** — não requer remover a cover existente antes de tentar #1500.
 
-URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-public.ts --mode newsletter`):
+**URL da cover — SEMPRE ler `images.cover.url` de `06-public-images.json` (#2680, #1418):**
 
-```
-https://poll.diaria.workers.dev/img/img-{AAMMDD}-04-d1-2x1.jpg
+```typescript
+import { readCoverImageUrl } from "scripts/lib/beehiiv-cover-upload.ts";
+const coverUrl = readCoverImageUrl(`{edition_dir}/06-public-images.json`);
+// Exemplo: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg"
 ```
 
-Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache.
+Ou via Bash:
+```bash
+node -e "const j=require('fs').readFileSync('{edition_dir}/06-public-images.json','utf8'); console.log(JSON.parse(j).images.cover.url)"
+```
+
+**Nunca** construir a URL canônica (`img-{AAMMDD}-04-d1-2x1.jpg`) manualmente — desde #1418 o KV armazena keys md5-versionadas; a URL sem hash retorna 9 bytes `text/plain` ('Not Found'), que o guard de blob em `buildCoverDataTransferJs` agora rejeita com erro explícito (#2680). Use `images.cover.url` do JSON, que sempre tem a URL correta independente de haver ou não sufixo md5.
 
 **Fluxo correto (#2341 — #1500 primeiro, 2-step replace só como fallback):**
 

@@ -52,6 +52,7 @@
  * @param imageUrl URL pública da imagem (deve resolver fora do Beehiiv —
  *                 Cloudflare Worker /img/ por convenção)
  */
+import { readFileSync } from "node:fs";
 import { buildLocateRectJs } from "./beehiiv-real-click.ts";
 
 export function buildCoverUploadJs(imageUrl: string): string {
@@ -312,6 +313,15 @@ export function buildCoverDataTransferJs(
         blob = await res.blob();
       } catch (e) {
         return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
+      }
+      // #2680: guard — rejeitar blob inválido antes de subir lixo silenciosamente.
+      // URL canônica (sem md5 hash) retorna 9 bytes text/plain 'Not Found' no KV.
+      // Usar SEMPRE images.cover.url de 06-public-images.json (URL versionada com md5).
+      // size < 5000 é o guard primário (pega o 'Not Found' de 9 bytes); o check de
+      // MIME só rejeita quando type ESTÁ presente e não é image/* — assim um JPEG
+      // válido servido sem Content-Type (blob.type === '') não é rejeitado por engano.
+      if (blob.size < 5000 || (blob.type && !blob.type.startsWith('image/'))) {
+        return { error: 'cover blob inválido (#2680): size=' + blob.size + ' bytes, type="' + blob.type + '" — use images.cover.url de 06-public-images.json (URL md5-versionada), não a URL canônica sem hash', steps };
       }
       const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
       const dt = new DataTransfer(); dt.items.add(file);
@@ -602,6 +612,15 @@ export function buildCoverReplaceStep2_UploadJs(
       } catch (e) {
         return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
       }
+      // #2680: guard — rejeitar blob inválido antes de subir lixo silenciosamente.
+      // URL canônica (sem md5 hash) retorna 9 bytes text/plain 'Not Found' no KV.
+      // Usar SEMPRE images.cover.url de 06-public-images.json (URL versionada com md5).
+      // size < 5000 é o guard primário (pega o 'Not Found' de 9 bytes); o check de
+      // MIME só rejeita quando type ESTÁ presente e não é image/* — assim um JPEG
+      // válido servido sem Content-Type (blob.type === '') não é rejeitado por engano.
+      if (blob.size < 5000 || (blob.type && !blob.type.startsWith('image/'))) {
+        return { error: 'cover blob inválido (#2680): size=' + blob.size + ' bytes, type="' + blob.type + '" — use images.cover.url de 06-public-images.json (URL md5-versionada), não a URL canônica sem hash', steps };
+      }
       const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
       const dt = new DataTransfer(); dt.items.add(file);
       fileInput.files = dt.files;
@@ -843,4 +862,38 @@ export function buildCoverReplaceJs(imageUrl: string): string {
       };
     })()
   `;
+}
+
+/**
+ * #2680: lê `images.cover.url` de `06-public-images.json` — a URL md5-versionada
+ * correta para usar como argumento de `buildCoverDataTransferJs`.
+ *
+ * Nunca construir a URL canônica manualmente (`img-{AAMMDD}-04-d1-2x1.jpg`) —
+ * desde #1418 o KV usa keys md5-versionadas; a canônica retorna 9 bytes 'Not Found'
+ * em vez do JPEG, o que o guard de blob em `buildCoverDataTransferJs` agora rejeita
+ * explicitamente.
+ *
+ * @param publicImagesPath Caminho absoluto para `{edition_dir}/06-public-images.json`
+ * @returns URL md5-versionada ex: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg"
+ * @throws Error se images.cover.url estiver ausente (upload-images-public.ts não rodou)
+ */
+export function readCoverImageUrl(publicImagesPath: string): string {
+  let data: { images?: { cover?: { url?: string } } };
+  try {
+    data = JSON.parse(readFileSync(publicImagesPath, "utf8"));
+  } catch (e) {
+    // ENOENT (arquivo ausente — Stage 3 não rodou) ou SyntaxError (write
+    // interrompido) chegam aqui sem o hint #2680; re-throw com o caminho de
+    // recuperação para não deixar o operador no escuro (#2680 self-review).
+    throw new Error(
+      `não foi possível ler ${publicImagesPath} (${(e as Error).message}) — verifique se upload-images-public.ts --mode newsletter rodou (#2680)`,
+    );
+  }
+  const url = data?.images?.cover?.url;
+  if (!url) {
+    throw new Error(
+      `images.cover.url não encontrado em ${publicImagesPath} — verifique se upload-images-public.ts --mode newsletter rodou (#2680)`,
+    );
+  }
+  return url;
 }

@@ -1,9 +1,12 @@
 /**
- * test/beehiiv-cover-upload.test.ts (#1416)
+ * test/beehiiv-cover-upload.test.ts (#1416, #2680)
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildCoverUploadJs,
   buildCoverDataTransferJs,
@@ -15,6 +18,7 @@ import {
   buildCoverApplyLocateJs,
   buildCoverVerifyJs,
   classifyCoverVerify,
+  readCoverImageUrl,
 } from "../scripts/lib/beehiiv-cover-upload.ts";
 
 describe("buildCoverDataTransferJs — método primário (#1801 / #1500)", () => {
@@ -42,6 +46,36 @@ describe("buildCoverDataTransferJs — método primário (#1801 / #1500)", () =>
     // o JS resolve com { addThumbnailPresent, thumbnailSrc, steps } → classificável
     assert.match(js, /addThumbnailPresent/);
     assert.match(js, /thumbnailSrc/);
+  });
+
+  // ─── #2680 regressions ────────────────────────────────────────────────────
+
+  it("#2680 guard: rejeita blob < 5000 bytes (ex: 9 bytes 'Not Found' da URL canônica)", () => {
+    const js = buildCoverDataTransferJs("https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1.jpg");
+    // guard deve checar tamanho antes de subir
+    assert.match(js, /blob\.size < 5000/, "deve checar size < 5000 bytes");
+  });
+
+  it("#2680 guard: rejeita blob não-image (text/plain = URL canônica sem md5)", () => {
+    const js = buildCoverDataTransferJs("https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1.jpg");
+    assert.match(js, /blob\.type.*startsWith\('image\//,  "deve checar MIME type image/*");
+  });
+
+  it("#2680 guard: mensagem de erro menciona 06-public-images.json e URL md5-versionada", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(js, /06-public-images\.json/, "mensagem deve citar 06-public-images.json");
+    assert.match(js, /md5/, "mensagem deve citar md5-versionada");
+  });
+
+  it("#2680 guard: check de MIME é condicional a blob.type presente (não rejeita JPEG sem Content-Type)", () => {
+    // self-review: um JPEG válido grande servido sem Content-Type (blob.type === '')
+    // não deve ser rejeitado pelo guard — o size guard já cobre o caso 'Not Found' (9 bytes).
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(
+      js,
+      /blob\.type && !blob\.type\.startsWith\('image\//,
+      "MIME check deve ser condicional a blob.type ser truthy",
+    );
   });
 });
 
@@ -342,6 +376,35 @@ describe("buildCoverReplaceStep2_UploadJs (#2283 — split replace step 2, DataT
     // default existingSrc = "" → guarda existingSrcSnapshot = "" → condição é no-op
     assert.match(js, /existingSrcSnapshot/, "variável deve existir mesmo sem existingSrc");
   });
+
+  // ─── #2680 regressions ────────────────────────────────────────────────────
+
+  it("#2680 guard: rejeita blob < 5000 bytes (URL canônica retorna 9 bytes 'Not Found')", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1.jpg");
+    assert.match(js, /blob\.size < 5000/, "deve checar size < 5000 bytes antes de subir");
+  });
+
+  it("#2680 guard: rejeita blob não-image (text/plain = URL canônica sem md5)", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1.jpg");
+    assert.match(js, /blob\.type.*startsWith\('image\//, "deve checar MIME type image/*");
+  });
+
+  it("#2680 guard: mensagem de erro menciona 06-public-images.json e md5 (paridade com primário)", () => {
+    // self-review (#633): o guard de Step2 é idêntico ao de buildCoverDataTransferJs —
+    // a mensagem com a guidance precisa estar coberta nas DUAS funções.
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(js, /06-public-images\.json/, "mensagem deve citar 06-public-images.json");
+    assert.match(js, /md5/, "mensagem deve citar md5-versionada");
+  });
+
+  it("#2680 guard: check de MIME condicional a blob.type presente (não rejeita JPEG sem Content-Type)", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(
+      js,
+      /blob\.type && !blob\.type\.startsWith\('image\//,
+      "MIME check deve ser condicional a blob.type ser truthy",
+    );
+  });
 });
 
 describe("buildCoverReplaceStep1_RemoveExistingJs — confirmBtn guard (#2283 fix #7)", () => {
@@ -399,5 +462,80 @@ describe("buildCoverReplaceJs — @deprecated (back-compat #2283)", () => {
   it("retorna replaced flag pra distinguir replace vs initial upload", () => {
     const js = buildCoverReplaceJs("https://x.com/new.jpg");
     assert.ok(js.includes("replaced: !!existing"));
+  });
+});
+
+// ─── #2680 regressions: URL versionada vs canônica ──────────────────────────
+
+describe("readCoverImageUrl (#2680 — URL versionada de 06-public-images.json)", () => {
+  it("lê images.cover.url da 06-public-images.json (URL md5-versionada)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      const json = {
+        images: {
+          cover: {
+            url: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg",
+            file_id: "img-260630-04-d1-2x1-3692a95a.jpg",
+            target: "cloudflare",
+          },
+        },
+      };
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify(json));
+      const url = readCoverImageUrl(join(dir, "06-public-images.json"));
+      assert.equal(
+        url,
+        "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg",
+        "deve retornar a URL md5-versionada exata de images.cover.url",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("URL versionada tem hash md5 no nome (≠ canônica sem hash)", () => {
+    // Canonical: img-260630-04-d1-2x1.jpg (sem hash — retorna 9 bytes 'Not Found' #2680)
+    // Versioned: img-260630-04-d1-2x1-3692a95a.jpg (com 8 chars hex = md5 prefix)
+    const canonical = "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1.jpg";
+    const versioned = "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg";
+    assert.doesNotMatch(canonical, /[0-9a-f]{8}\.jpg$/, "canônica NÃO deve ter hash md5 (-.{8}.jpg)");
+    assert.match(versioned, /[0-9a-f]{8}\.jpg$/, "versionada DEVE ter hash md5 prefix antes de .jpg");
+  });
+
+  it("lança erro quando images.cover.url ausente (upload-images-public.ts não rodou)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      // JSON sem cover.url — simula 06-public-images.json incompleto
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images: { d1: {} } }));
+      assert.throws(
+        () => readCoverImageUrl(join(dir, "06-public-images.json")),
+        /images\.cover\.url não encontrado|#2680/,
+        "deve lançar erro indicando que images.cover.url está ausente",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lança erro com hint #2680 quando arquivo não existe (ENOENT)", () => {
+    // self-review: ENOENT (Stage 3 não rodou) deve surfar o hint #2680, não o erro Node cru
+    assert.throws(
+      () => readCoverImageUrl(join(tmpdir(), "nonexistent-06-public-images.json")),
+      /#2680/,
+      "ENOENT deve ser re-thrown com a guidance de upload-images-public.ts (#2680)",
+    );
+  });
+
+  it("lança erro com hint #2680 quando JSON malformado (write interrompido)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      writeFileSync(join(dir, "06-public-images.json"), '{"images": {"cover": {"url"'); // truncado
+      assert.throws(
+        () => readCoverImageUrl(join(dir, "06-public-images.json")),
+        /#2680/,
+        "SyntaxError deve ser re-thrown com a guidance #2680",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
