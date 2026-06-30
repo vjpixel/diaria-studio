@@ -295,6 +295,12 @@ export interface SecondaryThemeWarning {
   jaccard: number;
   shared_companies: string[];
   effective_threshold: number;
+  /** Razão real do match:
+   *  - 'jaccard': Jaccard >= threshold base (sem redução por empresa/stem)
+   *  - 'company': threshold reduzido por empresa compartilhada (jaccard < threshold base)
+   *  - 'stem':    prefixo de stem compartilhado com empresa (jaccard < effectiveThreshold)
+   */
+  match_reason: "jaccard" | "stem" | "company";
 }
 
 export interface CheckSecondaryThemesResult {
@@ -386,6 +392,17 @@ function findSecondaryMatch(
 
     if (jaccard >= effectiveThreshold || hasStemMatch) {
       if (bestMatch === null || jaccard > bestMatch.jaccard) {
+        // Determine the real reason for the match:
+        // - 'stem': stem prefix matched with company present, but jaccard < effectiveThreshold
+        // - 'company': company-lowered threshold triggered (jaccard < base threshold but >= company threshold)
+        // - 'jaccard': base threshold reached (regardless of company presence)
+        const match_reason: "jaccard" | "stem" | "company" =
+          hasStemMatch && jaccard < effectiveThreshold
+            ? "stem"
+            : jaccard >= SECONDARY_JACCARD_THRESHOLD
+              ? "jaccard"
+              : "company";
+
         bestMatch = {
           candidate_url: candidate.url,
           candidate_title: candidate.title,
@@ -397,6 +414,7 @@ function findSecondaryMatch(
           jaccard: Math.round(jaccard * 100) / 100,
           shared_companies: sharedCompanies,
           effective_threshold: effectiveThreshold,
+          match_reason,
         };
       }
     }
@@ -491,7 +509,7 @@ async function main(): Promise<void> {
   if (result.warnings.length > 0) {
     for (const w of result.warnings) {
       console.error(
-        `[check-secondary-themes] ⚠️  "${w.candidate_title}" (${w.candidate_bucket}) repete tema de ${w.matched_edition} secundário "${w.matched_title}" (Jaccard=${w.jaccard}, empresas=[${w.shared_companies.join(",")}])`,
+        `[check-secondary-themes] ⚠️  "${w.candidate_title}" (${w.candidate_bucket}) repete tema de ${w.matched_edition} secundário "${w.matched_title}" (Jaccard=${w.jaccard}, threshold=${w.effective_threshold}, match_reason=${w.match_reason}, empresas=[${w.shared_companies.join(",")}])`,
       );
     }
   } else {

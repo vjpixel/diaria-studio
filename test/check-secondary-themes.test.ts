@@ -239,6 +239,155 @@ describe("extractCurrentCandidates", () => {
 });
 
 // ---------------------------------------------------------------------------
+// match_reason (#2629)
+// ---------------------------------------------------------------------------
+
+describe("match_reason — stem (#2629 finding 1)", () => {
+  it("warning com jaccard < effective_threshold mas hasStemMatch=true → match_reason='stem'", () => {
+    // Cenário de stem-match com jaccard abaixo do threshold reduzido por empresa.
+    // Candidate: "Nubank contratando [9 tokens muito distintos]" → jaccard baixo (~0.06)
+    // Past: "Nubank [tokens distintos] contratações" → "contrat-" compartilhado (>= 7 chars)
+    // Resultado antes do fix: warning exibia "Jaccard=0.06 (threshold=0.08)" — parecia que
+    // threshold NÃO foi atingido. Com fix, match_reason='stem' deixa o sinal inequívoco.
+    const candidates: CurrentCandidate[] = [
+      {
+        url: "https://fintechs.com/nubank-contratando",
+        title: "Nubank contratando profissionais experientes especialistas sistemas bancários globais internacionais",
+        bucket: "radar",
+      },
+    ];
+    const pastItems: PastSecondaryItem[] = [
+      {
+        edition: "260624",
+        bucket: "radar",
+        title: "Nubank divulga relatorio contratacoes abrangente perspectivas futuras regionais",
+        url: "https://finsiders.com.br/nubank-relatorio",
+      },
+    ];
+
+    const result = checkSecondaryThemes(candidates, pastItems, 3);
+    // Deve emitir aviso (hasStemMatch via "contrat-" prefix)
+    assert.equal(result.warnings.length, 1, "deve emitir 1 aviso via stem match");
+    const w = result.warnings[0];
+    // O motivo real do match deve ser explicitamente 'stem', não 'jaccard' nem 'company'
+    assert.equal(w.match_reason, "stem", "match_reason deve ser 'stem' quando jaccard < effectiveThreshold");
+    // Jaccard deve estar ABAIXO do threshold efetivo (por isso é stem, não jaccard/company)
+    assert.ok(w.jaccard < w.effective_threshold, `jaccard=${w.jaccard} deve ser < effective_threshold=${w.effective_threshold} no caso stem`);
+    // Deve ter empresa compartilhada (stem só ativa com company)
+    assert.ok(w.shared_companies.includes("nubank"), "empresa nubank deve estar em shared_companies");
+    // Campo present no JSON (para renderização no gate)
+    assert.ok("match_reason" in w, "match_reason deve existir no objeto warning");
+  });
+});
+
+describe("match_reason — company (#2629 finding 1)", () => {
+  it("warning com jaccard entre effective_threshold e threshold_base → match_reason='company'", () => {
+    // O caso real #2605: jaccard ≈ 0.10 (acima do company threshold 0.08,
+    // abaixo do base 0.40) → match_reason='company'
+    const candidates: CurrentCandidate[] = [
+      {
+        url: "https://tecnoblog.net/nubank-nao-vai-parar",
+        title: "Nubank não vai parar de contratar por causa da IA",
+        bucket: "radar",
+      },
+    ];
+    const pastItems: PastSecondaryItem[] = [
+      {
+        edition: "260625",
+        bucket: "radar",
+        title: "Nubank prioriza mentalidade de IA nas contratações",
+        url: "https://finsiders.com.br/nubank-mentalidade-ia",
+      },
+    ];
+
+    const result = checkSecondaryThemes(candidates, pastItems, 3);
+    assert.equal(result.warnings.length, 1, "deve emitir 1 aviso");
+    const w = result.warnings[0];
+    // Jaccard ~0.10 >= company threshold 0.08, mas < base 0.40 → 'company'
+    assert.equal(w.match_reason, "company", "match_reason deve ser 'company' quando company threshold disparou");
+    assert.ok(w.jaccard >= w.effective_threshold, "Jaccard deve ser >= effective_threshold");
+    assert.ok(w.jaccard < 0.40, "Jaccard deve ser < threshold base (0.40) — senão seria 'jaccard'");
+    assert.ok(w.shared_companies.includes("nubank"));
+  });
+});
+
+describe("match_reason — jaccard (#2629 finding 1)", () => {
+  it("warning com jaccard >= threshold base (0.40) → match_reason='jaccard'", () => {
+    // Títulos com alta sobreposição de tokens, sem empresa tech
+    const candidates: CurrentCandidate[] = [
+      {
+        url: "https://gov.br/novas-politicas",
+        title: "Governo federal anuncia novas políticas públicas para habitação popular",
+        bucket: "radar",
+      },
+    ];
+    const pastItems: PastSecondaryItem[] = [
+      {
+        edition: "260624",
+        bucket: "radar",
+        title: "Governo federal lança novas políticas públicas habitação popular",
+        url: "https://agencia.gov.br/politicas-habitacao",
+      },
+    ];
+
+    const result = checkSecondaryThemes(candidates, pastItems, 3);
+    assert.equal(result.warnings.length, 1, "deve emitir 1 aviso");
+    const w = result.warnings[0];
+    assert.equal(w.match_reason, "jaccard", "match_reason deve ser 'jaccard' quando Jaccard >= 0.40");
+    assert.ok(w.jaccard >= 0.40, `Jaccard=${w.jaccard} deve ser >= 0.40`);
+  });
+});
+
+describe("match_reason — sem falso positivo (#2629)", () => {
+  it("títulos sem relação não geram warning", () => {
+    const candidates: CurrentCandidate[] = [
+      {
+        url: "https://g1.com.br/eleicoes",
+        title: "Eleições municipais registram alta abstenção no nordeste",
+        bucket: "radar",
+      },
+    ];
+    const pastItems: PastSecondaryItem[] = [
+      {
+        edition: "260624",
+        bucket: "radar",
+        title: "Banco Central anuncia corte na taxa Selic",
+        url: "https://agencia.gov.br/selic",
+      },
+    ];
+
+    const result = checkSecondaryThemes(candidates, pastItems, 3);
+    assert.equal(result.warnings.length, 0, "sem relação temática = sem aviso");
+  });
+
+  it("todos os warnings (#2629) têm match_reason válido", () => {
+    const candidates: CurrentCandidate[] = [
+      {
+        url: "https://tech.com/openai-lanca",
+        title: "OpenAI lança novo modelo de linguagem avançado",
+        bucket: "radar",
+      },
+    ];
+    const pastItems: PastSecondaryItem[] = [
+      {
+        edition: "260624",
+        bucket: "radar",
+        title: "OpenAI anuncia novo modelo de linguagem para 2027",
+        url: "https://techcrunch.com/openai-model",
+      },
+    ];
+
+    const result = checkSecondaryThemes(candidates, pastItems, 3);
+    for (const w of result.warnings) {
+      assert.ok(
+        ["jaccard", "stem", "company"].includes(w.match_reason),
+        `match_reason='${w.match_reason}' não é um valor válido`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integração: end-to-end com dados reais do caso #2605
 // ---------------------------------------------------------------------------
 
