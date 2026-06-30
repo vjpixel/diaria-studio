@@ -47,6 +47,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { injectSeed, CLARICE_SEED_EMAIL, CLARICE_SEED_NOME } from "./lib/clarice-seed.ts";
 // #2651: brevoGet + pool consolidados na lib. Re-export de brevoGet mantém as 4
 // suites de teste que importam daqui (o código de produção já migrou pra lib).
 import { brevoGet } from "./lib/brevo-client.ts";
@@ -296,8 +297,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t1 = readCsv(t1Path);
   const t1Key = emailKeyOf(t1.fields);
   const split = classifyT1(t1.rows, t1Key, engagement);
-  writeCsv(wavesDir, "w1-brevo-export-t1-openers.csv", t1.fields, split.openers);
-  writeCsv(wavesDir, "w2-brevo-export-t1-non-openers.csv", t1.fields, split.nonOpeners);
+  // #2683: injeta seed em toda wave para monitoramento; IS_SEED marca a row pra
+  // excluir de analytics (open-rate, CTR). Dedup: se o editor já for assinante
+  // T1, a row existente é marcada IS_SEED sem duplicar.
+  const t1FieldsWithSeed = [...t1.fields, "IS_SEED"];
+  writeCsv(wavesDir, "w1-brevo-export-t1-openers.csv", t1FieldsWithSeed,
+    injectSeed(split.openers, t1Key, { NOME: CLARICE_SEED_NOME }));
+  writeCsv(wavesDir, "w2-brevo-export-t1-non-openers.csv", t1FieldsWithSeed,
+    injectSeed(split.nonOpeners, t1Key, { NOME: CLARICE_SEED_NOME }));
   console.error(
     `\n📨 T1: W1(abriu)=${split.openers.length} · W2(não-abriu)=${split.nonOpeners.length} · ` +
       `suprimidos=${split.suppressed.length} · não-encontrados(excluídos)=${split.notFound.length}`,
@@ -312,9 +319,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // virariam atributos de contato espúrios na lista de produção. Papa.unparse
   // emite só os fields listados, então os MV_* nas rows são ignorados.
   const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
+  const t2FieldsWithSeed = [...t2Fields, "IS_SEED"];
+  const t2SeedDefaults = { NOME: CLARICE_SEED_NOME, RECENCY_QUARTIL: "Q1", RECENCY_RANK: "0" };
   const { w3, w4 } = representativeSplit(tagged, w3Size);
-  writeCsv(wavesDir, "w3-mv-export-t2.csv", t2Fields, w3);
-  writeCsv(wavesDir, "w4-mv-export-t2.csv", t2Fields, w4);
+  writeCsv(wavesDir, "w3-mv-export-t2.csv", t2FieldsWithSeed,
+    injectSeed(w3, t2Key, t2SeedDefaults));
+  writeCsv(wavesDir, "w4-mv-export-t2.csv", t2FieldsWithSeed,
+    injectSeed(w4, t2Key, t2SeedDefaults));
   console.error(
     `📨 T2: W3=${w3.length} · W4=${w4.length} · suprimidos(blacklist)=${dropped.length} (de ${t2.rows.length})`,
   );
@@ -330,7 +341,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const maioKey = emailKeyOf(maio.fields);
     const { kept: maioKept, dropped: maioDropped } = suppressBlacklisted(maio.rows, maioKey, blacklist);
     const maioFields = maio.fields.filter((f) => !/^MV_/i.test(f)); // não vaza MV_* pro Brevo
-    writeCsv(wavesDir, "w5-mv-export-maio.csv", maioFields, maioKept);
+    writeCsv(wavesDir, "w5-mv-export-maio.csv", [...maioFields, "IS_SEED"],
+      injectSeed(maioKept, maioKey, { NOME: CLARICE_SEED_NOME }));
     w5Count = maioKept.length;
     console.error(
       `📨 W5 (maio): ${maioKept.length} · suprimidos(blacklist)=${maioDropped.length} (de ${maio.rows.length})`,
@@ -340,6 +352,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const summary = {
     generated_for: "próximo envio Clarice (warm-up por engajamento)",
     cycle,
+    // Contagens são de assinantes reais (pré-seed). O seed (IS_SEED=true) é
+    // injetado em cada wave CSV como +1 row extra para monitoramento (#2683).
+    seed_email: CLARICE_SEED_EMAIL,
     blacklisted_suppressed: blacklist.size,
     waves: {
       w1_t1_openers: split.openers.length,

@@ -36,6 +36,7 @@ import {
 } from "./lib/clarice-segment.ts";
 import { clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { injectSeed, CLARICE_SEED_EMAIL, CLARICE_SEED_NOME } from "./lib/clarice-seed.ts";
 
 interface BuilderRow extends StoreRow {
   name: string | null;
@@ -92,9 +93,18 @@ export function buildWaveArtifacts(
   for (let i = 0; i < waves.length; i++) {
     const file = `w${i + 1}-store.csv`;
     const w = waves[i];
-    csvByFile[file] = Papa.unparse(
-      w.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" })),
-    );
+    // #2683: injeta seed address em toda wave. Dedup: se o editor for assinante
+    // elegível (send_eligible=1), já estará em w → apenas marca IS_SEED sem duplicar.
+    // Se send_eligible=0 (ou não é assinante), injeta ao fim. IS_SEED="true" marca
+    // a row pra exclusão de analytics (open-rate, CTR, priority_points).
+    // IS_SEED="" pré-populado em todas as rows pra Papa.unparse incluir a coluna
+    // no header (Papa usa as chaves do 1º objeto como colunas; o seed é o último).
+    const baseRows = w.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "", IS_SEED: "" }));
+    const withSeed = injectSeed(baseRows, "email", { NOME: CLARICE_SEED_NOME });
+    csvByFile[file] = Papa.unparse(withSeed);
+    // count = rows de assinantes reais (pré-seed). O CSV tem +1 row extra (seed).
+    // clarice-import-waves usa countRows(raw) do CSV real — esta contagem é
+    // informacional (para o summary de planejamento).
     manifest.push({ key: `W${i + 1}`, file, desc: describeWave(w), count: w.length });
   }
   return { manifest, csvByFile, seg };
@@ -150,6 +160,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     source: "store-driven (#2656)",
     budget,
     wave_size: waveSize,
+    // Contagens de assinantes reais (pré-seed). O seed (IS_SEED=true) é injetado
+    // em cada wave CSV como +1 row extra de monitoramento (#2683).
+    seed_email: CLARICE_SEED_EMAIL,
     eligible_total: seg.reSend.length + seg.firstSend.length,
     re_send: seg.reSend.length,
     first_send: seg.firstSend.length,
