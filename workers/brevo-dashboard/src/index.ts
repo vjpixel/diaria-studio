@@ -333,30 +333,34 @@ export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe f
 export const COUPONS_KV_KEY = "coupons:usage";
 
 /**
- * #2718: busca o relatório de cupons Stripe com cache KV de 5min.
+ * #2718: busca relatório de cupons com KV como fonte primária.
  *
- * Guard duplo: retorna null imediatamente se a tab não estiver habilitada OU
- * se a chave Stripe não estiver configurada. Isso garante que PII (emails dos
- * clientes) nunca é computado ou exposto quando a flag está OFF.
- *
- * Degrada silenciosamente (null) em caso de erro — igual ao padrão de `scheduled`.
+ * Fluxo: KV (populado via MCP externo) → fallback Stripe API (só se
+ * STRIPE_API_KEY configurada). Em KV-only (sem Stripe key), isFresh=true
+ * ainda serve KV — não há fonte mais fresca disponível. Retorna null quando
+ * COUPONS_TAB_ENABLED !== "true", em KV miss sem STRIPE_API_KEY, ou em erro.
  */
-/** Exported for unit tests — tests the PII guard (disabled case) without needing full Worker runtime. */
+/** Exported for unit tests. */
 export async function getCouponUsage(
   env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
   isFresh: boolean,
 ): Promise<CouponUsageReport | null> {
   if (env.COUPONS_TAB_ENABLED !== "true") return null;
   try {
-    // KV cache tem prioridade — funciona mesmo sem STRIPE_API_KEY (populado via MCP externo)
-    if (!isFresh && env.STATS_CACHE) {
-      const cached = await env.STATS_CACHE.get(COUPONS_KV_KEY, "json").catch(() => null);
-      if (cached) return cached as CouponUsageReport;
+    if (env.STATS_CACHE) {
+      const cached = await env.STATS_CACHE.get<CouponUsageReport>(COUPONS_KV_KEY, "json")
+        .catch((e) => { console.error("[#2718] KV read error:", (e as Error).message); return null; });
+      // KV hit: retorna imediatamente, EXCETO quando isFresh=true E Stripe disponível
+      // (nesse caso Stripe tem dados mais frescos). Em KV-only (sem Stripe key), KV
+      // é a fonte mais fresca mesmo com isFresh=true.
+      if (cached !== null && (!isFresh || !env.STRIPE_API_KEY)) return cached;
     }
-    // KV miss: tenta Stripe API direta (só se a key estiver configurada)
+    // KV miss ou isFresh com Stripe disponível: tenta Stripe API
     if (!env.STRIPE_API_KEY) return null;
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
-    if (!isFresh && env.STATS_CACHE) {
+    // Sempre grava de volta ao KV — inclusive em isFresh, para atualizar o cache
+    // das sessões seguintes (não só do caller que pediu ?fresh=1).
+    if (env.STATS_CACHE) {
       await env.STATS_CACHE.put(COUPONS_KV_KEY, JSON.stringify(report), {
         expirationTtl: 300,
       }).catch(() => { /* KV erro nunca bloqueia o render */ });
@@ -3156,14 +3160,16 @@ export default {
       }
     }
 
-    // #2718: rota de cupons Stripe — 404 quando flag OFF ou STRIPE_API_KEY ausente (PII guard).
+    // #2718: rota de cupons — requer auth explícita (PII: emails de clientes).
+    // Não está inclusa na isenção /api/* (que é para automação interna sem cookie).
     if (path === "/api/coupons") {
+      if (!isAuthenticated(request, env)) return loginPage();
       const data = await getCouponUsage(env, isFresh);
       if (!data) return new Response("Not found", { status: 404 });
       return new Response(JSON.stringify(data, null, 2), {
         headers: {
           "Content-Type": "application/json",
-          "Cache-Control": "private, max-age=300",
+          "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
         },
       });
     }

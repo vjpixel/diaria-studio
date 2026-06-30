@@ -91,18 +91,17 @@ const syntheticUsage: CouponUsageReport = {
 const emptyCampaigns: [] = [];
 
 // ---------------------------------------------------------------------------
-// Tests: getCouponUsage — PII guard para a rota /api/coupons
-// Testável sem runtime do Worker porque o guard retorna null antes de tocar KV/Stripe.
+// Tests: getCouponUsage — PII guard + KV-first behavior (#2718, #2726)
 // ---------------------------------------------------------------------------
 
 describe("getCouponUsage — PII guard (/api/coupons)", () => {
-  // Env mínima: sem STATS_CACHE (o guard retorna null antes de qualquer KV access)
+  // Env sem STATS_CACHE: testa o guard de flag e o fallback "sem Stripe + sem KV → null"
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const makeEnv = (opts: { tabEnabled?: string; apiKey?: string }) =>
     ({
       COUPONS_TAB_ENABLED: opts.tabEnabled,
       STRIPE_API_KEY: opts.apiKey,
-      STATS_CACHE: undefined as any, // KVNamespace only available in Worker runtime
+      STATS_CACHE: undefined as any, // KVNamespace só disponível no runtime do Worker
     }) as any;
 
   it("retorna null quando COUPONS_TAB_ENABLED está ausente", async () => {
@@ -115,9 +114,44 @@ describe("getCouponUsage — PII guard (/api/coupons)", () => {
     assert.equal(result, null, "deve retornar null → rota retornaria 404");
   });
 
-  it("retorna null quando STRIPE_API_KEY está ausente (mesmo com flag ON)", async () => {
+  it("retorna null quando KV e STRIPE_API_KEY estão ausentes (flag ON)", async () => {
+    // Cobre o path: STATS_CACHE undefined → sem KV → sem Stripe key → null
     const result = await getCouponUsage(makeEnv({ tabEnabled: "true" }), false);
-    assert.equal(result, null, "sem chave Stripe → deve retornar null → rota retornaria 404");
+    assert.equal(result, null, "KV vazio + sem Stripe key → deve retornar null → rota retornaria 404");
+  });
+
+  // Regressão #2726: o comportamento KV-first (cobre o path principal do PR)
+  it("retorna dados do KV mesmo sem STRIPE_API_KEY quando KV tem dados (isFresh=false)", async () => {
+    const mockKv = { get: async () => syntheticUsage, put: async () => {} };
+    const result = await getCouponUsage(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
+      false,
+    );
+    assert.notEqual(result, null, "KV hit deve retornar dados mesmo sem STRIPE_API_KEY");
+    assert.deepEqual(result, syntheticUsage);
+  });
+
+  it("retorna dados do KV quando isFresh=true mas STRIPE_API_KEY ausente (KV-only deployment)", async () => {
+    // Em KV-only, isFresh=true não tem fonte mais fresca que o KV — deve servir KV.
+    const mockKv = { get: async () => syntheticUsage, put: async () => {} };
+    const result = await getCouponUsage(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
+      true, // isFresh=true
+    );
+    assert.notEqual(result, null, "KV-only + isFresh=true: sem Stripe disponível → retorna KV como melhor disponível");
+    assert.deepEqual(result, syntheticUsage);
+  });
+
+  it("retorna null quando isFresh=true, KV vazio e STRIPE_API_KEY ausente", async () => {
+    const mockKv = { get: async () => null, put: async () => {} };
+    const result = await getCouponUsage(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
+      true,
+    );
+    assert.equal(result, null, "isFresh=true + KV vazio + sem Stripe → null");
   });
 });
 
