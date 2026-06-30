@@ -1172,7 +1172,7 @@ Agora interaja!`,
     }));
     assert.match(html, /Para encerrar/); // #1936: kicker sem emoji
     // #2532: "**Diar.ia**" → bold preservado + wordmark diar.ia.br (pontos teal) interno.
-    assert.match(html, /<b>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/b>/);
+    assert.match(html, /<b><strong>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/strong><\/b>/);
     // #1936: lista vira PILLS (DS), precedidas de "Acesse nossas curadorias:" (#1942)
     assert.match(html, /Acesse nossas curadorias:/);
     assert.match(html, /border-radius:999px/);
@@ -1435,7 +1435,7 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     // HTML escape do & → &amp; (segurança contra injection de entities)
     // #2532: a marca "Diar.ia" renderiza como wordmark diar.ia.br (pontos teal);
     // o escape do & precede o wordmark, garantindo que ambos coexistem.
-    assert.match(html, /&amp; a diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span> encontrou/);
+    assert.match(html, /&amp; a <strong>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/strong> encontrou/);
   });
 
   it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {
@@ -2103,8 +2103,9 @@ describe("DS_STYLE_BLOCK — padding lateral mobile (#2514)", () => {
 });
 
 describe("applyBrandWordmark (#2532 — Diar.ia → diar.ia.br teal)", () => {
+  // #2674: wordmark agora em <strong> (negrito) — `.` e `.br` no teal.
   const WM =
-    'diar<span style="color:#00A0A0">.</span>ia<span style="color:#00A0A0">.br</span>';
+    '<strong>diar<span style="color:#00A0A0">.</span>ia<span style="color:#00A0A0">.br</span></strong>';
 
   it("token da marca em texto puro → wordmark com pontos teal", () => {
     assert.equal(applyBrandWordmark("a Diar.ia encontrou"), `a ${WM} encontrou`);
@@ -2124,6 +2125,21 @@ describe("applyBrandWordmark (#2532 — Diar.ia → diar.ia.br teal)", () => {
   it("NÃO casa URL lowercase diar.ia.br (domínio já existente)", () => {
     const url = 'href="https://diar.ia.br/p/post"';
     assert.equal(applyBrandWordmark(url), url);
+  });
+
+  it("#2674: casa 'diar.ia.br' minúsculo em PROSA (ex: linha de comissão)", () => {
+    assert.equal(
+      applyBrandWordmark("a diar.ia.br recebe comissão"),
+      `a ${WM} recebe comissão`,
+    );
+    // entre `**` (negrito do MD) também casa
+    assert.equal(applyBrandWordmark("da **diar.ia.br**"), `da **${WM}**`);
+  });
+
+  it("#2674: URL-safe — diar.ia.br precedido por / ou . ou seguido por /path NÃO casa", () => {
+    assert.equal(applyBrandWordmark("www.diar.ia.br"), "www.diar.ia.br");
+    assert.equal(applyBrandWordmark("visite diar.ia.br/livros hoje"), "visite diar.ia.br/livros hoje");
+    assert.equal(applyBrandWordmark("user@diar.ia.br"), "user@diar.ia.br");
   });
 
   it("NÃO casa 'diaria' sem ponto (livros.diaria.workers.dev)", () => {
