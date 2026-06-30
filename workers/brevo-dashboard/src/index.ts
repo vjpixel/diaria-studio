@@ -337,8 +337,9 @@ export const COUPONS_KV_KEY = "coupons:usage";
  *
  * Degrada silenciosamente (null) em caso de erro — igual ao padrão de `scheduled`.
  */
-async function getCouponUsage(
-  env: Env,
+/** Exported for unit tests — tests the PII guard (disabled case) without needing full Worker runtime. */
+export async function getCouponUsage(
+  env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
   isFresh: boolean,
 ): Promise<CouponUsageReport | null> {
   if (env.COUPONS_TAB_ENABLED !== "true" || !env.STRIPE_API_KEY) return null;
@@ -348,7 +349,7 @@ async function getCouponUsage(
       if (cached) return cached as CouponUsageReport;
     }
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
-    if (env.STATS_CACHE) {
+    if (!isFresh && env.STATS_CACHE) {
       await env.STATS_CACHE.put(COUPONS_KV_KEY, JSON.stringify(report), {
         expirationTtl: 300,
       }).catch(() => { /* KV erro nunca bloqueia o render */ });
@@ -2902,7 +2903,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       <td>${escHtml(durLabel)}</td>
       <td>${e.timesRedeemed.toLocaleString("pt-BR")}</td>
       <td>${e.rowCount.toLocaleString("pt-BR")}</td>
-      <td>${totalDiscount}</td>
+      <td>${escHtml(totalDiscount)}</td>
     </tr>`;
   }).join("\n");
 
@@ -2918,7 +2919,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       <td>${escHtml(r.coupon_code)}</td>
       <td>${escHtml(r.customer_email)}</td>
       <td>${escHtml(r.interval)}</td>
-      <td>${dur}</td>
+      <td>${escHtml(dur)}</td>
       <td>${escHtml(r.status)}</td>
       <td>${escHtml(date)}</td>
     </tr>`;

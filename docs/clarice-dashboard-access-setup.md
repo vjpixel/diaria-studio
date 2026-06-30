@@ -94,3 +94,24 @@ A tab de cupons exibe e-mails de clientes (PII). O Worker implementa um guard du
 - `STRIPE_API_KEY` ausente → idem.
 
 Mas esse guard só funciona **em conjunto** com o Cloudflare Access. Se a tab for habilitada antes do Access estar ativo, qualquer visitante anônimo veria os e-mails. Por isso o Access deve ser o **primeiro passo**, não o último.
+
+---
+
+## Desabilitando a tab de cupons (rollback)
+
+Se precisar desabilitar a tab após tê-la ativado:
+
+1. Defina `COUPONS_TAB_ENABLED = "false"` (via `wrangler.toml` + deploy, ou via dashboard).
+2. **Purgue o cache KV** — o Worker persiste o último HTML renderizado em `LASTGOOD_KEY` (`dash:lastgood:html`) com TTL de 1h para degradação graciosa em caso de rate-limit da Brevo. Esse snapshot pode conter a tab de cupons com e-mails. Sem a purga, um request com rate-limit nos próximos 60 minutos serviria o HTML antigo.
+
+```bash
+# Listar namespaces para encontrar o ID correto:
+npx wrangler kv namespace list
+
+# Deletar as chaves de last-good e coupon cache:
+npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "dash:lastgood:html"
+npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "dash:lastgood:hash"
+npx wrangler kv key delete --namespace-id <STATS_CACHE_NAMESPACE_ID> "coupons:usage"
+```
+
+Após a purga, novos renders não incluirão a tab de cupons. O LASTGOOD_KEY será sobrescrito com HTML sem a tab no primeiro request bem-sucedido.

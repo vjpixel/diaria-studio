@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   renderDashboardHtml,
   renderCouponTabPanel,
+  getCouponUsage,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { CouponUsageReport } from "../scripts/lib/stripe-coupons.ts";
 
@@ -88,6 +89,37 @@ const syntheticUsage: CouponUsageReport = {
 
 // Campanhas mínimas para renderDashboardHtml não explodir
 const emptyCampaigns: [] = [];
+
+// ---------------------------------------------------------------------------
+// Tests: getCouponUsage — PII guard para a rota /api/coupons
+// Testável sem runtime do Worker porque o guard retorna null antes de tocar KV/Stripe.
+// ---------------------------------------------------------------------------
+
+describe("getCouponUsage — PII guard (/api/coupons)", () => {
+  // Env mínima: sem STATS_CACHE (o guard retorna null antes de qualquer KV access)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const makeEnv = (opts: { tabEnabled?: string; apiKey?: string }) =>
+    ({
+      COUPONS_TAB_ENABLED: opts.tabEnabled,
+      STRIPE_API_KEY: opts.apiKey,
+      STATS_CACHE: undefined as any, // KVNamespace only available in Worker runtime
+    }) as any;
+
+  it("retorna null quando COUPONS_TAB_ENABLED está ausente", async () => {
+    const result = await getCouponUsage(makeEnv({}), false);
+    assert.equal(result, null, "deve retornar null → rota retornaria 404");
+  });
+
+  it("retorna null quando COUPONS_TAB_ENABLED='false'", async () => {
+    const result = await getCouponUsage(makeEnv({ tabEnabled: "false" }), false);
+    assert.equal(result, null, "deve retornar null → rota retornaria 404");
+  });
+
+  it("retorna null quando STRIPE_API_KEY está ausente (mesmo com flag ON)", async () => {
+    const result = await getCouponUsage(makeEnv({ tabEnabled: "true" }), false);
+    assert.equal(result, null, "sem chave Stripe → deve retornar null → rota retornaria 404");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests: renderCouponTabPanel (unitário, sem deps do dashboard)
