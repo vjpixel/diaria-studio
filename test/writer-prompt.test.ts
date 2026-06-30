@@ -117,3 +117,16 @@ describe("ERRO INTENCIONAL — writer emite placeholder, EDITOR escreve declara�
     );
   });
 });
+
+// #2657 — safe-area do crop 1:1 documentada no agent
+describe("writer-destaque.md safe-area invariant (#2657)", () => {
+  const writerDestaqueContent = readFileSync(WRITER_DESTAQUE_MD, "utf8");
+
+  it("menciona instrução de safe-area / terço central para crop 1:1", () => {
+    assert.match(
+      writerDestaqueContent,
+      /safe.?area|terço central|agrup.*no terço|central.*crop/i,
+      "writer-destaque.md deve mencionar safe-area para múltiplos sujeitos no crop 1:1",
+    );
+  });
+});

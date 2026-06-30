@@ -23,7 +23,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - **NUNCA** incluir resolução em pixels (ex: "1600x900px", "1920x1080px"). Proibido.
 - **Não** mencionar "Noite Estrelada" ou obras reconhecíveis de Van Gogh. Evitar céu noturno estrelado com pinceladas giratórias — produz clone de Noite Estrelada.
 - Descrição em português, concreta, com elementos visuais claros.
-- **Composição para crop.** A imagem D1 é usada em 2:1 (wide, newsletter) e 1:1 (square, redes sociais). O prompt deve garantir que os elementos principais fiquem **centrados e distribuídos horizontalmente**, sem depender de bordas verticais. Evitar cenas verticais (foguete decolando, prédio alto) que perdem sentido no crop 2:1. Preferir composições panorâmicas onde o crop preserva a narrativa visual.
+- **Composição para crop (#2657).** A imagem D1 é usada em 2:1 (wide, newsletter) e 1:1 (square, redes sociais). O crop quadrado extrai os 800×800 pixels centrais de uma imagem 1600×800 — equivalente à metade central da largura (safe-area de ~25% a ~75% horizontal). **Quando houver múltiplos sujeitos principais, todos devem ser agrupados no terço central da composição**, nunca espalhados pelas bordas laterais. Contra-exemplo do bug 260629: 3 esferas (Sol/Terra/Lua) distribuídas ao longo de toda a largura — o crop central captura só a do meio. Evitar cenas verticais (foguete decolando, prédio alto) que perdem sentido no crop 2:1. Esta instrução também está fixada como guard determinístico no STYLE_SUFFIX em `scripts/image-generate.ts`.
 - **Sem texto visível (#373).** Todo prompt deve terminar com: `Sem texto, letras, palavras, letreiros, placas ou legendas visíveis na imagem.` Não descrever elementos que implicitamente contenham texto (cartazes, painéis digitais com conteúdo, telas com texto legível). Alternativas: painel luminoso abstrato, cartazes coloridos sem texto, tela iluminada com cursor piscante.
 
 ## 3. Destaques
@@ -84,7 +84,7 @@ Audiência detalhada: ver `context/audience-profile.md` (gerado do Beehiiv MCP).
 
 Antes de aprovar o texto final da edição, validar:
 
-- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada.
+- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada, múltiplos sujeitos agrupados no terço central (safe-area crop 1:1).
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
 - [ ] Todos os links ausentes em `data/past-editions.md`.
 - [ ] Todos os links dentro da janela de datas da edição.
