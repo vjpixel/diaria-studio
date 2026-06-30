@@ -112,7 +112,7 @@ Reusa o schema do overnight + campos próprios de desbloqueio: `block_category` 
 
 ## Fronteira com o overnight nas ambíguas (cat C)
 
-`/diaria-develop` **trabalha** as issues ambíguas de trade-off-real (cat. C — decisão de produto/editorial). **Decisão atual (#2636):** develop pega cat. C, mas **o briefing do overnight NÃO foi alterado** — ou seja, hoje ambas as skills podem considerar a mesma issue ambígua (o overnight ainda pode perguntar sobre ela no seu briefing). **Risco de competição conhecido e aceito por ora**; o ajuste do overnight (marcá-las `pulada` motivo `ambigua` e deixá-las exclusivamente para o develop) é um **follow-up separado**, não feito nesta skill.
+`/diaria-develop` **trabalha** as issues ambíguas de trade-off-real (cat. C — decisão de produto/editorial). **Fronteira resolvida (#2640):** o `/diaria-overnight` marca issues de trade-off-real como `pulada` motivo `ambígua/trade-off-real`, posta comentário na issue direcionando ao `/diaria-develop`, e **nunca** as inclui no seu briefing. Ambiguidade trivial-mas-não-documentada (escolha técnica sem impacto diferencial em usuário) continua no briefing do overnight; trade-off-real é escopo exclusivo do develop.
 
 ## Regras
 
