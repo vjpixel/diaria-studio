@@ -127,7 +127,7 @@ export interface PastSecondaryItem {
   url: string;
 }
 
-const SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"] as const;
+export const SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"] as const;
 
 interface ApprovedEntry {
   url?: string;
@@ -236,7 +236,7 @@ interface CategorizedHighlight {
   [key: string]: unknown;
 }
 
-interface CategorizedJson {
+export interface CategorizedJson {
   highlights?: CategorizedHighlight[];
   radar?: ApprovedEntry[];
   lancamento?: ApprovedEntry[];

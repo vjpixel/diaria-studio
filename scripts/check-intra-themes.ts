@@ -88,12 +88,19 @@ import {
   highlightUrl,
   DEFAULT_INTRA_DESTAQUE_COUNT,
 } from "./dedup-intra-edition.ts";
-import { extractCompaniesFromText } from "./check-secondary-themes.ts";
+import {
+  extractCompaniesFromText,
+  SECONDARY_BUCKETS,
+  CategorizedJson,
+} from "./check-secondary-themes.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+// Article and HighlightEntry are kept local — needed for internal type casts
+// (CategorizedJson.highlights uses CategorizedHighlight from check-secondary-themes
+// while highlightTitle/highlightUrl from dedup-intra-edition expect this shape).
 interface Article {
   url: string;
   title?: string;
@@ -107,17 +114,6 @@ interface HighlightEntry {
   article?: Article;
   [key: string]: unknown;
 }
-
-interface CategorizedJson {
-  highlights?: HighlightEntry[];
-  radar?: Article[];
-  lancamento?: Article[];
-  use_melhor?: Article[];
-  video?: Article[];
-  [key: string]: unknown;
-}
-
-const SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"] as const;
 
 export interface IntraClusterItem {
   url: string;
@@ -260,7 +256,10 @@ export function checkIntraThemes(
   }
 
   // Coletar destaques (top N por rank)
-  const allHighlights = data.highlights ?? [];
+  // Cast necessário: CategorizedJson.highlights usa CategorizedHighlight (article.url opcional)
+  // enquanto highlightTitle/highlightUrl de dedup-intra-edition esperam url obrigatória.
+  // Compatível em runtime — highlightUrl faz `h.url ?? h.article?.url` (null-safe).
+  const allHighlights = (data.highlights ?? []) as unknown as HighlightEntry[];
   const topHighlights = [...allHighlights]
     .sort((a, b) => {
       const ra = typeof a.rank === "number" ? a.rank : 999;
