@@ -51,6 +51,11 @@
  * (circuit breaker threshold), sem token canônico no DS de marca.
  */
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
+import {
+  fetchCouponUsage,
+  type CouponUsageReport,
+  type CouponCodeReport,
+} from "../../../scripts/lib/stripe-coupons.ts";
 
 const DS = {
   ...DS_COLORS,
@@ -69,6 +74,10 @@ export interface Env {
   BREVO_API_KEY: string;
   /** KV namespace para cache de stats imutáveis (#2144) */
   STATS_CACHE: KVNamespace;
+  /** Chave Stripe restrita (read-only). Secret via `wrangler secret put STRIPE_API_KEY`. */
+  STRIPE_API_KEY?: string;
+  /** Tab de cupons habilitada? Deve ser "true" explicitamente. Default OFF. (#2718) */
+  COUPONS_TAB_ENABLED?: string;
 }
 
 interface BrevoCampaignStats {
@@ -315,6 +324,42 @@ export interface ContactsSummary {
 
 export const LASTGOOD_KEY = "dash:lastgood:html";
 export const LASTGOOD_TTL = 3600; // 1h — janela de rate-limit da Brevo cabe folgada
+
+// #2718: chave KV do relatório de cupons Stripe (TTL 5min, mesma granularidade do dashboard).
+export const COUPONS_KV_KEY = "coupons:usage";
+
+/**
+ * #2718: busca o relatório de cupons Stripe com cache KV de 5min.
+ *
+ * Guard duplo: retorna null imediatamente se a tab não estiver habilitada OU
+ * se a chave Stripe não estiver configurada. Isso garante que PII (emails dos
+ * clientes) nunca é computado ou exposto quando a flag está OFF.
+ *
+ * Degrada silenciosamente (null) em caso de erro — igual ao padrão de `scheduled`.
+ */
+/** Exported for unit tests — tests the PII guard (disabled case) without needing full Worker runtime. */
+export async function getCouponUsage(
+  env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
+  isFresh: boolean,
+): Promise<CouponUsageReport | null> {
+  if (env.COUPONS_TAB_ENABLED !== "true" || !env.STRIPE_API_KEY) return null;
+  try {
+    if (!isFresh && env.STATS_CACHE) {
+      const cached = await env.STATS_CACHE.get(COUPONS_KV_KEY, "json").catch(() => null);
+      if (cached) return cached as CouponUsageReport;
+    }
+    const report = await fetchCouponUsage(env.STRIPE_API_KEY);
+    if (!isFresh && env.STATS_CACHE) {
+      await env.STATS_CACHE.put(COUPONS_KV_KEY, JSON.stringify(report), {
+        expirationTtl: 300,
+      }).catch(() => { /* KV erro nunca bloqueia o render */ });
+    }
+    return report;
+  } catch (e) {
+    console.error("[#2718] getCouponUsage falhou — tab de cupons oculta:", e instanceof Error ? e.message : e);
+    return null;
+  }
+}
 
 // #2282: chave auxiliar que guarda o hash djb2 do último render bom gravado.
 // Permite write CONDICIONAL — só grava quando o conteúdo mudou, cortando writes/dia.
@@ -1192,6 +1237,7 @@ export function renderDashboardHtml(
   cohorts: EngagementCohorts | null = null, // #2426: pré-computado via KV
   mvStatus: MvStatus | null = null, // #2609: status MV por grupo
   contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
+  couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -1336,6 +1382,8 @@ export function renderDashboardHtml(
   const mvStatusSection = renderMvStatusSection(mvStatus);
   // #2653: sumário do store único de contatos (pré-computado via KV).
   const contactsSummarySection = renderContactsSummarySection(contactsSummary);
+  // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
+  const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage) : "";
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -1450,6 +1498,7 @@ export function renderDashboardHtml(
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
+${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
@@ -1457,6 +1506,7 @@ export function renderDashboardHtml(
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / CTR</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
+  ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
 <!-- tab panels -->
@@ -1571,6 +1621,11 @@ ${aggregatedLinksSection}
   <div class="tab-panel" id="panel-contatos" role="tabpanel" aria-labelledby="tablabel-contatos">
 ${contactsSummarySection}
   </div><!-- /panel-contatos -->
+
+${couponUsage ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
+  <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
+${couponTabHtml}
+  </div><!-- /panel-cupons -->` : ''}
 
 </div><!-- /tab-panels -->
 
@@ -2821,6 +2876,95 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
 }
 
 /**
+ * #2718: renderiza o painel de cupons Stripe (Aba 5).
+ * Chamada APENAS quando couponUsage != null (tab habilitada + flag ON + STRIPE_API_KEY presente).
+ * Exportada para testes unitários de PII-off.
+ */
+export function renderCouponTabPanel(usage: CouponUsageReport): string {
+  const fmtBRL = (cents: number): string => {
+    const abs = Math.abs(cents);
+    return `R$${Math.floor(abs / 100)},${String(abs % 100).padStart(2, "0")}`;
+  };
+
+  const codes = Object.keys(usage).sort();
+
+  const summaryRows = codes.map((code) => {
+    const e = usage[code] as CouponCodeReport;
+    const firstRow = e.redemptions[0];
+    const pct = firstRow?.percent_off ?? null;
+    const dur = firstRow?.duration ?? "—";
+    const durLabel = dur === "forever" ? "forever (recorrente)" : dur;
+    const totalDiscount = dur === "forever"
+      ? `${fmtBRL(e.totalProjectedDiscountCents)}/período`
+      : fmtBRL(e.totalProjectedDiscountCents);
+    return `<tr>
+      <td><strong>${escHtml(code)}</strong></td>
+      <td>${pct != null ? `${pct}%` : "—"}</td>
+      <td>${escHtml(durLabel)}</td>
+      <td>${e.timesRedeemed.toLocaleString("pt-BR")}</td>
+      <td>${e.rowCount.toLocaleString("pt-BR")}</td>
+      <td>${escHtml(totalDiscount)}</td>
+    </tr>`;
+  }).join("\n");
+
+  const allRows = codes.flatMap((code) => (usage[code] as CouponCodeReport).redemptions);
+  const detailRows = allRows.map((r) => {
+    const date = new Date(r.created * 1000).toLocaleDateString("pt-BR", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+    });
+    const dur = r.duration === "forever"
+      ? `${fmtBRL(r.discount_value_cents)}/período`
+      : fmtBRL(r.discount_value_cents);
+    return `<tr>
+      <td>${escHtml(r.coupon_code)}</td>
+      <td>${escHtml(r.customer_email)}</td>
+      <td>${escHtml(r.interval)}</td>
+      <td>${escHtml(dur)}</td>
+      <td>${escHtml(r.status)}</td>
+      <td>${escHtml(date)}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `
+<section class="phase2-section" id="coupon-summary">
+  <h2 class="section-title">Resumo por cupom</h2>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cupom</th>
+        <th>Desconto</th>
+        <th>Duração</th>
+        <th>times_redeemed</th>
+        <th>Assinaturas</th>
+        <th>Desconto projetado total</th>
+      </tr>
+    </thead>
+    <tbody>${summaryRows}</tbody>
+  </table>
+  </div>
+</section>
+<section class="phase2-section" id="coupon-detail">
+  <h2 class="section-title">Detalhe por assinatura</h2>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cupom</th>
+        <th>Email</th>
+        <th>Plano</th>
+        <th>Desconto</th>
+        <th>Status</th>
+        <th>Criada</th>
+      </tr>
+    </thead>
+    <tbody>${detailRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
  * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
  * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
@@ -2934,6 +3078,18 @@ export default {
       }
     }
 
+    // #2718: rota de cupons Stripe — 404 quando flag OFF ou STRIPE_API_KEY ausente (PII guard).
+    if (path === "/api/coupons") {
+      const data = await getCouponUsage(env, isFresh);
+      if (!data) return new Response("Not found", { status: 404 });
+      return new Response(JSON.stringify(data, null, 2), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "private, max-age=300",
+        },
+      });
+    }
+
     if (path === "/" || path === "/index.html") {
       try {
         // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
@@ -2961,7 +3117,9 @@ export default {
         const contactsSummary = env.STATS_CACHE
           ? ((await env.STATS_CACHE.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null)) as ContactsSummary | null)
           : null;
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary);
+        // #2718: cupons Stripe — null quando flag OFF ou STRIPE_API_KEY ausente (PII guard).
+        const couponUsage = await getCouponUsage(env, isFresh);
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
