@@ -627,6 +627,31 @@ export function isLaunchSlug(url: string): boolean {
   }
 }
 
+/**
+ * #2663: URL slug que indica newsletter/roundup — conteúdo agregador de links,
+ * não tutorial hands-on. Prevalece sobre sinais de how-to quando ambos aparecem
+ * (precedência: roundup > how-to — ver isNewsNotTutorial e isRadarHowToEligible).
+ *
+ * Conservador: apenas os termos de ALTÍSSIMA precisão no slug. "weekly" sozinho
+ * não entra porque "weekly-reports", "build-weekly-digest-in-python" seriam FP.
+ * "newsletter" e "roundup" são suficientemente específicos como slug-token.
+ *
+ * Caso real 260630: langchain.com/blog/june-2026-langchain-newsletter → slug
+ * termina em "newsletter" → bloqueado de use_melhor mesmo que o domínio
+ * (langchain.com/blog) esteja no TUTORIAL_PATTERNS.
+ */
+const ROUNDUP_SLUG_RE = /\b(newsletter|roundup|this[- ]week[- ]in)\b/i;
+
+export function isRoundupSlug(url: string): boolean {
+  let slug = "";
+  try {
+    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    return false;
+  }
+  return ROUNDUP_SLUG_RE.test(slug);
+}
+
 // #2469 (finding 4): isDevReleaseNote vive em scripts/lib/release-note-detect.ts
 // (fonte única compartilhada com use-melhor-curation.ts, que não pode importar
 // categorize.ts por dependência circular). Re-exportado aqui para manter a API pública.
@@ -661,7 +686,12 @@ export function isNewsNotTutorial(article: Article): boolean {
   // (ex: "How to use Amazon Bedrock Guardrails" em .../introducing-bedrock-guardrails/).
   // URL-slug é sinal mais confiável que keywords do título nesses casos.
   if (isLaunchSlug(article.url ?? "")) return true;
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug)
+  // #2663: roundup/newsletter no slug → não é tutorial, é aggregador de links.
+  // Roda ANTES de isTutorialByKeyword para que roundup > how-to (prioridade explícita):
+  // um roundup com "veja como" no título (ex: "Newsletter: veja como usar X") deve
+  // ir para RADAR, não para USE MELHOR. Caso real: langchain.com/blog/june-2026-langchain-newsletter.
+  if (isRoundupSlug(article.url ?? "")) return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug e roundup)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
@@ -1039,8 +1069,18 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // "guide" bare é conservador: exige preposição "to/for" para evitar "style guide",
 // "buyer guide" ou "productivity guide" (não acionáveis).
 // "techniques for" e "patterns for" exigem preposição por analogia.
+//
+// #2666: adicionados sinais PT-BR de how-to em manchete de imprensa:
+//   "veja como" — "X consegue fazer Y; veja como" (instrução no final do título)
+//   "veja o prompt" — "usamos este prompt; veja o prompt" (compartilha prompt acionável)
+//   "aprenda a" + verbo — "aprenda a usar IA para X" (instrução direta)
+// Esses padrões cobrem headlines BR onde o how-to fica no final da manchete
+// em vez do imperativo no início ("Como fazer X").
+// PRECEDÊNCIA: roundup (isRoundupSlug/isNewsNotTutorial) vence esses sinais —
+// "Newsletter: veja como usar X" → isRoundupSlug retorna true, isTutorialByKeyword
+// nunca chega a vencer. Ver isNewsNotTutorial para a ordem de avaliação.
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\bveja\s+(como|o\s+prompt)\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;

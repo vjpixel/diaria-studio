@@ -958,8 +958,24 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 // ("New Tutorial Series on LLMs", "The State of Tutorials in 2026").
 // Substituído por `tutorial\s*:` (com dois-pontos — sinal de how-to) e
 // `tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)` (com contexto how-to explícito).
+//
+// #2666: adicionados sinais PT-BR de how-to em manchete de imprensa — "veja como"
+// e "veja o prompt". Padrão "X consegue fazer Y; veja como" é sinal de que o
+// artigo é um tutorial disfarçado de manchete (não um simples anúncio de notícia).
+// "aprenda a + verbo" é um padrão PT-BR de instrução direta.
+// PRECEDÊNCIA: roundup (ROUNDUP_GUARD_RE em isRadarHowToEligible) vence esses
+// sinais — "Newsletter: veja como usar X" → isRoundupSlug retorna true →
+// isRadarHowToEligible retorna false antes de checar RADAR_HOWTO_PROMOTE_RE.
 const RADAR_HOWTO_PROMOTE_RE =
-  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b)/i;
+  /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b|veja\s+(?:como|o\s+prompt)\b|aprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b)/i;
+
+/**
+ * #2663: guard de roundup/newsletter para isRadarHowToEligible.
+ * Definido localmente (não importado de categorize.ts) para evitar dependência circular.
+ * Conservador: só os termos de alta precisão que tornam o slug inequivocamente um roundup.
+ * Espelha ROUNDUP_SLUG_RE em categorize.ts — manter em sincronia ao editar.
+ */
+const ROUNDUP_GUARD_RE = /\b(newsletter|roundup|this[- ]week[- ]in)\b/i;
 
 /**
  * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to
@@ -978,15 +994,20 @@ const RADAR_HOWTO_PROMOTE_RE =
  * @param summary Sumário/descrição opcional.
  */
 export function isRadarHowToEligible(url: string, title: string, summary = ""): boolean {
-  // Sem sinal how-to explícito no título nem no slug PT-BR da URL → não promover.
-  // #2469 (finding 3): checar também o slug da URL via HOWTO_BR_SIGNAL_RE —
-  // conforme prometido no docstring, mas que antes nunca era chamado.
+  // #2663: newsletter/roundup no slug → não promover, mesmo que título tenha
+  // sinal de how-to (ex: "Newsletter: veja como usar X"). Roundup > how-to.
+  // Roda ANTES de RADAR_HOWTO_PROMOTE_RE para garantir a precedência.
   let urlSlug = "";
   try {
     urlSlug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
   } catch {
     // URL inválida — prossegue sem slug
   }
+  if (ROUNDUP_GUARD_RE.test(urlSlug) || ROUNDUP_GUARD_RE.test(title)) return false;
+
+  // Sem sinal how-to explícito no título nem no slug PT-BR da URL → não promover.
+  // #2469 (finding 3): checar também o slug da URL via HOWTO_BR_SIGNAL_RE —
+  // conforme prometido no docstring, mas que antes nunca era chamado.
   if (!RADAR_HOWTO_PROMOTE_RE.test(title) && !HOWTO_BR_SIGNAL_RE.test(urlSlug)) return false;
 
   // Opinião ou estudo → não promover (how-to pode estar no summary, mas o conteúdo não é acionável).
