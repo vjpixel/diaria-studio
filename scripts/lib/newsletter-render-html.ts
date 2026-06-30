@@ -1014,19 +1014,28 @@ function escText(s: string): string {
  * corpo, exibe o domínio com os pontos em verde.
  *
  * Aplica-se a conteúdo de TEXTO já renderizado (segmentos de prosa). Casa o
- * token `Diar.ia` (D maiúsculo), absorvendo um sufixo `.br` opcional no MESMO
- * match — `Diar.ia.br` capital vira 1 wordmark, sem `.br` duplicado (#2533
- * review). NUNCA toca URLs (lowercase `diaria`/`diar.ia.br`), nem `diaria` sem
- * ponto, nem o comentário HTML `<!-- Diar.ia newsletter body -->` (gerado fora
- * das primitivas de texto). Output lowercase (`diar...`), logo re-aplicar é
- * idempotente. O caso bold é coberto aplicando o wordmark nos segmentos de
- * texto ANTES do passo de `**` (o `<b>` resultante envolve o span).
+ * token `Diar.ia` (nome) E `diar.ia.br` (domínio em minúscula, #2674 — ex: a
+ * linha de comissão do box de afiliados, que antes saía plana), absorvendo um
+ * sufixo `.br` opcional no MESMO match (sem `.br` duplicado, #2533 review).
+ * #2674: o `i` faz casar minúsculas; os lookbehind/lookahead garantem que
+ * **NUNCA toca URLs** — um `diar.ia.br` precedido por `/` `.` `@` ou letra (ex:
+ * `https://diar.ia.br/p`, `www.diar.ia.br`) ou seguido por `/` letra `@` (path
+ * de URL) NÃO casa. Também não casa `diaria` sem ponto. Output lowercase
+ * (`diar...`), logo re-aplicar é idempotente. O caso bold (`**`/`<b>`) envolve o
+ * wordmark (negrito redundante mas HTML válido).
  */
+// #2674 (260630): wordmark em negrito, com `.` e `.br` no teal da marca.
 const BRAND_WORDMARK_HTML =
-  `diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span>`;
-// Regex de módulo (não realocar por chamada). `replace` com flag `/g` é
-// stateless — reseta `lastIndex` a cada chamada — então o reuso é seguro.
-const BRAND_WORDMARK_RE = /\bDiar\.ia(?:\.br)?\b/g;
+  `<strong>diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span></strong>`;
+// Regex de módulo (não realocar por chamada). `replace` com `/g` é stateless.
+// `i`: casa `Diar.ia` (nome) e `diar.ia.br` (domínio minúsculo, ex: comissão).
+// Alternância URL-safe (#2674 review): o domínio cheio `diar.ia.br` casa salvo
+// se seguido por `/` `\w` `@` (path de URL); o nome `diar.ia` casa salvo se
+// seguido por `.br` (deixa o domínio cheio capturar) ou por `/` `\w` `@` (URL).
+// Lookbehind `(?<![/\w.@])` exclui `https://diar.ia.br`, `www.diar.ia.br`,
+// `user@diar.ia.br`. Fim de frase (`Diar.ia.` / `diar.ia.br.`) continua casando.
+const BRAND_WORDMARK_RE =
+  /(?<![/\w.@])(?:diar\.ia\.br(?![/\w@])|diar\.ia(?!\.br)(?![/\w@]))/gi;
 export function applyBrandWordmark(s: string): string {
   return s.replace(BRAND_WORDMARK_RE, BRAND_WORDMARK_HTML);
 }
