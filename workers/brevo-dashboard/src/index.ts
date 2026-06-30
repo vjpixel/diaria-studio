@@ -360,6 +360,9 @@ export async function getCouponUsage(
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
     // Sempre grava de volta ao KV — inclusive em isFresh, para atualizar o cache
     // das sessões seguintes (não só do caller que pediu ?fresh=1).
+    // Design: STRIPE_API_KEY e MCP-sourced data são mutuamente exclusivos.
+    // Com STRIPE_API_KEY configurado, o TTL passa a ser 300s (Worker-managed);
+    // sem ela, o KV é populado via MCP externo sem TTL (populate-once design).
     if (env.STATS_CACHE) {
       await env.STATS_CACHE.put(COUPONS_KV_KEY, JSON.stringify(report), {
         expirationTtl: 300,
