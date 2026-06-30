@@ -917,6 +917,111 @@ export function lintAntithesisReveal(md: string): AntithesisRevealResult {
 }
 
 // ---------------------------------------------------------------------------
+// #2658: no-trailing-editorial-hook — detecta ", e [gancho editorial]" em posts
+// social. Primo de #2526 (antítese-revelação) e #2494 (punchline de autoridade).
+//
+// Padrão-alvo: <fato>, e <oração que anuncia relevância em vez de afirmá-la>
+//   ex: "O GPT-5.6 Sol entrou em prévia, e a escolha de focos diz mais sobre
+//        estratégia do que os benchmarks costumam revelar."
+//
+// Só dispara quando `, e ` é seguido de oração com GATILHO EDITORIAL.
+// `, e` legítimo de coordenação simples ("lançou o modelo, e disponibilizou
+// a API") NÃO dispara — exige um dos gatilhos abaixo.
+//
+// WARN-ONLY: sempre exit 0; matches são surfaçados como ⚠️ no gate.
+// ---------------------------------------------------------------------------
+
+/**
+ * Gatilhos editoriais que indicam anúncio de relevância em vez de afirmação.
+ * Lista conservadora: cada item é discriminante o suficiente para não casar
+ * coordenação legítima simples ("e divulgou os resultados").
+ */
+const EDITORIAL_HOOK_TRIGGER_RE =
+  /diz mais sobre|[eé] t[aã]o relevante quanto|[eé] t[aã]o importante quanto|o que mais pesa|mais do que parece|vai al[eé]m de/i;
+
+/**
+ * Janela do lookahead: o gatilho editorial deve aparecer dentro de N chars após
+ * `, e ` na mesma linha. Exportada pra que a janela de contexto cubra o gatilho
+ * inteiro mesmo quando ele cai no fim do lookahead (evita clipar o gatilho do
+ * texto mostrado ao editor no gate — review #2658).
+ */
+const EDITORIAL_HOOK_LOOKAHEAD = 100;
+
+/**
+ * Regex completo: `, e ` seguido de conteúdo que contém um gatilho editorial
+ * dentro dos ~100 chars seguintes na mesma linha. O lookahead exige o gatilho.
+ *
+ * O conjunto de gatilhos é DERIVADO de `EDITORIAL_HOOK_TRIGGER_RE.source` —
+ * single source of truth, evita drift entre as duas regex (review #2658).
+ *
+ * Sem flag `g`: a função captura no máximo 1 match por linha (mesma convenção de
+ * `lintAntithesisReveal`), então a regex é stateless e dispensa reset de
+ * `lastIndex`. Sem `[^\n]*` final: o match termina logo após `, e ` e `m.index`
+ * aponta exatamente pra vírgula — janela de contexto fica determinística.
+ */
+const TRAILING_EDITORIAL_HOOK_RE = new RegExp(
+  `, e (?=[^\\n]{0,${EDITORIAL_HOOK_LOOKAHEAD}}(?:${EDITORIAL_HOOK_TRIGGER_RE.source}))`,
+  "i",
+);
+
+export interface TrailingEditorialHookMatch {
+  line: number;
+  context: string;
+}
+
+export interface TrailingEditorialHookResult {
+  /** Sempre true — este check é WARN-ONLY, nunca bloqueia. */
+  ok: true;
+  matches: TrailingEditorialHookMatch[];
+}
+
+/**
+ * #2658: detecta estrutura ", e [gancho editorial]" em qualquer seção do social.
+ * Primo de #2526 (antítese-revelação) e #2494 (punchline de autoridade).
+ *
+ * O padrão abre com o fato e emenda uma oração final que ANUNCIA a relevância
+ * em vez de afirmá-la. Gatilhos: "diz mais sobre", "é tão relevante quanto",
+ * "é tão importante quanto", "o que mais pesa", "mais do que parece",
+ * "vai além de".
+ *
+ * Limitação conhecida: o gatilho precisa cair dentro de ~100 chars após `, e `
+ * (janela do lookahead) — uma oração com preâmbulo muito longo antes do gatilho
+ * não dispara. Os exemplos reais ficam bem abaixo desse limite.
+ *
+ * 1 match por linha (mesma convenção de `lintAntithesisReveal`). WARN-ONLY —
+ * sempre retorna `ok: true`; matches são surfaçados como ⚠️ no gate. Decisão de
+ * cortar a oração ou mover o gancho pro corpo fica com o editor.
+ */
+export function lintTrailingEditorialHook(md: string): TrailingEditorialHookResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: TrailingEditorialHookMatch[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip section headers (# / ## / ###) — formato, não prosa
+    if (/^#{1,3}\s/.test(line)) continue;
+    // Skip HTML comments
+    if (/^<!--/.test(line.trim())) continue;
+
+    const m = TRAILING_EDITORIAL_HOOK_RE.exec(line);
+    if (m) {
+      const idx = m.index;
+      // Janela de contexto: 20 chars antes do `, e ` + o suficiente pra cobrir
+      // o lookahead inteiro (até o gatilho) sem clipar (review #2658).
+      matches.push({
+        line: i + 1,
+        context: line.slice(Math.max(0, idx - 20), idx + EDITORIAL_HOOK_LOOKAHEAD + 30).trim(),
+      });
+    }
+  }
+
+  return { ok: true, matches };
+}
+
+// Exportar o regex de gatilho pra testes de não-disparo
+export { EDITORIAL_HOOK_TRIGGER_RE };
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -1387,7 +1492,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check linkedin-page-link --md <path>\n" +
         "  ou: lint-social-md.ts --check no-credential-bio --md <path>\n" +
         "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>",
+        "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>",
     );
     process.exit(2);
   }
@@ -1598,6 +1704,25 @@ function main(): void {
       for (const m of result.matches) {
         console.error(
           `  linha ${m.line} [${m.pattern}]: "...${m.context}..."`,
+        );
+      }
+      // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
+    }
+    return;
+  }
+
+  // Modo --check no-trailing-editorial-hook (#2658) — detecta ", e [gancho editorial]"
+  // em posts social. WARN-ONLY: sempre exit 0 mesmo com matches; surfaça como ⚠️ no gate.
+  if (args.check === "no-trailing-editorial-hook") {
+    const result = lintTrailingEditorialHook(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (result.matches.length > 0) {
+      console.error(
+        `\n⚠️  ${result.matches.length} gancho(s) editorial(is) detectado(s) (#2658 — mover o gancho pro corpo ou cortar a oração emendada):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  linha ${m.line}: "...${m.context}..."`,
         );
       }
       // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate

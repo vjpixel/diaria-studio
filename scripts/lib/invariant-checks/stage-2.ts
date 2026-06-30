@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { assertHumanized } from "../assert-humanized.ts";
+import { lintTrailingEditorialHook } from "../../lint-social-md.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -267,6 +268,29 @@ function checkHumanizerRan(editionDir: string): InvariantViolation[] {
   }));
 }
 
+/**
+ * #2658: detecta ", e [gancho editorial]" em 03-social.md.
+ * WARN-ONLY: chama a função diretamente (não via subprocess) para emitir
+ * violations com `severity: "warning"` — visíveis no gate sem bloquear.
+ *
+ * Primo de #2526 (antítese-revelação) e #2494 (punchline de autoridade).
+ */
+function checkNoTrailingEditorialHookSocial(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "03-social.md");
+  if (!existsSync(file)) return [];
+  const md = readFileSync(file, "utf8");
+  const result = lintTrailingEditorialHook(md);
+  return result.matches.map((m) => ({
+    rule: "social-no-trailing-editorial-hook",
+    message:
+      `linha ${m.line}: gancho editorial emendado via ", e" — mover o gancho pro corpo ou cortar (#2658): "...${m.context}..."`,
+    source_issue: "#2658",
+    severity: "warning" as const,
+    file,
+    line: m.line,
+  }));
+}
+
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
@@ -296,6 +320,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     stage: 2,
     run: checkHumanizerRan,
   },
+  {
+    id: "social-no-trailing-editorial-hook",
+    description: "03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658)",
+    source_issue: "#2658",
+    stage: 2,
+    run: checkNoTrailingEditorialHookSocial,
+  },
 ];
 
 export {
@@ -303,4 +334,5 @@ export {
   checkSocialPassesLints,
   checkPorQueIssoImportaSeparate,
   checkHumanizerRan,
+  checkNoTrailingEditorialHookSocial,
 };

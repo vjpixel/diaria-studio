@@ -50,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "./lib/cli-args.ts";
-import { lintAntithesisReveal, type AntithesisRevealMatch } from "./lint-social-md.ts";
+import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -185,28 +185,33 @@ export interface TicLintResult {
   tics_found: boolean;
   /** Matches de antítese-revelação detectados (pode estar vazio). */
   antithesis_matches: AntithesisRevealMatch[];
+  /** Matches de gancho editorial emendado via ", e" (#2658 — pode estar vazio). */
+  trailing_hook_matches: TrailingEditorialHookMatch[];
 }
 
 /**
  * #2529: roda lint de tics determinísticos sobre o `03-social.md` editado.
  * Chamado internamente pelo `--check` quando o hash diverge (exit 2).
  *
- * Só usa `lintAntithesisReveal` de lint-social-md.ts — o único tic check
- * disponível no lint-social-md.ts que: (a) cobre construções de IA, (b) é
- * WARN-ONLY por design (#2526), (c) roda sobre qualquer conteúdo do MD.
- * Travessões e anglicismos não têm equivalente check em lint-social-md.ts
- * (os existentes são de CTA e schema), então não incluídos (#2529 decisão).
+ * Usa os tic checks WARN-ONLY de lint-social-md.ts que cobrem construções de IA
+ * e rodam sobre qualquer conteúdo do MD: `lintAntithesisReveal` (#2526) e
+ * `lintTrailingEditorialHook` (#2658). Travessões e anglicismos não têm
+ * equivalente check em lint-social-md.ts (os existentes são de CTA e schema),
+ * então não incluídos (#2529 decisão).
  */
 export function lintTicsOnMismatch(socialPath: string): TicLintResult {
   if (!existsSync(socialPath)) {
-    return { ok: true, tics_found: false, antithesis_matches: [] };
+    return { ok: true, tics_found: false, antithesis_matches: [], trailing_hook_matches: [] };
   }
   const md = readFileSync(socialPath, "utf8");
   const antithesisResult = lintAntithesisReveal(md);
+  const hookResult = lintTrailingEditorialHook(md);
+  const tics_found = antithesisResult.matches.length > 0 || hookResult.matches.length > 0;
   return {
     ok: true,
-    tics_found: antithesisResult.matches.length > 0,
+    tics_found,
     antithesis_matches: antithesisResult.matches,
+    trailing_hook_matches: hookResult.matches,
   };
 }
 
@@ -223,12 +228,13 @@ function logTicLintEvent(editionDir: string, result: TicLintResult): void {
 
   const level = result.tics_found ? "warn" : "info";
   const message = result.tics_found
-    ? `social_tic_lint: hash diverge E tics detectados (${result.antithesis_matches.length} antítese-revelação) — considerar re-humanizar`
+    ? `social_tic_lint: hash diverge E tics detectados (${result.antithesis_matches.length} antítese-revelação, ${result.trailing_hook_matches.length} gancho-editorial) — considerar re-humanizar`
     : "social_tic_lint: hash diverge mas sem tics detectados — edição pode ser só remoção de tic";
 
   const details = JSON.stringify({
     tics_found: result.tics_found,
     antithesis_count: result.antithesis_matches.length,
+    trailing_hook_count: result.trailing_hook_matches.length,
     kind: "humanizer_social_tic_lint",
   });
 
@@ -318,6 +324,9 @@ function main(): void {
           );
           for (const m of ticResult.antithesis_matches) {
             console.error(`  linha ${m.line} [antítese-revelação/${m.pattern}]: "...${m.context}..."`);
+          }
+          for (const m of ticResult.trailing_hook_matches) {
+            console.error(`  linha ${m.line} [gancho-editorial/, e]: "...${m.context}..."`);
           }
           console.error(
             "[check-humanizer-social] ⚠️  Considere re-humanizar antes de aprovar o gate.",
