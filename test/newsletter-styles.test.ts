@@ -1,20 +1,22 @@
 /**
  * test/newsletter-styles.test.ts (#2635)
  *
- * Regressão para a extração do CSS base compartilhado em newsletter-styles.ts:
+ * Regressão para a extração do CSS de email em newsletter-styles.ts:
  *
- *   (a) Ambos os renderers emitem o MESMO bloco base de estilo — body/img/table
- *       reset com os mesmos tokens. Fonte única (emailBaseRules) em vez de CSS
- *       duplicado independente em cada renderer.
+ *   (a) A base compartilhada (emailBaseRules) é a fonte única do reset body/img/table;
+ *       o renderer DIÁRIO a consome. A asserção é contra um literal GROUND-TRUTH (o
+ *       bloco <style> exato pré-refactor), NÃO contra DS_STYLE_BLOCK — este último é
+ *       definido como buildDiariaStyleBlock(...), então comparar contra ele seria
+ *       tautológico (f(x) === f(x)) e não pegaria bug no builder.
  *
- *   (b) DS_STYLE_BLOCK da diária permanece byte-idêntico ao anterior (buildDiariaStyleBlock
- *       deve produzir exatamente o mesmo string que o template literal que substituiu).
- *       O golden de hash em ds-golden-full-render.test.ts cobre o renderHTML completo;
- *       este teste cobre o bloco <style> isolado.
+ *   (b) O output renderizado de cada renderer NÃO regrediu (#633):
+ *       - diária: DS_STYLE_BLOCK byte-idêntico ao literal pré-refactor.
+ *       - mensal: wrapEmail() preserva o <style> atual (só .mob-stack), fundo branco,
+ *         bege de contraste. Confirma que a mensal NÃO ganhou o reset body/img/table
+ *         (decisão de escopo conservador: adotar a base na mensal é follow-up editorial).
  *
- *   (c) O HTML de wrapEmail() do renderer mensal contém a base compartilhada no <style>.
- *
- * #633: refactor em scripts/lib/ exige teste de regressão.
+ * #633: refactor em scripts/lib/ — teste de regressão demonstrando que o output de
+ * ambos os renderers permanece o esperado e a base é uma fonte única.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -23,108 +25,103 @@ import {
   emailBaseRules,
   buildDiariaStyleBlock,
   buildMensalStyleBlock,
-  BRAND_COLOR,
 } from "../scripts/lib/newsletter-styles.ts";
 import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
 import { draftToEmail } from "../scripts/lib/monthly-render.ts";
 
-// Tokens canônicos (de design-tokens.ts, hardcoded para estabilidade do teste — se
-// os tokens mudarem, este teste falha intencionalmente pra chamar atenção).
-const PAGE_BG = "#FFFFFF";  // canonical email bg após #1943/#1955
-const EXPECTED_BRAND = "#00A0A0"; // COLORS.brand
+// Tokens canônicos (de design-tokens.ts; hardcoded aqui para servir de GROUND TRUTH —
+// se os tokens mudarem, este teste falha intencionalmente pra chamar atenção).
+const PAGE_BG = "#FFFFFF"; // COLORS.paperEmail / email bg canonical (#1943/#1955)
+const BRAND = "#00A0A0"; // COLORS.brand
 
-// Bloco base esperado (primeiro bloco de qualquer <style> de email Diar.ia).
+// Bloco <style> EXATO da diária ANTES do refactor (#2635). Ground truth independente:
+// não é derivado de nenhuma função sob teste, então pega qualquer divergência no builder.
+const DIARIA_STYLE_BEFORE = `<style>
+  body { margin:0; padding:0; width:100% !important; background:${PAGE_BG}; }
+  img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
+  table { border-collapse:collapse; }
+  a.headline:hover { color:${BRAND} !important; }
+  @media only screen and (max-width:480px) {
+    .container { width:100% !important; }
+    .pad { padding-left:12px !important; padding-right:12px !important; }
+    .hero { height:auto !important; }
+  }
+</style>`;
+
 const EXPECTED_BASE_BODY = `body { margin:0; padding:0; width:100% !important; background:${PAGE_BG}; }`;
-const EXPECTED_BASE_IMG  = `img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }`;
+const EXPECTED_BASE_IMG = `img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }`;
 const EXPECTED_BASE_TABLE = `table { border-collapse:collapse; }`;
 
-describe("newsletter-styles — base CSS compartilhado (#2635)", () => {
+describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
 
-  // ── emailBaseRules ──────────────────────────────────────────────────────────
+  // ── emailBaseRules: fonte única do reset ────────────────────────────────────
 
-  it("BRAND_COLOR exportado = #00A0A0 (COLORS.brand canônico)", () => {
-    assert.equal(BRAND_COLOR, EXPECTED_BRAND);
-  });
-
-  it("emailBaseRules contém reset de body com pageBg correto", () => {
+  it("emailBaseRules emite o reset body/img/table com o pageBg passado", () => {
     const rules = emailBaseRules(PAGE_BG);
     assert.ok(rules.includes(EXPECTED_BASE_BODY), `body reset ausente:\n${rules}`);
-  });
-
-  it("emailBaseRules contém reset de img", () => {
-    const rules = emailBaseRules(PAGE_BG);
     assert.ok(rules.includes(EXPECTED_BASE_IMG), `img reset ausente:\n${rules}`);
-  });
-
-  it("emailBaseRules contém reset de table", () => {
-    const rules = emailBaseRules(PAGE_BG);
     assert.ok(rules.includes(EXPECTED_BASE_TABLE), `table reset ausente:\n${rules}`);
   });
 
-  // ── buildDiariaStyleBlock ──────────────────────────────────────────────────
-
-  it("buildDiariaStyleBlock é byte-idêntico ao DS_STYLE_BLOCK", () => {
-    // Esta é a asserção central da regressão da diária: refatorar o template literal
-    // em função não pode alterar nenhum caractere do output (snapshot hash depende disso).
-    assert.equal(
-      buildDiariaStyleBlock(PAGE_BG, BRAND_COLOR),
-      DS_STYLE_BLOCK,
-      "buildDiariaStyleBlock divergiu do DS_STYLE_BLOCK — o golden de hash vai falhar",
-    );
+  it("emailBaseRules interpola o pageBg recebido (não hardcoda branco)", () => {
+    const rules = emailBaseRules("#123456");
+    assert.ok(rules.includes("background:#123456;"), `pageBg não interpolado:\n${rules}`);
   });
 
-  it("DS_STYLE_BLOCK contém a base body/img/table", () => {
-    assert.ok(DS_STYLE_BLOCK.includes(EXPECTED_BASE_BODY), `body reset ausente no DS_STYLE_BLOCK`);
-    assert.ok(DS_STYLE_BLOCK.includes(EXPECTED_BASE_IMG),  `img reset ausente no DS_STYLE_BLOCK`);
-    assert.ok(DS_STYLE_BLOCK.includes(EXPECTED_BASE_TABLE), `table reset ausente no DS_STYLE_BLOCK`);
+  // ── buildDiariaStyleBlock: byte-idêntico ao literal pré-refactor (ground truth) ──
+
+  it("buildDiariaStyleBlock é byte-idêntico ao bloco <style> pré-refactor (ground truth)", () => {
+    // Asserção central da não-regressão da diária: o builder deve reproduzir EXATAMENTE
+    // o literal que substituiu. Comparar contra DIARIA_STYLE_BEFORE (não DS_STYLE_BLOCK)
+    // evita a tautologia f(x) === f(x), já que DS_STYLE_BLOCK = buildDiariaStyleBlock(...).
+    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND), DIARIA_STYLE_BEFORE);
   });
 
-  it("DS_STYLE_BLOCK contém overrides específicos da diária", () => {
-    assert.ok(DS_STYLE_BLOCK.includes("a.headline:hover"),        "hover da manchete ausente");
-    assert.ok(DS_STYLE_BLOCK.includes(".container"),               ".container ausente");
-    assert.ok(DS_STYLE_BLOCK.includes(".pad"),                     ".pad ausente");
-    assert.ok(DS_STYLE_BLOCK.includes(".hero"),                    ".hero ausente");
+  it("DS_STYLE_BLOCK exportado pela diária é byte-idêntico ao literal pré-refactor", () => {
+    // Garante que o export de produção (newsletter-render-html.ts) chama o builder com
+    // PAGE_BG/TEAL corretos — protege o golden de hash em ds-golden-full-render.test.ts.
+    assert.equal(DS_STYLE_BLOCK, DIARIA_STYLE_BEFORE);
   });
 
-  it("DS_STYLE_BLOCK NÃO contém .mob-stack (override exclusivo da mensal)", () => {
-    assert.ok(!DS_STYLE_BLOCK.includes(".mob-stack"), ".mob-stack não deve aparecer no bloco da diária");
+  it("DS_STYLE_BLOCK consome a base compartilhada (emailBaseRules)", () => {
+    // Liga o output de produção à fonte única: o reset emitido é exatamente o de emailBaseRules.
+    assert.ok(DS_STYLE_BLOCK.includes(emailBaseRules(PAGE_BG)),
+      "DS_STYLE_BLOCK não contém o output de emailBaseRules — base não compartilhada");
   });
 
-  // ── buildMensalStyleBlock ──────────────────────────────────────────────────
-
-  it("buildMensalStyleBlock contém a mesma base body/img/table", () => {
-    const style = buildMensalStyleBlock(PAGE_BG);
-    assert.ok(style.includes(EXPECTED_BASE_BODY),  `body reset ausente no bloco mensal`);
-    assert.ok(style.includes(EXPECTED_BASE_IMG),   `img reset ausente no bloco mensal`);
-    assert.ok(style.includes(EXPECTED_BASE_TABLE), `table reset ausente no bloco mensal`);
+  it("DS_STYLE_BLOCK tem os overrides específicos da diária e NÃO o da mensal", () => {
+    assert.ok(DS_STYLE_BLOCK.includes("a.headline:hover"), "hover da manchete ausente");
+    assert.ok(DS_STYLE_BLOCK.includes(".container"), ".container ausente");
+    assert.ok(DS_STYLE_BLOCK.includes(".pad"), ".pad ausente");
+    assert.ok(DS_STYLE_BLOCK.includes(".hero"), ".hero ausente");
+    assert.ok(!DS_STYLE_BLOCK.includes(".mob-stack"), ".mob-stack não pertence à diária");
   });
 
-  it("buildMensalStyleBlock contém override específico da mensal (.mob-stack)", () => {
+  // ── buildMensalStyleBlock: preserva o output atual (só .mob-stack) ──────────
+
+  it("buildMensalStyleBlock preserva o output atual: só .mob-stack, SEM reset base", () => {
+    // Escopo conservador (#2635): a mensal hoje NÃO emite o reset body/img/table.
+    // buildMensalStyleBlock preserva exatamente isso — adotar a base é follow-up editorial
+    // (mudaria o render por border-collapse em tabelas arredondadas sem guard).
     const style = buildMensalStyleBlock(PAGE_BG);
     assert.ok(style.includes(".mob-stack"), ".mob-stack ausente no bloco mensal");
+    assert.ok(!style.includes(EXPECTED_BASE_BODY), "mensal NÃO deve ganhar o reset body (regressão visual)");
+    assert.ok(!style.includes(EXPECTED_BASE_IMG), "mensal NÃO deve ganhar o reset img");
+    assert.ok(!style.includes(EXPECTED_BASE_TABLE), "mensal NÃO deve ganhar table{border-collapse:collapse} (quadra cantos arredondados)");
+    assert.ok(!style.includes(".container") && !style.includes(".hero"),
+      "overrides exclusivos da diária não pertencem à mensal");
   });
 
-  it("buildMensalStyleBlock NÃO contém .container/.pad/.hero (overrides exclusivos da diária)", () => {
-    const style = buildMensalStyleBlock(PAGE_BG);
-    assert.ok(!style.includes(".container"), ".container não deve aparecer no bloco mensal");
-    assert.ok(!style.includes(".hero"),      ".hero não deve aparecer no bloco mensal");
-  });
+  // ── wrapEmail integração: output mensal não regrediu ────────────────────────
 
-  // ── wrapEmail integração ────────────────────────────────────────────────────
-
-  it("mensal wrapEmail: <style> contém a base CSS compartilhada", () => {
+  it("mensal wrapEmail: <style> tem .mob-stack e NÃO o reset base (output preservado)", () => {
     const { html } = draftToEmail("**ASSUNTO**\nTeste #2635\n", null, "2605");
     const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
     assert.ok(styleMatch, "Bloco <style> ausente no HTML do wrapEmail mensal");
     const styleContent = styleMatch[1];
-    assert.ok(styleContent.includes("body { margin:0; padding:0;"),
-      `body reset ausente no <style> do wrapEmail:\n${styleContent}`);
-    assert.ok(styleContent.includes("img { border:0;"),
-      `img reset ausente no <style> do wrapEmail:\n${styleContent}`);
-    assert.ok(styleContent.includes("table { border-collapse:collapse;"),
-      `table reset ausente no <style> do wrapEmail:\n${styleContent}`);
-    assert.ok(styleContent.includes(".mob-stack"),
-      `.mob-stack ausente no <style> do wrapEmail:\n${styleContent}`);
+    assert.ok(styleContent.includes(".mob-stack"), `.mob-stack ausente:\n${styleContent}`);
+    assert.ok(!styleContent.includes("border-collapse:collapse"),
+      `mensal não deve ter table{border-collapse:collapse} no <style> (regressão):\n${styleContent}`);
   });
 
   it("mensal wrapEmail: fundo branco (#FFFFFF) e sem papel (#FBFAF6) — regressão #1955", () => {
@@ -134,9 +131,7 @@ describe("newsletter-styles — base CSS compartilhado (#2635)", () => {
   });
 
   it("mensal wrapEmail: bege de contraste (#EBE5D0) presente — regressão #1955", () => {
-    // Mesmo com o novo bloco <style>, os boxes bege (kicker, É IA?, fio condutor)
-    // seguem usando BEGE = COLORS.paperAlt (#EBE5D0) nos estilos inline.
-    // Um destaque qualquer já tem kicker → gera bege.
+    // Os boxes bege (kicker, É IA?, fio condutor) seguem usando BEGE (#EBE5D0) inline.
     const draft = [
       "**ASSUNTO**",
       "Teste #2635",

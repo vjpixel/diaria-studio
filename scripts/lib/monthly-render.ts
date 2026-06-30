@@ -703,8 +703,12 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   const divider = `<div style="line-height:28px;font-size:0;">&nbsp;</div>`;
   const body = bodyParts.join(divider);
 
-  // #2635: buildMensalStyleBlock (newsletter-styles.ts) — bloco <style> com a base
-  // compartilhada (body/img/table) + override .mob-stack específico da mensal (#1918).
+  // #2635: buildMensalStyleBlock (newsletter-styles.ts) constrói o bloco <style> a
+  // partir do módulo compartilhado. PRESERVA o output atual da mensal — só a media
+  // query .mob-stack (#1918), sem o reset body/img/table de emailBaseRules. Adotar a
+  // base compartilhada na mensal é follow-up editorial (mudaria o render por causa do
+  // `table { border-collapse:collapse; }` em tabelas arredondadas sem guard inline —
+  // ver nota de escopo em newsletter-styles.ts).
   const styleBlock = buildMensalStyleBlock(SHELL);
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
