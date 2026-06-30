@@ -1,18 +1,22 @@
 /**
- * test/check-highlight-themes.test.ts (#2073)
+ * test/check-highlight-themes.test.ts (#2073, #2652)
  *
- * Testa o script de detecção de repeat-de-tema em candidatos a destaque.
+ * Testa o script de detecção de repeat-de-tema em candidatos a destaque
+ * e em itens secundários (RADAR/LANÇAMENTOS).
  *
  * Cenário real (#2073): Gemma 4 12B (260611, URL nova) vs destaque da 260604
  * ("Gemma 4 12B: multimodal que roda no laptop") a ~7 edições de distância.
  * Dedup não pega porque URL é inédita e janela Jaccard é 4 edições.
  *
+ * Cenário real (#2652): Nubank×contratações — 260629 "não vai parar de contratar
+ * pessoas por causa da IA" vs 260626 "prioriza mentalidade de IA nas contratações".
+ * Dedup não pega: URL/publisher diferentes, Jaccard abaixo do threshold.
+ *
  * Requisitos:
- *   - Cenário positivo: candidato com mesmo tema deve emitir warn.
- *   - Cenário negativo (falso positivo): mesma empresa em produtos/eventos
- *     diferentes NÃO deve casar só por entidade.
- *   - Candidato sem título não deve crashar.
- *   - Janela vazia (past_editions=[]) → sem warnings.
+ *   - Cenário positivo (highlights): candidato com mesmo tema deve emitir warn.
+ *   - Cenário positivo (secundário): caso Nubank DEVE disparar a flag.
+ *   - Cenários negativos: empresas/temas distintos NÃO devem disparar.
+ *   - Warn-only: checkSecondaryThemes NUNCA bloqueia (só sinaliza, exit 0).
  */
 
 import { describe, it } from "node:test";
@@ -20,9 +24,13 @@ import assert from "node:assert/strict";
 import {
   extractPastEditionTitles,
   checkHighlightThemes,
+  checkSecondaryThemes,
   DEFAULT_HIGHLIGHT_WINDOW,
+  DEFAULT_SECONDARY_WINDOW,
   type PastEditionEntry,
   type HighlightThemeWarning,
+  type SecondaryItem,
+  type PastSecondaryItem,
 } from "../scripts/check-highlight-themes.ts";
 
 // ---------------------------------------------------------------------------
@@ -461,5 +469,296 @@ describe("extractPastEditionTitles — tolerância CRLF (#2124)", () => {
     assert.equal(entries.length, 8, "LF puro: deve extrair 8 entradas");
     assert.equal(entries[0].title, "AI Act entra em vigor: o que muda para empresas brasileiras");
     assert.ok(!entries[0].title.includes("\r"), "título LF não deve ter \\r");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSecondaryThemes — caso real Nubank (#2652)
+//
+// Regressão obrigatória (#633): 260629 "não vai parar de contratar pessoas por
+// causa da IA" × 260626 "prioriza mentalidade de IA nas contratações".
+// Empresa em comum: Nubank (posição 0 em ambos os títulos).
+// Sub-tema em comum: raiz "contra" (contratar / contratações) — capturado por
+// prefix overlap de 6 chars, pois Jaccard puro fica abaixo do threshold.
+// ---------------------------------------------------------------------------
+
+// Fixtures do caso real Nubank (#2652)
+const NUBANK_CURRENT_ITEMS: SecondaryItem[] = [
+  {
+    bucket: "radar",
+    title: "Nubank não vai parar de contratar pessoas por causa da IA",
+    url: "https://tecnoblog.net/noticias/nubank-nao-vai-parar-de-contratar-por-causa-da-ia/",
+  },
+  {
+    bucket: "radar",
+    title: "Banco Central divulga regulação para stablecoins brasileiras",
+    url: "https://bcb.gov.br/stablecoins-regulacao-2026",
+  },
+];
+
+const NUBANK_PAST_ITEMS: PastSecondaryItem[] = [
+  // 260626: a edição anterior com o item sobre Nubank+contratações
+  {
+    edition: "260626",
+    title: "Nubank prioriza mentalidade de IA nas contratações",
+    bucket: "radar",
+  },
+  // Uma edição ainda mais antiga — tema completamente diferente
+  {
+    edition: "260620",
+    title: "Stripe lança programa de aceleração para fintechs brasileiras",
+    bucket: "lancamento",
+  },
+];
+
+describe("checkSecondaryThemes — caso real Nubank 260626 × 260629 (#2652)", () => {
+  it("detecta repeat de tema: Nubank+contratações via prefix 'contra' (contratar/contratações)", () => {
+    const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
+
+    // Deve haver exatamente 1 warning — só o Nubank+contratações casa
+    assert.equal(
+      result.secondary_warnings.length,
+      1,
+      `esperado 1 warning, got ${result.secondary_warnings.length}: ${JSON.stringify(result.secondary_warnings)}`,
+    );
+
+    const w = result.secondary_warnings[0];
+    assert.equal(w.bucket, "radar", "bucket deve ser radar");
+    assert.ok(
+      w.item_title.includes("Nubank"),
+      `item_title deve incluir "Nubank": ${w.item_title}`,
+    );
+    assert.ok(
+      w.item_title.includes("contratar"),
+      `item_title deve incluir "contratar": ${w.item_title}`,
+    );
+    assert.equal(w.matched_edition, "260626", "deve casar com a edição 260626");
+    assert.ok(
+      w.matched_title.includes("Nubank"),
+      `matched_title deve incluir "Nubank": ${w.matched_title}`,
+    );
+    assert.ok(
+      w.matched_title.includes("contrata"),
+      `matched_title deve incluir "contrata": ${w.matched_title}`,
+    );
+    assert.ok(
+      w.shared_entities.includes("nubank"),
+      `shared_entities deve conter "nubank": ${JSON.stringify(w.shared_entities)}`,
+    );
+    assert.ok(
+      w.theme_evidence.startsWith("prefix:"),
+      `theme_evidence deve indicar match por prefixo (o Jaccard puro fica abaixo do threshold): "${w.theme_evidence}"`,
+    );
+  });
+
+  it("Banco Central (sem relação com Nubank+contratações) NÃO gera warning", () => {
+    const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
+    const warnedTitles = result.secondary_warnings.map((w) => w.item_title);
+    assert.ok(
+      !warnedTitles.some((t) => t.includes("Banco Central")),
+      `Banco Central não deveria gerar warn (títulos com warn: ${JSON.stringify(warnedTitles)})`,
+    );
+  });
+
+  it("campo secondary_checked reflete número de itens avaliados", () => {
+    const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
+    assert.equal(result.secondary_checked, NUBANK_CURRENT_ITEMS.length);
+  });
+
+  it("campo secondary_window reflete número de edições distintas no histórico", () => {
+    const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
+    // NUBANK_PAST_ITEMS tem 2 edições distintas: 260626 e 260620
+    assert.equal(result.secondary_window, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSecondaryThemes — casos NEGATIVOS (falso positivo guard)
+// ---------------------------------------------------------------------------
+
+describe("checkSecondaryThemes — guard de falso positivo (#2652)", () => {
+  it("empresas distintas (OpenAI vs Apple) → sem warning mesmo com tema similar", () => {
+    const current: SecondaryItem[] = [
+      {
+        bucket: "radar",
+        title: "OpenAI anuncia novo programa de parcerias com universidades",
+        url: "https://openai.com/partnerships-universities",
+      },
+    ];
+    const past: PastSecondaryItem[] = [
+      {
+        edition: "260620",
+        title: "Apple lança programa de parceria para desenvolvedores independentes",
+        bucket: "radar",
+      },
+    ];
+
+    const result = checkSecondaryThemes(current, past);
+    assert.equal(
+      result.secondary_warnings.length,
+      0,
+      `empresas distintas não devem casar: ${JSON.stringify(result.secondary_warnings)}`,
+    );
+  });
+
+  it("mesma empresa (Nubank) mas tópicos completamente diferentes → sem warning", () => {
+    // Nubank+crédito vs Nubank+contratações: empresa em comum mas sub-temas distintos
+    const current: SecondaryItem[] = [
+      {
+        bucket: "radar",
+        title: "Nubank lança cartão de crédito com cashback em criptomoedas",
+        url: "https://tecnoblog.net/nubank-cartao-cripto",
+      },
+    ];
+    const past: PastSecondaryItem[] = [
+      {
+        edition: "260626",
+        title: "Nubank não vai parar de contratar pessoas por causa da IA",
+        bucket: "radar",
+      },
+    ];
+
+    const result = checkSecondaryThemes(current, past);
+    assert.equal(
+      result.secondary_warnings.length,
+      0,
+      `mesma empresa mas tópicos distintos não deve gerar warning: ${JSON.stringify(result.secondary_warnings)}`,
+    );
+  });
+
+  it("mesmo tema (contratações) mas empresa diferente → sem warning", () => {
+    // "Itaú contrata" vs "Nubank prioriza contratações" — sub-tema semelhante mas empresa diferente
+    const current: SecondaryItem[] = [
+      {
+        bucket: "radar",
+        title: "Itaú abre 800 vagas para engenheiros de software e IA",
+        url: "https://itau.com.br/vagas-engenharia-2026",
+      },
+    ];
+    const past: PastSecondaryItem[] = [
+      {
+        edition: "260626",
+        title: "Nubank prioriza mentalidade de IA nas contratações",
+        bucket: "radar",
+      },
+    ];
+
+    // "Itaú" e "Nubank" são entidades distintas → sem entity overlap → sem warning
+    const result = checkSecondaryThemes(current, past);
+    assert.equal(
+      result.secondary_warnings.length,
+      0,
+      `empresa diferente não deve casar mesmo com tema similar: ${JSON.stringify(result.secondary_warnings)}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSecondaryThemes — via Jaccard (empresas+tema com sobreposição lexical direta)
+// ---------------------------------------------------------------------------
+
+describe("checkSecondaryThemes — detecção via Jaccard direto (#2652)", () => {
+  it("mesma empresa + sobreposição lexical direta → warning via Jaccard", () => {
+    // "demite" / "demissão" / "demitir" — palavras completamente distintas (não compartilham
+    // prefixo de 6 chars). Mas "Nubank demite" + "Nubank demissão" têm Jaccard > 0.15 se
+    // compartilham tokens como "funcionarios" diretamente.
+    const current: SecondaryItem[] = [
+      {
+        bucket: "radar",
+        title: "Nubank anuncia demissão de 200 funcionários na área de TI",
+        url: "https://tecnoblog.net/nubank-demissoes-2026",
+      },
+    ];
+    const past: PastSecondaryItem[] = [
+      {
+        edition: "260620",
+        title: "Nubank demite 150 funcionários em reestruturação de equipes",
+        bucket: "radar",
+      },
+    ];
+
+    // Entity: {nubank}, tokens comuns: {nubank, funcionarios}
+    // Jaccard = 2/N > 0.15 → match via Jaccard
+    const result = checkSecondaryThemes(current, past);
+    assert.equal(
+      result.secondary_warnings.length,
+      1,
+      `mesma empresa + funcionarios em ambos deve gerar warning via Jaccard: ${JSON.stringify(result.secondary_warnings)}`,
+    );
+    const w = result.secondary_warnings[0];
+    assert.ok(
+      w.theme_evidence.startsWith("jaccard:"),
+      `deve indicar match via jaccard: "${w.theme_evidence}"`,
+    );
+    assert.ok(
+      w.shared_entities.includes("nubank"),
+      `shared_entities deve conter "nubank"`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSecondaryThemes — edge cases (#2652)
+// ---------------------------------------------------------------------------
+
+describe("checkSecondaryThemes — edge cases (#2652)", () => {
+  it("sem itens secundários → sem warnings, secondary_checked=0", () => {
+    const result = checkSecondaryThemes([], NUBANK_PAST_ITEMS);
+    assert.equal(result.secondary_warnings.length, 0);
+    assert.equal(result.secondary_checked, 0);
+  });
+
+  it("sem histórico → sem warnings, secondary_window=0", () => {
+    const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, []);
+    assert.equal(result.secondary_warnings.length, 0);
+    assert.equal(result.secondary_window, 0);
+  });
+
+  it("item com título vazio não crasha e não emite warning", () => {
+    const current: SecondaryItem[] = [
+      { bucket: "radar", title: "", url: "https://example.com/no-title" },
+    ];
+
+    let threw = false;
+    let result;
+    try {
+      result = checkSecondaryThemes(current, NUBANK_PAST_ITEMS);
+    } catch {
+      threw = true;
+    }
+
+    assert.equal(threw, false, "não deve lançar exceção com título vazio");
+    assert.ok(result !== undefined);
+    assert.equal(result!.secondary_warnings.length, 0, "título vazio não deve gerar warning");
+  });
+
+  it("warn-only: checkSecondaryThemes nunca lança exceção mesmo com inputs degenerados", () => {
+    // Inputs degenerados: títulos sem tokens significativos + histórico com entrada inválida
+    const current: SecondaryItem[] = [
+      { bucket: "radar", title: "a b c", url: "https://example.com" },  // tokens < 3 chars
+    ];
+    const past: PastSecondaryItem[] = [
+      { edition: "260601", title: "x y z", bucket: "radar" },
+    ];
+
+    let threw = false;
+    try {
+      checkSecondaryThemes(current, past);
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, false, "nunca deve lançar exceção — warn-only");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFAULT_SECONDARY_WINDOW
+// ---------------------------------------------------------------------------
+
+describe("DEFAULT_SECONDARY_WINDOW", () => {
+  it("é 10 (conforme spec #2652: janela 7–12 edições)", () => {
+    assert.equal(DEFAULT_SECONDARY_WINDOW, 10);
+    // Deve ser maior que a janela de dedup (3-4 edições) — razão de existir do check
+    assert.ok(DEFAULT_SECONDARY_WINDOW > 4, "janela secundária deve ser maior que dedup");
   });
 });

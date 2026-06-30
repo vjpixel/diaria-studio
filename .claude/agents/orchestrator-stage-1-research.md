@@ -654,19 +654,19 @@ npx tsx scripts/log-stage-1-payload-sizes.ts --edition {AAMMDD}
 
 Output: grava `_internal/01-payload-sizes.json` (relatório completo) e append em `data/run-log.jsonl` com `level: info`, `message: "stage1_payload_sizes"`, `details.totals` + `details.top_3`. Nunca falha — best-effort. Próximo PR usa esses dados pra escolher entre Opção A (subagents retornam só path) ou Opção B (agregação imediata) descritas no #891.
 
-### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos (#2073)
+### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos e itens secundários (#2073, #2652)
 
-Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições** (janela mais larga que o dedup de URLs, que usa 4). O dedup de URL+Jaccard só opera na janela curta de 4 edições; temas repetidos a ~7 edições passam por todas as guards mas são detectados pelo editor humano como repetição. Este check torna isso determinístico e exibe aviso visível no gate. **Warn-only — nunca bloqueia.**
+Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições** e se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars). **Warn-only — nunca bloqueia.**
 
 ```bash
 npx tsx scripts/check-highlight-themes.ts \
   --categorized data/editions/{AAMMDD}/_internal/01-categorized.json \
-  --past-editions data/past-editions.md \
-  --window 12 \
+  --past-editions data/past-editions.md --window 12 \
+  --editions-dir data/editions --secondary-window 10 --current-edition {AAMMDD} \
   --out-json data/editions/{AAMMDD}/_internal/01-highlight-theme-check.json
 ```
 
-Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se o script falhar por qualquer motivo (past-editions.md ausente, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
+Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se o script falhar por qualquer motivo (past-editions.md ausente, data/editions/ vazio, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
 
 ### 1x. GATE HUMANO
 
@@ -703,15 +703,14 @@ Apresentar ao usuário:
 
 3. **Avisos de mínimos por seção (#488):** exibir avisos registrados na verificação de mínimos (ver 1t). Se não houver avisos, omitir este bloco.
 
-4. **⚠️ Repeat-de-tema em destaques (#2073):** ler `_internal/01-highlight-theme-check.json`. Se `warnings[]` não-vazio, exibir cada item como bloco de atenção visível (antes dos avisos de mínimos, pois exige ação editorial — troca de destaque):
+4. **⚠️ Repeat-de-tema em destaques (#2073) e RADAR (#2652):** ler `_internal/01-highlight-theme-check.json`. Exibir antes dos avisos. **Best-effort — nunca bloquear.** Se arquivo não existir, ambos=[]: omitir.
+   `warnings[]` não-vazio (destaques):
    ```
    ⚠️  TEMA REPETIDO — D{rank} candidato repete tema de {matched_edition}:
        Candidato:  "{candidate_title}"
-       Publicado:  "{matched_title}" ({matched_edition})
-       Similidade: {jaccard*100}%
-       → Considere escolher outro candidato para este slot de destaque.
+       Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
    ```
-   Se arquivo não existir ou warnings=[]: omitir este bloco. Esta checagem é best-effort; nunca bloquear.
+   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.`
 
 5. **Relatório de saúde das fontes:**
    - `⚠️` por fonte com outcome não-ok *nesta execução*.
