@@ -416,7 +416,7 @@ Isso muda tudo no setor.
 
 ### comment_diaria
 Leia a edição completa em {edition_url}
-Siga a Diar.ia: linkedin.com/company/diaria
+Siga a Diar.ia: linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 Compartilho minha perspectiva sobre isso.
@@ -438,7 +438,7 @@ Conteúdo direto, objetivo, sem construções problemáticas.
 
 ### comment_diaria
 Leia a edição em {edition_url}
-linkedin.com/company/diaria
+linkedin.com/company/diar.ia.br
 
 ### comment_pixel
 Perspectiva direta sobre o tema.

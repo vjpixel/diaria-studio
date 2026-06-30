@@ -47,7 +47,7 @@ export function isEditorial(url: string): boolean {
 
   // Skip own social channels
   const ownChannels = [
-    'facebook.com/diar.ia', 'linkedin.com/company/diaria',
+    'facebook.com/diar.ia.br', 'linkedin.com/company/diar.ia.br',
     'youtube.com/@diaria', 'instagram.com/diaria',
   ];
   if (ownChannels.some(s => url.includes(s))) return false;

@@ -238,7 +238,7 @@ export function checkUrlsAccessible(
     "clarice.ai",
     "beehiiv.com?via",
     "linkedin.com/company",
-    "facebook.com/diar.ia",
+    "facebook.com/diar.ia.br",
     "wikipedia.org", // todas as variantes (pt/en/es/...)
     "wikimedia.org", // commons + upload
     "creativecommons.org",

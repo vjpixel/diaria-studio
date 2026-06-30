@@ -523,7 +523,7 @@ async function main() {
     console.error(
       "ERRO: FACEBOOK_PAGE_ID não está setado.\n" +
       "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
-      "Encontrar Page ID em https://www.facebook.com/diaria.br → Sobre → ID da página."
+      "Encontrar Page ID em https://www.facebook.com/diar.ia.br → Sobre → ID da página."
     );
     process.exit(1);
   }

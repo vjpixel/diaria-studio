@@ -66,7 +66,7 @@ Postado **3 min após** o main post pela própria conta Diar.ia. Driver de tráf
 ```
 Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
-Siga a Diar.ia no LinkedIn em linkedin.com/company/diaria
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
 ```
 
 **NÃO incluir CTA de assinatura por e-mail** (#2458) — "assine grátis", "receba por e-mail", "inscreva-se" e variações são vetados em posts do LinkedIn. O foco é seguir a página.

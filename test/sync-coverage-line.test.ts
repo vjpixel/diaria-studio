@@ -238,7 +238,7 @@ Frase.
 **🙋🏼‍♀️ PARA ENCERRAR**
 
 [Wispr](https://wisprflow.ai/r?X=Y)
-[LinkedIn](https://www.linkedin.com/company/diaria/)
+[LinkedIn](https://www.linkedin.com/company/diar.ia.br/)
 `;
     // 3 itens editoriais: 1 destaque + 2 outras notícias. Pula sorteio + encerrar.
     assert.equal(countSelectedItems(md), 3);
