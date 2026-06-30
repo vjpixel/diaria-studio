@@ -154,6 +154,45 @@ describe("lintTrailingEditorialHook (#2658) — casos negativos (coordenação l
 });
 
 // ---------------------------------------------------------------------------
+// Cobertura por seção — full-MD scan deve pegar Facebook, post_pixel
+// ---------------------------------------------------------------------------
+
+describe("lintTrailingEditorialHook (#2658) — cobertura por seção (full-MD scan)", () => {
+  it("FALHA: gancho na seção # Facebook (não só LinkedIn)", () => {
+    const md =
+      "# LinkedIn\n\n## d1\n\nTexto limpo no LinkedIn.\n\n" +
+      "# Facebook\n\n## d1\n\nA OpenAI lançou o GPT-5, e o que mais pesa não é o desempenho.\n";
+    const r = lintTrailingEditorialHook(md);
+    assert.equal(r.ok, true);
+    assert.ok(r.matches.length > 0, `Deveria flagar gancho na seção Facebook; matches: ${JSON.stringify(r.matches)}`);
+  });
+
+  it("FALHA: gancho no bloco ## post_pixel (post pessoal — alto risco editorial)", () => {
+    const md =
+      "# LinkedIn\n\n## d1\n\nTexto limpo.\n\n" +
+      "## post_pixel\n\nUsei o GPT-5 a semana toda, e a escolha de foco diz mais sobre estratégia do que os benchmarks.\n";
+    const r = lintTrailingEditorialHook(md);
+    assert.equal(r.ok, true);
+    assert.ok(r.matches.length > 0, `Deveria flagar gancho em post_pixel; matches: ${JSON.stringify(r.matches)}`);
+  });
+
+  it("contexto mostrado inclui o gatilho mesmo quando cai no fim do lookahead (review #2658)", () => {
+    // Preâmbulo longo (~60 chars) entre ", e " e o gatilho "diz mais sobre" — a
+    // janela de contexto deve cobrir o gatilho, não clipá-lo.
+    const md = mkMd(
+      "A Anthropic publicou o relatório, e o processo de revisão interna que durou longos meses de debate diz mais sobre a cultura da empresa.",
+    );
+    const r = lintTrailingEditorialHook(md);
+    assert.equal(r.ok, true);
+    assert.ok(r.matches.length > 0, "deveria flagar mesmo com preâmbulo longo");
+    assert.ok(
+      r.matches[0].context.includes("diz mais sobre"),
+      `contexto deve incluir o gatilho, não clipá-lo; got: "${r.matches[0].context}"`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WARN-ONLY: ok deve ser sempre true, nunca bloqueia
 // ---------------------------------------------------------------------------
 

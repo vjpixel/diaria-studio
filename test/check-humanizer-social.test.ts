@@ -477,6 +477,37 @@ describe("lintTicsOnMismatch (#2529) — caso real 260624", () => {
       assert.equal(result.ok, true);
       assert.equal(result.tics_found, false, "social sem tics não deve acusar warning");
       assert.equal(result.antithesis_matches.length, 0);
+      assert.equal(result.trailing_hook_matches.length, 0, "sem ganchos editoriais → array vazio (#2658)");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("detecta gancho editorial ', e [trigger]' via trailing_hook_matches mesmo sem antítese (#2658)", () => {
+    // Social editado pós-humanização: SEM antítese-revelação, mas COM gancho editorial.
+    // Garante que o ramo OR de tics_found (hook-only) é exercitado e que o gancho
+    // não passa invisível pela ausência de antítese.
+    const SOCIAL_HOOK_ONLY = `# LinkedIn
+## d1
+A OpenAI colocou no ar a prévia do GPT-5.6, e a escolha de focos diz mais sobre estratégia do que os benchmarks revelam.
+
+### comment_diaria
+Leia em {edition_url}
+linkedin.com/company/diar.ia.br
+
+# Facebook
+## d1
+Saiba mais em https://diar.ia.br.
+`;
+    const { dir, cleanup } = mkEdition(SOCIAL_HOOK_ONLY);
+    try {
+      const socialPath = join(dir, "03-social.md");
+      const result = lintTicsOnMismatch(socialPath);
+      assert.equal(result.ok, true);
+      assert.equal(result.antithesis_matches.length, 0, "este fixture não tem antítese-revelação");
+      assert.ok(result.trailing_hook_matches.length > 0,
+        `deve detectar gancho editorial; got ${result.trailing_hook_matches.length}`);
+      assert.equal(result.tics_found, true, "tics_found deve ser true via ramo trailing_hook (OR)");
     } finally {
       cleanup();
     }

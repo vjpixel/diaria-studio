@@ -940,14 +940,28 @@ const EDITORIAL_HOOK_TRIGGER_RE =
   /diz mais sobre|[eé] t[aã]o relevante quanto|[eé] t[aã]o importante quanto|o que mais pesa|mais do que parece|vai al[eé]m de/i;
 
 /**
+ * Janela do lookahead: o gatilho editorial deve aparecer dentro de N chars após
+ * `, e ` na mesma linha. Exportada pra que a janela de contexto cubra o gatilho
+ * inteiro mesmo quando ele cai no fim do lookahead (evita clipar o gatilho do
+ * texto mostrado ao editor no gate — review #2658).
+ */
+const EDITORIAL_HOOK_LOOKAHEAD = 100;
+
+/**
  * Regex completo: `, e ` seguido de conteúdo que contém um gatilho editorial
- * dentro dos ~100 chars seguintes na mesma linha. O lookahead exige o gatilho;
- * o resto captura o trecho para contexto.
- * Flags: `i` (case-insensitive) + `g` (múltiplos matches por linha).
+ * dentro dos ~100 chars seguintes na mesma linha. O lookahead exige o gatilho.
+ *
+ * O conjunto de gatilhos é DERIVADO de `EDITORIAL_HOOK_TRIGGER_RE.source` —
+ * single source of truth, evita drift entre as duas regex (review #2658).
+ *
+ * Sem flag `g`: a função captura no máximo 1 match por linha (mesma convenção de
+ * `lintAntithesisReveal`), então a regex é stateless e dispensa reset de
+ * `lastIndex`. Sem `[^\n]*` final: o match termina logo após `, e ` e `m.index`
+ * aponta exatamente pra vírgula — janela de contexto fica determinística.
  */
 const TRAILING_EDITORIAL_HOOK_RE = new RegExp(
-  `, e (?=[^\\n]{0,100}(?:diz mais sobre|[eé] t[aã]o relevante quanto|[eé] t[aã]o importante quanto|o que mais pesa|mais do que parece|vai al[eé]m de))[^\\n]*`,
-  "gi",
+  `, e (?=[^\\n]{0,${EDITORIAL_HOOK_LOOKAHEAD}}(?:${EDITORIAL_HOOK_TRIGGER_RE.source}))`,
+  "i",
 );
 
 export interface TrailingEditorialHookMatch {
@@ -970,8 +984,13 @@ export interface TrailingEditorialHookResult {
  * "é tão importante quanto", "o que mais pesa", "mais do que parece",
  * "vai além de".
  *
- * WARN-ONLY — sempre retorna `ok: true`; matches são surfaçados como ⚠️ no gate.
- * Decisão de cortar a oração ou mover o gancho pro corpo fica com o editor.
+ * Limitação conhecida: o gatilho precisa cair dentro de ~100 chars após `, e `
+ * (janela do lookahead) — uma oração com preâmbulo muito longo antes do gatilho
+ * não dispara. Os exemplos reais ficam bem abaixo desse limite.
+ *
+ * 1 match por linha (mesma convenção de `lintAntithesisReveal`). WARN-ONLY —
+ * sempre retorna `ok: true`; matches são surfaçados como ⚠️ no gate. Decisão de
+ * cortar a oração ou mover o gancho pro corpo fica com o editor.
  */
 export function lintTrailingEditorialHook(md: string): TrailingEditorialHookResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -984,14 +1003,14 @@ export function lintTrailingEditorialHook(md: string): TrailingEditorialHookResu
     // Skip HTML comments
     if (/^<!--/.test(line.trim())) continue;
 
-    TRAILING_EDITORIAL_HOOK_RE.lastIndex = 0;
-    if (TRAILING_EDITORIAL_HOOK_RE.test(line)) {
-      TRAILING_EDITORIAL_HOOK_RE.lastIndex = 0;
-      const m = TRAILING_EDITORIAL_HOOK_RE.exec(line);
-      const idx = m ? line.indexOf(m[0]) : 0;
+    const m = TRAILING_EDITORIAL_HOOK_RE.exec(line);
+    if (m) {
+      const idx = m.index;
+      // Janela de contexto: 20 chars antes do `, e ` + o suficiente pra cobrir
+      // o lookahead inteiro (até o gatilho) sem clipar (review #2658).
       matches.push({
         line: i + 1,
-        context: line.slice(Math.max(0, idx - 20), idx + 80).trim(),
+        context: line.slice(Math.max(0, idx - 20), idx + EDITORIAL_HOOK_LOOKAHEAD + 30).trim(),
       });
     }
   }

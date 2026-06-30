@@ -193,11 +193,11 @@ export interface TicLintResult {
  * #2529: roda lint de tics determinísticos sobre o `03-social.md` editado.
  * Chamado internamente pelo `--check` quando o hash diverge (exit 2).
  *
- * Só usa `lintAntithesisReveal` de lint-social-md.ts — o único tic check
- * disponível no lint-social-md.ts que: (a) cobre construções de IA, (b) é
- * WARN-ONLY por design (#2526), (c) roda sobre qualquer conteúdo do MD.
- * Travessões e anglicismos não têm equivalente check em lint-social-md.ts
- * (os existentes são de CTA e schema), então não incluídos (#2529 decisão).
+ * Usa os tic checks WARN-ONLY de lint-social-md.ts que cobrem construções de IA
+ * e rodam sobre qualquer conteúdo do MD: `lintAntithesisReveal` (#2526) e
+ * `lintTrailingEditorialHook` (#2658). Travessões e anglicismos não têm
+ * equivalente check em lint-social-md.ts (os existentes são de CTA e schema),
+ * então não incluídos (#2529 decisão).
  */
 export function lintTicsOnMismatch(socialPath: string): TicLintResult {
   if (!existsSync(socialPath)) {
@@ -228,12 +228,13 @@ function logTicLintEvent(editionDir: string, result: TicLintResult): void {
 
   const level = result.tics_found ? "warn" : "info";
   const message = result.tics_found
-    ? `social_tic_lint: hash diverge E tics detectados (${result.antithesis_matches.length} antítese-revelação) — considerar re-humanizar`
+    ? `social_tic_lint: hash diverge E tics detectados (${result.antithesis_matches.length} antítese-revelação, ${result.trailing_hook_matches.length} gancho-editorial) — considerar re-humanizar`
     : "social_tic_lint: hash diverge mas sem tics detectados — edição pode ser só remoção de tic";
 
   const details = JSON.stringify({
     tics_found: result.tics_found,
     antithesis_count: result.antithesis_matches.length,
+    trailing_hook_count: result.trailing_hook_matches.length,
     kind: "humanizer_social_tic_lint",
   });
 
