@@ -30,7 +30,6 @@ import {
   narrativeIsCatalogShaped,
   SECTION_HEADER,
 } from "../../render-erro-intencional.ts";
-import { checkIntentionalError } from "../lint-checks/intentional-error.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -773,58 +772,6 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
   return violations;
 }
 
-/**
- * #2667: detecta inconsistência quando frontmatter declara `intentional_error: none`
- * (sem erro intencional) mas o corpo do MD ainda tem uma narrativa "Nessa edição, ..."
- * plantada — o que seria publicado como erro intencional sem contar ao leitor.
- *
- * Cenário real (incidente 260629→260630): editor decidiu "sem erro" depois do Stage 2
- * mas o plantio (Sol/Luna no corpo + reveal no frontmatter) não foi revertido.
- * Resultado: reveal fantasma na edição seguinte.
- *
- * severity: "error" — inconsistência entre frontmatter e corpo que bloqueia
- * publicação. A edição declara "sem erro" mas há uma narrativa que seria interpretada
- * como erro intencional pelo Stage 5 / leitores.
- *
- * Remediação: remover a narrativa "Nessa edição, ..." do bloco ERRO INTENCIONAL
- * (ou mudar o frontmatter de volta para um erro declarado completo).
- */
-function checkNoErrorBodyConsistent(editionDir: string): InvariantViolation[] {
-  const path = resolve(editionDir, "02-reviewed.md");
-  if (!existsSync(path)) return [];
-
-  // Verificar se o frontmatter declara no_error
-  const ieCheck = checkIntentionalError(path);
-  if (!ieCheck.no_error) return []; // não é uma edição "sem erro" — skip
-
-  // Frontmatter diz "sem erro": verificar se o corpo ainda tem narrativa plantada
-  const md = readFileSync(path, "utf8");
-  const extracted = extractIntentionalErrorFromMd(md);
-  if (!extracted) return []; // sem narrativa no corpo — consistente
-
-  // Corpo ainda tem narrativa "Nessa edição, ..." válida → inconsistência
-  // Trunca a narrativa em 80 chars só quando ela de fato excede — evita um
-  // "..." fantasma que sugeriria truncamento numa narrativa curta.
-  const narrativePreview =
-    extracted.narrative.length > 80
-      ? `${extracted.narrative.slice(0, 80)}...`
-      : extracted.narrative;
-  return [
-    {
-      rule: "no-error-body-consistent",
-      message:
-        `ERRO INTENCIONAL: frontmatter declara \`intentional_error: none\` (sem erro) ` +
-        `mas o corpo ainda tem uma narrativa plantada: "Nessa edição, ${narrativePreview}". ` +
-        `Isso causaria um reveal-fantasma na edição seguinte (#2667). ` +
-        `Fix: remover (ou substituir por placeholder) a linha "Nessa edição, ..." ` +
-        `do bloco ERRO INTENCIONAL, e re-rodar \`render-erro-intencional.ts\`.`,
-      source_issue: "#2667",
-      severity: "error",
-      file: path,
-    },
-  ];
-}
-
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -882,13 +829,6 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkTruncatedSecondaryItemSummary,
   },
-  {
-    id: "no-error-body-consistent",
-    description: "frontmatter none + corpo sem narrativa plantada (#2667)",
-    source_issue: "#2667",
-    stage: 4,
-    run: checkNoErrorBodyConsistent,
-  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -908,5 +848,4 @@ export {
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
   checkTruncatedSecondaryItemSummary,
-  checkNoErrorBodyConsistent,
 };

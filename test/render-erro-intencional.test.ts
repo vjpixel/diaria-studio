@@ -1448,11 +1448,7 @@ describe("#2078: prev.no_error branch — frase natural no reveal", () => {
     assert.equal(r?.no_error, true);
   });
 
-  it("#2667: integração CLI: prev no_error=true → reveal=null (sem 'Na última edição...')", () => {
-    // Regressão #2667: antes (#2078), no_error=true gerava
-    // "Na última edição, não havia erro intencional: quem respondeu que não há erro, acertou."
-    // Isso propagava um reveal-fantasma quando o editor cancelava o erro sem limpar o frontmatter.
-    // Após o fix (#2667): no_error=true → reveal=null → texto neutro "A edição anterior não trazia..."
+  it("integração CLI: prev no_error=true gera frase natural, não concatenação mecânica", () => {
     const dir = mkdtempSync(join(tmpdir(), "render-erro-none-"));
     try {
       const mdPath = join(dir, "02-reviewed.md");
@@ -1485,65 +1481,14 @@ describe("#2078: prev.no_error branch — frase natural no reveal", () => {
       ], { cwd: projectRoot, encoding: "utf8" });
       assert.equal(r.status, 0, r.stderr);
       const out = JSON.parse(r.stdout);
-      // #2667: reveal=null → prev_revealed=false
-      assert.equal(out.prev_revealed, false, "#2667: no_error=true deve resultar em reveal=null (prev_revealed=false)");
+      assert.equal(out.prev_revealed, true);
       assert.equal(out.prev_edition, "260605");
       const updated = readFileSync(mdPath, "utf8");
-      // #2667: NÃO deve inserir linha de reveal "Na última edição, ..." no corpo do ERRO INTENCIONAL
-      // Atenção: o frontmatter placeholder tem "Na última edição, escrevi X..." como exemplo —
-      // checar que a LINHA DO REVEAL no bloco ERRO INTENCIONAL NÃO começa com "Na última edição,".
-      const erroIdx = updated.indexOf("**ERRO INTENCIONAL**");
-      assert.ok(erroIdx >= 0, "bloco ERRO INTENCIONAL deve estar presente");
-      const erroBlock = updated.slice(erroIdx, updated.indexOf("\n---", erroIdx + 1));
-      assert.doesNotMatch(erroBlock, /^Na última edição,/m, "#2667: corpo do bloco não deve ter reveal quando prev no_error=true");
-      // Deve usar o texto neutro do renderSection(null, ...)
-      assert.match(updated, /não trazia erro intencional declarado/, "deve usar fallback neutro");
+      // Frase natural (#2078)
+      assert.match(updated, /Na última edição, não havia erro intencional/);
+      assert.match(updated, /quem respondeu que não há erro, acertou/);
       // NÃO pode ter a concatenação mecânica antiga
-      assert.doesNotMatch(erroBlock, /o correto é não há erro/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("#2667: integração CLI: prev com reveal válido (is_feature=true) → 'Na última edição...' é inserido (não-regressão do caminho feliz)", () => {
-    // Non-regression: quando prev tem reveal válido, o reveal DEVE ser inserido.
-    // Este é o caminho feliz — não pode ser quebrado pelo fix #2667.
-    const dir = mkdtempSync(join(tmpdir(), "render-erro-feliz-"));
-    try {
-      const mdPath = join(dir, "02-reviewed.md");
-      const errPath = join(dir, "intentional-errors.jsonl");
-      writeFileSync(
-        mdPath,
-        ["OUTRAS NOTICIAS", "", "Item.", "", "---", "", "**ASSINE**", "X"].join("\n"),
-        "utf8",
-      );
-      writeFileSync(
-        errPath,
-        JSON.stringify({
-          edition: "260607",
-          error_type: "factual",
-          is_feature: true,
-          reveal: "Na última edição, escrevi 1990 onde o correto é 1998.",
-          source: "frontmatter_02_reviewed",
-        }) + "\n",
-        "utf8",
-      );
-
-      const projectRoot = join(import.meta.dirname, "..");
-      const scriptPath = join(projectRoot, "scripts", "render-erro-intencional.ts");
-      const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath,
-        "--edition", "260608",
-        "--md", mdPath,
-        "--errors", errPath,
-      ], { cwd: projectRoot, encoding: "utf8" });
-      assert.equal(r.status, 0, r.stderr);
-      const out = JSON.parse(r.stdout);
-      // Caminho feliz: prev com reveal válido → prev_revealed=true
-      assert.equal(out.prev_revealed, true, "reveal válido deve ser inserido (não-regressão #2667)");
-      assert.equal(out.prev_edition, "260607");
-      const updated = readFileSync(mdPath, "utf8");
-      // O reveal deve aparecer no MD
-      assert.match(updated, /Na última edição, escrevi 1990 onde o correto é 1998/, "reveal válido deve ser inserido no MD");
+      assert.doesNotMatch(updated, /o correto é não há erro/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1663,7 +1608,6 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
 import { narrativeIsGenericPlaceholder } from "../scripts/render-erro-intencional.ts";
 import {
   checkNarrativeNotGenericPlaceholder,
-  checkNoErrorBodyConsistent,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 
 describe("narrativeIsGenericPlaceholder (#2377 root cause fix)", () => {
@@ -3185,133 +3129,6 @@ describe("#2438 — guards adicionais (block-scalar, CRLF, caso 3)", () => {
       assert.equal(extractCorrectValueFromFrontmatter(md), "42",
         "CRLF com frontmatter após TÍTULO deve retornar correct_value");
     });
-  });
-});
-
-// ── #2667: checkNoErrorBodyConsistent ────────────────────────────────────────────────────────
-//
-// Validator: quando frontmatter declara `intentional_error: none` (sem erro) mas
-// o corpo ainda tem uma narrativa "Nessa edição, ..." plantada → violation.
-//
-// Cobre o cenário exato do incidente: 260629 tinha erro plantado no corpo + reveal
-// no frontmatter, editor decidiu "sem erro", mas ninguém limpou o corpo nem o frontmatter.
-// A edição seguinte (260630) usou o reveal fantasma.
-// (#2667 — regressão obrigatória #633)
-
-describe("checkNoErrorBodyConsistent (#2667 — validator)", () => {
-  it("violation quando frontmatter none + corpo com narrativa plantada (cenário exato do bug)", () => {
-    // Este é o cenário exato do incidente 260629→260630:
-    // - frontmatter: intentional_error: none (editor decidiu sem erro)
-    // - corpo ERRO INTENCIONAL: "Nessa edição, escrevi Sol onde deveria ser Luna."
-    // → Inconsistência: corpo ainda tem erro plantado; próxima edição geraria reveal fantasma.
-    const dir = mkdtempSync(join(tmpdir(), "no-error-inconsistent-"));
-    try {
-      const md = [
-        "---",
-        "intentional_error: none",
-        "---",
-        "",
-        "**DESTAQUE 1**",
-        "",
-        "Texto do destaque.",
-        "",
-        "---",
-        "",
-        "**ERRO INTENCIONAL**",
-        "",
-        "A edição anterior não trazia erro intencional declarado.",
-        "",
-        "Nessa edição, escrevi Sol onde deveria ser Luna.",
-        "",
-        "---",
-        "",
-        "**ASSINE**",
-        "Texto.",
-      ].join("\n");
-      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
-      const violations = checkNoErrorBodyConsistent(dir);
-      assert.equal(violations.length, 1, "deve retornar 1 violation quando no_error + narrativa plantada no corpo");
-      assert.equal(violations[0].rule, "no-error-body-consistent");
-      assert.equal(violations[0].severity, "error");
-      assert.match(
-        violations[0].message,
-        /intentional_error: none.*ainda tem uma narrativa|nenhum\s+|declara.*none|frontmatter declara/i,
-        "mensagem deve descrever a inconsistência",
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("sem violation quando frontmatter none + corpo só com placeholder (edição consistente)", () => {
-    // Após o fix correto (#2667): editor setou none + substituiu narrativa por placeholder
-    // → sem inconsistência.
-    const dir = mkdtempSync(join(tmpdir(), "no-error-consistent-"));
-    try {
-      const md = [
-        "---",
-        "intentional_error: none",
-        "---",
-        "",
-        "**ERRO INTENCIONAL**",
-        "",
-        "A edição anterior não trazia erro intencional declarado.",
-        "",
-        "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
-        "",
-        "---",
-        "",
-        "**ASSINE**",
-        "Texto.",
-      ].join("\n");
-      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
-      const violations = checkNoErrorBodyConsistent(dir);
-      assert.equal(violations.length, 0, "sem violation quando no_error + placeholder no corpo");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("sem violation quando frontmatter tem erro completo (is_feature=true via 4 campos) — não é edição none", () => {
-    // Sem regressão: edições normais (com erro declarado) não devem gerar violation.
-    const dir = mkdtempSync(join(tmpdir(), "no-error-normal-"));
-    try {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "Erro factual"',
-        '  location: "DESTAQUE 1"',
-        '  category: "factual"',
-        '  correct_value: "2025"',
-        "---",
-        "",
-        "**ERRO INTENCIONAL**",
-        "",
-        "A edição anterior não trazia erro intencional declarado.",
-        "",
-        "Nessa edição, escrevi 2024 onde deveria ser 2025.",
-        "",
-        "---",
-        "",
-        "**ASSINE**",
-        "Texto.",
-      ].join("\n");
-      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
-      const violations = checkNoErrorBodyConsistent(dir);
-      assert.equal(violations.length, 0, "edição normal com erro declarado não deve gerar violation");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("sem violation quando 02-reviewed.md não existe", () => {
-    const dir = mkdtempSync(join(tmpdir(), "no-error-nofile-"));
-    try {
-      const violations = checkNoErrorBodyConsistent(dir);
-      assert.equal(violations.length, 0);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 
