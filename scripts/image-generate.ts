@@ -33,8 +33,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // #1241: instrução anti-texto movida pro positive prompt com fraseado afirmativo.
 // Gemini Flash Image respeita melhor instruções positivas que negative prompt
 // (que ele interpreta como descrição geral, às vezes induzindo o oposto).
-const STYLE_SUFFIX =
+// #2657: instrução de safe-area central — todos os sujeitos principais agrupados
+// na metade central do frame, visíveis após o crop 1:1 (800×800 do centro de 1600×800).
+// Exportada para teste de regressão em test/image-generate-safe-area.test.ts.
+export const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
+  "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to a square (1:1); do not place key subjects near the left or right edges. " +
   "Purely visual scene with absolutely no written characters, no letters, no digits, no symbols on any surface; " +
   "all signage, papers, screens, books and labels rendered as abstract shapes or solid color blocks without any text or numbers.";
 

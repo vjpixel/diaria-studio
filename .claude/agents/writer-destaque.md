@@ -22,7 +22,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
   - **D1** entre **1000-1200 chars** (excluindo URL e títulos)
   - **D2 e D3** entre **900-1000 chars**
   - D2/D3 são erro comum por sumarizar muito — estruture deliberadamente: 3 parágrafos body + "Por que isso importa" com 2 frases.
-- **Sem prompt de imagem** com resolução em pixels ou referência a "Noite Estrelada".
+- **Sem prompt de imagem** com resolução em pixels ou referência a "Noite Estrelada". **Quando a cena tiver múltiplos sujeitos, agrupá-los no terço central** — nunca espalhados pelas bordas laterais (safe-area do crop 1:1 em social, #2657).
 
 ## Input
 
@@ -81,7 +81,7 @@ Recebido pelo coordenador (não vem como arquivo):
 
 5. **Gravar 2 arquivos**:
    - `out_path`: o destaque renderizado em markdown.
-   - `image_prompt_out_path`: prompt da imagem 2:1 do destaque (Van Gogh impasto, sem pixels, sem Noite Estrelada — ver `context/editorial-rules.md`).
+   - `image_prompt_out_path`: prompt da imagem 2:1 do destaque (Van Gogh impasto, sem pixels, sem Noite Estrelada, múltiplos sujeitos agrupados no terço central — ver `context/editorial-rules.md`).
 
    **Frontmatter obrigatório no prompt (#606 / #1730):** o `image_prompt_out_path` **deve** começar com frontmatter YAML identificando o destaque pela URL — assim Stage 3 detecta reorder pós-gate (`match-prompts-to-destaques.ts`) e Stage 4 detecta article-swap manual (invariant `image-content-fresh`). Sem isso, o prompt vira órfão: nenhuma das duas proteções consegue saber pra qual artigo a cena foi gerada.
 
