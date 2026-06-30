@@ -73,3 +73,52 @@ describe("renderIntroCallout (#1648)", () => {
     assert.match(html, /font-weight:600/);
   });
 });
+
+// #260701: box de início de mês (campeões É IA? + sorteio) — title body-size
+// serif, sub-cabeçalho fully-bold, e parser greedy aceitando `**bold**` interno.
+const MONTHLY_BOX = `Para esta edição, eu enviei 1 e a Diar.ia achou 2.
+
+**🎉 Sorteio
+
+🥇 jorgemartinsfilho
+
+**Os campeões do É IA?:**
+
+🥈 Bruna Quevedo**
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[T](https://x.com)**
+
+Corpo.`;
+
+describe("box campeões/sorteio (#260701)", () => {
+  it("extractIntroCallout greedy captura sub-linhas **bold** internas", () => {
+    const cta = extractIntroCallout(MONTHLY_BOX);
+    assert.ok(cta);
+    // capturou até o último **$ (após 'Bruna Quevedo'), preservando o **Os campeões** interno
+    assert.match(cta!, /^🎉 Sorteio/);
+    assert.match(cta!, /\*\*Os campeões do É IA\?:\*\*/);
+    assert.match(cta!, /🥈 Bruna Quevedo$/);
+  });
+
+  it("titleStyle='body' usa serif 16px (não serif 26px) no título", () => {
+    const html = renderIntroCallout("🎉 Sorteio\n\nlinha do sorteio.", "body");
+    // título serif tamanho de corpo (16px, peso 600), não o 26px do default
+    assert.match(html, /font-size:16px/);
+    assert.doesNotMatch(html, /font-size:26px/);
+  });
+
+  it("parágrafo inteiramente **bold** vira sub-cabeçalho (titleStyle='body')", () => {
+    const html = renderIntroCallout(
+      "🎉 Sorteio\n\ntexto do sorteio.\n\n**Os campeões do É IA?:**\n\n🥇 jorgemartinsfilho",
+      "body",
+    );
+    // 'Os campeões' renderiza sem os ** (negrito via sub-header), peso 600
+    assert.match(html, /<strong>|font-weight:600/);
+    assert.match(html, /Os campeões do É IA\?:/);
+    assert.doesNotMatch(html, /\*\*Os campeões/);
+  });
+});

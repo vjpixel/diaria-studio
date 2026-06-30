@@ -555,7 +555,11 @@ export function reconcileCoverageCount(line: string, count: number): string {
  */
 export function extractIntroCallout(text: string): string | null {
   const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
-  const m = introRegion.match(/^\*\*\s*((?:🎉|📣)[\s\S]+?)\*\*\s*$/m);
+  // Greedy (#260701): captura até o ÚLTIMO `**` em fim de linha da região intro,
+  // permitindo sub-linhas totalmente em negrito (`**Sorteio**`) dentro do box.
+  // Seguro porque a região antes do 1º DESTAQUE contém só a coverage line (sem
+  // `**`) + o único callout 🎉/📣 — o último `**$` é o fechamento do box.
+  const m = introRegion.match(/^\*\*\s*((?:🎉|📣)[\s\S]+)\*\*\s*$/m);
   return m ? m[1].trim() : null;
 }
 
