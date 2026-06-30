@@ -50,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "./lib/cli-args.ts";
-import { lintAntithesisReveal, type AntithesisRevealMatch } from "./lint-social-md.ts";
+import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -185,6 +185,8 @@ export interface TicLintResult {
   tics_found: boolean;
   /** Matches de antítese-revelação detectados (pode estar vazio). */
   antithesis_matches: AntithesisRevealMatch[];
+  /** Matches de gancho editorial emendado via ", e" (#2658 — pode estar vazio). */
+  trailing_hook_matches: TrailingEditorialHookMatch[];
 }
 
 /**
@@ -199,14 +201,17 @@ export interface TicLintResult {
  */
 export function lintTicsOnMismatch(socialPath: string): TicLintResult {
   if (!existsSync(socialPath)) {
-    return { ok: true, tics_found: false, antithesis_matches: [] };
+    return { ok: true, tics_found: false, antithesis_matches: [], trailing_hook_matches: [] };
   }
   const md = readFileSync(socialPath, "utf8");
   const antithesisResult = lintAntithesisReveal(md);
+  const hookResult = lintTrailingEditorialHook(md);
+  const tics_found = antithesisResult.matches.length > 0 || hookResult.matches.length > 0;
   return {
     ok: true,
-    tics_found: antithesisResult.matches.length > 0,
+    tics_found,
     antithesis_matches: antithesisResult.matches,
+    trailing_hook_matches: hookResult.matches,
   };
 }
 
@@ -318,6 +323,9 @@ function main(): void {
           );
           for (const m of ticResult.antithesis_matches) {
             console.error(`  linha ${m.line} [antítese-revelação/${m.pattern}]: "...${m.context}..."`);
+          }
+          for (const m of ticResult.trailing_hook_matches) {
+            console.error(`  linha ${m.line} [gancho-editorial/, e]: "...${m.context}..."`);
           }
           console.error(
             "[check-humanizer-social] ⚠️  Considere re-humanizar antes de aprovar o gate.",

@@ -19,6 +19,7 @@
    - Inflação de importância ("revolucionário", "sem precedentes", "transformador")
    - Fechamentos genéricos ("Em um mundo em constante mudança…")
    - Negação paralela ("não apenas X, mas também Y")
+   - Gancho editorial emendado via ", e": "<fato>, e [diz mais sobre / é tão relevante quanto / o que mais pesa / vai além de]" — mover o gancho pro corpo ou cortar a oração (#2658)
    - Conectores repetitivos ("além disso", "nesse sentido", "por outro lado" ≥3× seguidas)
    - Verbos pomposos ("capitanear", "catalisar", "impulsionar" em contexto trivial)
    - Anglicismos desnecessários quando existe equivalente PT-BR natural

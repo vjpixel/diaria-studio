@@ -917,6 +917,92 @@ export function lintAntithesisReveal(md: string): AntithesisRevealResult {
 }
 
 // ---------------------------------------------------------------------------
+// #2658: no-trailing-editorial-hook — detecta ", e [gancho editorial]" em posts
+// social. Primo de #2526 (antítese-revelação) e #2494 (punchline de autoridade).
+//
+// Padrão-alvo: <fato>, e <oração que anuncia relevância em vez de afirmá-la>
+//   ex: "O GPT-5.6 Sol entrou em prévia, e a escolha de focos diz mais sobre
+//        estratégia do que os benchmarks costumam revelar."
+//
+// Só dispara quando `, e ` é seguido de oração com GATILHO EDITORIAL.
+// `, e` legítimo de coordenação simples ("lançou o modelo, e disponibilizou
+// a API") NÃO dispara — exige um dos gatilhos abaixo.
+//
+// WARN-ONLY: sempre exit 0; matches são surfaçados como ⚠️ no gate.
+// ---------------------------------------------------------------------------
+
+/**
+ * Gatilhos editoriais que indicam anúncio de relevância em vez de afirmação.
+ * Lista conservadora: cada item é discriminante o suficiente para não casar
+ * coordenação legítima simples ("e divulgou os resultados").
+ */
+const EDITORIAL_HOOK_TRIGGER_RE =
+  /diz mais sobre|[eé] t[aã]o relevante quanto|[eé] t[aã]o importante quanto|o que mais pesa|mais do que parece|vai al[eé]m de/i;
+
+/**
+ * Regex completo: `, e ` seguido de conteúdo que contém um gatilho editorial
+ * dentro dos ~100 chars seguintes na mesma linha. O lookahead exige o gatilho;
+ * o resto captura o trecho para contexto.
+ * Flags: `i` (case-insensitive) + `g` (múltiplos matches por linha).
+ */
+const TRAILING_EDITORIAL_HOOK_RE = new RegExp(
+  `, e (?=[^\\n]{0,100}(?:diz mais sobre|[eé] t[aã]o relevante quanto|[eé] t[aã]o importante quanto|o que mais pesa|mais do que parece|vai al[eé]m de))[^\\n]*`,
+  "gi",
+);
+
+export interface TrailingEditorialHookMatch {
+  line: number;
+  context: string;
+}
+
+export interface TrailingEditorialHookResult {
+  /** Sempre true — este check é WARN-ONLY, nunca bloqueia. */
+  ok: true;
+  matches: TrailingEditorialHookMatch[];
+}
+
+/**
+ * #2658: detecta estrutura ", e [gancho editorial]" em qualquer seção do social.
+ * Primo de #2526 (antítese-revelação) e #2494 (punchline de autoridade).
+ *
+ * O padrão abre com o fato e emenda uma oração final que ANUNCIA a relevância
+ * em vez de afirmá-la. Gatilhos: "diz mais sobre", "é tão relevante quanto",
+ * "é tão importante quanto", "o que mais pesa", "mais do que parece",
+ * "vai além de".
+ *
+ * WARN-ONLY — sempre retorna `ok: true`; matches são surfaçados como ⚠️ no gate.
+ * Decisão de cortar a oração ou mover o gancho pro corpo fica com o editor.
+ */
+export function lintTrailingEditorialHook(md: string): TrailingEditorialHookResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: TrailingEditorialHookMatch[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip section headers (# / ## / ###) — formato, não prosa
+    if (/^#{1,3}\s/.test(line)) continue;
+    // Skip HTML comments
+    if (/^<!--/.test(line.trim())) continue;
+
+    TRAILING_EDITORIAL_HOOK_RE.lastIndex = 0;
+    if (TRAILING_EDITORIAL_HOOK_RE.test(line)) {
+      TRAILING_EDITORIAL_HOOK_RE.lastIndex = 0;
+      const m = TRAILING_EDITORIAL_HOOK_RE.exec(line);
+      const idx = m ? line.indexOf(m[0]) : 0;
+      matches.push({
+        line: i + 1,
+        context: line.slice(Math.max(0, idx - 20), idx + 80).trim(),
+      });
+    }
+  }
+
+  return { ok: true, matches };
+}
+
+// Exportar o regex de gatilho pra testes de não-disparo
+export { EDITORIAL_HOOK_TRIGGER_RE };
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -1387,7 +1473,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check linkedin-page-link --md <path>\n" +
         "  ou: lint-social-md.ts --check no-credential-bio --md <path>\n" +
         "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>",
+        "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>",
     );
     process.exit(2);
   }
@@ -1598,6 +1685,25 @@ function main(): void {
       for (const m of result.matches) {
         console.error(
           `  linha ${m.line} [${m.pattern}]: "...${m.context}..."`,
+        );
+      }
+      // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
+    }
+    return;
+  }
+
+  // Modo --check no-trailing-editorial-hook (#2658) — detecta ", e [gancho editorial]"
+  // em posts social. WARN-ONLY: sempre exit 0 mesmo com matches; surfaça como ⚠️ no gate.
+  if (args.check === "no-trailing-editorial-hook") {
+    const result = lintTrailingEditorialHook(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (result.matches.length > 0) {
+      console.error(
+        `\n⚠️  ${result.matches.length} gancho(s) editorial(is) detectado(s) (#2658 — mover o gancho pro corpo ou cortar a oração emendada):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  linha ${m.line}: "...${m.context}..."`,
         );
       }
       // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
