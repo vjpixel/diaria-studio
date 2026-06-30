@@ -246,16 +246,17 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
 
   1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
-  2. Chamar `mcp__clarice__correct_text` passando o texto. **Chunking automático (#2606):** se o texto tiver > 9.000 chars (threshold `CLARICE_CHUNK_THRESHOLD` de `scripts/lib/clarice-chunk.ts`), **não** passar o texto inteiro — usar `splitIntoChunks(text, 9000)` para dividir em chunks em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha; nunca no meio de frase ou link markdown). Para cada chunk, chamar `mcp__clarice__correct_text` com `chunk.text`. Após coletar as sugestões de cada chunk, usar `mergeChunkSuggestions([{chunk, suggestions},...])` (apply chunk-local + re-concatenação — sem aritmética de offset) para produzir o texto corrigido com a política de ambiguidade: sugestão pulada (+ log warn) se `from` aparece 0× (não encontrado) ou 2+× (ambíguo) no chunk — evita replace global de termos curtos como `"os"→""`. Salvar a resposta crua (array de todas as sugestões de todos os chunks) em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume). **Nota (gap conhecido):** o fallback REST abaixo (`clarice-correct.ts`) ainda envia o texto inteiro — se uma edição > 9k cair no fallback (MCP offline), o chunking não se aplica; rastrear como follow-up se virar recorrente.
+  2. Chamar `mcp__clarice__correct_text` passando o texto. **Chunking automático (#2606):** se o texto tiver > 9.000 chars (threshold `CLARICE_CHUNK_THRESHOLD` de `scripts/lib/clarice-chunk.ts`), **não** passar o texto inteiro — usar `splitIntoChunks(text, 9000)` para dividir em chunks em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha; nunca no meio de frase ou link markdown). Para cada chunk, chamar `mcp__clarice__correct_text` com `chunk.text`. Após coletar as sugestões de cada chunk, usar `mergeChunkSuggestions([{chunk, suggestions},...])` (apply chunk-local + re-concatenação — sem aritmética de offset) para produzir o texto corrigido com a política de ambiguidade: sugestão pulada (+ log warn) se `from` aparece 0× (não encontrado) ou 2+× (ambíguo) no chunk — evita replace global de termos curtos como `"os"→""`. Salvar a resposta crua (array de todas as sugestões de todos os chunks) em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume). **Nota:** o fallback REST (`clarice-correct.ts`) também suporta chunking desde #2626 — para textos > 9k, o script divide em chunks via `correctTextChunked`, faz 1 request REST por chunk e usa `mergeChunkSuggestions` internamente. O texto corrigido pode ser gravado opcionalmente via `--corrected-out` (auditoria).
 
-     **Fallback REST (#1329, retry #2320).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST com retry/backoff que escreve no mesmo path:
+     **Fallback REST (#1329, retry #2320, chunking #2626).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST com retry/backoff que escreve no mesmo path. **Sempre passar `--corrected-out`** (#2626): o script já chunka textos > 9k e aplica as sugestões chunk-localmente via `mergeChunkSuggestions`, gravando o texto corrigido nesse arquivo. Esse é o resultado correto para textos multi-chunk — **não** re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` (uma âncora única dentro de um chunk pode aparecer 2+× no texto inteiro e seria pulada como ambígua, sub-corrigindo silenciosamente):
      ```bash
      npx tsx scripts/clarice-correct.ts \
        --in data/editions/{AAMMDD}/_internal/{FILENAME} \
        --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json \
+       --corrected-out data/editions/{AAMMDD}/_internal/02-clarice-corrected.md \
        --retry
      ```
-     `--retry` usa 3 tentativas × 60s timeout com backoff exponencial (0s → 5s → 10s entre tentativas). Teto total: ~3min15s — não stalla Stage 2 para sempre. Sem `--retry`, timeout é 30s e há apenas 1 tentativa (comportamento legado).
+     `--retry` usa 3 tentativas × 60s timeout com backoff exponencial (0s → 5s → 10s entre tentativas). Teto **por chunk**: ~3min15s; para textos multi-chunk o teto total é ~N × 3min15s (N = nº de chunks). Sem `--retry`, timeout é 30s e há apenas 1 tentativa (comportamento legado). Em sucesso, **consumir `02-clarice-corrected.md` diretamente no passo 3** (já é o texto corrigido — pular `clarice-apply.ts`).
 
      Logar warn no run-log antes de invocar o script:
      ```bash
@@ -277,7 +278,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
         echo '[]' > data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
         ```
      3. Continuar o pipeline normalmente.
-  3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
+  3. Produzir o texto revisado em `data/editions/{AAMMDD}/02-reviewed.md`. **Dois caminhos, conforme a origem das sugestões:**
+     - **Caminho MCP (normal):** aplicar as sugestões ao texto. Se houve chunking (#2606), o texto corrigido é o resultado do `mergeChunkSuggestions` (apply chunk-local) — gravar esse texto. Se foi chamada única (≤9k), aplicar as sugestões ao texto integral.
+     - **Caminho fallback REST (#2626):** o script já gravou o texto corrigido (chunk-applied) em `02-clarice-corrected.md`. **Copiar esse arquivo diretamente** para `02-reviewed.md` — **não** re-aplicar `02-clarice-suggestions.json` via `clarice-apply.ts` (re-aplicar a lista plana ao texto inteiro sub-corrige textos multi-chunk; ver fallback acima):
+       ```bash
+       cp data/editions/{AAMMDD}/_internal/02-clarice-corrected.md data/editions/{AAMMDD}/02-reviewed.md
+       ```
+     Em ambos os casos, gravar o texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
   4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash
      npx tsx scripts/clarice-diff.ts \
