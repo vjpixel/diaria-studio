@@ -280,8 +280,9 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
 
 **Condições de parada:** fila elegível esgotada → **Fase 1.5**. Erro irrecuperável (auth do gh expirada, rede fora por > 30 min) → se houver PR em CI em voo, levá-lo até merge/draft se possível (senão, comentar o estado na issue); renderizar halt banner (`npx tsx scripts/render-halt-banner.ts --stage "overnight" --reason "..." --action "..."`) + relatório antecipado com o motivo, **pulando a Fase 1.5** (estado pode estar inconsistente).
 
-**Stall passivo — watchdog (#2379):** stall passivo (sessão parada sem sinal explícito) é a causa mais frequente de buracos no run-log (incidentes 260611, 260616b). O coordenador deve detectar stall e agir antes de aguardar passivamente:
-- Quando detectar >60 min sem progresso em unidade em andamento (sem novo evento de run-log, sem resposta do subagente, sem transição de CI): (1) gravar entrada em `stall_events` no `plan.json` com `at` e `reason` estimado; (2) emitir evento run-log:
+**Stall passivo — duas camadas (#2379 + #2688):** stall passivo (sessão parada sem sinal explícito) é a causa mais frequente de buracos no run-log (incidentes 260611, 260616b). Há duas camadas independentes de detecção:
+
+- **(i) Detecção-no-wake (#2379 — coordenador):** o coordenador, quando acordado por um evento (CI, task-notification), verifica se houve >60 min sem progresso em unidade em andamento. Cobre o caso em que a sessão existe mas a issue está travada. Quando detectar: (1) gravar entrada em `stall_events` no `plan.json` com `at` e `reason` estimado; (2) emitir evento run-log:
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
     --message "stall_detected" \
@@ -295,6 +296,10 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
     --action "reconecte e responda 'retry' para retomar, ou 'abort' para encerrar"
   ```
   Stall silencioso >60 s é inaceitável — regra derivada do CLAUDE.md (#738), aqui especializada para o loop overnight. Ao retomar após stall, gravar `resumed_at` na entrada correspondente de `stall_events`.
+
+- **(ii) Detecção-por-tempo (#2688 — watchdog externo):** o coordenador é event-driven e não cobre o caso em que **nenhum evento chega** (todos os subagentes em silêncio total). O script `scripts/overnight-watchdog.ts` roda via Task Scheduler a cada 10 min, independente da sessão Claude Code, e detecta stall medindo `max(mtime plan.json, último evento run-log agent:overnight)`. Se inatividade > 60 min, também grava em `stall_events`, emite evento run-log e exibe halt banner. Setup local one-time: `scripts/overnight/setup-watchdog-schedule.ps1`. Ver `docs/overnight-watchdog-setup.md`.
+
+  **Interação entre as camadas:** ambas gravam em `stall_events` e emitem `stall_detected` no run-log. A dedup interna do watchdog (janela de 30 min) evita spam se o coordenador ainda estiver rodando e já tiver registrado. Ao retomar, o coordenador grava `resumed_at` na entrada correspondente de `stall_events` normalmente.
 
 ## Fase 1.5 — Code-review consolidado pós-rodada (#2039)
 
