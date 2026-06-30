@@ -877,3 +877,77 @@ describe("regressao #2628 gap2: applyFactcheckAutofix — claim DIVERGENT sem ca
     }
   });
 });
+
+// ─── #2634: edge-case texto "DESTAQUE N ..." no corpo do destaque ────────────
+
+describe("regressao #2634: findDestaqueBodyRange — texto DESTAQUE N no corpo nao corta range", () => {
+  it("linha iniciando com 'DESTAQUE N texto...' no corpo NAO corta o range prematuramente", () => {
+    // Edge-case: corpo do DESTAQUE 1 contem uma linha que comeca com "DESTAQUE 2 foi coberto..."
+    // O regex antigo /^DESTAQUE\s+\d+/im casava essa linha e cortava o range do D1 cedo,
+    // excluindo todo o texto abaixo dela.
+    // Com o fix (#2634), exige-se DESTAQUE N seguido de \s*\| (pipe) ou \s*$ (fim de linha),
+    // entao "DESTAQUE 2 foi coberto..." (seguido de " foi", nao de "|" nem de EOL) eh pulado.
+    // Nota: markerRe (para encontrar o INICIO de um destaque) nao e alterado neste fix —
+    // apenas nextMatch (para encontrar o FIM do bloco atual) e corrigido. Por isso, nao
+    // testamos a relacao entre rangeD1.end e rangeD2.start (que usa o markerRe nao corrigido).
+    // Testamos apenas que o CONTEUDO do bloco D1 inclui o texto que estava sendo perdido.
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "DESTAQUE 2 foi amplamente coberto pela midia especializada.",
+      "",
+      "Mais texto do D1 com claim-alvo aqui.",
+      "",
+      "DESTAQUE 2 | PRODUTO",
+      "",
+      "Texto do D2.",
+    ].join("\n");
+
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+
+    // O bloco D1 deve incluir o texto apos "DESTAQUE 2 foi coberto..."
+    // (antes do fix, nextMatch casava "DESTAQUE 2 foi..." e cortava D1 ali)
+    assert.ok(
+      d1Block.includes("Mais texto do D1 com claim-alvo aqui"),
+      "texto apos linha 'DESTAQUE 2 foi coberto' deve estar incluido no range D1 (nao cortado pelo regex)",
+    );
+    // D2's exclusive content should not be in D1
+    assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 nao deve incluir texto exclusivo de D2");
+    // D1 must end EXACTLY at the real "DESTAQUE 2 | PRODUTO" header (exclusive end).
+    // Igualdade exata (nao <= realD2Pos + 1) — o +1 toleraria um off-by-one que
+    // incluiria o "D" do header seguinte no range de D1 (self-review #2634).
+    const realD2Pos = content.indexOf("DESTAQUE 2 | PRODUTO");
+    assert.equal(rangeD1!.end, realD2Pos, `D1.end (${rangeD1!.end}) deve ser exatamente o inicio do header DESTAQUE 2 | PRODUTO (${realD2Pos})`);
+  });
+
+  it("formato canonico DESTAQUE N | CATEGORIA continua delimitando corretamente (nao regrediu)", () => {
+    // Garante que o fix nao quebrou o caso normal.
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "Valor errado GPT-4o aqui.",
+      "",
+      "DESTAQUE 2 | PRODUTO",
+      "",
+      "Outro conteudo com GPT-4o.",
+    ].join("\n");
+
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    const rangeD2 = findDestaqueBodyRange(content, 2);
+
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    assert.ok(rangeD2 !== null, "range D2 deve existir");
+
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    const d2Block = content.slice(rangeD2!.start, rangeD2!.end);
+
+    assert.ok(d1Block.includes("Valor errado GPT-4o aqui"), "D1 deve conter seu texto");
+    assert.ok(!d1Block.includes("Outro conteudo"), "D1 NAO deve conter texto de D2");
+    assert.ok(d2Block.includes("Outro conteudo com GPT-4o"), "D2 deve conter seu texto");
+    assert.ok(rangeD1!.end <= rangeD2!.start, "D1 deve terminar antes de D2 comecar");
+  });
+});

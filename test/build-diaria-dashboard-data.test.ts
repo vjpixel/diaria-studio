@@ -1864,3 +1864,84 @@ describe("regressao #2627: extractPublishedUseMelhorUrls — itens bold-link", (
     assert.ok(![...urls!].some((u) => u.includes("noticias.com")), "URL de NOTICIAS nao deve vazar para Use Melhor");
   });
 });
+
+// ─── #2634: edge-case bold-only item (sem link) na seção USE MELHOR ───────────
+
+describe("regressao #2634: extractPublishedUseMelhorUrls — bold-only item nao corta secao", () => {
+  test("item bold-only (**Ferramenta X**) no meio da secao NAO corta a extracao de URLs seguintes", async () => {
+    // Edge-case: editor escreve item em formato nao-canonico:
+    //   **Ferramenta X**          ← bold-only sem link (NAO e item-link **[Titulo](URL)**)
+    //   https://ferramenta-x.com  ← URL na linha seguinte
+    // O regex antigo casava **Ferramenta X** como fim-de-secao e descartava a URL.
+    // Com o fix (#2634), apenas headers de secao com keyword conhecida terminam a secao.
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const mdPath = j(td(), "diaria-test-2634-bold-only.md");
+    wf(
+      mdPath,
+      [
+        "**🛠️ USE MELHOR**",
+        "",
+        "**Ferramenta X**",
+        "https://ferramenta-x.com/tutorial",
+        "",
+        "**[Outra Ferramenta](https://outra-ferramenta.com/guide)**  Descricao. (5 min)",
+        "",
+        "**🚀 LANÇAMENTOS**",
+        "",
+        "**[OpenAI lanca algo](https://openai.com/news)**",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const urls = extractPublishedUseMelhorUrls(mdPath);
+    rm(mdPath, { force: true });
+
+    assert.ok(urls !== null, "deve retornar Set nao-nulo");
+    // URL logo apos o bold-only NAO deve ter sido descartada pelo falso fim-de-secao
+    assert.ok(
+      [...urls!].some((u) => u.includes("ferramenta-x.com")),
+      "URL apos **Ferramenta X** bold-only deve ser incluida (nao cortada pelo regex)",
+    );
+    // URL do item canonico tambem deve estar presente
+    assert.ok([...urls!].some((u) => u.includes("outra-ferramenta.com")), "item canonico **[Titulo](URL)** deve estar incluido");
+    // URL de LANCAMENTOS NAO deve vazar
+    assert.ok(![...urls!].some((u) => u.includes("openai.com")), "URL de LANCAMENTOS nao deve vazar para Use Melhor");
+  });
+
+  test("formato canonico **[Titulo](URL)** continua funcionando apos o fix", async () => {
+    // Caso canonico: garante que o fix do #2634 nao regrediu o formato normal.
+    const { extractPublishedUseMelhorUrls } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const { tmpdir: td } = await import("node:os");
+    const mdPath = j(td(), "diaria-test-2634-canonical.md");
+    wf(
+      mdPath,
+      [
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Cursor Tricks](https://cursor.sh/tricks)**  Truques avancados. (3 min)",
+        "",
+        "**[Perplexity Guide](https://perplexity.ai/guide)**  Como usar. (4 min)",
+        "",
+        "---",
+        "",
+        "**🚀 LANÇAMENTOS**",
+        "",
+        "**[GPT-5](https://openai.com/gpt5)**",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const urls = extractPublishedUseMelhorUrls(mdPath);
+    rm(mdPath, { force: true });
+
+    assert.ok(urls !== null, "deve retornar Set nao-nulo");
+    assert.ok([...urls!].some((u) => u.includes("cursor.sh")), "deve incluir cursor.sh (formato canonico)");
+    assert.ok([...urls!].some((u) => u.includes("perplexity.ai")), "deve incluir perplexity.ai (formato canonico)");
+    assert.ok(![...urls!].some((u) => u.includes("openai.com")), "URL de LANCAMENTOS nao deve vazar apos ---");
+  });
+});

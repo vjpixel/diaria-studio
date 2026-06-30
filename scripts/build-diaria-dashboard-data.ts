@@ -585,7 +585,13 @@ export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<strin
   // Section headers: **🛠️ USE MELHOR**  → closes with ** before EOL.
   // Item format:     **[Título](URL)**   → excluded by (?!\[).
   // Inline bold:     **Importante:** ... → ** closes mid-line, trailing text ≠ \s*(EOL).
-  const sectionEndMatch = /\n(?:---|#|\*\*(?!\[)[^\n]+\*\*\s*(?=\n|$))/i.exec(afterHeader);
+  // #2634: further require that ** bold lines contain a KNOWN section-name keyword to avoid
+  // cutting the section early when the editor writes a bold-only tool name (**Ferramenta X**)
+  // followed by its URL on the next line — a valid but non-canonical item format.
+  const sectionEndMatch =
+    /\n(?:---|#|\*\*(?!\[)[^\n]*(?:DESTAQUE\s+\d|USE MELHOR|LAN[ÇC]A|RADAR|V[ÍI]DEO|NOT[ÍI]CIA|PESQUISA|ERRO INTENCIONAL|SORTEIO)[^\n]*\*\*\s*(?=\n|$))/i.exec(
+      afterHeader,
+    );
   const sectionText = sectionEndMatch ? afterHeader.slice(0, sectionEndMatch.index) : afterHeader;
   // Extrai todas as URLs do texto da seção, tolerando parênteses balanceados (#2596).
   // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —
