@@ -1497,7 +1497,7 @@ describe("#2078: prev.no_error branch — frase natural no reveal", () => {
       const erroBlock = updated.slice(erroIdx, updated.indexOf("\n---", erroIdx + 1));
       assert.doesNotMatch(erroBlock, /^Na última edição,/m, "#2667: corpo do bloco não deve ter reveal quando prev no_error=true");
       // Deve usar o texto neutro do renderSection(null, ...)
-      assert.match(updated, /não travia erro intencional declarado|não trazia erro intencional declarado/, "deve usar fallback neutro");
+      assert.match(updated, /não trazia erro intencional declarado/, "deve usar fallback neutro");
       // NÃO pode ter a concatenação mecânica antiga
       assert.doesNotMatch(erroBlock, /o correto é não há erro/);
     } finally {

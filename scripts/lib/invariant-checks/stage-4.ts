@@ -803,12 +803,18 @@ function checkNoErrorBodyConsistent(editionDir: string): InvariantViolation[] {
   if (!extracted) return []; // sem narrativa no corpo — consistente
 
   // Corpo ainda tem narrativa "Nessa edição, ..." válida → inconsistência
+  // Trunca a narrativa em 80 chars só quando ela de fato excede — evita um
+  // "..." fantasma que sugeriria truncamento numa narrativa curta.
+  const narrativePreview =
+    extracted.narrative.length > 80
+      ? `${extracted.narrative.slice(0, 80)}...`
+      : extracted.narrative;
   return [
     {
       rule: "no-error-body-consistent",
       message:
         `ERRO INTENCIONAL: frontmatter declara \`intentional_error: none\` (sem erro) ` +
-        `mas o corpo ainda tem uma narrativa plantada: "Nessa edição, ${extracted.narrative.slice(0, 80)}...". ` +
+        `mas o corpo ainda tem uma narrativa plantada: "Nessa edição, ${narrativePreview}". ` +
         `Isso causaria um reveal-fantasma na edição seguinte (#2667). ` +
         `Fix: remover (ou substituir por placeholder) a linha "Nessa edição, ..." ` +
         `do bloco ERRO INTENCIONAL, e re-rodar \`render-erro-intencional.ts\`.`,
