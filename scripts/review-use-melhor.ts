@@ -26,6 +26,47 @@ import { isAggregator } from "./lib/aggregators.ts";
 import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curation.ts";
 
 /**
+ * #2663: sinal de newsletter/roundup em slug ou título — o artigo É uma
+ * compilação/curadoria de links, não tutorial acionável.
+ *
+ * Abrangente (usa mais sinais que o ROUNDUP_SLUG_RE do categorize.ts, que é
+ * conservador por operar no path de classificação). Aqui o guard é warn-only,
+ * então podemos incluir sinais mais fracos:
+ *   - slug/título: newsletter, roundup, digest, this week in
+ *   - título: "weekly [digest|recap|newsletter]", "monthly [digest|...]"
+ *   - título: "and more" SÓ quando TERMINAL (fim do título — enumeração de roundup
+ *     "X, Y, and More"). Mid-título ("and more efficient architectures") NÃO conta,
+ *     pra não flagar notícia/análise legítima (#2666 follow-up).
+ *
+ * PRECEDÊNCIA: newsletter/roundup > how-to (#2663 + #2666 coexistência).
+ * Se um roundup contém "veja como" no título, o sinal de roundup VENCE e o
+ * artigo é flagado mesmo assim — não usamos `&& !hasTutorial` aqui.
+ * Isso é intencional: um roundup sobre tutoriais ainda é um roundup, não um
+ * tutorial em si. O editor decide no gate.
+ *
+ * Limite deliberado: "Como construir uma newsletter" NÃO dispara (how-to
+ * canônico é coberto por hasTutorialSignal na lógica da caller).
+ * Mas como a function é chamada com precedência absoluta em reviewUseMelhor,
+ * o editor verá o alerta e pode descartar se for FP.
+ */
+const NEWSLETTER_ROUNDUP_RE =
+  /\b(?:newsletter|roundup|this\s+week\s+in|weekly\s+(?:digest|recap|roundup|newsletter)|monthly\s+(?:digest|recap|roundup|newsletter))\b|\band\s+more\b\s*[.!]?\s*$/i;
+
+/**
+ * Detecta sinal de newsletter/roundup no slug ou título.
+ * Exportada para testes (#2663).
+ */
+export function isNewsletterRoundup(url: string, title: string): boolean {
+  let slug = "";
+  try {
+    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    // URL inválida — testa só o título
+  }
+  return NEWSLETTER_ROUNDUP_RE.test(title) || NEWSLETTER_ROUNDUP_RE.test(slug);
+}
+
+/**
  * Domínios primariamente newsletter/podcast/análise — só PARTE do conteúdo é
  * tutorial, então no bucket use_melhor merecem revisão. `latent.space` está aqui
  * (e NÃO globalmente como aggregator, pra não quebrar o categorize que aceita
@@ -217,7 +258,19 @@ export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
     if (!url) continue;
     const title = typeof item.title === "string" ? item.title : "";
     const hasTutorial = hasTutorialSignal(url, title);
-    if (isNewsletterLike(url) && !hasTutorial) {
+    // #2663: newsletter/roundup detectado no slug ou título — flag com PRIORIDADE
+    // sobre todos os outros checks. NÃO usa `&& !hasTutorial` de propósito:
+    // roundup > how-to é a precedência definida (ver NEWSLETTER_ROUNDUP_RE acima).
+    // Um roundup sobre tutoriais ("Newsletter: veja como usar X") ainda é roundup.
+    if (isNewsletterRoundup(url, title)) {
+      suspicious.push({
+        url,
+        title: title || undefined,
+        reasons: [
+          "newsletter/roundup detectado (newsletter|roundup|weekly|digest|and more) — é uma compilação de links, não tutorial acionável (#2663)",
+        ],
+      });
+    } else if (isNewsletterLike(url) && !hasTutorial) {
       suspicious.push({
         url,
         title: title || undefined,

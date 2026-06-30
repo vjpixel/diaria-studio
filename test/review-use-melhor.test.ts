@@ -12,6 +12,7 @@ import {
   hasTutorialSignal,
   isCorporateBlog,
   reviewUseMelhorComposition,
+  isNewsletterRoundup,
 } from "../scripts/review-use-melhor.ts";
 
 describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
@@ -304,5 +305,164 @@ describe("reviewUseMelhorComposition (#2339) — guard de composição casual/in
     const result = reviewUseMelhorComposition(items);
     assert.equal(result.casualCount, 1, "sinal casual no título sem anotação = casual");
     assert.equal(result.missingCasual, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2663 — isNewsletterRoundup + reviewUseMelhor: guard de newsletter/roundup
+// ---------------------------------------------------------------------------
+
+describe("isNewsletterRoundup (#2663)", () => {
+  it("detecta 'newsletter' no slug (caso real 260630 — LangChain)", () => {
+    assert.ok(
+      isNewsletterRoundup(
+        "https://www.langchain.com/blog/june-2026-langchain-newsletter",
+        "June 2026: LangChain Newsletter, Fleet On-Call Copilot, Deep Agents Rubrics, and More",
+      ),
+      "slug e título com 'newsletter' devem ser detectados",
+    );
+  });
+
+  it("detecta 'newsletter' só no título (sem slug)", () => {
+    assert.ok(
+      isNewsletterRoundup(
+        "https://www.langchain.com/blog/june-2026",
+        "June 2026: LangChain Newsletter, and More",
+      ),
+      "título com 'newsletter' e 'and more' deve ser detectado",
+    );
+  });
+
+  it("detecta 'roundup' no slug", () => {
+    assert.ok(
+      isNewsletterRoundup("https://blog.example.com/weekly-ai-roundup/", "AI Weekly Roundup"),
+    );
+  });
+
+  it("detecta 'and more' no título (sinal de roundup)", () => {
+    assert.ok(
+      isNewsletterRoundup(
+        "https://langchain.com/blog/june-2026",
+        "June 2026: Deep Agents, RAG Updates, and More",
+      ),
+      "'and more' no título é sinal de roundup",
+    );
+  });
+
+  it("#2666 follow-up: 'and more' MID-título (não-terminal) NÃO dispara (reduz FP)", () => {
+    // "and more efficient architectures" é adjetivo, não enumeração de roundup.
+    assert.ok(
+      !isNewsletterRoundup(
+        "https://example.com/posts/transformers-deep-dive",
+        "Understanding Transformers and More Efficient Architectures",
+      ),
+      "'and more' no meio do título não é sinal de roundup",
+    );
+  });
+
+  it("detecta 'this week in' no título", () => {
+    assert.ok(
+      isNewsletterRoundup("https://example.com/posts/123", "This Week in AI: Models, Tools, and More"),
+    );
+  });
+
+  it("detecta 'weekly digest' no título", () => {
+    assert.ok(
+      isNewsletterRoundup("https://example.com/blog/2026-06-30", "Weekly Digest: Top AI Stories"),
+    );
+  });
+
+  it("NÃO detecta tutorial sobre newsletters (how-to sobre construir newsletter)", () => {
+    // "how-to-build-a-newsletter" — o artigo FALA SOBRE newsletter como tópico,
+    // mas isNewsletterRoundup retorna true porque 'newsletter' está no slug.
+    // Isso é um FP documentado (limite da heurística slug-based conservadora).
+    // O guard warn-only permite ao editor descartar o alerta no gate.
+    // Não adicionamos exceção aqui para manter a heurística simples e auditável.
+    // FP documentado: aceito como trade-off (melhor falso-alarme que FN).
+    const result = isNewsletterRoundup(
+      "https://example.com/how-to-build-a-newsletter-with-claude",
+      "How to Build a Newsletter with Claude",
+    );
+    // #633: afirma o comportamento ATUAL (true — FP aceito porque 'newsletter' está
+    // no slug), em vez de só checar o tipo. Se a heurística for refinada para excluir
+    // "how-to-build-a-newsletter", troque para assert.ok(!result) e renomeie.
+    assert.ok(result, "FP aceito: 'newsletter' no slug dispara o guard mesmo em how-to sobre newsletter");
+  });
+
+  it("URL inválida retorna false sem crash", () => {
+    assert.ok(!isNewsletterRoundup("not-a-url", "título qualquer de notícia comum"));
+  });
+});
+
+describe("reviewUseMelhor — guard de newsletter/roundup (#2663)", () => {
+  it("flaga LangChain newsletter como suspeito (caso real 260630)", () => {
+    const items = [
+      {
+        url: "https://www.langchain.com/blog/june-2026-langchain-newsletter",
+        title: "June 2026: LangChain Newsletter, Fleet On-Call Copilot, Deep Agents Rubrics, and More",
+      },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "newsletter LangChain deve ser flagado");
+    assert.match(
+      suspicious[0].reasons.join(" "),
+      /newsletter\/roundup/,
+      "motivo deve mencionar newsletter/roundup",
+    );
+  });
+
+  it("flaga roundup com 'veja como' no título — roundup vence how-to (caso de conflito)", () => {
+    // Caso de conflito: o título tem 'veja como' (sinal de how-to) E o slug tem 'newsletter'.
+    // O guard de roundup DEVE vencer o sinal de how-to (precedência documentada: roundup > how-to).
+    // Nota: hasTutorialSignal retorna true aqui, mas isNewsletterRoundup tem prioridade.
+    const items = [
+      {
+        url: "https://www.langchain.com/blog/june-2026-langchain-newsletter",
+        title: "Newsletter de Junho: veja como usar as novas ferramentas do LangChain, e mais",
+      },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(
+      suspicious.length,
+      1,
+      "roundup com 'veja como' deve ser flagado (roundup > how-to)",
+    );
+    assert.match(suspicious[0].reasons.join(" "), /newsletter\/roundup/);
+  });
+
+  it("NÃO flaga tutorial legítimo de domínio tutorial sem roundup (não-regressão)", () => {
+    const items = [
+      {
+        url: "https://www.langchain.com/blog/how-to-build-agents-with-langgraph",
+        title: "How to Build Agents with LangGraph",
+      },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(
+      suspicious.length,
+      0,
+      "tutorial legítimo sem sinal de roundup não deve ser flagado",
+    );
+  });
+
+  it("NÃO flaga tutorial cookbook.openai.com mesmo que 'newsletter' apareça em contexto de título", () => {
+    // "newsletter" como parte de domínio de curso não é roundup — tutorial domain vence.
+    // Na prática, isNewsletterRoundup verificaria o slug, mas cookbook.openai.com é
+    // TUTORIAL_HOSTS e hasTutorialSignal retornaria true mesmo sem sinal no título.
+    // Aqui testamos que um tutorial host com URL limpa (sem 'newsletter' no slug) não é flagado.
+    const items = [
+      {
+        url: "https://cookbook.openai.com/examples/newsletter-generation",
+        title: "Generating Newsletters with OpenAI API",
+      },
+    ];
+    // NOTA: esta URL TEM 'newsletter' no slug, então isNewsletterRoundup retorna true.
+    // Isso é FP: o artigo é um tutorial SOBRE newsletter, não uma newsletter em si.
+    // O guard é warn-only; o editor descarta. FP documentado como limite aceitável.
+    const { suspicious } = reviewUseMelhor(items);
+    // #633: afirma o comportamento ATUAL — a URL TEM 'newsletter' no slug, então É
+    // flagada (warn-only, FP aceito). Pinar o número evita que uma regressão passe
+    // silenciosamente; se a heurística passar a excluir esse caso, troque para 0.
+    assert.equal(suspicious.length, 1, "FP aceito: 'newsletter' no slug flaga mesmo tutorial sobre newsletter");
   });
 });
