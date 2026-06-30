@@ -28,7 +28,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
-import { stripPublisherSuffix } from "./lib/strip-publisher-suffix.ts"; // #2140
+import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
 
 // ---------------------------------------------------------------------------
 // Types
@@ -415,13 +415,14 @@ export async function enrichArticles(
         const recovered = titleFromSubmittedSubject(merged.article);
         if (recovered) merged.article.title = recovered;
       }
-      // #2140: strip de sufixo de veículo — aplicado AQUI (dentro do worker),
+      // #2140, #2664, #2672: normalização de título — aplicado AQUI (dentro do worker),
       // SOMENTE em artigos de imprensa (não-inbox). Títulos editoriais/inbox
       // (curados pelo editor ou recuperados de submitted_subject) são preservados.
+      // Aplica: strip de sufixo de veículo (` | `, ` - `, ` — `) + strip de ponto final.
       // Aplicar antes de gravar em `out` para que `title_updated` reflita o estado
       // final correto, sem a obsolescência que existia no passo pós-loop.
       if (!isInboxArticle(job.article) && typeof merged.article.title === "string") {
-        merged.article.title = stripPublisherSuffix(merged.article.title);
+        merged.article.title = normalizeItemTitle(merged.article.title);
       }
       out[job.idx] = merged.article;
       const titleUpdated =
@@ -441,9 +442,10 @@ export async function enrichArticles(
   const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
   await Promise.all(workers);
 
-  // #2140: strip de sufixo de veículo nos artigos NÃO processados pelo worker
-  // (needsEnrichment=false — ex: artigos RSS com título real + summary já preenchido).
-  // Estes não passaram pelo loop acima, então o strip ainda não foi aplicado.
+  // #2140, #2664, #2672: normalização de título nos artigos NÃO processados pelo
+  // worker (needsEnrichment=false — ex: artigos RSS com título real + summary já
+  // preenchido). Estes não passaram pelo loop acima, então a normalização ainda
+  // não foi aplicada. Normaliza: sufixo de veículo (` | `, ` - `, ` — `) + ponto final.
   //
   // ESCOPO INTENCIONAL: iteramos sobre `out` completo (não só `targets`) para
   // cobrir artigos de imprensa que foram pulados por já terem título + summary
@@ -451,26 +453,26 @@ export async function enrichArticles(
   // silenciosamente a cobertura desses artigos RSS — daí o loop sobre `out`.
   //
   // GATE DE ORIGEM: títulos editoriais (inbox / editor_submitted / submitted_subject)
-  // NUNCA são strippados — o invariante "NÃO toca o título" de mergeMetadata é
+  // NUNCA são normalizados — o invariante "NÃO toca o título" de mergeMetadata é
   // respeitado aqui também. Só artigos de imprensa (fontes regulares, RSS, discovery)
-  // passam pelo strip.
+  // passam pela normalização.
   const targetIdxSet = new Set(targets.map((t) => t.idx));
   for (let i = 0; i < out.length; i++) {
     const article = out[i];
-    // Pula artigos já processados pelo worker (strip foi aplicado lá, com observabilidade).
+    // Pula artigos já processados pelo worker (normalização foi aplicada lá).
     if (targetIdxSet.has(i)) continue;
-    // Pula artigos editoriais — nunca strippar títulos curados pelo editor.
+    // Pula artigos editoriais — nunca normalizar títulos curados pelo editor.
     if (isInboxArticle(article)) continue;
     if (typeof article.title !== "string" || !article.title) continue;
-    const stripped = stripPublisherSuffix(article.title);
-    if (stripped !== article.title) {
-      article.title = stripped;
+    const normalized = normalizeItemTitle(article.title);
+    if (normalized !== article.title) {
+      article.title = normalized;
       outcomes.push({
         url: article.url,
         enriched: true,
         title_updated: true,
         summary_updated: false,
-        reason: "strip_publisher_suffix",
+        reason: "normalize_item_title",
       });
     }
   }
