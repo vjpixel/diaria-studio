@@ -97,11 +97,12 @@ export function buildWaveArtifacts(
     // elegível (send_eligible=1), já estará em w → apenas marca IS_SEED sem duplicar.
     // Se send_eligible=0 (ou não é assinante), injeta ao fim. IS_SEED="true" marca
     // a row pra exclusão de analytics (open-rate, CTR, priority_points).
-    // IS_SEED="" pré-populado em todas as rows pra Papa.unparse incluir a coluna
-    // no header (Papa usa as chaves do 1º objeto como colunas; o seed é o último).
-    const baseRows = w.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "", IS_SEED: "" }));
+    const baseRows = w.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
     const withSeed = injectSeed(baseRows, "email", { NOME: CLARICE_SEED_NOME });
-    csvByFile[file] = Papa.unparse(withSeed);
+    // fields explícito: não depende da ordem de chaves do 1º objeto (só o seed
+    // tem IS_SEED; sem fields, Papa omitiria a coluna). Reais saem com IS_SEED
+    // vazio, o seed com "true".
+    csvByFile[file] = Papa.unparse({ fields: ["email", "NOME", "IS_SEED"], data: withSeed });
     // count = rows de assinantes reais (pré-seed). O CSV tem +1 row extra (seed).
     // clarice-import-waves usa countRows(raw) do CSV real — esta contagem é
     // informacional (para o summary de planejamento).
