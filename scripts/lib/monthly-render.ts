@@ -18,6 +18,7 @@ import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
 export { escHtml } from "./html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "./html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper (refs #2048)
+import { buildMensalStyleBlock } from "./newsletter-styles.ts"; // #2635 — CSS base compartilhado
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
@@ -702,18 +703,16 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   const divider = `<div style="line-height:28px;font-size:0;">&nbsp;</div>`;
   const body = bodyParts.join(divider);
 
+  // #2635: buildMensalStyleBlock (newsletter-styles.ts) — bloco <style> com a base
+  // compartilhada (body/img/table) + override .mob-stack específico da mensal (#1918).
+  const styleBlock = buildMensalStyleBlock(SHELL);
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escHtml(subject)}</title>
-  <style>
-    /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
-    @media only screen and (max-width: 480px) {
-      .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
-    }
-  </style>
+  ${styleBlock}
 </head>
 <body style="margin:0;padding:0;background:${SHELL};">
   <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">

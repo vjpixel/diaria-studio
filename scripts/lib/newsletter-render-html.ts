@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
+import { buildDiariaStyleBlock } from "./newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -83,17 +84,9 @@ const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 
 // #1936 (DS): media query + hover do template de email. Progressive enhancement
 // (Gmail/Apple Mail honram); o design carrega nos estilos inline.
-export const DS_STYLE_BLOCK = `<style>
-  body { margin:0; padding:0; width:100% !important; background:${PAGE_BG}; }
-  img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
-  table { border-collapse:collapse; }
-  a.headline:hover { color:${TEAL} !important; }
-  @media only screen and (max-width:480px) {
-    .container { width:100% !important; }
-    .pad { padding-left:12px !important; padding-right:12px !important; }
-    .hero { height:auto !important; }
-  }
-</style>`;
+// #2635: construído via buildDiariaStyleBlock (newsletter-styles.ts) — mesmo CSS
+// base compartilhado com o renderer mensal (monthly-render.ts). Output byte-idêntico.
+export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
