@@ -10,19 +10,17 @@ workers_dev = true
 #                     a tab de cupons (#2718). Nunca committed.
 #                     Setup: wrangler secret put STRIPE_API_KEY
 #
-# Dashboard protegido por Cloudflare Access (OTP email) — ver
-# docs/clarice-dashboard-access-setup.md para instruções de setup.
+# Dashboard protegido por cookie-token — ver docs/clarice-dashboard-access-setup.md.
 
 # Variáveis de ambiente (não-secretas). Secrets acima via wrangler secret put.
 [vars]
 # AUTH_TOKEN: set as a Worker secret (not a var) — wrangler secret put AUTH_TOKEN
 # Generate a strong token: openssl rand -hex 32
 # If unset, the dashboard is open (dev mode only — always set in production)
-# Tab de uso de cupons Stripe (#2718). Default OFF — emails de clientes (PII)
-# só são expostos após: (1) Cloudflare Access ativo, (2) STRIPE_API_KEY
-# configurada, (3) COUPONS_TAB_ENABLED = "true". Ver deploy ordering em
-# docs/clarice-dashboard-access-setup.md.
-COUPONS_TAB_ENABLED = "false"
+# Tab de uso de cupons Stripe (#2718). Dados populados via MCP externo → KV
+# (coupons:usage). STRIPE_API_KEY é opcional — KV tem prioridade.
+# Ver docs/clarice-dashboard-access-setup.md para refresh dos dados.
+COUPONS_TAB_ENABLED = "true"
 
 # KV namespace para cache de stats imutáveis (#2144).
 # id = namespace criado pelo coordenador via `wrangler kv:namespace create STATS_CACHE`.
