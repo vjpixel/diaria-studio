@@ -175,3 +175,66 @@ describe("checkTitleTrailingPeriod (#2672)", () => {
     assert.equal(result.ok, true);
   });
 });
+
+// ===========================================================================
+// Anti-falso-positivo de corpo (#2664/#2672 follow-up)
+//
+// `extractAllTitles` NÃO pode coletar linhas de corpo (parágrafos, links de
+// referência no corpo de um DESTAQUE) como se fossem títulos — senão os checks
+// flagram texto de corpo. Guards: looksLikeTitleOption (plain-text) + coleta de
+// inline link só dentro de seção secundária.
+// ===========================================================================
+
+describe("extractAllTitles — não coleta linhas de corpo (#2664/#2672 follow-up)", () => {
+  it("ANTI-FP: link de referência no corpo do DESTAQUE (com ponto) NÃO é flagrado", () => {
+    const md = [
+      "DESTAQUE 1 | INTELIGÊNCIA ARTIFICIAL",
+      "",
+      "[Modelo de IA da Meta supera GPT-4 em benchmarks](https://example.com/d1)",
+      "",
+      "Por que isso importa: contexto relevante aqui.",
+      "",
+      "[Leia o estudo completo da OpenAI.](https://openai.com/report)",
+      "",
+      "---",
+    ].join("\n");
+    // O link de referência termina em "." mas é corpo, não título → não flagra.
+    const period = checkTitleTrailingPeriod(md);
+    assert.equal(period.ok, true, "link de referência no corpo não deve disparar lint de ponto final");
+  });
+
+  it("ANTI-FP: link de referência no corpo do DESTAQUE (com traço+veículo) NÃO é flagrado", () => {
+    const md = [
+      "DESTAQUE 1 | INTELIGÊNCIA ARTIFICIAL",
+      "",
+      "[Modelo de IA da Meta supera GPT-4 em benchmarks](https://example.com/d1)",
+      "",
+      "Por que isso importa: veja a cobertura.",
+      "",
+      "[Matéria completa - Canaltech](https://canaltech.com.br/x)",
+      "",
+      "---",
+    ].join("\n");
+    const suffix = checkTitlePublisherSuffix(md);
+    assert.equal(suffix.ok, true, "link de referência no corpo não deve disparar lint de sufixo");
+  });
+
+  it("ANTI-FP: parágrafo de corpo (legado) terminando em ponto NÃO é flagrado", () => {
+    const md = [
+      "DESTAQUE 1 | INTELIGÊNCIA ARTIFICIAL",
+      "Título legado do destaque",
+      "Este é um parágrafo de corpo que descreve o artigo e termina em ponto.",
+      "https://example.com/legacy",
+    ].join("\n");
+    const period = checkTitleTrailingPeriod(md);
+    assert.equal(period.ok, true, "parágrafo de corpo não deve disparar lint de ponto final");
+  });
+
+  it("REGRESSÃO: título de item em seção secundária com ponto AINDA é flagrado", () => {
+    // Garante que o guard de seção secundária não suprime títulos reais.
+    const md = radarItemMd("AINews: relatório da OpenAI sobre Codex em 2025.");
+    const result = checkTitleTrailingPeriod(md);
+    assert.equal(result.ok, false, "título de item RADAR com ponto deve continuar flagrado");
+    assert.equal(result.errors.length, 1);
+  });
+});

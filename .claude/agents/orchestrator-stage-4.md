@@ -141,10 +141,14 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --md data/editions/{AAMMDD}/02-reviewed.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
 npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md data/editions/{AAMMDD}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
 `secondary-items-have-summary` (#2545): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR sem descrição renderiza título pelado no email. Ação: editar `02-reviewed.md` e adicionar descrição plain text (1 frase) abaixo de cada item pelado, ou re-rodar Etapa 1 (se a causa foi cache-miss no enrich).
+
+`title-publisher-suffix` + `title-trailing-period` (#2664/#2672): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com linha + sufixo/título, sem bloquear o gate. A normalização automática roda no Stage 1 (`enrich-inbox-articles.ts` → `normalizeItemTitle`); estes lints são backstop pré-gate para resíduos que escapam (títulos gerados pelo writer LLM ou curados pelo editor). O check de sufixo usa heurística de 1–4 palavras (pode ter falso-positivo em traço editorial legítimo) — por isso WARN, não BLOCK. Ação sugerida ao editor: remover o sufixo de veículo / ponto final em `02-reviewed.md` antes de aprovar.
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash

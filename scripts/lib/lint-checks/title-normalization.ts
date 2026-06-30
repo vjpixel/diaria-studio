@@ -28,10 +28,23 @@
  *     curtas (heurística: indica nome de veículo, não conteúdo do título).
  *   - ` — ` (travessão U+2014 com espaços) — idem.
  *
- *   Falso positivo inevitável raro: "ChatGPT vs Gemini - qual é melhor?" → o
- *   sufixo "qual é melhor?" tem 4 palavras → não seria flagrado (4 palavras
- *   e sem pipe). Decisão conservadora: aceitar esse falso-negativo para não
- *   bloquear títulos legítimos com traço.
+ *   ## Divergência intencional lint vs. normalizer
+ *
+ *   Este lint é DELIBERADAMENTE mais amplo que `stripPublisherSuffix`
+ *   (`scripts/lib/strip-publisher-suffix.ts`): o normalizer só strip traço/
+ *   travessão quando o sufixo está em `KNOWN_DASH_PUBLISHERS` (allowlist) e o
+ *   prefixo ≥ MIN_PREFIX_LEN; o lint usa só a heurística de 1–4 palavras, sem
+ *   allowlist nem guard de prefixo. Motivo: o lint é backstop para títulos que
+ *   NÃO passaram pelo normalizer (gerados pelo writer LLM, curados pelo editor),
+ *   onde o veículo pode ser desconhecido. Consequência aceita: o lint pode
+ *   flagrar um título que o normalizer não strip automaticamente — por isso é
+ *   WARN-ONLY no Stage 4 (não bloqueia o gate), e o editor decide.
+ *
+ *   Falso positivo possível: sufixos curtos legítimos com traço, ex:
+ *   "ChatGPT vs Gemini - qual é melhor?" → sufixo "qual é melhor?" tem 3
+ *   palavras (≤4) → SERIA flagrado. Como é WARN-ONLY, o editor simplesmente
+ *   ignora o aviso. Sufixos de 5+ palavras não são flagrados (provável
+ *   conteúdo de título, não veículo).
  *
  * ## Uso via CLI (lint-newsletter-md.ts)
  *
@@ -40,44 +53,65 @@
  */
 
 import { parseInlineLink } from "../inline-link.ts";
+import { looksLikeTitleOption } from "../title-heuristic.ts";
 import { HIGHLIGHT_HEADER_RE, URL_LINE_RE, SECTION_BREAK_LINE_RE, SECTION_HEADER_LINE_RE, WHY_MATTERS_LINE_RE } from "./highlight-parsing.ts";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Extrai todos os títulos do newsletter md com número de linha (1-based). */
+/**
+ * Extrai todos os títulos do newsletter md com número de linha (1-based).
+ *
+ * Anti-falso-positivo (#2664/#2672 follow-up): este parser NÃO pode coletar
+ * linhas de corpo como se fossem títulos, senão os checks de sufixo/ponto-final
+ * flagram texto de parágrafo. Dois guards (espelham `countTitlesPerHighlight`
+ * e `checkSecondaryItemsHaveSummary`):
+ *
+ *   1. Em bloco DESTAQUE, a coleta plain-text (formato legado) usa
+ *      `looksLikeTitleOption` — uma linha que parece corpo (longa OU terminando
+ *      em ponto único) ENCERRA a coleta do bloco, em vez de virar título.
+ *   2. Inline links só são coletados como título de item quando estamos DENTRO
+ *      de uma seção secundária (LANÇAMENTOS / RADAR / etc.). Um link de
+ *      referência no corpo de um DESTAQUE (ex: na linha "Por que isso importa:")
+ *      NÃO é título e não deve ser coletado.
+ */
 function extractAllTitles(md: string): Array<{ title: string; line: number }> {
   const lines = md.split("\n");
   const results: Array<{ title: string; line: number }> = [];
+
+  // Só coletamos inline links como títulos quando estamos numa seção secundária.
+  let inSecondarySection = false;
 
   let i = 0;
   while (i < lines.length) {
     const raw = lines[i];
     const t = raw.trim();
 
-    // DESTAQUE block — coletar títulos até a URL ou próximo header
+    // DESTAQUE block — coletar títulos até a URL ou próximo header.
     if (HIGHLIGHT_HEADER_RE.test(t)) {
+      inSecondarySection = false; // o corpo do destaque NÃO é seção secundária
       let j = i + 1;
       while (j < lines.length) {
         const lt = lines[j].trim();
         if (lt === "") { j++; continue; }
-        // Inline link — extrair título
+        // Inline link — extrair título (opções de destaque são inline links).
         const inline = parseInlineLink(lt);
         if (inline) {
           results.push({ title: inline.title, line: j + 1 });
           j++;
           continue;
         }
-        // URL em linha separada (legacy) → encerra o bloco de títulos
+        // URL em linha separada (legacy) → encerra o bloco de títulos.
         if (URL_LINE_RE.test(lt)) break;
         if (HIGHLIGHT_HEADER_RE.test(lt)) break;
         if (SECTION_BREAK_LINE_RE.test(lt)) break;
         if (SECTION_HEADER_LINE_RE.test(lt)) break;
         if (WHY_MATTERS_LINE_RE.test(lt)) break;
-        // Linha candidata a título plain-text (legacy, sem inline link)
-        // Qualquer linha não-vazia, não-URL que não parece body é candidata.
-        // Em formato legado, títulos aparecem aqui antes da URL.
+        // Linha plain-text (formato legado, sem inline link): só é candidata a
+        // título se PARECER título — não um parágrafo de corpo. Mesmo filtro de
+        // `countTitlesPerHighlight` (#245/#259): body line encerra a coleta.
+        if (!looksLikeTitleOption(lt)) break;
         results.push({ title: lt, line: j + 1 });
         j++;
       }
@@ -85,10 +119,27 @@ function extractAllTitles(md: string): Array<{ title: string; line: number }> {
       continue;
     }
 
-    // Seções secundárias — coletar títulos de inline links
-    const inline = parseInlineLink(t);
-    if (inline) {
-      results.push({ title: inline.title, line: i + 1 });
+    // Header de seção secundária (LANÇAMENTOS / RADAR / USE MELHOR / ...) — ativa
+    // a coleta de inline links como títulos de item. Tolera bold (`**...**`).
+    const headerCandidate = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
+    if (SECTION_HEADER_LINE_RE.test(t) || SECTION_HEADER_LINE_RE.test(headerCandidate)) {
+      inSecondarySection = true;
+      i++;
+      continue;
+    }
+    // Separador `---` encerra a seção secundária corrente.
+    if (SECTION_BREAK_LINE_RE.test(t)) {
+      inSecondarySection = false;
+      i++;
+      continue;
+    }
+
+    // Dentro de seção secundária: títulos de item são inline links.
+    if (inSecondarySection) {
+      const inline = parseInlineLink(t);
+      if (inline) {
+        results.push({ title: inline.title, line: i + 1 });
+      }
     }
 
     i++;
@@ -104,13 +155,10 @@ function extractAllTitles(md: string): Array<{ title: string; line: number }> {
 /** Padrão de sufixo de veículo via pipe (` | `). */
 const PIPE_SUFFIX_RE = / \| .+$/;
 
-/**
- * Padrão de sufixo de veículo via traço/travessão.
- * Heurística: sufixo de 1–4 palavras após o ÚLTIMO separador.
- * "OpenAI lança GPT-5 - o maior modelo da história" → 6 palavras → não flagra.
- * "ChatGPT consegue fazer check-up; veja como - Canaltech" → 1 palavra → flagra.
- */
-const DASH_SUFFIX_RE = / [-—] (\S+(\s+\S+){0,3})$/u;
+// Nota: a detecção de traço/travessão é feita inline em `checkTitlePublisherSuffix`
+// via `lastIndexOf` (pega o ÚLTIMO separador) + contagem de palavras do sufixo.
+// Não há regex dedicada — `lastIndexOf` é mais simples que ancorar a regex no
+// último separador.
 
 export interface TitlePublisherSuffixError {
   /** Número de linha no markdown (1-based). */

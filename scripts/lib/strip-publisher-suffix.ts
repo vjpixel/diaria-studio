@@ -178,18 +178,17 @@ function stripDashSuffix(title: string): string {
 
   // Escolhe o separador mais à direita
   let sepStart = -1;
-  let sepLen = 0;
   if (dashIdx >= 0 && dashIdx > emDashIdx) {
     sepStart = dashIdx;
-    sepLen = 3; // " - ".length
   } else if (emDashIdx >= 0) {
     sepStart = emDashIdx;
-    sepLen = 3; // " — ".length (espaço U+0020 + travessão U+2014 + espaço U+0020)
   }
 
   if (sepStart === -1) return title;
 
-  const suffix = trimmed.slice(sepStart + sepLen).trim().toLowerCase();
+  // " - " e " — " têm ambos 3 chars (travessão U+2014 é 1 code unit em JS).
+  const SEP_LEN = 3;
+  const suffix = trimmed.slice(sepStart + SEP_LEN).trim().toLowerCase();
 
   // Anti-falso-positivo principal: só strip se o sufixo é veículo conhecido
   if (!KNOWN_DASH_PUBLISHERS.has(suffix)) return title;
@@ -252,10 +251,18 @@ export function stripTrailingPeriod(title: string): string {
 /**
  * Normalização completa de título de item (#2664 + #2672).
  *
- * Ordem: sufixo de veículo PRIMEIRO, ponto final DEPOIS.
- * Razão: um título como "Evento ocorreu. - Canaltech" passa pelo strip de
- * veículo → "Evento ocorreu." e depois o ponto é removido → "Evento ocorreu".
- * Inverter a ordem deixaria o sufixo de veículo intacto nesses casos.
+ * Ordem: ponto final → sufixo de veículo → ponto final (sandwich).
+ * O ponto final pode aparecer de dois lados do separador de veículo, e os dois
+ * casos precisam funcionar:
+ *   - "Evento ocorreu. - Canaltech"  → o ponto vem ANTES do separador. O strip
+ *     de veículo o expõe no fim ("Evento ocorreu.") e o segundo strip de ponto
+ *     o remove → "Evento ocorreu".
+ *   - "...veja como - Canaltech."    → o ponto vem DEPOIS do veículo, grudado
+ *     no nome ("Canaltech."). Sem o PRIMEIRO strip de ponto, o lookup na
+ *     allowlist falha ("canaltech." ∉ KNOWN_DASH_PUBLISHERS) e o sufixo
+ *     sobrevive. O primeiro strip remove o ponto → "...veja como - Canaltech",
+ *     daí o strip de veículo casa e remove → "...veja como" (caso real #2664).
+ * `stripTrailingPeriod` é idempotente, então o duplo strip é seguro.
  *
  * @param title - Título bruto (de og:title / <title> / pipeline).
  * @returns Título normalizado.
@@ -263,5 +270,5 @@ export function stripTrailingPeriod(title: string): string {
  * @pure
  */
 export function normalizeItemTitle(title: string): string {
-  return stripTrailingPeriod(stripPublisherSuffix(title));
+  return stripTrailingPeriod(stripPublisherSuffix(stripTrailingPeriod(title)));
 }

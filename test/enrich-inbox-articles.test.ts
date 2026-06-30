@@ -596,6 +596,74 @@ describe("enrichArticles — #2140 strip publisher suffix gate by origin (C9)", 
   });
 });
 
+describe("enrichArticles — #2664/#2672 normalização cobre fetch-fail / sem-metadata", () => {
+  it("CASO REAL: fetch anti-bot FALHA → título cru de imprensa ainda é normalizado (sufixo + ponto)", async () => {
+    // Artigo de imprensa (não-inbox), needsEnrichment=true (sem summary). Entra no
+    // worker mas o fetch falha (anti-bot, comum em sites tipo Canaltech) → sai por
+    // `continue` precoce ANTES da normalização interna. O título cru do RSS ainda
+    // carrega o sufixo de veículo ` - Canaltech` + ponto final — a passagem final
+    // (#2664/#2672 follow-up) deve limpá-lo mesmo sem enriquecer.
+    const articles = [
+      {
+        url: "https://canaltech.com.br/artigo-anti-bot",
+        title: "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como - Canaltech.",
+        summary: "", // needsEnrichment=true → entra no worker
+      },
+    ];
+    const fetcher = async (): Promise<string | null> => null; // simula anti-bot
+    const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como",
+      "título cru de fetch-fail deve ter sufixo de veículo E ponto final removidos",
+    );
+    // Não deve inflar a contagem: o artigo já tem o outcome de cache-miss do worker;
+    // a normalização do título não empurra um outcome duplicado para o mesmo target.
+    assert.equal(outcomes.length, 1, "sem outcome de normalização duplicado para target");
+  });
+
+  it("página acessível mas SEM metadata extraível → título cru de imprensa ainda é normalizado", async () => {
+    // Fetch sucede mas não há og:title nem og:description nem <title> → sai por
+    // `continue` no ramo no_metadata (sem submitted_subject, pois é imprensa).
+    // A passagem final deve normalizar o título cru mesmo assim.
+    const articles = [
+      {
+        url: "https://techcrunch.com/no-meta",
+        title: "Google anuncia Gemini 2.5 Pro com melhorias significativas — TechCrunch",
+        summary: "",
+      },
+    ];
+    const fetcher = async (): Promise<string | null> =>
+      "<html><body>sem og nem title</body></html>";
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Google anuncia Gemini 2.5 Pro com melhorias significativas",
+      "sufixo de travessão deve ser removido mesmo no caminho no_metadata",
+    );
+  });
+
+  it("título editorial (submitted_subject) com fetch-fail NÃO é normalizado (gate de origem)", async () => {
+    // Contraprova: artigo editorial cujo fetch falha e o título vem do
+    // submitted_subject — NUNCA deve ser normalizado, mesmo com ' - ' + ponto.
+    const articles = [
+      {
+        url: "https://anti-bot.com/editorial",
+        title: "(inbox)",
+        flag: "editor_submitted",
+        submitted_subject: "Lançamento - Acme.",
+      },
+    ];
+    const fetcher = async (): Promise<string | null> => null;
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Lançamento - Acme.",
+      "título editorial recuperado de submitted_subject NÃO deve ser normalizado",
+    );
+  });
+});
+
 describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () => {
   it("non-inbox sem summary + body cacheado → preenche summary, NÃO toca título, sem network", async () => {
     const dir = mkdtempSync(join(tmpdir(), "enrich-1696-hit-"));

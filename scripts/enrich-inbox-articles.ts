@@ -456,25 +456,45 @@ export async function enrichArticles(
   // NUNCA são normalizados — o invariante "NÃO toca o título" de mergeMetadata é
   // respeitado aqui também. Só artigos de imprensa (fontes regulares, RSS, discovery)
   // passam pela normalização.
+  // Passagem final de normalização sobre TODO o `out`. Cobre os casos que o
+  // worker NÃO normaliza:
+  //   (a) artigos não-target (needsEnrichment=false — ex: RSS já com título +
+  //       summary), que nunca entraram no worker;
+  //   (b) #2664/#2672 follow-up: targets que SAÍRAM do worker por `continue`
+  //       precoce (fetch anti-bot falhou ou página sem metadata extraível) ANTES
+  //       da normalização interna (linha ~425). Nesses casos `out[idx].title`
+  //       ainda é o título cru do RSS/feed — exatamente onde vivem o sufixo de
+  //       veículo (` - Canaltech`) e o ponto final que #2664/#2672 removem. E
+  //       fetch anti-bot falha JUSTAMENTE em sites tipo Canaltech, então não é
+  //       hipotético.
+  // `normalizeItemTitle` é idempotente + @pure: targets já normalizados pelo
+  // worker dão no-op aqui (`normalized === title`), sem dupla normalização nem
+  // outcome duplicado.
+  // GATE DE ORIGEM: títulos editoriais (inbox / editor_submitted / recuperados
+  // de submitted_subject) NUNCA são normalizados.
   const targetIdxSet = new Set(targets.map((t) => t.idx));
   for (let i = 0; i < out.length; i++) {
     const article = out[i];
-    // Pula artigos já processados pelo worker (normalização foi aplicada lá).
-    if (targetIdxSet.has(i)) continue;
     // Pula artigos editoriais — nunca normalizar títulos curados pelo editor.
     if (isInboxArticle(article)) continue;
     if (typeof article.title !== "string" || !article.title) continue;
     const normalized = normalizeItemTitle(article.title);
-    if (normalized !== article.title) {
-      article.title = normalized;
-      outcomes.push({
-        url: article.url,
-        enriched: true,
-        title_updated: true,
-        summary_updated: false,
-        reason: "normalize_item_title",
-      });
+    if (normalized === article.title) continue; // já normalizado (worker) ou sem mudança
+    article.title = normalized;
+    if (targetIdxSet.has(i)) {
+      // Target que saiu por `continue` precoce no worker (fetch-fail / sem
+      // metadata): o título cru é corrigido AQUI. NÃO empurra outcome novo — o
+      // artigo já tem um outcome do worker (ex: fetch_failed / cache_miss_*);
+      // só garantimos o título final limpo, sem inflar a contagem de outcomes.
+      continue;
     }
+    outcomes.push({
+      url: article.url,
+      enriched: true,
+      title_updated: true,
+      summary_updated: false,
+      reason: "normalize_item_title",
+    });
   }
 
   return { articles: out, outcomes, stats };
