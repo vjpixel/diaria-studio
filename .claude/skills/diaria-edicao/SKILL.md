@@ -30,23 +30,25 @@ Antes de iniciar, verifique:
 npx tsx scripts/sync-code.ts
 ```
 
-O script imprime JSON com o resultado. Ler o campo `outcome` e logar via `log-event.ts`:
+O script imprime JSON com o resultado (campos `outcome`, `branch_before`, `warnings`). **Parsear o JSON do stdout** e extrair os valores individuais — nunca passar o blob inteiro pro `--details`. Logar via `log-event.ts`, escolhendo `--level info` para os 3 outcomes de sucesso e `--level warn` para os demais (coluna `--level` da tabela):
 
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
-  --level {info|warn} --message "git-sync: {outcome}" \
+  --level {info ou warn, conforme a tabela} --informational --message "git-sync: {outcome}" \
   --details '{"outcome":"{outcome}","branch_before":"{branch_before}"}'
 ```
 
+(`--informational` evita que warns de sync virem issues falsas no auto-reporter, análogo a §0k/§0l do preflight.)
+
 **Comportamento por outcome:**
 
-| outcome | ação |
-|---|---|
-| `synced` / `synced_stashed` / `already_up_to_date` | ✅ prosseguir normalmente |
-| `fetch_failed` | ⚠️ avisar editor ("offline — edição continua com código local") e prosseguir |
-| `ff_failed` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente") e prosseguir |
-| `stash_failed` / `stash_pop_failed` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
-| `checkout_failed` | ⚠️ avisar editor ("estava em outra branch e não foi possível voltar para master") e prosseguir |
+| outcome | `--level` | ação |
+|---|---|---|
+| `synced` / `synced_stashed` / `already_up_to_date` | `info` | ✅ prosseguir normalmente |
+| `fetch_failed` | `warn` | ⚠️ avisar editor ("offline — edição continua com código local") e prosseguir |
+| `ff_failed` | `warn` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente") e prosseguir |
+| `stash_failed` / `stash_pop_failed` | `warn` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
+| `checkout_failed` | `warn` | ⚠️ avisar editor ("estava em outra branch e não foi possível voltar para master") e prosseguir |
 
 **Regras invariáveis:**
 - **Nunca bloquear a edição por falha de sync** — `proceed` é sempre `true` no resultado. Falha de sync vira warning, nunca halt.

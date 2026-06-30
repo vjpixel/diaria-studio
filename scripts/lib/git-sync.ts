@@ -9,13 +9,17 @@
  *   1. Se não estiver em master → tenta `git checkout master` antes do sync.
  *      Se checkout falhar → warn + retorna sem forçar (fail-soft).
  *   2. `git fetch origin` — fail-soft (offline, credencial, etc.) → warn + retorna.
- *   3. Se working tree suja → stash → pull --ff-only → stash pop (reversível).
- *      Se stash falhar → warn + retorna sem tocar o tree.
+ *   3. Se working tree suja → stash → merge --ff-only origin/master → stash pop
+ *      (reversível). Se stash falhar → warn + retorna sem tocar o tree.
  *      Se stash pop falhar (conflito de merge) → warn + stash preservado.
- *   4. Se working tree limpa → pull --ff-only direto.
+ *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_pop_failed NÃO bloqueiam a edição
  *      — retornam status de warn e a skill continua.
+ *
+ * Nota: usa `git merge --ff-only origin/master` (não `git pull`) após o fetch
+ * explícito do passo 2 — evita um segundo fetch implícito (rede = única
+ * superfície de falha) e roda offline-friendly contra o ref já buscado.
  *
  * Idempotente: re-rodar não tem efeito colateral se já atualizado.
  *
@@ -55,8 +59,15 @@ export interface GitSyncResult {
   proceed: true;
 }
 
+/**
+ * Timeout por comando git (#2686 review — angle H). Sem isso, um git que trava
+ * esperando passphrase de SSH ou credencial bloquearia o processo indefinidamente,
+ * derrotando o fail-soft. 120s cobre fetch/pull em conexões lentas com folga.
+ */
+const GIT_TIMEOUT_MS = 120_000;
+
 function defaultSpawn(cmd: string, args: string[]): SpawnResult {
-  const r = spawnSync(cmd, args, { encoding: "utf8" });
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
   return {
     status: r.status,
     stdout: (r.stdout as string | null) ?? "",
@@ -65,15 +76,15 @@ function defaultSpawn(cmd: string, args: string[]): SpawnResult {
 }
 
 function isAlreadyUpToDate(stdout: string): boolean {
-  // git pull --ff-only imprime "Already up to date." (EN) ou "Já está atualizado." (PT)
-  return /already up.to.date/i.test(stdout) || /j[aá] est[aá]/i.test(stdout);
+  // git merge/pull imprime "Already up to date." (EN) ou "Já está atualizado." (PT).
+  // Espaços literais (não wildcards) — evita falso-positivo em strings inesperadas.
+  return /already up to date/i.test(stdout) || /j[aá] est[aá] atualizad/i.test(stdout);
 }
 
 /**
  * Sincroniza o checkout local com origin/master.
  *
  * @param spawn   Spawner injetável para testes (default: spawnSync real).
- * @param cwd     Diretório de trabalho do git (default: undefined = CWD do processo).
  */
 export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
   const warnings: string[] = [];
@@ -110,11 +121,21 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
   }
 
   // ── 4. Dirty check ────────────────────────────────────────────────────────
+  // Se o próprio `git status` falhar (índice corrompido, .git/index.lock travado),
+  // NÃO assumir tree limpa — isso pularia a proteção do stash e o ff poderia
+  // mover o branch sob mudanças não-protegidas. Conservador: tratar como dirty
+  // (força o caminho com stash, que protege ou aborta limpo via stash_failed).
   const statusRes = spawn("git", ["status", "--porcelain"]);
-  const isDirty = statusRes.stdout.trim().length > 0;
+  if (statusRes.status !== 0) {
+    warnings.push(
+      `[git-sync] WARN: git status falhou (exit ${statusRes.status}). ` +
+        `Tratando como dirty por segurança. Stderr: ${statusRes.stderr.trim() || "(vazio)"}`,
+    );
+  }
+  const isDirty = statusRes.status !== 0 || statusRes.stdout.trim().length > 0;
 
   if (isDirty) {
-    // ── 5a. Dirty tree: stash → pull --ff-only → stash pop ─────────────────
+    // ── 5a. Dirty tree: stash → merge --ff-only → stash pop ────────────────
     const stashRes = spawn("git", ["stash", "--include-untracked"]);
     if (stashRes.status !== 0) {
       const msg =
@@ -124,30 +145,43 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
       return { outcome: "stash_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
     }
 
-    const stashedSomething = !stashRes.stdout.includes("No local changes to save");
+    // Detecção locale-robusta de "nada foi guardado" (#2686 review — EN + PT-BR).
+    // Dentro do branch isDirty, o esperado é que algo tenha sido guardado; só
+    // pulamos o pop quando o git explicitamente diz que não havia nada (evita
+    // `stash pop` numa pilha vazia, que falharia espuriamente).
+    const stashedNothing =
+      /no local changes to save/i.test(stashRes.stdout) ||
+      /n(ã|a)o h(á|a) (mudan|altera)/i.test(stashRes.stdout);
+    const stashedSomething = !stashedNothing;
 
-    // pull --ff-only
-    const pullRes = spawn("git", ["pull", "--ff-only", "origin", "master"]);
+    // ff-only via merge do ref já buscado no passo 3 — evita o re-fetch implícito
+    // do `git pull` (segunda superfície de falha de rede) (#2686 review — angle H/I).
+    const pullRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
 
-    // ── restaurar stash sempre (mesmo se pull falhou) ─────────────────────
+    // ── restaurar stash sempre (mesmo se o merge falhou) ──────────────────
     if (stashedSomething) {
       const popRes = spawn("git", ["stash", "pop"]);
       if (popRes.status !== 0) {
-        // pull pode ter trazido mudanças conflitantes com o stash
-        const msg =
-          `[git-sync] WARN: git stash pop teve conflito. Stash preservado — ` +
-          `use 'git stash show' para ver. ` +
-          `Stderr: ${popRes.stderr.trim() || "(vazio)"}`;
+        // merge pode ter trazido mudanças conflitantes com o stash.
+        // Se o merge TAMBÉM falhou, incluir o stderr dele — senão a mensagem
+        // apontaria só pro conflito de stash e esconderia a divergência (#2686
+        // review — angles A/B/G/J/C).
+        const ffFailed = pullRes.status !== 0;
+        const msg = ffFailed
+          ? `[git-sync] WARN: ff (merge --ff-only) falhou (divergência) E git stash pop teve conflito. ` +
+            `Stash preservado — use 'git stash show'. ` +
+            `Stderr ff: ${pullRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`
+          : `[git-sync] WARN: git stash pop teve conflito. Stash preservado — ` +
+            `use 'git stash show' para ver. Stderr: ${popRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
-        // Se o pull em si também falhou, reportar ff_failed; senão stash_pop_failed.
-        const outcome = pullRes.status !== 0 ? "ff_failed" : "stash_pop_failed";
+        const outcome = ffFailed ? "ff_failed" : "stash_pop_failed";
         return { outcome, message: msg, branch_before: branchBefore, warnings, proceed: true };
       }
     }
 
     if (pullRes.status !== 0) {
       const msg =
-        `[git-sync] WARN: git pull --ff-only falhou (divergência?). ` +
+        `[git-sync] WARN: ff (merge --ff-only origin/master) falhou (divergência?). ` +
         `Working tree restaurada. Edição continua com código local. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
@@ -165,12 +199,12 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
       proceed: true,
     };
   } else {
-    // ── 5b. Clean tree: pull --ff-only direto ─────────────────────────────
-    const pullRes = spawn("git", ["pull", "--ff-only", "origin", "master"]);
+    // ── 5b. Clean tree: merge --ff-only direto ────────────────────────────
+    const pullRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
 
     if (pullRes.status !== 0) {
       const msg =
-        `[git-sync] WARN: git pull --ff-only falhou (divergência ou conflito). ` +
+        `[git-sync] WARN: ff (merge --ff-only origin/master) falhou (divergência ou conflito). ` +
         `Edição continua com código local. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);

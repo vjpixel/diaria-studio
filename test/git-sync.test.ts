@@ -49,7 +49,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(""), // tree limpa
-      "git pull --ff-only origin master": ok("2 files changed, 10 insertions(+)"),
+      "git merge --ff-only origin/master": ok("2 files changed, 10 insertions(+)"),
     });
 
     const r = syncCode(spawn);
@@ -64,7 +64,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(""),
-      "git pull --ff-only origin master": ok("Already up to date."),
+      "git merge --ff-only origin/master": ok("Already up to date."),
     });
 
     const r = syncCode(spawn);
@@ -78,7 +78,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json\n M seed/lancamentos-tool-allowlist.txt"),
       "git stash --include-untracked": ok("Saved working directory..."),
-      "git pull --ff-only origin master": ok("Fast-forward\n 3 files changed"),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 3 files changed"),
       "git stash pop": ok("On branch master..."),
     });
 
@@ -94,7 +94,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.local.json"),
       "git stash --include-untracked": ok("Saved working directory..."),
-      "git pull --ff-only origin master": ok("Already up to date."),
+      "git merge --ff-only origin/master": ok("Already up to date."),
       "git stash pop": ok(""),
     });
 
@@ -111,7 +111,7 @@ describe("git-sync — dirty tree edge cases", () => {
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
       "git stash --include-untracked": ok("Saved working directory..."),
-      "git pull --ff-only origin master": ok("Fast-forward\n 1 file changed"),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
 
@@ -146,7 +146,7 @@ describe("git-sync — dirty tree edge cases", () => {
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M .claude/settings.json"),
         "git stash --include-untracked": ok("No local changes to save"),
-        "git pull --ff-only origin master": ok("Already up to date."),
+        "git merge --ff-only origin/master": ok("Already up to date."),
       })(cmd, args);
     };
 
@@ -175,7 +175,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(""),
-      "git pull --ff-only origin master": fail("fatal: Not possible to fast-forward, aborting."),
+      "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
     });
 
     const r = syncCode(spawn);
@@ -190,13 +190,78 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
       "git stash --include-untracked": ok("Saved working directory..."),
-      "git pull --ff-only origin master": fail("fatal: Not possible to fast-forward"),
-      "git stash pop": ok(""), // pop deve ser chamado mesmo com pull falho
+      "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward"),
+      "git stash pop": ok(""), // pop deve ser chamado mesmo com ff falho
     });
 
     const r = syncCode(spawn);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
+  });
+
+  it("ff falhou E stash pop falhou (double-failure) → 'ff_failed' com stderr do ff na mensagem", () => {
+    // #2686 review (angles A/B/G/J/C): outcome=ff_failed mas a mensagem antes só
+    // citava o conflito de stash, escondendo a divergência. Agora inclui ambos.
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M .claude/settings.json"),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
+      "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
+    });
+
+    const r = syncCode(spawn);
+    assert.equal(r.outcome, "ff_failed");
+    assert.equal(r.proceed, true);
+    // a mensagem deve mencionar AMBOS: a divergência do ff e o conflito do pop
+    assert.match(r.message, /fast-forward/i, "mensagem deve citar o stderr do ff");
+    assert.match(r.message, /conflict|conflito|stash/i, "mensagem deve citar o conflito do pop");
+  });
+});
+
+describe("git-sync — robustez de detecção (locale + status)", () => {
+  it("git status falhou → tratado como dirty (protege via stash), proceed=true", () => {
+    // #2686 review (angles A/B): se status falha, NÃO assumir tree limpa —
+    // isso pularia a proteção do stash.
+    const stashCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash --include-untracked") stashCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": fail("fatal: unable to read index"),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": ok("Already up to date."),
+        "git stash pop": ok(""),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(stashCalled.length, 1, "status-fail deve forçar o caminho com stash");
+    assert.equal(r.proceed, true);
+    assert.ok(r.warnings.some((w) => /status falhou/i.test(w)));
+  });
+
+  it("stash reporta 'nada guardado' em PT-BR → não chama stash pop (locale-robusto)", () => {
+    // #2686 review (angle D/I/C): detecção EN-only causava pop espúrio em git PT-BR.
+    const popCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M .claude/settings.json"),
+        "git stash --include-untracked": ok("Não há mudanças locais para salvar"),
+        "git merge --ff-only origin/master": ok("Already up to date."),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(popCalled.length, 0, "stash pop não deve ser chamado em PT-BR 'nada guardado'");
+    assert.equal(r.outcome, "already_up_to_date");
   });
 });
 
@@ -211,7 +276,7 @@ describe("git-sync — branch != master", () => {
         "git checkout master": ok("Switched to branch 'master'"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(""),
-        "git pull --ff-only origin master": ok("Already up to date."),
+        "git merge --ff-only origin/master": ok("Already up to date."),
       })(cmd, args);
     };
 
