@@ -114,6 +114,14 @@ Reusa o schema do overnight + campos próprios de desbloqueio: `block_category` 
 
 `/diaria-develop` **trabalha** as issues ambíguas de trade-off-real (cat. C — decisão de produto/editorial). **Fronteira resolvida (#2640):** o `/diaria-overnight` marca issues de trade-off-real como `pulada` motivo `ambígua/trade-off-real`, posta comentário na issue direcionando ao `/diaria-develop`, e **nunca** as inclui no seu briefing. Ambiguidade trivial-mas-não-documentada (escolha técnica sem impacto diferencial em usuário) continua no briefing do overnight; trade-off-real é escopo exclusivo do develop.
 
+## Label `local` — issues que só fecham em sessão local (#2643)
+
+Issues com label **`local`** requerem recursos machine-local: junction `data/` (OneDrive), ComfyUI, credenciais persistidas, etc. O `/diaria-overnight` detecta o modo de execução via `npx tsx scripts/lib/exec-mode.ts` (`local` | `cloud`) e pula issues `local` em sessão cloud com motivo `requer-sessao-local`.
+
+O `/diaria-develop` **roda por natureza em sessão local** (o editor está presente na máquina). Por isso, issues `local` são **elegíveis normalmente** no develop — a label é apenas informacional aqui. Se por algum motivo a sessão develop rodar em cloud (improvável), aplicar a mesma detecção do overnight e avisar o editor antes de pular.
+
+**Quando aplicar a label `local` a uma nova issue:** quando a implementação ou o teste requer qualquer recurso ausente num clone fresco de cloud — junction `data/`, ComfyUI local, OneDrive sincronizado, credenciais locais não-gitadas, `scripts/overnight-watchdog.ts` via Task Scheduler, ou qualquer dependência de path local do editor.
+
 ## Regras
 
 - **Perguntar ao editor é permitido e central** (inverte a Regra 1 do overnight) — mas via os gates definidos; a sessão pressupõe editor presente e **nunca continua autônoma sem ele**.
