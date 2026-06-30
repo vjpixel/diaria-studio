@@ -65,6 +65,14 @@ import {
   type SecondaryItemSummaryError,
   type SecondaryItemSummaryReport,
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
+import {
+  checkTitlePublisherSuffix,
+  checkTitleTrailingPeriod,
+  type TitlePublisherSuffixError,
+  type TitlePublisherSuffixReport,
+  type TitleTrailingPeriodError,
+  type TitleTrailingPeriodReport,
+} from "./lib/lint-checks/title-normalization.ts"; // #2664 + #2672
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -139,6 +147,14 @@ export {
   type SecondaryItemSummaryError,
   type SecondaryItemSummaryReport,
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
+export {
+  checkTitlePublisherSuffix,
+  checkTitleTrailingPeriod,
+  type TitlePublisherSuffixError,
+  type TitlePublisherSuffixReport,
+  type TitleTrailingPeriodError,
+  type TitleTrailingPeriodReport,
+} from "./lib/lint-checks/title-normalization.ts"; // #2664 + #2672
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -764,6 +780,66 @@ intentional_error:
     return;
   }
 
+  // Modo --check title-publisher-suffix (#2664) — título com sufixo de veículo
+  // (` | Veículo`, ` - Veículo`, ` — Veículo`) que não foi strippado no Stage 1.
+  if (args.check === "title-publisher-suffix") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkTitlePublisherSuffix(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ title-publisher-suffix: ${result.errors.length} título(s) com sufixo de veículo:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  linha ${e.line} [${e.separator}]: "${e.title}" → sufixo: "${e.suffix}"`);
+      }
+      console.error(
+        `\nFix: o sufixo deveria ter sido removido pelo enrich-inbox-articles.ts (Stage 1). Edite o título manualmente ou re-rode Stage 1.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check title-trailing-period (#2672) — título terminando com ponto final.
+  // Manchetes não terminam em ponto. Residual de og:title.
+  if (args.check === "title-trailing-period") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check title-trailing-period --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkTitleTrailingPeriod(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ title-trailing-period: ${result.errors.length} título(s) terminando com ponto final:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  linha ${e.line}: "${e.title}"`);
+      }
+      console.error(
+        `\nFix: o ponto final deveria ter sido removido pelo enrich-inbox-articles.ts (Stage 1). Edite o título manualmente ou re-rode Stage 1.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -811,7 +887,9 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check erro-intencional-narrative-generico --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>",
     );
     process.exit(2);
   }
