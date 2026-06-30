@@ -419,42 +419,6 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
-### 4d.2 — Decisão "sem erro intencional" (#2667)
-
-Quando o editor decide que esta edição **não deve ter erro intencional** (ex: "tira o erro", "essa edição sai sem erro", "cancela o erro intencional"):
-
-**Passos obrigatórios (todos; ordem importa):**
-
-1. **Pull antes de editar** (#494): `drive-sync --mode pull --stage 4 --files 02-reviewed.md`.
-
-2. **Substituir o bloco `intentional_error` no frontmatter** por `intentional_error: none`:
-   - Localizar o bloco `intentional_error:` no frontmatter (entre os `---`).
-   - Substituir **apenas** o bloco inteiro (da linha `intentional_error:` até o último campo indentado) pela linha `intentional_error: none`.
-   - Usar `Edit` cirúrgico — não reescrever o frontmatter inteiro.
-
-3. **Limpar a narrativa plantada no bloco ERRO INTENCIONAL do corpo:**
-   - Localizar a linha `Nessa edição, {narrativa do erro plantado}.` no bloco `**ERRO INTENCIONAL**`.
-   - Substituir pelo placeholder: `Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.`
-   - Isso evita que `render-erro-intencional.ts` da próxima edição use essa narrativa como fonte de reveal (#2667 ghost reveal).
-
-4. **Re-rodar `render-erro-intencional.ts`** para atualizar o bloco de reveal:
-   ```bash
-   npx tsx scripts/render-erro-intencional.ts \
-     --edition {AAMMDD} \
-     --md data/editions/{AAMMDD}/02-reviewed.md
-   ```
-   Output esperado: `"prev_revealed": false` ou `"current_has_intentional": false` — confirma que o reveal da próxima edição ficará limpo.
-
-5. **Logar:**
-   ```bash
-   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
-     --message "gate revisao: erro intencional cancelado (no_error=true)"
-   ```
-
-6. **Voltar ao §4d** com o MD atualizado.
-
-**Invariante pós-ajuste (#2667):** após os passos acima, o invariant `no-error-body-consistent` (check Stage 4) deve passar — verificar que `checkNoErrorBodyConsistent` retorna 0 violations antes de aprovar o gate.
-
 **Distinção `editar` vs `ajustar`:**
 - `editar`: round-trip via Drive — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.
 - `ajustar`: inline no chat — adequado para tweaks rápidos (título, palavra, link), orchestrator aplica na hora.
