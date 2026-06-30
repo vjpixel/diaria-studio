@@ -133,6 +133,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Digest mensal: Drive sync inclui só Doc editorial + imagens (#1022).** O HTML render (`preview.html`, `preview-list*.html`) é exclusivamente local — input direto do Brevo, nunca sobe pro Drive. O editor revisa o Google Doc (`Edição {Mês}/{Mês} v{N}`), não o HTML. Análogo à convenção `_internal/*` (#959): só sobe pro Drive o que o editor de fato edita.
 
+- **Label `local` — issues que requerem sessão local (#2643).** Sessões podem rodar em cloud (container efêmero, clone fresco) ou localmente (máquina do editor). Issues com label **`local`** dependem de recursos machine-local — junction `data/` (OneDrive), ComfyUI, credenciais persistidas, Task Scheduler, etc. — e **não fecham em sessão cloud**. O sinal canônico de detecção é a presença do junction `data/` como diretório acessível: `npx tsx scripts/lib/exec-mode.ts` imprime `local` ou `cloud` (helper testável em `scripts/lib/exec-mode.ts`). **`/diaria-overnight` em cloud:** issues `local` → puladas com motivo `requer-sessao-local` (comentário na issue com dedup). **`/diaria-overnight` local:** issues `local` → elegíveis normalmente. **`/diaria-develop`:** roda por natureza local — issues `local` são elegíveis; a label é informacional aqui. **Quando aplicar:** implementação ou teste requer qualquer recurso ausente num clone fresco — `data/`, ComfyUI, OneDrive, credenciais locais não-gitadas, Task Scheduler, ou path local do editor.
+
 ---
 
 ## Otimização de tokens
