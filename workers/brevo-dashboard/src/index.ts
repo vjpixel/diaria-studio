@@ -70,6 +70,8 @@ const DS = {
 export const DS_TOKENS = DS_COLORS;
 export const DS_FONTS = DSF;
 
+const AUTH_COOKIE = 'cf-dash-auth'
+
 export interface Env {
   BREVO_API_KEY: string;
   /** KV namespace para cache de stats imutáveis (#2144) */
@@ -78,6 +80,8 @@ export interface Env {
   STRIPE_API_KEY?: string;
   /** Tab de cupons habilitada? Deve ser "true" explicitamente. Default OFF. (#2718) */
   COUPONS_TAB_ENABLED?: string;
+  /** Shared-token for cookie auth. Wrangler secret — if unset, auth is bypassed (dev mode). */
+  AUTH_TOKEN?: string;
 }
 
 interface BrevoCampaignStats {
@@ -3031,6 +3035,43 @@ Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
   );
 }
 
+export function isAuthenticated(request: Request, env: Env): boolean {
+  if (!env.AUTH_TOKEN) return true  // dev mode: no token configured = open
+  const cookie = request.headers.get('Cookie') ?? ''
+  const val = cookie.split(';').find(c => c.trim().startsWith(`${AUTH_COOKIE}=`))?.split('=').slice(1).join('=')
+  return val === env.AUTH_TOKEN
+}
+
+export function loginPage(error = false): Response {
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>clarice dashboard — login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;height:100dvh;align-items:center;justify-content:center;background:#f5f6f7}
+form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12);display:flex;flex-direction:column;gap:.75rem;width:min(340px,90vw)}
+h1{font-size:1.1rem;font-weight:600;color:#111}
+input[type=password]{padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:6px;font-size:.9rem;width:100%}
+input[type=password]:focus{outline:none;border-color:#f6821f;box-shadow:0 0 0 3px rgba(246,130,31,.15)}
+button{padding:.5rem 1rem;background:#f6821f;color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;font-weight:500}
+button:hover{background:#e07010}
+.err{color:#dc2626;font-size:.82rem}
+</style></head>
+<body>
+<form method="POST" action="/login">
+<h1>clarice dashboard</h1>
+${error ? '<p class="err">Token inválido. Tente novamente.</p>' : ''}
+<input type="password" name="token" placeholder="Token de acesso" required autofocus autocomplete="current-password">
+<button type="submit">Entrar</button>
+</form>
+</body></html>`
+  return new Response(html, {
+    status: error ? 401 : 200,
+    headers: { 'Content-Type': 'text/html;charset=UTF-8', 'Cache-Control': 'no-store' },
+  })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -3038,6 +3079,32 @@ export default {
 
     if (path === "/healthz") {
       return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+    }
+
+    // Auth gate
+    if (path === '/login') {
+      if (request.method === 'GET') return loginPage()
+      if (request.method === 'POST') {
+        const body = await request.formData()
+        const rawToken = body.get('token')
+        const token = typeof rawToken === 'string' ? rawToken : null
+        if (token && env.AUTH_TOKEN && token === env.AUTH_TOKEN) {
+          const maxAge = 30 * 24 * 60 * 60  // 30 days
+          return new Response(null, {
+            status: 302,
+            headers: {
+              'Location': '/',
+              'Set-Cookie': `${AUTH_COOKIE}=${env.AUTH_TOKEN}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+              'Cache-Control': 'no-store',
+            },
+          })
+        }
+        return loginPage(true)
+      }
+    }
+
+    if (!isAuthenticated(request, env)) {
+      return loginPage()
     }
 
     // #2144: edge cache 5min via Cache API pras rotas cacheáveis.

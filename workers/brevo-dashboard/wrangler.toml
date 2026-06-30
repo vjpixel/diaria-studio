@@ -15,6 +15,9 @@ workers_dev = true
 
 # Variáveis de ambiente (não-secretas). Secrets acima via wrangler secret put.
 [vars]
+# AUTH_TOKEN: set as a Worker secret (not a var) — wrangler secret put AUTH_TOKEN
+# Generate a strong token: openssl rand -hex 32
+# If unset, the dashboard is open (dev mode only — always set in production)
 # Tab de uso de cupons Stripe (#2718). Default OFF — emails de clientes (PII)
 # só são expostos após: (1) Cloudflare Access ativo, (2) STRIPE_API_KEY
 # configurada, (3) COUPONS_TAB_ENABLED = "true". Ver deploy ordering em
