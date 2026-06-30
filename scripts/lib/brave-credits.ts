@@ -104,7 +104,17 @@ export function recordBraveCreditEstimate(
   path: string = DEFAULT_PATH,
   now: Date = new Date(),
 ): void {
-  if (!Number.isFinite(count) || count <= 0) return;
+  if (!Number.isFinite(count)) {
+    // #2630 — warn explícito para count não-finito (NaN/±Infinity); não engolir silenciosamente.
+    // Causa original: LLM passava expressão não-avaliada ({N}*2+{M}+{J}) que resultava em NaN
+    // quando alguma variável era undefined. O gap ficava invisível porque o no-op era silencioso.
+    console.warn(
+      `[brave-credits] recordBraveCreditEstimate: count não-finito (${count}) — estimativa ignorada.` +
+        ` source=${source}, edition=${edition ?? "n/a"}`,
+    );
+    return;
+  }
+  if (count <= 0) return;
   count = Math.round(count);
   try {
     const fullPath = resolve(process.cwd(), path);
