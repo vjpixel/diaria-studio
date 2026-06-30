@@ -3038,7 +3038,10 @@ Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
 export function isAuthenticated(request: Request, env: Env): boolean {
   if (!env.AUTH_TOKEN) return true  // dev mode: no token configured = open
   const cookie = request.headers.get('Cookie') ?? ''
-  const val = cookie.split(';').find(c => c.trim().startsWith(`${AUTH_COOKIE}=`))?.split('=').slice(1).join('=')
+  const val = cookie.split(';')
+    .map(c => c.trim())
+    .find(c => c.startsWith(`${AUTH_COOKIE}=`))
+    ?.slice(`${AUTH_COOKIE}=`.length)
   return val === env.AUTH_TOKEN
 }
 
@@ -3081,30 +3084,35 @@ export default {
       return new Response("ok", { headers: { "Content-Type": "text/plain" } });
     }
 
-    // Auth gate
-    if (path === '/login') {
-      if (request.method === 'GET') return loginPage()
-      if (request.method === 'POST') {
-        const body = await request.formData()
-        const rawToken = body.get('token')
-        const token = typeof rawToken === 'string' ? rawToken : null
-        if (token && env.AUTH_TOKEN && token === env.AUTH_TOKEN) {
-          const maxAge = 30 * 24 * 60 * 60  // 30 days
-          return new Response(null, {
-            status: 302,
-            headers: {
-              'Location': '/',
-              'Set-Cookie': `${AUTH_COOKIE}=${env.AUTH_TOKEN}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
-              'Cache-Control': 'no-store',
-            },
-          })
+    // Auth gate — /api/* routes are exempt (internal automation, no cookie)
+    if (!path.startsWith('/api/')) {
+      if (path === '/login') {
+        if (request.method === 'GET') return loginPage()
+        if (request.method === 'POST') {
+          const body = await request.formData()
+          const rawToken = body.get('token')
+          const token = typeof rawToken === 'string' ? rawToken : null
+          if (!env.AUTH_TOKEN) return new Response(null, { status: 302, headers: { Location: '/' } })
+          if (/[;\r\n]/.test(env.AUTH_TOKEN)) return new Response('Invalid AUTH_TOKEN configuration', { status: 500 })
+          if (token && token === env.AUTH_TOKEN) {
+            const maxAge = 30 * 24 * 60 * 60  // 30 days
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': '/',
+                'Set-Cookie': `${AUTH_COOKIE}=${env.AUTH_TOKEN}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+                'Cache-Control': 'no-store',
+              },
+            })
+          }
+          return loginPage(true)
         }
-        return loginPage(true)
+        return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, POST' } })
       }
-    }
 
-    if (!isAuthenticated(request, env)) {
-      return loginPage()
+      if (!isAuthenticated(request, env)) {
+        return loginPage()
+      }
     }
 
     // #2144: edge cache 5min via Cache API pras rotas cacheáveis.

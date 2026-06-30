@@ -9,7 +9,7 @@
  * Usa polyfill de caches + mock de fetch para Brevo — sem deps externas reais.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import worker, {
@@ -30,19 +30,9 @@ import worker, {
   },
 };
 
-// Mock da Brevo API — retorna campanhas vazias para todos os requests
-const origFetch = globalThis.fetch;
+// Mock da Brevo API — escopo restrito com before/after para não vazar entre arquivos de teste
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).fetch = async (input: any, init?: any): Promise<Response> => {
-  const url = typeof input === "string" ? input : (input as Request)?.url ?? String(input);
-  if (url.includes("brevo.com")) {
-    return new Response(JSON.stringify({ campaigns: [] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-  return origFetch(input, init);
-};
+let origFetch: any;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -67,6 +57,26 @@ const makeEnv = (opts: { auth?: string } = {}): any => ({
   BREVO_API_KEY: "mock-key",
   STATS_CACHE: mockKV,
   AUTH_TOKEN: opts.auth,
+});
+
+before(() => {
+  origFetch = globalThis.fetch;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).fetch = async (input: any, init?: any): Promise<Response> => {
+    const url = typeof input === "string" ? input : (input as Request)?.url ?? String(input);
+    if (url.includes("brevo.com")) {
+      return new Response(JSON.stringify({ campaigns: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return origFetch(input, init);
+  };
+});
+
+after(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).fetch = origFetch;
 });
 
 // ---------------------------------------------------------------------------
@@ -181,5 +191,29 @@ describe("Worker fetch — auth routes", () => {
     const text = await res.text();
     assert.ok(text.includes("Clarice News Dashboard"), "deve exibir o dashboard");
     assert.ok(!text.includes("<form"), "não deve exibir formulário de login");
+  });
+
+  it("/api/campaigns sem auth: retorna JSON (isento de autenticação)", async () => {
+    const req = new Request("http://localhost/api/campaigns");
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    assert.equal(res.status, 200);
+    const ct = res.headers.get("Content-Type") ?? "";
+    assert.ok(ct.includes("application/json"), "deve retornar JSON, não login page");
+  });
+
+  it("/login PUT: retorna 405 Method Not Allowed", async () => {
+    const req = new Request("http://localhost/login", { method: "PUT" });
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    assert.equal(res.status, 405);
+    assert.ok((res.headers.get("Allow") ?? "").includes("POST"), "deve ter Allow header com POST");
+  });
+
+  it("/login POST sem AUTH_TOKEN (dev mode): redireciona para /", async () => {
+    const form = new FormData();
+    form.append("token", "qualquer");
+    const req = new Request("http://localhost/login", { method: "POST", body: form });
+    const res = await worker.fetch(req, makeEnv());  // no auth token
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("Location"), "/");
   });
 });

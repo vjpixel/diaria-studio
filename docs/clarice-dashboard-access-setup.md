@@ -69,7 +69,13 @@ The coupon tab shows customer emails. Never enable it before auth is confirmed w
 ## Rollback
 
 ```bash
-# Clear cached state
+# Clear cached state — required before disabling coupon tab.
+# The Worker caches the last successful render in KV (dash:lastgood:html, TTL 1h)
+# as a fallback served to authenticated users when Brevo returns a rate-limit error.
+# If the coupon tab was enabled and rendered customer emails into that cache,
+# it must be purged here — otherwise stale PII could be served for up to 1 hour
+# even after the tab is disabled.
+# Run these from the workers/brevo-dashboard/ directory.
 wrangler kv key delete --binding=STATS_CACHE "dash:lastgood:html"
 wrangler kv key delete --binding=STATS_CACHE "dash:lastgood:hash"
 wrangler kv key delete --binding=STATS_CACHE "coupons:usage"
