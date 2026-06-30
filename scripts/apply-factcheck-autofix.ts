@@ -151,8 +151,11 @@ export function findDestaqueBodyRange(
   // Usar ^DESTAQUE com flag m (multiline) em vez de \nDESTAQUE — o \n exige linha
   // em branco antes do próximo marcador; sem ela, nextMatch=null e o range de D1 engloba
   // todo o restante incluindo D2 (#2628 gap 1).
+  // #2634: anchor on the real header format: DESTAQUE N must be followed by whitespace+pipe
+  // (\s*\|) or end of line (\s*$) to avoid matching body text like "DESTAQUE 2 foi coberto..."
+  // that starts a line but is NOT a section header.
   const afterStart = body.slice(matchOffset + markerMatch[1].length);
-  const nextMatch = /^DESTAQUE\s+\d+/im.exec(afterStart);
+  const nextMatch = /^DESTAQUE\s+\d+(?:\s*\||\s*$)/im.exec(afterStart);
   const blockEnd = nextMatch
     ? blockStart + markerMatch[1].length + nextMatch.index
     : content.length;
