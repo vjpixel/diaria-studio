@@ -66,6 +66,7 @@ import {
   jaccardSimilarity,
   extractNamedEntities,
   recentEditionDirs,
+  deriveCurrentEdition,
 } from "./dedup.ts";
 
 // ---------------------------------------------------------------------------
@@ -358,11 +359,23 @@ const SECONDARY_JACCARD_THRESHOLD = 0.15;
 
 /**
  * Comprimento mínimo de prefixo para match morfológico PT-BR.
- * 6 chars captura: contratar/contratações ("contra"),
- *                  demitir/demissão ("demiti"), etc.
- * Sem capturar falsos positivos em radicais curtos comuns.
+ * 6 chars captura variantes que compartilham o radical nos 6 primeiros chars:
+ *   contratar/contratações → "contra", investir/investimento → "invest".
+ * NÃO captura pares cujo radical diverge antes do 6º char (ex: demitir="demiti"
+ * vs demissão="demiss") — esses dependem do sinal Jaccard.
  */
 const SECONDARY_PREFIX_MIN_LEN = 6;
+
+/**
+ * Shape cru (parcial) de um item de bucket em 01-categorized.json / 01-approved.json.
+ * Suporta `{ title, url }` direto e o wrapper `{ article: { title, url } }`.
+ */
+interface RawBucketItem {
+  url?: string;
+  title?: string;
+  article?: { url?: string; title?: string };
+}
+type RawBuckets = Record<string, RawBucketItem[]>;
 
 export interface SecondaryItem {
   bucket: string;  // "radar" | "lancamento" | "use_melhor"
@@ -413,7 +426,7 @@ function extractSecondaryEntities(title: string): Set<string> {
     const normalized = clean
       .toLowerCase()
       .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "");
+      .replace(/[̀-ͯ]/g, ""); // strip combining diacritics (U+0300–U+036F)
     if (ENTITY_STOPWORDS_SECONDARY.has(normalized)) continue;
     entities.add(normalized);
   }
@@ -456,13 +469,9 @@ export function extractSecondaryItems(
   buckets: string[] = ["radar", "lancamento"],
 ): SecondaryItem[] {
   if (!existsSync(categorizedPath)) return [];
-  let data: Record<string, Array<{
-    url?: string;
-    title?: string;
-    article?: { url?: string; title?: string };
-  }>>;
+  let data: RawBuckets;
   try {
-    data = JSON.parse(readFileSync(categorizedPath, "utf8")) as typeof data;
+    data = JSON.parse(readFileSync(categorizedPath, "utf8")) as RawBuckets;
   } catch {
     return [];
   }
@@ -502,16 +511,12 @@ export function readPastApprovedSecondary(
       resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
       resolve(editionsDir, aammdd, "01-approved.json"),
     ];
-    let parsed: Record<string, Array<{
-      url?: string;
-      title?: string;
-      article?: { url?: string; title?: string };
-    }>> | null = null;
+    let parsed: RawBuckets | null = null;
 
     for (const path of candidates) {
       if (!existsSync(path)) continue;
       try {
-        parsed = JSON.parse(readFileSync(path, "utf8")) as typeof parsed;
+        parsed = JSON.parse(readFileSync(path, "utf8")) as RawBuckets;
         break;
       } catch {
         continue;
@@ -572,6 +577,7 @@ export function checkSecondaryThemes(
     const currentEntities = extractSecondaryEntities(current.title);
 
     let bestWarning: SecondaryThemeWarning | null = null;
+    let bestJaccardRaw = -1; // raw (não-arredondado) p/ comparar best-match sem viés de rounding
 
     for (const { item: past, tokens: pastTokens, entities: pastEntities } of pastIndex) {
       // Sinal 1: entity overlap obrigatório
@@ -593,8 +599,11 @@ export function checkSecondaryThemes(
         ? `jaccard:${Math.round(jaccard * 100) / 100}`
         : `prefix:${prefixOverlap!.prefix} (${prefixOverlap!.tokenA}/${prefixOverlap!.tokenB})`;
 
-      // Manter o melhor match (maior Jaccard) por item corrente
-      if (bestWarning === null || jaccard > bestWarning.jaccard) {
+      // Manter o melhor match (maior Jaccard) por item corrente. Compara o jaccard
+      // RAW (não o campo arredondado) p/ não descartar match marginalmente melhor
+      // quando o anterior arredondou pra cima (ex: 0.177 vs stored 0.18).
+      if (bestWarning === null || jaccard > bestJaccardRaw) {
+        bestJaccardRaw = jaccard;
         bestWarning = {
           bucket: current.bucket,
           item_url: current.url,
@@ -634,7 +643,10 @@ async function main(): Promise<void> {
   // #2652: secondary check flags
   const editionsDir = args["editions-dir"] ?? "data/editions";
   const secondaryWindow = parseInt(args["secondary-window"] ?? String(DEFAULT_SECONDARY_WINDOW), 10);
-  const currentEdition = args["current-edition"];
+  // #2652: fallback p/ deriveCurrentEdition (espelha dedup.ts CLI #1856) — sem isso,
+  // re-run/resume onde o 01-approved.json da edição atual já existe inclui a própria
+  // edição na janela e gera self-match (Jaccard ~1.0) em todo item secundário.
+  const currentEdition = args["current-edition"] ?? deriveCurrentEdition(args["categorized"]);
 
   if (!categorizedPath) {
     console.error(

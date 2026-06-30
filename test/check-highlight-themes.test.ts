@@ -698,6 +698,49 @@ describe("checkSecondaryThemes — detecção via Jaccard direto (#2652)", () =>
 });
 
 // ---------------------------------------------------------------------------
+// checkSecondaryThemes — best-match selection (#2652 regressão do rounding)
+//
+// Quando um item corrente casa com VÁRIOS itens passados, reportar o de maior
+// Jaccard. Regressão do bug onde a comparação usava `jaccard > bestWarning.jaccard`
+// (campo arredondado) em vez do raw — um match marginalmente melhor podia ser
+// descartado se o anterior arredondou pra cima.
+// ---------------------------------------------------------------------------
+
+describe("checkSecondaryThemes — best-match selection multi-match (#2652)", () => {
+  it("entre vários matches, reporta o de maior Jaccard (1 warning por item)", () => {
+    const current: SecondaryItem[] = [
+      {
+        bucket: "radar",
+        title: "Nubank anuncia demissão de 200 funcionários na área de tecnologia",
+        url: "https://example.com/atual",
+      },
+    ];
+    // Past WEAK: compartilha nubank + funcionarios apenas.
+    // Past STRONG: quase idêntico ao atual → Jaccard maior.
+    const past: PastSecondaryItem[] = [
+      {
+        edition: "260610",
+        title: "Nubank demite funcionários em reestruturação",
+        bucket: "radar",
+      },
+      {
+        edition: "260625",
+        title: "Nubank anuncia demissão de 200 funcionários na área de tecnologia financeira",
+        bucket: "radar",
+      },
+    ];
+
+    const result = checkSecondaryThemes(current, past);
+    assert.equal(result.secondary_warnings.length, 1, "1 warning por item corrente (best-match)");
+    assert.equal(
+      result.secondary_warnings[0].matched_edition,
+      "260625",
+      `deve reportar o match de maior Jaccard (260625), não o mais fraco: ${JSON.stringify(result.secondary_warnings[0])}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkSecondaryThemes — edge cases (#2652)
 // ---------------------------------------------------------------------------
 
