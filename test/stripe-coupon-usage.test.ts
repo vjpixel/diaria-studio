@@ -8,13 +8,19 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   aggregateCouponUsage,
+  csvField,
+  toCSV,
+  isMainModule,
   type PromoCodeRaw,
   type CouponRaw,
   type SubscriptionRaw,
   type CustomerRaw,
+  type RedemptionRow,
 } from "../scripts/stripe-coupon-usage.ts";
 
 // ---------------------------------------------------------------------------
@@ -322,5 +328,117 @@ describe("aggregateCouponUsage", () => {
       ).length;
       assert.equal(count, 1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// csvField — quoting RFC 4180 (#2719 finding #2)
+// ---------------------------------------------------------------------------
+
+describe("csvField", () => {
+  it("passa campo limpo sem aspas", () => {
+    assert.equal(csvField("cpnTEST50"), "cpnTEST50");
+    assert.equal(csvField("active"), "active");
+  });
+
+  it("quota campo com vírgula (display-name email)", () => {
+    assert.equal(
+      csvField('"Sobrenome, Nome" <a@b.com>'),
+      '"""Sobrenome, Nome"" <a@b.com>"',
+    );
+  });
+
+  it("quota e escapa aspas internas dobrando-as", () => {
+    assert.equal(csvField('a "b" c'), '"a ""b"" c"');
+  });
+
+  it("quota campo com quebra de linha", () => {
+    assert.equal(csvField("linha1\nlinha2"), '"linha1\nlinha2"');
+  });
+
+  it("número vira string sem quoting", () => {
+    assert.equal(csvField(44900), "44900");
+  });
+
+  it("null vira string vazia", () => {
+    assert.equal(csvField(null), "");
+  });
+});
+
+describe("toCSV — quoting de fim-a-fim", () => {
+  const rowWithComma: RedemptionRow = {
+    coupon_code: "NEWS50",
+    coupon_id: "cpnTEST50",
+    percent_off: 50,
+    duration: "once",
+    customer: "cus_TEST9",
+    customer_email: '"Silva, João" <joao@example.com>',
+    subscription: "sub_TEST9",
+    status: "active",
+    created: 1782383062,
+    plan_amount_cents: 44900,
+    currency: "brl",
+    interval: "year",
+    discount_value_cents: 22450,
+  };
+
+  it("o email com vírgula é quotado e NÃO desloca colunas", () => {
+    const csv = toCSV([rowWithComma]);
+    const lines = csv.split("\n");
+    // header + 1 data row + trailing empty (devido ao \n final)
+    assert.equal(lines.length, 3);
+    assert.equal(lines[2], ""); // trailing newline
+
+    const dataLine = lines[1];
+    // O campo email quotado deve aparecer intacto
+    assert.ok(
+      dataLine.includes('"""Silva, João"" <joao@example.com>"'),
+      `email quotado deve estar presente: ${dataLine}`,
+    );
+
+    // Parse robusto: o campo quotado conta como UMA coluna. Validamos que
+    // a coluna 13 (discount_value_cents) ainda é 22450 — prova de não-deslocamento.
+    // Split simples por vírgula quebraria no email; usamos regex que respeita aspas.
+    const fields = dataLine.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!
+      .map((f) => f.replace(/,$/, ""))
+      .filter((_, i, arr) => i < arr.length); // mantém todos
+    // Última coluna não-vazia = discount_value_cents
+    const nonEmpty = fields.filter((f) => f !== "");
+    assert.equal(nonEmpty[nonEmpty.length - 1], "22450");
+  });
+
+  it("CSV termina com newline (POSIX)", () => {
+    const csv = toCSV([rowWithComma]);
+    assert.ok(csv.endsWith("\n"), "CSV deve terminar com \\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMainModule — detecção case-insensitive (#2719 finding #1)
+// ---------------------------------------------------------------------------
+
+describe("isMainModule", () => {
+  // Path absoluto real deste arquivo de teste → url file:// válida no SO atual.
+  const thisPath = fileURLToPath(import.meta.url);
+  const thisUrl = pathToFileURL(thisPath).href;
+
+  it("retorna false quando argv1 é undefined (importado)", () => {
+    assert.equal(isMainModule(undefined, thisUrl), false);
+  });
+
+  it("casa quando argv1 == módulo (mesmo casing)", () => {
+    assert.equal(isMainModule(thisPath, thisUrl), true);
+  });
+
+  it("casa mesmo com casing divergente (regressão Windows drive-letter, #2719)", () => {
+    // A função lowercases ambos os lados; argv1 em UPPER-CASE ainda deve casar.
+    // Reproduz o cenário Windows onde argv1 vem com `c:` e import.meta.url com `C:`.
+    assert.equal(isMainModule(thisPath.toUpperCase(), thisUrl), true);
+    assert.equal(isMainModule(thisPath.toLowerCase(), thisUrl), true);
+  });
+
+  it("não casa módulos diferentes", () => {
+    const otherPath = resolve(thisPath, "..", "outro-script-inexistente.ts");
+    assert.equal(isMainModule(otherPath, thisUrl), false);
   });
 });

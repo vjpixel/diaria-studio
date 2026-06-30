@@ -344,7 +344,22 @@ function fmtBRL(cents: number): string {
   return `R$${Math.floor(abs / 100)},${String(abs % 100).padStart(2, "0")}`;
 }
 
-function toCSV(rows: RedemptionRow[]): string {
+/**
+ * Quota um campo CSV conforme RFC 4180: se contém vírgula, aspas ou quebra de
+ * linha, envolve em aspas duplas e escapa aspas internas dobrando-as. Campos
+ * "limpos" passam sem alteração. Protege contra corrupção de colunas quando um
+ * email vem com display name (`"Sobrenome, Nome" <a@b.com>`) ou qualquer campo
+ * externo trouxer vírgula/aspas/newline (#2719).
+ */
+export function csvField(value: string | number | null): string {
+  const s = value == null ? "" : String(value);
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+export function toCSV(rows: RedemptionRow[]): string {
   const header =
     "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents";
   const lines = rows.map((r) =>
@@ -362,9 +377,12 @@ function toCSV(rows: RedemptionRow[]): string {
       r.currency,
       r.interval,
       r.discount_value_cents,
-    ].join(","),
+    ]
+      .map(csvField)
+      .join(","),
   );
-  return [header, ...lines].join("\n");
+  // Trailing newline — arquivos de texto POSIX terminam em \n (#2719)
+  return [header, ...lines].join("\n") + "\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -400,10 +418,16 @@ async function main(): Promise<void> {
     console.log(`  Desconto total projetado:  ${fmtBRL(entry.totalProjectedDiscountCents)}`);
     for (const r of entry.redemptions) {
       const trial = r.status === "trialing" ? " [pending/trial]" : "";
+      // "forever" desconta todo período indefinidamente — o valor é por período,
+      // NÃO um total. Sinalizar pra não confundir com "once"/"repeating" (#2719).
+      const discLabel =
+        r.duration === "forever"
+          ? `${fmtBRL(r.discount_value_cents)}/período (forever — recorrente)`
+          : fmtBRL(r.discount_value_cents);
       console.log(
         `    ${r.subscription}  ${r.customer_email || r.customer}  ` +
           `${r.status}${trial}  plan=${fmtBRL(r.plan_amount_cents)}/${r.interval}  ` +
-          `desconto=${fmtBRL(r.discount_value_cents)}`,
+          `desconto=${discLabel}`,
       );
     }
     console.log();
@@ -423,12 +447,24 @@ async function main(): Promise<void> {
   console.log(`CSV salvo em: ${outPath}`);
 }
 
-// Only run when invoked directly (not when imported by tests)
-const isMain =
-  process.argv[1] != null &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+/**
+ * Detecta se o módulo foi invocado diretamente (vs. importado por um teste).
+ *
+ * Comparação case-insensitive (#2719): no Windows, `process.argv[1]` pode vir
+ * com casing diferente de `fileURLToPath(import.meta.url)` (ex.: letra do drive
+ * `c:` vs `C:`). Uma comparação estrita case-sensitive daria `false` no Windows
+ * e o script sairia silenciosamente sem rodar `main()`. Normalizamos ambos os
+ * lados com `resolve()` + `toLowerCase()` antes de comparar.
+ */
+export function isMainModule(argv1: string | undefined, moduleUrl: string): boolean {
+  if (argv1 == null) return false;
+  return (
+    resolve(argv1).toLowerCase() ===
+    resolve(fileURLToPath(moduleUrl)).toLowerCase()
+  );
+}
 
-if (isMain) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);
