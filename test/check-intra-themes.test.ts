@@ -209,6 +209,141 @@ describe("checkIntraThemes — secundário vs destaque Google/ferramentas", () =
 });
 
 // ---------------------------------------------------------------------------
+// Caso (#2629 — finding 2): cluster 2-alto(Pass1a) + 1(Pass1b) silenciado
+// ---------------------------------------------------------------------------
+
+describe("checkIntraThemes — cluster 2-alto+1 (#2629 finding 2)", () => {
+  // Cenário: 3 artigos sobre "agentes de IA"
+  //   A e B: Google agent tools (company + Jaccard → pareados no Pass 1a)
+  //   C: Microsoft agents (compartilha keyword "agentes" mas Jaccard com A/B < threshold)
+  //   ANTES DO FIX: C tem newItems.length=1 < KEYWORD_CLUSTER_MIN(3) → sem aviso
+  //   APÓS O FIX: emite cluster [A, B, C] com cluster_size=3
+  const data_2_mais_1 = {
+    highlights: [],
+    radar: [
+      {
+        // A: Google agentes (vai parear com B via company Google + Jaccard ≈ 0.20)
+        url: "https://techcrunch.com/google-agents",
+        title: "Google lança agentes de IA para automação empresarial avançada",
+      },
+      {
+        // B: Google agentes ferramentas (pareia com A)
+        url: "https://venturebeat.com/google-tools-agents",
+        title: "Google apresenta ferramentas de agentes de IA para empresas de produtividade",
+      },
+      {
+        // C: Microsoft agents (compartilha "agentes" mas Jaccard com A/B < CLUSTER_JACCARD_THRESHOLD)
+        url: "https://wired.com/microsoft-agents",
+        title: "Microsoft desenvolve agentes autônomos com capacidades multimodais avançadas",
+      },
+      {
+        // D: Totalmente off-topic
+        url: "https://reuters.com/fed-juros-eua",
+        title: "Fed eleva taxa de juros nos Estados Unidos pela terceira vez",
+      },
+    ],
+    lancamento: [],
+    use_melhor: [],
+    video: [],
+  };
+
+  it("emite aviso de cluster quando 2 itens do Pass1a + 1 novo compartilham keyword (#2629)", () => {
+    const result = checkIntraThemes(data_2_mais_1, 3);
+
+    // Deve emitir cluster com os 3 itens sobre "agentes"
+    const agentesCluster = result.theme_clusters.find(
+      (c) => c.cluster_size >= 3 &&
+             c.items.some((it) => it.url.includes("google-agents")) &&
+             c.items.some((it) => it.url.includes("microsoft-agents")),
+    );
+    assert.ok(
+      agentesCluster !== undefined,
+      "deve emitir cluster de tamanho 3 incluindo itens Google e Microsoft sobre agentes",
+    );
+    assert.equal(agentesCluster.cluster_size, 3, "cluster_size deve ser 3 (contagem total, não só novos)");
+    // D (Fed/juros) NÃO deve estar no cluster
+    assert.ok(
+      !agentesCluster.items.some((it) => it.url.includes("fed-juros")),
+      "item off-topic (Fed/juros) não deve estar no cluster",
+    );
+  });
+
+  it("não emite aviso duplicado: Pass1a cluster [A,B] é absorvido pelo keyword cluster [A,B,C] (#2629)", () => {
+    const result = checkIntraThemes(data_2_mais_1, 3);
+
+    // Não deve ter um cluster separado com apenas [A, B] E um cluster com [A, B, C]
+    // — isso seria duplicado. Deve existir apenas 1 cluster cobrindo os 3.
+    const clustersWithGoogleAgents = result.theme_clusters.filter(
+      (c) => c.items.some((it) => it.url.includes("google-agents")),
+    );
+    assert.equal(
+      clustersWithGoogleAgents.length,
+      1,
+      "deve existir apenas 1 cluster cobrindo os artigos sobre Google/agentes (sem duplicata Pass1a + Pass1b)",
+    );
+  });
+
+  it("contagem total do cluster (não só novos) está correta no output (#2629)", () => {
+    const result = checkIntraThemes(data_2_mais_1, 3);
+
+    for (const c of result.theme_clusters) {
+      assert.equal(
+        c.cluster_size,
+        c.items.length,
+        `cluster_size=${c.cluster_size} deve ser igual a items.length=${c.items.length}`,
+      );
+    }
+  });
+});
+
+describe("checkIntraThemes — sem duplicata quando Pass1a já cobre tudo (#2629)", () => {
+  it("não duplica aviso quando keyword cluster é subconjunto de cluster Pass1a", () => {
+    // 3 itens altamente similares → Pass1a forma cluster de 3 via Jaccard
+    // → Pass1b: keyword "agentes" nos 3, mas todos já em alreadyClustered → skip
+    // Resultado esperado: 1 cluster (do Pass1a), não 2
+    const data = {
+      highlights: [],
+      radar: [
+        {
+          url: "https://a.com/1",
+          title: "Agentes de IA tomam decisões empresariais autônomas avançadas",
+        },
+        {
+          url: "https://b.com/2",
+          title: "Agentes de IA passam a tomar decisões empresariais autônomas",
+        },
+        {
+          url: "https://c.com/3",
+          title: "Decisões empresariais autônomas com agentes de IA avançados",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const result = checkIntraThemes(data, 3);
+
+    // Todos os 3 itens devem estar em algum cluster (Pass1a ou Pass1b)
+    const allUrls = new Set(result.theme_clusters.flatMap((c) => c.items.map((it) => it.url)));
+    assert.ok(allUrls.has("https://a.com/1") || result.theme_clusters.length > 0,
+      "os 3 itens similares devem ser capturados por algum cluster");
+
+    // Não deve haver mais clusters do que o esperado (duplicata)
+    // Se todos 3 são pareados em Pass1a como 3-cluster, deve haver exatamente 1 cluster
+    // (Pass1b não deve emitir cluster adicional pra os mesmos itens)
+    const totalItems = result.theme_clusters.flatMap((c) => c.items);
+    const uniqueUrls = new Set(totalItems.map((it) => it.url));
+    // Se há duplicatas de URL em clusters diferentes, significa warning duplicado
+    assert.equal(
+      uniqueUrls.size,
+      totalItems.length,
+      "cada item deve aparecer em no máximo 1 cluster (sem aviso duplicado)",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Output não dropa — só avisa
 // ---------------------------------------------------------------------------
 

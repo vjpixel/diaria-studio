@@ -364,9 +364,22 @@ export function checkIntraThemes(
       seenKeywordClusters.add(clusterKey);
 
       const clusterItems = sortedIndices.map((idx) => secIndex[idx].item);
-      // Só emitir se há itens NÃO cobertos pela Pass 1a
+      // Só emitir se há ao menos 1 item NÃO coberto pela Pass 1a.
+      // Caso "2-alto+1" (#2629): 2 itens já pareados pelo Jaccard (Pass 1a) + 1 novo
+      // compartilha keyword → total = 3 (>= KEYWORD_CLUSTER_MIN) e newItems = 1 → emite.
+      // Se todos os itens já estão no Pass 1a (newItems = 0), o Pass 1a já sinalizou
+      // esses itens → não duplicar.
       const newItems = clusterItems.filter((it) => !alreadyClustered.has(it.url));
-      if (newItems.length < KEYWORD_CLUSTER_MIN) continue;
+      if (newItems.length < 1) continue;
+
+      // Evitar aviso duplicado: remover clusters do Pass 1a que são subconjuntos
+      // deste cluster (todos os seus itens já estão cobertos aqui com contagem total).
+      const clusterUrlSet = new Set(clusterItems.map((it) => it.url));
+      for (let i = theme_clusters.length - 1; i >= 0; i--) {
+        if (theme_clusters[i].items.every((it) => clusterUrlSet.has(it.url))) {
+          theme_clusters.splice(i, 1);
+        }
+      }
 
       theme_clusters.push({
         theme: tok,
