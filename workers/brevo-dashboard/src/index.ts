@@ -346,12 +346,15 @@ export async function getCouponUsage(
   env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
   isFresh: boolean,
 ): Promise<CouponUsageReport | null> {
-  if (env.COUPONS_TAB_ENABLED !== "true" || !env.STRIPE_API_KEY) return null;
+  if (env.COUPONS_TAB_ENABLED !== "true") return null;
   try {
+    // KV cache tem prioridade — funciona mesmo sem STRIPE_API_KEY (populado via MCP externo)
     if (!isFresh && env.STATS_CACHE) {
       const cached = await env.STATS_CACHE.get(COUPONS_KV_KEY, "json").catch(() => null);
       if (cached) return cached as CouponUsageReport;
     }
+    // KV miss: tenta Stripe API direta (só se a key estiver configurada)
+    if (!env.STRIPE_API_KEY) return null;
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
     if (!isFresh && env.STATS_CACHE) {
       await env.STATS_CACHE.put(COUPONS_KV_KEY, JSON.stringify(report), {
