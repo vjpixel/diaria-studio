@@ -212,6 +212,25 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#260701: patrocinado 📣 multi-parágrafo no intro mantém título serif 26px (não body 16px)", () => {
+    const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
+    try {
+      const content = extractContent(dir);
+      // 📣 patrocinado multi-parágrafo no slot do intro: NÃO deve cair no titleStyle="body"
+      content.introCallout =
+        "📣 Patrocínio no topo\n\nCorpo do anúncio aqui.\n\n[Acesse](https://anunciante.com)";
+      const html = renderHTML(content);
+      const idx = html.indexOf("Patrocínio no topo");
+      assert.ok(idx > -1, "título do anúncio presente");
+      // o <p> do título (antes do texto) deve ter 26px serif, não 16px
+      const titleP = html.slice(html.lastIndexOf("<p", idx), idx);
+      assert.match(titleP, /font-size:26px/, "patrocinado mantém título 26px serif");
+      assert.doesNotMatch(titleP, /font-size:16px/, "patrocinado NÃO regride pra 16px");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parágrafo", () => {

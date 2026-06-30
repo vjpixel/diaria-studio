@@ -249,8 +249,11 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
     // titleStyle "serif" (default) = título serif grande (sponsored/mid callout);
     // "body" = mesmo tamanho do corpo, em negrito (intro 🎉 — pedido do editor 260701).
     const title = stripCalloutMarker(paras[0]);
+    // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
+    // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
+    const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
     const titleHtml = titleStyle === "body"
-      ? `<p style="margin:0 0 10px;font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`
+      ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
       : `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
 
     // #2136: callout patrocinado → verifica se o último parágrafo é só o link
@@ -326,7 +329,7 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
         const fullBold = titleStyle === "body" &&
           /^\*\*[^*][\s\S]*\*\*$/.test(p) && !p.slice(2, -2).includes("**");
         if (fullBold) {
-          return `<p style="margin:${mt} 0 0;font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};">${processInlineLinks(p.slice(2, -2))}</p>`;
+          return `<p style="margin:${mt} 0 0;${bodyHeadingStyle}">${processInlineLinks(p.slice(2, -2))}</p>`;
         }
         return bodyP(`${mt} 0 0`, processInlineLinks(p));
       })
@@ -848,7 +851,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.introCallout) {
     // #1942 review #1: disclosure também cobre anúncio (📣) colocado no topo.
     if (isSponsoredCallout(content.introCallout)) parts.push(renderDivulgacaoSeparator());
-    parts.push(renderIntroCallout(content.introCallout, "body"));
+    // #260701 review: title "body" SÓ para callout editorial (🎉); patrocinado (📣)
+    // mantém o serif 26px (consistente com mid/productBox). Sem o gate, um 📣 no
+    // intro regredia o título pra 16px e o fullBold-subheader disparava nele.
+    parts.push(renderIntroCallout(
+      content.introCallout,
+      isSponsoredCallout(content.introCallout) ? "serif" : "body",
+    ));
   }
 
   // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
