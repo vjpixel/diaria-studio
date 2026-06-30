@@ -917,9 +917,11 @@ describe("regressao #2634: findDestaqueBodyRange — texto DESTAQUE N no corpo n
     );
     // D2's exclusive content should not be in D1
     assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 nao deve incluir texto exclusivo de D2");
-    // D1 must end at or before the real "DESTAQUE 2 | PRODUTO" header
+    // D1 must end EXACTLY at the real "DESTAQUE 2 | PRODUTO" header (exclusive end).
+    // Igualdade exata (nao <= realD2Pos + 1) — o +1 toleraria um off-by-one que
+    // incluiria o "D" do header seguinte no range de D1 (self-review #2634).
     const realD2Pos = content.indexOf("DESTAQUE 2 | PRODUTO");
-    assert.ok(rangeD1!.end <= realD2Pos + 1, `D1.end (${rangeD1!.end}) deve ser <= inicio do header DESTAQUE 2 | PRODUTO (${realD2Pos})`);
+    assert.equal(rangeD1!.end, realD2Pos, `D1.end (${rangeD1!.end}) deve ser exatamente o inicio do header DESTAQUE 2 | PRODUTO (${realD2Pos})`);
   });
 
   it("formato canonico DESTAQUE N | CATEGORIA continua delimitando corretamente (nao regrediu)", () => {
