@@ -42,7 +42,7 @@ const FOOTER_DOMAINS = [
   "clarice.ai",
   "beehiiv.com?via",
   "linkedin.com/company",
-  "facebook.com/diar.ia",
+  "facebook.com/diar.ia.br",
   "pt.wikipedia.org",
   "commons.wikimedia.org",
   "creativecommons.org",

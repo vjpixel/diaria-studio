@@ -127,6 +127,18 @@ describe("findMismatchedUrls (#1456)", () => {
     assert.deepEqual(findMismatchedUrls(md, approved), []);
   });
 
+  it("ignora links das páginas sociais oficiais (LinkedIn + Facebook) (#2675)", () => {
+    // #2675: o rodapé linka as páginas sociais com os handles canônicos diar.ia.br.
+    // findMismatchedUrls não pode marcá-los como edição manual fora do approved JSON.
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+[LinkedIn](https://www.linkedin.com/company/diar.ia.br/)
+[Facebook](https://www.facebook.com/diar.ia.br)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
   it("retorna vazio quando MD não introduziu URLs novas", () => {
     const approved = {
       highlights: [{ article: { url: "https://a.com/x" } }],

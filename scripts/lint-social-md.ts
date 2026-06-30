@@ -643,7 +643,12 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
   const linkedinSection = extractPlatformSection(md, "linkedin");
   if (!linkedinSection) return { ok: true, errors };
 
-  const pageRe = /linkedin\.com\/company\/diar\.ia\.br/i;
+  // #2675: derivar o regex do slug canônico (não duplicar a string) — evita drift
+  // entre DIARIA_LINKEDIN_PAGE_SLUG e o pattern do lint num futuro rename.
+  const pageRe = new RegExp(
+    DIARIA_LINKEDIN_PAGE_SLUG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    "i",
+  );
 
   // --- Checar cada comment_diaria ---
   // #2458 fix (self-review): prefixar "\n" para casar `## d1` no início da seção

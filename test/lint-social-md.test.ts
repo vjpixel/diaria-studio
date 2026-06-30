@@ -1327,6 +1327,31 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diar.ia.br");
   });
 
+  it("FALHA: comment_diaria com o slug ANTIGO (company/diaria sem .br) (#2675)", () => {
+    // #2675 regressão: o handle antigo aponta pra uma página inexistente.
+    // O lint deve rejeitá-lo — garante que pageRe casa só o slug canônico atual.
+    const md = mkLinkedinMd({
+      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, false, "slug antigo company/diaria deveria falhar o lint");
+    assert.ok(
+      r.errors.some((x) => x.section === "comment_diaria"),
+      `esperava erro de comment_diaria, achei: ${JSON.stringify(r.errors)}`,
+    );
+  });
+
+  it("pageRe deriva de DIARIA_LINKEDIN_PAGE_SLUG — sem drift no rename (#2675)", () => {
+    // O regex interno de lintLinkedinPageLink é derivado do slug canônico, então
+    // conteúdo montado a partir da constante sempre passa; mudar a constante
+    // (futuro rename) move o lint junto, sem editar dois lugares.
+    const md = mkLinkedinMd({}); // helper injeta DIARIA_LINKEDIN_PAGE_SLUG
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
   it("CLI: exit 1 sem link da página, exit 0 com link da página", async () => {
     const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
