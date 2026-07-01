@@ -201,6 +201,72 @@ describe("renderCouponTabPanel", () => {
     assert.ok(!h.includes("<script>"), "email malicioso deve ser escapado");
     assert.ok(h.includes("&lt;script&gt;"), "email escapado deve conter &lt;script&gt;");
   });
+
+  // #2743: colunas de PAGO + COMISSÃO (40%), não desconto projetado.
+  describe("comissão (#2743)", () => {
+    const usage: CouponUsageReport = {
+      NEWS50: {
+        couponIds: ["cpnSYNTH50"],
+        timesRedeemed: 1,
+        rowCount: 1,
+        totalProjectedDiscountCents: 22450,
+        totalPaidCents: 84900,
+        totalCommissionCents: 33960,
+        redemptions: [
+          {
+            coupon_code: "NEWS50",
+            coupon_id: "cpnSYNTH50",
+            percent_off: 50,
+            duration: "once",
+            customer: "cus_TEST1",
+            customer_email: "test1@example.com",
+            subscription: "sub_SYNTH1",
+            status: "active",
+            created: 1782383062,
+            plan_amount_cents: 44900,
+            currency: "brl",
+            interval: "year",
+            discount_value_cents: 22450,
+            paid_cents: 84900,
+            commission_cents: 33960,
+          },
+        ],
+      },
+    };
+    const h = renderCouponTabPanel(usage);
+
+    it("cabeçalhos de Pago + Comissão presentes (detalhe e resumo)", () => {
+      assert.ok(h.includes("Pago (12m)"), "coluna Pago no detalhe");
+      assert.ok(h.includes("Comissão (40%)"), "coluna Comissão no detalhe");
+      assert.ok(h.includes("Comissão total (40%)"), "coluna Comissão total no resumo");
+    });
+
+    it("mostra o valor pago e a comissão formatados (R$849,00 / R$339,60)", () => {
+      assert.ok(h.includes("R$849,00"), "pago formatado");
+      assert.ok(h.includes("R$339,60"), "comissão formatada");
+    });
+
+    it("total geral de comissão a receber", () => {
+      assert.ok(h.includes("Comissão total a receber"), "linha de total geral");
+    });
+
+    it("KV legado sem os campos → render usa 0 (backward-compat, sem crash)", () => {
+      // Simula coupons:usage populado antes do #2743 (sem paid/commission).
+      const legacy = {
+        NEWS50: {
+          couponIds: ["cpnSYNTH50"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+          redemptions: [{
+            coupon_code: "NEWS50", coupon_id: "cpnSYNTH50", percent_off: 50, duration: "once",
+            customer: "cus_X", customer_email: "x@example.com", subscription: "sub_X", status: "active",
+            created: 1782383062, plan_amount_cents: 44900, currency: "brl", interval: "year", discount_value_cents: 0,
+          }],
+        },
+      } as unknown as CouponUsageReport;
+      const hLegacy = renderCouponTabPanel(legacy);
+      assert.ok(hLegacy.includes("R$0,00"), "campos ausentes renderizam R$0,00");
+      assert.ok(hLegacy.includes("Comissão total a receber"), "total geral ainda renderiza");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

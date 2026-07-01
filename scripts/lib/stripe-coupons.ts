@@ -15,6 +15,12 @@ export const TARGET_CODES = ["NEWS50", "NEWS25"] as const;
 
 const STRIPE_BASE = "https://api.stripe.com/v1";
 
+// #2743: comissão de afiliado. O editor recebe 40% de cada pagamento que o
+// cliente faz nos 12 primeiros meses desde o resgate do cupom. O que importa
+// não é o desconto projetado, e sim o REALIZADO (pago) e a comissão sobre ele.
+export const COMMISSION_RATE = 0.4;
+export const COMMISSION_WINDOW_MONTHS = 12;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -83,6 +89,19 @@ export interface CustomerRaw {
   email: string | null;
 }
 
+/** #2743: cobrança Stripe (payment). Só os campos usados p/ somar o realizado. */
+export interface ChargeRaw {
+  id: string;
+  object: "charge";
+  customer: string | null;
+  amount: number;
+  amount_captured?: number;
+  amount_refunded?: number;
+  created: number;
+  status: string; // "succeeded" | "pending" | "failed"
+  paid: boolean;
+}
+
 export interface RedemptionRow {
   coupon_code: string;
   coupon_id: string;
@@ -97,6 +116,11 @@ export interface RedemptionRow {
   currency: string;
   interval: string;
   discount_value_cents: number;
+  // #2743: realizado (net de refunds) do cliente na janela de 12m desde o resgate,
+  // e a comissão de 40% sobre ele. OPCIONAIS: o KV populado antes do #2743 não os
+  // tem (backward-compat); o render usa `?? 0`. aggregateCouponUsage sempre os seta.
+  paid_cents?: number;
+  commission_cents?: number;
 }
 
 export interface CouponCodeReport {
@@ -104,7 +128,52 @@ export interface CouponCodeReport {
   timesRedeemed: number;
   rowCount: number;
   totalProjectedDiscountCents: number;
+  // #2743: totais realizados do cupom (soma das redemptions). Opcionais — ver acima.
+  totalPaidCents?: number;
+  totalCommissionCents?: number;
   redemptions: RedemptionRow[];
+}
+
+// ---------------------------------------------------------------------------
+// #2743 — comissão sobre o realizado (funções puras, testáveis)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fim da janela de comissão: `created` + COMMISSION_WINDOW_MONTHS meses (epoch s).
+ * Usa aritmética de calendário (não 12×30 dias) — 12 meses reais.
+ */
+export function commissionWindowEnd(createdEpochSec: number): number {
+  const end = new Date(createdEpochSec * 1000);
+  end.setUTCMonth(end.getUTCMonth() + COMMISSION_WINDOW_MONTHS);
+  return Math.floor(end.getTime() / 1000);
+}
+
+/**
+ * Soma o valor PAGO (net de refunds) por um cliente na janela [created, created+12m).
+ * Considera só charges `succeeded` + `paid`. `amount_captured` (fallback `amount`)
+ * menos `amount_refunded`. Atribuição por cliente (granularidade "por e-mail").
+ */
+export function computePaidCents(
+  charges: ChargeRaw[],
+  customerId: string,
+  createdEpochSec: number,
+): number {
+  const windowEnd = commissionWindowEnd(createdEpochSec);
+  let paid = 0;
+  for (const c of charges) {
+    if (c.customer !== customerId) continue;
+    if (c.status !== "succeeded" || !c.paid) continue;
+    if (c.created < createdEpochSec || c.created >= windowEnd) continue;
+    const captured = c.amount_captured ?? c.amount;
+    const net = captured - (c.amount_refunded ?? 0);
+    if (net > 0) paid += net;
+  }
+  return paid;
+}
+
+/** Comissão de 40% sobre o valor pago (arredondada ao centavo). */
+export function commissionCents(paidCents: number): number {
+  return Math.round(paidCents * COMMISSION_RATE);
 }
 
 export type CouponUsageReport = Record<string, CouponCodeReport>;
@@ -118,8 +187,9 @@ export function aggregateCouponUsage(input: {
   coupons: CouponRaw[];
   subscriptions: SubscriptionRaw[];
   customers: CustomerRaw[];
+  charges?: ChargeRaw[]; // #2743: cobranças p/ computar o realizado + comissão
 }): CouponUsageReport {
-  const { codes, coupons, subscriptions, customers } = input;
+  const { codes, coupons, subscriptions, customers, charges = [] } = input;
 
   const couponById = new Map<string, CouponRaw>();
   for (const c of coupons) couponById.set(c.id, c);
@@ -150,6 +220,8 @@ export function aggregateCouponUsage(input: {
       timesRedeemed,
       rowCount: 0,
       totalProjectedDiscountCents: 0,
+      totalPaidCents: 0,
+      totalCommissionCents: 0,
       redemptions: [],
     };
   }
@@ -194,6 +266,11 @@ export function aggregateCouponUsage(input: {
         }
       }
 
+      // #2743: realizado (net de refunds) do cliente na janela de 12m desde o
+      // resgate + comissão de 40%. Atribuição por cliente (granularidade "por
+      // e-mail" que o editor pediu).
+      const paidCents = computePaidCents(charges, sub.customer, sub.created);
+
       report[code].redemptions.push({
         coupon_code: code,
         coupon_id: discCouponId,
@@ -208,6 +285,8 @@ export function aggregateCouponUsage(input: {
         currency,
         interval,
         discount_value_cents: discountValueCents,
+        paid_cents: paidCents,
+        commission_cents: commissionCents(paidCents),
       });
     }
   }
@@ -217,6 +296,11 @@ export function aggregateCouponUsage(input: {
     entry.rowCount = entry.redemptions.length;
     entry.totalProjectedDiscountCents = entry.redemptions.reduce(
       (sum, r) => sum + r.discount_value_cents,
+      0,
+    );
+    entry.totalPaidCents = entry.redemptions.reduce((sum, r) => sum + r.paid_cents, 0);
+    entry.totalCommissionCents = entry.redemptions.reduce(
+      (sum, r) => sum + r.commission_cents,
       0,
     );
   }
@@ -314,9 +398,18 @@ export async function fetchCouponUsage(
   }
 
   const customers: CustomerRaw[] = [];
+  const charges: ChargeRaw[] = [];
   for (const id of matchedCustomerIds) {
     customers.push(await stripeGet<CustomerRaw>(`/customers/${id}`, apiKey, fetchImpl));
+    // #2743: cobranças do cliente p/ somar o realizado + comissão de 40%.
+    // Read-only (Charges = Read na chave restrita). Paginado.
+    const custCharges = await stripeListAll<ChargeRaw>(
+      `/charges?customer=${encodeURIComponent(id)}`,
+      apiKey,
+      fetchImpl,
+    );
+    charges.push(...custCharges);
   }
 
-  return aggregateCouponUsage({ codes, coupons, subscriptions, customers });
+  return aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges });
 }
