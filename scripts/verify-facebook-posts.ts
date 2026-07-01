@@ -175,6 +175,13 @@ export function reconcilePost(
       status: "published",
       url: graph.permalink_url ?? entry.url,
       published_at: graph.created_time ?? undefined,
+      // #2676 F2 self-review: sem `created_time`, este `published` foi inferido
+      // só do `scheduled_publish_time` vencido (sem confirmação direta da API
+      // de que o post existe). Marca a proveniência pra um audit #573 não ficar
+      // cego pra essa diferença de confiança (vs. o caso confirmado por created_time).
+      ...(graph.created_time
+        ? {}
+        : { verification_note: "inferred_from_expired_schedule_no_created_time" }),
     };
   }
 

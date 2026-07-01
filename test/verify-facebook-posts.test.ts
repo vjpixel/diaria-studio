@@ -334,6 +334,35 @@ describe("v25.0 regression (#600): post agendado não vira failed", () => {
     const { updated, changes } = await verifyPublished(published, "TOKEN", "v25.0", fetchPost, now);
     assert.equal(changes, 1, "post publicado deve gerar mudança de status");
     assert.equal(updated.posts[0].status, "published");
+    assert.equal(
+      updated.posts[0].verification_note,
+      undefined,
+      "com created_time presente (confirmado pela API), não deve marcar verification_note",
+    );
+  });
+
+  it("#2676 self-review: sem created_time + scheduled_publish_time passado → published com verification_note (#573 audit trail)", async () => {
+    const published: SocialPublished = {
+      posts: [scheduledEntry({ destaque: "d1" })],
+    };
+    // #2676 F2: mesmo caminho de inferência, mas SEM created_time — a confiança
+    // é menor (só o relógio do scheduled_publish_time, sem confirmação direta
+    // de que o post existe na API). reconcilePost deve marcar essa proveniência.
+    const fetchPost = async (): Promise<GraphPostResponse> =>
+      inferIsPublished({ scheduled_publish_time: nowUnix600 - 3600 }, nowUnix600);
+    const { updated, changes } = await verifyPublished(published, "TOKEN", "v25.0", fetchPost, now);
+    assert.equal(changes, 1, "post inferido como publicado deve gerar mudança de status");
+    assert.equal(updated.posts[0].status, "published");
+    assert.equal(
+      updated.posts[0].verification_note,
+      "inferred_from_expired_schedule_no_created_time",
+      "sem created_time, o published deve carregar a marca de proveniência de baixa confiança",
+    );
+    assert.equal(
+      updated.posts[0].published_at,
+      undefined,
+      "sem created_time da API, published_at não deve ser inventado",
+    );
   });
 
   it("response v25.0 com error (#100 is_published deprecated) → vira failed com mensagem", async () => {
