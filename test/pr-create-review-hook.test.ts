@@ -2,12 +2,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveEffort, buildReviewInstruction } from "../.claude/hooks/pr-create-review.mjs";
 
-// #2748: overnight (token-sensitive) usa /code-review low; develop/manual
+// #2754: overnight (token-sensitive) usa /code-review low; develop/manual
 // (velocidade > tokens) mantém max. Regressão do PR que introduziu essa
 // branch-detection — sem isso, todo PR (inclusive overnight/*) volta a pagar
 // o custo do review multi-agente max por cima do self-review interno da skill.
 
-describe("resolveEffort (#2748)", () => {
+describe("resolveEffort (#2754)", () => {
   it("branch overnight/* → low", () => {
     const execFn = () => "overnight/fix-1234\n";
     assert.equal(resolveEffort("https://github.com/o/r/pull/1", execFn), "low");
@@ -51,7 +51,7 @@ describe("resolveEffort (#2748)", () => {
   });
 });
 
-describe("buildReviewInstruction (#2748)", () => {
+describe("buildReviewInstruction (#2754)", () => {
   it("effort=low menciona LOW effort e branch overnight", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
     assert.match(msg, /\/code-review low --comment/);

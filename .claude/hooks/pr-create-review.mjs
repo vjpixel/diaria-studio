@@ -16,7 +16,7 @@
 //      only emits the instruction when one is present (skips `--help`, etc.).
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
-// the effort-aware /code-review on the new PR. Effort is branch-aware (#2748):
+// the effort-aware /code-review on the new PR. Effort is branch-aware (#2754):
 // `overnight/*` branches get `low` (token-optimized — the overnight skill's own
 // subagent already does an adversarial self-review pass per unit; a second full
 // multi-agent `max` review on top was double-paying for depth on low-risk P3
