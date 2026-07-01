@@ -1547,7 +1547,8 @@ export function renderDashboardHtml(
   #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
   #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:checked ~ .tab-bar label[for="tab-links"],
-  #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"] {
+  #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"],
+  #tab-cupons:checked ~ .tab-bar label[for="tab-cupons"] {
     background: var(--paper); border-color: var(--rule); opacity: 1;
     color: var(--brand); border-bottom-color: var(--paper);
   }
@@ -1555,14 +1556,16 @@ export function renderDashboardHtml(
   #tab-visaogeral:focus-visible ~ .tab-bar label[for="tab-visaogeral"],
   #tab-engajamento:focus-visible ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
-  #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"] {
+  #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"],
+  #tab-cupons:focus-visible ~ .tab-bar label[for="tab-cupons"] {
     outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
   }
   .tab-panel { display: none; padding-top: 8px; }
   #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
   #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
   #tab-links:checked ~ .tab-panels #panel-links,
-  #tab-contatos:checked ~ .tab-panels #panel-contatos { display: block; }
+  #tab-contatos:checked ~ .tab-panels #panel-contatos,
+  #tab-cupons:checked ~ .tab-panels #panel-cupons { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }

@@ -211,8 +211,11 @@ describe("renderDashboardHtml — couponUsage", () => {
   describe("(a) com fixture sintética (couponUsage != null)", () => {
     const html = renderDashboardHtml(emptyCampaigns, [], null, null, null, syntheticUsage);
 
-    it("contém panel-cupons", () => {
-      assert.ok(html.includes("panel-cupons"), "deve conter o painel de cupons");
+    it("contém o painel de cupons (div id=panel-cupons)", () => {
+      // #2741: checa o DIV do painel, não a string crua — o seletor CSS
+      // `#panel-cupons` é estático (sempre no <style>), então `includes("panel-cupons")`
+      // passaria mesmo sem o painel. Simétrico com o teste PII-off do bloco (b).
+      assert.ok(html.includes('id="panel-cupons"'), "deve conter o div do painel de cupons");
     });
 
     it("contém tab-cupons (radio input)", () => {
@@ -226,13 +229,33 @@ describe("renderDashboardHtml — couponUsage", () => {
     it("contém o email sintético test1@example.com", () => {
       assert.ok(html.includes("test1@example.com"), "deve listar test1@example.com no painel");
     });
+
+    // Regressão #2741: a aba de Cupons foi adicionada (#2718) mas as regras CSS
+    // `:checked` esqueceram os cupons — o label aparecia mas clicar não exibia o
+    // painel (ficava display:none). Sintoma: "a aba não tem conteúdo".
+    it("CSS exibe o painel quando a aba Cupons é selecionada (regra :checked)", () => {
+      assert.ok(
+        html.includes("#tab-cupons:checked ~ .tab-panels #panel-cupons"),
+        "sem esta regra, clicar na aba Cupons não mostra o painel (fica display:none)",
+      );
+    });
+
+    it("CSS destaca o label da aba Cupons quando selecionada", () => {
+      assert.ok(
+        html.includes('#tab-cupons:checked ~ .tab-bar label[for="tab-cupons"]'),
+        "aba Cupons deve receber o estilo de aba ativa quando selecionada",
+      );
+    });
   });
 
   describe("(b) com null (PII-off guarantee)", () => {
     const html = renderDashboardHtml(emptyCampaigns, [], null, null, null, null);
 
-    it("NÃO contém panel-cupons", () => {
-      assert.ok(!html.includes("panel-cupons"), "panel-cupons não deve aparecer quando desabilitado");
+    it("NÃO contém o painel de cupons (div id=panel-cupons)", () => {
+      // #2741: a regra CSS `#panel-cupons` é estática (sempre no <style>), então
+      // checamos o DIV do painel — não a string crua — pra não confundir seletor
+      // com conteúdo. O painel/PII só é renderizado quando couponUsage != null.
+      assert.ok(!html.includes('id="panel-cupons"'), "div do painel de cupons não deve aparecer quando desabilitado");
     });
 
     it("NÃO contém tab-cupons (radio input)", () => {
