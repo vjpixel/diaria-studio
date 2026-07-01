@@ -688,7 +688,12 @@ export function buildUniverse(
 // Main
 // ---------------------------------------------------------------------------
 
-export function main(dataDir: string = DATA_DIR): void {
+/**
+ * @param now Data de referência para tier/score/verify_risk. Default = `new Date()`
+ *            (produção). Testes de integração devem passar explicitamente pra não
+ *            ficarem sujeitos à virada de semestre do sistema (#2724 CI incident).
+ */
+export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
   const filterClrcPt = process.argv.includes("--filter-clrc-pt");
 
   // Filtra arquivos CSV que NÃO são output do próprio script (importa só as
@@ -776,7 +781,6 @@ export function main(dataDir: string = DATA_DIR): void {
   }
 
   // Apply hard filters
-  const now = new Date();
   const kept: Scored[] = [];
   const excluded: Array<Merged & { reason: string }> = [];
   for (const m of merged.values()) {
