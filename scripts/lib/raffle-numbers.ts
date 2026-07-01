@@ -23,7 +23,8 @@
  * (§0-replies), análogo ao padrão de `filter-subscriber-replies.ts`.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 
 export interface RaffleEntry {
   /** Ciclo do sorteio — "AAMM", derivado dos 4 primeiros dígitos da edição. */
@@ -78,9 +79,15 @@ export function loadRaffleRegistry(path: string): RaffleEntry[] {
   }
 }
 
-/** Grava o registro completo (pretty JSON, determinístico). */
+/**
+ * Grava o registro completo (pretty JSON, determinístico). Usa `writeFileAtomic`
+ * (temp file + fsync + rename com retry) em vez de write direto — `data/` é a
+ * junction OneDrive (CLAUDE.md), sujeita a locks/races de sync; write direto
+ * arriscaria deixar o JSON truncado/corrompido no meio de uma leitura
+ * concorrente ou de um crash mid-write.
+ */
 export function saveRaffleRegistry(path: string, entries: RaffleEntry[]): void {
-  writeFileSync(path, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+  writeFileAtomic(path, `${JSON.stringify(entries, null, 2)}\n`);
 }
 
 /** Pure: deriva o ciclo do sorteio (AAMM) a partir da edição (AAMMDD). */
@@ -128,11 +135,17 @@ function normalizeText(s: string): string {
     .trim();
 }
 
-/** Extrai palavras-chave "significativas" (>3 chars, fora da stopword list). */
+/**
+ * Extrai palavras-chave "significativas": >3 chars fora da stopword list, OU
+ * qualquer token puramente numérico (>=1 dígito) — cobre `correct_value`
+ * numéricos curtos como "22" (categoria `numeric`) ou "V5" (não puramente
+ * numérico, mas >3 chars já cobre versões tipo "v5w2"; tokens tipo "22" ou
+ * "7" sozinhos são o caso que o filtro de 3+ chars descartaria).
+ */
 function significantWords(s: string): string[] {
   return normalizeText(s)
     .split(/[^a-z0-9]+/)
-    .filter((w) => w.length > 3 && !STOPWORDS.has(w));
+    .filter((w) => w.length > 0 && (w.length > 3 || /^\d+$/.test(w)) && !STOPWORDS.has(w));
 }
 
 /**
@@ -170,11 +183,9 @@ export function matchesIntentionalError(
     correctWords.length === 0 || correctWords.some((w) => bodyNorm.includes(w));
   const hasDescMatch = descWords.length === 0 || descWords.some((w) => bodyNorm.includes(w));
 
-  // Exige pelo menos 1 sinal real — se ambos os conjuntos existem, exige os dois;
-  // se só um existe, basta ele bater.
-  if (correctWords.length > 0 && descWords.length > 0) {
-    return hasCorrectMatch && hasDescMatch;
-  }
+  // Exige sinal real de cada conjunto que existir — quando um conjunto está
+  // vazio (ex: sem correct_value), o flag correspondente já é `true` por
+  // default acima, então o `&&` efetivamente exige só o(s) conjunto(s) não-vazio(s).
   return hasCorrectMatch && hasDescMatch;
 }
 
