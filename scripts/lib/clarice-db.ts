@@ -149,7 +149,8 @@ export function computePriorityPoints(i: PriorityInput): number {
 // ⚠️ NÃO-AUTORITATIVO ATÉ O SYNC DO BREVO (#2647 follow-up): as colunas de
 // supressão do Brevo (unsubscribed/hard_bounced/complained/email_blacklisted)
 // ficam no DEFAULT 0 até o sync ao vivo existir. Logo `send_eligible` hoje só
-// reflete MV (mv_rejected) + dispute — NÃO captura descadastro/bounce do Brevo.
+// reflete MV (mv_rejected/mv_unknown) + dispute — NÃO captura descadastro/bounce
+// do Brevo.
 // Não usar `send_eligible=1` como único gate de envio enquanto o sync não rodar;
 // o `clarice-build-waves.ts` continua excluindo `emailBlacklisted` do Brevo no
 // build da wave de forma independente. O builder emite warning quando o Brevo
@@ -163,6 +164,7 @@ export type IneligibleReason =
   | "hard_bounce"
   | "complaint"
   | "mv_rejected"
+  | "mv_unknown"
   | "dispute"
   | "soft_bounce";
 
@@ -188,6 +190,13 @@ export function classifyEligibility(i: EligibilityInput): {
     return { send_eligible: false, ineligible_reason: "complaint" };
   if (i.mv_bucket === "rejected")
     return { send_eligible: false, ineligible_reason: "mv_rejected" };
+  // MV inconclusivo (unknown/reverify/unverified/error, #2735) — mesma lógica
+  // defensiva de rejected, mas NÃO é permanente: o registro fica no store (só
+  // send_eligible=0), então uma re-verificação futura pode reabilitar. Contatos
+  // nunca submetidos ao MV (mv_bucket NULL, ex: T01 ativo) não são afetados —
+  // só quem tem uma linha `-unknown.csv` ingerida de fato.
+  if (i.mv_bucket === "unknown")
+    return { send_eligible: false, ineligible_reason: "mv_unknown" };
   if (i.dispute_losses > 0)
     return { send_eligible: false, ineligible_reason: "dispute" };
   if (i.soft_bounce_count >= SOFT_BOUNCE_LIMIT)

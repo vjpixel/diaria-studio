@@ -175,3 +175,34 @@ test("loadStoreRows + segmentFromStore: ponta-a-ponta sobre o store", () => {
   assert.deepEqual(s.excluded, [{ email: "unsub@x.com", reason: "unsubscribed" }]);
   db.close();
 });
+
+test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave (#2735)", () => {
+  const db = openClariceDb(":memory:");
+  // mv_result="unknown" (linha de um mv-export-*-unknown.csv ingerida no store)
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, mv_result, mv_bucket) VALUES (?, 1, 'unknown', 'unknown')",
+  ).run("inconclusivo@x.com");
+  // controle: mv_result="ok" (verified) continua elegível e entra em firstSend
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, mv_result, mv_bucket) VALUES (?, 1, 'ok', 'verified')",
+  ).run("ok@x.com");
+  recomputeDerived(db);
+
+  const rows = loadStoreRows(db);
+  const inconclusivo = rows.find((r) => r.email === "inconclusivo@x.com")!;
+  assert.equal(inconclusivo.send_eligible, 0);
+  assert.equal(inconclusivo.ineligible_reason, "mv_unknown");
+
+  const s = segmentFromStore(rows);
+  // não entra em reSend nem firstSend — logo não pode ser fatiado em nenhuma wave.
+  assert.ok(!s.reSend.some((r) => r.email === "inconclusivo@x.com"));
+  assert.ok(!s.firstSend.some((r) => r.email === "inconclusivo@x.com"));
+  assert.deepEqual(s.excluded, [
+    { email: "inconclusivo@x.com", reason: "mv_unknown" },
+  ]);
+
+  // sem regressão: mv_result="ok" continua elegível e vai pra 1º envio (firstSend).
+  assert.deepEqual(s.firstSend.map((r) => r.email), ["ok@x.com"]);
+
+  db.close();
+});
