@@ -136,6 +136,9 @@ export interface PollEiaEditionEntry {
   pct_correct: number | null;
   /** Qual opção era a correta ("A", "B", ou null se não configurado) */
   correct_choice: string | null;
+  /** Contagem bruta de acertos — permite agregação mensal exata (#2773), em vez
+   *  de aproximar via média ponderada de pct_correct já arredondado. */
+  correct_count: number;
 }
 
 export interface PollEiaLeaderboardEntry {

@@ -260,6 +260,7 @@ export async function buildPollEiaSummaryFromApi(
           voted_b: stats.voted_b,
           pct_correct: stats.correct_pct,
           correct_choice: stats.correct_answer,
+          correct_count: stats.correct_count,
         } satisfies PollEiaEditionEntry;
       }),
     );

@@ -341,6 +341,10 @@ export interface EiaEngagementEdition {
   voted_b: number;
   pct_correct: number | null;
   correct_choice: string | null;
+  /** Contagem bruta de acertos — permite agregação mensal exata (#2773) via
+   *  Σ correct_count / Σ total_votes, em vez de aproximar por pct_correct
+   *  (já arredondado na origem). */
+  correct_count: number;
 }
 
 export interface EiaEngagementSummary {
@@ -1735,9 +1739,9 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 
   <!-- Aba 2: Engajamento — coortes + weekday + resumo A/B/C + D1-D5 -->
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
-${cohortsSection}
 ${weekdaySection}
 ${abcSection}
+${cohortsSection}
 ${eiaEngagementSection}
   </div><!-- /panel-engajamento -->
 
@@ -3031,12 +3035,72 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
 </section>`;
 }
 
+/** 1 linha agregada por mês-calendário (AAMM) pra tabela de Engajamento — É IA?. */
+export interface EiaEngagementMonthRow {
+  /** AAMM (ex: "2604") — chave de ordenação, não exibida diretamente. */
+  month: string;
+  /** Rótulo legível (ex: "Abr/2026"). */
+  label: string;
+  /** Soma de votos de TODAS as edições do mês (inclui as sem correct_choice configurado). */
+  total_votes: number;
+  /** % de acerto agregado exato (Σ correct_count / Σ total_votes), só sobre
+   *  edições com pct_correct != null. null se nenhuma edição do mês qualifica. */
+  pct_correct: number | null;
+}
+
 /**
- * #2738: renderiza a tabela de engajamento do poll "É IA?" por edição.
- * Stub gracioso quando `eiaEngagement` é null (KV não populado ainda) ou sem
- * edições. Dado gravado por `scripts/build-poll-eia-data.ts --push` (reusa a
- * mesma agregação já usada pro workers/diaria-dashboard — sem pipeline nova).
+ * Agrupa `editions` (1 linha por edição AAMMDD) em 1 linha por mês-calendário
+ * (#2773). Mês extraído direto do AAMMDD (`edition.slice(0,4)`) — não precisa
+ * de fuso/timestamp (diferente do agrupamento de campanhas por sentDate), já
+ * que a edição em si não carrega hora.
+ *
+ * Agregação do "% acerto": exata via Σ correct_count / Σ total_votes — NÃO
+ * média de pct_correct (que já vem arredondado na origem, acumularia erro).
+ * Edições com `pct_correct === null` (abaixo do threshold do poll worker, ou
+ * resposta correta não configurada) são excluídas do numerador E denominador
+ * dessa razão — mas seus votos ainda contam pro total_votes do mês (métrica
+ * de volume, independente de haver gabarito).
+ *
  * Exportado pra teste unitário.
+ */
+export function aggregateEiaEngagementByMonth(editions: EiaEngagementEdition[]): EiaEngagementMonthRow[] {
+  const MONTH_NAMES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  type Acc = { totalVotes: number; correctCountSum: number; votesWithCorrect: number };
+  const acc = new Map<string, Acc>();
+
+  for (const e of editions) {
+    const month = e.edition.slice(0, 4); // AAMM
+    if (!acc.has(month)) acc.set(month, { totalVotes: 0, correctCountSum: 0, votesWithCorrect: 0 });
+    const a = acc.get(month)!;
+    a.totalVotes += e.total_votes;
+    if (e.pct_correct != null) {
+      a.correctCountSum += e.correct_count;
+      a.votesWithCorrect += e.total_votes;
+    }
+  }
+
+  return Array.from(acc.entries())
+    .sort(([a], [b]) => b.localeCompare(a)) // mais recente primeiro
+    .map(([month, d]) => {
+      const yy = month.slice(0, 2);
+      const mm = parseInt(month.slice(2, 4), 10);
+      const label = `${MONTH_NAMES[mm - 1] ?? mm}/20${yy}`;
+      return {
+        month,
+        label,
+        total_votes: d.totalVotes,
+        pct_correct: d.votesWithCorrect > 0 ? (d.correctCountSum / d.votesWithCorrect) * 100 : null,
+      };
+    });
+}
+
+/**
+ * #2738: renderiza a tabela de engajamento do poll "É IA?" — 1 linha por MÊS
+ * (#2773, agregado via `aggregateEiaEngagementByMonth`; antes era 1 linha por
+ * edição). Stub gracioso quando `eiaEngagement` é null (KV não populado ainda)
+ * ou sem edições. Dado gravado por `scripts/build-poll-eia-data.ts --push`
+ * (reusa a mesma agregação já usada pro workers/diaria-dashboard — sem
+ * pipeline nova). Exportado pra teste unitário.
  */
 export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary | null): string {
   if (!eiaEngagement || eiaEngagement.editions.length === 0) {
@@ -3048,18 +3112,14 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   }
 
   const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
-  // Defensivo: reordena desc por edição mesmo que o KV já venha ordenado —
-  // o render não deve confiar cegamente na ordem gravada por outro script.
-  const sorted = [...eiaEngagement.editions].sort((a, b) => (b.edition > a.edition ? 1 : -1));
+  const monthly = aggregateEiaEngagementByMonth(eiaEngagement.editions);
 
-  const tableRows = sorted.map((e) => {
-    const total = e.total_votes.toLocaleString("pt-BR");
-    const pctFmt = e.pct_correct != null ? `${e.pct_correct.toFixed(1)}%` : "—";
+  const tableRows = monthly.map((m) => {
+    const total = m.total_votes.toLocaleString("pt-BR");
+    const pctFmt = m.pct_correct != null ? `${m.pct_correct.toFixed(1)}%` : "—";
     return `<tr>
-      <td><strong>${escHtml(e.edition)}</strong></td>
+      <td><strong>${escHtml(m.label)}</strong></td>
       <td>${total}</td>
-      <td>${e.voted_a.toLocaleString("pt-BR")}</td>
-      <td>${e.voted_b.toLocaleString("pt-BR")}</td>
       <td>${escHtml(pctFmt)}</td>
     </tr>`;
   }).join("\n");
@@ -3067,16 +3127,14 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   return `
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
-  <p class="section-note">Votos no poll "É IA?" por edição (últimas ${sorted.length}), mais recente primeiro.${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
+  <p class="section-note">Votos no poll "É IA?" por mês (últimos ${monthly.length}), mais recente primeiro.${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th title="Edição (AAMMDD)">Edição</th>
-        <th title="Total de votos registrados">Votos</th>
-        <th title="Votos na opção A">A</th>
-        <th title="Votos na opção B">B</th>
-        <th title="Porcentagem de acerto (— se abaixo do threshold ou resposta correta não configurada)">% acerto</th>
+        <th title="Mês-calendário (extraído da edição AAMMDD)">Mês</th>
+        <th title="Total de votos registrados no mês">Votos</th>
+        <th title="Porcentagem de acerto agregada exata (Σ acertos / Σ votos), só sobre edições com gabarito configurado — — se nenhuma qualificar">% acerto</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
