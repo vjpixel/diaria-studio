@@ -146,15 +146,24 @@ export function computePriorityPoints(i: PriorityInput): number {
 // transitório (caixa cheia / indisponibilidade temporária) → só exclui após
 // SOFT_BOUNCE_LIMIT repetidos, pra não perder contato bom por hiccup do servidor.
 //
-// ⚠️ NÃO-AUTORITATIVO ATÉ O SYNC DO BREVO (#2647 follow-up): as colunas de
-// supressão do Brevo (unsubscribed/hard_bounced/complained/email_blacklisted)
-// ficam no DEFAULT 0 até o sync ao vivo existir. Logo `send_eligible` hoje só
-// reflete MV (mv_rejected/mv_unknown) + dispute — NÃO captura descadastro/bounce
-// do Brevo.
-// Não usar `send_eligible=1` como único gate de envio enquanto o sync não rodar;
-// o `clarice-build-waves.ts` continua excluindo `emailBlacklisted` do Brevo no
-// build da wave de forma independente. O builder emite warning quando o Brevo
-// nunca foi sincronizado.
+// As colunas de supressão do Brevo (unsubscribed/hard_bounced/complained/
+// email_blacklisted) são mantidas por `clarice-sync-brevo.ts` (MAX-merge,
+// nunca des-suprime). `send_eligible=1` só é autoritativo depois que esse
+// sync rodou pelo menos 1x sobre um contato — antes disso, as colunas ficam
+// no DEFAULT 0 (parecem "limpas" sem ser).
+//
+// mv_unknown (#2735): mv_bucket="unknown" (MV inconclusivo — reverify/error)
+// vira inelegível, mas é transitório (uma re-verificação pode reabilitar).
+//
+// mv_unverified (#2656 cutover): tier != 1 exige mv_bucket==="verified" —
+// "unknown" já foi tratado acima com razão própria; aqui cobre NULL/nunca-
+// verificado. Tier 1 (assinante ativo, validado implicitamente pelo pagamento
+// Stripe) é isento APENAS dessa exigência específica — se um tier-1 carregar
+// mv_bucket="rejected" (ou "unknown") de uma vida anterior como lead (antes de
+// assinar), a razão reportada continua a original (checada ACIMA, tier-
+// agnóstico), não "mv_unverified". T1 nunca reverifica no MV, então esse
+// mv_bucket velho nunca se autocorrige — comportamento pré-existente, fora do
+// escopo deste cutover.
 // ---------------------------------------------------------------------------
 
 export const SOFT_BOUNCE_LIMIT = 3;
@@ -165,6 +174,7 @@ export type IneligibleReason =
   | "complaint"
   | "mv_rejected"
   | "mv_unknown"
+  | "mv_unverified"
   | "dispute"
   | "soft_bounce";
 
@@ -176,6 +186,9 @@ export interface EligibilityInput {
   mv_bucket: string | null | undefined;
   dispute_losses: number;
   soft_bounce_count: number;
+  /** Usado só pra isentar tier 1 da exigência de mv_bucket==="verified" — ver
+   *  comentário de `mv_unverified` acima (ordem de prioridade). */
+  tier: number | null;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -201,6 +214,11 @@ export function classifyEligibility(i: EligibilityInput): {
     return { send_eligible: false, ineligible_reason: "dispute" };
   if (i.soft_bounce_count >= SOFT_BOUNCE_LIMIT)
     return { send_eligible: false, ineligible_reason: "soft_bounce" };
+  // mv_unverified por último: é "ainda não processado" (transitório, vira
+  // elegível assim que a verificação rodar), não uma supressão ativa — razões
+  // mais explícitas acima devem aparecer no relatório quando ambas batem.
+  if (i.tier !== 1 && i.mv_bucket !== "verified")
+    return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }
 
@@ -219,12 +237,13 @@ export function recomputeDerived(db: DatabaseSync): number {
 
   const rows = db
     .prepare(
-      `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
+      `SELECT email, tier, opens_count, sends_count, soft_bounce_count, dispute_losses,
               mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained
        FROM clarice_users`,
     )
     .all() as Array<{
     email: string;
+    tier: number | null;
     opens_count: number;
     sends_count: number;
     soft_bounce_count: number;
@@ -263,6 +282,7 @@ export function recomputeDerived(db: DatabaseSync): number {
         mv_bucket: r.mv_bucket,
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
+        tier: r.tier,
       });
       update.run(
         isOptin ? 1 : 0,

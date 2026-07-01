@@ -89,6 +89,7 @@ const CLEAN = {
   mv_bucket: "verified",
   dispute_losses: 0,
   soft_bounce_count: 0,
+  tier: 2,
 };
 
 test("eligibility: tudo limpo → elegível, sem razão", () => {
@@ -130,7 +131,7 @@ test("eligibility: mv_bucket rejected → mv_rejected", () => {
   );
 });
 
-test("eligibility: mv_bucket unknown → inelegível com razão mv_unknown (#2735)", () => {
+test("eligibility: mv_bucket unknown → inelegível com razão mv_unknown (#2735, checado antes de mv_unverified)", () => {
   const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown" });
   assert.equal(r.send_eligible, false);
   assert.equal(r.ineligible_reason, "mv_unknown");
@@ -142,10 +143,28 @@ test("eligibility: mv_bucket verified (mv_result=ok) continua elegível (#2735, 
   assert.equal(r.ineligible_reason, null);
 });
 
-test("eligibility: mv_bucket null (nunca submetido ao MV, ex: T01 ativo) continua elegível", () => {
-  const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+test("eligibility: tier=1 + mv_bucket null (nunca submetido ao MV) continua elegível — isento de mv_unverified", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: 1, mv_bucket: null });
   assert.equal(r.send_eligible, true);
   assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility: tier != 1 com mv_bucket null (nunca verificado) → mv_unverified (#2656)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: tier null (sem tier) também exige MV verified", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: null, mv_bucket: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: tier=1 NÃO é isento de mv_bucket='rejected' (só de mv_unverified) — vida anterior como lead rejeitado no MV", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: 1, mv_bucket: "rejected" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_rejected");
 });
 
 test("eligibility: dispute_losses > 0 → dispute", () => {
