@@ -1023,3 +1023,73 @@ describe("regressao #2707: findDestaqueBodyRange — markerRe (start-boundary) n
     assert.ok(block.includes("Texto do D1 legado"), "bloco D1 deve conter o texto");
   });
 });
+
+describe("regressao #2715 item 1: findDestaqueBodyRange — header nao-canonico (':'/'—'/'-') nao estende range ate EOF", () => {
+  it("header 'DESTAQUE 2: Titulo' (dois-pontos) delimita corretamente o fim do D1 e o inicio/fim do D2", () => {
+    // Antes do fix #2715, destaqueHeaderPattern so aceitava '|' ou fim-de-linha
+    // como separador. Um header nao-canonico como "DESTAQUE 2: Titulo" nao
+    // casava com nextMatch, entao o range do D1 pulava direto pro proximo
+    // header que CASASSE (ou EOF), englobando o D2 inteiro.
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "Texto do D1.",
+      "",
+      "DESTAQUE 2: Titulo Nao Canonico",
+      "",
+      "Texto do D2.",
+      "",
+      "DESTAQUE 3 | PESQUISA",
+      "",
+      "Texto do D3.",
+    ].join("\n");
+
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    const rangeD2 = findDestaqueBodyRange(content, 2);
+    assert.ok(rangeD1 !== null && rangeD2 !== null, "ranges D1 e D2 devem existir");
+
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(d1Block.includes("Texto do D1"), "bloco D1 deve conter o texto do D1");
+    assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 NAO deve englobar o D2");
+
+    const d2Block = content.slice(rangeD2!.start, rangeD2!.end);
+    assert.ok(d2Block.includes("Texto do D2"), "bloco D2 deve conter o texto do D2");
+    assert.ok(!d2Block.includes("Texto do D3"), "bloco D2 NAO deve englobar o D3");
+  });
+
+  it("header 'DESTAQUE 2 — Titulo' (travessao) delimita corretamente o fim do D1", () => {
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "Texto do D1.",
+      "",
+      "DESTAQUE 2 — Titulo Nao Canonico",
+      "",
+      "Texto do D2.",
+    ].join("\n");
+
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(d1Block.includes("Texto do D1"), "bloco D1 deve conter o texto do D1");
+    assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 NAO deve englobar o D2");
+  });
+
+  it("header 'DESTAQUE 2 - Titulo' (hifen) delimita corretamente o fim do D1", () => {
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "Texto do D1.",
+      "",
+      "DESTAQUE 2 - Titulo Nao Canonico",
+      "",
+      "Texto do D2.",
+    ].join("\n");
+
+    const rangeD1 = findDestaqueBodyRange(content, 1);
+    assert.ok(rangeD1 !== null, "range D1 deve existir");
+    const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
+    assert.ok(d1Block.includes("Texto do D1"), "bloco D1 deve conter o texto do D1");
+    assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 NAO deve englobar o D2");
+  });
+});

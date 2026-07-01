@@ -402,6 +402,14 @@ export function checkIntraThemes(
         items: clusterItems, // todos, incluindo os já em cluster 1a (melhor contexto)
         cluster_size: clusterItems.length,
       });
+
+      // #2715 item 4: registrar os itens deste keyword-cluster em `alreadyClustered`
+      // ANTES de avaliar o próximo token do índice invertido. Sem isso, dois
+      // keyword-clusters que compartilham itens já pareados no Pass 1a (ex:
+      // 'openai' e 'gpt' cobrindo A,B do Pass 1a + C e D respectivamente, cada
+      // um) calculam `newItems` contra o MESMO snapshot pré-loop — ambos veem
+      // newItems.length >= 1 e ambos emitem, duplicando o aviso sobre A,B.
+      for (const it of clusterItems) alreadyClustered.add(it.url);
     }
   }
 

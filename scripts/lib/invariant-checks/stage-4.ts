@@ -787,6 +787,13 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
  * `checkTitleTrailingPeriod` em lint-checks/title-normalization.ts).
  * A invocação CLI direta no orchestrator continua existindo (não removida
  * nesta passada) — este registro é só pra visibilidade/doc-gen.
+ *
+ * #2715 item 3: até aqui, a invocação CLI (`lint-newsletter-md.ts --check
+ * title-publisher-suffix`/`title-trailing-period`) saía com `process.exit(1)`
+ * + `❌` em caso de match — inconsistente com a doc WARN-ONLY acima e com a
+ * severity "warning" deste registry, podendo levar o orchestrator LLM a
+ * bloquear o gate indevidamente ao ver exit não-zero. O CLI foi corrigido pra
+ * sempre sair 0 (`⚠️` em vez de `❌`), alinhado a este registry.
  */
 function checkTitlePublisherSuffixInvariant(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");

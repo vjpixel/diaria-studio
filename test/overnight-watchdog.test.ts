@@ -24,6 +24,7 @@ import {
   isDeduped,
   findActiveRun,
   getLastRunLogActivity,
+  diagnoseWatchdogActivity,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
 
@@ -317,5 +318,110 @@ describe("getLastRunLogActivity (#2688)", () => {
       { agent: "overnight", edition: "260701", level: "info", message: "dispatch", details: null },
     ]);
     assert.equal(getLastRunLogActivity(tmpRoot, "260701"), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// diagnoseWatchdogActivity (#2715 item 5)
+// ---------------------------------------------------------------------------
+//
+// Antes do fix, o caminho `--dry-run` de `main()` era o PRIMEIRO branch —
+// retornava antes de checar `lastActivityMs === 0`. Como `detectStall(0, ...)`
+// sempre reporta stall (inatividade calculada contra epoch 1970), rodadas
+// recém-iniciadas sem timestamp ainda disponível (mtime falhou por race
+// write/stat) reportavam falsamente "STALL detectado" em dry-run — mesmo
+// quando o caminho não-dry-run (que já checava `lastActivityMs === 0` antes)
+// pularia corretamente. A lógica foi extraída para `diagnoseWatchdogActivity`
+// justamente para eliminar essa divergência entre os dois caminhos.
+describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
+  const nowMs = new Date("2026-07-01T10:00:00Z").getTime();
+
+  it("dry-run + lastActivityMs=0 → skip_unknown_activity, NÃO reporta stall (regressão do bug)", () => {
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: true,
+      lastActivityMs: 0,
+      lastSource: "nenhuma",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "skip_unknown_activity");
+    assert.ok(
+      result.lines.some((l) => /sem timestamp de atividade/.test(l)),
+      "deve explicar que não há timestamp disponível",
+    );
+    assert.ok(
+      !result.lines.some((l) => /STALL detectado/.test(l)),
+      "NÃO deve reportar 'STALL detectado' quando lastActivityMs=0 em dry-run — era o bug do #2715 item 5",
+    );
+  });
+
+  it("não-dry-run + lastActivityMs=0 → skip_unknown_activity (comportamento pré-existente preservado)", () => {
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs: 0,
+      lastSource: "nenhuma",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "skip_unknown_activity");
+    assert.ok(!result.lines.some((l) => /STALL detectado/.test(l)));
+  });
+
+  it("dry-run + atividade recente (< threshold) → dry_run, 'sem stall'", () => {
+    const lastActivityMs = nowMs - 10 * 60_000; // 10 min atrás
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: true,
+      lastActivityMs,
+      lastSource: "plan.json mtime",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "dry_run");
+    assert.ok(result.lines.some((l) => /sem stall/.test(l) && !/STALL detectado/.test(l)));
+  });
+
+  it("dry-run + atividade real > threshold → dry_run, 'STALL detectado' (caso positivo genuíno, não falso-positivo)", () => {
+    const lastActivityMs = nowMs - 90 * 60_000; // 90 min atrás, threshold 60
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: true,
+      lastActivityMs,
+      lastSource: "plan.json mtime",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "dry_run");
+    assert.ok(result.lines.some((l) => /STALL detectado/.test(l)));
+    // elapsed deve ser plausível (90 min), não o valor absurdo de décadas do bug original
+    assert.ok(result.lines.some((l) => /Inatividade: 90 min/.test(l)));
+  });
+
+  it("não-dry-run + atividade > threshold → action=stall (dispara o bloco de tratamento em main())", () => {
+    const lastActivityMs = nowMs - 90 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "stall");
+  });
+
+  it("não-dry-run + atividade < threshold → no_stall", () => {
+    const lastActivityMs = nowMs - 5 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "no_stall");
   });
 });

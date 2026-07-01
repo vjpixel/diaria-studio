@@ -388,3 +388,86 @@ describe("checkIntraThemes — sinaliza, não dropa", () => {
     assert.equal(result.highlights_checked, 1, "deve contar 1 destaque");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2715 item 4: keyword-clusters sobrepostos não devem duplicar aviso
+// ---------------------------------------------------------------------------
+//
+// Cenário: A e B são pareados no Pass 1a (Jaccard alto). C e D são itens
+// distintos, cada um compartilhando UMA keyword diferente com A+B:
+//   - token "wxyzalpha" aparece em A, B, C  → keyword-cluster [A,B,C] (C é novo)
+//   - token "produtividade" aparece em A, B, D → keyword-cluster [A,B,D] (D é novo)
+// Ambos os clusters acima são legítimos — cada um traz 1 item genuinamente
+// novo. Mas A e C TAMBÉM compartilham (com D) uma 3ª keyword ("xyzzytoken"),
+// formando um 3º keyword-cluster [A,C,D]. Nenhum item desse 3º cluster é
+// novo — A já está coberto pelo Pass 1a, C já foi sinalizado pelo cluster
+// "wxyzalpha", D já foi sinalizado pelo cluster "produtividade". Sem
+// atualizar `alreadyClustered` incrementalmente, o código ANTES do fix
+// checava `newItems` sempre contra o snapshot ESTÁTICO do Pass 1a (só A,B)
+// — então via C e D como "novos" de novo e emitia um 3º aviso 100%
+// redundante (nenhum dos 3 clusters é subconjunto de outro, então a
+// remoção de subsumption em cascata não pega esse caso).
+describe("checkIntraThemes — keyword-clusters sobrepostos não duplicam aviso (#2715 item 4)", () => {
+  const data = {
+    highlights: [],
+    radar: [
+      {
+        // A: pareia com B via Jaccard (Pass 1a); introduz "wxyzalpha" e "xyzzytoken"
+        url: "https://a.example.com/1",
+        title: "Zeta apresenta wxyzalpha para melhorar produtividade da equipe usando xyzzytoken avancado",
+      },
+      {
+        // B: pareia com A via Jaccard (Pass 1a)
+        url: "https://b.example.com/2",
+        title: "Zeta lanca wxyzalpha para melhorar produtividade da equipe corporativa",
+      },
+      {
+        // C: compartilha "wxyzalpha" (com A,B) e "xyzzytoken" (com A,D) — não pareia com A/B via Jaccard puro
+        url: "https://c.example.com/3",
+        title: "Startup usa wxyzalpha e xyzzytoken na plataforma de vendas internacionais",
+      },
+      {
+        // D: compartilha "produtividade" (com A,B) e "xyzzytoken" (com A,C) — não pareia com A/B via Jaccard puro
+        url: "https://d.example.com/4",
+        title: "Fornecedor oferece produtividade e xyzzytoken via nova interface web corporativa",
+      },
+    ],
+    lancamento: [],
+    use_melhor: [],
+    video: [],
+  };
+
+  it("emite exatamente 2 clusters (wxyzalpha e produtividade), não 3 — o cluster xyzzytoken redundante é suprimido", () => {
+    const result = checkIntraThemes(data, 3);
+
+    assert.equal(
+      result.theme_clusters.length,
+      2,
+      `esperava 2 clusters, obteve ${result.theme_clusters.length}: ${JSON.stringify(result.theme_clusters.map((c) => c.theme))}`,
+    );
+  });
+
+  it("não emite um cluster cujos itens sejam exatamente {A, C, D} (sem B) — seria o keyword-cluster redundante 'xyzzytoken'", () => {
+    const result = checkIntraThemes(data, 3);
+
+    const redundant = result.theme_clusters.find((c) => {
+      const urls = new Set(c.items.map((it) => it.url));
+      return (
+        urls.has("https://a.example.com/1") &&
+        urls.has("https://c.example.com/3") &&
+        urls.has("https://d.example.com/4") &&
+        !urls.has("https://b.example.com/2")
+      );
+    });
+    assert.equal(redundant, undefined, "cluster redundante {A,C,D} (sem B) não deve ser emitido");
+  });
+
+  it("os 2 clusters emitidos cobrem A, B, C, D no total (nenhum item fica sem aviso)", () => {
+    const result = checkIntraThemes(data, 3);
+    const allUrls = new Set(result.theme_clusters.flatMap((c) => c.items.map((it) => it.url)));
+    assert.ok(allUrls.has("https://a.example.com/1"));
+    assert.ok(allUrls.has("https://b.example.com/2"));
+    assert.ok(allUrls.has("https://c.example.com/3"));
+    assert.ok(allUrls.has("https://d.example.com/4"));
+  });
+});

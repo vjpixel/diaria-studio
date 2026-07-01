@@ -162,6 +162,12 @@ npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md data/edition
 ```
 Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate.
 
+**Gancho editorial emendado social (#2658) — WARN-ONLY:**
+```bash
+npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md data/editions/{AAMMDD}/03-social.md
+```
+Primo de #2526: detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
+
 **Guard determinístico do humanizador social (#2279, #2529):**
 ```bash
 npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/

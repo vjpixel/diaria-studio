@@ -330,6 +330,72 @@ function parseArgs(argv: string[]): {
 // Main
 // ---------------------------------------------------------------------------
 
+export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "stall";
+
+export interface WatchdogDiagnosis {
+  action: WatchdogDiagnosisAction;
+  lines: string[];
+}
+
+/**
+ * #2715 item 5: decisão pura de diagnóstico, extraída de `main()` pra ser
+ * testável sem depender de filesystem/subprocess.
+ *
+ * A ordem dos guards importa: `lastActivityMs === 0` (mtime indisponível —
+ * ex: race de write/stat no Windows) tem que ser checado ANTES do ramo
+ * `dryRun`, não depois. Antes do fix, o caminho `--dry-run` em `main()`
+ * retornava cedo demais (era o PRIMEIRO branch) sem nunca passar pelo guard
+ * de `lastActivityMs === 0` — então `detectStall(0, nowMs, ...)` calculava
+ * "inatividade" a partir de epoch 1970 e SEMPRE reportava "STALL detectado"
+ * com elapsed absurdo, mesmo numa rodada recém-iniciada sem timestamp ainda
+ * disponível. O caminho normal (não-dry-run) já pulava esse falso positivo —
+ * dry-run precisa do MESMO guard (não uma cópia divergente que pode
+ * re-regredir), daí a extração para uma única função compartilhada.
+ */
+export function diagnoseWatchdogActivity(params: {
+  aammdd: string;
+  dryRun: boolean;
+  lastActivityMs: number;
+  lastSource: string;
+  nowMs: number;
+  thresholdMin: number;
+}): WatchdogDiagnosis {
+  const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin } = params;
+
+  if (lastActivityMs === 0) {
+    const prefix = dryRun ? "[watchdog] DRY-RUN — " : "[watchdog] ";
+    const suffix = dryRun ? " (sem writes/alertas de qualquer forma em dry-run)" : "";
+    return {
+      action: "skip_unknown_activity",
+      lines: [`${prefix}Rodada ativa ${aammdd} mas sem timestamp de atividade. Skipping${suffix}.`],
+    };
+  }
+
+  const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
+  const isStall = detectStall(lastActivityMs, nowMs, thresholdMin);
+
+  if (dryRun) {
+    return {
+      action: "dry_run",
+      lines: [
+        `[watchdog] DRY-RUN — rodada ativa: ${aammdd}`,
+        `[watchdog] Última atividade: ${new Date(lastActivityMs).toISOString()} (fonte: ${lastSource})`,
+        `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
+        `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"} (dry-run, sem writes/alertas)`,
+      ],
+    };
+  }
+
+  if (!isStall) {
+    return {
+      action: "no_stall",
+      lines: [`[watchdog] Rodada ${aammdd} ativa, sem stall (${elapsedMin}/${thresholdMin} min).`],
+    };
+  }
+
+  return { action: "stall", lines: [] };
+}
+
 async function main(): Promise<void> {
   loadProjectEnv();
 
@@ -354,38 +420,23 @@ async function main(): Promise<void> {
     logLastTs,
   );
 
+  // elapsedMin recomputado aqui só para o bloco STALL abaixo (emitRunLogEvent,
+  // renderHaltBanner, alerta Telegram) — a decisão de branch (skip/dry-run/
+  // no-stall/stall) já saiu de `diagnoseWatchdogActivity` abaixo.
   const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
-  const isStall = detectStall(lastActivityMs, nowMs, thresholdMin);
 
-  if (dryRun) {
-    console.log(`[watchdog] DRY-RUN — rodada ativa: ${aammdd}`);
-    console.log(
-      `[watchdog] Última atividade: ${
-        lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : "(desconhecida)"
-      } (fonte: ${lastSource})`,
-    );
-    console.log(
-      `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
-    );
-    console.log(
-      `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"} (dry-run, sem writes/alertas)`,
-    );
-    return;
-  }
+  const diagnosis = diagnoseWatchdogActivity({
+    aammdd,
+    dryRun,
+    lastActivityMs,
+    lastSource,
+    nowMs,
+    thresholdMin,
+  });
 
-  if (lastActivityMs === 0) {
-    console.log(
-      `[watchdog] Rodada ativa ${aammdd} mas sem timestamp de atividade. Skipping.`,
-    );
-    return;
-  }
+  for (const line of diagnosis.lines) console.log(line);
 
-  if (!isStall) {
-    console.log(
-      `[watchdog] Rodada ${aammdd} ativa, sem stall (${elapsedMin}/${thresholdMin} min).`,
-    );
-    return;
-  }
+  if (diagnosis.action !== "stall") return;
 
   // --- STALL DETECTADO ---
 
