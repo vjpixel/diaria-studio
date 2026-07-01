@@ -3002,10 +3002,20 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
   );
 
   const allRows = codes.flatMap((code) => (usage[code] as CouponCodeReport).redemptions);
-  const detailRows = allRows.map((r) => {
-    const date = new Date(r.created * 1000).toLocaleDateString("pt-BR", {
+  // #2749: data em BRT (America/Sao_Paulo), consistente com fmtDateBRT do resto
+  // do dashboard — sem timeZone o worker (UTC) mostraria o dia-calendário errado
+  // perto da meia-noite pro editor no Brasil.
+  const fmtDate = (epoch: number): string =>
+    new Date(epoch * 1000).toLocaleDateString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
       day: "2-digit", month: "2-digit", year: "numeric",
     });
+  const detailRows = allRows.map((r) => {
+    // #2749: data do 1º pagamento — real (já cobrado) ou prevista (fim do trial),
+    // marcada com "*". Fallback pra r.created no KV pré-#2749 (sem o campo).
+    const payEpoch = r.first_payment_epoch ?? r.created;
+    const forecastMark = r.first_payment_is_forecast ? "*" : "";
+    const paymentCell = fmtDate(payEpoch) + forecastMark;
     // #2743: pago (realizado, net, 12m desde o resgate) + comissão de 40%.
     return `<tr>
       <td>${escHtml(r.coupon_code)}</td>
@@ -3014,9 +3024,14 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       <td>${escHtml(fmtBRL(r.paid_cents ?? 0))}</td>
       <td><strong>${escHtml(fmtBRL(r.commission_cents ?? 0))}</strong></td>
       <td>${escHtml(r.status)}</td>
-      <td>${escHtml(date)}</td>
+      <td>${escHtml(paymentCell)}</td>
     </tr>`;
   }).join("\n");
+  // #2749: legenda do "*" só aparece se há ≥1 pagamento previsto (trial).
+  const hasForecast = allRows.some((r) => r.first_payment_is_forecast);
+  const forecastLegend = hasForecast
+    ? `<p class="coupon-forecast-legend" style="margin-top:8px;font-size:13px;opacity:0.7;">* previsão do 1º pagamento (assinatura em trial — ainda não cobrada)</p>`
+    : "";
 
   return `
 <section class="phase2-section" id="coupon-summary">
@@ -3054,12 +3069,13 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
         <th>Pago (12m)</th>
         <th>Comissão (40%)</th>
         <th>Status</th>
-        <th>Criada</th>
+        <th>1º pagamento</th>
       </tr>
     </thead>
     <tbody>${detailRows}</tbody>
   </table>
   </div>
+  ${forecastLegend}
 </section>`;
 }
 

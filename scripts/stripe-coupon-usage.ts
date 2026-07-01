@@ -34,6 +34,8 @@ export {
   commissionWindowEnd,
   computePaidCents,
   commissionCents,
+  // #2749: data do 1º pagamento (real vs previsão)
+  firstPaymentInfo,
   type PromoCodeRaw,
   type CouponRaw,
   type DiscountRaw,
@@ -82,7 +84,7 @@ export function csvField(value: string | number | null): string {
 
 export function toCSV(rows: RedemptionRow[]): string {
   const header =
-    "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents,paid_cents,commission_cents";
+    "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents,paid_cents,commission_cents,first_payment_epoch,first_payment_is_forecast";
   const lines = rows.map((r) =>
     [
       r.coupon_code,
@@ -100,6 +102,10 @@ export function toCSV(rows: RedemptionRow[]): string {
       r.discount_value_cents,
       r.paid_cents ?? 0,
       r.commission_cents ?? 0,
+      // #2749: data do 1º pagamento (epoch) + se é previsão (trial) — mantém o
+      // CSV em sincronia com o report JSON gravado no KV.
+      r.first_payment_epoch ?? "",
+      r.first_payment_is_forecast == null ? "" : String(r.first_payment_is_forecast),
     ]
       .map(csvField)
       .join(","),
@@ -171,10 +177,16 @@ async function main(): Promise<void> {
     console.log(`  Comissão total (40%):      ${fmtBRL(entry.totalCommissionCents ?? 0)}`);
     for (const r of entry.redemptions) {
       const trial = r.status === "trialing" ? " [pending/trial]" : "";
+      // #2749: data do 1º pagamento — "*" quando é previsão (trial, sem cobrança).
+      const payDate = r.first_payment_epoch != null
+        ? new Date(r.first_payment_epoch * 1000).toISOString().slice(0, 10) +
+          (r.first_payment_is_forecast ? "*" : "")
+        : "—";
       console.log(
         `    ${r.subscription}  ${r.customer_email || r.customer}  ` +
           `${r.status}${trial}  plan=${fmtBRL(r.plan_amount_cents)}/${r.interval}  ` +
-          `pago=${fmtBRL(r.paid_cents ?? 0)}  comissão=${fmtBRL(r.commission_cents ?? 0)}`,
+          `pago=${fmtBRL(r.paid_cents ?? 0)}  comissão=${fmtBRL(r.commission_cents ?? 0)}  ` +
+          `1ºpag=${payDate}`,
       );
     }
     console.log();
