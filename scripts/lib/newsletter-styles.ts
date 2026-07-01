@@ -84,18 +84,38 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
  * `table { border-collapse:collapse; }` em tabelas arredondadas sem guard). A
  * adoção da base compartilhada na mensal é follow-up editorial (#2635).
  *
+ * #2645: também emite o suporte a dark theme (`@media (prefers-color-scheme: dark)`)
+ * pedido pela issue — o Brevo (ao contrário do Beehiiv, que envolve a diária no seu
+ * próprio shell configurável) não fornece dark mode automaticamente pro digest mensal.
+ * ESCOPO DELIBERADO: a regra escurece só o CANVAS externo ao card (classe `.ds-canvas`,
+ * aplicada por wrapEmail no `<body>`/tabela mais externa) — o card em si e todo o
+ * conteúdo renderizado (títulos/parágrafos/boxes com INK/BEGE/TEAL fixos dos outros
+ * render* da mensal) permanecem inalterados. Invert completo do conteúdo exigiria
+ * retocar a cor de cada elemento (fora do escopo desta issue) e arrisca contraste
+ * quebrado nos boxes internos já bege (fio condutor, É IA?, Clarice/Laboratório) —
+ * que já são claros e não devem escurecer. O canvas escuro ao redor do card claro é
+ * sinal real de dark mode sem esse risco.
+ *
  * @param _reservedPageBg — reservado para a futura adoção da base (paridade de
  *   assinatura com buildDiariaStyleBlock, #2709 decide se/quando a mensal adota
  *   emailBaseRules). Deliberadamente ignorado hoje pra preservar o output atual;
  *   o fundo da mensal já é setado inline no <body> por wrapEmail. Renomeado de
  *   `_pageBg` (#2716 item 2) — o prefixo `_` sozinho não deixava claro que é
  *   reservado para uso futuro vs. um parâmetro genuinamente morto.
+ * @param darkCanvasBg — cor do canvas em dark mode (#2645). Módulo não importa
+ *   design-tokens por princípio arquitetural (valores entram via argumento do
+ *   caller) — default espelha COLORS.ink (#171411) pra callers que não passam
+ *   explicitamente (ex: chamadas diretas em teste).
  */
-export function buildMensalStyleBlock(_reservedPageBg: string): string {
+export function buildMensalStyleBlock(_reservedPageBg: string, darkCanvasBg: string = "#171411"): string {
   return `<style>
   /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
   @media only screen and (max-width: 480px) {
     .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
+  }
+  /* #2645: dark theme — escurece o canvas externo ao card; conteúdo interno preservado. */
+  @media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:${darkCanvasBg} !important; }
   }
 </style>`;
 }

@@ -19,6 +19,7 @@ export { escHtml } from "./html-escape.ts"; // #1990: re-export for back-compat 
 import { escHtml } from "./html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper (refs #2048)
 import { buildMensalStyleBlock } from "./newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { DIARIA_FACEBOOK_PAGE_URL } from "./canonical-urls.ts"; // #2645 — reusa a URL canônica (mesma que a diária)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
@@ -695,6 +696,75 @@ export function parseHeaderChunk(chunk: string): {
   return { subjectOptions, preview, intro };
 }
 
+/**
+ * #2645: URLs canônicas dos canais sociais da marca Diar.ia, reusadas no rodapé
+ * co-brand do shell mensal. Facebook reusa a constante canônica de
+ * `canonical-urls.ts` (a mesma usada pela diária/dedup); LinkedIn/Instagram/Threads
+ * espelham os handles já hardcoded em outros pontos do código (`build-link-ctr.ts`
+ * `ownChannels`, `platform.config.json#publishing.social.linkedin`, e o comentário
+ * do handle Threads `@diar.ia.br` em `.env.example`/`publish-threads.ts`) — não há
+ * hoje uma constante única compartilhada pra essas 3, então os literais aqui são a
+ * fonte pra este render (mesmo padrão de duplicação já aceito no resto do repo).
+ */
+const SOCIAL_LINKS: ReadonlyArray<{ label: string; url: string }> = [
+  { label: "Facebook", url: DIARIA_FACEBOOK_PAGE_URL },
+  { label: "LinkedIn", url: "https://www.linkedin.com/company/diar.ia.br/" },
+  { label: "Instagram", url: "https://www.instagram.com/diaria" },
+  { label: "Threads", url: "https://www.threads.net/@diar.ia.br" },
+];
+
+/**
+ * #2645: ponto único de injeção do logo Clarice quando o asset existir. Enquanto
+ * vazio (hoje — decisão do editor 260701: sem asset ainda), o header renderiza o
+ * nome "Clarice" via tipografia/cor do DS (co-brand TEXTUAL, não uma cópia do
+ * header da diária). Setar esta constante para uma URL de imagem troca o header
+ * pra `<img>` sem qualquer outra mudança de código.
+ */
+const COBRAND_LOGO_URL = "";
+
+/**
+ * Header/capa do shell mensal (#2645): co-brand Clarice × Diar.ia. Decisão do
+ * editor (Gate 1, `/diaria-develop` 260701, comentário durável em #2645): o
+ * mensal é uma parceria Clarice com identidade PRÓPRIA — não uma cópia visual do
+ * header da diária. "Clarice" ganha destaque tipográfico (serif DS + teal, mesmo
+ * tratamento visual dos títulos de destaque) com "Clarice × Diar.ia" abaixo,
+ * indicando a parceria.
+ */
+export function renderCobrandHeader(): string {
+  const wordmark = COBRAND_LOGO_URL
+    ? `<img src="${escHtml(COBRAND_LOGO_URL)}" alt="Clarice" style="display:block;height:32px;width:auto;margin:0 0 6px 0;" />`
+    // #1955/#2645: font-size restrito à type scale {12,16,22,26}px do DS — 26px
+    // (mesmo tamanho do <h2> de título de destaque, renderDestaque) em vez de 28px.
+    : `<div style="font-family:${FONT_SERIF};font-size:26px;font-weight:bold;color:${TEAL};line-height:1.15;">Clarice</div>`;
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 28px 0;"><tr><td>
+    ${wordmark}
+    <div style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${INK};">Clarice &times; Diar.ia</div>
+    <div style="border-bottom:1px solid ${BEGE};margin:18px 0 0;line-height:0;font-size:0;">&nbsp;</div>
+  </td></tr></table>`;
+}
+
+/**
+ * Footer do shell mensal (#2645): ícones sociais (Facebook/LinkedIn/Instagram/
+ * Threads — os canais configurados em `platform.config.json#socials`) que o Brevo
+ * não anexa automaticamente (diferente do Beehiiv, que envolve a diária no seu
+ * shell configurável de publicação, com esses ícones no footer). Renderizados
+ * como pills outline (mesmo idioma visual de `renderEncerramento`/`renderCtaButton`
+ * — INK sobre PAPER com borda BEGE) em vez de `<svg>` inline: suporte de SVG em
+ * clientes de email é inconsistente (Outlook/Gmail app frequentemente removem),
+ * enquanto o pill de texto já é um padrão testado no resto do render mensal.
+ */
+export function renderSocialFooter(): string {
+  // #1955/#2645: font-size restrito à type scale {12,16,22,26}px do DS — 12px
+  // (mesmo tamanho de renderKicker/legendas) em vez de 13px.
+  const pills = SOCIAL_LINKS.map(
+    ({ label, url }) =>
+      `<a href="${escHtml(url)}" style="display:inline-block;background:${PAPER};border:1px solid ${BEGE};border-radius:999px;padding:10px 18px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a>`,
+  ).join("");
+  return `<div style="border-top:1px solid ${BEGE};margin:28px 0 20px 0;line-height:0;font-size:0;">&nbsp;</div>
+  <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Siga a Clarice &times; Diar.ia</p>
+  <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${pills}</td></tr></table>`;
+}
+
 /** Wraps rendered HTML parts in a full email document. */
 export function wrapEmail(subject: string, bodyParts: string[]): string {
   // #1935: régua entre seções no teal da marca (era cinza #e0e0e0).
@@ -708,24 +778,33 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   // query .mob-stack (#1918), sem o reset body/img/table de emailBaseRules. Adotar a
   // base compartilhada na mensal é follow-up editorial (mudaria o render por causa do
   // `table { border-collapse:collapse; }` em tabelas arredondadas sem guard inline —
-  // ver nota de escopo em newsletter-styles.ts).
-  const styleBlock = buildMensalStyleBlock(SHELL);
+  // ver nota de escopo em newsletter-styles.ts). #2645: agora também emite o dark
+  // theme (canvas), com o INK do DS explícito (o módulo não importa design-tokens).
+  const styleBlock = buildMensalStyleBlock(SHELL, INK);
+  // #2645: shell de marca — capa/header co-brand Clarice × Diar.ia + footer com
+  // ícones sociais (o Brevo, ao contrário do Beehiiv, não fornece isso automaticamente).
+  const header = renderCobrandHeader();
+  const footer = renderSocialFooter();
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="supported-color-schemes" content="light dark" />
   <title>${escHtml(subject)}</title>
   ${styleBlock}
 </head>
 <body style="margin:0;padding:0;background:${SHELL};">
-  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="ds-canvas">
     <tr>
       <td align="center" style="padding:20px 10px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
             <td style="padding:36px 32px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.62;">
+              ${header}
               ${body}
+              ${footer}
             </td>
           </tr>
         </table>
