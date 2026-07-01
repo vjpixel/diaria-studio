@@ -23,9 +23,11 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   const s = computeStoreSummary(db);
 
   assert.equal(s.total, 5);
-  // tiers: tier 1 → a,e (2); tier 2 → b,c (2); null → d (1)
+  // #2732: by_tier só conta quem NUNCA recebeu email (sends_count=0) — tier 1
+  // → a,e (2, ambos sends_count=0); tier 2 → b(sends=3)+c(sends=2) EXCLUÍDOS
+  // (já enviados, não aparecem mais em by_tier); null → d (sends=0, 1).
   assert.equal(s.by_tier["1"], 2);
-  assert.equal(s.by_tier["2"], 2);
+  assert.equal(s.by_tier["2"], undefined);
   assert.equal(s.by_tier["null"], 1);
   // elegibilidade: c (unsub) e d (dispute) cortados → 3 elegíveis, 2 inelegíveis
   assert.equal(s.eligibility.eligible, 3);
