@@ -14,11 +14,23 @@
  *   - pull --ff-only falhou (divergência) → "ff_failed", proceed=true
  *   - branch != master → checkout master primeiro
  *   - branch != master, checkout falhou → "checkout_failed", proceed=true
+ *   - #2699 item 1: defaultSpawn roda git com cwd=REPO_ROOT, não process.cwd()
+ *   - #2699 item 3: rev-parse falha → mensagem de diagnóstico aponta pra causa raiz
+ *     (não-repo / git indisponível), não "branch desconhecida"
  */
 
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { syncCode, type SpawnFn, type SpawnResult } from "../scripts/lib/git-sync.ts";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import {
+  syncCode,
+  defaultSpawn,
+  REPO_ROOT,
+  type SpawnFn,
+  type SpawnResult,
+} from "../scripts/lib/git-sync.ts";
 
 // ── Helpers de mock ────────────────────────────────────────────────────────
 
@@ -299,5 +311,93 @@ describe("git-sync — branch != master", () => {
     assert.equal(r.branch_before, "feat/some-feature");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /checkout/i.test(w)));
+  });
+});
+
+describe("git-sync — #2699 item 1: defaultSpawn usa cwd=REPO_ROOT explícito", () => {
+  // REPO_ROOT é resolvido a partir de scripts/lib/git-sync.ts (2 níveis abaixo
+  // da raiz do repo); este arquivo de teste está em test/ (1 nível abaixo) —
+  // recomputa independentemente para não reusar a mesma lógica sob teste.
+  const expectedRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("REPO_ROOT resolve pra raiz do repo (não process.cwd())", () => {
+    assert.equal(REPO_ROOT, expectedRepoRoot);
+  });
+
+  describe("com process.cwd() apontando pra fora do repo", () => {
+    let originalCwd: string;
+
+    before(() => {
+      originalCwd = process.cwd();
+      // tmpdir() garantidamente fora do checkout do repo — se defaultSpawn
+      // usasse process.cwd() (bug do item 1), o `git rev-parse` abaixo falharia
+      // ("not a git repository") em vez de resolver a raiz do repo.
+      process.chdir(tmpdir());
+    });
+
+    after(() => {
+      process.chdir(originalCwd);
+    });
+
+    it("defaultSpawn roda git com cwd=REPO_ROOT — rev-parse resolve mesmo fora do repo", () => {
+      assert.notEqual(
+        process.cwd().toLowerCase(),
+        REPO_ROOT.toLowerCase(),
+        "pré-condição do teste: cwd do processo precisa estar fora do repo",
+      );
+
+      const r = defaultSpawn("git", ["rev-parse", "--show-toplevel"]);
+
+      assert.equal(r.status, 0, `git rev-parse deveria suceder via cwd=REPO_ROOT; stderr: ${r.stderr}`);
+      // Normaliza separadores (Windows usa \\, git imprime /), barra final e
+      // caixa (drive letter pode divergir em maiúscula/minúscula) antes de comparar.
+      const normalize = (p: string) => p.trim().replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();
+      assert.equal(
+        normalize(r.stdout),
+        normalize(REPO_ROOT),
+        `git deveria ter rodado com cwd=REPO_ROOT (${REPO_ROOT}), resolveu toplevel: ${r.stdout.trim()}`,
+      );
+    });
+  });
+});
+
+describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () => {
+  it("rev-parse falha (não-repo/git indisponível) → warning aponta causa raiz, não 'branch desconhecida'", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": fail("fatal: not a git repository (or any of the parent directories): .git", 128),
+    });
+
+    const r = syncCode(spawn);
+
+    // rev-parse falhou → stdout vazio → branchBefore cai em "unknown" → tenta
+    // checkout master (fail-soft) → mockSpawn não mapeado pra "git checkout
+    // master" retorna ok("") por padrão do helper `makeSpawn`... então força
+    // falha explícita do checkout também, pra simular o caminho real onde um
+    // git quebrado falha em qualquer comando subsequente.
+    assert.ok(
+      r.warnings.some((w) => /rev-parse.*falhou/i.test(w)),
+      `deveria haver um warning específico sobre rev-parse falho: ${JSON.stringify(r.warnings)}`,
+    );
+    assert.ok(
+      r.warnings.some((w) => /não é um reposit(ó|o)rio git|git indispon[íi]vel/i.test(w)),
+      `warning deveria apontar causa raiz (não-repo / git indisponível): ${JSON.stringify(r.warnings)}`,
+    );
+  });
+
+  it("rev-parse E checkout falham → mensagem final também cita a causa raiz do rev-parse (não só 'branch=unknown')", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": fail("fatal: not a git repository", 128),
+      "git checkout master": fail("fatal: not a git repository", 128),
+    });
+
+    const r = syncCode(spawn);
+
+    assert.equal(r.outcome, "checkout_failed");
+    assert.equal(r.branch_before, "unknown");
+    assert.match(
+      r.message,
+      /não é um reposit(ó|o)rio git|git indispon[íi]vel/i,
+      `mensagem final deveria citar a causa raiz (rev-parse já falho), não só a branch: ${r.message}`,
+    );
   });
 });

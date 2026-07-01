@@ -33,6 +33,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 
 export function isBugfixPr(title: string, body: string, labels: string[]): boolean {
   // Heurísticas pra detectar bug fix:
@@ -83,12 +84,12 @@ export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
 /**
  * #2060: Tipo do spawner injetável — aceita os mesmos args do spawnSync mas
  * retorna só o que o teste precisa mockar. Produção usa spawnSync diretamente.
+ *
+ * Alias local de back-compat — o tipo canônico é `PrCheckSpawnFn` em
+ * `scripts/lib/spawn-types.ts` (#2699 — evita colisão com o `SpawnFn` de
+ * 2 args de `scripts/lib/git-sync.ts`).
  */
-export type SpawnFn = (
-  cmd: string,
-  args: string[],
-  opts: { encoding: "utf8" },
-) => { status: number | null; stdout: string; stderr: string };
+export type SpawnFn = PrCheckSpawnFn;
 
 /** Delay real entre tentativas (produção). Em testes, substituído por mock via sleepFn. */
 function sleepMs(ms: number): Promise<void> {
