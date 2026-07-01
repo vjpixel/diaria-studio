@@ -170,6 +170,19 @@ export function commissionWindowEnd(createdEpochSec: number): number {
  * Considera só charges `succeeded` + `paid`. `amount_captured` (fallback `amount`)
  * menos `amount_refunded`. Atribuição por cliente (granularidade "por e-mail").
  */
+/**
+ * #2743: valor líquido (net) retido de um charge — capturado (fallback `amount`)
+ * menos reembolsos. `amount_captured > 0` (não `?? `) porque um `0` explícito num
+ * charge succeeded+paid não deve zerar o pagamento (cai pro `amount`). Helper
+ * compartilhado por computePaidCents e firstPaymentInfo pra manter a mesma noção
+ * de "pagamento válido" (net > 0) nos dois (#2749).
+ */
+export function chargeNetCents(c: ChargeRaw): number {
+  const captured =
+    c.amount_captured != null && c.amount_captured > 0 ? c.amount_captured : c.amount;
+  return captured - (c.amount_refunded ?? 0);
+}
+
 export function computePaidCents(
   charges: ChargeRaw[],
   customerId: string,
@@ -181,12 +194,7 @@ export function computePaidCents(
     if (c.customer !== customerId) continue;
     if (c.status !== "succeeded" || !c.paid) continue;
     if (c.created < createdEpochSec || c.created >= windowEnd) continue;
-    // #2743: `amount_captured` é o efetivamente capturado; usa `amount` como
-    // fallback. `> 0` (não `?? `) porque um `amount_captured: 0` explícito num
-    // charge succeeded+paid não deve zerar o pagamento — cai pro `amount`.
-    const captured =
-      c.amount_captured != null && c.amount_captured > 0 ? c.amount_captured : c.amount;
-    const net = captured - (c.amount_refunded ?? 0);
+    const net = chargeNetCents(c);
     if (net > 0) paid += net;
   }
   return paid;
@@ -215,6 +223,9 @@ export function firstPaymentInfo(
     if (c.customer !== customerId) continue;
     if (c.status !== "succeeded" || !c.paid) continue;
     if (c.created < windowStart || c.created >= windowEnd) continue;
+    // #2749: só conta como pagamento se net > 0 — consistente com computePaidCents
+    // (um charge 100% reembolsado não é "1º pagamento": não retém dinheiro).
+    if (chargeNetCents(c) <= 0) continue;
     if (earliest === undefined || c.created < earliest) earliest = c.created;
   }
   return earliest !== undefined
@@ -323,7 +334,10 @@ export function aggregateCouponUsage(input: {
       const paidCents = computePaidCents(charges, sub.customer, windowAnchor);
       // #2749: data do 1º pagamento (real se houve cobrança; senão previsão =
       // fim do trial, com fallback pra start_date). Mesma janela do paidCents.
-      const forecastEpoch = sub.trial_end ?? sub.start_date;
+      // Clamp em windowAnchor: a previsão nunca é anterior ao resgate (evita
+      // mostrar data passada com "*" quando o cupom foi aplicado a uma assinatura
+      // já existente, ou quando trial_end vem 0/ausente).
+      const forecastEpoch = Math.max(sub.trial_end ?? sub.start_date, windowAnchor);
       const firstPayment = firstPaymentInfo(
         charges,
         sub.customer,

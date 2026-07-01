@@ -572,7 +572,11 @@ describe("comissão (#2743)", () => {
     });
 
     it("com cobrança na janela → menor created, forecast=false", () => {
-      const charges = [mkCh({ created: 2500 }), mkCh({ created: 2100 }), mkCh({ created: 2900 })];
+      const charges = [
+        mkCh({ id: "ch_c", created: 2500 }),
+        mkCh({ id: "ch_a", created: 2100 }),
+        mkCh({ id: "ch_b", created: 2900 }),
+      ];
       const r = firstPaymentInfo(charges, "cus_A", 2000, 3000, 9999);
       assert.equal(r.epoch, 2100);
       assert.equal(r.isForecast, false);
@@ -582,6 +586,12 @@ describe("comissão (#2743)", () => {
       const r = firstPaymentInfo([], "cus_A", 2000, 3000, 9999);
       assert.equal(r.epoch, 9999);
       assert.equal(r.isForecast, true);
+    });
+
+    it("cobrança exatamente em windowStart conta (limite inferior inclusivo)", () => {
+      const r = firstPaymentInfo([mkCh({ created: 2000 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, false);
+      assert.equal(r.epoch, 2000);
     });
 
     it("cobrança fora da janela (>= windowEnd) é ignorada → previsão", () => {
@@ -598,6 +608,18 @@ describe("comissão (#2743)", () => {
     it("cobrança não-succeeded é ignorada → previsão", () => {
       const r = firstPaymentInfo([mkCh({ status: "failed", paid: false, created: 2100 })], "cus_A", 2000, 3000, 9999);
       assert.equal(r.isForecast, true);
+    });
+
+    it("succeeded mas paid=false é ignorado → previsão", () => {
+      const r = firstPaymentInfo([mkCh({ status: "succeeded", paid: false, created: 2100 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, true);
+    });
+
+    it("charge 100% reembolsado (net 0) não conta como 1º pagamento → previsão", () => {
+      // consistente com computePaidCents: sem dinheiro retido, não é pagamento.
+      const r = firstPaymentInfo([mkCh({ created: 2100, amount: 1000, amount_refunded: 1000 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, true);
+      assert.equal(r.epoch, 9999);
     });
   });
 
@@ -633,7 +655,9 @@ describe("comissão (#2743)", () => {
       assert.equal(row.first_payment_epoch, start + 50, "menor created entre as cobranças");
     });
 
-    it("sem trial_end e sem charge → fallback start_date, forecast=true", () => {
+    it("trial_end null + sem charge → clamp em windowStart (discount.start), forecast=true", () => {
+      // start_date (1782383062) < discount.start (1782673121) → o fallback
+      // start_date seria anterior ao resgate; o clamp usa o anchor (discount.start).
       const subs: SubscriptionRaw[] = [{
         ...subscriptions[0], id: "sub_NF", customer: "cus_NF", trial_end: null,
         discounts: [{ ...subscriptions[0].discounts[0], id: "di_NF", customer: "cus_NF", subscription: "sub_NF" }],
@@ -642,7 +666,33 @@ describe("comissão (#2743)", () => {
       const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges: [] });
       const row = r["NEWS50"].redemptions[0];
       assert.equal(row.first_payment_is_forecast, true);
-      assert.equal(row.first_payment_epoch, subscriptions[0].start_date);
+      assert.ok(subscriptions[0].start_date < start, "pré-condição: start_date < anchor");
+      assert.equal(row.first_payment_epoch, start, "clamp pro windowStart (anchor)");
+    });
+
+    it("trial_end ausente (undefined, KV pré-#2749) → mesmo clamp, não quebra", () => {
+      // subscriptions[0] não define trial_end → exercita o caminho undefined.
+      const subs: SubscriptionRaw[] = [{
+        ...subscriptions[0], id: "sub_UD", customer: "cus_UD",
+        discounts: [{ ...subscriptions[0].discounts[0], id: "di_UD", customer: "cus_UD", subscription: "sub_UD" }],
+      }];
+      const custs: CustomerRaw[] = [{ id: "cus_UD", email: "ud@example.com" }];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges: [] });
+      const row = r["NEWS50"].redemptions[0];
+      assert.equal(row.first_payment_is_forecast, true);
+      assert.equal(row.first_payment_epoch, start);
+    });
+
+    it("trial_end anterior ao anchor é clampado (nunca previsão no passado)", () => {
+      // trial_end < discount.start → clamp pro anchor (não mostra data passada com *).
+      const subs: SubscriptionRaw[] = [{
+        ...subscriptions[0], id: "sub_CL", customer: "cus_CL", trial_end: start - 1000,
+        discounts: [{ ...subscriptions[0].discounts[0], id: "di_CL", customer: "cus_CL", subscription: "sub_CL" }],
+      }];
+      const custs: CustomerRaw[] = [{ id: "cus_CL", email: "cl@example.com" }];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges: [] });
+      const row = r["NEWS50"].redemptions[0];
+      assert.equal(row.first_payment_epoch, start, "clampado pro anchor");
     });
   });
 });
@@ -698,6 +748,8 @@ describe("toCSV — quoting de fim-a-fim", () => {
     discount_value_cents: 22450,
     paid_cents: 89800,
     commission_cents: 35920, // 89800 * 0.40
+    first_payment_epoch: 1783442446,
+    first_payment_is_forecast: true,
   };
 
   it("o email com vírgula é quotado e NÃO desloca colunas", () => {
@@ -721,14 +773,20 @@ describe("toCSV — quoting de fim-a-fim", () => {
     const fields = dataLine.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!
       .map((f) => f.replace(/,$/, ""))
       .filter((_, i, arr) => i < arr.length); // mantém todos
-    // Última coluna não-vazia = commission_cents (#2743)
     const nonEmpty = fields.filter((f) => f !== "");
-    assert.equal(nonEmpty[nonEmpty.length - 1], "35920");
+    // Última coluna = first_payment_is_forecast (#2749); commission_cents (#2743)
+    // segue presente na posição certa — prova de não-deslocamento.
+    assert.equal(nonEmpty[nonEmpty.length - 1], "true");
+    assert.ok(nonEmpty.includes("35920"), "commission_cents presente sem deslocamento");
+    assert.ok(nonEmpty.includes("1783442446"), "first_payment_epoch presente");
   });
 
-  it("header inclui paid_cents e commission_cents (#2743)", () => {
+  it("header inclui paid/commission (#2743) + first_payment (#2749)", () => {
     const header = toCSV([rowWithComma]).split("\n")[0];
-    assert.ok(header.endsWith("discount_value_cents,paid_cents,commission_cents"), header);
+    assert.ok(
+      header.endsWith("paid_cents,commission_cents,first_payment_epoch,first_payment_is_forecast"),
+      header,
+    );
   });
 
   it("CSV termina com newline (POSIX)", () => {

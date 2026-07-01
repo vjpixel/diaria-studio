@@ -294,10 +294,51 @@ describe("renderCouponTabPanel", () => {
       assert.ok(h.includes("previsão do 1º pagamento"), "legenda do asterisco presente");
     });
 
-    it("pagamento real → data sem '*' e sem legenda", () => {
+    it("pagamento real → data (sem '*') e sem legenda", () => {
       const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: false }));
+      // positivo: a linha renderizou de fato (não vacuamente vazia).
+      assert.ok(h.includes("f@example.com"), "linha renderizada");
+      assert.match(h, /\d{2}\/\d{2}\/\d{4}/, "há uma data na célula");
       assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "data sem asterisco");
       assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda quando não há previsão");
+    });
+
+    it("multi-linha: só a linha de previsão tem '*' e a legenda aparece 1×", () => {
+      const usage: CouponUsageReport = {
+        NEWS50: {
+          couponIds: ["cpnSYNTH50"], timesRedeemed: 2, rowCount: 2, totalProjectedDiscountCents: 0,
+          totalPaidCents: 44900, totalCommissionCents: 17960,
+          redemptions: [
+            {
+              coupon_code: "NEWS50", coupon_id: "cpnSYNTH50", percent_off: 50, duration: "once",
+              customer: "cus_R", customer_email: "real@example.com", subscription: "sub_R", status: "active",
+              created: 1782383062, plan_amount_cents: 44900, currency: "brl", interval: "year",
+              discount_value_cents: 0, paid_cents: 44900, commission_cents: 17960,
+              first_payment_epoch: 1783442446, first_payment_is_forecast: false,
+            },
+            {
+              coupon_code: "NEWS50", coupon_id: "cpnSYNTH50", percent_off: 50, duration: "once",
+              customer: "cus_F", customer_email: "trial@example.com", subscription: "sub_F", status: "trialing",
+              created: 1782673121, plan_amount_cents: 44900, currency: "brl", interval: "year",
+              discount_value_cents: 0, paid_cents: 0, commission_cents: 0,
+              first_payment_epoch: 1784000000, first_payment_is_forecast: true,
+            },
+          ],
+        },
+      };
+      const h = renderCouponTabPanel(usage);
+      const asterisks = h.match(/\d{2}\/\d{2}\/\d{4}\*/g) ?? [];
+      assert.equal(asterisks.length, 1, "só a linha de previsão tem asterisco");
+      const legendCount = (h.match(/previsão do 1º pagamento/g) ?? []).length;
+      assert.equal(legendCount, 1, "legenda única");
+      assert.ok(h.includes("real@example.com") && h.includes("trial@example.com"), "as duas linhas renderizam");
+    });
+
+    it("data formatada em BRT (America/Sao_Paulo), não UTC", () => {
+      // epoch 2026-07-01T01:30:00Z = 2026-06-30 22:30 BRT (UTC-3) → dia BRT = 30/06.
+      const epoch = Math.floor(Date.UTC(2026, 6, 1, 1, 30, 0) / 1000);
+      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: epoch, first_payment_is_forecast: true }));
+      assert.ok(h.includes("30/06/2026*"), "dia BRT (30/06), não UTC (01/07)");
     });
 
     it("KV legado sem first_payment_* → usa created, sem '*' nem legenda", () => {
