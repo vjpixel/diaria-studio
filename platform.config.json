@@ -31,6 +31,13 @@
     "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },
+  "raffle": {
+    "meet_url": "https://meet.google.com/nbs-jcut-ojj",
+    "day_of_month": 2,
+    "hora_inicio": "13:30",
+    "hora_fim": "14:00",
+    "note": "Sorteio ao vivo do erro intencional, dia {day_of_month} do mês da EDIÇÃO corrente (não o mês celebrado pelo pódio). Sala Meet fixa. Usado por scripts/inject-champions-callout.ts (#2725) na 1ª edição do mês."
+  },
   "draft": {
     "worker_url": "https://draft.diaria.workers.dev",
     "note": "Draft Worker uses its own KV namespace (NOT poll.kv_namespace_id). Use upload-html-public.ts to write — never wrangler kv directly (#1488)."
