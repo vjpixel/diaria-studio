@@ -34,6 +34,8 @@ export {
   commissionWindowEnd,
   computePaidCents,
   commissionCents,
+  // #2749: data do 1º pagamento (real vs previsão)
+  firstPaymentInfo,
   type PromoCodeRaw,
   type CouponRaw,
   type DiscountRaw,

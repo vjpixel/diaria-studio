@@ -72,6 +72,8 @@ export interface SubscriptionRaw {
   status: string;
   created: number;
   start_date: number;
+  /** #2749: fim do trial = data prevista do 1º pagamento (billing começa aqui). */
+  trial_end?: number | null;
   items: {
     data: Array<{
       price: {
@@ -121,6 +123,11 @@ export interface RedemptionRow {
   // tem (backward-compat); o render usa `?? 0`. aggregateCouponUsage sempre os seta.
   paid_cents?: number;
   commission_cents?: number;
+  // #2749: data do 1º pagamento. Se já houve cobrança na janela → data real
+  // (forecast=false). Se ainda em trial/sem cobrança → data PREVISTA (fim do
+  // trial), forecast=true (o render marca com "*"). OPCIONAIS (backward-compat KV).
+  first_payment_epoch?: number;
+  first_payment_is_forecast?: boolean;
 }
 
 export interface CouponCodeReport {
@@ -188,6 +195,31 @@ export function computePaidCents(
 /** Comissão de 40% sobre o valor pago (arredondada ao centavo). */
 export function commissionCents(paidCents: number): number {
   return Math.round(paidCents * COMMISSION_RATE);
+}
+
+/**
+ * #2749: data do 1º pagamento na janela [windowStart, windowEnd).
+ * Se há charge succeeded+paid → menor `created` entre eles (data real,
+ * forecast=false). Senão → `forecastEpoch` (fim do trial = previsão do 1º
+ * pagamento), forecast=true. O render marca a previsão com "*".
+ */
+export function firstPaymentInfo(
+  charges: ChargeRaw[],
+  customerId: string,
+  windowStart: number,
+  windowEnd: number,
+  forecastEpoch: number,
+): { epoch: number; isForecast: boolean } {
+  let earliest: number | undefined;
+  for (const c of charges) {
+    if (c.customer !== customerId) continue;
+    if (c.status !== "succeeded" || !c.paid) continue;
+    if (c.created < windowStart || c.created >= windowEnd) continue;
+    if (earliest === undefined || c.created < earliest) earliest = c.created;
+  }
+  return earliest !== undefined
+    ? { epoch: earliest, isForecast: false }
+    : { epoch: forecastEpoch, isForecast: true };
 }
 
 export type CouponUsageReport = Record<string, CouponCodeReport>;
@@ -289,6 +321,16 @@ export function aggregateCouponUsage(input: {
       // cupom é aplicado a uma assinatura já existente (start > created).
       const windowAnchor = discount.start ?? sub.created;
       const paidCents = computePaidCents(charges, sub.customer, windowAnchor);
+      // #2749: data do 1º pagamento (real se houve cobrança; senão previsão =
+      // fim do trial, com fallback pra start_date). Mesma janela do paidCents.
+      const forecastEpoch = sub.trial_end ?? sub.start_date;
+      const firstPayment = firstPaymentInfo(
+        charges,
+        sub.customer,
+        windowAnchor,
+        commissionWindowEnd(windowAnchor),
+        forecastEpoch,
+      );
 
       report[code].redemptions.push({
         coupon_code: code,
@@ -306,6 +348,8 @@ export function aggregateCouponUsage(input: {
         discount_value_cents: discountValueCents,
         paid_cents: paidCents,
         commission_cents: commissionCents(paidCents),
+        first_payment_epoch: firstPayment.epoch,
+        first_payment_is_forecast: firstPayment.isForecast,
       });
     }
   }

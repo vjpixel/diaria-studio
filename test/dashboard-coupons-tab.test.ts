@@ -17,7 +17,7 @@ import {
   renderCouponTabPanel,
   getCouponUsage,
 } from "../workers/brevo-dashboard/src/index.ts";
-import type { CouponUsageReport } from "../scripts/lib/stripe-coupons.ts";
+import type { CouponUsageReport, RedemptionRow } from "../scripts/lib/stripe-coupons.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture sintética — IDs e emails exclusivamente @example.com
@@ -265,6 +265,45 @@ describe("renderCouponTabPanel", () => {
       const hLegacy = renderCouponTabPanel(legacy);
       assert.ok(hLegacy.includes("R$0,00"), "campos ausentes renderizam R$0,00");
       assert.ok(hLegacy.includes("Comissão total a receber"), "total geral ainda renderiza");
+    });
+  });
+
+  describe("1º pagamento — data real vs previsão (#2749)", () => {
+    const mkUsage = (over: Partial<RedemptionRow>): CouponUsageReport => ({
+      NEWS50: {
+        couponIds: ["cpnSYNTH50"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+        totalPaidCents: 0, totalCommissionCents: 0,
+        redemptions: [{
+          coupon_code: "NEWS50", coupon_id: "cpnSYNTH50", percent_off: 50, duration: "once",
+          customer: "cus_F", customer_email: "f@example.com", subscription: "sub_F", status: "trialing",
+          created: 1782383062, plan_amount_cents: 44900, currency: "brl", interval: "year",
+          discount_value_cents: 0, paid_cents: 0, commission_cents: 0, ...over,
+        }],
+      },
+    });
+
+    it("cabeçalho '1º pagamento' substitui 'Criada'", () => {
+      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
+      assert.ok(h.includes("1º pagamento"), "novo cabeçalho presente");
+      assert.ok(!h.includes("<th>Criada</th>"), "cabeçalho antigo removido");
+    });
+
+    it("previsão (trial) → data com '*' + legenda", () => {
+      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
+      assert.match(h, /\d{2}\/\d{2}\/\d{4}\*/, "data seguida de asterisco");
+      assert.ok(h.includes("previsão do 1º pagamento"), "legenda do asterisco presente");
+    });
+
+    it("pagamento real → data sem '*' e sem legenda", () => {
+      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: false }));
+      assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "data sem asterisco");
+      assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda quando não há previsão");
+    });
+
+    it("KV legado sem first_payment_* → usa created, sem '*' nem legenda", () => {
+      const h = renderCouponTabPanel(mkUsage({}));
+      assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem asterisco no legado");
+      assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda no legado");
     });
   });
 });

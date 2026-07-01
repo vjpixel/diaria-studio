@@ -19,6 +19,7 @@ import {
   commissionWindowEnd,
   computePaidCents,
   commissionCents,
+  firstPaymentInfo,
   COMMISSION_RATE,
   type PromoCodeRaw,
   type CouponRaw,
@@ -561,6 +562,87 @@ describe("comissão (#2743)", () => {
       assert.equal(r["NEWS50"].totalPaidCents, 3);
       // soma de linhas arredondadas seria 0; round(3*0.4)=1 é o correto.
       assert.equal(r["NEWS50"].totalCommissionCents, 1);
+    });
+  });
+
+  describe("firstPaymentInfo (#2749)", () => {
+    const mkCh = (over: Partial<ChargeRaw>): ChargeRaw => ({
+      id: "ch", object: "charge", customer: "cus_A", amount: 1000,
+      amount_refunded: 0, created: 2000, status: "succeeded", paid: true, ...over,
+    });
+
+    it("com cobrança na janela → menor created, forecast=false", () => {
+      const charges = [mkCh({ created: 2500 }), mkCh({ created: 2100 }), mkCh({ created: 2900 })];
+      const r = firstPaymentInfo(charges, "cus_A", 2000, 3000, 9999);
+      assert.equal(r.epoch, 2100);
+      assert.equal(r.isForecast, false);
+    });
+
+    it("sem cobrança → forecastEpoch, forecast=true", () => {
+      const r = firstPaymentInfo([], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.epoch, 9999);
+      assert.equal(r.isForecast, true);
+    });
+
+    it("cobrança fora da janela (>= windowEnd) é ignorada → previsão", () => {
+      const r = firstPaymentInfo([mkCh({ created: 3000 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, true);
+      assert.equal(r.epoch, 9999);
+    });
+
+    it("cobrança de outro cliente é ignorada → previsão", () => {
+      const r = firstPaymentInfo([mkCh({ customer: "cus_B", created: 2100 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, true);
+    });
+
+    it("cobrança não-succeeded é ignorada → previsão", () => {
+      const r = firstPaymentInfo([mkCh({ status: "failed", paid: false, created: 2100 })], "cus_A", 2000, 3000, 9999);
+      assert.equal(r.isForecast, true);
+    });
+  });
+
+  describe("aggregateCouponUsage — 1º pagamento (#2749)", () => {
+    const start = subscriptions[0].discounts[0].start;
+
+    it("trial (sem charge) → previsão = trial_end, forecast=true", () => {
+      const trialEnd = start + 604800;
+      const subs: SubscriptionRaw[] = [{
+        ...subscriptions[0], id: "sub_TR", customer: "cus_TR", trial_end: trialEnd,
+        discounts: [{ ...subscriptions[0].discounts[0], id: "di_TR", customer: "cus_TR", subscription: "sub_TR" }],
+      }];
+      const custs: CustomerRaw[] = [{ id: "cus_TR", email: "tr@example.com" }];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges: [] });
+      const row = r["NEWS50"].redemptions[0];
+      assert.equal(row.first_payment_is_forecast, true);
+      assert.equal(row.first_payment_epoch, trialEnd);
+    });
+
+    it("com charge → data real do 1º pagamento, forecast=false", () => {
+      const subs: SubscriptionRaw[] = [{
+        ...subscriptions[0], id: "sub_PD", customer: "cus_PD",
+        discounts: [{ ...subscriptions[0].discounts[0], id: "di_PD", customer: "cus_PD", subscription: "sub_PD" }],
+      }];
+      const custs: CustomerRaw[] = [{ id: "cus_PD", email: "pd@example.com" }];
+      const charges: ChargeRaw[] = [
+        { id: "ch_PD2", object: "charge", customer: "cus_PD", amount: 44900, amount_refunded: 0, created: start + 200, status: "succeeded", paid: true },
+        { id: "ch_PD1", object: "charge", customer: "cus_PD", amount: 44900, amount_refunded: 0, created: start + 50, status: "succeeded", paid: true },
+      ];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges });
+      const row = r["NEWS50"].redemptions[0];
+      assert.equal(row.first_payment_is_forecast, false);
+      assert.equal(row.first_payment_epoch, start + 50, "menor created entre as cobranças");
+    });
+
+    it("sem trial_end e sem charge → fallback start_date, forecast=true", () => {
+      const subs: SubscriptionRaw[] = [{
+        ...subscriptions[0], id: "sub_NF", customer: "cus_NF", trial_end: null,
+        discounts: [{ ...subscriptions[0].discounts[0], id: "di_NF", customer: "cus_NF", subscription: "sub_NF" }],
+      }];
+      const custs: CustomerRaw[] = [{ id: "cus_NF", email: "nf@example.com" }];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges: [] });
+      const row = r["NEWS50"].redemptions[0];
+      assert.equal(row.first_payment_is_forecast, true);
+      assert.equal(row.first_payment_epoch, subscriptions[0].start_date);
     });
   });
 });
