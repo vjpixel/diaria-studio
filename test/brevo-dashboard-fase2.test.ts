@@ -50,8 +50,9 @@ import {
   MV_STATUS_KV_KEY,
   renderEiaEngagementSection,
   EIA_ENGAGEMENT_KV_KEY,
+  aggregateEiaEngagementByMonth,
 } from "../workers/brevo-dashboard/src/index.ts";
-import type { MvStatus, EiaEngagementSummary } from "../workers/brevo-dashboard/src/index.ts";
+import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -1985,6 +1986,17 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.doesNotMatch(panel, /id="mv-status"/, "Status MillionVerifier foi removido do panel Engajamento (#2736)");
   });
 
+  test("panel-engajamento: ordem das seções é weekday → abc → cohorts → eia-engagement (#2773)", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
+    const idxWeekday = panel.indexOf('id="weekday-openrate"');
+    const idxCohorts = panel.indexOf('id="engagement-cohorts"');
+    const idxEia = panel.indexOf('id="eia-engagement"');
+    assert.ok(idxWeekday >= 0 && idxCohorts >= 0 && idxEia >= 0, "todas as seções devem estar presentes");
+    assert.ok(idxWeekday < idxCohorts, "weekday deve vir antes de cohorts (#2773 — coortes movida pra depois do resumo A/B/C)");
+    assert.ok(idxCohorts < idxEia, "cohorts deve vir antes de eia-engagement (ordem final)");
+  });
+
   test("panel-links contém id=links-agregados", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     const panel = html.match(/id="panel-links"[\s\S]*?<\/div><!-- \/tab-panels -->/)?.[0] ?? "";
@@ -2365,40 +2377,49 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
   });
 
-  test("renderiza tabela por edição com votos e % de acerto, mais recente primeiro", () => {
+  test("renderiza tabela por MÊS agregado (#2773), mais recente primeiro, sem colunas A/B", () => {
     const data: EiaEngagementSummary = {
       editions: [
-        // fora de ordem de propósito — o render deve reordenar desc
-        { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A" },
-        { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A" },
+        // fora de ordem de propósito — o render deve reordenar desc por mês.
+        // 260415+260418 = mesmo mês (abril) → agregam numa linha só.
+        { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
+        { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A", correct_count: 30 },
+        { edition: "260510", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A", correct_count: 6 },
       ],
       updated_at: "2026-07-01T09:00:00.000Z",
     };
     const html = renderEiaEngagementSection(data);
-    assert.match(html, /260418/);
-    assert.match(html, /260415/);
-    assert.match(html, /63\.8%/);
-    assert.match(html, /66\.7%/);
-    // mais recente (260418) vem ANTES de 260415, mesmo com o input fora de ordem.
-    assert.ok(html.indexOf("260418") < html.indexOf("260415"), "260418 (mais recente) deve vir antes de 260415");
+    assert.match(html, /Abr\/2026/);
+    assert.match(html, /Mai\/2026/);
+    // abril: 30+47=77 votos, (20+30)/(30+47)=64.9%
+    assert.match(html, /77/);
+    assert.match(html, /64\.9%/);
+    // maio: 10 votos, 6/10=60.0%
+    assert.match(html, /60\.0%/);
+    // maio (mais recente) vem ANTES de abril, mesmo com o input fora de ordem.
+    assert.ok(html.indexOf("Mai/2026") < html.indexOf("Abr/2026"), "Mai/2026 (mais recente) deve vir antes de Abr/2026");
+    // colunas A/B removidas — só Mês/Votos/% acerto.
+    assert.doesNotMatch(html, /<th[^>]*>A<\/th>/);
+    assert.doesNotMatch(html, /<th[^>]*>B<\/th>/);
   });
 
-  test("pct_correct null → '—' (não 'null' nem 'NaN%')", () => {
+  test("pct_correct null → '—' (não 'null' nem 'NaN%'); votos ainda contam pro total do mês", () => {
     const data: EiaEngagementSummary = {
       editions: [
-        { edition: "260418", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null },
+        { edition: "260418", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null, correct_count: 0 },
       ],
       updated_at: null,
     };
     const html = renderEiaEngagementSection(data);
     assert.match(html, />—</, "deve mostrar travessão quando pct_correct é null");
+    assert.match(html, />3</, "total_votes ainda soma no mês mesmo sem gabarito");
     assert.doesNotMatch(html, /null/i);
     assert.doesNotMatch(html, /NaN/);
   });
 
   test("sem updated_at: não mostra o texto 'Atualizado às'", () => {
     const data: EiaEngagementSummary = {
-      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }],
+      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 }],
       updated_at: null,
     };
     const html = renderEiaEngagementSection(data);
@@ -2407,11 +2428,81 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
 
   test("panel-engajamento inclui a seção eia-engagement (renderDashboardHtml)", () => {
     const eiaEngagement: EiaEngagementSummary = {
-      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }],
+      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 }],
       updated_at: "2026-07-01T09:00:00.000Z",
     };
     const html = renderDashboardHtml([], [], null, null, null, null, eiaEngagement);
     const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
     assert.match(panel, /id="eia-engagement"/, "seção eia-engagement deve estar dentro do panel Engajamento");
+  });
+});
+
+describe("aggregateEiaEngagementByMonth (#2773)", () => {
+  test("agrega múltiplas edições do mesmo mês numa linha só (soma exata via correct_count)", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
+      { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A", correct_count: 30 },
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].month, "2604");
+    assert.equal(rows[0].label, "Abr/2026");
+    assert.equal(rows[0].total_votes, 77);
+    assert.ok(Math.abs((rows[0].pct_correct ?? 0) - (50 / 77) * 100) < 0.01);
+  });
+
+  test("edições sem gabarito (pct_correct null) excluídas do numerador/denominador, mas contam pro total de votos", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "260401", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A", correct_count: 6 },
+      { edition: "260402", total_votes: 5, voted_a: 3, voted_b: 2, pct_correct: null, correct_choice: null, correct_count: 0 },
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].total_votes, 15); // 10 + 5, inclui a sem-gabarito
+    assert.equal(rows[0].pct_correct, 60); // só a 260401 conta: 6/10 = 60%
+  });
+
+  test("mês inteiro sem nenhuma edição com gabarito → pct_correct null (não 0)", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "260401", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null, correct_count: 0 },
+    ]);
+    assert.equal(rows[0].pct_correct, null);
+  });
+
+  test("meses ordenados desc (mais recente primeiro)", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "260401", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
+      { edition: "260601", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
+      { edition: "260501", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
+    ]);
+    assert.deepEqual(rows.map((r) => r.month), ["2606", "2605", "2604"]);
+  });
+
+  test("KV pré-#2773 sem correct_count (dado real já em produção) → NÃO produz NaN, trata como sem gabarito", () => {
+    // Simula exatamente o shape do KV eia:engagement gravado ANTES desta PR
+    // (achado do code-review: produção já tem ~15 edições nesse shape antigo).
+    // correct_count é opcional (mesmo padrão de priority_points_histogram, #2731)
+    // justamente pra esse literal, sem o campo, ser um EiaEngagementEdition válido.
+    const staleEdition: EiaEngagementEdition = {
+      edition: "260415",
+      total_votes: 30,
+      voted_a: 20,
+      voted_b: 10,
+      pct_correct: 66.7,
+      correct_choice: "A",
+    };
+    const rows = aggregateEiaEngagementByMonth([staleEdition]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].total_votes, 30, "votos ainda contam mesmo sem correct_count");
+    assert.equal(rows[0].pct_correct, null, "sem correct_count confiável → null, nunca NaN");
+    assert.ok(!Number.isNaN(rows[0].pct_correct as any));
+  });
+
+  test("edition malformado (KV corrompido) não produz label/mês 'NaN' — entrada é ignorada", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "", total_votes: 5, voted_a: 3, voted_b: 2, pct_correct: 60, correct_choice: "A", correct_count: 3 },
+      { edition: "26", total_votes: 2, voted_a: 1, voted_b: 1, pct_correct: 50, correct_choice: "A", correct_count: 1 },
+      { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
+    ]);
+    assert.equal(rows.length, 1, "só a edição bem-formada (260415) vira linha");
+    assert.ok(!rows.some((r) => r.label.includes("NaN")), "nenhum label deve conter 'NaN'");
   });
 });

@@ -331,6 +331,8 @@ describe("buildPollEiaSummaryFromApi (#2475)", () => {
       assert.equal(ed260418!.voted_b, 17);
       assert.equal(ed260418!.pct_correct, 64);
       assert.equal(ed260418!.correct_choice, "A");
+      // #2773: correct_count bruto propagado (permite agregação mensal exata no dashboard)
+      assert.equal(ed260418!.correct_count, 30);
 
       // Dados corretos da edição 260419 (sem gabarito)
       const ed260419 = summary.editions.find((e) => e.edition === "260419");
@@ -338,6 +340,7 @@ describe("buildPollEiaSummaryFromApi (#2475)", () => {
       assert.equal(ed260419!.total_votes, 12);
       assert.equal(ed260419!.pct_correct, null);
       assert.equal(ed260419!.correct_choice, null);
+      assert.equal(ed260419!.correct_count, 0);
 
       // Leaderboard: 2026-04 tem dados, 2026-05 não (404)
       assert.ok(summary.leaderboard.length > 0, "deve ter entradas no leaderboard");
