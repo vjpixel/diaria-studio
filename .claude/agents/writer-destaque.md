@@ -1,7 +1,7 @@
 ---
 name: writer-destaque
 description: Sub-agente paralelo do writer (#1158). Escreve UM único destaque (D1, D2 ou D3) seguindo `context/templates/newsletter.md` e `context/editorial-rules.md`. Invocado em paralelo com 2 outras instâncias pelos coordenador (writer ou orchestrator) — corta 92% wall clock do Stage 2 quando 3 destaques rodam concorrente.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: Read, Write
 ---
 
