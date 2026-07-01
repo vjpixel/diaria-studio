@@ -211,8 +211,11 @@ describe("renderDashboardHtml — couponUsage", () => {
   describe("(a) com fixture sintética (couponUsage != null)", () => {
     const html = renderDashboardHtml(emptyCampaigns, [], null, null, null, syntheticUsage);
 
-    it("contém panel-cupons", () => {
-      assert.ok(html.includes("panel-cupons"), "deve conter o painel de cupons");
+    it("contém o painel de cupons (div id=panel-cupons)", () => {
+      // #2741: checa o DIV do painel, não a string crua — o seletor CSS
+      // `#panel-cupons` é estático (sempre no <style>), então `includes("panel-cupons")`
+      // passaria mesmo sem o painel. Simétrico com o teste PII-off do bloco (b).
+      assert.ok(html.includes('id="panel-cupons"'), "deve conter o div do painel de cupons");
     });
 
     it("contém tab-cupons (radio input)", () => {
