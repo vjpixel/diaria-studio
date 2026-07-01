@@ -13,6 +13,7 @@ import {
   splitIntoChunks,
   applyChunkSuggestions,
   mergeChunkSuggestions,
+  findLastBoundary,
   CLARICE_CHUNK_THRESHOLD,
   type TextChunk,
   type ClariceChunkSuggestion,
@@ -247,5 +248,36 @@ describe("mergeChunkSuggestions", () => {
     assert.equal(result.skipped.length, 1, "sugestão ambígua deve ser pulada");
     assert.ok(result.text.includes("singular"));
     assert.ok(result.text.includes("ambíguo"), "texto ambíguo não deve ser substituído");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findLastBoundary — #2705: guard contra regex sem flag `g` (footgun infinite-loop)
+// ---------------------------------------------------------------------------
+
+describe("findLastBoundary — guard de flag g (#2705)", () => {
+  it("lança erro explícito quando o regex NÃO tem a flag g (em vez de travar em loop infinito)", () => {
+    // Sem `g`, `re.exec(text)` nunca avança `lastIndex` — o `while` interno de
+    // findLastBoundary rodaria para sempre. Antes do fix #2705 isso travava a
+    // thread; o guard deve falhar loud e imediato.
+    assert.throws(
+      () => findLastBoundary("a---b---c", /---/, 0),
+      /findLastBoundary requer regex com flag g/,
+      "deve lançar erro claro em vez de entrar em loop infinito",
+    );
+  });
+
+  it("funciona normalmente com regex com flag g (comportamento preservado)", () => {
+    const result = findLastBoundary("a\n\nb\n\nc\n\nd", /\n\n/g, 0);
+    // Última ocorrência de "\n\n" é entre "c" e "d" — índice 8, cutPos = 10.
+    const expectedIdx = "a\n\nb\n\nc\n\nd".lastIndexOf("\n\n") + "\n\n".length;
+    assert.equal(result, expectedIdx);
+  });
+
+  it("respeita minCut mesmo com regex g válido (comportamento preservado)", () => {
+    const text = "a\n\nb\n\nc";
+    // Com minCut muito alto, nenhum corte serve → -1.
+    const result = findLastBoundary(text, /\n\n/g, 1000);
+    assert.equal(result, -1);
   });
 });

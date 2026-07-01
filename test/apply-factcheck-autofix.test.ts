@@ -951,3 +951,75 @@ describe("regressao #2634: findDestaqueBodyRange — texto DESTAQUE N no corpo n
     assert.ok(rangeD1!.end <= rangeD2!.start, "D1 deve terminar antes de D2 comecar");
   });
 });
+
+// ─── #2707: markerRe (start-boundary) tinha o MESMO bug-class do #2634 ───────
+
+describe("regressao #2707: findDestaqueBodyRange — markerRe (start-boundary) nao confunde texto de corpo com header real", () => {
+  it("texto de corpo 'DESTAQUE 2 e importante porque...' ANTES do header real nao e confundido com o inicio do D2", () => {
+    // Antes do fix #2707, markerRe = /(?:^|\n)(DESTAQUE\s+2(?:\s|$))/i — o grupo
+    // `(?:\s|$)` exige so UM whitespace apos o numero, entao "DESTAQUE 2 e
+    // importante..." tambem casava (o "2" e seguido por um espaco), fazendo
+    // findDestaqueBodyRange(content, 2) apontar para o texto de CORPO do D1 em
+    // vez do header real "DESTAQUE 2 | PRODUTO" mais abaixo.
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "DESTAQUE 2 e importante porque muda o mercado de forma relevante.",
+      "",
+      "Mais texto do D1.",
+      "",
+      "DESTAQUE 2 | PRODUTO",
+      "",
+      "Texto real do D2 com claim-alvo aqui.",
+    ].join("\n");
+
+    const rangeD2 = findDestaqueBodyRange(content, 2);
+    assert.ok(rangeD2 !== null, "range D2 deve existir");
+
+    const realHeaderPos = content.indexOf("DESTAQUE 2 | PRODUTO");
+    assert.equal(
+      rangeD2!.start,
+      realHeaderPos,
+      `D2.start (${rangeD2!.start}) deve apontar para o header real "DESTAQUE 2 | PRODUTO" (${realHeaderPos}), nao para a mencao de corpo dentro do D1`,
+    );
+
+    const d2Block = content.slice(rangeD2!.start, rangeD2!.end);
+    assert.ok(d2Block.includes("Texto real do D2 com claim-alvo aqui"), "bloco D2 deve conter o texto real do D2");
+    assert.ok(!d2Block.includes("Mais texto do D1"), "bloco D2 NAO deve incluir texto do D1");
+  });
+
+  it("formato canonico DESTAQUE N | CATEGORIA continua sendo encontrado corretamente (nao regrediu)", () => {
+    const content = [
+      "DESTAQUE 1 | MERCADO",
+      "",
+      "Texto do D1.",
+      "",
+      "DESTAQUE 2 | PRODUTO",
+      "",
+      "Texto do D2.",
+      "",
+      "DESTAQUE 3 | PESQUISA",
+      "",
+      "Texto do D3.",
+    ].join("\n");
+
+    for (const [n, expectedText] of [
+      [1, "Texto do D1"],
+      [2, "Texto do D2"],
+      [3, "Texto do D3"],
+    ] as const) {
+      const range = findDestaqueBodyRange(content, n);
+      assert.ok(range !== null, `range D${n} deve existir`);
+      const block = content.slice(range!.start, range!.end);
+      assert.ok(block.includes(expectedText), `bloco D${n} deve conter "${expectedText}"`);
+    }
+  });
+
+  it("header sem pipe/colon (formato legado, so 'DESTAQUE N' no fim da linha) ainda e encontrado", () => {
+    const content = ["DESTAQUE 1", "", "Texto do D1 legado."].join("\n");
+    const range = findDestaqueBodyRange(content, 1);
+    assert.ok(range !== null, "range D1 deve existir mesmo sem pipe/categoria");
+    const block = content.slice(range!.start, range!.end);
+    assert.ok(block.includes("Texto do D1 legado"), "bloco D1 deve conter o texto");
+  });
+});
