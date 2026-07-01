@@ -24,6 +24,12 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
 
 const FIXTURE_PATH = resolve(import.meta.dirname, "fixtures/clarice-fixtures/stripe-customers-fixture.csv");
 
+// `now` fixo (não `new Date()`) — os fixtures têm datas hardcoded (ex: fresh2026
+// criado em 2026-03-15) e as asserções de tier/score dependem de estarem no mesmo
+// semestre/janela de 12mo que `now`. Sem isso, o teste vira flaky em virada de
+// semestre (quebrou de fato às 2026-07-01 — #2724 CI incident).
+const FIXED_NOW = new Date("2026-05-01T12:00:00Z");
+
 /**
  * Nomes de tier agora são descritivos (stripe-export-t{NN}-{slug}.csv, ex:
  * t01-assinantes-ativos, t03-leads-2026-jan-abr) e o slug dos leads é dinâmico
@@ -53,7 +59,7 @@ after(() => {
 
 describe("merge-clarice integration: outputs end-to-end", () => {
   it("gera 10 CSVs t01–t10 + excluded ao rodar main(tempDir)", () => {
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Os 10 tiers (nome descritivo, achado por prefixo t{NN}-):
     for (let t = 1; t <= 10; t++) {
@@ -136,7 +142,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     );
 
     // Roda de novo
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Compara
     for (const [filename, content] of Object.entries(beforeContent)) {
@@ -158,7 +164,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     writeFileSync(join(tmpDataDir, "stripe-export-t04-leads-2099H1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "stripe-export-t05.csv"), "stale\n", "utf8");
 
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Devem ter sido removidos
     assert.equal(existsSync(join(tmpDataDir, "kit-import-tier1.csv")), false);
@@ -203,7 +209,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
       join(COHORTS_DIR, "stripe-fixture-cohort3-2026.csv"),
       join(mergeDir, "stripe-cohort3.csv"),
     );
-    main(mergeDir);
+    main(mergeDir, FIXED_NOW);
   });
 
   after(() => {
