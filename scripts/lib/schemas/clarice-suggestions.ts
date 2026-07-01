@@ -24,6 +24,17 @@ export const ClariceSuggestionSchema = z.object({
 
 export const ClariceSuggestionsSchema = z.array(ClariceSuggestionSchema);
 
+/**
+ * Tipo de UMA sugestão (singular) — fonte de verdade única (#2701 item 2 do
+ * self-review #2700). `scripts/lib/clarice-chunk.ts` reusa este tipo como
+ * `ClariceChunkSuggestion` em vez de declarar uma interface estruturalmente
+ * duplicada, o que eliminou o `as ClariceChunkSuggestion[]` unsafe cast em
+ * `scripts/clarice-correct.ts` — o array já validado por
+ * `parseClariceSuggestions` (via Zod, com `.passthrough()`) é atribuível
+ * diretamente sem cast.
+ */
+export type ClariceSuggestion = z.infer<typeof ClariceSuggestionSchema>;
+
 export type ClariceSuggestions = z.infer<typeof ClariceSuggestionsSchema>;
 
 /** Parse + valida 02-clarice-suggestions.json. */

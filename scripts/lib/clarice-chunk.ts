@@ -32,6 +32,7 @@
  */
 
 import { countOccurrences } from "../clarice-apply.ts";
+import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
 
 export interface TextChunk {
   /** Conteúdo do chunk, pronto para enviar ao Clarice. */
@@ -43,12 +44,15 @@ export interface TextChunk {
   startOffset: number;
 }
 
-export interface ClariceChunkSuggestion {
-  from: string;
-  to: string;
-  rule?: string;
-  explanation?: string;
-}
+/**
+ * Alias de `ClariceSuggestion` (#2701 item 2 do self-review #2700) — antes este
+ * módulo declarava uma interface própria estruturalmente idêntica ao schema Zod
+ * de `clarice-suggestions.ts`, forçando `scripts/clarice-correct.ts` a fazer
+ * `as ClariceChunkSuggestion[]` unsafe cast no array já validado retornado por
+ * `correctTextViaREST`. Com o alias, os dois tipos são literalmente o mesmo tipo
+ * e a atribuição não precisa de cast.
+ */
+export type ClariceChunkSuggestion = ClariceSuggestion;
 
 export interface ApplyResult {
   /** Texto completo com as sugestões deste chunk aplicadas. */

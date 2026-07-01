@@ -36,7 +36,7 @@
  *   mv-export-t04-leads-2025H2-verified.csv        T4 verificado (após MV)
  *
  * Outputs (em data/clarice-subscribers/{ciclo}/sends/):
- *   d01-10jun.csv … d21-30jun.csv   (colunas: email,NOME,TIER)
+ *   d01-10jun.csv … d21-30jun.csv   (colunas: email,NOME,TIER,IS_SEED — #2697 item 1)
  *   sends-summary.json
  */
 
@@ -158,9 +158,27 @@ function emailKeyOf(row: Row | undefined): string {
   return k;
 }
 
-/** Normaliza uma linha pro output: email + NOME + TIER (descarta MV_*, OPEN_PROBABILITY). */
-function outRow(r: Row, emailKey: string, tier: Tier): Row {
-  return { email: (r[emailKey] ?? "").trim(), NOME: r["NOME"] ?? r["nome"] ?? "", TIER: tier };
+/**
+ * Normaliza uma linha pro output: email + NOME + TIER (descarta MV_*, OPEN_PROBABILITY).
+ *
+ * Propaga `IS_SEED` (#2697 item 1, self-review #2696) — os arquivos w1/w2 consumidos
+ * pelo tier T1 (`waves/w1-brevo-export-t1-openers.csv`, `w2-...-non-openers.csv`) já
+ * carregam a row do seed (`vjpixel@gmail.com`) marcada `IS_SEED="true"` (injetada por
+ * `clarice-build-waves.ts` via `injectSeed`, #2683). Antes deste fix, este builder
+ * legado normalizava a row pra `{email, NOME, TIER}` e descartava a coluna `IS_SEED` —
+ * o seed continuava recebendo o envio, mas SEM o marcador que permite excluí-lo das
+ * métricas de open-rate/CTR no Brevo. Só T1 pode carregar o seed aqui: maio/T2/T3/T4
+ * vêm de arquivos MV-verified sem `IS_SEED` (o seed nunca foi injetado nesses tiers
+ * neste caminho legado) — `r["IS_SEED"]` é `undefined` para essas rows, resultando em
+ * `IS_SEED: ""` no output (coluna sempre presente para shape consistente do CSV).
+ */
+export function outRow(r: Row, emailKey: string, tier: Tier): Row {
+  return {
+    email: (r[emailKey] ?? "").trim(),
+    NOME: r["NOME"] ?? r["nome"] ?? "",
+    TIER: tier,
+    IS_SEED: r["IS_SEED"] === "true" ? "true" : "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +454,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       summary.sends.push({ n: s.n, file: `d${String(s.n).padStart(2, "0")}-${s.date}.csv`, day: s.day, week: s.week, planned: s.volume, actual: rows.length, comp });
       const name = `d${String(s.n).padStart(2, "0")}-${s.date}.csv`;
       if (!dryRun) {
-        writeFileAtomic(resolve(sendsDir, name), Papa.unparse({ fields: ["email", "NOME", "TIER"], data: rows }));
+        // IS_SEED (#2697 item 1): coluna sempre presente pra manter o shape do CSV
+        // consistente entre dias com/sem seed presente naquele dia específico.
+        writeFileAtomic(resolve(sendsDir, name), Papa.unparse({ fields: ["email", "NOME", "TIER", "IS_SEED"], data: rows }));
       }
       console.error(`  ${name}  dia=${s.day} plan=${s.volume} real=${rows.length}  ${JSON.stringify(comp)}`);
     });
