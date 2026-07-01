@@ -391,7 +391,7 @@ Input do scorer (1q) agora vem direto de `tmp-dates-reviewed.json` (output de 1p
 
 ### 1q. Scorer (chunked-parallel, #1611)
 
-O scorer single-call (então em Opus, sobre ~80-150 artigos numa passada) gastava ~8min — desde #2772 o legado 1q-fallback roda em Sonnet. Agora roda em 5 sub-passos: pontuação em K chamadas paralelas (mesmo rubrico) + seleção holística sobre os finalistas. Paridade validada (top-6 overlap 5/6 vs. single-call, dentro do ruído run-to-run do próprio scorer). Pools pequenos caem no caminho legado — ver **1q-fallback**.
+O scorer single-call (esse mesmo caminho legado, hoje chamado **1q-fallback** — então em Opus, sobre ~80-150 artigos numa passada) gastava ~8min; desde #2772 roda em Sonnet. Agora o caminho principal roda em 5 sub-passos: pontuação em K chamadas paralelas (mesmo rubrico) + seleção holística sobre os finalistas. Paridade validada (top-6 overlap 5/6 vs. single-call, dentro do ruído run-to-run do próprio scorer). Pools pequenos caem no caminho legado — ver **1q-fallback**.
 
 **1q.1 — Split.** Dividir o pool em chunks de ~30:
 ```bash
