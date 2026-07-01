@@ -1,7 +1,7 @@
 ---
 name: scorer-chunk
 description: Roda no Stage 1 (#1611) como K instâncias paralelas — uma por chunk de artigos gerado por split-articles-for-scoring.ts. Pontua TODOS os artigos do seu chunk 0-100 com o mesmo rubrico do scorer, SEM escolher destaques (a seleção é global, feita depois pelo scorer-select sobre os finalistas do merge). Output enxuto contendo apenas url e score. Encurta o wall-clock do scorer single-call (~8min para o tempo do chunk mais lento).
-model: claude-opus-4-8
+model: claude-sonnet-5
 tools: Read, Write, Bash
 ---
 

@@ -537,7 +537,7 @@ done
 
 ## Passo 6 — Gate humano unificado
 
-**Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Opus) escolhe automaticamente como fallback no Passo 7.
+**Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Sonnet, #2772) escolhe automaticamente como fallback no Passo 7.
 
 **Se `--no-gate`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
 
@@ -548,7 +548,7 @@ Etapa 2 — Escrita pronta.
 
 📁 Newsletter: data/editions/$1/02-reviewed.md
    ⚠️  Cada destaque tem 3 opções de título — apague 2 antes de aprovar,
-       ou aprove direto pra deixar o title-picker (Opus) escolher.
+       ou aprove direto pra deixar o title-picker (Sonnet) escolher.
 
 📁 Social: data/editions/$1/03-social.md
 📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/
