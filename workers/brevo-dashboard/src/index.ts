@@ -396,17 +396,68 @@ export async function readKvTabs(
   contactsSummary: ContactsSummary | null;
   couponUsage: CouponUsageReport | null;
 }> {
-  const cohorts = env.STATS_CACHE
-    ? ((await env.STATS_CACHE.get(COHORTS_KV_KEY, "json").catch(() => null)) as EngagementCohorts | null)
-    : null;
-  const mvStatus = env.STATS_CACHE
-    ? ((await env.STATS_CACHE.get(MV_STATUS_KV_KEY, "json").catch(() => null)) as MvStatus | null)
-    : null;
-  const contactsSummary = env.STATS_CACHE
-    ? ((await env.STATS_CACHE.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null)) as ContactsSummary | null)
-    : null;
-  const couponUsage = await getCouponUsage(env, isFresh);
+  // As 4 leituras são independentes → paralelas (importa no fallback de 429,
+  // que está no caminho crítico do render stale).
+  const kv = env.STATS_CACHE;
+  const [cohorts, mvStatus, contactsSummary, couponUsage] = await Promise.all([
+    kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
+    kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
+    kv ? (kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) as Promise<ContactsSummary | null>) : Promise.resolve(null),
+    getCouponUsage(env, isFresh),
+  ]);
   return { cohorts, mvStatus, contactsSummary, couponUsage };
+}
+
+/**
+ * #2733: monta a resposta de fallback quando o Brevo está em rate-limit (429).
+ * Serve o dashboard com campanhas STALE (do KV `dash:lastgood:campaigns`) + as
+ * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
+ * vez do HTML inteiro congelado, que escondia dado KV recém-publicado.
+ *
+ * `isFresh=false` sempre: no caminho de erro nunca fazemos chamada externa ao
+ * vivo (getCouponUsage) — honramos o KV. `Array.isArray` guarda contra KV
+ * corrompido. Se o re-render lançar, degrada pro 503 amigável (nunca 500).
+ *
+ * Exported for unit tests (#2733).
+ */
+export async function buildRateLimitFallback(
+  env: Env,
+  retryAfterSecs: number | null,
+): Promise<Response> {
+  if (!env.STATS_CACHE) return rateLimitResponse(retryAfterSecs, true);
+  const staleCampaignsRaw = (await env.STATS_CACHE
+    .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
+  const { cohorts, mvStatus, contactsSummary, couponUsage } = await readKvTabs(env, false);
+  const rawCampaigns = staleCampaignsRaw?.campaigns;
+  const rawScheduled = staleCampaignsRaw?.scheduled;
+  const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
+    typeof renderDashboardHtml
+  >[0];
+  const staleScheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<
+    typeof renderDashboardHtml
+  >[1];
+  try {
+    const html = renderDashboardHtml(
+      staleCampaigns,
+      staleScheduled,
+      cohorts,
+      mvStatus,
+      contactsSummary,
+      couponUsage,
+    );
+    // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
+    // campanha estão atrasadas; Cupons/Contatos estão frescos).
+    return buildStaleResponse(html, retryAfterSecs);
+  } catch (renderErr) {
+    // O re-render no fallback NUNCA pode virar 500: se lançar (ex: campanha stale
+    // malformada no KV), degrada pro 503 amigável (comportamento pré-#2733).
+    console.error(
+      "[#2733] re-render no fallback de 429 falhou — degradando p/ 503:",
+      renderErr instanceof Error ? renderErr.message : renderErr,
+    );
+    return rateLimitResponse(retryAfterSecs, true);
+  }
 }
 
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */
@@ -3212,15 +3263,6 @@ export default {
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
         const { cohorts, mvStatus, contactsSummary, couponUsage } = await readKvTabs(env, isFresh);
         const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage);
-        // #2733: cacheia as campanhas Brevo cruas do render saudável. No 429 do
-        // Brevo, o fallback re-renderiza com estas campanhas stale + abas de KV
-        // frescas — em vez de servir o HTML inteiro congelado (que esconderia
-        // dado KV recém-publicado, ex: aba de Cupons pós-deploy).
-        if (scheduledOk && env.STATS_CACHE) {
-          await env.STATS_CACHE
-            .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify({ campaigns, scheduled }), { expirationTtl: LASTGOOD_TTL })
-            .catch(() => { /* erro de KV nunca bloqueia o render */ });
-        }
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
@@ -3230,36 +3272,27 @@ export default {
         });
         if (!isFresh) {
           await cache.put(request, response.clone());
+          // #2733: cacheia as campanhas Brevo cruas do render saudável. No 429 do
+          // Brevo, o fallback re-renderiza com estas campanhas stale + abas de KV
+          // frescas — em vez de servir o HTML inteiro congelado (que esconderia
+          // dado KV recém-publicado, ex: aba de Cupons pós-deploy). Só em render
+          // NÃO-fresh: ?fresh=1 pode trazer stats parciais (429 interno por campanha)
+          // e não deve poluir o fallback; e mantém o caminho ?fresh=1 sem write extra.
+          // Depois do cache de edge — nunca bloqueia a resposta.
+          if (scheduledOk && env.STATS_CACHE) {
+            await env.STATS_CACHE
+              .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify({ campaigns, scheduled }), { expirationTtl: LASTGOOD_TTL })
+              .catch(() => { /* erro de KV nunca bloqueia o render */ });
+          }
         }
         return response;
       } catch (e) {
         if (e instanceof BrevoRateLimitError) {
           // #2733: em vez de servir o HTML inteiro congelado (#2280), re-renderiza
-          // com as campanhas Brevo STALE (do KV) + as abas de KV (Cupons/Contatos/
-          // coortes/MV) ATUALIZADAS. Assim uma janela de rate-limit do Brevo nunca
-          // esconde dado KV fresco (o bug original: aba de Cupons pós-deploy oculta).
-          if (env.STATS_CACHE) {
-            const staleCampaignsRaw = (await env.STATS_CACHE
-              .get(LASTGOOD_CAMPAIGNS_KEY, "json")
-              .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
-            const { cohorts, mvStatus, contactsSummary, couponUsage } = await readKvTabs(env, isFresh);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const staleCampaigns = (staleCampaignsRaw?.campaigns ?? []) as any[];
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const staleScheduled = (staleCampaignsRaw?.scheduled ?? []) as any[];
-            const html = renderDashboardHtml(
-              staleCampaigns,
-              staleScheduled,
-              cohorts,
-              mvStatus,
-              contactsSummary,
-              couponUsage,
-            );
-            // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções
-            // de campanha estão atrasadas; Cupons/Contatos estão frescos).
-            return buildStaleResponse(html, e.retryAfterSecs);
-          }
-          return rateLimitResponse(e.retryAfterSecs, true);
+          // com campanhas Brevo STALE (do KV) + abas de KV FRESCAS. Assim uma janela
+          // de rate-limit do Brevo nunca esconde dado KV recém-publicado (o bug
+          // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
+          return buildRateLimitFallback(env, e.retryAfterSecs);
         }
         return new Response(
           `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,

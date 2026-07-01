@@ -25,7 +25,10 @@ import {
   readKvTabs,
   renderDashboardHtml,
   buildStaleResponse,
+  buildRateLimitFallback,
   COUPONS_KV_KEY,
+  COHORTS_KV_KEY,
+  MV_STATUS_KV_KEY,
   CONTACTS_SUMMARY_KV_KEY,
   LASTGOOD_CAMPAIGNS_KEY,
   type ContactsSummary,
@@ -84,18 +87,32 @@ function makeKv(initial: Record<string, string>) {
 }
 
 describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
-  it("readKvTabs lê Cupons/Contatos do KV (independente do Brevo)", async () => {
+  it("readKvTabs lê as 4 seções KV (Cupons/Contatos/coortes/MV) independente do Brevo", async () => {
     const kv = makeKv({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
+      [COHORTS_KV_KEY]: JSON.stringify({ marker: "cohorts-fixture" }),
+      [MV_STATUS_KV_KEY]: JSON.stringify({ marker: "mv-fixture" }),
     });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { couponUsage, contactsSummary } = await readKvTabs(env as any, false);
+    const { couponUsage, contactsSummary, cohorts, mvStatus } = await readKvTabs(env as any, false);
     assert.notEqual(couponUsage, null, "Cupons deve vir do KV");
     assert.deepEqual(couponUsage, syntheticCoupons);
     assert.notEqual(contactsSummary, null, "Contatos deve vir do KV");
     assert.equal(contactsSummary?.total, 100);
+    assert.notEqual(cohorts, null, "coortes devem vir do KV");
+    assert.notEqual(mvStatus, null, "status MV deve vir do KV");
+  });
+
+  it("readKvTabs retorna null para seções ausentes no KV (sem crashar)", async () => {
+    const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { cohorts, mvStatus, contactsSummary } = await readKvTabs(env as any, false);
+    assert.equal(cohorts, null);
+    assert.equal(mvStatus, null);
+    assert.equal(contactsSummary, null);
   });
 
   it("render com campanhas STALE vazias + cupons frescos → aba de Cupons presente", () => {
@@ -139,5 +156,55 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { couponUsage } = await readKvTabs(env as any, false);
     assert.equal(couponUsage, null, "flag OFF → cupons null mesmo com KV populado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRateLimitFallback — o CAMINHO que tinha o bug (#2733 + #633).
+// Exercita a lógica real do catch de 429: lê campanhas stale + readKvTabs FRESCO
+// + render + banner, com guardas de shape e throw-safety. Se alguém reverter o
+// fallback pra servir HTML congelado, estes testes falham.
+// ---------------------------------------------------------------------------
+
+describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV)", () => {
+  it("serve Cupons FRESCOS do KV + banner de rate-limit (o fix do #2733)", async () => {
+    // Cache de campanhas ausente → staleCampaigns=[]; cupons vêm do KV FRESCO.
+    const kv = makeKv({
+      [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
+      [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
+    });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildRateLimitFallback(env as any, 120);
+    assert.strictEqual(resp.status, 200, "fallback é 200 (stale), não 503");
+    assert.strictEqual(resp.headers.get("X-Dashboard-Stale"), "rate-limit");
+    const body = await resp.text();
+    assert.ok(body.includes("tablabel-cupons"), "aba Cupons FRESCA sobrevive ao 429");
+    assert.ok(body.includes("test1@example.com"), "dado de cupom do KV renderizado");
+    assert.ok(body.includes("panel-contatos"), "aba Contatos presente");
+    assert.ok(body.includes("rate-limit"), "banner de rate-limit injetado");
+  });
+
+  it("STATS_CACHE ausente → 503 amigável (nunca crasha)", async () => {
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: undefined };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildRateLimitFallback(env as any, 90);
+    assert.strictEqual(resp.status, 503, "sem KV → rateLimitResponse 503");
+  });
+
+  it("KV corrompido (campaigns não-array) → guard Array.isArray, NUNCA 500/throw", async () => {
+    const kv = makeKv({
+      [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
+      // valor corrompido: campaigns como string em vez de array
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: "corrompido", scheduled: 0 }),
+    });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await assert.doesNotReject(() => buildRateLimitFallback(env as any, 60), "não deve lançar");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildRateLimitFallback(env as any, 60);
+    assert.ok(resp.status === 200 || resp.status === 503, "degrada graciosamente (200 stale ou 503)");
+    const body = await resp.text();
+    assert.ok(body.includes("tablabel-cupons") || resp.status === 503, "cupons ainda frescos no 200");
   });
 });
