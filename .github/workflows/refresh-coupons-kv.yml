@@ -1,0 +1,44 @@
+name: Refresh Coupons KV
+
+# #2750: repopula o KV `coupons:usage` do dashboard diariamente rodando o CLI
+# read-only da Stripe (stripe-coupon-usage.ts --write-kv). Assim a comissão e a
+# data do 1º pagamento atualizam sozinhas conforme os trials convertem, sem
+# populate manual. Roda como "job agendado" (Node) em vez de cron no Worker
+# porque fetchCouponUsage pagina TODAS as subscriptions da conta Stripe (clarice)
+# — em volume alto isso estoura os limites de subrequest/CPU de um Cloudflare
+# Worker; o runner Node não tem esse teto.
+#
+# Secrets necessários (editor configura 1x em Settings > Secrets and variables >
+# Actions): STRIPE_API_KEY (chave restrita read-only), CLOUDFLARE_ACCOUNT_ID,
+# CLOUDFLARE_WORKERS_TOKEN. Se faltarem, o run falha com mensagem clara — sinal
+# visível no Actions, sem corromper o KV (o CLI aborta antes de escrever).
+
+on:
+  schedule:
+    # Todo dia 09:00 UTC = 06:00 BRT.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-coupons-kv
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Repopula coupons:usage no KV
+        env:
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+        run: npx tsx scripts/stripe-coupon-usage.ts --write-kv
