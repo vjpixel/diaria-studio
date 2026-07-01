@@ -16,36 +16,81 @@
 //      only emits the instruction when one is present (skips `--help`, etc.).
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
-// the effort-aware /code-review at MAX effort with --comment on the new PR
-// (NOT the lighter default, NOT cloud `ultra`). Never throws / never exits
-// non-zero, so it can't block the Bash tool.
+// the effort-aware /code-review on the new PR. Effort is branch-aware (#2754):
+// `overnight/*` branches get `low` (token-optimized — the overnight skill's own
+// subagent already does an adversarial self-review pass per unit; a second full
+// multi-agent `max` review on top was double-paying for depth on low-risk P3
+// hardening PRs, the single biggest token sink observed in the 260630 session).
+// Everything else (develop/manual PRs) keeps `max` — speed matters more than
+// token count there, and `max` doesn't cost wall-clock time, just tokens.
+// Never throws / never exits non-zero, so it can't block the Bash tool.
 
-let data = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => (data += chunk));
-process.stdin.on("end", () => {
+import { execFileSync } from "node:child_process";
+
+/**
+ * Resolve o headRefName de um PR e decide o effort de /code-review.
+ * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
+ * Fail-safe: qualquer erro (gh indisponível, PR não encontrado, timeout) → "max".
+ */
+export function resolveEffort(prUrl, execFn = execFileSync) {
   try {
-    const payload = JSON.parse(data || "{}");
-    const resp =
-      typeof payload.tool_response === "string"
-        ? payload.tool_response
-        : JSON.stringify(payload.tool_response ?? "");
-    const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
-    if (match) {
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: "PostToolUse",
-            additionalContext:
-              `A pull request was just created: ${match[0]} — per project policy, run ` +
-              "`/code-review max --comment` on it now, at ULTRACODE / maximum effort: the full multi-agent review " +
-              "(many finder angles -> verify -> sweep, recall mode), posting findings as inline PR comments. " +
-              "Do NOT downgrade to the lighter default effort. Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched).",
-          },
-        }),
-      );
-    }
+    const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
+    if (!num) return "max";
+    const branch = execFn(
+      "gh",
+      ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
+      { encoding: "utf8", timeout: 10_000 },
+    ).trim();
+    return branch.startsWith("overnight/") ? "low" : "max";
   } catch {
-    // Swallow everything: a hook that errors must not block the PR creation.
+    return "max"; // fail-safe: unknown branch → keep the thorough default.
   }
-});
+}
+
+/** Monta o additionalContext do hook a partir da URL do PR e do effort resolvido. Pure/testável. */
+export function buildReviewInstruction(prUrl, effort) {
+  const effortNote =
+    effort === "low"
+      ? "at LOW effort (overnight branch — token-optimized; fewer, high-confidence findings only)"
+      : "at ULTRACODE / maximum effort: the full multi-agent review (many finder angles -> verify -> sweep, recall mode)";
+  return (
+    `A pull request was just created: ${prUrl} — per project policy, run ` +
+    `\`/code-review ${effort} --comment\` on it now, ${effortNote}, ` +
+    "posting findings as inline PR comments. Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)."
+  );
+}
+
+// #2019: CLI guard — só roda o corpo do hook quando este arquivo é o entrypoint
+// (nunca ao ser importado por test/pr-create-review-hook.test.ts).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  let data = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => (data += chunk));
+  process.stdin.on("end", () => {
+    try {
+      const payload = JSON.parse(data || "{}");
+      const resp =
+        typeof payload.tool_response === "string"
+          ? payload.tool_response
+          : JSON.stringify(payload.tool_response ?? "");
+      const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
+      if (match) {
+        const effort = resolveEffort(match[0]);
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PostToolUse",
+              additionalContext: buildReviewInstruction(match[0], effort),
+            },
+          }),
+        );
+      }
+    } catch {
+      // Swallow everything: a hook that errors must not block the PR creation.
+    }
+  });
+}
