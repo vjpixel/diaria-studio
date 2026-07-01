@@ -25,13 +25,27 @@ export const COMMISSION_WINDOW_MONTHS = 12;
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Referência a um coupon nas várias formas que a Stripe API retorna conforme a
+ * versão: id string, objeto `{ coupon: "id" }` (wrapper promotion/source), ou o
+ * próprio Coupon inline `{ id: "…" }`. `couponIdFrom` normaliza todas (#2750).
+ */
+export type CouponRef =
+  | string
+  | { coupon?: string | { id: string }; id?: string; [k: string]: unknown }
+  | null
+  | undefined;
+
 export interface PromoCodeRaw {
   id: string;
   object: "promotion_code";
   active: boolean;
   code: string;
   created: number;
-  promotion: { coupon: string; type: string };
+  /** API nova (via MCP): coupon id vem em `promotion.coupon`. */
+  promotion?: { coupon: string; type: string };
+  /** API clássica (REST default): o Coupon vem inline em `coupon`. */
+  coupon?: CouponRef;
   max_redemptions: number | null;
   times_redeemed: number;
   restrictions: { first_time_transaction: boolean; minimum_amount: number | null };
@@ -56,10 +70,10 @@ export interface DiscountRaw {
   object: "discount";
   customer: string;
   promotion_code: string | null;
-  /** New Stripe API: coupon id lives here */
+  /** API nova: coupon id em `source.coupon`. */
   source?: { coupon: string; type: string };
-  /** Legacy fallback: older API surfaces coupon id as string */
-  coupon?: string;
+  /** API clássica: `coupon` é o Coupon inline (objeto) ou um id string. */
+  coupon?: CouponRef;
   start: number;
   end: number | null;
   subscription: string;
@@ -139,6 +153,27 @@ export interface CouponCodeReport {
   totalPaidCents?: number;
   totalCommissionCents?: number;
   redemptions: RedemptionRow[];
+}
+
+/**
+ * #2750: extrai o id do coupon de qualquer forma que a Stripe API retorne
+ * conforme a versão — resiliente a mudança de shape:
+ *   - `"cpn_123"`                      (id string direto)
+ *   - `{ coupon: "cpn_123" }`          (wrapper promotion/source da API nova)
+ *   - `{ coupon: { id: "cpn_123" } }`  (coupon aninhado como objeto)
+ *   - `{ id: "cpn_123", object: "coupon", … }` (Coupon inline da API clássica)
+ * Retorna `undefined` se não achar id. O bug do #2750: o REST default da conta
+ * retorna o Coupon inline (`coupon` objeto), não `promotion.coupon` string.
+ */
+export function couponIdFrom(value: CouponRef): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value.coupon === "string") return value.coupon;
+  if (value.coupon && typeof value.coupon === "object" && typeof value.coupon.id === "string") {
+    return value.coupon.id;
+  }
+  if (typeof value.id === "string") return value.id;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +292,8 @@ export function aggregateCouponUsage(input: {
   const codeToCouponIds = new Map<string, Set<string>>();
   for (const pc of codes) {
     if (!codeToCouponIds.has(pc.code)) codeToCouponIds.set(pc.code, new Set());
-    codeToCouponIds.get(pc.code)!.add(pc.promotion.coupon);
+    const pcCouponId = couponIdFrom(pc.promotion) ?? couponIdFrom(pc.coupon);
+    if (pcCouponId) codeToCouponIds.get(pc.code)!.add(pcCouponId);
   }
 
   const couponIdToCode = new Map<string, string>();
@@ -287,9 +323,7 @@ export function aggregateCouponUsage(input: {
 
   for (const sub of subscriptions) {
     for (const discount of sub.discounts ?? []) {
-      const discCouponId =
-        discount.source?.coupon ??
-        (typeof discount.coupon === "string" ? discount.coupon : undefined);
+      const discCouponId = couponIdFrom(discount.source) ?? couponIdFrom(discount.coupon);
       if (!discCouponId) continue;
 
       const code = couponIdToCode.get(discCouponId);
@@ -457,7 +491,11 @@ export async function fetchCouponUsage(
     codes.push(...list);
   }
 
-  const couponIds = new Set<string>(codes.map((pc) => pc.promotion.coupon));
+  const couponIds = new Set<string>(
+    codes
+      .map((pc) => couponIdFrom(pc.promotion) ?? couponIdFrom(pc.coupon))
+      .filter((id): id is string => !!id),
+  );
   const coupons: CouponRaw[] = [];
   for (const id of couponIds) {
     coupons.push(await stripeGet<CouponRaw>(`/coupons/${id}`, apiKey, fetchImpl));
@@ -473,9 +511,7 @@ export async function fetchCouponUsage(
   const matchedCustomerIds = new Set<string>();
   for (const sub of subscriptions) {
     for (const d of sub.discounts ?? []) {
-      const discId =
-        d.source?.coupon ??
-        (typeof d.coupon === "string" ? d.coupon : undefined);
+      const discId = couponIdFrom(d.source) ?? couponIdFrom(d.coupon);
       if (discId && targetCouponIds.has(discId)) {
         matchedCustomerIds.add(sub.customer);
         break;

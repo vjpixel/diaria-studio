@@ -21,6 +21,7 @@ import {
   commissionCents,
   firstPaymentInfo,
   redemptionWho,
+  couponIdFrom,
   COMMISSION_RATE,
   type PromoCodeRaw,
   type CouponRaw,
@@ -793,6 +794,75 @@ describe("toCSV — quoting de fim-a-fim", () => {
   it("CSV termina com newline (POSIX)", () => {
     const csv = toCSV([rowWithComma]);
     assert.ok(csv.endsWith("\n"), "CSV deve terminar com \\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// couponIdFrom — normalização de shape do coupon id (#2750)
+// ---------------------------------------------------------------------------
+
+describe("couponIdFrom (#2750)", () => {
+  it("id string direto", () => {
+    assert.equal(couponIdFrom("cpn_123"), "cpn_123");
+  });
+  it("wrapper { coupon: 'id' } (promotion/source da API nova)", () => {
+    assert.equal(couponIdFrom({ coupon: "cpn_123", type: "coupon" }), "cpn_123");
+  });
+  it("coupon aninhado como objeto { coupon: { id } }", () => {
+    assert.equal(couponIdFrom({ coupon: { id: "cpn_123" } }), "cpn_123");
+  });
+  it("Coupon inline da API clássica { id, object: 'coupon' } (o bug do #2750)", () => {
+    assert.equal(couponIdFrom({ id: "cpn_123", object: "coupon", percent_off: 50 }), "cpn_123");
+  });
+  it("null/undefined → undefined (não quebra)", () => {
+    assert.equal(couponIdFrom(null), undefined);
+    assert.equal(couponIdFrom(undefined), undefined);
+  });
+  it("objeto sem coupon nem id → undefined", () => {
+    assert.equal(couponIdFrom({ type: "coupon" }), undefined);
+  });
+});
+
+// Regressão do #2750: o REST default da conta Stripe retorna promotion_code com
+// o Coupon INLINE (`coupon` objeto) — não `promotion.coupon` string. O agregado
+// tem que casar o cupom mesmo nessa forma (antes: TypeError / 0 matches).
+describe("aggregateCouponUsage — shape clássico REST (#2750)", () => {
+  const promosClassic = [
+    {
+      id: "promo_c1", object: "promotion_code", active: true, code: "NEWS50",
+      created: 1779210106, max_redemptions: null, times_redeemed: 1,
+      restrictions: { first_time_transaction: false, minimum_amount: null },
+      // sem `promotion` — Coupon inline em `coupon` (API clássica)
+      coupon: { id: "cpnTEST50", object: "coupon", percent_off: 50 },
+    },
+  ] as unknown as PromoCodeRaw[];
+
+  const couponsClassic: CouponRaw[] = [
+    { id: "cpnTEST50", object: "coupon", amount_off: null, percent_off: 50, currency: null,
+      duration: "once", duration_in_months: null, name: "NEWS50", times_redeemed: 1, valid: true, max_redemptions: null },
+  ];
+
+  const subsClassic = [
+    {
+      id: "sub_c1", object: "subscription", customer: "cus_c1", status: "trialing",
+      created: 1782383062, start_date: 1782383062, trial_end: 1782987862,
+      items: { data: [{ price: { unit_amount: 44900, currency: "brl", recurring: { interval: "year" } } }] },
+      // discount com Coupon inline como OBJETO (não string) — o outro shape do bug
+      discounts: [{ id: "di_c1", object: "discount", customer: "cus_c1", promotion_code: null,
+        coupon: { id: "cpnTEST50", object: "coupon" }, start: 1782383062, end: null, subscription: "sub_c1" }],
+    },
+  ] as unknown as SubscriptionRaw[];
+
+  const custsClassic: CustomerRaw[] = [{ id: "cus_c1", email: "c1@example.com" }];
+
+  it("casa o cupom e produz a redemption mesmo com Coupon inline (objeto)", () => {
+    const r = aggregateCouponUsage({
+      codes: promosClassic, coupons: couponsClassic, subscriptions: subsClassic, customers: custsClassic, charges: [],
+    });
+    assert.equal(r["NEWS50"].rowCount, 1, "assinatura casada apesar do shape clássico");
+    assert.equal(r["NEWS50"].redemptions[0].coupon_id, "cpnTEST50");
+    assert.equal(r["NEWS50"].redemptions[0].customer_email, "c1@example.com");
+    assert.equal(r["NEWS50"].redemptions[0].first_payment_is_forecast, true, "trial → previsão");
   });
 });
 
