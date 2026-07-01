@@ -498,7 +498,16 @@ export async function fetchCouponUsage(
   );
   const coupons: CouponRaw[] = [];
   for (const id of couponIds) {
-    coupons.push(await stripeGet<CouponRaw>(`/coupons/${id}`, apiKey, fetchImpl));
+    try {
+      coupons.push(await stripeGet<CouponRaw>(`/coupons/${id}`, apiKey, fetchImpl));
+    } catch (err) {
+      // #2750: um promotion_code inativo pode apontar pra um coupon já DELETADO
+      // → 404. Pula (times_redeemed=0, nenhuma assinatura o usa). Só tolera 404 —
+      // 401/403/5xx (auth/infra) continuam estourando pra não mascarar falha real.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/ → 404[:\s]/.test(msg)) throw err;
+      console.warn(`[coupon-usage] coupon ${id} deletado/ausente (404) — pulado.`);
+    }
   }
 
   const subscriptions = await stripeListAll<SubscriptionRaw>(

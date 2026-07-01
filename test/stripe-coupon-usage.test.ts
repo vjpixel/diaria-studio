@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   aggregateCouponUsage,
+  fetchCouponUsage,
   csvField,
   toCSV,
   isMainModule,
@@ -863,6 +864,72 @@ describe("aggregateCouponUsage — shape clássico REST (#2750)", () => {
     assert.equal(r["NEWS50"].redemptions[0].coupon_id, "cpnTEST50");
     assert.equal(r["NEWS50"].redemptions[0].customer_email, "c1@example.com");
     assert.equal(r["NEWS50"].redemptions[0].first_payment_is_forecast, true, "trial → previsão");
+  });
+});
+
+// Regressão do #2750: um promotion_code inativo aponta pra um coupon DELETADO
+// (404). fetchCouponUsage tem que tolerar o 404 e seguir, sem quebrar o refresh.
+describe("fetchCouponUsage — tolera coupon 404 (#2750)", () => {
+  const mkRes = (status: number, body: unknown): Response =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  const mockFetch = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/promotion_codes?code=NEWS50")) {
+      return mkRes(200, {
+        data: [{ id: "promo_50", object: "promotion_code", active: true, code: "NEWS50", created: 1779210106,
+          coupon: { id: "cpnTEST50", object: "coupon" }, max_redemptions: null, times_redeemed: 1,
+          restrictions: { first_time_transaction: false, minimum_amount: null } }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/promotion_codes?code=NEWS25")) {
+      return mkRes(200, {
+        data: [
+          { id: "promo_25a", object: "promotion_code", active: true, code: "NEWS25", created: 1779209686,
+            coupon: { id: "cpnACTIVE25", object: "coupon" }, max_redemptions: null, times_redeemed: 0,
+            restrictions: { first_time_transaction: false, minimum_amount: null } },
+          { id: "promo_25i", object: "promotion_code", active: false, code: "NEWS25", created: 1779209465,
+            coupon: { id: "cpnGONE", object: "coupon" }, max_redemptions: null, times_redeemed: 0,
+            restrictions: { first_time_transaction: false, minimum_amount: null } },
+        ],
+        has_more: false,
+      });
+    }
+    if (u.includes("/coupons/cpnGONE")) return mkRes(404, { error: { code: "resource_missing" } });
+    if (u.includes("/coupons/cpnTEST50")) {
+      return mkRes(200, { id: "cpnTEST50", object: "coupon", amount_off: null, percent_off: 50, currency: null,
+        duration: "once", duration_in_months: null, name: "NEWS50", times_redeemed: 1, valid: true, max_redemptions: null });
+    }
+    if (u.includes("/coupons/cpnACTIVE25")) {
+      return mkRes(200, { id: "cpnACTIVE25", object: "coupon", amount_off: null, percent_off: 25, currency: null,
+        duration: "repeating", duration_in_months: 3, name: "NEWS25", times_redeemed: 0, valid: true, max_redemptions: null });
+    }
+    if (u.includes("/subscriptions")) {
+      return mkRes(200, {
+        data: [{ id: "sub_1", object: "subscription", customer: "cus_1", status: "trialing",
+          created: 1782383062, start_date: 1782383062, trial_end: 1782987862,
+          items: { data: [{ price: { unit_amount: 44900, currency: "brl", recurring: { interval: "year" } } }] },
+          discounts: [{ id: "di_1", object: "discount", customer: "cus_1", promotion_code: null,
+            coupon: { id: "cpnTEST50", object: "coupon" }, start: 1782383062, end: null, subscription: "sub_1" }] }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/customers/")) return mkRes(200, { id: "cus_1", email: "c1@example.com" });
+    if (u.includes("/charges")) return mkRes(200, { data: [], has_more: false });
+    return mkRes(404, { error: { code: "unexpected" } });
+  }) as unknown as typeof fetch;
+
+  it("não quebra no coupon deletado e produz o report do cupom válido", async () => {
+    const report = await fetchCouponUsage("rk_test_dummy", mockFetch);
+    assert.equal(report["NEWS50"].rowCount, 1, "assinatura NEWS50 casada");
+    assert.equal(report["NEWS50"].redemptions[0].customer_email, "c1@example.com");
+    assert.equal(report["NEWS50"].redemptions[0].first_payment_is_forecast, true, "trial → previsão");
   });
 });
 
