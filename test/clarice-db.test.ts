@@ -278,3 +278,39 @@ test("recomputeDerived: mv_bucket=unknown vira send_eligible=0 + ineligible_reas
 
   db.close();
 });
+
+test("recomputeDerived: mv_unverified via round-trip SQL real (#2656) — tier passa pela SELECT/UPDATE, não só a função pura", () => {
+  const db = openClariceDb(":memory:");
+
+  // tier 3, nunca verificado (mv_bucket NULL) → mv_unverified
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 3)").run("nv@x.com");
+  // tier 3, verificado → elegível
+  db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 3, 'verified')").run("v@x.com");
+  // tier 1 (T1), nunca verificado → elegível mesmo assim (isento)
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 1)").run("t1@x.com");
+  // sem tier (NULL), nunca verificado → mv_unverified também
+  db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("semtier@x.com");
+
+  recomputeDerived(db);
+
+  const get = (email: string) =>
+    db.prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?").get(email) as any;
+
+  const nv = get("nv@x.com");
+  assert.equal(nv.send_eligible, 0);
+  assert.equal(nv.ineligible_reason, "mv_unverified");
+
+  const v = get("v@x.com");
+  assert.equal(v.send_eligible, 1);
+  assert.equal(v.ineligible_reason, null);
+
+  const t1 = get("t1@x.com");
+  assert.equal(t1.send_eligible, 1);
+  assert.equal(t1.ineligible_reason, null);
+
+  const semtier = get("semtier@x.com");
+  assert.equal(semtier.send_eligible, 0);
+  assert.equal(semtier.ineligible_reason, "mv_unverified");
+
+  db.close();
+});

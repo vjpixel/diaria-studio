@@ -85,8 +85,14 @@ function emptyDiv(): DivergenceBlock {
   };
 }
 
-/** Razões que o pipeline ATUAL real já filtra a montante (além de blacklist). */
-const PIPELINE_FILTERED_REASONS = new Set(["mv_rejected", "dispute"]);
+/** Razões que o pipeline ATUAL real já filtra a montante (além de blacklist).
+ *  mv_unverified (#2656): o pipeline atual só trabalha a partir de arquivos
+ *  `*-verified.csv` (curados via verify-emails-mv.ts) — quem nunca foi
+ *  verificado nunca apareceu nesses arquivos, então já era filtrado a montante
+ *  na prática, mesmo sem essa razão existir como rótulo antes deste cutover.
+ *  Sem isso aqui, o dry-run reportaria um "newly_suppressed" gigante sob
+ *  mv_unverified como se fosse uma mudança de comportamento nova. */
+const PIPELINE_FILTERED_REASONS = new Set(["mv_rejected", "dispute", "mv_unverified"]);
 
 export function computeWavesDryrun(
   rows: DryrunRow[],

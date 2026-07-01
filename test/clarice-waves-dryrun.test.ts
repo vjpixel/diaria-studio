@@ -85,6 +85,16 @@ test("computeWavesDryrun: caso real esperado — store == pipeline na supressão
   assert.equal(r.divergence.vs_pipeline.newly_sent, 0);
 });
 
+test("computeWavesDryrun: mv_unverified NÃO conta como divergência nova (#2656) — pipeline atual já só trabalha com *-verified.csv", () => {
+  const r = computeWavesDryrun([
+    row({ email: "ok@x.com", send_eligible: 1 }),
+    row({ email: "nv@x.com", send_eligible: 0, ineligible_reason: "mv_unverified" }),
+  ]);
+  assert.equal(r.current_pipeline.send_pool, r.store.eligible);
+  assert.equal(r.divergence.vs_pipeline.newly_suppressed, 0);
+  assert.equal(r.divergence.vs_pipeline.newly_sent, 0);
+});
+
 test("computeWavesDryrun: warning de derivados stale (blacklisted mas elegível)", () => {
   const r = computeWavesDryrun([
     row({ email: "stale@x.com", email_blacklisted: 1, send_eligible: 1 }), // recompute não rodou

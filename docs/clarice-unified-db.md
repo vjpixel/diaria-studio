@@ -57,7 +57,16 @@ Emails inválidos/disposable/test/role ficam só no audit CSV.
 primeira pela ordem:
 
 `unsubscribed` (ou `emailBlacklisted`) → `hard_bounce` → `complaint` →
-`mv_rejected` → `dispute` → `soft_bounce` (só após **3** soft bounces; transitório).
+`mv_rejected` → `dispute` → `soft_bounce` (só após **3** soft bounces; transitório) →
+`mv_unverified` (#2656 — nunca verificado no MV; tier 1 é isento, único caso).
+
+> ⚠️ **`mv_unverified` é "ainda não processado", não supressão ativa.** Tier != 1
+> (incl. sem-tier) exige `mv_bucket === "verified"` pra ser elegível — "unknown"/
+> nunca-verificado não conta até a verificação MV rodar (sob demanda, por lote,
+> via `verify-emails-mv.ts` + `clarice-build-db.ts`). **Tier 1 só é isento dessa
+> exigência específica** — se um tier-1 carregar `mv_bucket="rejected"` de uma
+> vida anterior como lead (antes de assinar), a razão reportada continua sendo
+> `mv_rejected` (checado antes, tier-agnóstico), não `mv_unverified`.
 
 > ⚠️ **`send_eligible` só é autoritativo após `clarice-sync-brevo.ts` rodar.**
 > Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam
