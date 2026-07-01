@@ -23,6 +23,7 @@ import {
   firstPaymentInfo,
   redemptionWho,
   couponIdFrom,
+  StripeApiError,
   COMMISSION_RATE,
   type PromoCodeRaw,
   type CouponRaw,
@@ -799,6 +800,19 @@ describe("toCSV — quoting de fim-a-fim", () => {
 });
 
 // ---------------------------------------------------------------------------
+// StripeApiError — status estruturado, não regex na mensagem (#2750)
+// ---------------------------------------------------------------------------
+
+describe("StripeApiError (#2750)", () => {
+  it("carrega o status HTTP estruturado (não só na mensagem)", () => {
+    const err = new StripeApiError("/coupons/cpn_x", 404, '{"error":{"code":"resource_missing"}}');
+    assert.equal(err.status, 404);
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /404/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // couponIdFrom — normalização de shape do coupon id (#2750)
 // ---------------------------------------------------------------------------
 
@@ -821,6 +835,15 @@ describe("couponIdFrom (#2750)", () => {
   });
   it("objeto sem coupon nem id → undefined", () => {
     assert.equal(couponIdFrom({ type: "coupon" }), undefined);
+  });
+  it("coupon vazio ('') cai pro fallback id, não retorna string vazia", () => {
+    assert.equal(couponIdFrom({ coupon: "", id: "cpn_fallback" }), "cpn_fallback");
+  });
+  it("coupon aninhado vazio ({id:''}) cai pro fallback id", () => {
+    assert.equal(couponIdFrom({ coupon: { id: "" }, id: "cpn_fallback" }), "cpn_fallback");
+  });
+  it("tudo vazio ('', sem id) → undefined, nunca string vazia", () => {
+    assert.equal(couponIdFrom({ coupon: "", id: "" }), undefined);
   });
 });
 
@@ -930,6 +953,101 @@ describe("fetchCouponUsage — tolera coupon 404 (#2750)", () => {
     assert.equal(report["NEWS50"].rowCount, 1, "assinatura NEWS50 casada");
     assert.equal(report["NEWS50"].redemptions[0].customer_email, "c1@example.com");
     assert.equal(report["NEWS50"].redemptions[0].first_payment_is_forecast, true, "trial → previsão");
+  });
+});
+
+// Regressão CRÍTICA do #2750: um coupon pode ser deletado na Stripe ENQUANTO
+// uma assinatura ainda tem o discount ativo (Stripe permite). Antes do fix,
+// `couponById.get(discCouponId)` vinha undefined e a linha inteira (com
+// paid_cents/commission_cents) era descartada — perda SILENCIOSA de comissão
+// de um cliente que ainda paga. O placeholder garante que a linha sobreviva.
+describe("fetchCouponUsage — coupon deletado MAS ainda usado por assinatura ativa (#2750)", () => {
+  const mkRes = (status: number, body: unknown): Response =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  const mockFetch = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/promotion_codes?code=NEWS50")) {
+      return mkRes(200, { data: [], has_more: false });
+    }
+    if (u.includes("/promotion_codes?code=NEWS25")) {
+      return mkRes(200, {
+        data: [{ id: "promo_25", object: "promotion_code", active: true, code: "NEWS25", created: 1779209686,
+          coupon: { id: "cpnDELETED", object: "coupon" }, max_redemptions: null, times_redeemed: 1,
+          restrictions: { first_time_transaction: false, minimum_amount: null } }],
+        has_more: false,
+      });
+    }
+    // O coupon foi deletado — 404 mesmo sendo referenciado por assinatura ativa.
+    if (u.includes("/coupons/cpnDELETED")) return mkRes(404, { error: { code: "resource_missing" } });
+    if (u.includes("/subscriptions")) {
+      return mkRes(200, {
+        data: [{ id: "sub_paying", object: "subscription", customer: "cus_paying", status: "active",
+          created: 1782383062, start_date: 1782383062, trial_end: null,
+          items: { data: [{ price: { unit_amount: 9990, currency: "brl", recurring: { interval: "month" } } }] },
+          discounts: [{ id: "di_paying", object: "discount", customer: "cus_paying", promotion_code: null,
+            coupon: { id: "cpnDELETED", object: "coupon" }, start: 1782383062, end: null, subscription: "sub_paying" }] }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/customers/")) return mkRes(200, { id: "cus_paying", email: "paying@example.com" });
+    if (u.includes("/charges")) {
+      return mkRes(200, {
+        data: [{ id: "ch_1", object: "charge", customer: "cus_paying", amount: 9990, amount_refunded: 0,
+          created: 1782383062 + 10, status: "succeeded", paid: true }],
+        has_more: false,
+      });
+    }
+    return mkRes(404, { error: { code: "unexpected" } });
+  }) as unknown as typeof fetch;
+
+  it("a redemption SOBREVIVE com paid/comissão corretos, mesmo sem metadados do coupon", async () => {
+    const report = await fetchCouponUsage("rk_test_dummy", mockFetch);
+    assert.equal(report["NEWS25"].rowCount, 1, "assinatura NÃO foi descartada apesar do coupon 404");
+    const row = report["NEWS25"].redemptions[0];
+    assert.equal(row.customer_email, "paying@example.com");
+    assert.equal(row.paid_cents, 9990, "comissão calculada a partir dos charges, não do coupon");
+    assert.equal(row.commission_cents, Math.round(9990 * 0.4));
+    assert.equal(row.percent_off, null, "metadados do coupon deletado são desconhecidos");
+    assert.equal(row.duration, "desconhecido", "placeholder explícito, não confundido com um valor real");
+  });
+});
+
+// Regressão do #2750: só 404 é tolerado. Erros de auth/infra (401/403/5xx) têm
+// que continuar estourando — senão uma chave revogada vira silenciosamente
+// "0 cupons" em vez de falha visível.
+describe("fetchCouponUsage — NÃO tolera erro não-404 (#2750)", () => {
+  const mkRes = (status: number, body: unknown): Response =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  const mockFetch = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/promotion_codes?code=NEWS50")) {
+      return mkRes(200, {
+        data: [{ id: "promo_50", object: "promotion_code", active: true, code: "NEWS50", created: 1779210106,
+          coupon: { id: "cpnX", object: "coupon" }, max_redemptions: null, times_redeemed: 1,
+          restrictions: { first_time_transaction: false, minimum_amount: null } }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/promotion_codes?code=NEWS25")) return mkRes(200, { data: [], has_more: false });
+    // 401 — chave revogada/inválida. NÃO deve ser tolerado como o 404.
+    if (u.includes("/coupons/cpnX")) return mkRes(401, { error: { code: "api_key_expired" } });
+    return mkRes(404, { error: { code: "unexpected" } });
+  }) as unknown as typeof fetch;
+
+  it("propaga o erro (não mascara 401 como se fosse coupon deletado)", async () => {
+    await assert.rejects(() => fetchCouponUsage("rk_test_dummy", mockFetch), /401/);
   });
 });
 

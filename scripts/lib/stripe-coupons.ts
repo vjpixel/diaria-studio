@@ -42,8 +42,10 @@ export interface PromoCodeRaw {
   active: boolean;
   code: string;
   created: number;
-  /** API nova (via MCP): coupon id vem em `promotion.coupon`. */
-  promotion?: { coupon: string; type: string };
+  /** API nova (via MCP): coupon id em `promotion.coupon` — tipado `CouponRef`
+   *  (não `{coupon: string}`) porque `couponIdFrom` também aceita `coupon`
+   *  como objeto aninhado `{id}` nesse wrapper, não só string. */
+  promotion?: CouponRef;
   /** API clássica (REST default): o Coupon vem inline em `coupon`. */
   coupon?: CouponRef;
   max_redemptions: number | null;
@@ -57,7 +59,9 @@ export interface CouponRaw {
   amount_off: number | null;
   percent_off: number | null;
   currency: string | null;
-  duration: "once" | "repeating" | "forever";
+  // #2750: "desconhecido" — placeholder pra coupon 404'd/deletado (metadados
+  // reais indisponíveis; NÃO é um valor real da Stripe).
+  duration: "once" | "repeating" | "forever" | "desconhecido";
   duration_in_months: number | null;
   name: string;
   times_redeemed: number;
@@ -70,8 +74,9 @@ export interface DiscountRaw {
   object: "discount";
   customer: string;
   promotion_code: string | null;
-  /** API nova: coupon id em `source.coupon`. */
-  source?: { coupon: string; type: string };
+  /** API nova: coupon id em `source.coupon` — `CouponRef` pelo mesmo motivo
+   *  do `promotion` acima (`coupon` pode vir aninhado como objeto). */
+  source?: CouponRef;
   /** API clássica: `coupon` é o Coupon inline (objeto) ou um id string. */
   coupon?: CouponRef;
   start: number;
@@ -167,12 +172,14 @@ export interface CouponCodeReport {
  */
 export function couponIdFrom(value: CouponRef): string | undefined {
   if (value == null) return undefined;
-  if (typeof value === "string") return value;
-  if (typeof value.coupon === "string") return value.coupon;
-  if (value.coupon && typeof value.coupon === "object" && typeof value.coupon.id === "string") {
+  if (typeof value === "string") return value || undefined;
+  // Cada checagem exige valor NÃO-vazio antes de aceitar — um campo vazio
+  // ("" ou {} sem id) cai pro próximo fallback em vez de "achar" um id vazio.
+  if (typeof value.coupon === "string" && value.coupon) return value.coupon;
+  if (value.coupon && typeof value.coupon === "object" && value.coupon.id) {
     return value.coupon.id;
   }
-  if (typeof value.id === "string") return value.id;
+  if (typeof value.id === "string" && value.id) return value.id;
   return undefined;
 }
 
@@ -293,7 +300,13 @@ export function aggregateCouponUsage(input: {
   for (const pc of codes) {
     if (!codeToCouponIds.has(pc.code)) codeToCouponIds.set(pc.code, new Set());
     const pcCouponId = couponIdFrom(pc.promotion) ?? couponIdFrom(pc.coupon);
-    if (pcCouponId) codeToCouponIds.get(pc.code)!.add(pcCouponId);
+    if (pcCouponId) {
+      codeToCouponIds.get(pc.code)!.add(pcCouponId);
+    } else {
+      // #2750: shape não reconhecido (nem promotion.coupon nem coupon inline) —
+      // sem isso o code perde silenciosamente esse promotion_code do relatório.
+      console.warn(`[coupon-usage] promotion_code ${pc.id} (${pc.code}): não achei o coupon id — shape não reconhecido.`);
+    }
   }
 
   const couponIdToCode = new Map<string, string>();
@@ -432,6 +445,21 @@ export function aggregateCouponUsage(input: {
 // Portable Stripe fetch helpers — injetável pra testes e Worker-safe
 // ---------------------------------------------------------------------------
 
+/**
+ * #2750: erro tipado com `status` HTTP estruturado — os callers checam
+ * `err.status` (ex.: tolerar 404 de coupon deletado) em vez de fazer regex na
+ * mensagem de texto livre. Mensagem de texto livre acopla o caller ao formato
+ * exato da string, que quebra silenciosamente se `stripeGet` mudar o wording.
+ */
+export class StripeApiError extends Error {
+  readonly status: number;
+  constructor(path: string, status: number, body: string) {
+    super(`Stripe GET ${path} → ${status}: ${body.slice(0, 300)}`);
+    this.name = "StripeApiError";
+    this.status = status;
+  }
+}
+
 async function stripeGet<T>(
   path: string,
   apiKey: string,
@@ -442,7 +470,7 @@ async function stripeGet<T>(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Stripe GET ${path} → ${res.status}: ${body.slice(0, 300)}`);
+    throw new StripeApiError(path, res.status, body);
   }
   return res.json() as Promise<T>;
 }
@@ -501,12 +529,24 @@ export async function fetchCouponUsage(
     try {
       coupons.push(await stripeGet<CouponRaw>(`/coupons/${id}`, apiKey, fetchImpl));
     } catch (err) {
-      // #2750: um promotion_code inativo pode apontar pra um coupon já DELETADO
-      // → 404. Pula (times_redeemed=0, nenhuma assinatura o usa). Só tolera 404 —
-      // 401/403/5xx (auth/infra) continuam estourando pra não mascarar falha real.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/ → 404[:\s]/.test(msg)) throw err;
-      console.warn(`[coupon-usage] coupon ${id} deletado/ausente (404) — pulado.`);
+      // #2750: um coupon pode ter sido DELETADO na Stripe (404) — seja porque o
+      // promotion_code que o referenciava está inativo, seja porque o editor
+      // limpou o coupon enquanto uma assinatura AINDA o usa (Stripe permite
+      // deletar um coupon com discounts ativos). Só tolera 404 — 401/403/5xx
+      // (auth/infra) continuam estourando pra não mascarar falha real.
+      if (!(err instanceof StripeApiError) || err.status !== 404) throw err;
+      // Placeholder: garante que `couponById.get(id)` resolva mesmo sem os
+      // metadados reais do coupon (percent_off/duration), pra que uma
+      // assinatura que ainda referencia esse id NÃO seja descartada da
+      // agregação — o que importa (pago/comissão) vem dos charges, não do
+      // coupon. `duration: "desconhecido"` deixa explícito nos dados que é
+      // um placeholder degradado, não um coupon real.
+      coupons.push({
+        id, object: "coupon", amount_off: null, percent_off: null, currency: null,
+        duration: "desconhecido", duration_in_months: null, name: "(coupon deletado)",
+        times_redeemed: 0, valid: false, max_redemptions: null,
+      });
+      console.warn(`[coupon-usage] coupon ${id} deletado/ausente (404) — metadados indisponíveis, comissão ainda rastreada.`);
     }
   }
 
@@ -516,12 +556,14 @@ export async function fetchCouponUsage(
     fetchImpl,
   );
 
-  const targetCouponIds = new Set(couponIds);
+  // `couponIds` já é o Set completo (inclui os 404'd — de propósito: uma
+  // assinatura ainda pode referenciar um coupon deletado e precisa ser
+  // encontrada/rastreada; ver o placeholder acima).
   const matchedCustomerIds = new Set<string>();
   for (const sub of subscriptions) {
     for (const d of sub.discounts ?? []) {
       const discId = couponIdFrom(d.source) ?? couponIdFrom(d.coupon);
-      if (discId && targetCouponIds.has(discId)) {
+      if (discId && couponIds.has(discId)) {
         matchedCustomerIds.add(sub.customer);
         break;
       }

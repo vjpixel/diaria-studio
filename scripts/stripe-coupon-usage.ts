@@ -44,6 +44,7 @@ export {
   firstPaymentInfo,
   // #2750: normalização de shape do coupon id (versões da Stripe API)
   couponIdFrom,
+  StripeApiError,
   type CouponRef,
   type PromoCodeRaw,
   type CouponRaw,
