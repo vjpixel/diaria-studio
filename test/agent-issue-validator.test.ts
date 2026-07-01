@@ -23,6 +23,8 @@ import {
   isSectionMissingFalsePositive,
   isLinkDeadFalsePositive,
   extractLinkDeadUrl,
+  extractEncodingDropCharAndContext,
+  extractEncodingDropCharTerm,
   filterAgentIssues,
   ISSUE_HANDLERS,
   type FetchFn,
@@ -362,6 +364,93 @@ describe("#2013 — isEncodingDropSectionEmojiByDesign", () => {
     const issue = "email:section_missing: '🚀' seção LANÇAMENTOS ausente";
     const r = isEncodingDropSectionEmojiByDesign(issue);
     assert.equal(r.falsePositive, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2730 — bug real: o formato de PRODUÇÃO de encoding_drop (mapeado de
+// lint-test-email-encoding.ts em review-test-email.md passo 3e) sempre cita
+// 2 termos entre aspas (char + context), nunca 1 — o gate `terms.length !== 1`
+// pré-fix NUNCA disparava nessas issues reais, só nos testes sintéticos com
+// 1 termo. extractEncodingDropCharAndContext/extractEncodingDropCharTerm
+// reconhecem o formato de produção; os testes acima (com 1 termo só) cobrem
+// o formato legado — devem continuar passando inalterados (ver rodada acima).
+// ---------------------------------------------------------------------------
+
+describe("#2730 — extractEncodingDropCharAndContext / extractEncodingDropCharTerm", () => {
+  it("reconhece o formato de produção: codepoint + char + em + context", () => {
+    const issue = "email:encoding_drop: U+1F680 '🚀' em '…texto antes 🚀 LANÇAMENTOS texto depois…'";
+    const r = extractEncodingDropCharAndContext(issue);
+    assert.ok(r);
+    assert.equal(r?.char, "🚀");
+    assert.match(r!.context, /LANÇAMENTOS/);
+  });
+
+  it("retorna null pro formato legado (sem codepoint)", () => {
+    const issue = "email:encoding_drop: '🚀' ausente no header da seção LANÇAMENTOS";
+    assert.equal(extractEncodingDropCharAndContext(issue), null);
+  });
+
+  it("extractEncodingDropCharTerm: usa o char do formato de produção quando presente", () => {
+    const issue = "email:encoding_drop: U+1F4E3 '📣' em '…📣 Patrocinado por…'";
+    assert.equal(extractEncodingDropCharTerm(issue), "📣");
+  });
+
+  it("extractEncodingDropCharTerm: cai pro formato legado (1 termo) quando sem codepoint", () => {
+    assert.equal(extractEncodingDropCharTerm("email:encoding_drop: '📚' ausente"), "📚");
+  });
+
+  it("extractEncodingDropCharTerm: null quando múltiplos termos reais sem codepoint", () => {
+    const issue = "email:encoding_drop: 'pré-treino' e 'funcionários' corrompidos";
+    assert.equal(extractEncodingDropCharTerm(issue), null);
+  });
+});
+
+describe("#2730 — FP real de produção: emoji de header/callout no formato codepoint+char+context", () => {
+  it("FP: 🚀 de LANÇAMENTOS no formato de produção completo (caso real do review-test-email)", () => {
+    const issue = "email:encoding_drop: U+1F680 '🚀' em '…🚀 LANÇAMENTOS\\n\\nApple lança…'";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true);
+    if (r.falsePositive) assert.match(r.reason, /stripKickerEmoji|by-design/i);
+  });
+
+  it("FP: 🎁 de SORTEIO no formato de produção", () => {
+    const issue = "email:encoding_drop: U+1F381 '🎁' em '…🎁 SORTEIO\\n\\nNa última edição…'";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
+  it("FP: 📣 de callout patrocinado no formato de produção", () => {
+    const issue = "email:encoding_drop: U+1F4E3 '📣' em '…📣 Patrocinado por Clarice…'";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
+  it("NÃO é FP: emoji de header cujo contexto NÃO bate o label canônico (💼 fora de header)", () => {
+    // 💼 é multi-propósito (também usado em DESTAQUE labels/links inline) — o
+    // contexto aqui não menciona MERCADO/TRABALHO, então fica conservador (mantém).
+    const issue = "email:encoding_drop: U+1F4BC '💼' em '…confira o link do destaque sobre 💼 startups…'";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, false);
+  });
+
+  it("NÃO é FP: encoding_drop real (acento, não emoji by-design) no formato de produção continua mantido", () => {
+    const issue = "email:encoding_drop: U+00E3 'ã' em '…funcionários da Anthropic confirmaram…'";
+    assert.equal(isEncodingDropSectionEmojiByDesign(issue).falsePositive, false);
+    assert.equal(isEncodingDropCalloutMarkerByDesign(issue).falsePositive, false);
+  });
+
+  it("filterAgentIssues: dropa os FPs de emoji by-design no formato de produção real, mantém corrupção real", async () => {
+    const html = "<p>newsletter renderizada sem emojis nos headers</p>";
+    const issues = [
+      "email:encoding_drop: U+1F680 '🚀' em '…🚀 LANÇAMENTOS\\n\\nprimeiro item…'",
+      "email:encoding_drop: U+1F4E3 '📣' em '…📣 Patrocinado por Clarice…'",
+      "email:encoding_drop: U+00E3 'ã' em '…funcionários confirmaram…'", // real — não está no html
+    ];
+    const r = await filterAgentIssues(issues, html, "260701");
+    assert.equal(r.dropped.length, 2, `esperado 2 FPs dropados: ${JSON.stringify(r.dropped)}`);
+    assert.equal(r.kept.length, 1, `esperado 1 issue real mantida: ${JSON.stringify(r.kept)}`);
+    assert.match(r.kept[0], /U\+00E3/);
   });
 });
 
