@@ -100,8 +100,8 @@ describe("recordBraveCreditEstimate (#2608)", () => {
     const path = makeTmpPath();
     const K = 3, L = 5, J = 2;
     const total = K * 2 + L + J; // 13
-    recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: total }, path);
     const now = new Date("2026-06-27T12:00:00Z");
+    recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: total }, path, now);
     const stats = computeBraveCreditStats("260627", path, now);
     assert.ok(stats.queries_this_month >= total, "queries_this_month deve ser >= count");
     assert.ok(stats.queries_this_edition >= total, "queries_this_edition deve ser >= count");
@@ -122,7 +122,7 @@ describe("recordBraveCreditEstimate (#2608)", () => {
       ].join("\n") + "\n",  // trailing newline to avoid concat with appendFileSync
       "utf8",
     );
-    recordBraveCreditEstimate({ source: "stage1-agents", count: 5 }, path);
+    recordBraveCreditEstimate({ source: "stage1-agents", count: 5 }, path, now);
     const stats = computeBraveCreditStats(null, path, now);
     assert.equal(stats.queries_this_month_real, 2);
     assert.equal(stats.queries_this_month_estimated, 5);

@@ -24,6 +24,12 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
 
 const FIXTURE_PATH = resolve(import.meta.dirname, "fixtures/clarice-fixtures/stripe-customers-fixture.csv");
 
+// `now` fixo (não `new Date()`) — os fixtures têm datas hardcoded (ex: fresh2026
+// criado em 2026-03-15) e as asserções de tier/score dependem de estarem no mesmo
+// semestre/janela de 12mo que `now`. Sem isso, o teste vira flaky em virada de
+// semestre (quebrou de fato às 2026-07-01 — #2724 CI incident).
+const FIXED_NOW = new Date("2026-05-01T12:00:00Z");
+
 /**
  * Nomes de tier agora são descritivos (stripe-export-t{NN}-{slug}.csv, ex:
  * t01-assinantes-ativos, t03-leads-2026-jan-abr) e o slug dos leads é dinâmico
@@ -53,7 +59,7 @@ after(() => {
 
 describe("merge-clarice integration: outputs end-to-end", () => {
   it("gera 10 CSVs t01–t10 + excluded ao rodar main(tempDir)", () => {
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Os 10 tiers (nome descritivo, achado por prefixo t{NN}-):
     for (let t = 1; t <= 10; t++) {
@@ -136,7 +142,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     );
 
     // Roda de novo
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Compara
     for (const [filename, content] of Object.entries(beforeContent)) {
@@ -158,7 +164,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     writeFileSync(join(tmpDataDir, "stripe-export-t04-leads-2099H1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "stripe-export-t05.csv"), "stale\n", "utf8");
 
-    main(tmpDataDir);
+    main(tmpDataDir, FIXED_NOW);
 
     // Devem ter sido removidos
     assert.equal(existsSync(join(tmpDataDir, "kit-import-tier1.csv")), false);
@@ -203,7 +209,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
       join(COHORTS_DIR, "stripe-fixture-cohort3-2026.csv"),
       join(mergeDir, "stripe-cohort3.csv"),
     );
-    main(mergeDir);
+    main(mergeDir, FIXED_NOW);
   });
 
   after(() => {
@@ -313,5 +319,58 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     const soloProb = parseInt(solo!.OPEN_PROBABILITY, 10);
     const dupProb = parseInt(dup!.OPEN_PROBABILITY, 10);
     assert.equal(dupProb - soloProb, 15, "Diff = 15 prova merge somou spend+pmt e aplicou delinquent");
+  });
+});
+
+// ─── Regressão: main() propaga `now` até o cálculo de tier (#2724 CI incident) ─
+
+describe("merge-clarice: main() respeita `now` explícito (não reintroduz new Date() interno)", () => {
+  const COHORTS_DIR = resolve(import.meta.dirname, "fixtures/clarice-fixtures");
+
+  function findContactIn(dir: string, filename: string, email: string): { [k: string]: string } | undefined {
+    const content = readFileSync(join(dir, filename), "utf8");
+    const rows = Papa.parse<{ [k: string]: string }>(content, {
+      header: true,
+      skipEmptyLines: true,
+    }).data;
+    return rows.find((r) => r.email === email);
+  }
+
+  it("mesmo fixture, `now` em semestres diferentes → tiers diferentes p/ fresh2026", () => {
+    // fresh2026 (cohort3) criado em 2026-03-15 (H1 2026). Rodando main() com um
+    // `now` no MESMO semestre, cai em T3 (semestre corrente); com um `now` um
+    // semestre à frente, cai em T4 (1 semestre atrás). Se um refactor futuro
+    // voltar a ignorar o parâmetro `now` (reintroduzindo `new Date()` interno),
+    // as duas rodadas produziriam o MESMO tier (o do relógio real da máquina
+    // rodando o teste) e esta asserção pegaria.
+    const dirSameSemester = mkdtempSync(join(tmpdir(), "merge-now-h1-"));
+    const dirNextSemester = mkdtempSync(join(tmpdir(), "merge-now-h2-"));
+    try {
+      copyFileSync(
+        join(COHORTS_DIR, "stripe-fixture-cohort3-2026.csv"),
+        join(dirSameSemester, "stripe-cohort3.csv"),
+      );
+      copyFileSync(
+        join(COHORTS_DIR, "stripe-fixture-cohort3-2026.csv"),
+        join(dirNextSemester, "stripe-cohort3.csv"),
+      );
+
+      main(dirSameSemester, new Date("2026-05-01T12:00:00Z")); // H1 2026 — mesmo semestre do fixture
+      main(dirNextSemester, new Date("2026-09-01T12:00:00Z")); // H2 2026 — 1 semestre à frente
+
+      const inH1 = findContactIn(dirSameSemester, tierFile(dirSameSemester, 3), "fresh2026@clrctest.com.br");
+      const inH2 = findContactIn(dirNextSemester, tierFile(dirNextSemester, 4), "fresh2026@clrctest.com.br");
+
+      assert.ok(inH1, "com now em H1 2026, fresh2026 deveria estar em T3 (semestre corrente)");
+      assert.ok(inH2, "com now em H2 2026, fresh2026 deveria estar em T4 (1 semestre atrás) — prova que `now` foi propagado, não ignorado");
+      assert.equal(
+        findContactIn(dirSameSemester, tierFile(dirSameSemester, 4), "fresh2026@clrctest.com.br"),
+        undefined,
+        "fresh2026 não deveria estar em T4 quando now está no mesmo semestre do fixture",
+      );
+    } finally {
+      rmSync(dirSameSemester, { recursive: true, force: true });
+      rmSync(dirNextSemester, { recursive: true, force: true });
+    }
   });
 });
