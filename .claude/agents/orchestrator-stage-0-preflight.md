@@ -456,8 +456,21 @@ Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (nã
    npx tsx scripts/filter-subscriber-replies.ts --in data/editions/{AAMMDD}/_internal/captured-replies.json
    ```
    (assunto `Re:` + remetente humano — exclui automáticos `no-reply`/`beehiiv`/`mailer-daemon` e os próprios endereços do editor.)
-4. Para **cada** resposta filtrada (`replies[]`), rascunhar uma resposta **pessoal** (voz do Pixel/Diar.ia: agradecer + responder ao conteúdo da mensagem, curto, assinatura simples) via `mcp__claude_ai_Gmail__create_draft` — **NUNCA `send`** (princípio de segurança CLAUDE.md: só rascunhar; o envio é ação do editor).
-5. **Apresentar no gate** a lista de rascunhos criados (remetente + assunto + 1ª linha do rascunho) pra o editor revisar/editar/descartar no Gmail antes de enviar.
+4. Para **cada** resposta filtrada (`replies[]`):
+   1. Resolver a edição referenciada pelo `subject` (ex: "Re: Diar.ia — 29/06" → `260629`; quando o assunto não tiver data clara, usar a edição mais recente publicada antes da `date` da reply).
+   2. Ler o frontmatter `intentional_error` dessa edição (`data/editions/{edição}/02-reviewed.md` — `category`, `location`, `description`, `correct_value`).
+   3. Rodar o matcher determinístico (#2724) pra decidir se a reply **acertou** o erro intencional:
+      ```bash
+      npx tsx -e "
+        import { matchesIntentionalError, cycleFromEdition, allocateRaffleNumber, loadRaffleRegistry, saveRaffleRegistry } from './scripts/lib/raffle-numbers.ts';
+        // ver scripts/lib/raffle-numbers.ts pra assinatura completa
+      "
+      ```
+      (ou um script ad-hoc curto chamando as funções — `matchesIntentionalError(replyBody, intentionalErrorFrontmatter)`).
+   4. **Se acertou** (e a reply chegou antes do prazo do concurso — checar contra a regra editorial do mês; replies fora do prazo NUNCA recebem número, ex: Edson "Macrosoft fora do prazo"): alocar o próximo número via `allocateRaffleNumber(loadRaffleRegistry("data/raffle-numbers.json"), { cycle: cycleFromEdition(edição), email, nickname, edition }, ...)`, persistir com `saveRaffleRegistry` (idempotente — mesmo email no mesmo ciclo nunca realoca, item 4 da #2724), e incluir no rascunho a linha **"Seu número para o sorteio é {N} — sorteio no dia {data} às {hora}"** (data/hora do sorteio do mês, conferir regra editorial vigente).
+   5. **Se não acertou** (ou está fora do prazo, ou a edição referenciada não tem `intentional_error` declarado): manter a resposta **pessoal** padrão (voz do Pixel/Diar.ia: agradecer + responder ao conteúdo da mensagem, curto, assinatura simples), **sem número** — comportamento atual (casos Edson "Macrosoft fora do prazo" e Joshu "valuation").
+   6. Criar o rascunho via `mcp__claude_ai_Gmail__create_draft` — **NUNCA `send`** (princípio de segurança CLAUDE.md: só rascunhar; o envio é ação do editor).
+5. **Apresentar no gate** a lista de rascunhos criados (remetente + assunto + 1ª linha do rascunho + número do sorteio quando alocado) pra o editor revisar/editar/descartar no Gmail antes de enviar.
 
 Se Gmail MCP indisponível: pular silenciosamente (logar `info "0-replies skipped: Gmail MCP unavailable"`). Nunca bloqueia a edição. Se `pre_gate !== true` (headless `--no-gates`, ou skill isolada sem `pre_gate`): pular silenciosamente (logar `info "0-replies skipped: headless --no-gates"`).
 
