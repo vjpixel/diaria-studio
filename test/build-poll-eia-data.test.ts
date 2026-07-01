@@ -494,3 +494,31 @@ describe("integração: output do buildPollEiaSummaryFromApi aceito por buildPol
     assert.equal(result!.leaderboard[0].display_name, "João");
   });
 });
+
+// ─── pushEiaEngagementToBrevoKv (#2738) ──────────────────────────────────────
+
+describe("pushEiaEngagementToBrevoKv (#2738)", () => {
+  const fakeSummary = {
+    source: "push" as const,
+    last_edition: "260418",
+    editions: [
+      { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 64, correct_choice: "A" },
+    ],
+    leaderboard: [{ display_name: "João", correct: 8, total: 10, streak: 0 }],
+    updated_at: "2026-07-01T09:00:00.000Z",
+  };
+
+  test("sem credenciais Cloudflare: fail-soft, não lança e não trava o --push principal", async () => {
+    const { pushEiaEngagementToBrevoKv } = await import("../scripts/build-poll-eia-data.ts");
+    const origAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const origToken = process.env.CLOUDFLARE_WORKERS_TOKEN;
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_WORKERS_TOKEN;
+    try {
+      await assert.doesNotReject(() => pushEiaEngagementToBrevoKv(fakeSummary));
+    } finally {
+      if (origAccount !== undefined) process.env.CLOUDFLARE_ACCOUNT_ID = origAccount;
+      if (origToken !== undefined) process.env.CLOUDFLARE_WORKERS_TOKEN = origToken;
+    }
+  });
+});

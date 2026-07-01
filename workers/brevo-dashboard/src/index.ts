@@ -326,6 +326,28 @@ export interface ContactsSummary {
   engagement: { with_opens: number; with_clicks: number };
 }
 
+// #2738: engajamento do poll "É IA?" por edição, gravado por
+// scripts/build-poll-eia-data.ts --push (reusa buildPollEiaSummaryFromApi,
+// que já busca os endpoints públicos de poll.diaria.workers.dev pro OUTRO
+// dashboard — workers/diaria-dashboard). Payload SLIM (só o necessário pra
+// esta tabela) — sem PII (nicknames/leaderboard ficam só no diaria-dashboard).
+export const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
+
+export interface EiaEngagementEdition {
+  /** AAMMDD */
+  edition: string;
+  total_votes: number;
+  voted_a: number;
+  voted_b: number;
+  pct_correct: number | null;
+  correct_choice: string | null;
+}
+
+export interface EiaEngagementSummary {
+  editions: EiaEngagementEdition[];
+  updated_at: string | null;
+}
+
 // #2733: TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY). 1h — a janela
 // de rate-limit da Brevo cabe folgada.
 export const LASTGOOD_TTL = 3600;
@@ -398,17 +420,19 @@ export async function readKvTabs(
   mvStatus: MvStatus | null;
   contactsSummary: ContactsSummary | null;
   couponUsage: CouponUsageReport | null;
+  eiaEngagement: EiaEngagementSummary | null;
 }> {
-  // As 4 leituras são independentes → paralelas (importa no fallback de 429,
+  // As 5 leituras são independentes → paralelas (importa no fallback de 429,
   // que está no caminho crítico do render stale).
   const kv = env.STATS_CACHE;
-  const [cohorts, mvStatus, contactsSummary, couponUsage] = await Promise.all([
+  const [cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement] = await Promise.all([
     kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
     kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
     kv ? (kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) as Promise<ContactsSummary | null>) : Promise.resolve(null),
     getCouponUsage(env, isFresh),
+    kv ? (kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) as Promise<EiaEngagementSummary | null>) : Promise.resolve(null),
   ]);
-  return { cohorts, mvStatus, contactsSummary, couponUsage };
+  return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
 }
 
 /**
@@ -431,7 +455,7 @@ export async function buildRateLimitFallback(
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
     .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage } = await readKvTabs(env, false);
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, false);
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -448,6 +472,7 @@ export async function buildRateLimitFallback(
       mvStatus,
       contactsSummary,
       couponUsage,
+      eiaEngagement,
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1323,6 +1348,7 @@ export function renderDashboardHtml(
   mvStatus: MvStatus | null = null, // #2609: status MV por grupo
   contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
+  eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -1470,6 +1496,8 @@ export function renderDashboardHtml(
   // do que o pedido pede; ver corpo do PR).
   // #2653: sumário do store único de contatos (pré-computado via KV).
   const contactsSummarySection = renderContactsSummarySection(contactsSummary);
+  // #2738: engajamento do poll "É IA?" por edição (pré-computado via KV).
+  const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
   const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage) : "";
 
@@ -1710,6 +1738,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 ${cohortsSection}
 ${weekdaySection}
 ${abcSection}
+${eiaEngagementSection}
   </div><!-- /panel-engajamento -->
 
   <!-- Aba 3: Links / CTR — links agregados do período -->
@@ -2997,6 +3026,60 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
 }
 
 /**
+ * #2738: renderiza a tabela de engajamento do poll "É IA?" por edição.
+ * Stub gracioso quando `eiaEngagement` é null (KV não populado ainda) ou sem
+ * edições. Dado gravado por `scripts/build-poll-eia-data.ts --push` (reusa a
+ * mesma agregação já usada pro workers/diaria-dashboard — sem pipeline nova).
+ * Exportado pra teste unitário.
+ */
+export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary | null): string {
+  if (!eiaEngagement || eiaEngagement.editions.length === 0) {
+    return `
+<section class="phase2-section" id="eia-engagement">
+  <h2 class="section-title">Engajamento — É IA?</h2>
+  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> para popular.</p>
+</section>`;
+  }
+
+  const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
+  // Defensivo: reordena desc por edição mesmo que o KV já venha ordenado —
+  // o render não deve confiar cegamente na ordem gravada por outro script.
+  const sorted = [...eiaEngagement.editions].sort((a, b) => (b.edition > a.edition ? 1 : -1));
+
+  const tableRows = sorted.map((e) => {
+    const total = e.total_votes.toLocaleString("pt-BR");
+    const pctFmt = e.pct_correct != null ? `${e.pct_correct.toFixed(1)}%` : "—";
+    return `<tr>
+      <td><strong>${escHtml(e.edition)}</strong></td>
+      <td>${total}</td>
+      <td>${e.voted_a.toLocaleString("pt-BR")}</td>
+      <td>${e.voted_b.toLocaleString("pt-BR")}</td>
+      <td>${escHtml(pctFmt)}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `
+<section class="phase2-section" id="eia-engagement">
+  <h2 class="section-title">Engajamento — É IA?</h2>
+  <p class="section-note">Votos no poll "É IA?" por edição (últimas ${sorted.length}), mais recente primeiro.${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Edição (AAMMDD)">Edição</th>
+        <th title="Total de votos registrados">Votos</th>
+        <th title="Votos na opção A">A</th>
+        <th title="Votos na opção B">B</th>
+        <th title="Porcentagem de acerto (— se abaixo do threshold ou resposta correta não configurada)">% acerto</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
  * #2718: renderiza o painel de cupons Stripe (Aba 5).
  * Chamada APENAS quando couponUsage != null (tab habilitada + flag ON + STRIPE_API_KEY presente).
  * Exportada para testes unitários de PII-off.
@@ -3407,8 +3490,8 @@ export default {
         const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-        const { cohorts, mvStatus, contactsSummary, couponUsage } = await readKvTabs(env, isFresh);
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage);
+        const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh);
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",

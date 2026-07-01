@@ -48,8 +48,10 @@ import {
   WEEKDAY_MIN_AGE_HOURS,
   renderMvStatusSection,
   MV_STATUS_KV_KEY,
+  renderEiaEngagementSection,
+  EIA_ENGAGEMENT_KV_KEY,
 } from "../workers/brevo-dashboard/src/index.ts";
-import type { MvStatus } from "../workers/brevo-dashboard/src/index.ts";
+import type { MvStatus, EiaEngagementSummary } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -2340,5 +2342,76 @@ describe("regressão #2619 bug D: computeMvStatus emite 'pending' quando ciclo e
     } finally {
       teardown();
     }
+  });
+});
+
+// ─── #2738: renderEiaEngagementSection ────────────────────────────────────────
+
+describe("regressão #2738: renderEiaEngagementSection", () => {
+  test("EIA_ENGAGEMENT_KV_KEY é 'eia:engagement'", () => {
+    assert.equal(EIA_ENGAGEMENT_KV_KEY, "eia:engagement");
+  });
+
+  test("stub gracioso quando eiaEngagement é null", () => {
+    const html = renderEiaEngagementSection(null);
+    assert.match(html, /id="eia-engagement"/, "deve ter âncora eia-engagement");
+    assert.match(html, /build-poll-eia-data\.ts/, "deve indicar o script para gerar dados");
+    assert.doesNotMatch(html, /undefined/, "não deve ter 'undefined' no HTML");
+  });
+
+  test("stub gracioso também quando editions está vazio (não tabela vazia)", () => {
+    const html = renderEiaEngagementSection({ editions: [], updated_at: "2026-07-01T09:00:00.000Z" });
+    assert.match(html, /build-poll-eia-data\.ts/, "editions vazio deve mostrar orientação, não tbody vazia");
+    assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
+  });
+
+  test("renderiza tabela por edição com votos e % de acerto, mais recente primeiro", () => {
+    const data: EiaEngagementSummary = {
+      editions: [
+        // fora de ordem de propósito — o render deve reordenar desc
+        { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A" },
+        { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A" },
+      ],
+      updated_at: "2026-07-01T09:00:00.000Z",
+    };
+    const html = renderEiaEngagementSection(data);
+    assert.match(html, /260418/);
+    assert.match(html, /260415/);
+    assert.match(html, /63\.8%/);
+    assert.match(html, /66\.7%/);
+    // mais recente (260418) vem ANTES de 260415, mesmo com o input fora de ordem.
+    assert.ok(html.indexOf("260418") < html.indexOf("260415"), "260418 (mais recente) deve vir antes de 260415");
+  });
+
+  test("pct_correct null → '—' (não 'null' nem 'NaN%')", () => {
+    const data: EiaEngagementSummary = {
+      editions: [
+        { edition: "260418", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null },
+      ],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(data);
+    assert.match(html, />—</, "deve mostrar travessão quando pct_correct é null");
+    assert.doesNotMatch(html, /null/i);
+    assert.doesNotMatch(html, /NaN/);
+  });
+
+  test("sem updated_at: não mostra o texto 'Atualizado às'", () => {
+    const data: EiaEngagementSummary = {
+      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(data);
+    assert.doesNotMatch(html, /Atualizado às/);
+  });
+
+  test("panel-engajamento inclui a seção eia-engagement (renderDashboardHtml)", () => {
+    const eiaEngagement: EiaEngagementSummary = {
+      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }],
+      updated_at: "2026-07-01T09:00:00.000Z",
+    };
+    const html = renderDashboardHtml([], [], null, null, null, null, eiaEngagement);
+    const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
+    assert.match(panel, /id="eia-engagement"/, "seção eia-engagement deve estar dentro do panel Engajamento");
   });
 });

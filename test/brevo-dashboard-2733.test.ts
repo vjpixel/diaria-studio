@@ -30,6 +30,7 @@ import {
   COHORTS_KV_KEY,
   MV_STATUS_KV_KEY,
   CONTACTS_SUMMARY_KV_KEY,
+  EIA_ENGAGEMENT_KV_KEY,
   LASTGOOD_CAMPAIGNS_KEY,
   type ContactsSummary,
 } from "../workers/brevo-dashboard/src/index.ts";
@@ -87,32 +88,36 @@ function makeKv(initial: Record<string, string>) {
 }
 
 describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
-  it("readKvTabs lê as 4 seções KV (Cupons/Contatos/coortes/MV) independente do Brevo", async () => {
+  it("readKvTabs lê as 5 seções KV (Cupons/Contatos/coortes/MV/É IA?) independente do Brevo", async () => {
     const kv = makeKv({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
       [COHORTS_KV_KEY]: JSON.stringify({ marker: "cohorts-fixture" }),
       [MV_STATUS_KV_KEY]: JSON.stringify({ marker: "mv-fixture" }),
+      [EIA_ENGAGEMENT_KV_KEY]: JSON.stringify({ editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }], updated_at: "2026-07-01T09:00:00.000Z" }),
     });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { couponUsage, contactsSummary, cohorts, mvStatus } = await readKvTabs(env as any, false);
+    const { couponUsage, contactsSummary, cohorts, mvStatus, eiaEngagement } = await readKvTabs(env as any, false);
     assert.notEqual(couponUsage, null, "Cupons deve vir do KV");
     assert.deepEqual(couponUsage, syntheticCoupons);
     assert.notEqual(contactsSummary, null, "Contatos deve vir do KV");
     assert.equal(contactsSummary?.total, 100);
     assert.notEqual(cohorts, null, "coortes devem vir do KV");
     assert.notEqual(mvStatus, null, "status MV deve vir do KV");
+    assert.notEqual(eiaEngagement, null, "engajamento do É IA? deve vir do KV (#2738)");
+    assert.equal(eiaEngagement?.editions[0]?.edition, "260418");
   });
 
   it("readKvTabs retorna null para seções ausentes no KV (sem crashar)", async () => {
     const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { cohorts, mvStatus, contactsSummary } = await readKvTabs(env as any, false);
+    const { cohorts, mvStatus, contactsSummary, eiaEngagement } = await readKvTabs(env as any, false);
     assert.equal(cohorts, null);
     assert.equal(mvStatus, null);
     assert.equal(contactsSummary, null);
+    assert.equal(eiaEngagement, null, "#2738: também deve degradar pra null sem quebrar");
   });
 
   it("render com campanhas STALE vazias + cupons frescos → aba de Cupons presente", () => {
