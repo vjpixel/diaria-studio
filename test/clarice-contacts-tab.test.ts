@@ -56,6 +56,32 @@ test("renderContactsSummarySection: renderiza tier/razões/pontos/mv/engajamento
   assert.match(html, /2[.,]?219/); // engajamento with_opens
 });
 
+test("renderContactsSummarySection: sem priority_points_histogram (KV pré-#2731) → cai pras faixas antigas", () => {
+  // `sample` não tem priority_points_histogram — confirma o fallback gracioso.
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /41–80/, "faixa antiga presente (fallback)");
+  assert.doesNotMatch(html, /valor exato/, "não deve mostrar o cabeçalho do histograma novo sem o campo");
+});
+
+test("renderContactsSummarySection: com priority_points_histogram → valores exatos, ordenados DESC (#2731)", () => {
+  const withHistogram: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "-3": 2, "0": 427520, "15": 40, "80": 3, null: 12 },
+  };
+  const html = renderContactsSummarySection(withHistogram);
+  assert.match(html, /valor exato/, "cabeçalho do histograma novo presente");
+  assert.doesNotMatch(html, /41–80/, "faixas antigas NÃO aparecem quando o histograma existe");
+  assert.match(html, /sem pontuação/, "null vira rótulo 'sem pontuação'");
+  // Ordem: maior valor primeiro (fila de re-envio, #2731 — comentário do editor).
+  const idx80 = html.indexOf(">80<");
+  const idx15 = html.indexOf(">15<");
+  const idx0 = html.indexOf(">0<");
+  const idxNeg3 = html.indexOf(">-3<");
+  const idxNull = html.indexOf("sem pontuação");
+  assert.ok(idx80 < idx15 && idx15 < idx0 && idx0 < idxNeg3, "ordem numérica DESC: 80 > 15 > 0 > -3");
+  assert.ok(idxNeg3 < idxNull, "'sem pontuação' (null) vai por último, depois do menor valor numérico");
+});
+
 test("renderContactsSummarySection: label do by_tier deixa explícito o escopo 1º envio (#2732)", () => {
   // #2732: tier só é preditor válido pra quem NUNCA recebeu email
   // (segmentFromStore/computeStoreSummary já excluem sends_count>0 do by_tier

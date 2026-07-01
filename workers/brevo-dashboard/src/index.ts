@@ -320,6 +320,8 @@ export interface ContactsSummary {
     gt80: number;
     optin: number;
   };
+  // #2731: distribuição por valor exato (opcional — KV pré-#2731 não tem).
+  priority_points_histogram?: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -2903,6 +2905,27 @@ export function renderContactsSummarySection(
     "41–80": pp.p41_80,
     ">80": pp.gt80,
   };
+  // #2731: distribuição por VALOR EXATO de priority_points, ordenada
+  // NUMERICAMENTE DESC pelo valor (não pela contagem, ao contrário de
+  // `kvTable`) — reflete a ordem real da fila de re-envio (maior pontuação
+  // recebe primeiro). "null" (sem pontuação atribuída ainda) vai por último.
+  const renderPriorityPointsHistogram = (hist: Record<string, number>): string => {
+    const sorted = Object.entries(hist).sort(([a], [b]) => {
+      const na = a === "null" ? -Infinity : Number(a);
+      const nb = b === "null" ? -Infinity : Number(b);
+      return nb - na;
+    });
+    const rows = sorted.map(([k, v]) =>
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
+    ).join("\n");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  };
+  // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
+  const priorityPointsSection = s.priority_points_histogram
+    ? renderPriorityPointsHistogram(s.priority_points_histogram)
+    : kvTable("priority_points (re-envio, por faixa — aguardando refresh #2731)", ppMap);
   const brevoBadge = brevo.has_signal
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
@@ -2913,7 +2936,7 @@ export function renderContactsSummarySection(
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
   ${kvTable("Por tier (1º envio)", s.by_tier, tierLabel)}
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
-  ${kvTable("priority_points (re-envio)", ppMap)}
+  ${priorityPointsSection}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
 </section>`;

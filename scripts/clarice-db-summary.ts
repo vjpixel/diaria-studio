@@ -47,6 +47,13 @@ export interface StoreSummary {
     gt80: number;
     optin: number;
   };
+  // #2731: distribuição por VALOR EXATO de priority_points (não em faixas) —
+  // Record<string, number> (chave = valor como string, "null" = sem pontuação
+  // atribuída ainda). O render mostra isso como visão primária, ordenado
+  // numérico DESC pelo valor (fila de re-envio: maior pontuação primeiro);
+  // `priority_points` (faixas, acima) mantido pra contexto/fallback de KV
+  // pré-#2731.
+  priority_points_histogram: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -130,6 +137,12 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
       // ainda ausentes do store.
       optin: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_optin=1"),
     },
+    // #2731: distribuição por valor exato — groupCounts já trata NULL como
+    // chave "null" (mesmo padrão de `mv`/`by_reason`/`by_tier` acima).
+    priority_points_histogram: groupCounts(
+      db,
+      "SELECT priority_points AS k, COUNT(*) n FROM clarice_users GROUP BY priority_points",
+    ),
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",

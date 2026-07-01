@@ -47,6 +47,14 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   // invariante: as 5 faixas particionam o total (nenhuma linha cai fora — pega NULL)
   const pp = s.priority_points;
   assert.equal(pp.lt0 + pp.eq0 + pp.p1_40 + pp.p41_80 + pp.gt80, s.total);
+  // #2731: distribuição por VALOR EXATO — e:+40 (optin), b:+60 (3×20), a,d:0, c:-20.
+  const hist = s.priority_points_histogram;
+  assert.equal(hist["40"], 1, "e: optin +40");
+  assert.equal(hist["60"], 1, "b: 3 opens ×20");
+  assert.equal(hist["0"], 2, "a, d");
+  assert.equal(hist["-20"], 1, "c");
+  // invariante: a soma do histograma também particiona o total.
+  assert.equal(Object.values(hist).reduce((s2, v) => s2 + v, 0), s.total);
   // mv: verified (a,b)=2; none (c,d,e)=3
   assert.equal(s.mv["verified"], 2);
   assert.equal(s.mv["none"], 3);
