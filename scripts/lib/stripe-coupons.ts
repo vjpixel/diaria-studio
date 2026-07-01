@@ -298,9 +298,9 @@ export function aggregateCouponUsage(input: {
       (sum, r) => sum + r.discount_value_cents,
       0,
     );
-    entry.totalPaidCents = entry.redemptions.reduce((sum, r) => sum + r.paid_cents, 0);
+    entry.totalPaidCents = entry.redemptions.reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
     entry.totalCommissionCents = entry.redemptions.reduce(
-      (sum, r) => sum + r.commission_cents,
+      (sum, r) => sum + (r.commission_cents ?? 0),
       0,
     );
   }
