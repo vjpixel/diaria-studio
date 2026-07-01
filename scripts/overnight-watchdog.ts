@@ -335,6 +335,14 @@ export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_
 export interface WatchdogDiagnosis {
   action: WatchdogDiagnosisAction;
   lines: string[];
+  /**
+   * #2781: `elapsedMin` era recomputado de forma duplicada aqui dentro E em
+   * `main()` (mesma fórmula, 2 lugares) — risco de re-divergir se um dos dois
+   * mudar sem o outro (o mesmo padrão que motivou a extração original de
+   * `diagnoseWatchdogActivity`, ver docstring acima). Agora `main()` reusa
+   * este valor em vez de recalcular.
+   */
+  elapsedMin: number;
 }
 
 /**
@@ -361,6 +369,7 @@ export function diagnoseWatchdogActivity(params: {
   thresholdMin: number;
 }): WatchdogDiagnosis {
   const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin } = params;
+  const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
 
   if (lastActivityMs === 0) {
     const prefix = dryRun ? "[watchdog] DRY-RUN — " : "[watchdog] ";
@@ -368,10 +377,10 @@ export function diagnoseWatchdogActivity(params: {
     return {
       action: "skip_unknown_activity",
       lines: [`${prefix}Rodada ativa ${aammdd} mas sem timestamp de atividade. Skipping${suffix}.`],
+      elapsedMin,
     };
   }
 
-  const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
   const isStall = detectStall(lastActivityMs, nowMs, thresholdMin);
 
   if (dryRun) {
@@ -383,6 +392,7 @@ export function diagnoseWatchdogActivity(params: {
         `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
         `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"} (dry-run, sem writes/alertas)`,
       ],
+      elapsedMin,
     };
   }
 
@@ -390,10 +400,11 @@ export function diagnoseWatchdogActivity(params: {
     return {
       action: "no_stall",
       lines: [`[watchdog] Rodada ${aammdd} ativa, sem stall (${elapsedMin}/${thresholdMin} min).`],
+      elapsedMin,
     };
   }
 
-  return { action: "stall", lines: [] };
+  return { action: "stall", lines: [], elapsedMin };
 }
 
 async function main(): Promise<void> {
@@ -420,11 +431,6 @@ async function main(): Promise<void> {
     logLastTs,
   );
 
-  // elapsedMin recomputado aqui só para o bloco STALL abaixo (emitRunLogEvent,
-  // renderHaltBanner, alerta Telegram) — a decisão de branch (skip/dry-run/
-  // no-stall/stall) já saiu de `diagnoseWatchdogActivity` abaixo.
-  const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
-
   const diagnosis = diagnoseWatchdogActivity({
     aammdd,
     dryRun,
@@ -437,6 +443,13 @@ async function main(): Promise<void> {
   for (const line of diagnosis.lines) console.log(line);
 
   if (diagnosis.action !== "stall") return;
+
+  // #2781: `elapsedMin` usado no bloco STALL abaixo (emitRunLogEvent,
+  // renderHaltBanner, alerta Telegram) vem de `diagnosis.elapsedMin` — não é
+  // recomputado aqui. Antes essa mesma fórmula existia duplicada em
+  // `diagnoseWatchdogActivity` E em `main()`, com risco de os 2 valores
+  // divergirem se um fosse alterado sem o outro.
+  const { elapsedMin } = diagnosis;
 
   // --- STALL DETECTADO ---
 

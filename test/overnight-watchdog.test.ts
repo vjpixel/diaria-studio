@@ -397,6 +397,10 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
     assert.ok(result.lines.some((l) => /STALL detectado/.test(l)));
     // elapsed deve ser plausível (90 min), não o valor absurdo de décadas do bug original
     assert.ok(result.lines.some((l) => /Inatividade: 90 min/.test(l)));
+    // #2781: elapsedMin agora é exposto no resultado — precisa bater com o
+    // valor embutido na mensagem de diagnóstico acima (mesma fonte, sem
+    // recomputação duplicada em main()).
+    assert.equal(result.elapsedMin, 90);
   });
 
   it("não-dry-run + atividade > threshold → action=stall (dispara o bloco de tratamento em main())", () => {
@@ -410,6 +414,10 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       thresholdMin: 60,
     });
     assert.equal(result.action, "stall");
+    // #2781: main() usa diagnosis.elapsedMin no bloco STALL (emitRunLogEvent,
+    // renderHaltBanner, alerta Telegram) em vez de recomputar — precisa bater
+    // com o elapsed real (90 min), não ser recalculado separadamente.
+    assert.equal(result.elapsedMin, 90);
   });
 
   it("não-dry-run + atividade < threshold → no_stall", () => {
@@ -423,5 +431,19 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       thresholdMin: 60,
     });
     assert.equal(result.action, "no_stall");
+    assert.equal(result.elapsedMin, 5);
+  });
+
+  it("#2781: skip_unknown_activity ainda popula elapsedMin (não usado pelo caller neste branch, mas o campo é sempre presente no shape do retorno)", () => {
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs: 0,
+      lastSource: "nenhuma",
+      nowMs,
+      thresholdMin: 60,
+    });
+    assert.equal(result.action, "skip_unknown_activity");
+    assert.equal(typeof result.elapsedMin, "number");
   });
 });

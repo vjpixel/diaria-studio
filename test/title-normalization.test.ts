@@ -238,3 +238,70 @@ describe("extractAllTitles — não coleta linhas de corpo (#2664/#2672 follow-u
     assert.equal(result.errors.length, 1);
   });
 });
+
+// ===========================================================================
+// #2778 — extractAllTitles herda a exceção `t !== category` de
+// walkDestaqueTitles (#2693): decisão consciente, documentada em
+// destaque-title-walk.ts. Regressão: categoria do destaque == nome de uma
+// seção secundária real (ex: "LANÇAMENTOS"), com a linha de header aparecendo
+// DENTRO do corpo do destaque, ANTES do terminador real (URL/"Por que isso
+// importa"). Sem o guard `t !== category`, essa linha solta seria tratada
+// como header de seção secundária e encerraria a coleta prematuramente —
+// qualquer título real posterior (o inline link abaixo, com ponto final)
+// deixaria de ser visto pelos lints de título (#2664/#2672).
+// ===========================================================================
+
+describe("extractAllTitles — herda guard t !== category do walker compartilhado (#2778)", () => {
+  it("categoria do destaque == seção secundária real ('LANÇAMENTOS'): NÃO encerra a coleta prematuramente", () => {
+    const md = [
+      "DESTAQUE 1 | LANÇAMENTOS",
+      "",
+      // Linha solta que repete o nome da categoria — bate SECTION_HEADER_LINE_RE,
+      // mas t === category, então o walker NÃO deve tratá-la como terminador.
+      "LANÇAMENTOS",
+      "",
+      // Título real, DEPOIS da linha solta — só é alcançado se a coleta
+      // continuar além da linha "LANÇAMENTOS" acima.
+      "[Nova plataforma de IA chega ao mercado brasileiro.](https://example.com/lancamento)",
+      "",
+      "Por que isso importa: contexto relevante aqui.",
+      "",
+      "---",
+    ].join("\n");
+
+    const result = checkTitleTrailingPeriod(md);
+    assert.equal(
+      result.ok,
+      false,
+      "título real após a linha solta 'LANÇAMENTOS' deve continuar sendo enxergado e flagrado (ponto final)",
+    );
+    assert.ok(
+      result.errors.some((e) =>
+        e.title.startsWith("Nova plataforma de IA chega ao mercado brasileiro"),
+      ),
+      "o título do inline link pós-'LANÇAMENTOS' precisa aparecer nos erros",
+    );
+  });
+
+  it("categoria do destaque == seção secundária real: sufixo de veículo pós-linha-solta também é flagrado", () => {
+    const md = [
+      "DESTAQUE 1 | LANÇAMENTOS",
+      "",
+      "LANÇAMENTOS",
+      "",
+      "[Nova plataforma de IA chega ao Brasil - Canaltech](https://example.com/lancamento2)",
+      "",
+      "Por que isso importa: contexto relevante aqui.",
+      "",
+      "---",
+    ].join("\n");
+
+    const result = checkTitlePublisherSuffix(md);
+    assert.equal(
+      result.ok,
+      false,
+      "sufixo de veículo em título pós-'LANÇAMENTOS' deve continuar sendo flagrado",
+    );
+    assert.equal(result.errors[0].suffix, "Canaltech");
+  });
+});
