@@ -54,6 +54,7 @@ import type { SourceEntry } from "./lib/source-runs.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
   DashboardData,
@@ -588,10 +589,20 @@ export function extractPublishedUseMelhorUrls(reviewedMdPath: string): Set<strin
   // #2634: further require that ** bold lines contain a KNOWN section-name keyword to avoid
   // cutting the section early when the editor writes a bold-only tool name (**Ferramenta X**)
   // followed by its URL on the next line — a valid but non-canonical item format.
-  const sectionEndMatch =
-    /\n(?:---|#|\*\*(?!\[)[^\n]*(?:DESTAQUE\s+\d|USE MELHOR|LAN[ÇC]A|RADAR|V[ÍI]DEO|NOT[ÍI]CIA|PESQUISA|ERRO INTENCIONAL|SORTEIO)[^\n]*\*\*\s*(?=\n|$))/i.exec(
-      afterHeader,
-    );
+  // #2707: the section-name alternatives (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS/PESQUISAS/
+  // OUTRAS NOTÍCIAS) reuse the canonical `ALL_SECTION_NAMES_PATTERN` from section-naming.ts
+  // instead of a hand-duplicated list that had already drifted (missing the `S?`/`\s+` leniency
+  // section-naming.ts consolidated in #1737). `NOT[ÍI]CIA` (bare, without the "OUTRAS" prefix
+  // section-naming.ts requires) is kept as an extra literal — it's a defensive catch-all for a
+  // plain "NOTÍCIAS" header some old edições used, not a name in the SECTIONS registry, so it
+  // can't be folded into ALL_SECTION_NAMES_PATTERN without narrowing behavior (regression risk
+  // for the #2627 boundary test). DESTAQUE/ERRO INTENCIONAL/SORTEIO aren't secondary sections
+  // either — they stay as literals for the same reason.
+  const SECTION_END_KEYWORDS = `DESTAQUE\\s+\\d|${ALL_SECTION_NAMES_PATTERN}|NOT[ÍI]CIA|ERRO INTENCIONAL|SORTEIO`;
+  const sectionEndMatch = new RegExp(
+    `\\n(?:---|#|\\*\\*(?!\\[)[^\\n]*(?:${SECTION_END_KEYWORDS})[^\\n]*\\*\\*\\s*(?=\\n|$))`,
+    "i",
+  ).exec(afterHeader);
   const sectionText = sectionEndMatch ? afterHeader.slice(0, sectionEndMatch.index) : afterHeader;
   // Extrai todas as URLs do texto da seção, tolerando parênteses balanceados (#2596).
   // Retorna Set vazio (não null) quando seção existe mas editor removeu todos os itens —

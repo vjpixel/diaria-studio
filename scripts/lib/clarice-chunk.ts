@@ -236,8 +236,19 @@ export function mergeChunkSuggestions(
  * Núcleo compartilhado: encontra a última posição de corte para `re` dentro de
  * `text`, considerando apenas posições ≥ `minCut`. Retorna -1 se não encontrado.
  * `re` deve ter a flag `g` e ser criado em cada chamada (regex stateful via exec).
+ *
+ * #2705: sem a flag `g`, `RegExp.prototype.exec` nunca avança `lastIndex` — o
+ * `while` abaixo receberia sempre o mesmo primeiro match e travaria em loop
+ * infinito. Os 2 callers atuais (`findLastSectionBoundary`, `findLastParagraphBoundary`)
+ * sempre passam um regex `/g` literal fresco, mas a assinatura aceita qualquer
+ * `RegExp` sem enforcement — um erro de caller aqui travaria silenciosamente em
+ * vez de falhar. Fail loud: documenta o contrato explicitamente em vez de
+ * "consertar" silenciosamente o input (ex: recriando o regex com `g`).
  */
-function findLastBoundary(text: string, re: RegExp, minCut: number): number {
+export function findLastBoundary(text: string, re: RegExp, minCut: number): number {
+  if (!re.global) {
+    throw new Error("findLastBoundary requer regex com flag g");
+  }
   let lastMatch = -1;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {

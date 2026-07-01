@@ -120,6 +120,24 @@ export function isIntentionalErrorClaim(
 }
 
 /**
+ * #2634/#2707: fronteira canônica de um header "DESTAQUE N" — o número seguido
+ * de um pipe (com whitespace opcional antes, ex: "DESTAQUE 1 | MERCADO") ou de
+ * fim de linha. Sem esse ancoramento, texto de CORPO como "DESTAQUE 2 foi
+ * importante porque..." também casa (o "2" é seguido por um espaço, que já
+ * satisfazia um `\s` solto) e é confundido com o início/fim de um header real.
+ *
+ * Compartilhado entre `markerRe` (start-boundary, âncora no `destaque` exato)
+ * e `nextMatch` (end-boundary, âncora em qualquer `\d+`) para as duas fronteiras
+ * não voltarem a divergir — #2634 corrigiu só o end-boundary; #2707 estendeu o
+ * mesmo fix ao start-boundary, que tinha o mesmo bug-class.
+ * `\s*(?:\||$)` (item 2 #2707) é a forma fatorada e equivalente de
+ * `(?:\s*\||\s*$)`.
+ */
+function destaqueHeaderPattern(numPattern: string): string {
+  return String.raw`DESTAQUE\s+${numPattern}\s*(?:\||$)`;
+}
+
+/**
  * Encontra o range (start, end) do bloco "DESTAQUE N" no conteúdo, excluindo
  * o frontmatter. Retorna null se o destaque não for encontrado.
  *
@@ -138,8 +156,10 @@ export function findDestaqueBodyRange(
   }
   const body = content.slice(bodyStart);
 
-  // Encontrar marcador "DESTAQUE N" no início de linha
-  const markerRe = new RegExp(`(?:^|\\n)(DESTAQUE\\s+${destaque}(?:\\s|$))`, "i");
+  // Encontrar marcador "DESTAQUE N" no início de linha. `m` (multiline) faz o
+  // `$` de destaqueHeaderPattern casar fim-de-LINHA (não só fim-do-documento) —
+  // mesma necessidade do end-boundary abaixo.
+  const markerRe = new RegExp(`(?:^|\\n)(${destaqueHeaderPattern(String(destaque))})`, "im");
   const markerMatch = markerRe.exec(body);
   if (!markerMatch) return null;
 
@@ -151,11 +171,8 @@ export function findDestaqueBodyRange(
   // Usar ^DESTAQUE com flag m (multiline) em vez de \nDESTAQUE — o \n exige linha
   // em branco antes do próximo marcador; sem ela, nextMatch=null e o range de D1 engloba
   // todo o restante incluindo D2 (#2628 gap 1).
-  // #2634: anchor on the real header format: DESTAQUE N must be followed by whitespace+pipe
-  // (\s*\|) or end of line (\s*$) to avoid matching body text like "DESTAQUE 2 foi coberto..."
-  // that starts a line but is NOT a section header.
   const afterStart = body.slice(matchOffset + markerMatch[1].length);
-  const nextMatch = /^DESTAQUE\s+\d+(?:\s*\||\s*$)/im.exec(afterStart);
+  const nextMatch = new RegExp(`^${destaqueHeaderPattern("\\d+")}`, "im").exec(afterStart);
   const blockEnd = nextMatch
     ? blockStart + markerMatch[1].length + nextMatch.index
     : content.length;

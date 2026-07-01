@@ -146,6 +146,26 @@ export interface CheckIntraThemesResult {
   highlights_checked: number;
 }
 
+/**
+ * #2705: mapper explícito em vez de `as unknown as HighlightEntry[]` — o cast amplo
+ * silenciava TODA checagem estrutural entre `CategorizedJson["highlights"]` (raw,
+ * `article.url` opcional) e o local `HighlightEntry` (article.url obrigatório, exigido
+ * por `highlightTitle`/`highlightUrl` de dedup-intra-edition.ts), não só essa incompat
+ * documentada. `NonNullable<...>[number]` evita ter que importar o tipo não-exportado
+ * `CategorizedHighlight` de check-secondary-themes.ts.
+ * Comportamento idêntico ao cast anterior: só promove `article` quando `article.url`
+ * existe; senão omite `article` (highlightUrl/highlightTitle caem no fallback `h.url`/`h.title`).
+ */
+type RawHighlight = NonNullable<CategorizedJson["highlights"]>[number];
+
+function toHighlightEntry(h: RawHighlight): HighlightEntry {
+  const { article, ...rest } = h;
+  return {
+    ...rest,
+    article: article?.url ? { url: article.url, title: article.title } : undefined,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Thresholds
 // ---------------------------------------------------------------------------
@@ -255,11 +275,8 @@ export function checkIntraThemes(
     }
   }
 
-  // Coletar destaques (top N por rank)
-  // Cast necessário: CategorizedJson.highlights usa CategorizedHighlight (article.url opcional)
-  // enquanto highlightTitle/highlightUrl de dedup-intra-edition esperam url obrigatória.
-  // Compatível em runtime — highlightUrl faz `h.url ?? h.article?.url` (null-safe).
-  const allHighlights = (data.highlights ?? []) as unknown as HighlightEntry[];
+  // Coletar destaques (top N por rank). Mapper explícito (#2705) — ver toHighlightEntry.
+  const allHighlights = (data.highlights ?? []).map(toHighlightEntry);
   const topHighlights = [...allHighlights]
     .sort((a, b) => {
       const ra = typeof a.rank === "number" ? a.rank : 999;
