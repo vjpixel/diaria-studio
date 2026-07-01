@@ -419,12 +419,15 @@ describe("comissão (#2743)", () => {
   });
 
   describe("aggregateCouponUsage com charges", () => {
+    // Charges ancorados em discount.start (#2743): a janela começa no resgate do
+    // cupom (discount.start), não na criação da assinatura. As fixtures usam
+    // start+delta pra cair dentro da janela sob a âncora correta.
     const charges: ChargeRaw[] = [
       // cus_TEST1 (sub_TEST1, NEWS50): 2 pagamentos anuais na janela
-      { id: "ch_1a", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 0, created: subscriptions[0].created + 10, status: "succeeded", paid: true },
-      { id: "ch_1b", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 4900, created: subscriptions[0].created + 20, status: "succeeded", paid: true },
+      { id: "ch_1a", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 0, created: subscriptions[0].discounts[0].start + 10, status: "succeeded", paid: true },
+      { id: "ch_1b", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 4900, created: subscriptions[0].discounts[0].start + 20, status: "succeeded", paid: true },
       // cus_TEST3 (sub_TEST3, NEWS25): 1 pagamento mensal
-      { id: "ch_3a", object: "charge", customer: "cus_TEST3", amount: 9990, amount_refunded: 0, created: subscriptions[2].created + 10, status: "succeeded", paid: true },
+      { id: "ch_3a", object: "charge", customer: "cus_TEST3", amount: 9990, amount_refunded: 0, created: subscriptions[2].discounts[0].start + 10, status: "succeeded", paid: true },
     ];
     const report = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers, charges });
 
@@ -451,6 +454,113 @@ describe("comissão (#2743)", () => {
       const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers });
       assert.equal(r["NEWS50"].totalPaidCents, 0);
       assert.equal(r["NEWS50"].redemptions[0].paid_cents, 0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regressões dos fixes de code-review (#2743)
+  // -------------------------------------------------------------------------
+
+  describe("commissionWindowEnd — overflow de mês (#2743 leap-year)", () => {
+    it("29/fev + 12m recua pro último dia de fev do ano seguinte (não transborda pra mar)", () => {
+      // 29/fev/2024 00:00 UTC. +12 meses = fev/2025 (não-bissexto): dia 29 não
+      // existe → deve virar 28/fev/2025, NÃO 01/mar/2025.
+      const feb29 = Math.floor(Date.UTC(2024, 1, 29, 0, 0, 0) / 1000);
+      const end = commissionWindowEnd(feb29);
+      const endDate = new Date(end * 1000);
+      assert.equal(endDate.getUTCFullYear(), 2025);
+      assert.equal(endDate.getUTCMonth(), 1, "mês = fevereiro (1), não março (2)");
+      assert.equal(endDate.getUTCDate(), 28, "dia = 28 (clamp), não 1 de março");
+    });
+
+    it("data comum: 15/jun + 12m = 15/jun do ano seguinte", () => {
+      const jun15 = Math.floor(Date.UTC(2025, 5, 15, 12, 0, 0) / 1000);
+      const end = commissionWindowEnd(jun15);
+      const endDate = new Date(end * 1000);
+      assert.equal(endDate.getUTCFullYear(), 2026);
+      assert.equal(endDate.getUTCMonth(), 5);
+      assert.equal(endDate.getUTCDate(), 15);
+    });
+  });
+
+  describe("computePaidCents — amount_captured explícito 0 (#2743)", () => {
+    it("amount_captured: 0 num charge succeeded+paid cai pro amount (não zera)", () => {
+      const charges = [mkCharge({ amount: 5000, amount_captured: 0, amount_refunded: 0 })];
+      assert.equal(computePaidCents(charges, "cus_TEST1", created), 5000);
+    });
+
+    it("amount_captured parcial (< amount) é respeitado", () => {
+      const charges = [mkCharge({ amount: 5000, amount_captured: 3000, amount_refunded: 0 })];
+      assert.equal(computePaidCents(charges, "cus_TEST1", created), 3000);
+    });
+  });
+
+  describe("aggregateCouponUsage — âncora em discount.start (#2743)", () => {
+    it("charge entre sub.created e discount.start NÃO conta (pré-resgate)", () => {
+      // sub_TEST1: created 1782383062, discount.start 1782673121.
+      const preRedeem = subscriptions[0].created + 10; // antes do discount.start
+      const charges: ChargeRaw[] = [
+        { id: "ch_pre", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 0, created: preRedeem, status: "succeeded", paid: true },
+      ];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers, charges });
+      const row = r["NEWS50"].redemptions.find((x) => x.subscription === "sub_TEST1");
+      assert.equal(row!.paid_cents, 0, "pagamento pré-resgate não entra na janela");
+    });
+
+    it("charge em discount.start+delta conta", () => {
+      const postRedeem = subscriptions[0].discounts[0].start + 10;
+      const charges: ChargeRaw[] = [
+        { id: "ch_post", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 0, created: postRedeem, status: "succeeded", paid: true },
+      ];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers, charges });
+      const row = r["NEWS50"].redemptions.find((x) => x.subscription === "sub_TEST1");
+      assert.equal(row!.paid_cents, 44900);
+    });
+  });
+
+  describe("aggregateCouponUsage — dedup por cliente + arredondamento único (#2743)", () => {
+    it("mesma pessoa com 2 assinaturas do mesmo cupom conta UMA vez no total", () => {
+      // Duas subscriptions NEWS50 do MESMO cliente. computePaidCents soma todos
+      // os charges da pessoa → cada linha traria o mesmo paid; o total dedup
+      // conta a pessoa uma vez (não 2×).
+      const start = subscriptions[0].discounts[0].start;
+      const dupSubs: SubscriptionRaw[] = [
+        subscriptions[0],
+        {
+          ...subscriptions[0],
+          id: "sub_TEST1b",
+          discounts: [{ ...subscriptions[0].discounts[0], id: "di_TEST1b", subscription: "sub_TEST1b" }],
+        },
+      ];
+      const charges: ChargeRaw[] = [
+        { id: "ch_d", object: "charge", customer: "cus_TEST1", amount: 44900, amount_refunded: 0, created: start + 10, status: "succeeded", paid: true },
+      ];
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: dupSubs, customers, charges });
+      assert.equal(r["NEWS50"].redemptions.length, 2, "duas redemptions (display)");
+      // ambas as linhas mostram o mesmo paid (44900), mas o total conta 1×.
+      assert.equal(r["NEWS50"].totalPaidCents, 44900, "total dedup por cliente");
+      assert.equal(r["NEWS50"].totalCommissionCents, Math.round(44900 * 0.4));
+    });
+
+    it("comissão total = round(pago_total * 0.4), não soma de linhas arredondadas", () => {
+      // 3 clientes distintos, cada um com paid que arredonda a comissão .5 → a
+      // soma de round(linha) diverge de round(total). Ex.: paid=1 cada.
+      // round(1*.4)=0 por linha → soma 0; round(3*.4)=round(1.2)=1 no total.
+      const start = subscriptions[0].discounts[0].start;
+      const subs: SubscriptionRaw[] = ["A", "B", "C"].map((sfx) => ({
+        ...subscriptions[0],
+        id: `sub_R${sfx}`,
+        customer: `cus_R${sfx}`,
+        discounts: [{ ...subscriptions[0].discounts[0], id: `di_R${sfx}`, customer: `cus_R${sfx}`, subscription: `sub_R${sfx}` }],
+      }));
+      const custs: CustomerRaw[] = ["A", "B", "C"].map((sfx) => ({ id: `cus_R${sfx}`, email: `r${sfx}@example.com` }));
+      const charges: ChargeRaw[] = ["A", "B", "C"].map((sfx) => ({
+        id: `ch_R${sfx}`, object: "charge", customer: `cus_R${sfx}`, amount: 1, amount_refunded: 0, created: start + 10, status: "succeeded", paid: true,
+      }));
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions: subs, customers: custs, charges });
+      assert.equal(r["NEWS50"].totalPaidCents, 3);
+      // soma de linhas arredondadas seria 0; round(3*0.4)=1 é o correto.
+      assert.equal(r["NEWS50"].totalCommissionCents, 1);
     });
   });
 });

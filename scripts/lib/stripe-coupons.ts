@@ -144,7 +144,17 @@ export interface CouponCodeReport {
  */
 export function commissionWindowEnd(createdEpochSec: number): number {
   const end = new Date(createdEpochSec * 1000);
-  end.setUTCMonth(end.getUTCMonth() + COMMISSION_WINDOW_MONTHS);
+  const targetMonth = end.getUTCMonth() + COMMISSION_WINDOW_MONTHS;
+  const expectedMonth = ((targetMonth % 12) + 12) % 12;
+  end.setUTCMonth(targetMonth);
+  // Overflow guard (#2743): se o dia-do-mês não existe no mês alvo (ex.: 29/fev
+  // + 12m num ano não-bissexto → dia 29 não existe em fev/2025), setUTCMonth
+  // transborda pro mês seguinte (mar/2025). Recuamos pro último dia do mês alvo
+  // (setUTCDate(0) = último dia do mês anterior) pra manter 12 meses de
+  // calendário exatos, sem estender a janela por 1 dia.
+  if (end.getUTCMonth() !== expectedMonth) {
+    end.setUTCDate(0);
+  }
   return Math.floor(end.getTime() / 1000);
 }
 
@@ -164,7 +174,11 @@ export function computePaidCents(
     if (c.customer !== customerId) continue;
     if (c.status !== "succeeded" || !c.paid) continue;
     if (c.created < createdEpochSec || c.created >= windowEnd) continue;
-    const captured = c.amount_captured ?? c.amount;
+    // #2743: `amount_captured` é o efetivamente capturado; usa `amount` como
+    // fallback. `> 0` (não `?? `) porque um `amount_captured: 0` explícito num
+    // charge succeeded+paid não deve zerar o pagamento — cai pro `amount`.
+    const captured =
+      c.amount_captured != null && c.amount_captured > 0 ? c.amount_captured : c.amount;
     const net = captured - (c.amount_refunded ?? 0);
     if (net > 0) paid += net;
   }
@@ -268,8 +282,13 @@ export function aggregateCouponUsage(input: {
 
       // #2743: realizado (net de refunds) do cliente na janela de 12m desde o
       // resgate + comissão de 40%. Atribuição por cliente (granularidade "por
-      // e-mail" que o editor pediu).
-      const paidCents = computePaidCents(charges, sub.customer, sub.created);
+      // e-mail" que o editor pediu — conta TODOS os pagamentos da pessoa na
+      // janela, não só os da assinatura do cupom). Janela ancorada em
+      // `discount.start` (quando o cupom foi de fato aplicado/resgatado), com
+      // fallback pra `sub.created` — mais fiel a "desde o resgate" quando o
+      // cupom é aplicado a uma assinatura já existente (start > created).
+      const windowAnchor = discount.start ?? sub.created;
+      const paidCents = computePaidCents(charges, sub.customer, windowAnchor);
 
       report[code].redemptions.push({
         coupon_code: code,
@@ -298,11 +317,20 @@ export function aggregateCouponUsage(input: {
       (sum, r) => sum + r.discount_value_cents,
       0,
     );
-    entry.totalPaidCents = entry.redemptions.reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
-    entry.totalCommissionCents = entry.redemptions.reduce(
-      (sum, r) => sum + (r.commission_cents ?? 0),
-      0,
-    );
+    // #2743: total PAGO deduplicado por cliente. No modelo por-e-mail,
+    // computePaidCents já soma TODOS os pagamentos da pessoa na janela — então
+    // se a mesma pessoa tiver +1 assinatura com o cupom, cada linha traria o
+    // mesmo valor e somá-las inflaria o total. Contamos cada cliente UMA vez
+    // (max entre as linhas dela, cobrindo âncoras diferentes por assinatura).
+    const paidByCustomer = new Map<string, number>();
+    for (const r of entry.redemptions) {
+      const prev = paidByCustomer.get(r.customer) ?? 0;
+      paidByCustomer.set(r.customer, Math.max(prev, r.paid_cents ?? 0));
+    }
+    entry.totalPaidCents = [...paidByCustomer.values()].reduce((sum, v) => sum + v, 0);
+    // Comissão arredondada UMA vez sobre o pago total — somar comissões já
+    // arredondadas por linha divergiria do valor correto em até ~N/2 centavos.
+    entry.totalCommissionCents = commissionCents(entry.totalPaidCents);
   }
 
   return report;

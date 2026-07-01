@@ -32,6 +32,7 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag } from "./lib/cli-args.ts";
+import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 
 loadProjectEnv();
 
@@ -56,7 +57,11 @@ export interface MvStatus {
   groups: MvGroupStatus[];
 }
 
-export const DASHBOARD_KV_NAMESPACE_ID = "2f87d65d735c499ab8f465774d0167e2";
+// Re-export p/ compat: DASHBOARD_KV_NAMESPACE_ID mora agora em lib/dashboard-kv.ts
+// (módulo sem side-effect), pra que importar a constante não dispare o
+// loadProjectEnv() do topo deste arquivo (#2743). Consumidores que já importavam
+// daqui seguem funcionando.
+export { DASHBOARD_KV_NAMESPACE_ID };
 export const MV_STATUS_KV_KEY = "mv:status";
 
 /** Conta linhas de CSV excluindo o header (retorna 0 se arquivo não existe). */
