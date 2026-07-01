@@ -163,6 +163,10 @@ export interface CouponCodeReport {
   totalPaidCents?: number;
   totalCommissionCents?: number;
   redemptions: RedemptionRow[];
+  // #2766: quando o report foi montado (ISO, mesmo valor em TODOS os códigos
+  // do mesmo report — carimbado por fetchCouponUsage, não por aggregateCouponUsage
+  // que é pura/sem I/O). Opcional — backward-compat com KV pré-#2766.
+  generatedAt?: string;
 }
 
 /**
@@ -545,6 +549,10 @@ async function stripeListAll<T>(
 export async function fetchCouponUsage(
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
+  // #2766: ISO opcional — quando omitido, usa o relógio real. Injetável nos
+  // testes pro mesmo motivo de `fetchImpl`: determinismo sem depender de
+  // Date.now() embutido (mesmo padrão de computeMvStatus/buildCohorts).
+  generatedAt?: string,
 ): Promise<CouponUsageReport> {
   const codes: PromoCodeRaw[] = [];
   for (const code of TARGET_CODES) {
@@ -621,5 +629,10 @@ export async function fetchCouponUsage(
     charges.push(...custCharges);
   }
 
-  return aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges });
+  const report = aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges });
+  // #2766: carimba o momento de montagem do report — aqui, não em
+  // aggregateCouponUsage (pura/sem I/O). Mesmo valor em todos os códigos.
+  const stamp = generatedAt ?? new Date().toISOString();
+  for (const code of Object.keys(report)) report[code].generatedAt = stamp;
+  return report;
 }

@@ -2996,6 +2996,13 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
   const codes = Object.keys(usage).sort();
   const allRows = codes.flatMap((code) => (usage[code] as CouponCodeReport).redemptions);
 
+  // #2766: momento em que o report foi montado — mesmo valor em todos os
+  // códigos (carimbado por fetchCouponUsage). Ausente em KV pré-#2766.
+  const generatedAt = codes.map((code) => (usage[code] as CouponCodeReport).generatedAt).find((g) => g != null);
+  const generatedAtNote = generatedAt
+    ? `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Atualizado ${escHtml(fmtTimeBRT(generatedAt))} BRT.</p>`
+    : `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Data de atualização indisponível (KV antigo — aguarde o próximo refresh, #2750).</p>`;
+
   // #2749: data em BRT (America/Sao_Paulo), consistente com fmtDateBRT do resto
   // do dashboard — sem timeZone o worker (UTC) mostraria o dia-calendário errado
   // perto da meia-noite pro editor no Brasil.
@@ -3128,6 +3135,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       }).join("\n");
 
   return `
+${generatedAtNote}
 <section class="phase2-section" id="coupon-monthly">
   <h2 class="section-title">Total por mês</h2>
   ${monthlySectionBody}
