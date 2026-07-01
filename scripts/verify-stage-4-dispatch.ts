@@ -100,7 +100,6 @@ export interface VerifyReport {
 
 interface FbGraphResponse {
   id?: string;
-  is_published?: boolean;
   scheduled_publish_time?: number;
   created_time?: string;
   permalink_url?: string;

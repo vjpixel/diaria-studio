@@ -21,7 +21,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
-import { extractUrlsFromMd } from "./lib/canonical-urls.ts"; // #1456
+import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
 import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // P2 fix #2300
 
 interface VerifyCacheEntry {
@@ -232,25 +232,10 @@ export function checkUrlsAccessible(
   }
   const md = readFileSync(reviewed, "utf8");
   const urls = extractUrlsFromMd(md);
-  const FOOTER = [
-    "diaria.beehiiv.com",
-    "wisprflow.ai",
-    "clarice.ai",
-    "beehiiv.com?via",
-    "linkedin.com/company",
-    "facebook.com/diar.ia.br",
-    "wikipedia.org", // todas as variantes (pt/en/es/...)
-    "wikimedia.org", // commons + upload
-    "creativecommons.org",
-    "wikidata.org",
-    // #2498: Workers do template (cursos/livros/poll) são links fixos do rodapé —
-    // nunca são artigos pesquisados e portanto nunca entram no link-verify-cache.
-    // São Workers vivos (HTTP 200); allowlistar por hostname exato pra evitar
-    // match permissivo de substring (ex: "workers.dev" casaria qualquer Worker).
-    "cursos.diaria.workers.dev",
-    "livros.diaria.workers.dev",
-    "poll.diaria.workers.dev",
-  ];
+  // #2695: FOOTER_DOMAINS importado de canonical-urls.ts (fonte única — antes
+  // cópia local que já havia divergido: wikipedia.org/wikimedia.org
+  // ("todas as variantes") vs pt.wikipedia.org/commons.wikimedia.org
+  // nas cópias paralelas em newsletter-count.ts e canonical-urls.ts).
   // #1456 review fix: build reverse index por finalUrl + normalized form tb.
   // verify-accessibility.ts strips trailing slash; nosso checker precisa
   // tentar ambas formas pra evitar false-positive (caso: URL no MD termina
@@ -274,7 +259,7 @@ export function checkUrlsAccessible(
   };
   const suspicious: { url: string; reason: string }[] = [];
   for (const url of urls) {
-    if (FOOTER.some((d) => url.includes(d))) continue;
+    if (FOOTER_DOMAINS.some((d) => url.includes(d))) continue;
     const entry = lookupCacheEntry(url);
     if (!entry) {
       suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });

@@ -19,10 +19,13 @@
  * Skipped:
  *   - Bloco É IA?, SORTEIO, PARA ENCERRAR, ERRO INTENCIONAL, TÍTULO/SUBTÍTULO
  *   - Affiliate/footer URLs (diaria.beehiiv.com, wisprflow, clarice.ai,
- *     beehiiv.com?via, linkedin/facebook/wikipedia/creativecommons)
+ *     beehiiv.com?via, linkedin/facebook/wikipedia/creativecommons) — lista
+ *     em `FOOTER_DOMAINS` de `canonical-urls.ts` (#2695: fonte única,
+ *     antes duplicada aqui em paralelo)
  */
 
 import { SECTION_EMOJI_PREFIX } from "./section-naming.ts"; // #1836 fonte única do prefixo de emoji
+import { FOOTER_DOMAINS } from "./canonical-urls.ts"; // #2695 fonte única (antes cópia local)
 
 export interface SelectedCounts {
   destaques: number;
@@ -35,18 +38,6 @@ export interface SelectedCounts {
   videos: number;
   total: number;
 }
-
-const FOOTER_DOMAINS = [
-  "diaria.beehiiv.com",
-  "wisprflow.ai",
-  "clarice.ai",
-  "beehiiv.com?via",
-  "linkedin.com/company",
-  "facebook.com/diar.ia.br",
-  "pt.wikipedia.org",
-  "commons.wikimedia.org",
-  "creativecommons.org",
-];
 
 const SKIP_HEADER_NAMES = [
   "SORTEIO",
