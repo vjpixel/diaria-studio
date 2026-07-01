@@ -56,6 +56,16 @@ test("renderContactsSummarySection: renderiza tier/razões/pontos/mv/engajamento
   assert.match(html, /2[.,]?219/); // engajamento with_opens
 });
 
+test("renderContactsSummarySection: label do by_tier deixa explícito o escopo 1º envio (#2732)", () => {
+  // #2732: tier só é preditor válido pra quem NUNCA recebeu email
+  // (segmentFromStore/computeStoreSummary já excluem sends_count>0 do by_tier
+  // upstream) — o label da seção precisa deixar isso auditável na UI, não só
+  // no dado. Reforça a decisão de modelagem: uma vez enviado, o eixo correto
+  // de segmentação é priority_points, nunca mais tier.
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /Por tier \(1º envio\)/);
+});
+
 test("renderContactsSummarySection: branch has_signal=false mostra alerta", () => {
   const html = renderContactsSummarySection({
     ...sample,

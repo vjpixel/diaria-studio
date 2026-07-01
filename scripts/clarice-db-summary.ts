@@ -83,9 +83,20 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
                OR unsubscribed=1 OR hard_bounced=1 OR complained=1`,
         ) > 0,
     },
+    // #2732: tier só governa a ordenação de 1º envio (segmentFromStore em
+    // clarice-segment.ts) — uma vez que o contato JÁ recebeu ≥1 email
+    // (sends_count>0), o preditor de reenvio vira priority_points (histórico
+    // real de abertura), nunca mais tier (atributo estático do Stripe).
+    // by_tier aqui espelha o universo `firstSend` de segmentFromStore: além
+    // de sends_count=0, exige send_eligible=1 — sem isso, contato nunca-enviado
+    // mas permanentemente bloqueado (dispute, mv_rejected, unsubscribed antes
+    // do 1º envio) inflaria a contagem por tier mesmo nunca indo pra fila real
+    // (segmentFromStore roteia esses pra `excluded`, não `firstSend`). tier
+    // continua gravado no store pra auditoria, só não entra nesta contagem.
     by_tier: groupCounts(
       db,
-      "SELECT tier AS k, COUNT(*) n FROM clarice_users GROUP BY tier",
+      `SELECT tier AS k, COUNT(*) n FROM clarice_users
+        WHERE send_eligible=1 AND COALESCE(sends_count,0)=0 GROUP BY tier`,
     ),
     eligibility: {
       eligible: count(

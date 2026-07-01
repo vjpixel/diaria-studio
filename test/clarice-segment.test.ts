@@ -73,6 +73,18 @@ test("segmentFromStore: separa re-envio de 1º envio por sends_count", () => {
   assert.deepEqual(s.firstSend.map((r) => r.email), ["novo@x.com"]);
 });
 
+test("segmentFromStore: contato já-enviado NUNCA cai em firstSend, mesmo com tier T01 válido (#2732)", () => {
+  // Finding do #2732: nenhum atributo estático prediz abertura — o preditor
+  // real é o histórico de envio. Uma vez que o contato tem sends_count>0, o
+  // eixo de segmentação correto é priority_points (reSend), nunca mais tier
+  // (firstSend) — mesmo que o tier seja o "melhor" possível (T01, ativo).
+  const s = segmentFromStore([
+    row({ email: "ja-enviado@x.com", tier: 1, sends_count: 1, priority_points: -20 }),
+  ]);
+  assert.equal(s.firstSend.length, 0);
+  assert.deepEqual(s.reSend.map((r) => r.email), ["ja-enviado@x.com"]);
+});
+
 // ---------------------------------------------------------------------------
 // sliceIntoWaves
 // ---------------------------------------------------------------------------

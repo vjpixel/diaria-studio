@@ -23,10 +23,15 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   const s = computeStoreSummary(db);
 
   assert.equal(s.total, 5);
-  // tiers: tier 1 → a,e (2); tier 2 → b,c (2); null → d (1)
+  // #2732: by_tier espelha o universo `firstSend` de segmentFromStore —
+  // send_eligible=1 E sends_count=0. tier 1 → a,e (2, ambos elegíveis e
+  // nunca enviados); tier 2 → b(sends=3, já enviado)+c(sends=2 mas unsub →
+  // inelegível) EXCLUÍDOS; null → d (dispute → inelegível, mesmo com
+  // sends_count=0) também EXCLUÍDO — nunca-enviado NÃO basta, precisa ser
+  // elegível (senão nunca vai pra fila real de 1º envio).
   assert.equal(s.by_tier["1"], 2);
-  assert.equal(s.by_tier["2"], 2);
-  assert.equal(s.by_tier["null"], 1);
+  assert.equal(s.by_tier["2"], undefined);
+  assert.equal(s.by_tier["null"], undefined);
   // elegibilidade: c (unsub) e d (dispute) cortados → 3 elegíveis, 2 inelegíveis
   assert.equal(s.eligibility.eligible, 3);
   assert.equal(s.eligibility.ineligible, 2);
@@ -49,5 +54,27 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(s.engagement.with_opens, 1);
   assert.equal(s.engagement.with_clicks, 1);
 
+  db.close();
+});
+
+test("computeStoreSummary: by_tier exclui nunca-enviado MAS inelegível (dispute/unsub) — só firstSend real (#2732)", () => {
+  // Regressão: a 1ª versão do fix filtrava by_tier só por sends_count=0, sem
+  // checar send_eligible. Um contato nunca-enviado mas permanentemente
+  // bloqueado (disputa, mv_rejected, unsub antes do 1º envio) tem
+  // sends_count=0 e passaria no filtro antigo — mas segmentFromStore roteia
+  // esse contato pra `excluded`, nunca `firstSend`. by_tier tinha que
+  // acompanhar isso ou infla a contagem "1º envio" com gente que nunca vai
+  // ser enviada.
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // elegível, nunca enviado, tier 3 — DEVE contar
+  ins("INSERT INTO clarice_users (email, status, tier) VALUES ('ok@x.com','active',3)");
+  // disputado, nunca enviado (sends_count implícito 0), tier 3 — NÃO deve contar
+  ins("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('disputa@x.com',3,10)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+  assert.equal(s.by_tier["3"], 1); // só ok@x.com
   db.close();
 });
