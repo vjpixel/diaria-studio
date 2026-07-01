@@ -16,6 +16,9 @@ import {
   renderDestaque,
   normalizeKnownUrl,
   renderInline,
+  wrapEmail,
+  renderCobrandHeader,
+  renderSocialFooter,
 } from "../scripts/lib/monthly-render.ts";
 import {
   escHtml as escReexport,
@@ -67,6 +70,59 @@ describe("monthly-render extraído (#1844)", () => {
     const imageUrls = { 1: "https://example.com/d1.jpg" };
     const out = d2eDirect(draft, "Assunto", "2606", undefined, undefined, undefined, imageUrls, "Criada com ComfyUI");
     assert.ok(out.html.includes("Criada com ComfyUI"), `caption customizado deve aparecer no HTML: ${out.html.slice(0, 400)}`);
+  });
+});
+
+describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () => {
+  it("renderCobrandHeader emite o nome 'Clarice' + indicação de parceria com Diar.ia (textual, sem logo)", () => {
+    const html = renderCobrandHeader();
+    assert.ok(html.includes("Clarice"), `nome Clarice ausente no header: ${html}`);
+    assert.ok(/Clarice\s*(&times;|×)\s*Diar\.ia/.test(html), `indicação de parceria Clarice × Diar.ia ausente: ${html}`);
+    assert.ok(!html.includes("<img"), "sem asset de logo ainda — header deve ser textual, não <img> (decisão do editor 260701)");
+  });
+
+  it("renderSocialFooter emite os 4 canais sociais configurados (Facebook/LinkedIn/Instagram/Threads)", () => {
+    const html = renderSocialFooter();
+    for (const label of ["Facebook", "LinkedIn", "Instagram", "Threads"]) {
+      assert.ok(html.includes(label), `canal ${label} ausente no footer: ${html}`);
+    }
+    assert.ok(html.includes("facebook.com/diar.ia.br"), "URL do Facebook ausente/incorreta");
+    assert.ok(html.includes("linkedin.com/company/diar.ia.br"), "URL do LinkedIn ausente/incorreta");
+    assert.ok(html.includes("instagram.com/diaria"), "URL do Instagram ausente/incorreta");
+    assert.ok(html.includes("threads.net/@diar.ia.br"), "URL do Threads ausente/incorreta");
+  });
+
+  it("wrapEmail integra header co-brand + footer social no documento final", () => {
+    const { html } = d2eDirect("**ASSUNTO**\nTeste #2645\n", null, "2605");
+    assert.ok(html.includes("Clarice"), "header co-brand ausente no wrapEmail");
+    assert.ok(html.includes("Facebook") && html.includes("LinkedIn"), "footer social ausente no wrapEmail");
+    // Header vem ANTES do footer no documento (ordem visual capa → corpo → rodapé).
+    assert.ok(html.indexOf("Clarice &times; Diar.ia") < html.lastIndexOf("Siga a Clarice"), "header deve preceder o footer");
+  });
+
+  it("wrapEmail declara suporte a dark theme (@media prefers-color-scheme + metas color-scheme)", () => {
+    const html = wrapEmail("Assunto teste", ["<p>corpo</p>"]);
+    assert.ok(html.includes("prefers-color-scheme: dark"), "media query de dark theme ausente");
+    assert.ok(html.includes('name="color-scheme"'), "meta color-scheme ausente");
+    assert.ok(html.includes('name="supported-color-schemes"'), "meta supported-color-schemes ausente");
+    assert.ok(html.includes('class="ds-canvas"'), "classe ds-canvas (alvo do dark mode) ausente no canvas externo");
+  });
+
+  it("dark theme escurece só o canvas — card (#FFFFFF) e conteúdo interno preservados (sem regressão #1955)", () => {
+    const draft = [
+      "**ASSUNTO**",
+      "Teste #2645",
+      "",
+      "**DESTAQUE 1 | TECH**",
+      "Título tech",
+      "Corpo do destaque.",
+      "",
+      "O fio condutor: Conclusão.",
+    ].join("\n");
+    const { html } = d2eDirect(draft, null, "2605");
+    assert.match(html, /#FFFFFF/i, "card branco deve seguir presente (canvas escurece, card não)");
+    assert.doesNotMatch(html, /#FBFAF6/i, "#FBFAF6 (paper token web) não deve aparecer no email mensal");
+    assert.match(html, /#EBE5D0/i, "bege de contraste (boxes internos) deve seguir presente e intocado");
   });
 });
 
