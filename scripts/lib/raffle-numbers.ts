@@ -80,14 +80,34 @@ export function loadRaffleRegistry(path: string): RaffleEntry[] {
 }
 
 /**
+ * Subconjunto mínimo aceito por `saveRaffleRegistry` — `AllocateRaffleNumberResult`
+ * satisfaz este shape estruturalmente, então o caller comum
+ * `saveRaffleRegistry(path, allocateRaffleNumber(...))` funciona sem wrapper.
+ */
+export interface RaffleRegistrySave {
+  entries: RaffleEntry[];
+}
+
+/**
  * Grava o registro completo (pretty JSON, determinístico). Usa `writeFileAtomic`
  * (temp file + fsync + rename com retry) em vez de write direto — `data/` é a
  * junction OneDrive (CLAUDE.md), sujeita a locks/races de sync; write direto
  * arriscaria deixar o JSON truncado/corrompido no meio de uma leitura
  * concorrente ou de um crash mid-write.
+ *
+ * **Assinatura (#2780):** recebe `{ entries }` (ex: o próprio
+ * `AllocateRaffleNumberResult` retornado por `allocateRaffleNumber`), NÃO um
+ * `RaffleEntry[]` cru. Antes aceitava o array diretamente — o risco real era
+ * o caller persistir o array ORIGINALMENTE carregado (`loadRaffleRegistry`)
+ * em vez de `result.entries` (o novo array com a entry recém-alocada),
+ * perdendo a alocação silenciosamente. `allocateRaffleNumber` é pura e só
+ * retorna um array NOVO quando `isNew=true` — com essa assinatura, o erro de
+ * passar o array antigo vira erro de compilação (arrays não têm `.entries`),
+ * em vez de bug silencioso descoberto só em produção. Ver §0-replies em
+ * `.claude/agents/orchestrator-stage-0-preflight.md`.
  */
-export function saveRaffleRegistry(path: string, entries: RaffleEntry[]): void {
-  writeFileAtomic(path, `${JSON.stringify(entries, null, 2)}\n`);
+export function saveRaffleRegistry(path: string, result: RaffleRegistrySave): void {
+  writeFileAtomic(path, `${JSON.stringify(result.entries, null, 2)}\n`);
 }
 
 /** Pure: deriva o ciclo do sorteio (AAMM) a partir da edição (AAMMDD). */

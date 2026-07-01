@@ -26,6 +26,27 @@
  *   - (só quando `isTitleCandidate` é fornecido) linha plain-text que não
  *     parece título — encerra a coleta em vez de virar título.
  *
+ * ## Decisão consciente (#2778): `t !== category` também vale para `extractAllTitles`
+ *
+ * Este guard existia SÓ em `countTitlesPerHighlight` (titles-per-highlight.ts)
+ * antes do #2693 consolidar os dois walkers aqui. `extractAllTitles`
+ * (title-normalization.ts) tinha sua própria cópia do walk sem essa exceção —
+ * a consolidação em #2693 fez `extractAllTitles` herdar o guard como efeito
+ * colateral da extração, não como decisão deliberada.
+ *
+ * Avaliado no #2778: manter a exceção em `extractAllTitles` é o comportamento
+ * CORRETO, e a decisão é ficar assim. Motivo: sem o guard, uma linha de corpo
+ * que por acaso repete o nome da categoria do destaque (ex: destaque
+ * categorizado como "LANÇAMENTOS" com uma linha solta "LANÇAMENTOS" no corpo,
+ * antes do terminador real — URL ou "Por que isso importa:") seria
+ * erroneamente tratada como header de seção secundária e encerraria a coleta
+ * PREMATURAMENTE. Isso faria `extractAllTitles` (e por extensão
+ * `checkTitlePublisherSuffix`/`checkTitleTrailingPeriod`) parar de enxergar
+ * qualquer título real que viesse DEPOIS dessa linha solta — um falso-negativo
+ * silencioso nos lints de título (#2664/#2672). Ver regressão em
+ * `test/title-normalization.test.ts` ("category do destaque == seção
+ * secundária real").
+ *
  * Cada linha não-vazia que não bate nenhum terminator vira um título:
  *   - inline link (`[título](url)`) → título = texto do link.
  *   - plain-text (formato legado) → título = linha inteira, só se

@@ -73,9 +73,40 @@ describe("parseRaffleRegistry / loadRaffleRegistry (#2724)", () => {
       const entries: RaffleEntry[] = [
         { cycle: "2606", email: "a@b.com", number: 1, edition: "260629", issued_at: "2026-06-29T10:00:00.000Z" },
       ];
-      saveRaffleRegistry(path, entries);
+      saveRaffleRegistry(path, { entries });
       const loaded = loadRaffleRegistry(path);
       assert.deepEqual(loaded, entries);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2780: `saveRaffleRegistry` aceita `{ entries }` (não `RaffleEntry[]` cru) —
+  // `AllocateRaffleNumberResult` satisfaz esse shape estruturalmente, então o
+  // call-site correto é `saveRaffleRegistry(path, result)`, NUNCA
+  // `saveRaffleRegistry(path, loadRaffleRegistry(path))` (array originalmente
+  // carregado, sem a entry recém-alocada).
+  it("#2780: aceita diretamente o AllocateRaffleNumberResult (result.entries persistido, não o array originalmente carregado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raffle-test-"));
+    try {
+      const path = join(dir, "raffle-numbers.json");
+      const originalEntries: RaffleEntry[] = [
+        { cycle: "2606", email: "existing@example.com", number: 1, edition: "260610", issued_at: "x" },
+      ];
+      const result = allocateRaffleNumber(
+        originalEntries,
+        { cycle: "2606", email: "joshu@example.com", edition: "260629" },
+        "2026-06-29T12:00:00.000Z",
+      );
+      assert.equal(result.isNew, true);
+
+      // Call-site correto: passa o result inteiro (satisfaz `{ entries }` por
+      // structural typing), não `originalEntries` (que ficaria sem a alocação).
+      saveRaffleRegistry(path, result);
+
+      const loaded = loadRaffleRegistry(path);
+      assert.equal(loaded.length, 2, "deve persistir AMBAS entries — a original + a recém-alocada");
+      assert.ok(loaded.some((e) => e.email === "joshu@example.com" && e.number === 2));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

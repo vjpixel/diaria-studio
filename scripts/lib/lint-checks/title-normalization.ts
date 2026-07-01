@@ -99,6 +99,10 @@ function extractAllTitles(md: string): Array<{ title: string; line: number }> {
     if (headerMatch) {
       inSecondarySection = false; // o corpo do destaque NÃO é seção secundária
       const category = headerMatch[2].trim();
+      // #2778: `walkDestaqueTitles` herda o guard `t !== category` (não quebra
+      // a coleta quando uma linha de corpo repete o nome da categoria do
+      // destaque) — decisão CONSCIENTE, não efeito colateral da consolidação
+      // do #2693. Ver docstring de `walkDestaqueTitles` pra rationale completo.
       const { titles, nextIndex } = walkDestaqueTitles(lines, i + 1, category, looksLikeTitleOption);
       results.push(...titles);
       i = nextIndex;
