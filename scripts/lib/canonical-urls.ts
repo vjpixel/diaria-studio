@@ -20,6 +20,12 @@
  * - `extractUrlsFromMd`: lista URLs presentes no MD final (incluindo body)
  * - `findMismatchedUrls`: dado um MD pós-edit e o JSON canonical, lista URLs
  *   no MD que NÃO aparecem em nenhum bucket — candidates pra verificação.
+ *
+ * Também hospeda (#2695) `FOOTER_DOMAINS` — a allowlist de domínios de
+ * rodapé/afiliado (Beehiiv, LinkedIn, Facebook, Wikipedia/Wikimedia,
+ * Workers de template) usada tanto por `findMismatchedUrls` acima quanto
+ * por `newsletter-count.ts` e `check-stage2-invariants.ts` — e as
+ * constantes `DIARIA_FACEBOOK_PAGE_SLUG`/`DIARIA_FACEBOOK_PAGE_URL`.
  */
 
 import { normalizeTitle } from "../dedup.ts";

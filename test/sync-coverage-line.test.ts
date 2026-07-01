@@ -262,6 +262,30 @@ Vista aérea... [Takht-i-Bahi](https://pt.wikipedia.org/wiki/Takht-i-Bahi). [Aut
     assert.equal(countSelectedItems(md), 1);
   });
 
+  // #2695: FOOTER_DOMAINS foi consolidado numa fonte única (canonical-urls.ts),
+  // agora incluindo as variantes amplas de wikipedia/wikimedia (não só pt/commons)
+  // + wikidata.org + os Workers de template (cursos/livros/poll). O bloco É IA?
+  // é sempre pulado por header (não exercita FOOTER_DOMAINS) — pra testar a
+  // lista de fato, a citação precisa estar DENTRO de um bucket contado
+  // (RADAR aqui), junto do link real do item, e o total não pode inflar.
+  it("#2695: citação com domínio amplo (wikipedia/wikimedia/wikidata/Workers) dentro de um bucket contado não infla o total", () => {
+    const md = `---
+
+**DESTAQUE 1**
+
+**[Real](https://example.com/d1)**
+
+---
+
+**RADAR**
+
+**[Item 1](https://x.com/1)**
+Fonte: [Wiki EN](https://en.wikipedia.org/wiki/X), [Upload](https://upload.wikimedia.org/wikipedia/commons/x.jpg), [Wikidata](https://www.wikidata.org/wiki/Q1), [Cursos](https://cursos.diaria.workers.dev), [Livros](https://livros.diaria.workers.dev), [Poll](https://poll.diaria.workers.dev/vote).
+`;
+    // 1 destaque + 1 item RADAR = 2. As 6 citações de domínio footer não contam.
+    assert.equal(countSelectedItems(md), 2);
+  });
+
   it("#1441: conta OUTRAS NOTÍCIAS mesmo sem --- antes de SORTEIO (caso 260520)", () => {
     const md = `Para esta edição...
 

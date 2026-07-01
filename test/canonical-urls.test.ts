@@ -5,6 +5,9 @@ import {
   lookupCanonicalUrl,
   extractUrlsFromMd,
   findMismatchedUrls,
+  FOOTER_DOMAINS,
+  DIARIA_FACEBOOK_PAGE_SLUG,
+  DIARIA_FACEBOOK_PAGE_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
 describe("getCanonicalUrls (#1456)", () => {
@@ -137,6 +140,32 @@ describe("findMismatchedUrls (#1456)", () => {
 [Facebook](https://www.facebook.com/diar.ia.br)
 `;
     assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
+  // #2695: FOOTER_DOMAINS foi consolidado — antes canonical-urls.ts só reconhecia
+  // pt.wikipedia.org/commons.wikimedia.org (aqui) enquanto check-stage2-invariants.ts
+  // já usava as variantes amplas (wikipedia.org/wikimedia.org, "todas as variantes")
+  // + wikidata.org + os Workers de template. Trava o comportamento consolidado —
+  // sem este teste, um futuro rename da constante poderia estreitar a lista de volta
+  // sem que nada acusasse.
+  it("ignora variantes amplas de wikipedia/wikimedia + wikidata + Workers de template (#2695)", () => {
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+[Wiki EN](https://en.wikipedia.org/wiki/X)
+[Wikimedia upload](https://upload.wikimedia.org/wikipedia/commons/x.jpg)
+[Wikidata](https://www.wikidata.org/wiki/Q1)
+[Cursos](https://cursos.diaria.workers.dev)
+[Livros](https://livros.diaria.workers.dev)
+[Poll](https://poll.diaria.workers.dev/vote)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
+  it("DIARIA_FACEBOOK_PAGE_SLUG/URL têm o handle canônico e FOOTER_DOMAINS deriva dele (#2695)", () => {
+    assert.equal(DIARIA_FACEBOOK_PAGE_SLUG, "facebook.com/diar.ia.br");
+    assert.equal(DIARIA_FACEBOOK_PAGE_URL, "https://www.facebook.com/diar.ia.br");
+    assert.ok(FOOTER_DOMAINS.includes(DIARIA_FACEBOOK_PAGE_SLUG));
   });
 
   it("retorna vazio quando MD não introduziu URLs novas", () => {
