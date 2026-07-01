@@ -84,10 +84,16 @@ after(() => {
 // ---------------------------------------------------------------------------
 
 describe("isAuthenticated", () => {
-  it("no AUTH_TOKEN → always true (dev mode)", () => {
+  it("no AUTH_TOKEN → sempre false (fail-closed, #2748)", () => {
     const env = makeEnv();
     const req = new Request("http://localhost/");
-    assert.ok(isAuthenticated(req, env), "deve retornar true quando AUTH_TOKEN não configurado");
+    assert.ok(!isAuthenticated(req, env), "deve retornar false quando AUTH_TOKEN não configurado — nunca libera tudo");
+  });
+
+  it("no AUTH_TOKEN, MESMO com um cookie qualquer → false (não há valor que passe)", () => {
+    const env = makeEnv();
+    const req = new Request("http://localhost/", { headers: { Cookie: "cf-dash-auth=anything" } });
+    assert.ok(!isAuthenticated(req, env), "sem AUTH_TOKEN configurado, nenhum cookie autentica");
   });
 
   it("AUTH_TOKEN set, no cookie → false", () => {
@@ -208,12 +214,23 @@ describe("Worker fetch — auth routes", () => {
     assert.ok((res.headers.get("Allow") ?? "").includes("POST"), "deve ter Allow header com POST");
   });
 
-  it("/login POST sem AUTH_TOKEN (dev mode): redireciona para /", async () => {
+  it("/login POST sem AUTH_TOKEN: 500 acesso negado (fail-closed, #2748 — NÃO redireciona pra /)", async () => {
     const form = new FormData();
     form.append("token", "qualquer");
     const req = new Request("http://localhost/login", { method: "POST", body: form });
     const res = await worker.fetch(req, makeEnv());  // no auth token
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get("Location"), "/");
+    assert.equal(res.status, 500);
+    assert.notEqual(res.headers.get("Location"), "/", "não deve mais deixar entrar via /login sem AUTH_TOKEN");
+    const text = await res.text();
+    assert.ok(text.includes("não configurado"), "mensagem explica a causa (config ausente, não erro do usuário)");
+  });
+
+  it("/ sem AUTH_TOKEN configurado: mostra login page, NÃO o dashboard com PII (#2748)", async () => {
+    const req = new Request("http://localhost/");
+    const res = await worker.fetch(req, makeEnv());  // no auth token
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("<form"), "deve exibir formulário de login");
+    assert.ok(!text.includes("Clarice News Dashboard"), "NUNCA deve expor o dashboard sem AUTH_TOKEN configurado");
   });
 });

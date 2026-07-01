@@ -1433,9 +1433,9 @@ export function renderDashboardHtml(
   // D1–D5 mantido como seção SEPARADA logo após.
   const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
   const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
-  // #2492: breakdown D1–D5 por dia — mantido como seção adicional (valor próprio).
-  const daySummaryRows = activeCycle ? aggregateDaySummary(campaigns, activeCycle) : [];
-  const daySummarySection = activeCycle ? renderDaySummarySection(daySummaryRows) : "";
+  // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
+  // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
+  // e testadas (reuso futuro), só não são mais chamadas aqui.
   // #2134: tabela de open rate por dia da semana (ciclo ativo).
   // Escopo: ciclo ativo quando detectado; fallback "todas as campanhas" quando
   // não há campanha Clarice News (activeCycle=null). Linha all-time separada
@@ -1461,8 +1461,11 @@ export function renderDashboardHtml(
   const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
   const cohortsSection = renderEngagementCohortsSection(cohorts);
-  // #2609: status MillionVerifier por grupo (pré-computado via KV).
-  const mvStatusSection = renderMvStatusSection(mvStatus);
+  // #2736: "Status MillionVerifier por grupo" removida da aba Engajamento
+  // (ruído, decisão do editor). renderMvStatusSection permanece exportada e
+  // testada (reuso futuro); a leitura do KV mv:status em readKvTabs também
+  // fica (custo desprezível, já paralela às outras — reverter é maior cirurgia
+  // do que o pedido pede; ver corpo do PR).
   // #2653: sumário do store único de contatos (pré-computado via KV).
   const contactsSummarySection = renderContactsSummarySection(contactsSummary);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
@@ -1703,10 +1706,8 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
   <!-- Aba 2: Engajamento — coortes + weekday + resumo A/B/C + D1-D5 -->
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${cohortsSection}
-${mvStatusSection}
 ${weekdaySection}
 ${abcSection}
-${daySummarySection}
   </div><!-- /panel-engajamento -->
 
   <!-- Aba 3: Links / CTR — links agregados do período -->
@@ -3222,7 +3223,11 @@ Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
 }
 
 export function isAuthenticated(request: Request, env: Env): boolean {
-  if (!env.AUTH_TOKEN) return true  // dev mode: no token configured = open
+  // #2748: fail-CLOSED — sem AUTH_TOKEN configurado, nega acesso (nunca libera
+  // tudo). O dashboard está num URL público e carrega PII (e-mail de
+  // assinantes nas abas Cupons/Contatos); um secret esquecido no deploy não
+  // pode virar leak silencioso.
+  if (!env.AUTH_TOKEN) return false
   const cookie = request.headers.get('Cookie') ?? ''
   const val = cookie.split(';')
     .map(c => c.trim())
@@ -3278,7 +3283,9 @@ export default {
           const body = await request.formData()
           const rawToken = body.get('token')
           const token = typeof rawToken === 'string' ? rawToken : null
-          if (!env.AUTH_TOKEN) return new Response(null, { status: 302, headers: { Location: '/' } })
+          // #2748: fail-CLOSED — sem AUTH_TOKEN, negar o login (não deixar
+          // qualquer submissão entrar). Mesmo espírito de isAuthenticated().
+          if (!env.AUTH_TOKEN) return new Response('AUTH_TOKEN não configurado no worker — acesso negado.', { status: 500 })
           if (/[;\r\n]/.test(env.AUTH_TOKEN)) return new Response('Invalid AUTH_TOKEN configuration', { status: 500 })
           if (token && token === env.AUTH_TOKEN) {
             const maxAge = 30 * 24 * 60 * 60  // 30 days

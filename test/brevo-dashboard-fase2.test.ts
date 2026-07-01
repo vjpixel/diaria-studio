@@ -993,38 +993,28 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /<small>15<\/small>/, "deve exibir count trackableViews=15");
   });
 
-  test("seção day-summary aparece quando há campanhas Clarice News (#2523)", () => {
+  test("seção day-summary foi REMOVIDA da aba Engajamento (#2736, supersede #2523)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    // #2523: renderDaySummarySection usa id="day-summary" (não "abc-summary"), para não colidir
-    // com renderAbcSection que mantém id="abc-summary". #2600 restaurou ambas as seções.
-    assert.match(html, /id="day-summary"/, "deve conter a seção day-summary com id= (#2523)");
-    // #2600: renderAbcSection está de volta, então id="abc-summary" agora aparece no HTML da página.
-    // Verificar que renderDaySummarySection por si só não usa abc-summary:
-    const daySummarySection = renderDaySummarySection(aggregateDaySummary(cycle2605Campaigns, "2605"));
-    assert.doesNotMatch(daySummarySection, /id="abc-summary"/, "renderDaySummarySection não deve usar id=abc-summary (#2523)");
-    // #2492: seção agora mostra breakdown D1–D5 em vez de A/B/C por célula
-    assert.match(html, /Resumo D1–D5/, "deve ter título 'Resumo D1–D5'");
+    // #2736: "Resumo D1–D5 — S1" removida da aba (ruído, decisão do editor).
+    // renderDaySummarySection/aggregateDaySummary permanecem exportadas e
+    // testadas isoladamente (ver describe "renderDaySummarySection (#2492)")
+    // — só não são mais chamadas no render completo do dashboard.
+    assert.doesNotMatch(html, /id="day-summary"/, "seção day-summary não deve mais aparecer (#2736)");
+    assert.doesNotMatch(html, /Resumo D1–D5/, "título 'Resumo D1–D5' não deve mais aparecer (#2736)");
+    // #2600: renderAbcSection segue presente — só D1-D5 saiu, não A/B/C.
+    assert.match(html, /id="abc-summary"/, "seção abc-summary segue presente (não removida)");
   });
 
-  test("volume-ciclo vem ANTES de day-summary (editor 2026-06-11)", () => {
+  test("volume-ciclo segue presente (day-summary removida, #2736)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    const posVolume = html.indexOf('id="volume-ciclo"');
-    const posAbc = html.indexOf('id="day-summary"');
-    assert.ok(posVolume > -1, "deve conter a seção de volume");
-    assert.ok(posVolume < posAbc, "volume deve vir antes do resumo D1–D5");
+    assert.match(html, /id="volume-ciclo"/, "deve conter a seção de volume");
+    assert.doesNotMatch(html, /id="day-summary"/, "day-summary não existe mais pra comparar posição (#2736)");
   });
 
   test("seção wave-trend NÃO aparece no dashboard (removida em #2359)", () => {
     const html = renderDashboardHtml(allCampaigns);
     assert.doesNotMatch(html, /id="wave-trend"/, "seção wave-trend foi removida (#2359)");
     assert.doesNotMatch(html, /Tend.ncia entre waves/, "título da seção removida não deve aparecer");
-  });
-
-  test("sem campanhas Clarice News: seção day-summary ausente (#2523)", () => {
-    const html = renderDashboardHtml(t1Campaigns);
-    // #2208 (item 4): verificar ausência do id= específico, não de qualquer substring.
-    // #2523: verificar pelo novo id "day-summary"
-    assert.doesNotMatch(html, /id="day-summary"/, "seção day-summary deve estar ausente sem Clarice News (#2523)");
   });
 
   test("colspan da linha 'sem stats' atualizado para 7 (11 colunas - 4 fixas)", () => {
@@ -1062,19 +1052,17 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /Open rate por dia da semana/, "deve ter título da seção weekday");
   });
 
-  test("seção weekday-openrate posicionada ENTRE campaigns-table e day-summary (#2134, #2472, #2523)", () => {
+  test("seção weekday-openrate posicionada DEPOIS de campaigns-table (#2134, #2472; day-summary removida em #2736)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
-    // #2472: nova ordem: campaigns-table → weekday-openrate → day-summary
-    // #2523: seção agora tem id="day-summary" (era "abc-summary")
+    // #2472: nova ordem: campaigns-table → weekday-openrate. day-summary (era
+    // o 3º elemento da ordem) foi removida da aba em #2736.
     // #2208 (item 4): ancorando em id= para não casar substring de nav/href.
     const idxCampaigns = html.indexOf('id="campaigns-table"');
     const idxWeekday = html.indexOf('id="weekday-openrate"');
-    const idxDaySummary = html.indexOf('id="day-summary"');
     assert.ok(idxCampaigns > -1, 'deve encontrar id="campaigns-table"');
     assert.ok(idxWeekday > -1, 'deve encontrar id="weekday-openrate"');
-    assert.ok(idxDaySummary > -1, 'deve encontrar id="day-summary" (#2523)');
     assert.ok(idxCampaigns < idxWeekday, "weekday-openrate deve vir depois de campaigns-table");
-    assert.ok(idxWeekday < idxDaySummary, "weekday-openrate deve vir antes de day-summary");
+    assert.doesNotMatch(html, /id="day-summary"/, "day-summary não existe mais (#2736)");
   });
 });
 
@@ -1985,13 +1973,14 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no panel Visão geral");
   });
 
-  test("panel-engajamento contém id=engagement-cohorts e weekday-openrate e day-summary", () => {
+  test("panel-engajamento contém id=engagement-cohorts e weekday-openrate (day-summary removida, #2736)", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-engajamento deve existir no HTML");
     assert.match(panel, /id="engagement-cohorts"/, "Coortes deve estar no panel Engajamento");
     assert.match(panel, /id="weekday-openrate"/, "Weekday deve estar no panel Engajamento");
-    assert.match(panel, /id="day-summary"/, "Day summary deve estar no panel Engajamento");
+    assert.doesNotMatch(panel, /id="day-summary"/, "Day summary foi removida do panel Engajamento (#2736)");
+    assert.doesNotMatch(panel, /id="mv-status"/, "Status MillionVerifier foi removido do panel Engajamento (#2736)");
   });
 
   test("panel-links contém id=links-agregados", () => {
@@ -2011,12 +2000,14 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
       "campaigns-table",
       "engagement-cohorts",
       "weekday-openrate",
-      "day-summary",
       "links-agregados",
     ];
     for (const id of sectionIds) {
       assert.match(html, new RegExp(`id="${id}"`), `seção id="${id}" deve estar presente no HTML`);
     }
+    // #2736: day-summary e mv-status foram removidas da aba Engajamento.
+    assert.doesNotMatch(html, /id="day-summary"/, 'seção id="day-summary" foi removida (#2736)');
+    assert.doesNotMatch(html, /id="mv-status"/, 'seção id="mv-status" foi removida (#2736)');
   });
 
   test("scheduled-campaigns aparece dentro de panel-visaogeral quando há agendados", () => {
@@ -2055,9 +2046,9 @@ describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
     assert.match(html, /Resumo A\/B\/C/i, "deve conter seção Resumo A/B/C");
   });
 
-  test("renderDashboardHtml inclui TAMBÉM seção D1-D5 como seção separada", () => {
+  test("renderDashboardHtml NÃO inclui mais a seção D1-D5 (removida em #2736)", () => {
     const html = renderDashboardHtml(allCampaigns);
-    assert.match(html, /Resumo D1.D5/i, "deve conter seção D1-D5 como seção adicional");
+    assert.doesNotMatch(html, /Resumo D1.D5/i, "seção D1-D5 foi removida da aba Engajamento (#2736)");
   });
 
   test("seção A/B/C tem células A, B, C (não rótulos D1, D2)", () => {
