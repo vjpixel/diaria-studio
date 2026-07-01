@@ -462,6 +462,10 @@ describe("comissão (#2743)", () => {
       assert.equal(r["NEWS50"].redemptions[0].paid_cents, 0);
     });
 
+    it("aggregateCouponUsage (pura) NÃO seta generatedAt (#2766 — só fetchCouponUsage, que faz I/O)", () => {
+      assert.equal(report["NEWS50"].generatedAt, undefined, "função pura não deve tocar o relógio");
+    });
+
     // #2758: lista completa de pagamentos (não só o 1º) — relevante sobretudo
     // pra planos mensais com múltiplas cobranças na janela.
     it("payments lista os 2 charges de sub_TEST1, ordenados, valor net", () => {
@@ -1022,6 +1026,24 @@ describe("fetchCouponUsage — tolera coupon 404 (#2750)", () => {
     assert.equal(report["NEWS50"].rowCount, 1, "assinatura NEWS50 casada");
     assert.equal(report["NEWS50"].redemptions[0].customer_email, "c1@example.com");
     assert.equal(report["NEWS50"].redemptions[0].first_payment_is_forecast, true, "trial → previsão");
+  });
+
+  // #2766: momento em que o report foi montado (não em aggregateCouponUsage,
+  // que é pura/sem I/O — ver describe "aggregateCouponUsage com charges").
+  describe("generatedAt (#2766)", () => {
+    it("com generatedAt injetado: mesmo valor ISO em TODOS os códigos do report", async () => {
+      const stamp = "2026-07-01T09:00:00.000Z";
+      const report = await fetchCouponUsage("rk_test_dummy", mockFetch, stamp);
+      assert.equal(report["NEWS50"].generatedAt, stamp);
+      assert.equal(report["NEWS25"]?.generatedAt, stamp, "mesmo carimbo em todo código presente no report");
+    });
+
+    it("sem generatedAt injetado: usa o relógio real (ISO válido, não undefined)", async () => {
+      const report = await fetchCouponUsage("rk_test_dummy", mockFetch);
+      const g = report["NEWS50"].generatedAt;
+      assert.ok(g, "generatedAt deve estar setado mesmo sem injeção explícita");
+      assert.ok(!isNaN(new Date(g!).getTime()), "deve ser um ISO parseável");
+    });
   });
 });
 

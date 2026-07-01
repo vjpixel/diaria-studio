@@ -346,6 +346,34 @@ describe("renderCouponTabPanel", () => {
     });
   });
 
+  describe("generatedAt — última atualização (#2766)", () => {
+    const mkUsage = (generatedAt?: string): CouponUsageReport => ({
+      NEWS50: {
+        couponIds: ["cpnSYNTH50"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+        totalPaidCents: 0, totalCommissionCents: 0, generatedAt,
+        redemptions: [{
+          coupon_code: "NEWS50", coupon_id: "cpnSYNTH50", percent_off: 50, duration: "once",
+          customer: "cus_G", customer_email: "g@example.com", subscription: "sub_G", status: "active",
+          created: 1782383062, plan_amount_cents: 44900, currency: "brl", interval: "year",
+          discount_value_cents: 0, paid_cents: 0, commission_cents: 0,
+        }],
+      },
+    });
+
+    it("com generatedAt: mostra 'Atualizado ... BRT'", () => {
+      const h = renderCouponTabPanel(mkUsage("2026-07-01T09:00:00.000Z"));
+      assert.ok(h.includes("Atualizado"), "texto de atualização presente");
+      assert.ok(h.includes("BRT"), "formatado em BRT");
+      assert.ok(!h.includes("indisponível"), "não deve mostrar o fallback quando o dado existe");
+    });
+
+    it("sem generatedAt (KV pré-#2766): fallback gracioso, sem crash", () => {
+      const h = renderCouponTabPanel(mkUsage(undefined));
+      assert.ok(h.includes("indisponível"), "mensagem de fallback presente");
+      assert.ok(h.includes("#2750"), "aponta pro refresh que vai popular o campo");
+    });
+  });
+
   describe("Pagamentos — lista completa + total por mês (#2758)", () => {
     // `id` opcional — auto-gerado por índice quando o teste não precisa controlar
     // charge ids explicitamente (só o teste de dedup abaixo precisa).

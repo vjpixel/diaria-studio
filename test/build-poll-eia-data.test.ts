@@ -494,3 +494,63 @@ describe("integração: output do buildPollEiaSummaryFromApi aceito por buildPol
     assert.equal(result!.leaderboard[0].display_name, "João");
   });
 });
+
+// ─── pushEiaEngagementToBrevoKv (#2738) ──────────────────────────────────────
+
+describe("pushEiaEngagementToBrevoKv (#2738)", () => {
+  const fakeSummary = {
+    source: "push" as const,
+    last_edition: "260418",
+    editions: [
+      { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 64, correct_choice: "A" },
+    ],
+    leaderboard: [{ display_name: "João", correct: 8, total: 10, streak: 0 }],
+    updated_at: "2026-07-01T09:00:00.000Z",
+  };
+
+  test("sem credenciais Cloudflare: fail-soft, não lança e não trava o --push principal", async () => {
+    const { pushEiaEngagementToBrevoKv } = await import("../scripts/build-poll-eia-data.ts");
+    const origAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const origToken = process.env.CLOUDFLARE_WORKERS_TOKEN;
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_WORKERS_TOKEN;
+    try {
+      await assert.doesNotReject(() => pushEiaEngagementToBrevoKv(fakeSummary));
+    } finally {
+      if (origAccount !== undefined) process.env.CLOUDFLARE_ACCOUNT_ID = origAccount;
+      if (origToken !== undefined) process.env.CLOUDFLARE_WORKERS_TOKEN = origToken;
+    }
+  });
+});
+
+describe("buildEiaEngagementKvPayload (#2738) — payload SLIM, sem PII/leaderboard", () => {
+  test("mantém editions + updated_at, DESCARTA leaderboard/source/last_edition", async () => {
+    const { buildEiaEngagementKvPayload } = await import("../scripts/build-poll-eia-data.ts");
+    const summary = {
+      source: "push" as const,
+      last_edition: "260418",
+      editions: [
+        { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 64, correct_choice: "A" },
+      ],
+      leaderboard: [{ display_name: "João", correct: 8, total: 10, streak: 0 }],
+      updated_at: "2026-07-01T09:00:00.000Z",
+    };
+    const payload = buildEiaEngagementKvPayload(summary);
+    assert.deepEqual(payload, {
+      editions: summary.editions,
+      updated_at: summary.updated_at,
+    });
+    // Prova negativa explícita: nenhum campo PII-adjacent (nicknames) vaza.
+    assert.ok(!("leaderboard" in payload), "leaderboard NÃO deve estar no payload (PII-adjacent, específico do diaria-dashboard)");
+    assert.ok(!("source" in payload), "source não é relevante pra esta aba");
+    assert.ok(!("last_edition" in payload), "last_edition é derivável de editions[0], redundante");
+  });
+
+  test("editions vazio → payload com array vazio, não quebra", async () => {
+    const { buildEiaEngagementKvPayload } = await import("../scripts/build-poll-eia-data.ts");
+    const payload = buildEiaEngagementKvPayload({
+      source: "push", last_edition: null, editions: [], leaderboard: [], updated_at: null,
+    });
+    assert.deepEqual(payload, { editions: [], updated_at: null });
+  });
+});

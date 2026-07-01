@@ -84,10 +84,16 @@ after(() => {
 // ---------------------------------------------------------------------------
 
 describe("isAuthenticated", () => {
-  it("no AUTH_TOKEN → always true (dev mode)", () => {
+  it("no AUTH_TOKEN → sempre false (fail-closed, #2748)", () => {
     const env = makeEnv();
     const req = new Request("http://localhost/");
-    assert.ok(isAuthenticated(req, env), "deve retornar true quando AUTH_TOKEN não configurado");
+    assert.ok(!isAuthenticated(req, env), "deve retornar false quando AUTH_TOKEN não configurado — nunca libera tudo");
+  });
+
+  it("no AUTH_TOKEN, MESMO com um cookie qualquer → false (não há valor que passe)", () => {
+    const env = makeEnv();
+    const req = new Request("http://localhost/", { headers: { Cookie: "cf-dash-auth=anything" } });
+    assert.ok(!isAuthenticated(req, env), "sem AUTH_TOKEN configurado, nenhum cookie autentica");
   });
 
   it("AUTH_TOKEN set, no cookie → false", () => {
@@ -201,6 +207,43 @@ describe("Worker fetch — auth routes", () => {
     assert.ok(ct.includes("application/json"), "deve retornar JSON, não login page");
   });
 
+  // #2748: /api/coupons é a ÚNICA rota /api/* que exige auth explícita (carrega
+  // PII — e-mail de clientes) — o exato caso que o fail-open original expunha.
+  // Cobertura E2E via worker.fetch (não só unit test de getCouponUsage) pra
+  // travar contra uma futura "simplificação" que reuse a isenção genérica /api/*.
+  it("/api/coupons sem cookie (AUTH_TOKEN configurado): NÃO retorna dados — login page", async () => {
+    const req = new Request("http://localhost/api/coupons");
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    const text = await res.text();
+    assert.ok(text.includes("<form"), "deve receber a login page, não JSON de cupons");
+    const ct = res.headers.get("Content-Type") ?? "";
+    assert.ok(!ct.includes("application/json"), "não deve retornar JSON sem auth");
+  });
+
+  it("/api/coupons com cookie ERRADO (AUTH_TOKEN configurado): NÃO retorna dados", async () => {
+    const req = new Request("http://localhost/api/coupons", { headers: { Cookie: WRONG_COOKIE } });
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    const text = await res.text();
+    assert.ok(text.includes("<form"), "cookie errado → login page, não dados de cupons");
+  });
+
+  it("/api/coupons SEM AUTH_TOKEN configurado: fail-closed, NÃO expõe dados (#2748 — o bug original)", async () => {
+    const req = new Request("http://localhost/api/coupons");
+    const res = await worker.fetch(req, makeEnv());  // sem auth token
+    const text = await res.text();
+    assert.ok(text.includes("<form"), "sem AUTH_TOKEN configurado, /api/coupons deve cair na login page, nunca vazar PII");
+  });
+
+  it("/api/coupons com cookie VÁLIDO: passa do gate de auth (não recebe a login page)", async () => {
+    const req = new Request("http://localhost/api/coupons", { headers: { Cookie: COOKIE } });
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    const text = await res.text();
+    // Sem COUPONS_TAB_ENABLED/dado no KV, getCouponUsage tende a retornar null
+    // (404) — o que importa aqui é que o gate de auth foi PASSADO, não travado
+    // na login page (prova de que um cookie válido chega até a lógica de dados).
+    assert.ok(!text.includes("<form"), "cookie válido não deve cair na login page");
+  });
+
   it("/login PUT: retorna 405 Method Not Allowed", async () => {
     const req = new Request("http://localhost/login", { method: "PUT" });
     const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
@@ -208,12 +251,26 @@ describe("Worker fetch — auth routes", () => {
     assert.ok((res.headers.get("Allow") ?? "").includes("POST"), "deve ter Allow header com POST");
   });
 
-  it("/login POST sem AUTH_TOKEN (dev mode): redireciona para /", async () => {
+  it("/login POST sem AUTH_TOKEN: 403 genérico (fail-closed, #2748 — NÃO redireciona pra /)", async () => {
     const form = new FormData();
     form.append("token", "qualquer");
     const req = new Request("http://localhost/login", { method: "POST", body: form });
     const res = await worker.fetch(req, makeEnv());  // no auth token
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get("Location"), "/");
+    // 403 (não 500): negação de acesso deliberada, não erro de servidor — e a
+    // mensagem NÃO nomeia "AUTH_TOKEN" pra não sinalizar a um scanner externo
+    // que este deploy específico tem o secret ausente (vs. token errado).
+    assert.equal(res.status, 403);
+    assert.notEqual(res.headers.get("Location"), "/", "não deve mais deixar entrar via /login sem AUTH_TOKEN");
+    const text = await res.text();
+    assert.ok(!text.includes("AUTH_TOKEN"), "mensagem não deve nomear a causa exata (evita reconhecimento externo)");
+  });
+
+  it("/ sem AUTH_TOKEN configurado: mostra login page, NÃO o dashboard com PII (#2748)", async () => {
+    const req = new Request("http://localhost/");
+    const res = await worker.fetch(req, makeEnv());  // no auth token
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("<form"), "deve exibir formulário de login");
+    assert.ok(!text.includes("Clarice News Dashboard"), "NUNCA deve expor o dashboard sem AUTH_TOKEN configurado");
   });
 });
