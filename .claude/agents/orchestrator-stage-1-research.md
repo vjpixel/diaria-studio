@@ -391,7 +391,7 @@ Input do scorer (1q) agora vem direto de `tmp-dates-reviewed.json` (output de 1p
 
 ### 1q. Scorer (chunked-parallel, #1611)
 
-O scorer single-call (Opus sobre ~80-150 artigos numa passada) gastava ~8min. Agora roda em 5 sub-passos: pontuação em K chamadas paralelas (mesmo rubrico) + seleção holística sobre os finalistas. Paridade validada (top-6 overlap 5/6 vs. single-call, dentro do ruído run-to-run do próprio scorer). Pools pequenos caem no caminho legado — ver **1q-fallback**.
+O scorer single-call (então em Opus, sobre ~80-150 artigos numa passada) gastava ~8min — desde #2772 o legado 1q-fallback roda em Sonnet. Agora roda em 5 sub-passos: pontuação em K chamadas paralelas (mesmo rubrico) + seleção holística sobre os finalistas. Paridade validada (top-6 overlap 5/6 vs. single-call, dentro do ruído run-to-run do próprio scorer). Pools pequenos caem no caminho legado — ver **1q-fallback**.
 
 **1q.1 — Split.** Dividir o pool em chunks de ~30:
 ```bash
@@ -439,7 +439,7 @@ npx tsx scripts/assemble-scored.ts \
 ```
 Daqui em diante `tmp-scored.json` tem o **mesmo contrato** de antes (`highlights`, `runners_up`, `all_scored`) — 1r/1s seguem inalterados.
 
-**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Opus) passando `categorized` (de `tmp-dates-reviewed.json`) e `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
+**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Sonnet, #2772) passando `categorized` (de `tmp-dates-reviewed.json`) e `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
 
 ### 1r. Validação pós-scorer (#104)
 

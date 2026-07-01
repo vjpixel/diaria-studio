@@ -462,7 +462,7 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
   ```
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 
-  - **Auto-pick de título via Opus (#159).** Após aprovação, **fazer snapshot do 02-reviewed.md** pra `_internal/02-pre-title-picker.md` (necessário pra validar estrutura post-#1205), depois dispatch `title-picker` (Opus, Agent) passando:
+  - **Auto-pick de título via Sonnet (#159, #2772).** Após aprovação, **fazer snapshot do 02-reviewed.md** pra `_internal/02-pre-title-picker.md` (necessário pra validar estrutura post-#1205), depois dispatch `title-picker` (Sonnet, Agent) passando:
     - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
     - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
     - `audience_path = context/audience-profile.md`

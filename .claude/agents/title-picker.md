@@ -101,6 +101,6 @@ Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, m
 
 Onde `destaques_picked` = quantos destaques tinham >1 título e foram podados; `destaques_skipped` = quantos já estavam com 1 título.
 
-## Por que Opus
+## Por que Sonnet
 
-Decisão editorial pequena mas com impacto direto em CTR (título é primeiro contato). Volume baixíssimo (≤3 escolhas por edição, só quando editor não podou). Coerência editorial requer raciocínio sobre tom + concretude — não dá pra resolver com regex.
+Migrado de Opus para Sonnet em #2772 (260701). Diferente de escrever título do zero, aqui a tarefa é escolher 1 entre 3 opções já escritas — escopo restrito, volume baixíssimo (≤3 escolhas por edição, só quando editor não podou). Mais mecânico que julgamento holístico: os 3 critérios (concretude, tom, variedade lexical) já vêm especificados acima, então a decisão é aplicar rubrico contra opções finitas, não julgar do zero. Coerência editorial ainda requer raciocínio sobre tom + concretude — não dá pra resolver com regex — mas esse raciocínio não exige o tier mais caro.
