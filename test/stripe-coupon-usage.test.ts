@@ -21,6 +21,7 @@ import {
   computePaidCents,
   commissionCents,
   firstPaymentInfo,
+  paymentsInWindow,
   redemptionWho,
   couponIdFrom,
   StripeApiError,
@@ -460,6 +461,28 @@ describe("comissão (#2743)", () => {
       assert.equal(r["NEWS50"].totalPaidCents, 0);
       assert.equal(r["NEWS50"].redemptions[0].paid_cents, 0);
     });
+
+    // #2758: lista completa de pagamentos (não só o 1º) — relevante sobretudo
+    // pra planos mensais com múltiplas cobranças na janela.
+    it("payments lista os 2 charges de sub_TEST1, ordenados, valor net", () => {
+      const r1 = report["NEWS50"].redemptions.find((r) => r.subscription === "sub_TEST1");
+      assert.equal(r1!.payments!.length, 2, "2 charges → 2 pagamentos, não só o 1º");
+      assert.deepEqual(
+        r1!.payments!.map((p) => p.amount_cents),
+        [44900, 44900 - 4900],
+        "valores net (2º com refund parcial)",
+      );
+      assert.equal(
+        r1!.payments!.reduce((s, p) => s + p.amount_cents, 0),
+        r1!.paid_cents,
+        "soma da lista == paid_cents (mesma fonte)",
+      );
+    });
+
+    it("sub_TEST2 (sem charges) → payments = [] (não undefined)", () => {
+      const r2 = report["NEWS50"].redemptions.find((r) => r.subscription === "sub_TEST2");
+      assert.deepEqual(r2!.payments, [], "lista vazia explícita, não ausente");
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -569,7 +592,53 @@ describe("comissão (#2743)", () => {
     });
   });
 
-  describe("firstPaymentInfo (#2749)", () => {
+  describe("paymentsInWindow (#2758)", () => {
+    const mkCh = (over: Partial<ChargeRaw>): ChargeRaw => ({
+      id: "ch", object: "charge", customer: "cus_A", amount: 1000,
+      amount_refunded: 0, created: 2000, status: "succeeded", paid: true, ...over,
+    });
+
+    it("retorna TODOS os pagamentos na janela, ordenados por data crescente", () => {
+      const charges = [
+        mkCh({ id: "ch_c", created: 2500, amount: 300 }),
+        mkCh({ id: "ch_a", created: 2100, amount: 100 }),
+        mkCh({ id: "ch_b", created: 2900, amount: 200 }),
+      ];
+      const payments = paymentsInWindow(charges, "cus_A", 2000, 3000);
+      assert.equal(payments.length, 3, "os 3 pagamentos, não só o 1º");
+      assert.deepEqual(payments.map((p) => p.epoch), [2100, 2500, 2900], "ordem crescente por data");
+      assert.deepEqual(payments.map((p) => p.amount_cents), [100, 300, 200], "valor de cada pagamento preservado");
+    });
+
+    it("sem cobrança na janela → lista vazia", () => {
+      assert.deepEqual(paymentsInWindow([], "cus_A", 2000, 3000), []);
+    });
+
+    it("exclui charge de outro cliente, fora da janela, não-succeeded, ou refund total (net<=0)", () => {
+      const charges = [
+        mkCh({ id: "c1", customer: "cus_B", created: 2100 }),
+        mkCh({ id: "c2", created: 3000 }), // >= windowEnd
+        mkCh({ id: "c3", created: 1999 }), // < windowStart
+        mkCh({ id: "c4", status: "failed", paid: false, created: 2200 }),
+        mkCh({ id: "c5", created: 2300, amount: 1000, amount_refunded: 1000 }), // net 0
+      ];
+      assert.deepEqual(paymentsInWindow(charges, "cus_A", 2000, 3000), []);
+    });
+
+    it("soma de amount_cents é idêntica ao resultado de computePaidCents (mesma filtragem e mesma janela)", () => {
+      const created = 1782383062;
+      const charges = [
+        mkCh({ id: "ch_1", customer: "cus_A", created: created + 10, amount: 44900 }),
+        mkCh({ id: "ch_2", customer: "cus_A", created: created + 20, amount: 44900, amount_refunded: 4900 }),
+      ];
+      // Mesma janela [created, commissionWindowEnd(created)) que computePaidCents usa internamente.
+      const payments = paymentsInWindow(charges, "cus_A", created, commissionWindowEnd(created));
+      const sumFromPayments = payments.reduce((s, p) => s + p.amount_cents, 0);
+      assert.equal(sumFromPayments, computePaidCents(charges, "cus_A", created));
+    });
+  });
+
+  describe("firstPaymentInfo (#2749) — implementado em cima de paymentsInWindow", () => {
     const mkCh = (over: Partial<ChargeRaw>): ChargeRaw => ({
       id: "ch", object: "charge", customer: "cus_A", amount: 1000,
       amount_refunded: 0, created: 2000, status: "succeeded", paid: true, ...over,

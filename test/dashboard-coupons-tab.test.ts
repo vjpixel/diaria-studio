@@ -162,9 +162,11 @@ describe("getCouponUsage — PII guard (/api/coupons)", () => {
 describe("renderCouponTabPanel", () => {
   const html = renderCouponTabPanel(syntheticUsage);
 
-  it("contém coupon-summary e coupon-detail", () => {
-    assert.ok(html.includes("coupon-summary"), "deve ter seção coupon-summary");
+  it("contém coupon-monthly e coupon-detail (#2758: 'Resumo por cupom' removido)", () => {
+    assert.ok(html.includes("coupon-monthly"), "deve ter seção coupon-monthly (total por mês)");
     assert.ok(html.includes("coupon-detail"), "deve ter seção coupon-detail");
+    assert.ok(!html.includes("coupon-summary"), "seção coupon-summary (Resumo por cupom) foi removida");
+    assert.ok(!html.includes("Resumo por cupom"), "título 'Resumo por cupom' não aparece mais");
   });
 
   it("contém o email sintético test1@example.com", () => {
@@ -235,19 +237,14 @@ describe("renderCouponTabPanel", () => {
     };
     const h = renderCouponTabPanel(usage);
 
-    it("cabeçalhos de Pago + Comissão presentes (detalhe e resumo)", () => {
+    it("cabeçalhos de Pago + Comissão presentes no detalhe", () => {
       assert.ok(h.includes("Pago (12m)"), "coluna Pago no detalhe");
       assert.ok(h.includes("Comissão (40%)"), "coluna Comissão no detalhe");
-      assert.ok(h.includes("Comissão total (40%)"), "coluna Comissão total no resumo");
     });
 
     it("mostra o valor pago e a comissão formatados (R$849,00 / R$339,60)", () => {
       assert.ok(h.includes("R$849,00"), "pago formatado");
       assert.ok(h.includes("R$339,60"), "comissão formatada");
-    });
-
-    it("total geral de comissão a receber", () => {
-      assert.ok(h.includes("Comissão total a receber"), "linha de total geral");
     });
 
     it("KV legado sem os campos → render usa 0 (backward-compat, sem crash)", () => {
@@ -264,11 +261,11 @@ describe("renderCouponTabPanel", () => {
       } as unknown as CouponUsageReport;
       const hLegacy = renderCouponTabPanel(legacy);
       assert.ok(hLegacy.includes("R$0,00"), "campos ausentes renderizam R$0,00");
-      assert.ok(hLegacy.includes("Comissão total a receber"), "total geral ainda renderiza");
+      assert.ok(hLegacy.includes("coupon-monthly"), "seção mensal ainda renderiza (vazia)");
     });
   });
 
-  describe("1º pagamento — data real vs previsão (#2749)", () => {
+  describe("Pagamentos — fallback pra 1º pagamento/previsão sem lista (#2749, KV legado do #2758)", () => {
     const mkUsage = (over: Partial<RedemptionRow>): CouponUsageReport => ({
       NEWS50: {
         couponIds: ["cpnSYNTH50"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
@@ -282,10 +279,11 @@ describe("renderCouponTabPanel", () => {
       },
     });
 
-    it("cabeçalho '1º pagamento' substitui 'Criada'", () => {
+    it("cabeçalho 'Pagamentos' substitui 'Criada' e '1º pagamento' (#2758)", () => {
       const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
-      assert.ok(h.includes("1º pagamento"), "novo cabeçalho presente");
-      assert.ok(!h.includes("<th>Criada</th>"), "cabeçalho antigo removido");
+      assert.ok(h.includes("<th>Pagamentos</th>"), "novo cabeçalho presente");
+      assert.ok(!h.includes("<th>Criada</th>"), "cabeçalho antigo (#2743) removido");
+      assert.ok(!h.includes("<th>1º pagamento</th>"), "cabeçalho intermediário (#2749) removido");
     });
 
     it("previsão (trial) → data com '*' + legenda", () => {
@@ -347,7 +345,230 @@ describe("renderCouponTabPanel", () => {
       assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda no legado");
     });
   });
+
+  describe("Pagamentos — lista completa + total por mês (#2758)", () => {
+    // `id` opcional — auto-gerado por índice quando o teste não precisa controlar
+    // charge ids explicitamente (só o teste de dedup abaixo precisa).
+    const mkUsageWithPayments = (
+      paymentsIn: { epoch: number; amount_cents: number; id?: string }[],
+    ): CouponUsageReport => {
+      const payments = paymentsIn.map((p, i) => ({ id: p.id ?? `ch_auto_${i}`, epoch: p.epoch, amount_cents: p.amount_cents }));
+      return {
+        NEWS25: {
+          couponIds: ["cpnSYNTH25"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+          totalPaidCents: payments.reduce((s, p) => s + p.amount_cents, 0),
+          totalCommissionCents: 0,
+          redemptions: [{
+            coupon_code: "NEWS25", coupon_id: "cpnSYNTH25", percent_off: 25, duration: "repeating",
+            customer: "cus_M", customer_email: "monthly@example.com", subscription: "sub_M", status: "active",
+            created: 1782383062, plan_amount_cents: 9990, currency: "brl", interval: "month",
+            discount_value_cents: 0,
+            paid_cents: payments.reduce((s, p) => s + p.amount_cents, 0),
+            commission_cents: 0,
+            payments,
+          }],
+        },
+      };
+    };
+
+    it("plano mensal com 3 pagamentos: célula mostra contagem + total, expande as 3 datas", () => {
+      const h = renderCouponTabPanel(mkUsageWithPayments([
+        { epoch: 1782383062, amount_cents: 9990 },
+        { epoch: 1785061462, amount_cents: 9990 },
+        { epoch: 1787739862, amount_cents: 9990 },
+      ]));
+      assert.ok(h.includes("3 pagamentos"), "contagem plural");
+      assert.ok(h.includes("R$299,70"), "total dos 3 pagamentos (3×R$99,90)");
+      assert.ok(h.includes("payments-list"), "lista expansível presente");
+      // 3 itens individuais na lista expandida (cada um R$99,90)
+      const occurrences = (h.match(/R\$99,90/g) ?? []).length;
+      assert.ok(occurrences >= 3, "cada pagamento individual (R$99,90) aparece na lista expandida");
+    });
+
+    it("1 pagamento: singular ('1 pagamento', não '1 pagamentos')", () => {
+      const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
+      assert.ok(h.includes("1 pagamento"), "singular presente");
+      assert.ok(!h.includes("1 pagamentos"), "sem plural incorreto");
+    });
+
+    it("payments=[] (trial, sem cobrança) → cai pro fallback de previsão, não pra lista vazia", () => {
+      const usage: CouponUsageReport = {
+        NEWS25: {
+          couponIds: ["cpnSYNTH25"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+          totalPaidCents: 0, totalCommissionCents: 0,
+          redemptions: [{
+            coupon_code: "NEWS25", coupon_id: "cpnSYNTH25", percent_off: 25, duration: "repeating",
+            customer: "cus_T", customer_email: "trial2@example.com", subscription: "sub_T", status: "trialing",
+            created: 1782383062, plan_amount_cents: 9990, currency: "brl", interval: "month",
+            discount_value_cents: 0, paid_cents: 0, commission_cents: 0,
+            first_payment_epoch: 1783000000, first_payment_is_forecast: true,
+            payments: [],
+          }],
+        },
+      };
+      const h = renderCouponTabPanel(usage);
+      assert.ok(!h.includes("0 pagamentos"), "não mostra '0 pagamentos' — usa a previsão");
+      assert.match(h, /\d{2}\/\d{2}\/\d{4}\*/, "mostra a data prevista com asterisco");
+    });
+
+    describe("tabela mensal (coupon-monthly)", () => {
+      it("sem nenhum pagamento em lugar nenhum → mensagem vazia graciosa", () => {
+        const h = renderCouponTabPanel(syntheticUsage); // fixture sem `payments` em nenhuma redemption
+        assert.ok(h.includes("coupon-monthly"), "seção presente");
+        assert.ok(h.includes("Nenhum pagamento registrado"), "mensagem vazia");
+      });
+
+      it("agrupa pagamentos de meses diferentes em buckets separados, ordenados desc", () => {
+        // jan/2026 e mar/2026 (BRT) — meses bem distantes, sem ambiguidade de fuso.
+        const jan = Math.floor(Date.UTC(2026, 0, 15, 12, 0, 0) / 1000);
+        const mar = Math.floor(Date.UTC(2026, 2, 15, 12, 0, 0) / 1000);
+        const h = renderCouponTabPanel(mkUsageWithPayments([
+          { epoch: jan, amount_cents: 9990 },
+          { epoch: mar, amount_cents: 9990 },
+        ]));
+        const idxMar = h.indexOf("03/2026");
+        const idxJan = h.indexOf("01/2026");
+        assert.ok(idxMar !== -1 && idxJan !== -1, "os dois meses aparecem");
+        assert.ok(idxMar < idxJan, "mês mais recente (03/2026) vem ANTES do mais antigo (01/2026) — ordem desc");
+      });
+
+      it("drill-down do mês mostra cupom/email/plano/valor/comissão/data de cada pagamento", () => {
+        const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
+        assert.ok(h.includes("monthly@example.com"), "email do pagamento no drill-down");
+        assert.ok(h.includes("NEWS25"), "cupom no drill-down");
+        assert.ok(h.includes(fmtBRLTest(3996)), "comissão de 40% sobre R$99,90 (R$39,96) calculada por pagamento");
+      });
+
+      it("total do mês soma pago + comissão corretamente (2 pagamentos no mesmo mês)", () => {
+        const epochA = 1782383062; // 25/06/2026 07:24 BRT
+        const epochB = epochA + 86400; // 26/06/2026 07:24 BRT — mesmo mês, longe do limite (dia 25→26)
+        const h = renderCouponTabPanel(mkUsageWithPayments([
+          { epoch: epochA, amount_cents: 9990 },
+          { epoch: epochB, amount_cents: 9990 },
+        ]));
+        assert.ok(h.includes("R$199,80"), "pago total do mês (2×R$99,90)");
+        assert.ok(h.includes(fmtBRLTest(Math.round(19980 * 0.4))), "comissão total do mês (40% de R$199,80)");
+      });
+
+      it("3+ meses distintos ordenam desc corretamente (não só o caso trivial de 2)", () => {
+        const jan = Math.floor(Date.UTC(2026, 0, 15, 12, 0, 0) / 1000);
+        const abr = Math.floor(Date.UTC(2026, 3, 15, 12, 0, 0) / 1000);
+        const jul = Math.floor(Date.UTC(2026, 6, 15, 12, 0, 0) / 1000);
+        const h = renderCouponTabPanel(mkUsageWithPayments([
+          { epoch: jan, amount_cents: 9990 },
+          { epoch: jul, amount_cents: 9990 },
+          { epoch: abr, amount_cents: 9990 },
+        ]));
+        const idx = (label: string) => h.indexOf(label);
+        assert.ok(idx("07/2026") < idx("04/2026"), "07 antes de 04");
+        assert.ok(idx("04/2026") < idx("01/2026"), "04 antes de 01");
+      });
+
+      it("payment na virada BRT: epoch 01:30 UTC (22:30 BRT do dia anterior) cai no mês anterior", () => {
+        // 2026-07-01T01:30Z = 2026-06-30 22:30 BRT — deve agrupar em 06/2026, não 07/2026
+        // (bug distinto do fmtDate/#2749 — brtMonthKey é função própria pro #2758).
+        const epoch = Math.floor(Date.UTC(2026, 6, 1, 1, 30, 0) / 1000);
+        const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch, amount_cents: 9990 }]));
+        assert.ok(h.includes("06/2026"), "agrupado no mês BRT (06/2026)");
+        assert.ok(!h.includes("07/2026"), "NÃO agrupado no mês UTC (07/2026)");
+      });
+
+      it("dedup por charge id: 2 redemptions do MESMO cliente com o MESMO charge (janelas sobrepostas) não conta 2×", () => {
+        // Simula 2 assinaturas com cupom pro mesmo cliente cujas janelas se
+        // sobrepõem — o mesmo charge Stripe aparece na lista `payments` de
+        // AMBAS as redemptions (#2743: atribuição é por-cliente, não por-sub).
+        // Sem o dedup por id, "Total por mês" contaria o pagamento 2×.
+        const sharedEpoch = 1782383062;
+        const usage: CouponUsageReport = {
+          NEWS50: {
+            couponIds: ["cpnA"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+            totalPaidCents: 9990, totalCommissionCents: 3996,
+            redemptions: [{
+              coupon_code: "NEWS50", coupon_id: "cpnA", percent_off: 50, duration: "once",
+              customer: "cus_DUP", customer_email: "dup@example.com", subscription: "sub_A", status: "active",
+              created: sharedEpoch, plan_amount_cents: 9990, currency: "brl", interval: "month",
+              discount_value_cents: 0, paid_cents: 9990, commission_cents: 3996,
+              payments: [{ id: "ch_SHARED", epoch: sharedEpoch, amount_cents: 9990 }],
+            }],
+          },
+          NEWS25: {
+            couponIds: ["cpnB"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+            totalPaidCents: 9990, totalCommissionCents: 3996,
+            redemptions: [{
+              coupon_code: "NEWS25", coupon_id: "cpnB", percent_off: 25, duration: "repeating",
+              customer: "cus_DUP", customer_email: "dup@example.com", subscription: "sub_B", status: "active",
+              created: sharedEpoch, plan_amount_cents: 9990, currency: "brl", interval: "month",
+              discount_value_cents: 0, paid_cents: 9990, commission_cents: 3996,
+              // MESMO charge id (ch_SHARED) que a redemption acima — mesmo cliente,
+              // janelas sobrepostas, mesmo charge Stripe subjacente.
+              payments: [{ id: "ch_SHARED", epoch: sharedEpoch, amount_cents: 9990 }],
+            }],
+          },
+        };
+        const h = renderCouponTabPanel(usage);
+        assert.ok(h.includes("R$99,90"), "valor do pagamento único presente");
+        assert.ok(!h.includes("R$199,80"), "NÃO soma 2× (deduplicado por charge id)");
+      });
+
+      it("2 clientes diferentes com pagamento no MESMO mês: agrega os dois no mesmo bucket (não substitui)", () => {
+        const epochA = 1782383062;
+        const epochB = epochA + 100;
+        const usage: CouponUsageReport = {
+          NEWS50: {
+            couponIds: ["cpnA"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+            totalPaidCents: 44900, totalCommissionCents: 17960,
+            redemptions: [{
+              coupon_code: "NEWS50", coupon_id: "cpnA", percent_off: 50, duration: "once",
+              customer: "cus_X", customer_email: "x@example.com", subscription: "sub_X", status: "active",
+              created: epochA, plan_amount_cents: 44900, currency: "brl", interval: "year",
+              discount_value_cents: 0, paid_cents: 44900, commission_cents: 17960,
+              payments: [{ id: "ch_X", epoch: epochA, amount_cents: 44900 }],
+            }],
+          },
+          NEWS25: {
+            couponIds: ["cpnB"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+            totalPaidCents: 9990, totalCommissionCents: 3996,
+            redemptions: [{
+              coupon_code: "NEWS25", coupon_id: "cpnB", percent_off: 25, duration: "repeating",
+              customer: "cus_Y", customer_email: "y@example.com", subscription: "sub_Y", status: "active",
+              created: epochB, plan_amount_cents: 9990, currency: "brl", interval: "month",
+              discount_value_cents: 0, paid_cents: 9990, commission_cents: 3996,
+              payments: [{ id: "ch_Y", epoch: epochB, amount_cents: 9990 }],
+            }],
+          },
+        };
+        const h = renderCouponTabPanel(usage);
+        assert.ok(h.includes("x@example.com") && h.includes("y@example.com"), "os 2 clientes aparecem no drill-down");
+        assert.ok(h.includes("R$548,90"), "total do mês soma os 2 clientes (R$449,00 + R$99,90)");
+      });
+
+      it("nota de dado legado: paid_cents real sem `payments` mostra aviso (não parece R$0 de receita)", () => {
+        const legacy: CouponUsageReport = {
+          NEWS50: {
+            couponIds: ["cpnL"], timesRedeemed: 1, rowCount: 1, totalProjectedDiscountCents: 0,
+            totalPaidCents: 44900, totalCommissionCents: 17960,
+            redemptions: [{
+              coupon_code: "NEWS50", coupon_id: "cpnL", percent_off: 50, duration: "once",
+              customer: "cus_L", customer_email: "legacy@example.com", subscription: "sub_L", status: "active",
+              created: 1782383062, plan_amount_cents: 44900, currency: "brl", interval: "year",
+              discount_value_cents: 0, paid_cents: 44900, commission_cents: 17960,
+              // SEM `payments` — formato pré-#2758, dinheiro real mas sem quebra mensal.
+            }],
+          },
+        };
+        const h = renderCouponTabPanel(legacy);
+        assert.ok(h.includes("Nenhum pagamento registrado"), "seção mensal vazia (sem dados pra agregar)");
+        assert.ok(h.includes("R$449,00"), "aviso menciona o valor real (não fica em silêncio parecendo R$0)");
+        assert.ok(h.includes("formato antigo"), "aviso explica que é dado legado, não falta de receita");
+      });
+    });
+  });
 });
+
+function fmtBRLTest(cents: number): string {
+  const abs = Math.abs(cents);
+  return `R$${Math.floor(abs / 100)},${String(abs % 100).padStart(2, "0")}`;
+}
 
 // ---------------------------------------------------------------------------
 // Tests: renderDashboardHtml — tab habilitada vs. desabilitada

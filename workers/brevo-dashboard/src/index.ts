@@ -53,6 +53,7 @@
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
 import {
   fetchCouponUsage,
+  commissionCents,
   type CouponUsageReport,
   type CouponCodeReport,
 } from "../../../scripts/lib/stripe-coupons.ts";
@@ -1531,6 +1532,17 @@ export function renderDashboardHtml(
   .links-table td.link-clicks { font-weight: 600; color: var(--brand); }
   .links-table td.link-pct { opacity: 0.75; }
   .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.5; padding: 2px 12px 6px; margin: 0; }
+  /* #2758: lista de pagamentos individuais na célula "Pagamentos" (detalhe por assinatura) */
+  .payments-list { margin: 4px 0 6px; padding-left: 20px; font-size: 0.8rem; }
+  .payments-list li { padding: 1px 0; }
+  /* #2758: .links-ctr dentro de uma <td> normal (não numa <tr>/<td> full-bleed
+     como o "Links clicados") — a <td> já tem padding próprio, então zeramos o
+     do summary pra não dobrar o espaçamento. */
+  details.payments-cell summary.links-summary { padding: 0; }
+  /* #2758: separador entre os blocos de mês empilhados (sem tabela ao redor
+     pra dar borda, diferente do "Resumo por cupom" removido). */
+  details.coupon-month { border-bottom: 1px solid var(--rule); }
+  details.coupon-month summary.links-summary { padding: 8px; }
   /* #2542: tab navigation — CSS-only via radio+label+:checked (sem JS externo) */
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
@@ -2965,6 +2977,15 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
  * Chamada APENAS quando couponUsage != null (tab habilitada + flag ON + STRIPE_API_KEY presente).
  * Exportada para testes unitários de PII-off.
  */
+/** #2758: um pagamento "achatado" com o contexto da assinatura, pra listagem/drill-down. */
+interface FlatPayment {
+  coupon_code: string;
+  customer_email: string;
+  interval: string;
+  amount_cents: number;
+  epoch: number;
+}
+
 export function renderCouponTabPanel(usage: CouponUsageReport): string {
   const fmtBRL = (cents: number): string => {
     const abs = Math.abs(cents);
@@ -2972,36 +2993,8 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
   };
 
   const codes = Object.keys(usage).sort();
-
-  const summaryRows = codes.map((code) => {
-    const e = usage[code] as CouponCodeReport;
-    const firstRow = e.redemptions[0];
-    const pct = firstRow?.percent_off ?? null;
-    const dur = firstRow?.duration ?? "—";
-    const durLabel = dur === "forever" ? "forever (recorrente)" : dur;
-    // #2743: mostra o REALIZADO (pago) + comissão de 40%, não o desconto projetado.
-    return `<tr>
-      <td><strong>${escHtml(code)}</strong></td>
-      <td>${pct != null ? `${pct}%` : "—"}</td>
-      <td>${escHtml(durLabel)}</td>
-      <td>${e.timesRedeemed.toLocaleString("pt-BR")}</td>
-      <td>${e.rowCount.toLocaleString("pt-BR")}</td>
-      <td>${escHtml(fmtBRL(e.totalPaidCents ?? 0))}</td>
-      <td><strong>${escHtml(fmtBRL(e.totalCommissionCents ?? 0))}</strong></td>
-    </tr>`;
-  }).join("\n");
-
-  // #2743: comissão total a receber (soma de todos os cupons).
-  const grandCommissionCents = codes.reduce(
-    (sum, code) => sum + ((usage[code] as CouponCodeReport).totalCommissionCents ?? 0),
-    0,
-  );
-  const grandPaidCents = codes.reduce(
-    (sum, code) => sum + ((usage[code] as CouponCodeReport).totalPaidCents ?? 0),
-    0,
-  );
-
   const allRows = codes.flatMap((code) => (usage[code] as CouponCodeReport).redemptions);
+
   // #2749: data em BRT (America/Sao_Paulo), consistente com fmtDateBRT do resto
   // do dashboard — sem timeZone o worker (UTC) mostraria o dia-calendário errado
   // perto da meia-noite pro editor no Brasil.
@@ -3010,12 +3003,42 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       timeZone: "America/Sao_Paulo",
       day: "2-digit", month: "2-digit", year: "numeric",
     });
-  const detailRows = allRows.map((r) => {
-    // #2749: data do 1º pagamento — real (já cobrado) ou prevista (fim do trial),
-    // marcada com "*". Fallback pra r.created no KV pré-#2749 (sem o campo).
+  // #2758: chave de mês-calendário em BRT ("AAAA-MM") pra agrupar pagamentos —
+  // um pagamento nos últimos dias do mês em UTC pode cair no mês seguinte em BRT.
+  const brtMonthKey = (epoch: number): string => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit",
+    }).formatToParts(new Date(epoch * 1000));
+    const y = parts.find((p) => p.type === "year")!.value;
+    const m = parts.find((p) => p.type === "month")!.value;
+    return `${y}-${m}`;
+  };
+  const monthKeyToLabel = (key: string): string => {
+    const [y, m] = key.split("-");
+    return `${m}/${y}`;
+  };
+
+  // #2758: coluna "Pagamentos" — lista TODOS os pagamentos na janela (não só o
+  // 1º), colapsável. Sem pagamentos ainda (trial) OU KV legado sem a lista →
+  // degrada pra data do 1º pagamento/previsão (mesma semântica do #2749).
+  const paymentsCell = (r: (typeof allRows)[number]): string => {
+    const list = r.payments;
+    if (list && list.length > 0) {
+      const total = list.reduce((sum, p) => sum + p.amount_cents, 0);
+      const items = list.map((p) =>
+        `<li>${escHtml(fmtBRL(p.amount_cents))} em ${escHtml(fmtDate(p.epoch))}</li>`,
+      ).join("");
+      return `<details class="links-ctr payments-cell">
+        <summary class="links-summary">${list.length} pagamento${list.length > 1 ? "s" : ""} <span class="links-count-badge">${escHtml(fmtBRL(total))}</span></summary>
+        <ul class="payments-list">${items}</ul>
+      </details>`;
+    }
     const payEpoch = r.first_payment_epoch ?? r.created;
     const forecastMark = r.first_payment_is_forecast ? "*" : "";
-    const paymentCell = fmtDate(payEpoch) + forecastMark;
+    return escHtml(fmtDate(payEpoch) + forecastMark);
+  };
+
+  const detailRows = allRows.map((r) => {
     // #2743: pago (realizado, net, 12m desde o resgate) + comissão de 40%.
     return `<tr>
       <td>${escHtml(r.coupon_code)}</td>
@@ -3024,38 +3047,90 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       <td>${escHtml(fmtBRL(r.paid_cents ?? 0))}</td>
       <td><strong>${escHtml(fmtBRL(r.commission_cents ?? 0))}</strong></td>
       <td>${escHtml(r.status)}</td>
-      <td>${escHtml(paymentCell)}</td>
+      <td>${paymentsCell(r)}</td>
     </tr>`;
   }).join("\n");
-  // #2749: legenda do "*" só aparece se há ≥1 pagamento previsto (trial).
-  const hasForecast = allRows.some((r) => r.first_payment_is_forecast);
+  // #2749: legenda do "*" só aparece se há ≥1 pagamento previsto (trial) SEM
+  // lista de pagamentos (a lista, quando presente e vazia, já usa a previsão).
+  const hasForecast = allRows.some((r) => (!r.payments || r.payments.length === 0) && r.first_payment_is_forecast);
   const forecastLegend = hasForecast
     ? `<p class="coupon-forecast-legend" style="margin-top:8px;font-size:13px;opacity:0.7;">* previsão do 1º pagamento (assinatura em trial — ainda não cobrada)</p>`
     : "";
 
-  return `
-<section class="phase2-section" id="coupon-summary">
-  <h2 class="section-title">Resumo por cupom</h2>
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Cupom</th>
-        <th>Desconto</th>
-        <th>Duração</th>
-        <th>times_redeemed</th>
-        <th>Assinaturas</th>
-        <th>Pago total (12m)</th>
-        <th>Comissão total (40%)</th>
-      </tr>
-    </thead>
-    <tbody>${summaryRows}</tbody>
+  // #2758: total por mês-calendário (BRT), clicável — substitui o "Resumo por
+  // cupom" (agora só existe "Detalhe por assinatura" + esta visão mensal). A
+  // agregação roda inteiramente sobre os `payments` já carregados no KV — sem
+  // nova chamada à Stripe. Redemptions sem `payments` (KV pré-#2758) não
+  // contribuem — degradação graciosa até o próximo refresh (#2750) repopular.
+  //
+  // Dedup por charge id (`seenChargeIds`): `payments` é filtrado só por
+  // cliente+janela (granularidade "por e-mail", #2743) — se o MESMO cliente
+  // tem 2 redemptions cujas janelas se sobrepõem (ex.: 2 assinaturas com
+  // cupom, ou resgate + reaplicação), o mesmo charge Stripe aparece na lista
+  // de payments de AMBAS as rows. Sem dedup, essa agregação cross-redemption
+  // contaria o pagamento 2×. O total por-código (`totalPaidCents`) já se
+  // protege disso via max-por-cliente; aqui, mais granular (por charge
+  // individual), usamos o id do charge — mais preciso que "max por cliente"
+  // quando as janelas se sobrepõem só parcialmente.
+  const monthly = new Map<string, { totalCents: number; items: FlatPayment[] }>();
+  const seenChargeIds = new Set<string>();
+  for (const r of allRows) {
+    for (const p of r.payments ?? []) {
+      if (seenChargeIds.has(p.id)) continue;
+      seenChargeIds.add(p.id);
+      const key = brtMonthKey(p.epoch);
+      if (!monthly.has(key)) monthly.set(key, { totalCents: 0, items: [] });
+      const bucket = monthly.get(key)!;
+      bucket.totalCents += p.amount_cents;
+      bucket.items.push({
+        coupon_code: r.coupon_code, customer_email: r.customer_email,
+        interval: r.interval, amount_cents: p.amount_cents, epoch: p.epoch,
+      });
+    }
+  }
+  const monthKeysDesc = [...monthly.keys()].sort().reverse();
+
+  // #2758: redemptions do KV pré-#2758 têm `paid_cents` real mas NÃO têm a
+  // lista `payments` (não sabemos em que mês cada pagamento caiu) — sem este
+  // aviso, "Total por mês" pareceria mostrar R$0 de receita quando na verdade
+  // há dinheiro real registrado (só sem quebra mensal ainda). Nota some
+  // sozinha assim que o refresh diário (#2750) repopular o KV no formato novo.
+  const legacyPaidCents = allRows
+    .filter((r) => (!r.payments || r.payments.length === 0) && (r.paid_cents ?? 0) > 0)
+    .reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
+  const legacyNote = legacyPaidCents > 0
+    ? `<p class="coupon-monthly-legacy-note" style="opacity:0.6;font-size:13px;margin-top:6px;">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh (#2750). Ver "Detalhe por assinatura" abaixo pro total real.</p>`
+    : "";
+
+  const monthlySectionBody = monthKeysDesc.length === 0
+    ? `<p class="coupon-monthly-empty" style="opacity:0.6;font-size:14px;">Nenhum pagamento registrado ainda (assinaturas em trial, ou KV aguardando refresh — ver #2750).</p>`
+    : monthKeysDesc.map((key) => {
+        const bucket = monthly.get(key)!;
+        const itemsSorted = [...bucket.items].sort((a, b) => a.epoch - b.epoch);
+        const itemRows = itemsSorted.map((it) => `<tr>
+          <td>${escHtml(it.coupon_code)}</td>
+          <td>${escHtml(it.customer_email)}</td>
+          <td>${escHtml(it.interval)}</td>
+          <td>${escHtml(fmtBRL(it.amount_cents))}</td>
+          <td>${escHtml(fmtBRL(commissionCents(it.amount_cents)))}</td>
+          <td>${escHtml(fmtDate(it.epoch))}</td>
+        </tr>`).join("\n");
+        return `<details class="links-ctr coupon-month" id="coupon-month-${escHtml(key)}">
+  <summary class="links-summary">${escHtml(monthKeyToLabel(key))} <span class="links-count-badge">${bucket.items.length}</span> — pago ${escHtml(fmtBRL(bucket.totalCents))} · comissão ${escHtml(fmtBRL(commissionCents(bucket.totalCents)))}</summary>
+  <div class="links-table-wrap">
+  <table class="links-table">
+    <thead><tr><th>Cupom</th><th>Email</th><th>Plano</th><th>Valor</th><th>Comissão (40%)</th><th>Data</th></tr></thead>
+    <tbody>${itemRows}</tbody>
   </table>
   </div>
-  <p class="coupon-commission-total" style="margin-top:8px;font-size:15px;">
-    Comissão total a receber (40% do pago em 12m): <strong>${escHtml(fmtBRL(grandCommissionCents))}</strong>
-    <span style="opacity:0.6;"> · pago total ${escHtml(fmtBRL(grandPaidCents))}</span>
-  </p>
+</details>`;
+      }).join("\n");
+
+  return `
+<section class="phase2-section" id="coupon-monthly">
+  <h2 class="section-title">Total por mês</h2>
+  ${monthlySectionBody}
+  ${legacyNote}
 </section>
 <section class="phase2-section" id="coupon-detail">
   <h2 class="section-title">Detalhe por assinatura</h2>
@@ -3069,7 +3144,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
         <th>Pago (12m)</th>
         <th>Comissão (40%)</th>
         <th>Status</th>
-        <th>1º pagamento</th>
+        <th>Pagamentos</th>
       </tr>
     </thead>
     <tbody>${detailRows}</tbody>

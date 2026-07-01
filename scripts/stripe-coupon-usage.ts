@@ -45,6 +45,9 @@ export {
   // #2750: normalização de shape do coupon id (versões da Stripe API)
   couponIdFrom,
   StripeApiError,
+  // #2758: lista completa de pagamentos (não só o 1º)
+  paymentsInWindow,
+  type PaymentEntry,
   type CouponRef,
   type PromoCodeRaw,
   type CouponRaw,
@@ -214,16 +217,20 @@ async function main(): Promise<void> {
     console.log(`  Comissão total (40%):      ${fmtBRL(entry.totalCommissionCents ?? 0)}`);
     for (const r of entry.redemptions) {
       const trial = r.status === "trialing" ? " [pending/trial]" : "";
-      // #2749: data do 1º pagamento — "*" quando é previsão (trial, sem cobrança).
-      const payDate = r.first_payment_epoch != null
-        ? new Date(r.first_payment_epoch * 1000).toISOString().slice(0, 10) +
-          (r.first_payment_is_forecast ? "*" : "")
-        : "—";
+      // #2758: lista TODOS os pagamentos (não só o 1º) — "*" quando ainda não
+      // há nenhum (previsão do 1º pagamento, trial sem cobrança).
+      const payments = r.payments;
+      const paymentsLabel = payments && payments.length > 0
+        ? payments.map((p) => new Date(p.epoch * 1000).toISOString().slice(0, 10)).join(",")
+        : r.first_payment_epoch != null
+          ? new Date(r.first_payment_epoch * 1000).toISOString().slice(0, 10) +
+            (r.first_payment_is_forecast ? "*" : "")
+          : "—";
       console.log(
         `    ${r.subscription}  ${redemptionWho(r, noPii)}  ` +
           `${r.status}${trial}  plan=${fmtBRL(r.plan_amount_cents)}/${r.interval}  ` +
           `pago=${fmtBRL(r.paid_cents ?? 0)}  comissão=${fmtBRL(r.commission_cents ?? 0)}  ` +
-          `1ºpag=${payDate}`,
+          `pagamentos=${paymentsLabel}`,
       );
     }
     console.log();
