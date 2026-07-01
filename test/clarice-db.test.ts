@@ -130,6 +130,24 @@ test("eligibility: mv_bucket rejected → mv_rejected", () => {
   );
 });
 
+test("eligibility: mv_bucket unknown → inelegível com razão mv_unknown (#2735)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unknown");
+});
+
+test("eligibility: mv_bucket verified (mv_result=ok) continua elegível (#2735, sem regressão)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "verified" });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility: mv_bucket null (nunca submetido ao MV, ex: T01 ativo) continua elegível", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
 test("eligibility: dispute_losses > 0 → dispute", () => {
   assert.equal(
     classifyEligibility({ ...CLEAN, dispute_losses: 12.5 }).ineligible_reason,
@@ -211,6 +229,33 @@ test("recomputeDerived: aplica optin + pontos + elegibilidade nas linhas", () =>
   assert.equal(caio.ineligible_reason, "unsubscribed");
   // pontos são computados mesmo pra inelegíveis (auditoria): recebeu 1, não abriu → −10
   assert.equal(caio.priority_points, -10);
+
+  db.close();
+});
+
+test("recomputeDerived: mv_bucket=unknown vira send_eligible=0 + ineligible_reason=mv_unknown (#2735)", () => {
+  const db = openClariceDb(":memory:");
+
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket) VALUES (?, ?, ?, ?)",
+  ).run("duda@x.com", 0, 0, "unknown");
+
+  recomputeDerived(db);
+
+  const duda = db
+    .prepare(
+      "SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?",
+    )
+    .get("duda@x.com") as any;
+  assert.equal(duda.send_eligible, 0);
+  assert.equal(duda.ineligible_reason, "mv_unknown");
+
+  // registro fica no store (não é apagado) — só o flag muda, pra permitir
+  // reabilitação numa re-verificação futura (decisão da issue #2735).
+  const total = db.prepare("SELECT COUNT(*) n FROM clarice_users").get() as {
+    n: number;
+  };
+  assert.equal(total.n, 1);
 
   db.close();
 });
