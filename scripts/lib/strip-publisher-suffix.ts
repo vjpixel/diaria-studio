@@ -36,9 +36,16 @@
  *
  * ## Ordem das normalizações em normalizeItemTitle()
  *
- *   1. stripPublisherSuffix → remove sufixo de veículo
- *   2. stripTrailingPeriod  → remove ponto residual (ex: "...2025. - Canaltech"
- *      → strip Canaltech → "...2025." → strip ponto → "...2025")
+ *   1. stripTrailingPeriod  → pre-pass: expõe sufixo de veículo grudado num ponto
+ *      (ex: "...veja como - Canaltech." → "...veja como - Canaltech", senão
+ *      "canaltech." não bate a allowlist de KNOWN_DASH_PUBLISHERS)
+ *   2. stripPublisherSuffix → remove sufixo de veículo
+ *   3. stripTrailingPeriod  → remove ponto residual exposto pelo strip de veículo
+ *      (ex: "Evento ocorreu. - Canaltech" → strip Canaltech → "Evento ocorreu."
+ *      → strip ponto → "Evento ocorreu")
+ *
+ *   Ver docstring de normalizeItemTitle() abaixo para os dois casos reais
+ *   (#2664) que motivam o sandwich de 3 passos.
  *
  * ## Funções exportadas
  *   - `stripPublisherSuffix(title)` — sufixo ` | ` + ` - ` / ` — ` (lista)

@@ -55,6 +55,31 @@
 import { readFileSync } from "node:fs";
 import { buildLocateRectJs } from "./beehiiv-real-click.ts";
 
+/**
+ * #2714 item 2: guard de blob compartilhado entre `buildCoverDataTransferJs`
+ * (upload direto/#1500) e `buildCoverReplaceStep2_UploadJs` (Etapa 2 do replace
+ * em 2 chamadas/#2283). Antes deste extract, o mesmo bloco `if (blob.size < 5000
+ * ...)` existia LITERALMENTE duplicado nas duas funções — risco de as duas cópias
+ * divergirem numa mudança futura do guard (ex: ajustar o threshold, adicionar
+ * outro MIME check) e só uma das duas ser atualizada.
+ *
+ * Assume que a variável `blob` (resultado de `await res.blob()`) e o array
+ * `steps` já estão no escopo onde este trecho é interpolado — não é uma função
+ * JS standalone, é um fragmento de código pra colar dentro do IIFE async gerado
+ * por cada builder (via template literal `${COVER_BLOB_GUARD_JS}`).
+ *
+ * #2680: rejeita blob inválido antes de subir lixo silenciosamente. URL canônica
+ * (sem md5 hash) retorna 9 bytes text/plain 'Not Found' no KV. Usar SEMPRE
+ * `images.cover.url` de `06-public-images.json` (URL versionada com md5).
+ * `size < 5000` é o guard primário (pega o 'Not Found' de 9 bytes); o check de
+ * MIME só rejeita quando `type` ESTÁ presente e não é `image/*` — assim um JPEG
+ * válido servido sem Content-Type (`blob.type === ''`) não é rejeitado por engano.
+ */
+const COVER_BLOB_GUARD_JS = `
+      if (blob.size < 5000 || (blob.type && !blob.type.startsWith('image/'))) {
+        return { error: 'cover blob inválido (#2680): size=' + blob.size + ' bytes, type="' + blob.type + '" — use images.cover.url de 06-public-images.json (URL md5-versionada), não a URL canônica sem hash', steps };
+      }`;
+
 export function buildCoverUploadJs(imageUrl: string): string {
   return `
     (async () => {
@@ -314,15 +339,8 @@ export function buildCoverDataTransferJs(
       } catch (e) {
         return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
       }
-      // #2680: guard — rejeitar blob inválido antes de subir lixo silenciosamente.
-      // URL canônica (sem md5 hash) retorna 9 bytes text/plain 'Not Found' no KV.
-      // Usar SEMPRE images.cover.url de 06-public-images.json (URL versionada com md5).
-      // size < 5000 é o guard primário (pega o 'Not Found' de 9 bytes); o check de
-      // MIME só rejeita quando type ESTÁ presente e não é image/* — assim um JPEG
-      // válido servido sem Content-Type (blob.type === '') não é rejeitado por engano.
-      if (blob.size < 5000 || (blob.type && !blob.type.startsWith('image/'))) {
-        return { error: 'cover blob inválido (#2680): size=' + blob.size + ' bytes, type="' + blob.type + '" — use images.cover.url de 06-public-images.json (URL md5-versionada), não a URL canônica sem hash', steps };
-      }
+      // #2680 / #2714 item 2: guard de blob compartilhado — ver COVER_BLOB_GUARD_JS.
+      ${COVER_BLOB_GUARD_JS}
       const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
       const dt = new DataTransfer(); dt.items.add(file);
       fileInput.files = dt.files;
@@ -612,15 +630,8 @@ export function buildCoverReplaceStep2_UploadJs(
       } catch (e) {
         return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
       }
-      // #2680: guard — rejeitar blob inválido antes de subir lixo silenciosamente.
-      // URL canônica (sem md5 hash) retorna 9 bytes text/plain 'Not Found' no KV.
-      // Usar SEMPRE images.cover.url de 06-public-images.json (URL versionada com md5).
-      // size < 5000 é o guard primário (pega o 'Not Found' de 9 bytes); o check de
-      // MIME só rejeita quando type ESTÁ presente e não é image/* — assim um JPEG
-      // válido servido sem Content-Type (blob.type === '') não é rejeitado por engano.
-      if (blob.size < 5000 || (blob.type && !blob.type.startsWith('image/'))) {
-        return { error: 'cover blob inválido (#2680): size=' + blob.size + ' bytes, type="' + blob.type + '" — use images.cover.url de 06-public-images.json (URL md5-versionada), não a URL canônica sem hash', steps };
-      }
+      // #2680 / #2714 item 2: guard de blob compartilhado — ver COVER_BLOB_GUARD_JS.
+      ${COVER_BLOB_GUARD_JS}
       const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
       const dt = new DataTransfer(); dt.items.add(file);
       fileInput.files = dt.files;
@@ -873,12 +884,33 @@ export function buildCoverReplaceJs(imageUrl: string): string {
  * em vez do JPEG, o que o guard de blob em `buildCoverDataTransferJs` agora rejeita
  * explicitamente.
  *
+ * #2714 item 1 — edge case `target: "drive"`: desde #2147 o default de
+ * `upload-images-public.ts` é SEMPRE `cloudflare` para todos os modes (Drive só
+ * é alcançável via `--target drive` explícito, override manual raro). Quando o
+ * entry `cover` foi de fato uploadado com `target: "drive"`, `images.cover.url`
+ * é uma URL `https://drive.google.com/uc?id=...&export=view` — NÃO a URL
+ * Cloudflare Worker md5-versionada que os callers (`buildCoverDataTransferJs` /
+ * `buildCoverReplaceStep2_UploadJs`) esperam. Diferenças relevantes:
+ *   - Drive `uc?id=` não é garantidamente fetch()-ável em CORS cross-origin a
+ *     partir do domínio do Beehiiv (Google não seta `Access-Control-Allow-Origin:
+ *     *` de forma confiável nesse endpoint) — o fetch dentro do IIFE async pode
+ *     lançar, e o catch existente já produz um erro genérico ("CORS no /img?")
+ *     que hoje presume (incorretamente, nesse caso) que a fonte é o Worker.
+ *   - Drive URLs não carregam sufixo md5 de cache-bust — não há garantia de que
+ *     o blob servido reflita a imagem local mais recente (#1418 drift).
+ * Fail-fast aqui: se o entry aponta pra `target: "drive"`, lança um erro claro
+ * ANTES do caller tentar usar a URL no browser, em vez de deixar o erro de CORS
+ * genérico (potencialmente confuso) surgir só no fetch() in-page. Recuperação:
+ * re-rodar `upload-images-public.ts --mode newsletter --target cloudflare
+ * --force-reupload` pra recriar o entry `cover` no Worker antes do cover upload.
+ *
  * @param publicImagesPath Caminho absoluto para `{edition_dir}/06-public-images.json`
  * @returns URL md5-versionada ex: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg"
  * @throws Error se images.cover.url estiver ausente (upload-images-public.ts não rodou)
+ * @throws Error se o entry cover foi uploadado com target=drive (não Cloudflare Worker)
  */
 export function readCoverImageUrl(publicImagesPath: string): string {
-  let data: { images?: { cover?: { url?: string } } };
+  let data: { images?: { cover?: { url?: string; target?: "drive" | "cloudflare" } } };
   try {
     data = JSON.parse(readFileSync(publicImagesPath, "utf8"));
   } catch (e) {
@@ -889,10 +921,20 @@ export function readCoverImageUrl(publicImagesPath: string): string {
       `não foi possível ler ${publicImagesPath} (${(e as Error).message}) — verifique se upload-images-public.ts --mode newsletter rodou (#2680)`,
     );
   }
-  const url = data?.images?.cover?.url;
+  const cover = data?.images?.cover;
+  const url = cover?.url;
   if (!url) {
     throw new Error(
       `images.cover.url não encontrado em ${publicImagesPath} — verifique se upload-images-public.ts --mode newsletter rodou (#2680)`,
+    );
+  }
+  // #2714 item 1: target=drive não é a fonte esperada pelos builders de cover
+  // upload — ver docstring acima para o porquê (CORS + sem cache-bust md5).
+  if (cover?.target === "drive") {
+    throw new Error(
+      `images.cover.url em ${publicImagesPath} aponta pra target=drive (${url}), não Cloudflare Worker (#2714) — ` +
+        `Drive não garante CORS pro fetch() in-page nem cache-bust md5. Re-rode ` +
+        `'upload-images-public.ts --mode newsletter --target cloudflare --force-reupload' antes do cover upload.`,
     );
   }
   return url;

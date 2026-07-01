@@ -221,11 +221,20 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
     }
 
     const upToDate = isAlreadyUpToDate(pullRes.stdout);
+    // #2716 item 5c: outcome "synced_stashed" só é correto quando algo de fato foi
+    // stashado E despopado (stashedSomething). Quando `git stash` não tinha nada pra
+    // guardar (working tree "dirty" só por `git status` ter falhado — ver comentário
+    // acima do dirty check — ou por já estar em sync com o índice), `stashedSomething`
+    // é false e o outcome deve refletir "synced" puro (nada foi stashado/restaurado),
+    // senão o log confunde diagnóstico futuro (parece que houve stash quando não houve).
+    const outcome = upToDate ? "already_up_to_date" : stashedSomething ? "synced_stashed" : "synced";
     return {
-      outcome: upToDate ? "already_up_to_date" : "synced_stashed",
+      outcome,
       message: upToDate
         ? "[git-sync] Código já estava atualizado (dirty tree restaurada)."
-        : "[git-sync] Código sincronizado com origin/master (dirty tree restaurada via stash).",
+        : stashedSomething
+          ? "[git-sync] Código sincronizado com origin/master (dirty tree restaurada via stash)."
+          : "[git-sync] Código sincronizado com origin/master (nada foi stashado — stash não tinha mudanças a guardar).",
       branch_before: branchBefore,
       warnings,
       proceed: true,

@@ -981,6 +981,12 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 // regex `\bmonte\b` bateria em título como "Um monte de startups fecham".
 // "configurar"/"montar" já cobertos via "como montar/configurar" e "aprenda
 // a montar/configurar" acima; cobertura suficiente sem o risco do standalone.
+//
+// #2716 item 4: manter em sincronia com TUTORIAL_KEYWORDS_RE em categorize.ts
+// (a família "veja como"/"veja o prompt"/"aprenda a" é duplicada entre os dois
+// arquivos — ver o comentário simétrico em categorize.ts junto de
+// TUTORIAL_KEYWORDS_RE). Consolidar num módulo compartilhado (ex:
+// lib/howto-patterns.ts) fica como follow-up — fora do escopo desta passada.
 const RADAR_HOWTO_PROMOTE_RE =
   /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b|(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|[.!?]))|veja\s+o\s+prompt\b|aprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b)/i;
 

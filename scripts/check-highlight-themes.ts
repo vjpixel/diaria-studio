@@ -70,6 +70,12 @@ import {
   deriveCurrentEdition,
 } from "./dedup.ts";
 import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-bucket highlight↔secundário
+// #2716 item 1: importa a lista canônica de buckets secundários em vez de
+// hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
+// fonte única (dedup-intra-edition.ts e check-intra-themes.ts já a consomem do
+// mesmo lugar). Ver nota "Consolidação parcial" mais abaixo, junto de
+// DEFAULT_SECONDARY_BUCKETS, para o que NÃO foi consolidado nesta passada.
+import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 
 // ---------------------------------------------------------------------------
 // Entity stopwords — entidades tão genéricas que não discriminam tema
@@ -503,10 +509,33 @@ function findPrefixTokenOverlap(
  * não entravam na janela de comparação, deixando escapar repeat de tema
  * quando o mesmo assunto aparece num bucket diferente entre edições (ex:
  * ferramenta coberta como tutorial numa edição e como radar noutra).
- * Espelha `SECONDARY_BUCKETS` de check-secondary-themes.ts (#2605 — check
- * irmão mais antigo, que já cobria os 4 buckets desde o início).
+ *
+ * #2716 item 1: antes uma cópia local hardcoded (`["radar", "lancamento",
+ * "use_melhor", "video"]`) que só *documentava* espelhar `SECONDARY_BUCKETS`
+ * de check-secondary-themes.ts sem de fato importar — risco de as duas listas
+ * divergirem silenciosamente numa mudança futura. Agora deriva diretamente da
+ * constante importada (fonte única, mesma que dedup-intra-edition.ts e
+ * check-intra-themes.ts já usam).
+ *
+ * Consolidação PARCIAL — o que não foi feito nesta passada e por quê:
+ *   - `checkSecondaryThemes` / `SecondaryThemeWarning` deste arquivo (definidos
+ *     mais abaixo) são uma implementação PARALELA à de check-secondary-themes.ts,
+ *     com shape de warning incompatível (`theme_evidence: string` aqui vs
+ *     `shared_companies: string[] + match_reason` lá) e algoritmos de matching
+ *     diferentes (entity+jaccard/prefix aqui; jaccard/company/stem lá).
+ *   - `extractSecondaryEntities` (abaixo) duplica `extractNamedEntities` importado
+ *     de dedup.ts com parametrização própria (inclui 1ª palavra, min-len 5,
+ *     stopwords permissivos) — não é um alias trivial.
+ *   - O `checkSecondaryThemes` de check-secondary-themes.ts (e seu CLI `main()`)
+ *     não é invocado por nenhum orchestrator/skill hoje — só `check-highlight-themes.ts`
+ *     é chamado em produção (ver orchestrator-stage-1-research.md). O irmão em
+ *     check-secondary-themes.ts é, na prática, código morto de produção (mas
+ *     testado e com CLI própria) — merge-lo neste arquivo trocaria contratos e
+ *     algoritmo sem cobertura de regressão cross-teste; fora do escopo desta
+ *     passada de fixes seguros/isolados. Ver #2716 para follow-up de consolidação
+ *     completa (decisão de qual algoritmo/shape vira canônico).
  */
-export const DEFAULT_SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"];
+export const DEFAULT_SECONDARY_BUCKETS: string[] = [...SECONDARY_BUCKETS];
 
 /**
  * Extrai itens dos buckets secundários do 01-categorized.json atual.

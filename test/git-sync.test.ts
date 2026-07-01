@@ -167,6 +167,31 @@ describe("git-sync — dirty tree edge cases", () => {
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "already_up_to_date");
   });
+
+  it("#2716 item 5c: 'No local changes to save' + merge traz mudanças → 'synced' (NÃO 'synced_stashed')", () => {
+    // Regressão: antes do fix, o outcome era hardcoded para "synced_stashed" sempre
+    // que a tree era tratada como dirty, mesmo quando `git stash` não guardou nada
+    // (stashedSomething=false). O outcome enganava o diagnóstico — parecia que houve
+    // stash/pop quando nunca houve. Cenário: status --porcelain falhou (força dirty
+    // por segurança), stash não tinha nada pra guardar, merge trouxe mudanças reais.
+    const popCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": fail("fatal: unable to read index"), // força dirty
+        "git stash --include-untracked": ok("No local changes to save"),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 2 files changed"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
+    assert.equal(r.outcome, "synced", "outcome deve ser 'synced' (não 'synced_stashed') quando nada foi de fato stashado");
+    assert.equal(r.proceed, true);
+  });
 });
 
 describe("git-sync — cenários de falha fail-soft", () => {

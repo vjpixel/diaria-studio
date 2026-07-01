@@ -84,11 +84,14 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
  * `table { border-collapse:collapse; }` em tabelas arredondadas sem guard). A
  * adoção da base compartilhada na mensal é follow-up editorial (#2635).
  *
- * @param _pageBg — reservado para a futura adoção da base (paridade de assinatura
- *   com buildDiariaStyleBlock). Não usado hoje pra preservar o output atual; o
- *   fundo da mensal já é setado inline no <body> por wrapEmail.
+ * @param _reservedPageBg — reservado para a futura adoção da base (paridade de
+ *   assinatura com buildDiariaStyleBlock, #2709 decide se/quando a mensal adota
+ *   emailBaseRules). Deliberadamente ignorado hoje pra preservar o output atual;
+ *   o fundo da mensal já é setado inline no <body> por wrapEmail. Renomeado de
+ *   `_pageBg` (#2716 item 2) — o prefixo `_` sozinho não deixava claro que é
+ *   reservado para uso futuro vs. um parâmetro genuinamente morto.
  */
-export function buildMensalStyleBlock(_pageBg: string): string {
+export function buildMensalStyleBlock(_reservedPageBg: string): string {
   return `<style>
   /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
   @media only screen and (max-width: 480px) {
