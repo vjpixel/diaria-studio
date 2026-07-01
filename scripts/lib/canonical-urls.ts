@@ -160,7 +160,12 @@ export const FOOTER_DOMAINS = [
   "cursos.diaria.workers.dev",
   "livros.diaria.workers.dev",
   "poll.diaria.workers.dev",
-];
+  // #2695 self-review: `as const` — agora que o array é exportado e
+  // compartilhado por referência entre 3 importers (era privado a este
+  // arquivo antes), congela o tipo em readonly pra um `.push`/`.splice`
+  // acidental num consumer virar erro de compilação em vez de vazar
+  // silenciosamente pros outros 2 importers (mesma instância de módulo).
+] as const;
 
 export function findMismatchedUrls(
   md: string,
