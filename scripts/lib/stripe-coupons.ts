@@ -147,6 +147,11 @@ export interface RedemptionRow {
   // trial), forecast=true (o render marca com "*"). OPCIONAIS (backward-compat KV).
   first_payment_epoch?: number;
   first_payment_is_forecast?: boolean;
+  // #2758: lista de TODOS os pagamentos (net) na janela de 12m — não só o 1º.
+  // Vazia se ainda não há cobrança (trial); nesse caso `first_payment_epoch`/
+  // `first_payment_is_forecast` seguem carregando a previsão. OPCIONAL —
+  // backward-compat com KV populado antes do #2758.
+  payments?: PaymentEntry[];
 }
 
 export interface CouponCodeReport {
@@ -247,6 +252,39 @@ export function commissionCents(paidCents: number): number {
   return Math.round(paidCents * COMMISSION_RATE);
 }
 
+/** #2758: um pagamento individual (net) dentro da janela de comissão. */
+export interface PaymentEntry {
+  epoch: number;
+  amount_cents: number;
+}
+
+/**
+ * #2758: TODOS os pagamentos (net, succeeded+paid, net>0) de um cliente na
+ * janela [windowStart, windowEnd), ordenados por data crescente. Substitui a
+ * ideia de "só o 1º pagamento" (#2749) — relevante sobretudo pra planos
+ * mensais, onde uma assinatura de 12m pode ter até 12 cobranças distintas.
+ * Mesmos filtros de `computePaidCents`/`firstPaymentInfo` (customer, status,
+ * janela, net>0) — a soma de `amount_cents` aqui é idêntica ao resultado de
+ * `computePaidCents` para o mesmo cliente/janela.
+ */
+export function paymentsInWindow(
+  charges: ChargeRaw[],
+  customerId: string,
+  windowStart: number,
+  windowEnd: number,
+): PaymentEntry[] {
+  const out: PaymentEntry[] = [];
+  for (const c of charges) {
+    if (c.customer !== customerId) continue;
+    if (c.status !== "succeeded" || !c.paid) continue;
+    if (c.created < windowStart || c.created >= windowEnd) continue;
+    const net = chargeNetCents(c);
+    if (net > 0) out.push({ epoch: c.created, amount_cents: net });
+  }
+  out.sort((a, b) => a.epoch - b.epoch);
+  return out;
+}
+
 /**
  * #2749: data do 1º pagamento na janela [windowStart, windowEnd).
  * Se há charge succeeded+paid → menor `created` entre eles (data real,
@@ -260,18 +298,9 @@ export function firstPaymentInfo(
   windowEnd: number,
   forecastEpoch: number,
 ): { epoch: number; isForecast: boolean } {
-  let earliest: number | undefined;
-  for (const c of charges) {
-    if (c.customer !== customerId) continue;
-    if (c.status !== "succeeded" || !c.paid) continue;
-    if (c.created < windowStart || c.created >= windowEnd) continue;
-    // #2749: só conta como pagamento se net > 0 — consistente com computePaidCents
-    // (um charge 100% reembolsado não é "1º pagamento": não retém dinheiro).
-    if (chargeNetCents(c) <= 0) continue;
-    if (earliest === undefined || c.created < earliest) earliest = c.created;
-  }
-  return earliest !== undefined
-    ? { epoch: earliest, isForecast: false }
+  const payments = paymentsInWindow(charges, customerId, windowStart, windowEnd);
+  return payments.length > 0
+    ? { epoch: payments[0].epoch, isForecast: false }
     : { epoch: forecastEpoch, isForecast: true };
 }
 
@@ -378,20 +407,20 @@ export function aggregateCouponUsage(input: {
       // fallback pra `sub.created` — mais fiel a "desde o resgate" quando o
       // cupom é aplicado a uma assinatura já existente (start > created).
       const windowAnchor = discount.start ?? sub.created;
-      const paidCents = computePaidCents(charges, sub.customer, windowAnchor);
-      // #2749: data do 1º pagamento (real se houve cobrança; senão previsão =
-      // fim do trial, com fallback pra start_date). Mesma janela do paidCents.
+      const windowEnd = commissionWindowEnd(windowAnchor);
+      // #2758: lista completa de pagamentos calculada UMA vez — paidCents e o
+      // 1º pagamento (#2749) são derivados dela (mesmos filtros, sem reescanear
+      // `charges` 3× separadamente).
+      const payments = paymentsInWindow(charges, sub.customer, windowAnchor, windowEnd);
+      const paidCents = payments.reduce((sum, p) => sum + p.amount_cents, 0);
+      // #2749: previsão do 1º pagamento (fim do trial, fallback start_date).
       // Clamp em windowAnchor: a previsão nunca é anterior ao resgate (evita
       // mostrar data passada com "*" quando o cupom foi aplicado a uma assinatura
       // já existente, ou quando trial_end vem 0/ausente).
       const forecastEpoch = Math.max(sub.trial_end ?? sub.start_date, windowAnchor);
-      const firstPayment = firstPaymentInfo(
-        charges,
-        sub.customer,
-        windowAnchor,
-        commissionWindowEnd(windowAnchor),
-        forecastEpoch,
-      );
+      const firstPayment = payments.length > 0
+        ? { epoch: payments[0].epoch, isForecast: false }
+        : { epoch: forecastEpoch, isForecast: true };
 
       report[code].redemptions.push({
         coupon_code: code,
@@ -411,6 +440,7 @@ export function aggregateCouponUsage(input: {
         commission_cents: commissionCents(paidCents),
         first_payment_epoch: firstPayment.epoch,
         first_payment_is_forecast: firstPayment.isForecast,
+        payments,
       });
     }
   }
