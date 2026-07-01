@@ -2979,32 +2979,40 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
     const pct = firstRow?.percent_off ?? null;
     const dur = firstRow?.duration ?? "—";
     const durLabel = dur === "forever" ? "forever (recorrente)" : dur;
-    const totalDiscount = dur === "forever"
-      ? `${fmtBRL(e.totalProjectedDiscountCents)}/período`
-      : fmtBRL(e.totalProjectedDiscountCents);
+    // #2743: mostra o REALIZADO (pago) + comissão de 40%, não o desconto projetado.
     return `<tr>
       <td><strong>${escHtml(code)}</strong></td>
       <td>${pct != null ? `${pct}%` : "—"}</td>
       <td>${escHtml(durLabel)}</td>
       <td>${e.timesRedeemed.toLocaleString("pt-BR")}</td>
       <td>${e.rowCount.toLocaleString("pt-BR")}</td>
-      <td>${escHtml(totalDiscount)}</td>
+      <td>${escHtml(fmtBRL(e.totalPaidCents ?? 0))}</td>
+      <td><strong>${escHtml(fmtBRL(e.totalCommissionCents ?? 0))}</strong></td>
     </tr>`;
   }).join("\n");
+
+  // #2743: comissão total a receber (soma de todos os cupons).
+  const grandCommissionCents = codes.reduce(
+    (sum, code) => sum + ((usage[code] as CouponCodeReport).totalCommissionCents ?? 0),
+    0,
+  );
+  const grandPaidCents = codes.reduce(
+    (sum, code) => sum + ((usage[code] as CouponCodeReport).totalPaidCents ?? 0),
+    0,
+  );
 
   const allRows = codes.flatMap((code) => (usage[code] as CouponCodeReport).redemptions);
   const detailRows = allRows.map((r) => {
     const date = new Date(r.created * 1000).toLocaleDateString("pt-BR", {
       day: "2-digit", month: "2-digit", year: "numeric",
     });
-    const dur = r.duration === "forever"
-      ? `${fmtBRL(r.discount_value_cents)}/período`
-      : fmtBRL(r.discount_value_cents);
+    // #2743: pago (realizado, net, 12m desde o resgate) + comissão de 40%.
     return `<tr>
       <td>${escHtml(r.coupon_code)}</td>
       <td>${escHtml(r.customer_email)}</td>
       <td>${escHtml(r.interval)}</td>
-      <td>${escHtml(dur)}</td>
+      <td>${escHtml(fmtBRL(r.paid_cents ?? 0))}</td>
+      <td><strong>${escHtml(fmtBRL(r.commission_cents ?? 0))}</strong></td>
       <td>${escHtml(r.status)}</td>
       <td>${escHtml(date)}</td>
     </tr>`;
@@ -3022,12 +3030,17 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
         <th>Duração</th>
         <th>times_redeemed</th>
         <th>Assinaturas</th>
-        <th>Desconto projetado total</th>
+        <th>Pago total (12m)</th>
+        <th>Comissão total (40%)</th>
       </tr>
     </thead>
     <tbody>${summaryRows}</tbody>
   </table>
   </div>
+  <p class="coupon-commission-total" style="margin-top:8px;font-size:15px;">
+    Comissão total a receber (40% do pago em 12m): <strong>${escHtml(fmtBRL(grandCommissionCents))}</strong>
+    <span style="opacity:0.6;"> · pago total ${escHtml(fmtBRL(grandPaidCents))}</span>
+  </p>
 </section>
 <section class="phase2-section" id="coupon-detail">
   <h2 class="section-title">Detalhe por assinatura</h2>
@@ -3038,7 +3051,8 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
         <th>Cupom</th>
         <th>Email</th>
         <th>Plano</th>
-        <th>Desconto</th>
+        <th>Pago (12m)</th>
+        <th>Comissão (40%)</th>
         <th>Status</th>
         <th>Criada</th>
       </tr>

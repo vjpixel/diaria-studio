@@ -15,6 +15,12 @@ export const TARGET_CODES = ["NEWS50", "NEWS25"] as const;
 
 const STRIPE_BASE = "https://api.stripe.com/v1";
 
+// #2743: comissão de afiliado. O editor recebe 40% de cada pagamento que o
+// cliente faz nos 12 primeiros meses desde o resgate do cupom. O que importa
+// não é o desconto projetado, e sim o REALIZADO (pago) e a comissão sobre ele.
+export const COMMISSION_RATE = 0.4;
+export const COMMISSION_WINDOW_MONTHS = 12;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -83,6 +89,19 @@ export interface CustomerRaw {
   email: string | null;
 }
 
+/** #2743: cobrança Stripe (payment). Só os campos usados p/ somar o realizado. */
+export interface ChargeRaw {
+  id: string;
+  object: "charge";
+  customer: string | null;
+  amount: number;
+  amount_captured?: number;
+  amount_refunded?: number;
+  created: number;
+  status: string; // "succeeded" | "pending" | "failed"
+  paid: boolean;
+}
+
 export interface RedemptionRow {
   coupon_code: string;
   coupon_id: string;
@@ -97,6 +116,11 @@ export interface RedemptionRow {
   currency: string;
   interval: string;
   discount_value_cents: number;
+  // #2743: realizado (net de refunds) do cliente na janela de 12m desde o resgate,
+  // e a comissão de 40% sobre ele. OPCIONAIS: o KV populado antes do #2743 não os
+  // tem (backward-compat); o render usa `?? 0`. aggregateCouponUsage sempre os seta.
+  paid_cents?: number;
+  commission_cents?: number;
 }
 
 export interface CouponCodeReport {
@@ -104,7 +128,66 @@ export interface CouponCodeReport {
   timesRedeemed: number;
   rowCount: number;
   totalProjectedDiscountCents: number;
+  // #2743: totais realizados do cupom (soma das redemptions). Opcionais — ver acima.
+  totalPaidCents?: number;
+  totalCommissionCents?: number;
   redemptions: RedemptionRow[];
+}
+
+// ---------------------------------------------------------------------------
+// #2743 — comissão sobre o realizado (funções puras, testáveis)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fim da janela de comissão: `created` + COMMISSION_WINDOW_MONTHS meses (epoch s).
+ * Usa aritmética de calendário (não 12×30 dias) — 12 meses reais.
+ */
+export function commissionWindowEnd(createdEpochSec: number): number {
+  const end = new Date(createdEpochSec * 1000);
+  const targetMonth = end.getUTCMonth() + COMMISSION_WINDOW_MONTHS;
+  const expectedMonth = ((targetMonth % 12) + 12) % 12;
+  end.setUTCMonth(targetMonth);
+  // Overflow guard (#2743): se o dia-do-mês não existe no mês alvo (ex.: 29/fev
+  // + 12m num ano não-bissexto → dia 29 não existe em fev/2025), setUTCMonth
+  // transborda pro mês seguinte (mar/2025). Recuamos pro último dia do mês alvo
+  // (setUTCDate(0) = último dia do mês anterior) pra manter 12 meses de
+  // calendário exatos, sem estender a janela por 1 dia.
+  if (end.getUTCMonth() !== expectedMonth) {
+    end.setUTCDate(0);
+  }
+  return Math.floor(end.getTime() / 1000);
+}
+
+/**
+ * Soma o valor PAGO (net de refunds) por um cliente na janela [created, created+12m).
+ * Considera só charges `succeeded` + `paid`. `amount_captured` (fallback `amount`)
+ * menos `amount_refunded`. Atribuição por cliente (granularidade "por e-mail").
+ */
+export function computePaidCents(
+  charges: ChargeRaw[],
+  customerId: string,
+  createdEpochSec: number,
+): number {
+  const windowEnd = commissionWindowEnd(createdEpochSec);
+  let paid = 0;
+  for (const c of charges) {
+    if (c.customer !== customerId) continue;
+    if (c.status !== "succeeded" || !c.paid) continue;
+    if (c.created < createdEpochSec || c.created >= windowEnd) continue;
+    // #2743: `amount_captured` é o efetivamente capturado; usa `amount` como
+    // fallback. `> 0` (não `?? `) porque um `amount_captured: 0` explícito num
+    // charge succeeded+paid não deve zerar o pagamento — cai pro `amount`.
+    const captured =
+      c.amount_captured != null && c.amount_captured > 0 ? c.amount_captured : c.amount;
+    const net = captured - (c.amount_refunded ?? 0);
+    if (net > 0) paid += net;
+  }
+  return paid;
+}
+
+/** Comissão de 40% sobre o valor pago (arredondada ao centavo). */
+export function commissionCents(paidCents: number): number {
+  return Math.round(paidCents * COMMISSION_RATE);
 }
 
 export type CouponUsageReport = Record<string, CouponCodeReport>;
@@ -118,8 +201,9 @@ export function aggregateCouponUsage(input: {
   coupons: CouponRaw[];
   subscriptions: SubscriptionRaw[];
   customers: CustomerRaw[];
+  charges?: ChargeRaw[]; // #2743: cobranças p/ computar o realizado + comissão
 }): CouponUsageReport {
-  const { codes, coupons, subscriptions, customers } = input;
+  const { codes, coupons, subscriptions, customers, charges = [] } = input;
 
   const couponById = new Map<string, CouponRaw>();
   for (const c of coupons) couponById.set(c.id, c);
@@ -150,6 +234,8 @@ export function aggregateCouponUsage(input: {
       timesRedeemed,
       rowCount: 0,
       totalProjectedDiscountCents: 0,
+      totalPaidCents: 0,
+      totalCommissionCents: 0,
       redemptions: [],
     };
   }
@@ -194,6 +280,16 @@ export function aggregateCouponUsage(input: {
         }
       }
 
+      // #2743: realizado (net de refunds) do cliente na janela de 12m desde o
+      // resgate + comissão de 40%. Atribuição por cliente (granularidade "por
+      // e-mail" que o editor pediu — conta TODOS os pagamentos da pessoa na
+      // janela, não só os da assinatura do cupom). Janela ancorada em
+      // `discount.start` (quando o cupom foi de fato aplicado/resgatado), com
+      // fallback pra `sub.created` — mais fiel a "desde o resgate" quando o
+      // cupom é aplicado a uma assinatura já existente (start > created).
+      const windowAnchor = discount.start ?? sub.created;
+      const paidCents = computePaidCents(charges, sub.customer, windowAnchor);
+
       report[code].redemptions.push({
         coupon_code: code,
         coupon_id: discCouponId,
@@ -208,6 +304,8 @@ export function aggregateCouponUsage(input: {
         currency,
         interval,
         discount_value_cents: discountValueCents,
+        paid_cents: paidCents,
+        commission_cents: commissionCents(paidCents),
       });
     }
   }
@@ -219,6 +317,20 @@ export function aggregateCouponUsage(input: {
       (sum, r) => sum + r.discount_value_cents,
       0,
     );
+    // #2743: total PAGO deduplicado por cliente. No modelo por-e-mail,
+    // computePaidCents já soma TODOS os pagamentos da pessoa na janela — então
+    // se a mesma pessoa tiver +1 assinatura com o cupom, cada linha traria o
+    // mesmo valor e somá-las inflaria o total. Contamos cada cliente UMA vez
+    // (max entre as linhas dela, cobrindo âncoras diferentes por assinatura).
+    const paidByCustomer = new Map<string, number>();
+    for (const r of entry.redemptions) {
+      const prev = paidByCustomer.get(r.customer) ?? 0;
+      paidByCustomer.set(r.customer, Math.max(prev, r.paid_cents ?? 0));
+    }
+    entry.totalPaidCents = [...paidByCustomer.values()].reduce((sum, v) => sum + v, 0);
+    // Comissão arredondada UMA vez sobre o pago total — somar comissões já
+    // arredondadas por linha divergiria do valor correto em até ~N/2 centavos.
+    entry.totalCommissionCents = commissionCents(entry.totalPaidCents);
   }
 
   return report;
@@ -314,9 +426,18 @@ export async function fetchCouponUsage(
   }
 
   const customers: CustomerRaw[] = [];
+  const charges: ChargeRaw[] = [];
   for (const id of matchedCustomerIds) {
     customers.push(await stripeGet<CustomerRaw>(`/customers/${id}`, apiKey, fetchImpl));
+    // #2743: cobranças do cliente p/ somar o realizado + comissão de 40%.
+    // Read-only (Charges = Read na chave restrita). Paginado.
+    const custCharges = await stripeListAll<ChargeRaw>(
+      `/charges?customer=${encodeURIComponent(id)}`,
+      apiKey,
+      fetchImpl,
+    );
+    charges.push(...custCharges);
   }
 
-  return aggregateCouponUsage({ codes, coupons, subscriptions, customers });
+  return aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges });
 }

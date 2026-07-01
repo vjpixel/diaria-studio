@@ -28,11 +28,18 @@ export {
   TARGET_CODES,
   aggregateCouponUsage,
   fetchCouponUsage,
+  // #2743: comissão sobre o realizado
+  COMMISSION_RATE,
+  COMMISSION_WINDOW_MONTHS,
+  commissionWindowEnd,
+  computePaidCents,
+  commissionCents,
   type PromoCodeRaw,
   type CouponRaw,
   type DiscountRaw,
   type SubscriptionRaw,
   type CustomerRaw,
+  type ChargeRaw,
   type RedemptionRow,
   type CouponCodeReport,
   type CouponUsageReport,
@@ -40,6 +47,11 @@ export {
 
 import { TARGET_CODES, fetchCouponUsage } from "./lib/stripe-coupons.ts";
 import type { RedemptionRow } from "./lib/stripe-coupons.ts";
+import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
+
+// #2743: chave KV canônica do relatório de cupons (== COUPONS_KV_KEY no worker).
+const COUPONS_KV_KEY = "coupons:usage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dir, "..");
@@ -70,7 +82,7 @@ export function csvField(value: string | number | null): string {
 
 export function toCSV(rows: RedemptionRow[]): string {
   const header =
-    "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents";
+    "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents,paid_cents,commission_cents";
   const lines = rows.map((r) =>
     [
       r.coupon_code,
@@ -86,12 +98,44 @@ export function toCSV(rows: RedemptionRow[]): string {
       r.currency,
       r.interval,
       r.discount_value_cents,
+      r.paid_cents ?? 0,
+      r.commission_cents ?? 0,
     ]
       .map(csvField)
       .join(","),
   );
   // Trailing newline — arquivos de texto POSIX terminam em \n (#2719)
   return [header, ...lines].join("\n") + "\n";
+}
+
+// ---------------------------------------------------------------------------
+// KV write (#2743) — repopula `coupons:usage` do dashboard, reproduzível.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sobe o relatório de cupons pro KV do dashboard. Roda ANTES do early-return de
+ * "0 resgates" (#2743): um report vazio ainda é válido e deve zerar o KV, em vez
+ * de deixar dados velhos no dashboard. Requer CLOUDFLARE_ACCOUNT_ID +
+ * CLOUDFLARE_WORKERS_TOKEN — se faltarem, é erro (o `--write-kv` foi pedido e
+ * não pôde ser honrado): sai com código 1.
+ */
+async function writeReportToKv(report: unknown): Promise<void> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const token = process.env.CLOUDFLARE_WORKERS_TOKEN ?? "";
+  if (!accountId || !token) {
+    console.error(
+      "[--write-kv] erro: CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN ausentes — " +
+        "não consegui subir o relatório ao KV. Defina-os no ambiente e rode de novo.",
+    );
+    process.exit(1);
+  }
+  await uploadTextToWorkerKV(JSON.stringify(report), COUPONS_KV_KEY, {
+    kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
+    accountId,
+    token,
+    contentType: "application/json",
+  });
+  console.log(`KV atualizado: ${COUPONS_KV_KEY} (dashboard de cupons).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,20 +167,31 @@ async function main(): Promise<void> {
     console.log(`${code} (coupon: ${entry.couponIds.join(", ")})`);
     console.log(`  Resgates (times_redeemed): ${entry.timesRedeemed}`);
     console.log(`  Assinaturas encontradas:   ${entry.rowCount}`);
-    console.log(`  Desconto total projetado:  ${fmtBRL(entry.totalProjectedDiscountCents)}`);
+    console.log(`  Pago total (12m):          ${fmtBRL(entry.totalPaidCents ?? 0)}`);
+    console.log(`  Comissão total (40%):      ${fmtBRL(entry.totalCommissionCents ?? 0)}`);
     for (const r of entry.redemptions) {
       const trial = r.status === "trialing" ? " [pending/trial]" : "";
-      const discLabel =
-        r.duration === "forever"
-          ? `${fmtBRL(r.discount_value_cents)}/período (forever — recorrente)`
-          : fmtBRL(r.discount_value_cents);
       console.log(
         `    ${r.subscription}  ${r.customer_email || r.customer}  ` +
           `${r.status}${trial}  plan=${fmtBRL(r.plan_amount_cents)}/${r.interval}  ` +
-          `desconto=${discLabel}`,
+          `pago=${fmtBRL(r.paid_cents ?? 0)}  comissão=${fmtBRL(r.commission_cents ?? 0)}`,
       );
     }
     console.log();
+  }
+
+  // #2743: total geral de comissão a receber (todos os cupons).
+  const grandCommission = TARGET_CODES.reduce(
+    (sum, c) => sum + (report[c]?.totalCommissionCents ?? 0),
+    0,
+  );
+  console.log(`>>> Comissão total a receber (40% do pago em 12m): ${fmtBRL(grandCommission)}\n`);
+
+  // #2743: `--write-kv` repopula o KV `coupons:usage` do dashboard (reproduzível,
+  // em vez de wrangler kv put manual). Roda ANTES do early-return de "0 resgates"
+  // — um report vazio ainda é válido e deve refletir no dashboard.
+  if (process.argv.includes("--write-kv")) {
+    await writeReportToKv(report);
   }
 
   const allRows = TARGET_CODES.flatMap((c) => report[c]?.redemptions ?? []);
