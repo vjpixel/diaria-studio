@@ -343,8 +343,11 @@ export interface EiaEngagementEdition {
   correct_choice: string | null;
   /** Contagem bruta de acertos — permite agregação mensal exata (#2773) via
    *  Σ correct_count / Σ total_votes, em vez de aproximar por pct_correct
-   *  (já arredondado na origem). */
-  correct_count: number;
+   *  (já arredondado na origem). Opcional (mesmo padrão de
+   *  priority_points_histogram, #2731): KV escrito antes deste campo existir
+   *  não o tem — aggregateEiaEngagementByMonth trata ausência como "sem
+   *  gabarito confiável" (exclui do numerador/denominador), nunca NaN. */
+  correct_count?: number;
 }
 
 export interface EiaEngagementSummary {
@@ -1737,7 +1740,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </section>
   </div><!-- /panel-visaogeral -->
 
-  <!-- Aba 2: Engajamento — coortes + weekday + resumo A/B/C + D1-D5 -->
+  <!-- Aba 2: Engajamento — weekday + resumo A/B/C + coortes + É IA? (#2773) -->
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${weekdaySection}
 ${abcSection}
@@ -3069,11 +3072,18 @@ export function aggregateEiaEngagementByMonth(editions: EiaEngagementEdition[]):
   const acc = new Map<string, Acc>();
 
   for (const e of editions) {
+    // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez
+    // de produzir um bucket/label "NaN" na tabela. AAMMDD só, 6 dígitos.
+    if (!/^\d{6}$/.test(e.edition)) continue;
     const month = e.edition.slice(0, 4); // AAMM
     if (!acc.has(month)) acc.set(month, { totalVotes: 0, correctCountSum: 0, votesWithCorrect: 0 });
     const a = acc.get(month)!;
     a.totalVotes += e.total_votes;
-    if (e.pct_correct != null) {
+    // Guard: KV pré-#2773 não tem correct_count (campo novo) — se pct_correct
+    // existe mas correct_count não é um number válido, trata como "sem gabarito
+    // confiável" (exclui do numerador/denominador) em vez de somar `undefined`
+    // e produzir NaN% silencioso na tabela até o próximo --push atualizar o KV.
+    if (e.pct_correct != null && typeof e.correct_count === "number" && Number.isFinite(e.correct_count)) {
       a.correctCountSum += e.correct_count;
       a.votesWithCorrect += e.total_votes;
     }
@@ -3134,7 +3144,7 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
       <tr>
         <th title="Mês-calendário (extraído da edição AAMMDD)">Mês</th>
         <th title="Total de votos registrados no mês">Votos</th>
-        <th title="Porcentagem de acerto agregada exata (Σ acertos / Σ votos), só sobre edições com gabarito configurado — — se nenhuma qualificar">% acerto</th>
+        <th title="Porcentagem de acerto agregada exata (Σ acertos / Σ votos), só sobre edições com gabarito configurado — se nenhuma qualificar">% acerto</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

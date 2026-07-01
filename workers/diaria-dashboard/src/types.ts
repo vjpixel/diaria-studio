@@ -137,8 +137,11 @@ export interface PollEiaEditionEntry {
   /** Qual opção era a correta ("A", "B", ou null se não configurado) */
   correct_choice: string | null;
   /** Contagem bruta de acertos — permite agregação mensal exata (#2773), em vez
-   *  de aproximar via média ponderada de pct_correct já arredondado. */
-  correct_count: number;
+   *  de aproximar via média ponderada de pct_correct já arredondado. Opcional
+   *  (mesmo padrão de priority_points_histogram, #2731): KV escrito por uma
+   *  versão do script anterior a este campo não o tem — consumidores devem
+   *  tratar ausência/undefined como "sem gabarito confiável", nunca lançar. */
+  correct_count?: number;
 }
 
 export interface PollEiaLeaderboardEntry {

@@ -52,7 +52,7 @@ import {
   EIA_ENGAGEMENT_KV_KEY,
   aggregateEiaEngagementByMonth,
 } from "../workers/brevo-dashboard/src/index.ts";
-import type { MvStatus, EiaEngagementSummary } from "../workers/brevo-dashboard/src/index.ts";
+import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -2474,5 +2474,35 @@ describe("aggregateEiaEngagementByMonth (#2773)", () => {
       { edition: "260501", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
     ]);
     assert.deepEqual(rows.map((r) => r.month), ["2606", "2605", "2604"]);
+  });
+
+  test("KV pré-#2773 sem correct_count (dado real já em produção) → NÃO produz NaN, trata como sem gabarito", () => {
+    // Simula exatamente o shape do KV eia:engagement gravado ANTES desta PR
+    // (achado do code-review: produção já tem ~15 edições nesse shape antigo).
+    // correct_count é opcional (mesmo padrão de priority_points_histogram, #2731)
+    // justamente pra esse literal, sem o campo, ser um EiaEngagementEdition válido.
+    const staleEdition: EiaEngagementEdition = {
+      edition: "260415",
+      total_votes: 30,
+      voted_a: 20,
+      voted_b: 10,
+      pct_correct: 66.7,
+      correct_choice: "A",
+    };
+    const rows = aggregateEiaEngagementByMonth([staleEdition]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].total_votes, 30, "votos ainda contam mesmo sem correct_count");
+    assert.equal(rows[0].pct_correct, null, "sem correct_count confiável → null, nunca NaN");
+    assert.ok(!Number.isNaN(rows[0].pct_correct as any));
+  });
+
+  test("edition malformado (KV corrompido) não produz label/mês 'NaN' — entrada é ignorada", () => {
+    const rows = aggregateEiaEngagementByMonth([
+      { edition: "", total_votes: 5, voted_a: 3, voted_b: 2, pct_correct: 60, correct_choice: "A", correct_count: 3 },
+      { edition: "26", total_votes: 2, voted_a: 1, voted_b: 1, pct_correct: 50, correct_choice: "A", correct_count: 1 },
+      { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
+    ]);
+    assert.equal(rows.length, 1, "só a edição bem-formada (260415) vira linha");
+    assert.ok(!rows.some((r) => r.label.includes("NaN")), "nenhum label deve conter 'NaN'");
   });
 });
