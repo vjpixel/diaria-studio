@@ -11,7 +11,7 @@ import {
   type ChunkedResult,
   type ChunkedRetryResult,
 } from "../scripts/clarice-correct.ts";
-import { CLARICE_CHUNK_THRESHOLD } from "../scripts/lib/clarice-chunk.ts";
+import { CLARICE_CHUNK_THRESHOLD, splitIntoChunks } from "../scripts/lib/clarice-chunk.ts";
 import { applyClariceSuggestions, countOccurrences } from "../scripts/clarice-apply.ts";
 
 function mockFetch(response: {
@@ -243,7 +243,15 @@ function makeFetchWithCapture(responsesPerCall: Array<Array<{ from: string; to: 
   let callIndex = 0;
   const fetchImpl: typeof fetch = async (_url, init) => {
     const bodyStr = typeof init?.body === "string" ? init.body : "{}";
-    const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+    const parsed = JSON.parse(bodyStr) as { paragraphs?: Array<{ description: string }> };
+    // Guard (#2701 item 5 do self-review #2700): sem isso, um shape inesperado de
+    // `init.body` (ex: `paragraphs` ausente) faria `parsed.paragraphs[0]` lançar um
+    // TypeError críptico ("Cannot read properties of undefined") em vez de uma
+    // assertion legível apontando pro fixture/chamador errado.
+    assert.ok(
+      Array.isArray(parsed.paragraphs) && parsed.paragraphs.length > 0 && typeof parsed.paragraphs[0]?.description === "string",
+      `makeFetchWithCapture: body não tem o shape esperado { paragraphs: [{ description }] }. Recebido: ${bodyStr}`,
+    );
     capturedBodies.push({ text: parsed.paragraphs[0].description });
     const resp = responsesPerCall[callIndex] ?? [];
     callIndex++;
@@ -298,6 +306,19 @@ describe("correctTextChunked (#2626) — REST fallback com chunking", () => {
 
     assert.ok(callCount() >= 2, `texto longo deve fazer ≥2 requests REST; fez ${callCount()}`);
     assert.ok(result.chunkCount >= 2, `chunkCount deve ser ≥2; foi ${result.chunkCount}`);
+    // #2701 item 4 do self-review #2700: este teste checava só call-count/chunkCount,
+    // não o output merged — uma regressão que chunka mas descarta o merge do chunk 2
+    // passaria aqui. Espelha as assertions de conteúdo do teste equivalente de
+    // `withClariceRetryChunked` (linha ~510) pra tornar essa regressão observável
+    // diretamente no corpo deste teste (não só no teste de merge separado).
+    assert.ok(
+      result.correctedText.includes("CORRIGIDO_CHUNK1"),
+      "sugestão do chunk 1 deve estar aplicada no correctedText",
+    );
+    assert.ok(
+      result.correctedText.includes("CORRIGIDO_CHUNK2"),
+      "sugestão do chunk 2 deve estar aplicada no correctedText",
+    );
   });
 
   it("texto > threshold → sugestões de cada chunk remapeadas corretamente no texto corrigido", async () => {
@@ -531,5 +552,120 @@ describe("withClariceRetryChunked (#2626) — chunking + retry", () => {
     assert.equal(callCount, 2, "deve ter feito 2 requests (1 falha + 1 sucesso)");
     assert.equal(result.totalAttempts, 2, "totalAttempts deve refletir os 2 attempts do chunk");
     assert.ok(result.correctedText.includes("ensaio"), "sugestão aplicada após retry");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2701 item 1 (self-review #2700) — dispatch de chunks com teto de concorrência
+// ---------------------------------------------------------------------------
+
+/** Gera texto com `nSections` seções `SECAO_{i}` separadas por `---`, cada uma
+ * grande o bastante para virar 1 chunk próprio sob um `chunkThreshold` moderado. */
+function makeManyChunkText(nSections: number): string {
+  const filler =
+    "Conteudo de preenchimento editorial para forcar o chunking em multiplas secoes distintas. ".repeat(6);
+  return Array.from({ length: nSections }, (_, i) => `SECAO_${i}\n${filler}`).join("\n---\n");
+}
+
+describe("correctTextChunked (#2701 item 1) — teto de concorrência no dispatch de chunks", () => {
+  const CHUNK_THRESHOLD = 700;
+
+  it("nunca excede o teto de concorrência em requests simultâneas", async () => {
+    const text = makeManyChunkText(8);
+    const concurrency = 2;
+    let inFlight = 0;
+    let peakInFlight = 0;
+
+    const fetchImpl: typeof fetch = async () => {
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 15));
+      inFlight--;
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctTextChunked({ apiKey: "k", text, fetchImpl }, CHUNK_THRESHOLD, concurrency);
+
+    assert.ok(
+      result.chunkCount >= 4,
+      `fixture deve gerar ≥4 chunks pro teste do teto ser significativo; gerou ${result.chunkCount}`,
+    );
+    assert.ok(
+      peakInFlight <= concurrency,
+      `peak de requests simultâneas (${peakInFlight}) excedeu o teto de concorrência (${concurrency})`,
+    );
+    assert.equal(
+      peakInFlight,
+      Math.min(concurrency, result.chunkCount),
+      `com chunkCount ≥ concurrency, o teto deve ser efetivamente atingido (peak observado=${peakInFlight})`,
+    );
+  });
+
+  it("preserva a ordem dos chunks no correctedText mesmo quando completam fora de ordem", async () => {
+    const text = makeManyChunkText(4);
+    const chunks = splitIntoChunks(text, CHUNK_THRESHOLD);
+    assert.ok(chunks.length >= 3, `fixture deve gerar ≥3 chunks; gerou ${chunks.length}`);
+
+    // Delay inversamente proporcional ao índice do chunk: os ÚLTIMOS chunks
+    // respondem PRIMEIRO. Se o merge dependesse da ordem de CONCLUSÃO (ex: um
+    // `results.push` ingênuo em vez de escrita indexada por posição), o texto
+    // final sairia com as seções fora de ordem.
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs?: Array<{ description: string }> };
+      const chunkIdx = chunks.findIndex((c) => c.text === parsed.paragraphs?.[0]?.description);
+      assert.ok(chunkIdx >= 0, "body do fetch deve corresponder a um chunk conhecido do fixture");
+      const delay = (chunks.length - chunkIdx) * 10;
+      await new Promise((r) => setTimeout(r, delay));
+      return new Response(JSON.stringify([{ from: `SECAO_${chunkIdx}`, to: `MARCADA_${chunkIdx}` }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const result = await correctTextChunked(
+      { apiKey: "k", text, fetchImpl },
+      CHUNK_THRESHOLD,
+      chunks.length, // concorrência total — todos os chunks em voo ao mesmo tempo
+    );
+
+    for (let i = 0; i < chunks.length; i++) {
+      assert.ok(result.correctedText.includes(`MARCADA_${i}`), `chunk ${i} deve estar corrigido no correctedText`);
+    }
+    // Reverter as correções deve reproduzir o texto original byte-a-byte — isso só
+    // é verdade se cada correção foi aplicada NA POSIÇÃO do seu chunk de origem
+    // (ordem de chunk), não na ordem em que os requests retornaram.
+    let reconstructed = result.correctedText;
+    for (let i = 0; i < chunks.length; i++) {
+      reconstructed = reconstructed.replace(`MARCADA_${i}`, `SECAO_${i}`);
+    }
+    assert.equal(
+      reconstructed,
+      text,
+      "ordem dos chunks no correctedText deve corresponder à ordem original, mesmo com conclusão fora de ordem",
+    );
+  });
+
+  it("chunk que falha (4xx) propaga o erro mesmo com outros chunks concorrentes bem-sucedidos (fail-clean)", async () => {
+    const text = makeManyChunkText(4);
+    const chunks = splitIntoChunks(text, CHUNK_THRESHOLD);
+    assert.ok(chunks.length >= 3, `fixture deve gerar ≥3 chunks; gerou ${chunks.length}`);
+
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs?: Array<{ description: string }> };
+      const chunkIdx = chunks.findIndex((c) => c.text === parsed.paragraphs?.[0]?.description);
+      if (chunkIdx === 1) {
+        return new Response("forbidden", { status: 403 });
+      }
+      await new Promise((r) => setTimeout(r, 5));
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    await assert.rejects(
+      () => correctTextChunked({ apiKey: "k", text, fetchImpl }, CHUNK_THRESHOLD, chunks.length),
+      /HTTP 403/,
+      "erro de um chunk deve propagar mesmo com outros chunks em voo bem-sucedidos — sem resultado parcial (fail-clean)",
+    );
   });
 });

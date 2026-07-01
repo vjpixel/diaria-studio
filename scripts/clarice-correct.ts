@@ -92,10 +92,13 @@ export interface CorrectOptions {
  *   attempts=3, baseBackoffMs=5000 → 0 + 5s + 10s = 15s de espera entre tentativas
  *   + 3 × 60s de timeout = teto de ~3min15s por chunk.
  *
- * ⚠️ Em `withClariceRetryChunked` (#2626) o timeout é POR CHUNK, não total: um texto que
- * divide em N chunks tem teto ~N × 3min15s. Ex: edição de 25k chars → ~3 chunks → ~9min45s.
+ * ⚠️ Em `withClariceRetryChunked` (#2626) o timeout é POR CHUNK, não total: o teto no
+ * PIOR CASO (todos os chunks precisando do máximo de tentativas) é ~⌈N / CLARICE_CHUNK_CONCURRENCY⌉
+ * × 3min15s, já que os chunks são despachados com teto de concorrência (#2701 item 1),
+ * não mais estritamente em série. Ex: edição de 25k chars → ~3 chunks → com concorrência
+ * 3, os 3 cabem numa única "onda" → teto ~3min15s (não ~9min45s como seria sequencial).
  * `--timeout-ms` também é por-tentativa-por-chunk. Quem roda em ambiente com wall-clock
- * apertado (CI) deve dimensionar o limite considerando o chunkCount esperado.
+ * apertado (CI) deve dimensionar o limite considerando ⌈chunkCount / concurrency⌉.
  *
  * Exporta interface + factory para testabilidade: tests injetam `baseBackoffMs=0`
  * para não ter sleep real nos testes.
@@ -255,8 +258,9 @@ function flatten(raw: unknown): unknown[] {
  * - `correctedText`: texto com sugestões aplicadas chunk-local via `mergeChunkSuggestions`.
  *   Para texto ≤ threshold, equivale a aplicar as sugestões do único chunk ao texto.
  * - `rawSuggestions`: lista plana de TODAS as sugestões brutas coletadas de todos os chunks,
- *   na ordem de chegada. Compatível com `clarice-apply.ts` e com o formato de
- *   `02-clarice-suggestions.json` (auditoria / resume).
+ *   na ordem dos chunks (não necessariamente a ordem de chegada da rede — ver nota de
+ *   concorrência em `mapWithConcurrencyLimit`). Compatível com `clarice-apply.ts` e com o
+ *   formato de `02-clarice-suggestions.json` (auditoria / resume).
  * - `chunkCount`: número de chunks processados (1 = texto ≤ threshold, sem split).
  */
 export interface ChunkedResult {
@@ -274,49 +278,157 @@ export interface ChunkedRetryResult extends ChunkedResult {
 }
 
 /**
- * Versão com chunking de `correctTextViaREST` (#2626).
+ * Teto de concorrência para dispatch de chunks (#2701 item 1 do self-review #2700).
  *
- * Para textos > `chunkThreshold` (default: CLARICE_CHUNK_THRESHOLD = 9.000 chars),
- * divide em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha) via
- * `splitIntoChunks`, faz 1 request REST por chunk, e usa `mergeChunkSuggestions`
- * para aplicar as sugestões chunk-localmente (sem aritmética de offset).
- *
- * Para textos ≤ threshold, faz 1 request único (sem overhead de chunking).
- *
- * Cuidado central do merge: sugestões são aplicadas somente no chunk onde o Clarice
- * as gerou — isso evita replace global ambíguo de termos curtos como `"os"→""` que
- * apareceriam múltiplas vezes no texto completo mas são únicos em um chunk.
- *
- * Falha parcial (fail-clean, por design): os chunks são processados em sequência. Se um
- * chunk lançar (HTTP non-2xx, rede), a função propaga o erro e NÃO retorna resultado
- * parcial — as sugestões dos chunks já processados são descartadas. Isso é intencional:
- * um texto parcialmente corrigido (alguns chunks revisados, outros crus) é pior que um
- * fail limpo, porque entraria silenciosamente na newsletter. O caller (main → exit 3)
- * re-roda do zero. Não há checkpoint por chunk (custo de re-enviar 2-3 chunks é baixo).
- *
- * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl` (para testes), `timeoutMs`
- * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
+ * O dispatch sequencial original (1 chunk por vez) multiplicava o wall-clock pelo
+ * número de chunks (ex: edição de 3 chunks ≈ 3× a latência de 1 request). Concorrência
+ * total (`Promise.all` sem teto) foi descartada porque o Clarice REST pode ter
+ * rate-limit por-segundo não documentado — uma edição de 5+ chunks disparando tudo de
+ * uma vez arriscaria 429s que o `withClariceRetry` trataria como 4xx→fast-fail (sem
+ * retry), piorando a confiabilidade em vez de melhorá-la. Teto de 3 é um meio-termo:
+ * cobre o caso comum (2-3 chunks) com paralelismo total, e limita o burst para
+ * edições excepcionalmente longas.
  */
-export async function correctTextChunked(
-  opts: CorrectOptions,
-  chunkThreshold = CLARICE_CHUNK_THRESHOLD,
-): Promise<ChunkedResult> {
-  const chunks = splitIntoChunks(opts.text, chunkThreshold);
-  const chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }> = [];
-  const rawSuggestions: ClariceSuggestions = [];
+export const CLARICE_CHUNK_CONCURRENCY = 3;
 
-  for (const chunk of chunks) {
-    const suggestions = await correctTextViaREST({ ...opts, text: chunk.text });
-    chunkSuggestions.push({ chunk, suggestions: suggestions as ClariceChunkSuggestion[] });
-    rawSuggestions.push(...suggestions);
+/**
+ * Executa `fn` sobre `items` com um teto de concorrência (#2701 item 1).
+ *
+ * Preserva a ORDEM do array de retorno (índice de saída = índice de entrada),
+ * independente da ordem de conclusão das promises — necessário porque
+ * `mergeChunkSuggestions` concatena os chunks corrigidos em ordem para reconstruir
+ * o texto original.
+ *
+ * Fail-fast parcial: se qualquer `fn(item)` rejeitar, a função pára de DISPARAR itens
+ * ainda não iniciados e propaga o primeiro erro assim que ele ocorre — sem esperar o
+ * restante das chamadas em voo terminarem. As chamadas já em voo continuam executando
+ * em segundo plano (não canceladas), mas seus resultados são descartados porque o
+ * caller trata qualquer erro como fail-clean (ver JSDoc de `correctTextChunked`) — não
+ * há resultado parcial a preservar.
+ */
+async function mapWithConcurrencyLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  let hasError = false;
+  let firstError: unknown;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (hasError) return;
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      try {
+        results[i] = await fn(items[i], i);
+      } catch (e) {
+        if (!hasError) {
+          hasError = true;
+          firstError = e;
+        }
+        return;
+      }
+    }
   }
 
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (hasError) throw firstError;
+  return results;
+}
+
+/**
+ * Núcleo compartilhado de `correctTextChunked`/`withClariceRetryChunked` (#2701 item 3
+ * do self-review #2700 — antes as duas funções duplicavam o scaffold split → dispatch →
+ * acumular → merge; só o `perChunk` por-chunk divergia).
+ *
+ * Divide `text` em chunks via `splitIntoChunks`, despacha `perChunk` para cada um
+ * (com teto de concorrência via `mapWithConcurrencyLimit`), e aplica o merge chunk-local
+ * via `mergeChunkSuggestions`. `perChunk` retorna `{ suggestions, extra }` — `extra` é
+ * bookkeeping específico do caller (ex.: `attempts` em `withClariceRetryChunked`); este
+ * helper não interpreta `extra`, só acumula em ordem de chunk para o caller reduzir.
+ *
+ * Sem cast: `suggestions` já vem tipado como `ClariceSuggestions` (validado via Zod em
+ * `correctTextViaREST`/`extractSuggestions`), que é o mesmo tipo de `ClariceChunkSuggestion`
+ * (alias, #2701 item 2) — a atribuição a `mergeChunkSuggestions` não precisa de
+ * `as ClariceChunkSuggestion[]`.
+ */
+async function runChunked<Extra>(
+  text: string,
+  chunkThreshold: number,
+  concurrency: number,
+  perChunk: (chunk: TextChunk) => Promise<{ suggestions: ClariceSuggestions; extra: Extra }>,
+): Promise<{
+  correctedText: string;
+  rawSuggestions: ClariceSuggestions;
+  chunkCount: number;
+  extras: Extra[];
+}> {
+  const chunks = splitIntoChunks(text, chunkThreshold);
+
+  const perChunkResults = await mapWithConcurrencyLimit(chunks, concurrency, async (chunk) => {
+    const { suggestions, extra } = await perChunk(chunk);
+    return { chunk, suggestions, extra };
+  });
+
+  const chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }> =
+    perChunkResults.map(({ chunk, suggestions }) => ({ chunk, suggestions }));
+  const rawSuggestions: ClariceSuggestions = perChunkResults.flatMap((r) => r.suggestions);
   const mergeResult = mergeChunkSuggestions(chunkSuggestions);
 
   return {
     correctedText: mergeResult.text,
     rawSuggestions,
     chunkCount: chunks.length,
+    extras: perChunkResults.map((r) => r.extra),
+  };
+}
+
+/**
+ * Versão com chunking de `correctTextViaREST` (#2626).
+ *
+ * Para textos > `chunkThreshold` (default: CLARICE_CHUNK_THRESHOLD = 9.000 chars),
+ * divide em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha) via
+ * `splitIntoChunks`, faz 1 request REST por chunk (com teto de concorrência —
+ * `CLARICE_CHUNK_CONCURRENCY`, #2701 item 1), e usa `mergeChunkSuggestions` para aplicar
+ * as sugestões chunk-localmente (sem aritmética de offset).
+ *
+ * Para textos ≤ threshold, faz 1 request único (sem overhead de chunking/concorrência).
+ *
+ * Cuidado central do merge: sugestões são aplicadas somente no chunk onde o Clarice
+ * as gerou — isso evita replace global ambíguo de termos curtos como `"os"→""` que
+ * apareceriam múltiplas vezes no texto completo mas são únicos em um chunk.
+ *
+ * Falha parcial (fail-clean, por design): os chunks são despachados com teto de
+ * concorrência (não mais estritamente sequencial, #2701 item 1). Se um chunk lançar
+ * (HTTP non-2xx, rede), a função pára de despachar chunks ainda não iniciados e propaga
+ * o erro — NÃO retorna resultado parcial, mesmo que outros chunks já em voo tenham
+ * sucesso (seus resultados são descartados). Isso é intencional: um texto parcialmente
+ * corrigido (alguns chunks revisados, outros crus) é pior que um fail limpo, porque
+ * entraria silenciosamente na newsletter. O caller (main → exit 3) re-roda do zero. Não
+ * há checkpoint por chunk (custo de re-enviar 2-3 chunks é baixo).
+ *
+ * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl` (para testes), `timeoutMs`
+ * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
+ * @param concurrency Teto de chunks em voo simultaneamente (default: CLARICE_CHUNK_CONCURRENCY)
+ */
+export async function correctTextChunked(
+  opts: CorrectOptions,
+  chunkThreshold = CLARICE_CHUNK_THRESHOLD,
+  concurrency = CLARICE_CHUNK_CONCURRENCY,
+): Promise<ChunkedResult> {
+  const result = await runChunked(opts.text, chunkThreshold, concurrency, async (chunk) => {
+    const suggestions = await correctTextViaREST({ ...opts, text: chunk.text });
+    return { suggestions, extra: undefined };
+  });
+
+  return {
+    correctedText: result.correctedText,
+    rawSuggestions: result.rawSuggestions,
+    chunkCount: result.chunkCount,
   };
 }
 
@@ -325,18 +437,20 @@ export async function correctTextChunked(
  *
  * Combina a divisão em chunks de `correctTextChunked` com a política de retry de
  * `withClariceRetry`: cada chunk é enviado com retry independente (backoff exponencial,
- * fast-fail em 4xx). O `totalAttempts` acumula as tentativas de todos os chunks.
+ * fast-fail em 4xx), respeitando o mesmo teto de concorrência (`CLARICE_CHUNK_CONCURRENCY`,
+ * #2701 item 1). O `totalAttempts` acumula as tentativas de todos os chunks.
  *
  * Para textos ≤ threshold, comporta-se como `withClariceRetry` com 1 chunk.
  *
  * Falha parcial (fail-clean): igual a `correctTextChunked` — se um chunk esgotar os retries
- * e lançar, o erro propaga e o trabalho dos chunks anteriores é descartado (sem resultado
+ * e lançar, o erro propaga e o trabalho dos chunks já concluídos é descartado (sem resultado
  * parcial). Ver justificativa no JSDoc de `correctTextChunked`.
  *
  * @param opts CorrectOptions com `text`, `apiKey`, `fetchImpl`, `timeoutMs`
  * @param policy RetryPolicy (default: DEFAULT_RETRY_POLICY)
  * @param sleepFn Injetável para testes (default: setTimeout)
  * @param chunkThreshold Limite de chars por chunk (default: CLARICE_CHUNK_THRESHOLD)
+ * @param concurrency Teto de chunks em voo simultaneamente (default: CLARICE_CHUNK_CONCURRENCY)
  */
 export async function withClariceRetryChunked(
   opts: CorrectOptions,
@@ -344,29 +458,19 @@ export async function withClariceRetryChunked(
   sleepFn: (ms: number) => Promise<void> = (ms) =>
     new Promise((r) => setTimeout(r, ms)),
   chunkThreshold = CLARICE_CHUNK_THRESHOLD,
+  concurrency = CLARICE_CHUNK_CONCURRENCY,
 ): Promise<ChunkedRetryResult> {
-  const chunks = splitIntoChunks(opts.text, chunkThreshold);
-  const chunkSuggestions: Array<{ chunk: TextChunk; suggestions: ClariceChunkSuggestion[] }> = [];
-  const rawSuggestions: ClariceSuggestions = [];
-  let totalAttempts = 0;
+  const result = await runChunked(opts.text, chunkThreshold, concurrency, async (chunk) => {
+    const retryResult = await withClariceRetry({ ...opts, text: chunk.text }, policy, sleepFn);
+    return { suggestions: retryResult.suggestions, extra: retryResult.attempts };
+  });
 
-  for (const chunk of chunks) {
-    const result = await withClariceRetry(
-      { ...opts, text: chunk.text },
-      policy,
-      sleepFn,
-    );
-    chunkSuggestions.push({ chunk, suggestions: result.suggestions as ClariceChunkSuggestion[] });
-    rawSuggestions.push(...result.suggestions);
-    totalAttempts += result.attempts;
-  }
-
-  const mergeResult = mergeChunkSuggestions(chunkSuggestions);
+  const totalAttempts = result.extras.reduce((sum, attempts) => sum + attempts, 0);
 
   return {
-    correctedText: mergeResult.text,
-    rawSuggestions,
-    chunkCount: chunks.length,
+    correctedText: result.correctedText,
+    rawSuggestions: result.rawSuggestions,
+    chunkCount: result.chunkCount,
     totalAttempts,
   };
 }

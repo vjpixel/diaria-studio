@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apportion, stratify, planWeeks, advanceCursors, ALL_WEEKS, SENDS, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
+import { apportion, stratify, planWeeks, advanceCursors, ALL_WEEKS, SENDS, outRow, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
 
 describe("SENDS (plano dos 21 envios)", () => {
   it("21 envios, 7 por semana, totais por semana corretos", () => {
@@ -277,6 +277,32 @@ describe("advanceCursors (#2048 item 4b)", () => {
     assert.throws(() => planWeeks(trimmedSizes, [1, 2]), /T3 insuficiente/);
     // advanceCursors não lança:
     assert.doesNotThrow(() => advanceCursors(trimmedSizes, [1, 2]));
+  });
+});
+
+// #2697 item 1 (self-review #2696) — propagação de IS_SEED no caminho legado
+// edition-sends. Antes deste fix, outRow descartava a coluna IS_SEED presente
+// nas rows de w1/w2 (onde o seed vjpixel@gmail.com é injetado por
+// clarice-build-waves.ts), fazendo o seed vazar SEM marcador nas métricas Brevo
+// caso este builder legado fosse reutilizado.
+describe("outRow — propagação de IS_SEED (#2697 item 1)", () => {
+  it("row do seed (IS_SEED=\"true\" na fonte) preserva IS_SEED=\"true\" no output", () => {
+    const row = outRow(
+      { email: "vjpixel@gmail.com", NOME: "Pixel", IS_SEED: "true" },
+      "email",
+      "T1-abriu",
+    );
+    assert.deepEqual(row, { email: "vjpixel@gmail.com", NOME: "Pixel", TIER: "T1-abriu", IS_SEED: "true" });
+  });
+
+  it("row normal (sem coluna IS_SEED na fonte) sai com IS_SEED=\"\" (coluna presente, vazia)", () => {
+    const row = outRow({ email: "leitor@x.com", NOME: "Leitor" }, "email", "T2");
+    assert.deepEqual(row, { email: "leitor@x.com", NOME: "Leitor", TIER: "T2", IS_SEED: "" });
+  });
+
+  it("row com IS_SEED=\"\" explícito na fonte (Papa.parse de coluna vazia) não vira \"true\"", () => {
+    const row = outRow({ email: "leitor@x.com", NOME: "Leitor", IS_SEED: "" }, "email", "T1-nao-abriu");
+    assert.equal(row.IS_SEED, "", "só o literal \"true\" deve marcar o seed — string vazia não é truthy aqui");
   });
 });
 

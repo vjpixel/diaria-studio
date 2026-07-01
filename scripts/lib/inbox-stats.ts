@@ -16,8 +16,16 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLARICE_SEED_EMAIL } from "./clarice-seed.ts";
 
-const DEFAULT_EDITOR_EMAIL = "vjpixel@gmail.com";
+/**
+ * #2697 item 2 (self-review #2696) — antes este módulo duplicava o literal
+ * `"vjpixel@gmail.com"` como constante própria (`DEFAULT_EDITOR_EMAIL`), separada
+ * de `CLARICE_SEED_EMAIL` em `clarice-seed.ts`. Mesmo endereço, mesmo conceito
+ * ("email pessoal do editor"), duas fontes de verdade — deriva de
+ * `CLARICE_SEED_EMAIL` em vez de redeclarar o literal.
+ */
+const DEFAULT_EDITOR_EMAIL = CLARICE_SEED_EMAIL;
 
 /**
  * #1864: número de LINKS que entraram pelo canal do editor (forwards diretos +
