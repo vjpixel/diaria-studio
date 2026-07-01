@@ -1,5 +1,5 @@
 /**
- * agent-issue-validator.ts (#1421, #2013)
+ * agent-issue-validator.ts (#1421, #2013, #2730)
  *
  * Cross-check determinístico dos issues retornados por `review-test-email`
  * agent (Haiku). O agent tem viés de encoding em ambientes WSL/locale —
@@ -25,6 +25,17 @@
  *     renderiza headers SEM emoji (stripKickerEmoji); emoji de seção ausente
  *     no header é by-design, não corruption.
  *
+ * #2730: o formato REAL de `email:encoding_drop` produzido pelo review-test-email
+ * (`.claude/agents/review-test-email.md` passo 3e, mapeado de
+ * `lint-test-email-encoding.ts`) é `"{codepoint} '{char}' em '…{context}…'"` — 2
+ * termos entre aspas simples (char + context), nunca 1. Os checkers de FP
+ * by-design (`isEncodingDropSectionEmojiByDesign`, `isEncodingDropCalloutMarkerByDesign`)
+ * exigiam exatamente 1 termo — nunca disparavam em produção, só nos testes
+ * sintéticos com 1 termo só. `extractEncodingDropCharAndContext`/
+ * `extractEncodingDropCharTerm` reconhecem os 2 formatos (produção com
+ * codepoint, e legado/sintético com 1 termo) e mantêm os dois checkers
+ * funcionando nos dois casos.
+ *
  * Outros tipos passam através (caller decide o que fazer).
  *
  * Não cobre: `unexpected_content`, `formatting` etc — esses precisam
@@ -49,6 +60,48 @@ export function extractQuotedTerms(issue: string): string[] {
     out.push(m[1]);
   }
   return out;
+}
+
+/**
+ * #2730: extrai separadamente `char` e `context` do formato de PRODUÇÃO de
+ * `email:encoding_drop` mapeado pelo `review-test-email` agent a partir de
+ * `lint-test-email-encoding.ts` (ver `.claude/agents/review-test-email.md`
+ * passo 3e): `"email:encoding_drop: {codepoint} '{char}' em '…{source_context}…'"`.
+ *
+ * Esse formato SEMPRE cita 2 termos entre aspas simples — o char dropado E o
+ * contexto ao redor no source — então `extractQuotedTerms(issue).length` é 2,
+ * nunca 1. Os checkers de FP by-design (`isEncodingDropSectionEmojiByDesign`,
+ * `isEncodingDropCalloutMarkerByDesign`) exigiam exatamente 1 termo quoted —
+ * bug real do #2730: em produção esse gate NUNCA disparava, então os FPs de
+ * emoji by-design (headers de seção, marcadores de callout) nunca eram
+ * dropados de fato, só nos testes sintéticos com 1 termo só.
+ *
+ * Retorna `{ char, context }` quando o formato de produção é reconhecido
+ * (codepoint + char + "em" + context), ou `null` caso contrário (formato
+ * legado/sintético sem codepoint, usado nos testes originais #2013/#2066).
+ */
+export function extractEncodingDropCharAndContext(
+  issue: string,
+): { char: string; context: string } | null {
+  const m = issue.match(/U\+[0-9A-Fa-f]{2,8}\s+'([^']+)'\s+em\s+'([^']*)'/i);
+  if (!m) return null;
+  return { char: m[1], context: m[2] };
+}
+
+/**
+ * #2730: extrai o termo "char" de uma issue `email:encoding_drop`, cobrindo
+ * tanto o formato de produção (codepoint + char + context — usa só o char,
+ * ignora o context) quanto o formato legado/sintético (exatamente 1 termo
+ * quoted na issue inteira, sem codepoint). Retorna `null` quando nenhum dos
+ * 2 formatos é reconhecido (issue sem termos, ou múltiplos termos reais sem
+ * o padrão de codepoint).
+ */
+export function extractEncodingDropCharTerm(issue: string): string | null {
+  const prod = extractEncodingDropCharAndContext(issue);
+  if (prod) return prod.char;
+  const terms = extractQuotedTerms(issue);
+  if (terms.length === 1) return terms[0];
+  return null;
 }
 
 /**
@@ -254,9 +307,12 @@ export function isEncodingDropCalloutMarkerByDesign(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   if (!/^email:encoding_drop/i.test(issue)) return { falsePositive: false };
-  const terms = extractQuotedTerms(issue);
-  if (terms.length !== 1) return { falsePositive: false };
-  const [term] = terms;
+  // #2730: extração cobre o formato de produção (codepoint + char + context,
+  // 2 termos quoted) E o legado/sintético (1 termo só) — antes só o legado
+  // era reconhecido, então o FP nunca era dropado nas issues reais do
+  // review-test-email.
+  const term = extractEncodingDropCharTerm(issue);
+  if (term === null) return { falsePositive: false };
   if (!CALLOUT_MARKER_EMOJIS.has(term)) return { falsePositive: false };
   return {
     falsePositive: true,
@@ -283,24 +339,71 @@ export function isEncodingDropCalloutMarkerByDesign(
  * texto real com encoding real, não só o emoji) — nesse caso volta pra
  * checagem normal de `isEncodingDropFalsePositive`.
  */
+/**
+ * #2730: label canônico que acompanha cada emoji de section header no source
+ * MD (`context/templates/newsletter.md` — ex: `**🚀 LANÇAMENTOS**`, emoji
+ * imediatamente adjacente ao label). Usado como sinal de confirmação quando a
+ * issue segue o formato de PRODUÇÃO (codepoint + char + context extraído do
+ * source ao redor do char) — nesse formato a issue nunca menciona a palavra
+ * "header"/"seção" literalmente (é só um snippet de ~20 chars ao redor do
+ * char no MD cru), então o gate de frase original nunca disparava em issues
+ * reais. O contexto de um header genuíno inclui o label adjacente (o emoji
+ * está colado nele); emoji multi-propósito (💼/🌐/📺) usado em outro lugar do
+ * documento não bate o label canônico da seção correspondente.
+ */
+const SECTION_EMOJI_LABEL_PATTERN: ReadonlyMap<string, RegExp> = new Map([
+  ["🚀", /LAN[ÇC]AMENTOS?/i],
+  ["📡", /RADAR/i],
+  ["🛠️", /USE MELHOR|FERRAMENTA/i],
+  ["🎁", /SORTEIO/i],
+  ["🙋", /PARA ENCERRAR/i],
+  ["🙋🏼‍♀️", /PARA ENCERRAR/i],
+  ["💼", /MERCADO|TRABALHO/i],
+  ["🌐", /GLOBAL/i],
+  ["📺", /V[ÍI]DEOS?/i],
+  ["🔬", /PESQUISAS?/i],
+  ["📰", /OUTRAS NOT[ÍI]CIAS?/i],
+  ["⚖️", /REGULA[ÇC][ÃA]O/i],
+  ["🇧🇷", /BRASIL/i],
+]);
+
 export function isEncodingDropSectionEmojiByDesign(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   if (!/^email:encoding_drop/i.test(issue)) return { falsePositive: false };
-  const terms = extractQuotedTerms(issue);
-  // Só casa quando o único termo citado é um emoji de header — múltiplos termos
-  // passam pra verificação normal (pode ter texto real + emoji misturados).
-  if (terms.length !== 1) return { falsePositive: false };
-  const [term] = terms;
+  // #2730: reconhece o formato de produção (codepoint + char + context) —
+  // guarda o context separadamente pra usar como sinal alternativo ao gate
+  // de frase abaixo (que nunca bate no formato real, só no legado/sintético).
+  const prod = extractEncodingDropCharAndContext(issue);
+  const term = prod ? prod.char : extractEncodingDropCharTerm(issue);
+  if (term === null) return { falsePositive: false };
   // Verifica se o termo é um emoji de section header (ou começa com um deles —
   // sequências com skin-tone podem ter substring da lista).
-  const isHeaderEmoji = SECTION_HEADER_EMOJIS.has(term) ||
-    [...SECTION_HEADER_EMOJIS].some((e) => term.startsWith(e) || e.startsWith(term));
-  if (!isHeaderEmoji) return { falsePositive: false };
-  // Gate de header: a frase precisa mencionar que a reclamação é sobre um
-  // HEADER/kicker de seção — não apenas mencionar o nome da seção em qualquer
-  // contexto. Sem isso, emojis multi-propósito (📺, 💼, 🌐) em links inline
-  // seriam dropados indevidamente quando o nome da seção aparece na frase.
+  const matchedKey = [...SECTION_HEADER_EMOJIS].find(
+    (e) => term === e || term.startsWith(e) || e.startsWith(term),
+  );
+  if (matchedKey === undefined) return { falsePositive: false };
+
+  if (prod) {
+    // #2730: formato de produção — o context (texto ao redor do char no
+    // source MD) é o sinal confiável de header genuíno, já que a issue nunca
+    // menciona "header"/"seção" literalmente neste formato. Só confirma FP
+    // quando o context bate o label canônico do emoji (headers são
+    // `**{emoji} {LABEL}**`, adjacentes) — emoji multi-propósito usado em
+    // outro lugar do documento não bate e a issue é mantida (conservador).
+    const labelPattern = SECTION_EMOJI_LABEL_PATTERN.get(matchedKey);
+    if (labelPattern && labelPattern.test(prod.context)) {
+      return {
+        falsePositive: true,
+        reason: `DS #1936: emoji '${term}' é removido de headers por renderKicker/stripKickerEmoji — ausência by-design (#2013, contexto '${matchedKey}' confirma header — #2730)`,
+      };
+    }
+    return { falsePositive: false };
+  }
+
+  // Formato legado/sintético (sem codepoint+context): mantém o gate de frase
+  // original — precisa mencionar explicitamente header/kicker/seção. Não
+  // altera o comportamento pré-#2730 pra esses casos (testes existentes).
   const hasHeaderInPhrase =
     /header|kicker|se[çc][ãa]o|section|t[íi]tulo\s+da\s+se[çc][ãa]o|t[íi]tulo\s+de\s+se[çc][ãa]o/i.test(issue);
   if (!hasHeaderInPhrase) return { falsePositive: false };

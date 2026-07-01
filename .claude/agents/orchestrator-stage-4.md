@@ -143,12 +143,15 @@ npx tsx scripts/lint-newsletter-md.ts --md data/editions/{AAMMDD}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md data/editions/{AAMMDD}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md data/editions/{AAMMDD}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md data/editions/{AAMMDD}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
 `secondary-items-have-summary` (#2545): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR sem descrição renderiza título pelado no email. Ação: editar `02-reviewed.md` e adicionar descrição plain text (1 frase) abaixo de cada item pelado, ou re-rodar Etapa 1 (se a causa foi cache-miss no enrich).
 
 `title-publisher-suffix` + `title-trailing-period` (#2664/#2672): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com linha + sufixo/título, sem bloquear o gate. A normalização automática roda no Stage 1 (`enrich-inbox-articles.ts` → `normalizeItemTitle`); estes lints são backstop pré-gate para resíduos que escapam (títulos gerados pelo writer LLM ou curados pelo editor). O check de sufixo usa heurística de 1–4 palavras (pode ter falso-positivo em traço editorial legítimo) — por isso WARN, não BLOCK. Ação sugerida ao editor: remover o sufixo de veículo / ponto final em `02-reviewed.md` antes de aprovar.
+
+`stacked-intro-callouts` (#2729): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com as linhas dos blocos empilhados. Detecta ≥2 blocos `**(🎉|📣)…**` na região de intro (antes do 1º `**DESTAQUE`) — `extractIntroCallout` (#2727) é greedy e funde os 2 blocos num só, vazando `**` internos como texto literal e perdendo o separador "Divulgação" do bloco patrocinado. `inject-champions-callout.ts` (Stage 3) já pula a auto-injeção quando um callout preexiste, mas isso não cobre colagem manual de 2 blocos pelo editor no Drive — daí o lint como backstop. Ação sugerida: mesclar os 2 CTAs num único bloco, ou mover o 2º para uma lacuna entre destaques (midCallout).
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash

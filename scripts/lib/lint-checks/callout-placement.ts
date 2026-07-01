@@ -69,3 +69,52 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   }
   return { ok: matches.length === 0, matches };
 }
+
+// ---------------------------------------------------------------------------
+// #2729 — ≥2 blocos de callout-marker (🎉/📣) empilhados na região de intro
+// ---------------------------------------------------------------------------
+
+/**
+ * #2729: `extractIntroCallout` (`scripts/lib/newsletter-parse.ts`, tornado
+ * greedy pelo #2727 pra permitir sub-linhas `**bold**` dentro do box de
+ * início de mês) assume que a região de intro (tudo antes do 1º
+ * `**DESTAQUE`) contém NO MÁXIMO 1 bloco `**(🎉|📣) …**` — o regex greedy
+ * casa do PRIMEIRO abertura até o ÚLTIMO `**` de fim de linha na região.
+ *
+ * Se o editor colar 2 blocos empilhados (ex: um 📣 patrocinado acima do 🎉 de
+ * campeões/sorteio — `inject-champions-callout.ts` já tem lógica de
+ * precedência que PULA a auto-injeção quando já existe um callout, mas isso
+ * não impede colagem manual de 2 blocos pelo editor no Drive), o greedy funde
+ * os dois num só bloco: os `**` internos (fechamento do 1º bloco + abertura
+ * do 2º) vazam como texto literal no meio do parágrafo renderizado, e o
+ * separador "Divulgação" do bloco 📣 patrocinado se perde.
+ *
+ * Este check erra (`ok: false`) quando encontra ≥2 linhas
+ * `^\*\*\s*(🎉|📣)` na região de intro (antes do 1º `**DESTAQUE`) —
+ * independente de midCallouts (📚/📣/🎉 entre destaques, cobertos por
+ * `lintCalloutPlacement`/`locateMidCallout`, semântica diferente).
+ */
+export interface StackedIntroCalloutResult {
+  ok: boolean;
+  count: number;
+  lines: number[];
+}
+
+const INTRO_CALLOUT_OPEN_RE = /^\*\*\s*(?:🎉|📣)/u;
+const DESTAQUE_MARKER_RE = /^\*\*DESTAQUE/;
+
+export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult {
+  const normalized = md.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const matchLines: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    // Região de intro = tudo ANTES da 1ª linha `**DESTAQUE` — para assim que
+    // encontrar o 1º destaque, espelhando `extractIntroCallout`
+    // (`text.split(/^\*\*DESTAQUE/m)[0]`).
+    if (DESTAQUE_MARKER_RE.test(lines[i])) break;
+    if (INTRO_CALLOUT_OPEN_RE.test(lines[i].trim())) {
+      matchLines.push(i + 1);
+    }
+  }
+  return { ok: matchLines.length < 2, count: matchLines.length, lines: matchLines };
+}

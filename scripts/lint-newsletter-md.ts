@@ -37,7 +37,7 @@ import {
 } from "./lib/lint-checks/url-bucket.ts";
 import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
-import { lintCalloutPlacement } from "./lib/lint-checks/callout-placement.ts";
+import { lintCalloutPlacement, lintStackedIntroCallouts } from "./lib/lint-checks/callout-placement.ts";
 import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
 import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
 import { checkCoverageLine } from "./lib/lint-checks/coverage-line-format.ts";
@@ -88,6 +88,8 @@ export {
   lintCalloutPlacement,
   type CalloutPlacementMatch,
   type CalloutPlacementResult,
+  lintStackedIntroCallouts,
+  type StackedIntroCalloutResult,
 } from "./lib/lint-checks/callout-placement.ts";
 export {
   checkWhyMattersFormat,
@@ -877,6 +879,35 @@ intentional_error:
     return;
   }
 
+  // Modo --check stacked-intro-callouts (#2729) — ≥2 blocos `**(🎉|📣)…**`
+  // empilhados na região de intro (antes do 1º `**DESTAQUE`) fundem no
+  // `extractIntroCallout` greedy (#2727): `**` internos vazam como texto
+  // literal + separador "Divulgação" do bloco 📣 se perde.
+  if (args.check === "stacked-intro-callouts") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = lintStackedIntroCallouts(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.count} blocos de callout (🎉/📣) empilhados na região de intro (linhas ${result.lines.join(", ")}):`,
+      );
+      console.error(
+        `\n   Fix: manter só 1 bloco \`**🎉/📣 …**\` na região de intro (antes do 1º **DESTAQUE). Blocos empilhados fundem no render (extractIntroCallout é greedy, #2727) — \`**\` internos vazam como texto literal e o separador "Divulgação" do bloco patrocinado se perde. Se 2 CTAs são necessários, mesclar num único bloco ou mover o 2º para uma lacuna entre destaques (midCallout).`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
@@ -896,7 +927,9 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>",
     );
     process.exit(2);
   }
