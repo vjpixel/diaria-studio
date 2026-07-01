@@ -120,21 +120,25 @@ export function isIntentionalErrorClaim(
 }
 
 /**
- * #2634/#2707: fronteira canônica de um header "DESTAQUE N" — o número seguido
- * de um pipe (com whitespace opcional antes, ex: "DESTAQUE 1 | MERCADO") ou de
- * fim de linha. Sem esse ancoramento, texto de CORPO como "DESTAQUE 2 foi
- * importante porque..." também casa (o "2" é seguido por um espaço, que já
- * satisfazia um `\s` solto) e é confundido com o início/fim de um header real.
+ * #2634/#2707/#2715: fronteira canônica de um header "DESTAQUE N" — o número
+ * seguido de um separador de header (pipe, dois-pontos, travessão ou hífen,
+ * com whitespace opcional antes, ex: "DESTAQUE 1 | MERCADO", "DESTAQUE 2:
+ * Título", "DESTAQUE 2 — Título") ou de fim de linha. Sem esse ancoramento,
+ * texto de CORPO como "DESTAQUE 2 foi importante porque..." também casa (o
+ * "2" é seguido por um espaço, que já satisfazia um `\s` solto) e é confundido
+ * com o início/fim de um header real.
  *
  * Compartilhado entre `markerRe` (start-boundary, âncora no `destaque` exato)
  * e `nextMatch` (end-boundary, âncora em qualquer `\d+`) para as duas fronteiras
  * não voltarem a divergir — #2634 corrigiu só o end-boundary; #2707 estendeu o
  * mesmo fix ao start-boundary, que tinha o mesmo bug-class.
- * `\s*(?:\||$)` (item 2 #2707) é a forma fatorada e equivalente de
- * `(?:\s*\||\s*$)`.
+ * `\s*(?:[|:—-]|$)` (#2715 item 1) generaliza `\s*(?:\||$)` (#2707 item 2)
+ * pra aceitar header não-canônico ("DESTAQUE 2: Título", "DESTAQUE 2 — X") —
+ * sem isso, `nextMatch` não encontra o separador esperado, retorna null, e o
+ * range do destaque anterior engloba os seguintes até EOF.
  */
 function destaqueHeaderPattern(numPattern: string): string {
-  return String.raw`DESTAQUE\s+${numPattern}\s*(?:\||$)`;
+  return String.raw`DESTAQUE\s+${numPattern}\s*(?:[|:—-]|$)`;
 }
 
 /**
