@@ -32,7 +32,7 @@ O pipeline Diar.ia roda 20+ agentes LLM distribuídos em 4 etapas. Vários desse
 | `analyst-monthly` | Agrupamento temático de ~90 destaques por narrativa. Requer compreensão de coerência temática ao longo do mês. |
 | `publish-newsletter` / `publish-social` | Navegação de UI via Chrome. O Claude in Chrome é dependência fundamental — não há API oficial equivalente. |
 | `review-test-email` | Inspeção visual/semântica do email renderizado para detectar problemas de layout. |
-| `title-picker` | Decisão editorial de alto impacto em CTR com raciocínio sobre concretude e tom. Opus por design. |
+| `title-picker` | Decisão editorial de alto impacto em CTR com raciocínio sobre concretude e tom. Opus por design. (nota: migrado pra Sonnet em #2772, 260701 — ver docs/agent-migration-triage.md) |
 | `inbox-drainer` (gate conversacional) | A extração de URLs é migrável, mas a interpretação de mensagens em formato livre (editor manda links sem contexto estruturado) beneficia de LLM. Migração parcial recomendada (parsing para script, julgamento para LLM como fallback). |
 | `auto-reporter` | Gate humano + síntese narrativa de sinais de múltiplas edições requer LLM. |
 | `eia-composer` | Já migrado para `scripts/eia-compose.ts`; agente é referência histórica. |
