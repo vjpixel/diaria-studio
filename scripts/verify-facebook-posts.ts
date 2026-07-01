@@ -74,16 +74,30 @@ export type FetchPostFn = (
  *
  * Regra: post está publicado se created_time presente E NÃO está no futuro
  * agendado (scheduled_publish_time ausente OU já passou).
+ *
+ * #2676 F2: quando `created_time` está ausente MAS `scheduled_publish_time`
+ * já passou, isso é o mesmo sinal (post deveria ter saído) — antes essa
+ * combinação caía no early-return e ficava com `is_published=undefined`,
+ * que `reconcilePost` resolve como `failed` silenciosamente (mesma classe
+ * de bug do #600, só que sem a API retornar erro). Sem NENHUM sinal
+ * temporal (nem created_time, nem scheduled_publish_time), não há base pra
+ * inferir — mantém undefined.
  */
 export function inferIsPublished(
   data: GraphPostResponse,
   nowUnix: number,
 ): GraphPostResponse {
-  if (data.error || !data.created_time) return data;
+  if (data.error) return data;
   const stillScheduled =
     typeof data.scheduled_publish_time === "number" &&
     data.scheduled_publish_time > nowUnix;
-  return { ...data, is_published: !stillScheduled };
+  if (data.created_time) {
+    return { ...data, is_published: !stillScheduled };
+  }
+  if (typeof data.scheduled_publish_time === "number" && !stillScheduled) {
+    return { ...data, is_published: true };
+  }
+  return data;
 }
 
 export async function defaultFetchPost(

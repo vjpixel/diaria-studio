@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
+import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -523,7 +524,7 @@ async function main() {
     console.error(
       "ERRO: FACEBOOK_PAGE_ID não está setado.\n" +
       "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
-      "Encontrar Page ID em https://www.facebook.com/diar.ia.br → Sobre → ID da página."
+      `Encontrar Page ID em ${DIARIA_FACEBOOK_PAGE_URL} → Sobre → ID da página.`
     );
     process.exit(1);
   }

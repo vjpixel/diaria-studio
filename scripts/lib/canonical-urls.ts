@@ -24,6 +24,19 @@
 
 import { normalizeTitle } from "../dedup.ts";
 
+/**
+ * Slug canônico da página da Diar.ia no Facebook (sem `https://`, sem `www.`).
+ * #2695 — single source of truth pra toda referência hardcoded à URL pública
+ * do Facebook (footer de templates, comments de credencial, filtros de
+ * domínio). Analogous ao `DIARIA_LINKEDIN_PAGE_SLUG` em `lint-social-md.ts`
+ * (#2458), que cobre o slug do LinkedIn pra fins de lint de CTA social —
+ * este cobre o Facebook pra fins de URL canônica (footer/dedup/mensagens).
+ */
+export const DIARIA_FACEBOOK_PAGE_SLUG = "facebook.com/diar.ia.br";
+
+/** URL completa (com protocolo + `www.`) derivada do slug canônico acima. */
+export const DIARIA_FACEBOOK_PAGE_URL = `https://www.${DIARIA_FACEBOOK_PAGE_SLUG}`;
+
 interface ArticleLike {
   url?: string;
   title?: string;
@@ -122,18 +135,31 @@ export function extractUrlsFromMd(md: string): string[] {
  *
  * Footer/affiliate URLs (diaria.beehiiv.com, wisprflow, clarice.ai, etc.)
  * são puladas — sempre são adicionadas em runtime fora do approved.
+ *
+ * #2695: single source of truth — antes esta lista era duplicada em paralelo
+ * (com drift real: variantes distintas de wikipedia/wikimedia, wikidata
+ * presente em uns e ausente em outros) em `newsletter-count.ts` e
+ * `check-stage2-invariants.ts`. Ambos agora importam esta constante em vez
+ * de manter cópia própria.
  */
-const FOOTER_DOMAINS = [
+export const FOOTER_DOMAINS = [
   "diaria.beehiiv.com",
   "wisprflow.ai",
   "clarice.ai",
   "beehiiv.com?via",
   "linkedin.com/company",
-  "facebook.com/diar.ia.br",
-  "pt.wikipedia.org",
-  "commons.wikimedia.org",
+  DIARIA_FACEBOOK_PAGE_SLUG,
+  "wikipedia.org", // todas as variantes (pt/en/es/...)
+  "wikimedia.org", // commons + upload
   "creativecommons.org",
   "wikidata.org",
+  // #2498: Workers do template (cursos/livros/poll) são links fixos do rodapé —
+  // nunca são artigos pesquisados, portanto nunca entram em nenhum cache/JSON
+  // de proveniência. Allowlistar por hostname exato pra evitar match
+  // permissivo de substring (ex: "workers.dev" casaria qualquer Worker).
+  "cursos.diaria.workers.dev",
+  "livros.diaria.workers.dev",
+  "poll.diaria.workers.dev",
 ];
 
 export function findMismatchedUrls(

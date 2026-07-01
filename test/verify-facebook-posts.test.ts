@@ -7,6 +7,7 @@ import {
   reconcilePost,
   verifyPublished,
   inferIsPublished,
+  defaultFetchPost,
   resolveSocialPublishedPath,
   type PostEntry,
   type GraphPostResponse,
@@ -204,6 +205,86 @@ describe("inferIsPublished (#600)", () => {
   it("created_time ausente → não infere", () => {
     const r = inferIsPublished({ scheduled_publish_time: fakeNow + 3600 }, fakeNow);
     assert.equal(r.is_published, undefined);
+  });
+
+  // #2676 F2: sem created_time, scheduled_publish_time no PASSADO era o único
+  // caso não coberto — caía no "não infere" acima (mesmo guard `!data.created_time`)
+  // e ficava indistinguível do caso "post nem existe ainda". Um
+  // scheduled_publish_time vencido é sinal forte de que o post deveria ter
+  // saído — tratar como published em vez de deixar is_published=undefined
+  // (que reconcilePost resolve como "failed", mesma classe de bug do #600).
+  it("#2676 F2: sem created_time + scheduled_publish_time no passado → infere is_published=true", () => {
+    const r = inferIsPublished({ scheduled_publish_time: fakeNow - 60 }, fakeNow);
+    assert.equal(
+      r.is_published,
+      true,
+      "scheduled_publish_time vencido sem created_time deveria inferir published, não ficar undefined (mesma classe de bug do #600)",
+    );
+  });
+
+  it("#2676 F2: sem created_time + sem scheduled_publish_time → continua sem inferir (undefined)", () => {
+    // Sem nenhum sinal temporal, não há base pra inferir nada — mantém o
+    // comportamento pré-#2676 (undefined, não published nem failed).
+    const r = inferIsPublished({}, fakeNow);
+    assert.equal(r.is_published, undefined);
+  });
+});
+
+describe("defaultFetchPost — exercita o fetch real (#2676 F1)", () => {
+  // #2676 F1: a suite "v25.0 regression (#600)" acima injeta um `fetchPost`
+  // mockado direto em `verifyPublished`, então NUNCA exercita
+  // `defaultFetchPost` — que é onde o bug #600 de fato morava (o `fields=`
+  // passado pro fetch real). Se alguém reintroduzir "is_published" em
+  // `safeFields` dentro de `defaultFetchPost`, a suite acima continuaria
+  // verde (ela nem chama essa função) e a regressão passaria despercebida.
+  // Este teste mocka `global.fetch` e inspeciona a URL de fato construída.
+  it("nunca inclui is_published no fields= da chamada Graph API real", async () => {
+    const origFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      calls.push(url);
+      if (url.includes("fields=permalink_url")) {
+        return new Response(
+          JSON.stringify({ permalink_url: "https://facebook.com/post/999" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      // Resposta v25.0 real: sem is_published (deprecated), scheduled_publish_time
+      // já vencido — dispara também a chamada best-effort de permalink_url.
+      return new Response(
+        JSON.stringify({
+          created_time: "2026-04-24T10:30:00+0000",
+          scheduled_publish_time: Math.floor(now.getTime() / 1000) - 3600,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      const result = await defaultFetchPost("12345_67890", "TOKEN", "v25.0");
+
+      const mainCall = calls.find((c) => !c.includes("fields=permalink_url"));
+      assert.ok(mainCall, "esperava ao menos 1 chamada de fields principal");
+      const fieldsParam = new URL(mainCall!).searchParams.get("fields") ?? "";
+      // Esta é a asserção que teria pego o bug #600: se `safeFields` em
+      // `defaultFetchPost` voltar a incluir "is_published", `fieldsParam`
+      // passa a conter a string e este assert falha.
+      assert.ok(
+        !fieldsParam.includes("is_published"),
+        `fields= não deve incluir is_published (regressão #600): "${fieldsParam}"`,
+      );
+      assert.ok(
+        fieldsParam.includes("created_time") && fieldsParam.includes("scheduled_publish_time"),
+        `fields= deve conter os campos seguros: "${fieldsParam}"`,
+      );
+      // Sanity: is_published no resultado veio de inferIsPublished (inferido),
+      // nunca da API — confirma que defaultFetchPost chamou o inferidor.
+      assert.equal(result.is_published, true);
+      assert.equal(result.permalink_url, "https://facebook.com/post/999");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 
