@@ -15,11 +15,9 @@
  *    (c) lstats null/undefined → não-poison.
  *    (d) lstats {} (vazio) → não-poison (campanha sem links rastreados).
  *    (e) fetchRecentCampaigns com lstats poison no KV → force re-fetch.
- *  - #2282: djb2Hash + LASTGOOD_KEY/HASH condicional.
- *    (a) djb2Hash é determinístico (mesma string → mesmo hash).
- *    (b) djb2Hash é sensível ao conteúdo (strings diferentes → hashes diferentes).
- *    (c) RECENT_STATS_TTL foi elevado a 1800s (≥ 900 pra ser defensivo).
- *    (d) lastgood só grava quando hash mudou (via fetchRecentCampaigns mock).
+ *  - #2282: RECENT_STATS_TTL foi elevado a 1800s (≥ 900 pra ser defensivo).
+ *    (#2733 removeu o HTML lastgood + djb2Hash + write condicional por hash;
+ *     o fallback de rate-limit agora re-renderiza com campanhas cruas do KV.)
  */
 
 import { test, describe } from "node:test";
@@ -235,25 +233,9 @@ describe("isLinksStatsPoisoned (#2273 — detecção de cache envenenado)", () =
   });
 });
 
-// ─── #2282: djb2Hash + RECENT_STATS_TTL + write condicional ─────────────────
-
-describe("djb2Hash (#2282 — write condicional)", () => {
-  test("hash é determinístico (mesma string → mesmo hash)", async () => {
-    const { djb2Hash } = await import("../workers/brevo-dashboard/src/index.ts");
-    const s = "<html>Dashboard content 123</html>";
-    assert.strictEqual(djb2Hash(s), djb2Hash(s));
-  });
-
-  test("hash difere para strings diferentes", async () => {
-    const { djb2Hash } = await import("../workers/brevo-dashboard/src/index.ts");
-    assert.notStrictEqual(djb2Hash("version 1"), djb2Hash("version 2"));
-  });
-
-  test("hash de string vazia não lança", async () => {
-    const { djb2Hash } = await import("../workers/brevo-dashboard/src/index.ts");
-    assert.doesNotThrow(() => djb2Hash(""));
-  });
-});
+// ─── #2282: RECENT_STATS_TTL ─────────────────────────────────────────────────
+// (#2733 removeu o HTML lastgood + djb2Hash; o write condicional por hash saiu
+// junto. O fallback de rate-limit agora re-renderiza com campanhas cruas do KV.)
 
 describe("RECENT_STATS_TTL elevado (#2282)", () => {
   test("RECENT_STATS_TTL >= 900s (corte mínimo aceitável é 15min)", async () => {
@@ -295,29 +277,6 @@ describe("RECENT_STATS_TTL elevado (#2282)", () => {
     const statsTtl = (putOpts["stats:99"] as any)?.expirationTtl;
     assert.strictEqual(statsTtl, RECENT_STATS_TTL,
       `TTL de stats:{id} recente deve ser ${RECENT_STATS_TTL}s (RECENT_STATS_TTL), não hardcoded`);
-  });
-});
-
-describe("lastgood write condicional (#2282 — não grava quando conteúdo não mudou)", () => {
-  // Testa diretamente que o djb2Hash de dois HTMLs idênticos é o mesmo,
-  // portanto o branch de "skip write" seria acionado (não testamos o KV
-  // diretamente na rota /, pois o fetch handler é um dispatch do Worker —
-  // o fetch handler não é exportado de forma testável em unidade).
-  test("djb2Hash idêntico para mesmo HTML → branch de skip seria acionado", async () => {
-    const { djb2Hash } = await import("../workers/brevo-dashboard/src/index.ts");
-    const html = `<!DOCTYPE html><html><body><h1>Dashboard</h1><p>ts: 12:00</p></body></html>`;
-    const h1 = djb2Hash(html);
-    const h2 = djb2Hash(html);
-    assert.strictEqual(h1, h2,
-      "hashes idênticos → prevHash === newHash → skip write (não grava novamente)");
-  });
-
-  test("djb2Hash diferente quando conteúdo muda → write seria acionado", async () => {
-    const { djb2Hash } = await import("../workers/brevo-dashboard/src/index.ts");
-    const html1 = `<!DOCTYPE html><html><body><h1>Dashboard</h1><p>ts: 12:00</p></body></html>`;
-    const html2 = `<!DOCTYPE html><html><body><h1>Dashboard</h1><p>ts: 12:05</p></body></html>`;
-    assert.notStrictEqual(djb2Hash(html1), djb2Hash(html2),
-      "hashes diferentes → conteúdo mudou → write seria acionado");
   });
 });
 
