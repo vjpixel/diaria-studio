@@ -95,6 +95,13 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --out data/editions/{AAMMDD}/_internal/04-leaderboard-top1.json
   ```
   Falha do fetch (Worker offline, timeout) escreve `top1: []` — renderer detecta e omite bloco. **Não-bloqueante** — newsletter funciona sem leaderboard.
+- **Injetar box campeões/sorteio de início de mês (#2725).** Logo após o fetch acima (mesmo gate "1ª edição do mês", reusado internamente — não duplica a detecção), preencher e injetar o box `🎉 Os campeões do É IA?... + Sorteio` em `02-reviewed.md` a partir do `podium` recém-escrito + do bloco `raffle` de `platform.config.json`:
+  ```bash
+  npx tsx scripts/inject-champions-callout.ts \
+    --edition {AAMMDD} \
+    --edition-dir data/editions/{AAMMDD}/
+  ```
+  **Graceful/no-op** (mesmo padrão do fetch): não é a 1ª edição do mês, pódio vazio/incompleto, ou bloco `raffle` ausente → loga o motivo e sai 0 sem alterar `02-reviewed.md`. **Precedência:** se `02-reviewed.md` já tem um callout na região de intro (ex: patrocínio 📣 colado manualmente), a injeção é PULADA — o callout existente vence, evitando corromper o parse greedy de `extractIntroCallout` (#2727) com dois blocos empilhados. Se isso ocorrer, reportar ao editor no resumo do gate: "Box de campeões do mês não injetado — já havia um callout ({tipo}) no topo desta edição." Só roda quando `02-reviewed.md` já existe (Stage 2 completo) — nunca antes.
 - **Pre-gate invariants (#1007 Fase 1).** Validar que as imagens obrigatórias existem (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 **condicional a `destaque_count === 3`**, #2352) e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
   ```bash
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/

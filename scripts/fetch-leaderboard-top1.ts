@@ -121,8 +121,11 @@ export function isFirstEditionOfMonth(
  * Lê `published_at` de cada edição em `past-editions-raw.json`. Graceful:
  * arquivo ausente/inválido → `[]` (→ `isFirstEditionOfMonth` retorna true,
  * fail-open: mostra o bloco em vez de suprimir por engano).
+ *
+ * Exportado (#2725) — `inject-champions-callout.ts` reusa pra checar o mesmo
+ * gate "1ª edição do mês" sem duplicar a leitura de `past-editions-raw.json`.
  */
-function readPublishedDates(path: string): string[] {
+export function readPublishedDates(path: string): string[] {
   try {
     if (!existsSync(path)) return [];
     const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
