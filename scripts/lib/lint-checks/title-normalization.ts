@@ -54,7 +54,8 @@
 
 import { parseInlineLink } from "../inline-link.ts";
 import { looksLikeTitleOption } from "../title-heuristic.ts";
-import { HIGHLIGHT_HEADER_RE, URL_LINE_RE, SECTION_BREAK_LINE_RE, SECTION_HEADER_LINE_RE, WHY_MATTERS_LINE_RE } from "./highlight-parsing.ts";
+import { HIGHLIGHT_HEADER_RE, SECTION_BREAK_LINE_RE, SECTION_HEADER_LINE_RE } from "./highlight-parsing.ts";
+import { walkDestaqueTitles } from "./destaque-title-walk.ts"; // #2693 item 1 — parser compartilhado
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -88,34 +89,19 @@ function extractAllTitles(md: string): Array<{ title: string; line: number }> {
     const raw = lines[i];
     const t = raw.trim();
 
-    // DESTAQUE block — coletar títulos até a URL ou próximo header.
-    if (HIGHLIGHT_HEADER_RE.test(t)) {
+    // DESTAQUE block — coletar títulos via parser compartilhado (#2693 item 1
+    // — antes esta função reimplementava o walk feito por
+    // `countTitlesPerHighlight` em titles-per-highlight.ts, sincronizado só
+    // por comentário. `walkDestaqueTitles` centraliza o walk + break;
+    // `looksLikeTitleOption` continua sendo o filtro de candidatura de título
+    // (mesmo critério de #245/#259).
+    const headerMatch = t.match(HIGHLIGHT_HEADER_RE);
+    if (headerMatch) {
       inSecondarySection = false; // o corpo do destaque NÃO é seção secundária
-      let j = i + 1;
-      while (j < lines.length) {
-        const lt = lines[j].trim();
-        if (lt === "") { j++; continue; }
-        // Inline link — extrair título (opções de destaque são inline links).
-        const inline = parseInlineLink(lt);
-        if (inline) {
-          results.push({ title: inline.title, line: j + 1 });
-          j++;
-          continue;
-        }
-        // URL em linha separada (legacy) → encerra o bloco de títulos.
-        if (URL_LINE_RE.test(lt)) break;
-        if (HIGHLIGHT_HEADER_RE.test(lt)) break;
-        if (SECTION_BREAK_LINE_RE.test(lt)) break;
-        if (SECTION_HEADER_LINE_RE.test(lt)) break;
-        if (WHY_MATTERS_LINE_RE.test(lt)) break;
-        // Linha plain-text (formato legado, sem inline link): só é candidata a
-        // título se PARECER título — não um parágrafo de corpo. Mesmo filtro de
-        // `countTitlesPerHighlight` (#245/#259): body line encerra a coleta.
-        if (!looksLikeTitleOption(lt)) break;
-        results.push({ title: lt, line: j + 1 });
-        j++;
-      }
-      i = j;
+      const category = headerMatch[2].trim();
+      const { titles, nextIndex } = walkDestaqueTitles(lines, i + 1, category, looksLikeTitleOption);
+      results.push(...titles);
+      i = nextIndex;
       continue;
     }
 

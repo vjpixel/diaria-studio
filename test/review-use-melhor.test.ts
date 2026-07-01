@@ -372,21 +372,24 @@ describe("isNewsletterRoundup (#2663)", () => {
     );
   });
 
-  it("NÃO detecta tutorial sobre newsletters (how-to sobre construir newsletter)", () => {
-    // "how-to-build-a-newsletter" — o artigo FALA SOBRE newsletter como tópico,
-    // mas isNewsletterRoundup retorna true porque 'newsletter' está no slug.
-    // Isso é um FP documentado (limite da heurística slug-based conservadora).
-    // O guard warn-only permite ao editor descartar o alerta no gate.
-    // Não adicionamos exceção aqui para manter a heurística simples e auditável.
-    // FP documentado: aceito como trade-off (melhor falso-alarme que FN).
+  it("#2691 item 3 FIX: NÃO detecta tutorial genuíno sobre newsletters (how-to sobre construir newsletter)", () => {
+    // "how-to-build-a-newsletter" — o artigo FALA SOBRE newsletter como tópico
+    // E é how-to real. Antes do #2691 item 3, isNewsletterRoundup retornava
+    // true (FP aceito — "newsletter" no slug/título disparava o guard mesmo
+    // em how-to genuíno). Agora ROUNDUP_HOWTO_EXCEPTION_RE (lib/roundup-detect.ts)
+    // reconhece "build/creat/montar/criar (a|an|sua|uma)? newsletter" como
+    // how-to e desativa o guard — aplicado tanto ao slug quanto ao título.
     const result = isNewsletterRoundup(
       "https://example.com/how-to-build-a-newsletter-with-claude",
       "How to Build a Newsletter with Claude",
     );
-    // #633: afirma o comportamento ATUAL (true — FP aceito porque 'newsletter' está
-    // no slug), em vez de só checar o tipo. Se a heurística for refinada para excluir
-    // "how-to-build-a-newsletter", troque para assert.ok(!result) e renomeie.
-    assert.ok(result, "FP aceito: 'newsletter' no slug dispara o guard mesmo em how-to sobre newsletter");
+    assert.ok(!result, "how-to genuíno sobre newsletter não deve mais ser flagado como roundup (#2691 item 3)");
+  });
+
+  it("#2691 item 3: exceção não enfraquece detecção de roundup real (título)", () => {
+    assert.ok(
+      isNewsletterRoundup("https://example.com/posts/123", "This Week in AI: Models, Tools, and More"),
+    );
   });
 
   it("URL inválida retorna false sem crash", () => {

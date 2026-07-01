@@ -1110,6 +1110,18 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
     assert.ok(!isLaunchSlug("https://aws.amazon.com/blogs/machine-learning/re-introducing-bedrock-agents/"), "re-introducing não é launch slug");
   });
 
+  it("#2691 item 4: isLaunchSlug decodifica percent-encoding no pathname (consistência com isRoundupSlug)", () => {
+    // Antes do #2691 item 4, isLaunchSlug testava new URL(url).pathname CRU
+    // (sem decodeURIComponent), divergindo de isRoundupSlug/urlSlugText que
+    // sempre decodificam. LAUNCH_SLUG_RE só casa tokens ASCII então isso não
+    // afeta os casos comuns — mas um slug com o prefixo percent-encoded
+    // (ex: "%69ntroducing-x", i genérico encoded) só bate depois do decode.
+    assert.ok(
+      isLaunchSlug("https://example.com/blog/%69ntroducing-new-model/"),
+      "prefixo 'introducing-' percent-encoded deve ser detectado após decode",
+    );
+  });
+
   it("isNewsNotTutorial detecta slug de lançamento (#2313)", () => {
     const art: Article = {
       url: "https://aws.amazon.com/blogs/machine-learning/introducing-gemma-4-on-amazon-bedrock/",
@@ -3039,18 +3051,39 @@ describe("isRoundupSlug (#2663)", () => {
     assert.ok(!isRoundupSlug("https://newsletter.exemplo.com/posts/how-to-build-agents"));
   });
 
-  it("FP documentado: slug com 'newsletter' é tratado como roundup mesmo em how-to sobre newsletter", () => {
+  it("#2691 item 3 FIX: 'how-to-build-a-newsletter' NÃO é mais tratado como roundup", () => {
     // "how-to-build-a-newsletter-with-claude" — o topic é newsletter, mas o artigo É how-to.
-    // isRoundupSlug retorna TRUE (FP): a heurística slug-based é conservadora e trata
-    // qualquer 'newsletter' no slug como roundup. Aceito como trade-off (warn/precaução);
-    // o editor reclassifica no gate. O nome do teste reflete o comportamento ASSERTADO.
-    // Se a heurística for refinada para excluir 'how-to-build-a-newsletter', troque para
-    // assert.ok(!isRoundupSlug(...)) e renomeie.
-    assert.ok(isRoundupSlug("https://example.com/how-to-build-a-newsletter-with-claude"));
+    // Antes do #2691 item 3 isRoundupSlug retornava TRUE (FP aceito). Agora
+    // ROUNDUP_HOWTO_EXCEPTION_RE (lib/roundup-detect.ts) reconhece o padrão
+    // "build/creat/montar/criar (a|an|sua|uma)? newsletter/roundup" como how-to
+    // genuíno e desativa o guard.
+    assert.ok(!isRoundupSlug("https://example.com/how-to-build-a-newsletter-with-claude"));
+  });
+
+  it("#2691 item 3: exceção NÃO enfraquece detecção de roundup real", () => {
+    // Regressão de guarda: a exceção é estreita (verbo de criação IMEDIATAMENTE
+    // antes de newsletter/roundup) — não deve desativar o guard pra roundups
+    // genuínos que só mencionam "newsletter" como substantivo solto.
+    assert.ok(isRoundupSlug("https://www.langchain.com/blog/june-2026-langchain-newsletter"));
+    assert.ok(isRoundupSlug("https://example.com/blog/weekly-ai-roundup-june-2026/"));
   });
 
   it("URL inválida retorna false (sem crash)", () => {
     assert.ok(!isRoundupSlug("not-a-url"));
+  });
+
+  it("#2691 item 2: detecta sinal de roundup SÓ no título (slug limpo) via 2º argumento", () => {
+    // Antes do #2691 item 2, isRoundupSlug(url) só checava o slug — um roundup
+    // cujo ÚNICO sinal está no título (ex: URL com slug data-only, título
+    // explícito de roundup) escapava o guard.
+    assert.ok(
+      isRoundupSlug("https://example.com/posts/2026-06-30", "AI Weekly Roundup: Models and Tools"),
+      "título com 'roundup' deve ser detectado mesmo com slug limpo",
+    );
+  });
+
+  it("#2691 item 2: sem 2º argumento continua checando só o slug (compat)", () => {
+    assert.ok(!isRoundupSlug("https://example.com/posts/2026-06-30"));
   });
 });
 
@@ -3120,6 +3153,31 @@ describe("categorize() — #2666: how-to em manchete PT-BR detectado como tutori
       title: "Aprenda a usar Gemini para produtividade no trabalho",
     };
     assert.equal(categorize(art), "tutorial", "'aprenda a usar' deve sinalizar how-to");
+  });
+
+  it("#2691 item 5: 'saiba como' terminal no título → tutorial", () => {
+    const art: Article = {
+      url: "https://canaltech.com.br/ia/chatgpt-ganha-novo-recurso-saiba-como/",
+      title: "ChatGPT ganha novo recurso de memória; saiba como",
+    };
+    assert.equal(categorize(art), "tutorial", "'saiba como' terminal deve sinalizar how-to (#2691 item 5)");
+  });
+
+  it("#2691 item 5: 'descubra como' terminal no título → tutorial", () => {
+    const art: Article = {
+      url: "https://canaltech.com.br/ia/gemini-ganha-integracao-descubra-como/",
+      title: "Gemini ganha nova integração com o Workspace; descubra como",
+    };
+    assert.equal(categorize(art), "tutorial", "'descubra como' terminal deve sinalizar how-to (#2691 item 5)");
+  });
+
+  it("#2691 item 5: 'saiba como' PREDITIVO (não-terminal) NÃO vira tutorial", () => {
+    // Mesmo gate terminal de "veja como" (#2666 gate HIGH 1) se aplica.
+    const art: Article = {
+      url: "https://canaltech.com.br/ia/saiba-como-a-ia-vai-mudar-o-mercado/",
+      title: "Saiba como a IA vai mudar o mercado de trabalho nos próximos anos",
+    };
+    assert.notEqual(categorize(art), "tutorial", "'saiba como' preditivo não deve virar tutorial");
   });
 
   it("#2666: notícia sobre ChatGPT SEM 'veja como' continua em noticias", () => {

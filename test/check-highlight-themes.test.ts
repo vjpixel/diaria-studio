@@ -21,12 +21,19 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   extractPastEditionTitles,
   checkHighlightThemes,
   checkSecondaryThemes,
+  extractSecondaryItems,
+  readPastApprovedSecondary,
+  isoDateToAammdd,
   DEFAULT_HIGHLIGHT_WINDOW,
   DEFAULT_SECONDARY_WINDOW,
+  DEFAULT_SECONDARY_BUCKETS,
   type PastEditionEntry,
   type HighlightThemeWarning,
   type SecondaryItem,
@@ -186,7 +193,8 @@ describe("checkHighlightThemes — cenário positivo (Gemma 4 12B)", () => {
     const w = result.warnings[0];
     assert.equal(w.candidate_rank, 1);
     assert.ok(w.candidate_title.includes("Gemma 4 12B"), `título candidato deve incluir "Gemma 4 12B": ${w.candidate_title}`);
-    assert.equal(w.matched_edition, "2026-06-04");
+    // #2684 item 3: matched_edition padronizado em AAMMDD (antes YYYY-MM-DD).
+    assert.equal(w.matched_edition, "260604");
     assert.ok(w.matched_title.includes("Gemma 4 12B"), `título matched deve incluir "Gemma 4 12B": ${w.matched_title}`);
     assert.ok(w.jaccard >= 0.25, `Jaccard deve ser >= 0.25, got ${w.jaccard}`);
   });
@@ -329,7 +337,8 @@ describe("checkHighlightThemes — edge cases", () => {
 
     const result = checkHighlightThemes(GEMMA_CANDIDATES, past);
     assert.equal(result.warnings.length, 1, "janela de 12 deve detectar o repeat da 260604");
-    assert.equal(result.warnings[0].matched_edition, "2026-06-04");
+    // #2684 item 3: matched_edition padronizado em AAMMDD (antes YYYY-MM-DD).
+    assert.equal(result.warnings[0].matched_edition, "260604");
   });
 });
 
@@ -565,10 +574,20 @@ describe("checkSecondaryThemes — caso real Nubank 260626 × 260629 (#2652)", (
     assert.equal(result.secondary_checked, NUBANK_CURRENT_ITEMS.length);
   });
 
-  it("campo secondary_window reflete número de edições distintas no histórico", () => {
+  it("#2684 item 4: secondary_editions_with_data reflete número de edições distintas no histórico (renomeado de secondary_window)", () => {
     const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
     // NUBANK_PAST_ITEMS tem 2 edições distintas: 260626 e 260620
-    assert.equal(result.secondary_window, 2);
+    assert.equal(result.secondary_editions_with_data, 2);
+  });
+
+  it("#2684 item 4: secondary_window_requested reporta a janela nominal passada (default DEFAULT_SECONDARY_WINDOW)", () => {
+    const resultDefault = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS);
+    assert.equal(resultDefault.secondary_window_requested, 10);
+
+    const resultCustom = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, NUBANK_PAST_ITEMS, 5);
+    assert.equal(resultCustom.secondary_window_requested, 5);
+    // secondary_editions_with_data não muda — reflete pastItems, não o requestedWindow.
+    assert.equal(resultCustom.secondary_editions_with_data, 2);
   });
 });
 
@@ -751,10 +770,10 @@ describe("checkSecondaryThemes — edge cases (#2652)", () => {
     assert.equal(result.secondary_checked, 0);
   });
 
-  it("sem histórico → sem warnings, secondary_window=0", () => {
+  it("sem histórico → sem warnings, secondary_editions_with_data=0", () => {
     const result = checkSecondaryThemes(NUBANK_CURRENT_ITEMS, []);
     assert.equal(result.secondary_warnings.length, 0);
-    assert.equal(result.secondary_window, 0);
+    assert.equal(result.secondary_editions_with_data, 0);
   });
 
   it("item com título vazio não crasha e não emite warning", () => {
@@ -803,5 +822,225 @@ describe("DEFAULT_SECONDARY_WINDOW", () => {
     assert.equal(DEFAULT_SECONDARY_WINDOW, 10);
     // Deve ser maior que a janela de dedup (3-4 edições) — razão de existir do check
     assert.ok(DEFAULT_SECONDARY_WINDOW > 4, "janela secundária deve ser maior que dedup");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2684 — findings do self-review do PR #2682 (#2652)
+// ---------------------------------------------------------------------------
+
+function makeTempEditionsDir(): string {
+  return mkdtempSync(join(tmpdir(), "check-highlight-themes-"));
+}
+
+function writeCategorized(dir: string, data: unknown): string {
+  const path = resolve(dir, "01-categorized.json");
+  writeFileSync(path, JSON.stringify(data), "utf8");
+  return path;
+}
+
+describe("isoDateToAammdd (#2684 item 3)", () => {
+  it("converte YYYY-MM-DD para AAMMDD", () => {
+    assert.equal(isoDateToAammdd("2026-06-04"), "260604");
+    assert.equal(isoDateToAammdd("2026-12-31"), "261231");
+  });
+
+  it("retorna a entrada inalterada se não bater o formato YYYY-MM-DD", () => {
+    assert.equal(isoDateToAammdd("260604"), "260604");
+    assert.equal(isoDateToAammdd("not-a-date"), "not-a-date");
+  });
+});
+
+describe("DEFAULT_SECONDARY_BUCKETS (#2684 item 2)", () => {
+  it("inclui os 4 buckets secundários (radar, lancamento, use_melhor, video)", () => {
+    assert.deepEqual(
+      [...DEFAULT_SECONDARY_BUCKETS].sort(),
+      ["lancamento", "radar", "use_melhor", "video"].sort(),
+    );
+  });
+});
+
+describe("extractSecondaryItems — cobertura de buckets (#2684 item 2)", () => {
+  it("por default, extrai itens de use_melhor e video também (não só radar/lancamento)", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, {
+        radar: [{ title: "Item radar", url: "https://example.com/radar" }],
+        lancamento: [{ title: "Item lancamento", url: "https://example.com/lancamento" }],
+        use_melhor: [{ title: "Item use_melhor", url: "https://example.com/use-melhor" }],
+        video: [{ title: "Item video", url: "https://example.com/video" }],
+      });
+      const items = extractSecondaryItems(path);
+      const buckets = items.map((i) => i.bucket).sort();
+      assert.deepEqual(buckets, ["lancamento", "radar", "use_melhor", "video"].sort());
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("respeita buckets explícitos passados pelo caller (compat)", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, {
+        radar: [{ title: "Item radar", url: "https://example.com/radar" }],
+        use_melhor: [{ title: "Item use_melhor", url: "https://example.com/use-melhor" }],
+      });
+      const items = extractSecondaryItems(path, ["radar"]);
+      assert.equal(items.length, 1);
+      assert.equal(items[0].bucket, "radar");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("extractSecondaryItems — dedup cross-bucket highlight↔secundário (#2684 item 5)", () => {
+  it("exclui item de bucket secundário cuja URL já está em highlights (pré-gate)", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      // finalize-stage1.ts mantém o artigo no bucket de origem MESMO quando
+      // escolhido como highlight (só isenta do filtro de score/domain-cap) —
+      // caso real que este teste reproduz.
+      const path = writeCategorized(dir, {
+        highlights: [
+          { rank: 1, url: "https://example.com/nubank-contratacao", title: "Nubank contrata mais" },
+        ],
+        radar: [
+          { title: "Nubank contrata mais", url: "https://example.com/nubank-contratacao" },
+          { title: "Outro item qualquer", url: "https://example.com/outro" },
+        ],
+      });
+      const items = extractSecondaryItems(path);
+      assert.equal(items.length, 1, "artigo já em highlights não deve duplicar no bucket secundário");
+      assert.equal(items[0].url, "https://example.com/outro");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("dedup funciona com URL canonicalizada (UTM/trailing-slash não escapam)", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, {
+        highlights: [
+          { rank: 1, url: "https://example.com/artigo", title: "Artigo X" },
+        ],
+        radar: [
+          { title: "Artigo X", url: "https://example.com/artigo/?utm_source=x" },
+        ],
+      });
+      const items = extractSecondaryItems(path);
+      assert.equal(items.length, 0, "variante com UTM da mesma URL de highlight deve ser excluída");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("sem highlights no categorized.json, comportamento é inalterado", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, {
+        radar: [{ title: "Item radar", url: "https://example.com/radar" }],
+      });
+      const items = extractSecondaryItems(path);
+      assert.equal(items.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("extractSecondaryItems — guard de resume p/ formato antigo/corrompido (#2684 item 6)", () => {
+  it("root do JSON não é objeto (array) → retorna [] sem lançar", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, ["not", "an", "object"]);
+      assert.deepEqual(extractSecondaryItems(path), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("root do JSON é null → retorna [] sem lançar", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, null);
+      assert.deepEqual(extractSecondaryItems(path), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("item null dentro de um bucket é ignorado sem lançar TypeError", () => {
+    const dir = makeTempEditionsDir();
+    try {
+      const path = writeCategorized(dir, {
+        radar: [null, { title: "Item válido", url: "https://example.com/x" }],
+      });
+      const items = extractSecondaryItems(path);
+      assert.equal(items.length, 1);
+      assert.equal(items[0].title, "Item válido");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("readPastApprovedSecondary — guard de resume p/ formato antigo/corrompido (#2684 item 6)", () => {
+  it("edição com 01-approved.json de root não-objeto é pulada sem lançar", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260601");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(resolve(editionDir, "_internal", "01-approved.json"), JSON.stringify(["legacy", "array"]), "utf8");
+
+      const items = readPastApprovedSecondary(editionsDir, 10);
+      assert.deepEqual(items, []);
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
+
+  it("bucket com item null é ignorado sem lançar TypeError", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260601");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionDir, "_internal", "01-approved.json"),
+        JSON.stringify({ radar: [null, { title: "Item válido", url: "https://example.com/x" }] }),
+        "utf8",
+      );
+
+      const items = readPastApprovedSecondary(editionsDir, 10);
+      assert.equal(items.length, 1);
+      assert.equal(items[0].title, "Item válido");
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
+
+  it("por default, lê os 4 buckets secundários (não só radar/lancamento) — #2684 item 2", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260601");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionDir, "_internal", "01-approved.json"),
+        JSON.stringify({
+          radar: [{ title: "R", url: "https://example.com/r" }],
+          lancamento: [{ title: "L", url: "https://example.com/l" }],
+          use_melhor: [{ title: "U", url: "https://example.com/u" }],
+          video: [{ title: "V", url: "https://example.com/v" }],
+        }),
+        "utf8",
+      );
+
+      const items = readPastApprovedSecondary(editionsDir, 10);
+      const buckets = items.map((i) => i.bucket).sort();
+      assert.deepEqual(buckets, ["lancamento", "radar", "use_melhor", "video"].sort());
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
   });
 });
