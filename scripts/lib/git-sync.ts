@@ -27,16 +27,28 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { GitSpawnFn, SpawnResult } from "./spawn-types.ts";
 
-/** Resultado de uma chamada de processo injetável (testável sem git real). */
-export interface SpawnResult {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
+export type { SpawnResult } from "./spawn-types.ts";
 
-/** Tipo do spawner injetável. Produção usa spawnSync; testes usam mock. */
-export type SpawnFn = (cmd: string, args: string[]) => SpawnResult;
+/**
+ * Tipo do spawner injetável. Produção usa spawnSync; testes usam mock.
+ * Alias local de back-compat — o tipo canônico é `GitSpawnFn` em
+ * `scripts/lib/spawn-types.ts` (#2699 — evita colisão com o `SpawnFn` de
+ * 3 args de `scripts/check-pr-bugfix.ts`).
+ */
+export type SpawnFn = GitSpawnFn;
+
+/**
+ * Raiz do repo, resolvida a partir da localização deste arquivo (não de
+ * `process.cwd()`) — #2699 item 1. Sem isso, `defaultSpawn` roda `git` no
+ * CWD do processo; se `/diaria-edicao` for invocado de dentro de um worktree
+ * (`.claude/worktrees/agent-*`), o sync miraria o worktree, não o checkout
+ * principal. `scripts/lib/git-sync.ts` está 2 níveis abaixo da raiz.
+ */
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Status da operação de sync. */
 export type GitSyncOutcome =
@@ -66,8 +78,12 @@ export interface GitSyncResult {
  */
 const GIT_TIMEOUT_MS = 120_000;
 
-function defaultSpawn(cmd: string, args: string[]): SpawnResult {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
+/**
+ * Spawner de produção. `cwd: REPO_ROOT` explícito (#2699 item 1) — nunca
+ * confiar em `process.cwd()` como único sinal de onde rodar o `git`.
+ */
+export function defaultSpawn(cmd: string, args: string[]): SpawnResult {
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, cwd: REPO_ROOT });
   return {
     status: r.status,
     stdout: (r.stdout as string | null) ?? "",
@@ -91,7 +107,19 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
 
   // ── 1. Branch atual ────────────────────────────────────────────────────────
   const branchRes = spawn("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  // #2699 item 3: se o próprio `rev-parse` falhar (não-repo / HEAD órfão / git
+  // indisponível), branchBefore cai em "unknown" só por ausência de stdout —
+  // registrar isso explicitamente agora, senão o diagnóstico downstream (se o
+  // checkout também falhar) aponta pra "branch inesperada" em vez da causa raiz.
+  const branchRevParseFailed = branchRes.status !== 0;
   const branchBefore = branchRes.stdout.trim() || "unknown";
+  if (branchRevParseFailed) {
+    warnings.push(
+      `[git-sync] WARN: git rev-parse --abbrev-ref HEAD falhou (exit ${branchRes.status}). ` +
+        `Causa raiz provável: não é um repositório git, ou git indisponível no ambiente — não uma ` +
+        `branch desconhecida. Stderr: ${branchRes.stderr.trim() || "(vazio)"}`,
+    );
+  }
 
   // ── 2. Se não estiver em master → checkout master ─────────────────────────
   if (branchBefore !== "master") {
@@ -99,8 +127,12 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
     warnings.push(w);
     const checkoutRes = spawn("git", ["checkout", "master"]);
     if (checkoutRes.status !== 0) {
+      const rootCauseNote = branchRevParseFailed
+        ? ` Causa raiz provável: git indisponível ou não é um repositório git (git rev-parse já ` +
+          `havia falhado acima) — não uma branch inesperada.`
+        : "";
       const msg =
-        `[git-sync] WARN: checkout master falhou (branch='${branchBefore}'). ` +
+        `[git-sync] WARN: checkout master falhou (branch='${branchBefore}').${rootCauseNote} ` +
         `Sync ignorado — edição continua com código local. ` +
         `Stderr: ${checkoutRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
