@@ -710,7 +710,7 @@ Apresentar ao usuário:
        Candidato:  "{candidate_title}"
        Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
    ```
-   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.`
+   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile/Drive, onde título sozinho pode ser ambíguo.)
 
 5. **Relatório de saúde das fontes:**
    - `⚠️` por fonte com outcome não-ok *nesta execução*.

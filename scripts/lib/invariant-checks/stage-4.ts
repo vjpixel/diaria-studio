@@ -11,6 +11,10 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
+import {
+  checkTitlePublisherSuffix,
+  checkTitleTrailingPeriod,
+} from "../lint-checks/title-normalization.ts";
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -772,6 +776,56 @@ function checkTruncatedSecondaryItemSummary(editionDir: string): InvariantViolat
   return violations;
 }
 
+/**
+ * #2693 item 3: registro dos 2 lints de título (#2664 sufixo de veículo,
+ * #2672 ponto final) em `invariant-checks/`. Antes rodavam como invocação
+ * CLI separada em `orchestrator-stage-4.md` (`lint-newsletter-md.ts --check
+ * title-publisher-suffix`/`title-trailing-period`) — funcionais, mas fora do
+ * registry, então invisíveis em `docs/editorial-invariants.md`. Severity
+ * "warning" preserva o comportamento atual (backstop deliberadamente amplo,
+ * WARN-ONLY — ver docstring de `checkTitlePublisherSuffix`/
+ * `checkTitleTrailingPeriod` em lint-checks/title-normalization.ts).
+ * A invocação CLI direta no orchestrator continua existindo (não removida
+ * nesta passada) — este registro é só pra visibilidade/doc-gen.
+ */
+function checkTitlePublisherSuffixInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkTitlePublisherSuffix(md);
+  if (result.ok) return [];
+  return result.errors.map((e) => ({
+    rule: "title-publisher-suffix",
+    message:
+      `Título com sufixo de veículo residual (linha ${e.line}): "${e.title}" ` +
+      `(separador ${e.separator}, sufixo "${e.suffix}"). ` +
+      `Verificar se é veículo real ou falso-positivo (backstop amplo, sem allowlist) — ` +
+      `ver docstring de checkTitlePublisherSuffix.`,
+    source_issue: "#2664",
+    severity: "warning",
+    file: path,
+    line: e.line,
+  }));
+}
+
+function checkTitleTrailingPeriodInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkTitleTrailingPeriod(md);
+  if (result.ok) return [];
+  return result.errors.map((e) => ({
+    rule: "title-trailing-period",
+    message:
+      `Título termina com ponto final único (linha ${e.line}): "${e.title}". ` +
+      `Manchetes não terminam em ponto — remover manualmente se não for reticências.`,
+    source_issue: "#2672",
+    severity: "warning",
+    file: path,
+    line: e.line,
+  }));
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -829,6 +883,20 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkTruncatedSecondaryItemSummary,
   },
+  {
+    id: "title-publisher-suffix",
+    description: "título sem sufixo residual de veículo (' | Veículo' / ' - Veículo', #2664)",
+    source_issue: "#2664",
+    stage: 4,
+    run: checkTitlePublisherSuffixInvariant,
+  },
+  {
+    id: "title-trailing-period",
+    description: "título de destaque/item sem ponto final único (#2672)",
+    source_issue: "#2672",
+    stage: 4,
+    run: checkTitleTrailingPeriodInvariant,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -848,4 +916,6 @@ export {
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
   checkTruncatedSecondaryItemSummary,
+  checkTitlePublisherSuffixInvariant,
+  checkTitleTrailingPeriodInvariant,
 };

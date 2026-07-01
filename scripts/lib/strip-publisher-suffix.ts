@@ -230,6 +230,36 @@ export function stripPublisherSuffix(title: string): string {
  * Não aplica MIN_PREFIX_LEN guard — título curto com ponto final também
  * deve ter o ponto removido (ex: "IA." → "IA").
  *
+ * ## Whitespace asymmetry conhecida (#2693 item 4)
+ *
+ * Este método tem tratamento de whitespace ASSIMÉTRICO entre os dois ramos,
+ * por design pinado em teste (não é um bug latente — é contrato):
+ *
+ *   - Ramo "sem ponto final" → retorna `title` intacto, preservando espaços
+ *     de borda do chamador (mesma convenção de `stripPipeSuffix`/`stripDashSuffix`
+ *     — "retorna `title`, não `trimmed`, pra preservar espaços do chamador").
+ *     Ex: `stripTrailingPeriod("  Hello  ")` → `"  Hello  "` (inalterado).
+ *
+ *   - Ramo "com ponto final" → opera sobre `trimmed` (já sem espaços de
+ *     borda) e retorna `trimmed.slice(0, -1).trimEnd()`, que também descarta
+ *     o espaço de ABERTURA (não só o de fechamento). Ex:
+ *     `stripTrailingPeriod("  Hello.  ")` → `"Hello"` (espaço de abertura
+ *     também removido — ver teste "remove ponto final com espaços ao redor").
+ *
+ * Ou seja: o resultado preserva leading whitespace SOMENTE quando nada foi
+ * strippado. Isso é inconsistente em teoria, mas o call-site real (og:title
+ * de artigo, sempre `.trim()`-ado a montante no pipeline de scraping antes
+ * de chegar aqui) nunca exercita a diferença — leading whitespace só
+ * apareceria em input sintético/teste. Um fixer anterior (#2692 self-review)
+ * julgou arriscado normalizar isso porque o ramo "com ponto" já tinha teste
+ * de regressão travando o comportamento atual (`strip-publisher-suffix.test.ts`
+ * — "remove ponto final com espaços ao redor (trimEnd() aplicado)"); mudar o
+ * ramo "sem ponto" pra também descartar leading whitespace quebraria a
+ * simetria com `stripPipeSuffix`/`stripDashSuffix` (que preservam por
+ * contrato). Não tocado nesta passada pelo mesmo motivo — ver teste de
+ * regressão dedicado em `test/strip-publisher-suffix.test.ts` que documenta
+ * ambos os ramos lado a lado.
+ *
  * @param title - Título (pode já ter passado por stripPublisherSuffix).
  * @returns Título sem ponto final, ou original se o ponto é parte de reticências.
  *

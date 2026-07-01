@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { isAggregator } from "./lib/aggregators.ts";
 import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curation.ts";
+import { ROUNDUP_HOWTO_EXCEPTION_RE, urlSlugText } from "./lib/roundup-detect.ts"; // #2691 items 1+3+4
 
 /**
  * #2663: sinal de newsletter/roundup em slug ou título — o artigo É uma
@@ -44,10 +45,13 @@ import { classifyAudienceClass, isOpinionOrStudy } from "./lib/use-melhor-curati
  * Isso é intencional: um roundup sobre tutoriais ainda é um roundup, não um
  * tutorial em si. O editor decide no gate.
  *
- * Limite deliberado: "Como construir uma newsletter" NÃO dispara (how-to
- * canônico é coberto por hasTutorialSignal na lógica da caller).
- * Mas como a function é chamada com precedência absoluta em reviewUseMelhor,
- * o editor verá o alerta e pode descartar se for FP.
+ * Limite deliberado: "Como construir uma newsletter" / "how-to-build-a-newsletter"
+ * NÃO dispara (#2691 item 3 — `ROUNDUP_HOWTO_EXCEPTION_RE` compartilhada de
+ * lib/roundup-detect.ts). Antes desse fix este comentário era ASPIRACIONAL —
+ * a exceção não existia de fato e o caso era um FP aceito e documentado em
+ * teste (ver test/review-use-melhor.test.ts). Mas como a function é chamada
+ * com precedência absoluta em reviewUseMelhor, o editor verá o alerta e pode
+ * descartar se ainda for FP em algum caso não coberto pela exceção.
  */
 const NEWSLETTER_ROUNDUP_RE =
   /\b(?:newsletter|roundup|this\s+week\s+in|weekly\s+(?:digest|recap|roundup|newsletter)|monthly\s+(?:digest|recap|roundup|newsletter))\b|\band\s+more\b\s*[.!]?\s*$/i;
@@ -55,15 +59,18 @@ const NEWSLETTER_ROUNDUP_RE =
 /**
  * Detecta sinal de newsletter/roundup no slug ou título.
  * Exportada para testes (#2663).
+ *
+ * #2691 item 3: aplica `ROUNDUP_HOWTO_EXCEPTION_RE` (lib/roundup-detect.ts)
+ * antes de confirmar o match — desativa o guard pra how-to genuíno sobre
+ * criar/montar uma newsletter (mesma exceção usada por `ROUNDUP_GUARD_RE`
+ * em categorize.ts/use-melhor-curation.ts, aplicada aqui ao regex mais amplo).
  */
 export function isNewsletterRoundup(url: string, title: string): boolean {
-  let slug = "";
-  try {
-    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
-  } catch {
-    // URL inválida — testa só o título
-  }
-  return NEWSLETTER_ROUNDUP_RE.test(title) || NEWSLETTER_ROUNDUP_RE.test(slug);
+  const slug = urlSlugText(url);
+  const matched = NEWSLETTER_ROUNDUP_RE.test(title) || NEWSLETTER_ROUNDUP_RE.test(slug);
+  if (!matched) return false;
+  if (ROUNDUP_HOWTO_EXCEPTION_RE.test(title) || ROUNDUP_HOWTO_EXCEPTION_RE.test(slug)) return false;
+  return true;
 }
 
 /**
@@ -130,12 +137,10 @@ const TUTORIAL_SIGNAL_RE =
 export function hasTutorialSignal(url: string, title: string): boolean {
   const host = hostOf(url);
   if (host && TUTORIAL_HOSTS.has(host)) return true;
-  let slug = "";
-  try {
-    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
-  } catch {
-    // url inválida — sem slug; cai no teste de título só.
-  }
+  // #2691 item 4: reusa urlSlugText (lib/roundup-detect.ts) em vez de
+  // reimplementar o mesmo decode+replace localmente — mesma normalização
+  // usada por isNewsletterRoundup logo acima.
+  const slug = urlSlugText(url);
   return TUTORIAL_SIGNAL_RE.test(title) || TUTORIAL_SIGNAL_RE.test(slug);
 }
 

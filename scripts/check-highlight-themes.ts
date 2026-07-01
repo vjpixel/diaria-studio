@@ -50,7 +50,8 @@
  *     "checked": 6,
  *     "secondary_checked": 12,
  *     "window": 12,
- *     "secondary_window": 10
+ *     "secondary_editions_with_data": 8,  // #2684 item 4: edições distintas do histórico com itens (renomeado de secondary_window)
+ *     "secondary_window_requested": 10    // #2684 item 4: janela nominal solicitada (--secondary-window)
  *   }
  *
  * Exit codes:
@@ -68,6 +69,7 @@ import {
   recentEditionDirs,
   deriveCurrentEdition,
 } from "./dedup.ts";
+import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-bucket highlight↔secundário
 
 // ---------------------------------------------------------------------------
 // Entity stopwords — entidades tão genéricas que não discriminam tema
@@ -183,10 +185,32 @@ export const DEFAULT_HIGHLIGHT_WINDOW = 12;
 const JACCARD_THRESHOLD = 0.35;
 const JACCARD_THRESHOLD_WITH_ENTITY = 0.25;
 
+/**
+ * Converte data ISO (YYYY-MM-DD, formato de `past-editions.md`) para AAMMDD
+ * (formato canônico de diretório de edição, `data/editions/{AAMMDD}/`).
+ *
+ * #2684 item 3: antes `HighlightThemeWarning.matched_edition` saía em
+ * YYYY-MM-DD (ex: "2026-06-04") enquanto `SecondaryThemeWarning.matched_edition`
+ * (mais abaixo neste arquivo) já saía em AAMMDD (ex: "260626" — vem direto do
+ * nome do diretório da edição, sem conversão). O gate do Stage 1 mostra os
+ * dois lado a lado (ver orchestrator-stage-1-research.md) — formato misto
+ * confundia o editor. Padronizado em AAMMDD (formato canônico do repo).
+ *
+ * @param iso Data no formato YYYY-MM-DD.
+ * @returns AAMMDD, ou `iso` inalterado se não bater o formato esperado
+ *   (defensivo — nunca deveria acontecer, `sectionRe` já valida o formato).
+ */
+export function isoDateToAammdd(iso: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  return `${m[1].slice(2)}${m[2]}${m[3]}`;
+}
+
 export interface HighlightThemeWarning {
   candidate_rank: number;
   candidate_title: string;
   candidate_url: string;
+  /** AAMMDD (#2684 item 3 — antes YYYY-MM-DD, agora padronizado com secondary_warnings). */
   matched_edition: string;
   matched_title: string;
   jaccard: number;
@@ -275,7 +299,7 @@ function findThemeMatch(
           candidate_rank: candidate.rank,
           candidate_title: candidate.title,
           candidate_url: candidate.url,
-          matched_edition: past.date,
+          matched_edition: isoDateToAammdd(past.date),
           matched_title: past.title,
           jaccard: Math.round(jaccard * 100) / 100,
           shared_entities: sharedEntities,
@@ -333,18 +357,24 @@ export function checkHighlightThemes(
 // WARN-ONLY — nunca bloqueia o gate. (#633 test required)
 // ---------------------------------------------------------------------------
 
-/**
- * Stopwords para extração de entidades em itens secundários — intencionalmente
- * permissivos. Mantém nomes de empresas (Google, Nubank, OpenAI) como entidades
- * válidas. Só filtra termos ubíquos do domínio IA que aparecem em quase toda
- * headline de RADAR e não discriminam tema.
- */
-const ENTITY_STOPWORDS_SECONDARY = new Set([
-  "ia", "ai", "ml", "llm", "gpt",
-]);
-
 /** Comprimento mínimo de entidade para check secundário (vs 4 no check de highlights).
- * 5 chars filtra palavras curtas comuns como "meta" (em PT = meta/objetivo). */
+ * 5 chars filtra palavras curtas comuns como "meta" (em PT = meta/objetivo) E
+ * os acrônimos ubíquos do domínio IA ("IA", "AI", "ML", "LLM", "GPT" — todos
+ * ≤3 chars) que aparecem em quase toda headline de RADAR e não discriminam
+ * tema. Mantém nomes de empresas (Google, Nubank, OpenAI — todos ≥5 chars)
+ * como entidades válidas.
+ *
+ * #2684 item 1: havia um `ENTITY_STOPWORDS_SECONDARY` separado ({ia, ai, ml,
+ * llm, gpt}) pra filtrar esses mesmos acrônimos — DEAD CODE, porque todo termo
+ * do set tem <5 chars e já era removido pelo filtro `SECONDARY_ENTITY_MIN_LEN`
+ * ANTES do lookup no stopword set rodar (a ordem no loop de
+ * `extractSecondaryEntities` é: length-filter primeiro, stopword-check depois
+ * — nunca sobrava nada pro segundo filtro avaliar). Removido em vez de
+ * "consertado" pra rodar antes do length-filter: isso mudaria o comportamento
+ * (filtrar nomes de empresa curtos tb, não só acrônimos) sem necessidade —
+ * `SECONDARY_ENTITY_MIN_LEN` já cobre 100% dos termos que o set intencionava
+ * filtrar.
+ */
 const SECONDARY_ENTITY_MIN_LEN = 5;
 
 /** Janela padrão de edições para check de itens secundários (#2652). */
@@ -404,7 +434,17 @@ export interface SecondaryThemeWarning {
 export interface CheckSecondaryThemesResult {
   secondary_warnings: SecondaryThemeWarning[];
   secondary_checked: number;
-  secondary_window: number;
+  /**
+   * #2684 item 4: renomeado de `secondary_window` (nome enganoso — parecia a
+   * janela CONFIGURADA, mas na verdade sempre reportava `distinctEditions.size`
+   * derivado de `pastItems`, ou seja, quantas edições DISTINTAS do histórico
+   * de fato contribuíram algum item). Pode ser menor que
+   * `secondary_window_requested` quando o histórico é curto (bootstrap) ou
+   * quando edições no meio da janela não tinham `01-approved.json`.
+   */
+  secondary_editions_with_data: number;
+  /** Janela nominal solicitada (arg `window` de checkSecondaryThemes / `--secondary-window` da CLI / DEFAULT_SECONDARY_WINDOW). #2684 item 4. */
+  secondary_window_requested: number;
 }
 
 /**
@@ -412,7 +452,8 @@ export interface CheckSecondaryThemesResult {
  * extractNamedEntities de dedup.ts, que pula i=0). Headlines de RADAR
  * frequentemente começam com o nome da empresa ("Nubank prioriza...").
  *
- * Usa ENTITY_STOPWORDS_SECONDARY (permissivos) e exige ≥ SECONDARY_ENTITY_MIN_LEN.
+ * Exige ≥ SECONDARY_ENTITY_MIN_LEN — ver docstring da constante pra por que
+ * isso já basta pra filtrar os acrônimos ubíquos do domínio (#2684 item 1).
  */
 function extractSecondaryEntities(title: string): Set<string> {
   const entities = new Set<string>();
@@ -427,7 +468,6 @@ function extractSecondaryEntities(title: string): Set<string> {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[̀-ͯ]/g, ""); // strip combining diacritics (U+0300–U+036F)
-    if (ENTITY_STOPWORDS_SECONDARY.has(normalized)) continue;
     entities.add(normalized);
   }
   return entities;
@@ -458,15 +498,26 @@ function findPrefixTokenOverlap(
 }
 
 /**
+ * Buckets secundários cobertos por default pelo check de tema (#2684 item 2).
+ * Antes só `radar`+`lancamento` — itens históricos de `use_melhor`/`video`
+ * não entravam na janela de comparação, deixando escapar repeat de tema
+ * quando o mesmo assunto aparece num bucket diferente entre edições (ex:
+ * ferramenta coberta como tutorial numa edição e como radar noutra).
+ * Espelha `SECONDARY_BUCKETS` de check-secondary-themes.ts (#2605 — check
+ * irmão mais antigo, que já cobria os 4 buckets desde o início).
+ */
+export const DEFAULT_SECONDARY_BUCKETS = ["radar", "lancamento", "use_melhor", "video"];
+
+/**
  * Extrai itens dos buckets secundários do 01-categorized.json atual.
  * Suporta tanto { title, url } direto quanto { article: { title, url } }.
  *
  * @param categorizedPath  Caminho para _internal/01-categorized.json
- * @param buckets          Buckets a extrair (default: radar + lancamento)
+ * @param buckets          Buckets a extrair (default: DEFAULT_SECONDARY_BUCKETS, #2684 item 2)
  */
 export function extractSecondaryItems(
   categorizedPath: string,
-  buckets: string[] = ["radar", "lancamento"],
+  buckets: string[] = DEFAULT_SECONDARY_BUCKETS,
 ): SecondaryItem[] {
   if (!existsSync(categorizedPath)) return [];
   let data: RawBuckets;
@@ -475,15 +526,45 @@ export function extractSecondaryItems(
   } catch {
     return [];
   }
+  // #2684 item 6: JSON válido mas shape inesperada (root não é objeto — ex:
+  // arquivo de versão pré-#2652 com schema totalmente diferente, ou array na
+  // raiz) — tratar como "sem dados" em vez de deixar `data[bucket]` explodir.
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return [];
+
+  // #2684 item 5: `01-categorized.json` é PRÉ-GATE — um artigo escolhido pelo
+  // scorer como highlight PERMANECE no array do seu bucket de origem
+  // (radar/lancamento/etc; ver finalize-stage1.ts `protectedUrls`, que só
+  // isenta highlights do filtro de score/domain-cap, não os remove do
+  // bucket). Sem este guard, o mesmo artigo seria avaliado 2x: uma vez pelo
+  // check de DESTAQUES (via extractHighlightCandidates lendo `data.highlights`)
+  // e outra vez aqui como se ainda estivesse competindo no secundário —
+  // podendo gerar um warning "SECUNDÁRIO REPETIDO [radar]" pra um artigo que
+  // editorialmente já vai sair como DESTAQUE, confundindo o editor no gate.
+  const highlightUrls = new Set<string>();
+  const highlightArr = data["highlights"];
+  if (Array.isArray(highlightArr)) {
+    for (const h of highlightArr) {
+      if (h === null || typeof h !== "object") continue;
+      const url = (h.article?.url ?? h.url ?? "").trim();
+      if (url) highlightUrls.add(canonicalize(url));
+    }
+  }
+
   const items: SecondaryItem[] = [];
   for (const bucket of buckets) {
     const arr = data[bucket];
     if (!Array.isArray(arr)) continue;
     for (const item of arr) {
+      // #2684 item 6: item pode ser `null`/primitivo em JSON de formato antigo
+      // ou corrompido — `null.article` lançaria TypeError e abortaria o check
+      // inteiro (não só este item). Skip silencioso do item malformado.
+      if (item === null || typeof item !== "object") continue;
       const art = item.article ?? {};
       const title = (art.title ?? item.title ?? "").trim();
       const url = (art.url ?? item.url ?? "").trim();
-      if (title) items.push({ bucket, title, url });
+      if (!title) continue;
+      if (url && highlightUrls.has(canonicalize(url))) continue; // #2684 item 5
+      items.push({ bucket, title, url });
     }
   }
   return items;
@@ -499,7 +580,7 @@ export function readPastApprovedSecondary(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
-  buckets: string[] = ["radar", "lancamento"],
+  buckets: string[] = DEFAULT_SECONDARY_BUCKETS,
 ): PastSecondaryItem[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
@@ -516,7 +597,13 @@ export function readPastApprovedSecondary(
     for (const path of candidates) {
       if (!existsSync(path)) continue;
       try {
-        parsed = JSON.parse(readFileSync(path, "utf8")) as RawBuckets;
+        const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+        // #2684 item 6: 01-approved.json de edição pré-#2652 (ou corrompido)
+        // pode ter root não-objeto (array, string, null) — tratar como
+        // "sem dados nesta edição" em vez de deixar `parsed[bucket]` explodir
+        // mais abaixo (edição legada não deve abortar o resume inteiro).
+        if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+        parsed = raw as RawBuckets;
         break;
       } catch {
         continue;
@@ -528,6 +615,9 @@ export function readPastApprovedSecondary(
       const arr = parsed[bucket];
       if (!Array.isArray(arr)) continue;
       for (const item of arr) {
+        // #2684 item 6: item pode ser `null`/primitivo em edição de formato
+        // antigo — `null.article` lançaria TypeError. Skip silencioso.
+        if (item === null || typeof item !== "object") continue;
         const art = item.article ?? {};
         const title = (art.title ?? item.title ?? "").trim();
         if (title) items.push({ edition: aammdd, title, bucket });
@@ -548,12 +638,16 @@ export function readPastApprovedSecondary(
  *
  * WARN-ONLY — nunca bloqueia o gate. Exit code sempre 0.
  *
- * @param currentItems  Itens da edição corrente (de extractSecondaryItems)
- * @param pastItems     Itens das edições anteriores (de readPastApprovedSecondary)
+ * @param currentItems     Itens da edição corrente (de extractSecondaryItems)
+ * @param pastItems        Itens das edições anteriores (de readPastApprovedSecondary)
+ * @param requestedWindow  Janela nominal solicitada (#2684 item 4 — só pra reportar em
+ *   `secondary_window_requested`; não afeta o matching, que já opera sobre `pastItems`
+ *   pré-filtrado pelo caller). Default DEFAULT_SECONDARY_WINDOW.
  */
 export function checkSecondaryThemes(
   currentItems: SecondaryItem[],
   pastItems: PastSecondaryItem[],
+  requestedWindow: number = DEFAULT_SECONDARY_WINDOW,
 ): CheckSecondaryThemesResult {
   const secondary_warnings: SecondaryThemeWarning[] = [];
 
@@ -625,7 +719,8 @@ export function checkSecondaryThemes(
   return {
     secondary_warnings,
     secondary_checked: currentItems.length,
-    secondary_window: distinctEditions.size,
+    secondary_editions_with_data: distinctEditions.size,
+    secondary_window_requested: requestedWindow,
   };
 }
 
@@ -685,17 +780,21 @@ async function main(): Promise<void> {
   // #2652: secondary check
   const secondaryItems = extractSecondaryItems(categorizedPath);
   const pastSecondary = readPastApprovedSecondary(editionsDir, secondaryWindow, currentEdition);
-  const secondaryResult = checkSecondaryThemes(secondaryItems, pastSecondary);
+  const secondaryResult = checkSecondaryThemes(secondaryItems, pastSecondary, secondaryWindow);
 
   if (secondaryResult.secondary_warnings.length > 0) {
     for (const w of secondaryResult.secondary_warnings) {
+      // #2684 item 7: item_url incluído no display — sem ele o editor (no gate
+      // mobile/Drive) não consegue identificar QUAL item específico é o
+      // suspeito quando o título sozinho é ambíguo (título curto/genérico
+      // repetido em buckets diferentes).
       console.error(
-        `[check-highlight-themes] ⚠️  SECUNDÁRIO [${w.bucket}] "${w.item_title}" repete tema de ${w.matched_edition} "${w.matched_title}" (${w.theme_evidence}, entities=[${w.shared_entities.join(",")}])`,
+        `[check-highlight-themes] ⚠️  SECUNDÁRIO [${w.bucket}] "${w.item_title}" (${w.item_url}) repete tema de ${w.matched_edition} "${w.matched_title}" (${w.theme_evidence}, entities=[${w.shared_entities.join(",")}])`,
       );
     }
   } else {
     console.error(
-      `[check-highlight-themes] ✓ ${secondaryResult.secondary_checked} item(ns) secundário(s) verificado(s) contra ${secondaryResult.secondary_window} edição(ões) — nenhum repeat de tema detectado.`,
+      `[check-highlight-themes] ✓ ${secondaryResult.secondary_checked} item(ns) secundário(s) verificado(s) contra ${secondaryResult.secondary_editions_with_data}/${secondaryResult.secondary_window_requested} edição(ões) com dados na janela — nenhum repeat de tema detectado.`,
     );
   }
 
@@ -706,7 +805,9 @@ async function main(): Promise<void> {
     checked: highlightResult.checked,
     secondary_checked: secondaryResult.secondary_checked,
     window: highlightResult.window,
-    secondary_window: secondaryResult.secondary_window,
+    // #2684 item 4: secondary_window (nome enganoso) substituído pelos 2 campos abaixo.
+    secondary_editions_with_data: secondaryResult.secondary_editions_with_data,
+    secondary_window_requested: secondaryResult.secondary_window_requested,
   };
 
   const json = JSON.stringify(combined, null, 2);

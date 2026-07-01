@@ -265,6 +265,19 @@ describe("stripTrailingPeriod (#2672)", () => {
       "OpenAI lança modelo",
     );
   });
+
+  // #2693 item 4 — whitespace asymmetry documentada (contrato pinado, não bug):
+  // o ramo "sem ponto final" preserva leading/trailing whitespace do chamador
+  // (mesma convenção de stripPipeSuffix/stripDashSuffix); o ramo "com ponto"
+  // descarta AMBOS os lados (leading incluso) porque opera sobre `trimmed`.
+  // Ver docstring de `stripTrailingPeriod` para o raciocínio completo.
+  it("#2693 item 4: ASSIMETRIA — sem ponto final preserva leading whitespace...", () => {
+    assert.equal(stripTrailingPeriod("  Hello  "), "  Hello  ");
+  });
+
+  it("#2693 item 4: ...mas com ponto final descarta leading whitespace também", () => {
+    assert.equal(stripTrailingPeriod("  Hello.  "), "Hello");
+  });
 });
 
 // ===========================================================================

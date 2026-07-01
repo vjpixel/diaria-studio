@@ -2116,6 +2116,24 @@ describe("isRadarHowToEligible (#2448)", () => {
     );
   });
 
+  it("#2691 item 5: 'saiba como' terminal é elegível para promoção", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://techblog.example.com/chatgpt-recurso-novo",
+        "ChatGPT ganha novo recurso de memória; saiba como",
+      ),
+    );
+  });
+
+  it("#2691 item 5: 'descubra como' terminal é elegível para promoção", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://techblog.example.com/gemini-integracao",
+        "Gemini ganha nova integração; descubra como",
+      ),
+    );
+  });
+
   it("hotfix 260621: 'Tutorial: X' (espaço após ':') é elegível — o \\b externo matava o branch", () => {
     // Slug sem sinal how-to → o ÚNICO sinal é o prefixo "Tutorial:" do título.
     // O `\b` externo da regex falhava após ':' seguido de espaço; o teste antigo

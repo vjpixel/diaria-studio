@@ -35,6 +35,7 @@ import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./lib/use-melhor-sources.ts"; // #1899 / #2176 / #2197
 import { isMarketingCaseStudy } from "./lib/use-melhor-curation.ts"; // #2276
 import { isDevReleaseNote } from "./lib/release-note-detect.ts"; // #2469 (finding 4): shared regex — fonte única, evita divergência com use-melhor-curation.ts
+import { hasRoundupSignalInUrlOrTitle } from "./lib/roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -621,35 +622,40 @@ const LAUNCH_SLUG_RE = /\/(introducing|announcing|new-in|what-is-new)-[a-z]/i;
 
 export function isLaunchSlug(url: string): boolean {
   try {
-    return LAUNCH_SLUG_RE.test(new URL(url).pathname);
+    // #2691 item 4: decodeURIComponent adicionado pra consistência com
+    // isRoundupSlug/urlSlugText (lib/roundup-detect.ts) — antes esta rota NÃO
+    // decodificava o pathname enquanto a rota irmã de roundup decodificava,
+    // divergência que podia esconder um match em path percent-encoded
+    // (ex: acentos/espaços). LAUNCH_SLUG_RE só casa tokens ASCII, então isso
+    // é no-op pro caso comum — mas fecha a inconsistência pro caso raro.
+    return LAUNCH_SLUG_RE.test(decodeURIComponent(new URL(url).pathname));
   } catch {
     return false;
   }
 }
 
 /**
- * #2663: URL slug que indica newsletter/roundup — conteúdo agregador de links,
- * não tutorial hands-on. Prevalece sobre sinais de how-to quando ambos aparecem
- * (precedência: roundup > how-to — ver isNewsNotTutorial e isRadarHowToEligible).
+ * #2663: URL slug (opcionalmente + título) que indica newsletter/roundup —
+ * conteúdo agregador de links, não tutorial hands-on. Prevalece sobre sinais
+ * de how-to quando ambos aparecem (precedência: roundup > how-to — ver
+ * isNewsNotTutorial e isRadarHowToEligible).
  *
- * Conservador: apenas os termos de ALTÍSSIMA precisão no slug. "weekly" sozinho
- * não entra porque "weekly-reports", "build-weekly-digest-in-python" seriam FP.
- * "newsletter" e "roundup" são suficientemente específicos como slug-token.
+ * #2691 item 1: regex + slug helper migrados para `lib/roundup-detect.ts`
+ * (fonte única — antes duplicado com `ROUNDUP_GUARD_RE` em
+ * use-melhor-curation.ts, sincronizado só por comentário).
  *
  * Caso real 260630: langchain.com/blog/june-2026-langchain-newsletter → slug
  * termina em "newsletter" → bloqueado de use_melhor mesmo que o domínio
  * (langchain.com/blog) esteja no TUTORIAL_PATTERNS.
+ *
+ * #2691 item 2: `title` opcional — antes esta função só checava o slug,
+ * deixando escapar roundups cujo ÚNICO sinal está no título (assimetria
+ * vs. `isRadarHowToEligible`/`isNewsletterRoundup`, que já checavam ambos).
+ * Default `""` preserva o comportamento pra chamadas com 1 argumento
+ * (compat com testes existentes de #2663).
  */
-const ROUNDUP_SLUG_RE = /\b(newsletter|roundup|this[- ]week[- ]in)\b/i;
-
-export function isRoundupSlug(url: string): boolean {
-  let slug = "";
-  try {
-    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
-  } catch {
-    return false;
-  }
-  return ROUNDUP_SLUG_RE.test(slug);
+export function isRoundupSlug(url: string, title = ""): boolean {
+  return hasRoundupSignalInUrlOrTitle(url, title);
 }
 
 // #2469 (finding 4): isDevReleaseNote vive em scripts/lib/release-note-detect.ts
@@ -686,11 +692,14 @@ export function isNewsNotTutorial(article: Article): boolean {
   // (ex: "How to use Amazon Bedrock Guardrails" em .../introducing-bedrock-guardrails/).
   // URL-slug é sinal mais confiável que keywords do título nesses casos.
   if (isLaunchSlug(article.url ?? "")) return true;
-  // #2663: roundup/newsletter no slug → não é tutorial, é aggregador de links.
-  // Roda ANTES de isTutorialByKeyword para que roundup > how-to (prioridade explícita):
-  // um roundup com "veja como" no título (ex: "Newsletter: veja como usar X") deve
-  // ir para RADAR, não para USE MELHOR. Caso real: langchain.com/blog/june-2026-langchain-newsletter.
-  if (isRoundupSlug(article.url ?? "")) return true;
+  // #2663: roundup/newsletter no slug OU título → não é tutorial, é aggregador
+  // de links. Roda ANTES de isTutorialByKeyword para que roundup > how-to
+  // (prioridade explícita): um roundup com "veja como" no título (ex:
+  // "Newsletter: veja como usar X") deve ir para RADAR, não para USE MELHOR.
+  // Caso real: langchain.com/blog/june-2026-langchain-newsletter.
+  // #2691 item 2: título também é checado (antes só o slug era, deixando
+  // escapar roundup cujo único sinal está no título).
+  if (isRoundupSlug(article.url ?? "", article.title ?? "")) return true;
   // #2666 (follow-up, HIGH 2): LANÇAMENTO confirmado pelo researcher NUNCA vira
   // tutorial por keyword. Roda ANTES de isTutorialByKeyword — um anúncio cujo
   // título termina em "veja como" ("OpenAI lança X; veja como") deve seguir para
@@ -1091,8 +1100,14 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // PRECEDÊNCIA: roundup (isRoundupSlug/isNewsNotTutorial) vence esses sinais —
 // "Newsletter: veja como usar X" → isRoundupSlug retorna true, isTutorialByKeyword
 // nunca chega a vencer. Ver isNewsNotTutorial para a ordem de avaliação.
+// #2691 item 5: "saiba como"/"descubra como" adicionados (mesmo padrão terminal
+// de "veja como" — variante equivalente de manchete PT-BR). Mantido em sincronia
+// com RADAR_HOWTO_PROMOTE_RE em use-melhor-curation.ts, que recebeu a mesma
+// adição (a família "veja como/veja o prompt/aprenda a" já era duplicada entre
+// os dois arquivos antes deste PR — fora do escopo #2691 item 1 consolidar,
+// que tratou só dos 3 regexes de ROUNDUP).
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\bveja\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
