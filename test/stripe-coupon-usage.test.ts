@@ -20,6 +20,7 @@ import {
   computePaidCents,
   commissionCents,
   firstPaymentInfo,
+  redemptionWho,
   COMMISSION_RATE,
   type PromoCodeRaw,
   type CouponRaw,
@@ -792,6 +793,32 @@ describe("toCSV — quoting de fim-a-fim", () => {
   it("CSV termina com newline (POSIX)", () => {
     const csv = toCSV([rowWithComma]);
     assert.ok(csv.endsWith("\n"), "CSV deve terminar com \\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redemptionWho — mascaramento de PII no stdout p/ CI (#2750)
+// ---------------------------------------------------------------------------
+
+describe("redemptionWho (#2750)", () => {
+  const row = {
+    customer: "cus_ABC123",
+    customer_email: "assinante@example.com",
+  } as unknown as RedemptionRow;
+
+  it("noPii=false → mostra o e-mail", () => {
+    assert.equal(redemptionWho(row, false), "assinante@example.com");
+  });
+
+  it("noPii=true → mostra o cus_id, NUNCA o e-mail", () => {
+    const who = redemptionWho(row, true);
+    assert.equal(who, "cus_ABC123");
+    assert.ok(!who.includes("@"), "sem e-mail no output de CI");
+  });
+
+  it("noPii=false sem e-mail → cai pro cus_id", () => {
+    const noEmail = { customer: "cus_X", customer_email: "" } as unknown as RedemptionRow;
+    assert.equal(redemptionWho(noEmail, false), "cus_X");
   });
 });
 
