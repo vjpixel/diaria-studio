@@ -42,7 +42,7 @@
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 export type ExecMode = "local" | "cloud";
 

@@ -538,4 +538,74 @@ describe("readCoverImageUrl (#2680 — URL versionada de 06-public-images.json)"
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #2714 item 1: edge case target=drive — images.cover.url pode não ser a
+  // URL Cloudflare Worker que os builders de cover upload esperam.
+  it("#2714: lança erro claro quando cover.target=drive (não Cloudflare Worker)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      const json = {
+        images: {
+          cover: {
+            url: "https://drive.google.com/uc?id=abc123&export=view",
+            file_id: "abc123",
+            target: "drive",
+          },
+        },
+      };
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify(json));
+      assert.throws(
+        () => readCoverImageUrl(join(dir, "06-public-images.json")),
+        /target=drive/,
+        "deve lançar erro claro apontando target=drive como causa, antes do fetch() in-page falhar",
+      );
+      assert.throws(
+        () => readCoverImageUrl(join(dir, "06-public-images.json")),
+        /#2714/,
+        "mensagem deve referenciar #2714 para o operador achar o contexto",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2714: target=cloudflare (explícito) NÃO lança — comportamento normal preservado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      const json = {
+        images: {
+          cover: {
+            url: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg",
+            file_id: "img-260630-04-d1-2x1-3692a95a.jpg",
+            target: "cloudflare",
+          },
+        },
+      };
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify(json));
+      assert.doesNotThrow(() => readCoverImageUrl(join(dir, "06-public-images.json")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2714: target ausente (entry sem o campo) NÃO lança — só target='drive' EXPLÍCITO dispara o guard", () => {
+    // Cobertura de contrato: o guard é conservador — só dispara quando o cache
+    // AFIRMA target=drive. Entries sem o campo (não deveria ocorrer em edições
+    // atuais — uploadPublicImages sempre grava target explícito desde #1119/#2147
+    // — mas pode existir em fixtures antigas) seguem o comportamento pré-#2714.
+    const dir = mkdtempSync(join(tmpdir(), "test-cover-"));
+    try {
+      const json = {
+        images: {
+          cover: {
+            url: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg",
+          },
+        },
+      };
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify(json));
+      assert.doesNotThrow(() => readCoverImageUrl(join(dir, "06-public-images.json")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

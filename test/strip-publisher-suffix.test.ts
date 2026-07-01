@@ -21,7 +21,9 @@
  *   - Sufixo de veículo + ponto: chain completo
  *   - Caso real #2664: "...veja como - Canaltech" → strip sufixo
  *   - Caso real #2672: "...November 2025." → strip ponto
- *   - Ordem correta: sufixo ANTES do ponto (ex: "evento. - Canaltech" → "evento")
+ *   - Ordem correta: sufixo ANTES do ponto (ex: "Evento importante aconteceu. - Canaltech"
+ *     → "Evento importante aconteceu" — prefixo precisa ter >= MIN_PREFIX_LEN chars,
+ *     senão o guard anti-FP recusa o strip; ver teste abaixo #2716 item 5b)
  */
 
 import { describe, it } from "node:test";
@@ -304,9 +306,14 @@ describe("normalizeItemTitle — chain completo (#2664 + #2672)", () => {
   });
 
   it("ordem correta: sufixo ANTES do ponto (título com ponto + sufixo Canaltech)", () => {
-    // "evento. - Canaltech":
-    //   1. stripPublisherSuffix → "evento."  (strip Canaltech)
-    //   2. stripTrailingPeriod → "evento"    (strip ponto)
+    // #2716 item 5b: exemplo corrigido — "evento. - Canaltech" (prefixo "evento",
+    // 6 chars) NÃO refletia o guard MIN_PREFIX_LEN (15): um prefixo tão curto faria
+    // stripDashSuffix recusar o strip, então esse exemplo nunca se comportaria como
+    // descrito. O título real usado abaixo tem prefixo bem acima do guard.
+    // "...; veja como. - Canaltech" (prefixo >> MIN_PREFIX_LEN chars):
+    //   1. stripTrailingPeriod (pre-pass) → sem efeito (não termina em ponto)
+    //   2. stripPublisherSuffix → "...; veja como."  (strip Canaltech, ponto exposto)
+    //   3. stripTrailingPeriod → "...; veja como"    (strip ponto)
     assert.equal(
       normalizeItemTitle(
         "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como. - Canaltech",
