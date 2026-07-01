@@ -104,7 +104,7 @@ test("main: --dry-run sobre store seedado não escreve, imprime summary correto"
   const dir = mkdtempSync(resolve(tmpdir(), "bws-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
-  db.prepare("INSERT INTO clarice_users (email, name, status, tier, opens_count, sends_count) VALUES ('e@x.com','Eng',NULL,2,3,3)").run();
+  db.prepare("INSERT INTO clarice_users (email, name, status, tier, opens_count, sends_count, mv_bucket) VALUES ('e@x.com','Eng',NULL,2,3,3,'verified')").run();
   db.prepare("INSERT INTO clarice_users (email, name, status, tier) VALUES ('f@x.com','Fre','active',1)").run();
   recomputeDerived(db);
   db.close();

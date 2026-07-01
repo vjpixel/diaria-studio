@@ -89,6 +89,7 @@ const CLEAN = {
   mv_bucket: "verified",
   dispute_losses: 0,
   soft_bounce_count: 0,
+  tier: 2,
 };
 
 test("eligibility: tudo limpo → elegível, sem razão", () => {
@@ -130,7 +131,7 @@ test("eligibility: mv_bucket rejected → mv_rejected", () => {
   );
 });
 
-test("eligibility: mv_bucket unknown → inelegível com razão mv_unknown (#2735)", () => {
+test("eligibility: mv_bucket unknown → inelegível com razão mv_unknown (#2735, checado antes de mv_unverified)", () => {
   const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown" });
   assert.equal(r.send_eligible, false);
   assert.equal(r.ineligible_reason, "mv_unknown");
@@ -142,10 +143,28 @@ test("eligibility: mv_bucket verified (mv_result=ok) continua elegível (#2735, 
   assert.equal(r.ineligible_reason, null);
 });
 
-test("eligibility: mv_bucket null (nunca submetido ao MV, ex: T01 ativo) continua elegível", () => {
-  const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+test("eligibility: tier=1 + mv_bucket null (nunca submetido ao MV) continua elegível — isento de mv_unverified", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: 1, mv_bucket: null });
   assert.equal(r.send_eligible, true);
   assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility: tier != 1 com mv_bucket null (nunca verificado) → mv_unverified (#2656)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: tier null (sem tier) também exige MV verified", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: null, mv_bucket: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: tier=1 NÃO é isento de mv_bucket='rejected' (só de mv_unverified) — vida anterior como lead rejeitado no MV", () => {
+  const r = classifyEligibility({ ...CLEAN, tier: 1, mv_bucket: "rejected" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_rejected");
 });
 
 test("eligibility: dispute_losses > 0 → dispute", () => {
@@ -256,6 +275,42 @@ test("recomputeDerived: mv_bucket=unknown vira send_eligible=0 + ineligible_reas
     n: number;
   };
   assert.equal(total.n, 1);
+
+  db.close();
+});
+
+test("recomputeDerived: mv_unverified via round-trip SQL real (#2656) — tier passa pela SELECT/UPDATE, não só a função pura", () => {
+  const db = openClariceDb(":memory:");
+
+  // tier 3, nunca verificado (mv_bucket NULL) → mv_unverified
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 3)").run("nv@x.com");
+  // tier 3, verificado → elegível
+  db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 3, 'verified')").run("v@x.com");
+  // tier 1 (T1), nunca verificado → elegível mesmo assim (isento)
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 1)").run("t1@x.com");
+  // sem tier (NULL), nunca verificado → mv_unverified também
+  db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("semtier@x.com");
+
+  recomputeDerived(db);
+
+  const get = (email: string) =>
+    db.prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?").get(email) as any;
+
+  const nv = get("nv@x.com");
+  assert.equal(nv.send_eligible, 0);
+  assert.equal(nv.ineligible_reason, "mv_unverified");
+
+  const v = get("v@x.com");
+  assert.equal(v.send_eligible, 1);
+  assert.equal(v.ineligible_reason, null);
+
+  const t1 = get("t1@x.com");
+  assert.equal(t1.send_eligible, 1);
+  assert.equal(t1.ineligible_reason, null);
+
+  const semtier = get("semtier@x.com");
+  assert.equal(semtier.send_eligible, 0);
+  assert.equal(semtier.ineligible_reason, "mv_unverified");
 
   db.close();
 });

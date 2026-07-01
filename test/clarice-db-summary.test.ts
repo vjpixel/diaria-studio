@@ -76,8 +76,8 @@ test("computeStoreSummary: by_tier exclui nunca-enviado MAS inelegível (dispute
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
-  // elegível, nunca enviado, tier 3 — DEVE contar
-  ins("INSERT INTO clarice_users (email, status, tier) VALUES ('ok@x.com','active',3)");
+  // elegível, nunca enviado, tier 3, mv verified — DEVE contar
+  ins("INSERT INTO clarice_users (email, status, tier, mv_bucket) VALUES ('ok@x.com','active',3,'verified')");
   // disputado, nunca enviado (sends_count implícito 0), tier 3 — NÃO deve contar
   ins("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('disputa@x.com',3,10)");
   recomputeDerived(db);
