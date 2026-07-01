@@ -1,10 +1,12 @@
 /**
- * test/edition-statusline.test.ts (#2250, #2618)
+ * test/edition-statusline.test.ts (#2250, #2618, #2760)
  *
  * Testes da função pura `renderEditionBar` e do detector `readCurrentEditionDoc`
  * que alimentam a statusLine do Claude Code durante uma edição em curso.
  * #2618: + `renderStatusline` (composição pura) e `readMostRecentEditionDoc`
  * (lê edição mais recente incluindo encerrada) — barra some após edição concluída.
+ * #2760: + guard de staleness (`isStaleEditionDoc`, `EDITION_STALE_THRESHOLD_MS`) —
+ * edição com row `running` travada há >24h é tratada como abandonada, não "em curso".
  *
  * Coberturas obrigatórias (#633):
  *   - Edição em curso (stage running) → barra com label correto
@@ -16,6 +18,10 @@
  *   - Edição all-pending (--init mas não rodando) → oculta (não é "em curso")
  *   - Múltiplas edições → detecta a mais recente com atividade (deterministico)
  *   - doc com rows vazio → string vazia
+ *   - #2760: row `running` travada >24h → readCurrentEditionDoc trata como abandonada (pula)
+ *   - #2760: row `running` recente (<24h) → continua detectada normalmente (não regride)
+ *   - #2760: caso legítimo (scheduled run parado em Stage 4, Stage 5 `pending` há >24h,
+ *     SEM nenhuma row `running`) → NUNCA é stale, continua "em curso" (evita falso-positivo)
  */
 
 import { describe, it, after } from "node:test";
@@ -32,12 +38,22 @@ import {
   findMostRecentEditionId,
   renderStatusline,
   readMostRecentEditionDoc,
+  isStaleEditionDoc,
+  EDITION_STALE_THRESHOLD_MS,
   type Plan,
 } from "../scripts/overnight-statusline.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
 import { STAGE_LABELS } from "../scripts/update-stage-status.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+// #2760: readCurrentEditionDoc now takes an injectable `now` (default `new Date()`)
+// for the staleness guard. All fixtures below use `generated_at` pinned to this
+// instant, so every call to readCurrentEditionDoc in this file passes FIXTURE_NOW
+// explicitly — keeps tests deterministic and immune to real-clock drift (a "running"
+// row with a fixture `generated_at` from the past would otherwise look abandoned
+// once EDITION_STALE_THRESHOLD_MS elapses in wall-clock time since this file was written).
+const FIXTURE_NOW = new Date("2026-06-15T09:00:00.000Z");
 
 function makeDoc(
   edition: string,
@@ -240,7 +256,7 @@ describe("readCurrentEditionDoc — detecção de edição em curso", () => {
     const doc = makeDoc("260615", ["done", "running", "pending", "pending", "pending", "pending", "pending"]);
     writeStageStatus(editionDir, doc);
     try {
-      const result = readCurrentEditionDoc(root);
+      const result = readCurrentEditionDoc(root, FIXTURE_NOW);
       assert.ok(result !== null, "deve detectar edição com running");
       assert.equal(result!.edition, "260615");
     } finally {
@@ -283,7 +299,7 @@ describe("readCurrentEditionDoc — múltiplas edições (determinístico, sem c
     writeStageStatus(dir260614, doc260614);
 
     try {
-      const result = readCurrentEditionDoc(tmpRoot);
+      const result = readCurrentEditionDoc(tmpRoot, FIXTURE_NOW);
       assert.ok(result !== null, "deve retornar edição");
       assert.equal(result!.edition, "260614", `deve escolher 260614 (mais recente), got ${result!.edition}`);
     } finally {
@@ -306,7 +322,7 @@ describe("readCurrentEditionDoc — múltiplas edições (determinístico, sem c
     writeStageStatus(dir260615, docAllPending);
 
     try {
-      const result = readCurrentEditionDoc(tmpRoot);
+      const result = readCurrentEditionDoc(tmpRoot, FIXTURE_NOW);
       assert.ok(result !== null, "deve retornar edição com atividade");
       // 260615 é all-pending → deve cair para 260614 (em curso)
       assert.equal(result!.edition, "260614", `deve pular 260615 all-pending e usar 260614, got ${result!.edition}`);
@@ -329,7 +345,7 @@ describe("readCurrentEditionDoc — múltiplas edições (determinístico, sem c
     writeStageStatus(dir260615, docEncerrada);
 
     try {
-      const result = readCurrentEditionDoc(tmpRoot);
+      const result = readCurrentEditionDoc(tmpRoot, FIXTURE_NOW);
       // 260615 is encerrada → skipped; 260614 is in-progress → returned
       assert.ok(result !== null, "deve retornar edição em curso anterior");
       assert.equal(result!.edition, "260614", `deve pular 260615 encerrada e usar 260614 em curso, got ${result!.edition}`);
@@ -465,7 +481,7 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
     // CLI (ln 490): bar = editionBar || renderOvernightBar(readTodayPlan(cwd))
     // O overnight só é lido quando editionBar é vazio (short-circuit real do CLI).
     // O teste verifica a BARRA FINAL usando o mesmo operador, sem re-implementação.
-    const editionDoc = readCurrentEditionDoc(tmpRoot);
+    const editionDoc = readCurrentEditionDoc(tmpRoot, FIXTURE_NOW);
     const editionBar = renderEditionBar(editionDoc);
 
     // Mirror CLI short-circuit: compute overnightBar independently to assert both exist,
@@ -929,5 +945,258 @@ describe("integração de disco #2618 — edição encerrada faz a barra sumir (
     // #2618: a barra deve sumir — output é só o branch, sem barra de progresso
     assert.equal(output, "master", `edição encerrada em disco deve suprimir a barra: "${output}"`);
     assert.ok(!output.includes("["), `não deve conter barra: "${output}"`);
+  });
+});
+
+// ─── #2760: guard de staleness — edição travada em "running" é tratada como abandonada ─
+//
+// Bug relatado: `data/editions/260623/_internal/stage-status.json` tinha
+// `{ stage: 5, status: "running", start: "2026-06-23T02:23:06.933Z" }` que nunca
+// transicionou pra done/failed (crash durante o workaround manual do CSP do
+// Beehiiv, #2495). A statusline reportava essa edição de mais de uma semana
+// atrás como "em curso" — indistinguível de uma run ativa agora.
+//
+// isStaleEditionDoc(doc, now) → true quando há row `status:"running"` cujo
+// `start` (ou `generated_at` de fallback) é mais antigo que
+// EDITION_STALE_THRESHOLD_MS (24h) em relação a `now`. readCurrentEditionDoc
+// pula (trata como encerrada) qualquer doc stale nesse sentido.
+
+describe("isStaleEditionDoc — função pura (#2760)", () => {
+  it("EDITION_STALE_THRESHOLD_MS é exatamente 24h em ms", () => {
+    assert.equal(EDITION_STALE_THRESHOLD_MS, 24 * 60 * 60 * 1000);
+  });
+
+  it("row running com start >24h atrás → stale (true)", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const doc: StageStatusDoc = {
+      edition: "260623",
+      generated_at: "2026-06-23T02:23:06.933Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        // Reproduz o caso exato relatado na issue: stage 5 preso em running.
+        { stage: 5, status: "running", start: "2026-06-23T02:23:06.933Z" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    assert.equal(isStaleEditionDoc(doc, now), true, "row running de 7 dias atrás deve ser stale");
+  });
+
+  it("row running com start <24h atrás → não-stale (false)", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const doc: StageStatusDoc = {
+      edition: "260630",
+      generated_at: "2026-06-30T10:00:00.000Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "running", start: "2026-06-30T10:00:00.000Z" }, // 2h atrás
+        { stage: 2, status: "pending" },
+      ],
+    };
+    assert.equal(isStaleEditionDoc(doc, now), false, "row running de 2h atrás não deve ser stale");
+  });
+
+  it("row running exatamente no limiar (24h - 1ms) → não-stale; (24h + 1ms) → stale", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const justUnder: StageStatusDoc = {
+      edition: "260629",
+      generated_at: now.toISOString(),
+      rows: [{ stage: 1, status: "running", start: new Date(now.getTime() - EDITION_STALE_THRESHOLD_MS + 1).toISOString() }],
+    };
+    const justOver: StageStatusDoc = {
+      edition: "260629",
+      generated_at: now.toISOString(),
+      rows: [{ stage: 1, status: "running", start: new Date(now.getTime() - EDITION_STALE_THRESHOLD_MS - 1).toISOString() }],
+    };
+    assert.equal(isStaleEditionDoc(justUnder, now), false, "1ms sob o limiar não deve ser stale");
+    assert.equal(isStaleEditionDoc(justOver, now), true, "1ms sobre o limiar deve ser stale");
+  });
+
+  it("sem nenhuma row running (ex: pending esperando disparo manual) → NUNCA stale, mesmo muito velha", () => {
+    // Caso legítimo descoberto na investigação: o run agendado
+    // (docs/scheduled-edicao-setup.md) roda Stages 0-4 às 14h e encerra o
+    // processo normalmente com Stage 4 done, Stage 5 pending — sem nenhuma
+    // row running. O editor pode disparar o Stage 5 manualmente dias depois
+    // (o schedule não roda sexta/sábado). Isso NUNCA deve ser tratado como
+    // abandonado, não importa o quão velho o generated_at seja.
+    const now = new Date("2026-06-30T12:00:00.000Z"); // vários dias após o generated_at
+    const doc: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "2026-06-20T14:30:00.000Z", // 10 dias atrás
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        { stage: 5, status: "pending" }, // aguardando /diaria-5-publicacao manual
+        { stage: 6, status: "pending" },
+      ],
+    };
+    assert.equal(isStaleEditionDoc(doc, now), false, "sem row running, nunca deve ser stale (evita falso-positivo #2760)");
+  });
+
+  it("doc all-done (encerrada) → false (isEncerrada já cobre esse caso separadamente, mas a função em si não deve throw nem marcar stale)", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const doc: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "2026-06-20T14:30:00.000Z",
+      rows: Array.from({ length: 7 }, (_, i) => ({ stage: i, status: "done" as const })),
+    };
+    assert.equal(isStaleEditionDoc(doc, now), false);
+  });
+
+  it("row running sem `start` cai pro `generated_at` do doc como fallback", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const docOld: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "2026-06-20T14:30:00.000Z", // 10 dias atrás
+      rows: [{ stage: 1, status: "running" }], // sem start
+    };
+    const docRecent: StageStatusDoc = {
+      edition: "260630",
+      generated_at: "2026-06-30T10:00:00.000Z", // 2h atrás
+      rows: [{ stage: 1, status: "running" }], // sem start
+    };
+    assert.equal(isStaleEditionDoc(docOld, now), true, "sem start, generated_at velho deve ser stale");
+    assert.equal(isStaleEditionDoc(docRecent, now), false, "sem start, generated_at recente não deve ser stale");
+  });
+
+  it("timestamp não-parseável (nem start nem generated_at válidos) → fail-open (false), sem throw", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const doc: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "not-a-date",
+      rows: [{ stage: 1, status: "running", start: "also-not-a-date" }],
+    };
+    assert.doesNotThrow(() => isStaleEditionDoc(doc, now));
+    assert.equal(isStaleEditionDoc(doc, now), false, "timestamps malformados devem fail-open (não esconder a edição)");
+  });
+});
+
+describe("readCurrentEditionDoc — guard de staleness end-to-end via disco (#2760)", () => {
+  it("edição com stage running travado >24h → tratada como abandonada, retorna null", () => {
+    // Reproduz o caso relatado: 260623 travada no Stage 5 (running, nunca transicionou).
+    const root = join(tmpdir(), `edition-test-stale-${Date.now()}`);
+    const editionDir = join(root, "data", "editions", "260623");
+    const doc: StageStatusDoc = {
+      edition: "260623",
+      generated_at: "2026-06-23T02:23:06.933Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        { stage: 5, status: "running", start: "2026-06-23T02:23:06.933Z" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    writeStageStatus(editionDir, doc);
+    try {
+      // "now" = 260701 (dias depois), espelhando o observado ao vivo na issue.
+      const result = readCurrentEditionDoc(root, new Date("2026-07-01T12:00:00.000Z"));
+      assert.equal(result, null, "edição travada >24h em running deve ser tratada como abandonada (null)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição com stage running recente (2h atrás) → CONTINUA detectada normalmente (não regride)", () => {
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const root = join(tmpdir(), `edition-test-fresh-running-${Date.now()}`);
+    const editionDir = join(root, "data", "editions", "260630");
+    const doc: StageStatusDoc = {
+      edition: "260630",
+      generated_at: "2026-06-30T10:00:00.000Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "running", start: "2026-06-30T10:00:00.000Z" },
+        { stage: 2, status: "pending" },
+        { stage: 3, status: "pending" },
+        { stage: 4, status: "pending" },
+        { stage: 5, status: "pending" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    writeStageStatus(editionDir, doc);
+    try {
+      const result = readCurrentEditionDoc(root, now);
+      assert.ok(result !== null, "edição com running recente deve continuar sendo detectada como em curso");
+      assert.equal(result!.edition, "260630");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição legítima parada em Stage 5 pending (sem running) há >24h → continua 'em curso', NÃO stale", () => {
+    // Caso do scheduled run (docs/scheduled-edicao-setup.md): Stages 0-4 done,
+    // Stage 5 pending aguardando disparo manual — pode levar dias (fim de
+    // semana). Não deve ser escondida da statusline mesmo que generated_at
+    // seja bem antigo.
+    const now = new Date("2026-06-30T12:00:00.000Z");
+    const root = join(tmpdir(), `edition-test-legit-pending-${Date.now()}`);
+    const editionDir = join(root, "data", "editions", "260620");
+    const doc: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "2026-06-20T14:30:00.000Z", // 10 dias atrás
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        { stage: 5, status: "pending" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    writeStageStatus(editionDir, doc);
+    try {
+      const result = readCurrentEditionDoc(root, now);
+      assert.ok(result !== null, "Stage 5 pending sem running não deve ser tratado como abandonado (falso-positivo #2760)");
+      assert.equal(result!.edition, "260620");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição stale mais recente é pulada, cai para uma edição anterior ainda em curso e válida", () => {
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    const root = join(tmpdir(), `edition-test-stale-fallback-${Date.now()}`);
+    const dir260623 = join(root, "data", "editions", "260623");
+    const dir260620 = join(root, "data", "editions", "260620");
+
+    const staleDoc: StageStatusDoc = {
+      edition: "260623",
+      generated_at: "2026-06-23T02:23:06.933Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "running", start: "2026-06-23T02:23:06.933Z" },
+        { stage: 2, status: "pending" },
+      ],
+    };
+    const olderInProgressDoc: StageStatusDoc = {
+      edition: "260620",
+      generated_at: "2026-06-20T14:30:00.000Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "pending" }, // sem running — não é stale por definição
+      ],
+    };
+
+    writeStageStatus(dir260623, staleDoc);
+    writeStageStatus(dir260620, olderInProgressDoc);
+
+    try {
+      const result = readCurrentEditionDoc(root, now);
+      assert.ok(result !== null, "deve pular a stale e cair para a anterior em curso");
+      assert.equal(result!.edition, "260620", `deve pular 260623 (stale) e retornar 260620, got ${result!.edition}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

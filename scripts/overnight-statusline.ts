@@ -115,6 +115,73 @@ const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
 const TOTAL_STAGES = STAGES.length;
 
 /**
+ * Guard de staleness (#2760): limiar acima do qual um stage preso em
+ * `status: "running"` é tratado como ABANDONADO em vez de "em curso" pela
+ * statusline.
+ *
+ * Threshold: 24h. Escopo deliberadamente restrito a rows com `status ===
+ * "running"` (não "qualquer row não-terminal") — investigação #2760 confirmou
+ * um caso legítimo de edição não-encerrada e MUITO mais velha que 24h que NÃO
+ * deve ser tratada como abandonada: o run agendado (`docs/scheduled-edicao-setup.md`)
+ * roda Stages 0–4 às 14h e **encerra o processo naturalmente** com Stage 4
+ * `done` e Stage 5 `pending` — "requer input do editor... não fica travada no
+ * gate" (linha 66 do doc). O editor dispara `/diaria-5-publicacao` manualmente
+ * "na manhã seguinte", podendo levar bem mais de 24h corridas se atrasar (fins
+ * de semana: o schedule não roda sexta/sábado). Um doc assim nunca tem row
+ * `running` — só `done`/`pending` — então o guard abaixo não o penaliza.
+ *
+ * Já o caso relatado na issue (`data/editions/260623/_internal/stage-status.json`,
+ * `{ stage: 5, status: "running", start: "...02:23:06.933Z" }` que nunca
+ * transicionou) tem exatamente uma row travada em `running` — é isso que o
+ * guard detecta. `orchestrator-stage-4.md` confirma que mesmo o gate humano
+ * (Stage 4) marca a row `running` só ENQUANTO apresenta o gate na MESMA sessão/
+ * turno de chat (linha 50→443) — se o editor precisa de uma revisão longa fora
+ * do terminal, o fluxo `"editar"` explicitamente devolve o status pra `pending`
+ * (não deixa `running` pendurado) — logo `running` genuinamente parado >24h é
+ * sempre sessão morta (terminal fechado, crash), nunca gate humano em curso.
+ *
+ * Usa o `start` da própria row (gravado por `update-stage-status.ts` ao marcar
+ * `running`); se ausente (runs legadas), cai pro `generated_at` do doc como
+ * aproximação — mesmo padrão de fallback usado no backfill de `applyUpdate`.
+ */
+export const EDITION_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Retorna true quando `doc` tem pelo menos 1 row `status: "running"` cujo
+ * timestamp de início (`row.start`, ou `doc.generated_at` como fallback) é
+ * mais antigo que `EDITION_STALE_THRESHOLD_MS` em relação a `now` — ou seja,
+ * deve ser tratado como abandonado, não "em curso" (#2760).
+ *
+ * Escopo deliberado: rows `pending` (ainda não iniciadas, ex: Stage 5
+ * aguardando disparo manual do editor após um run agendado que parou no
+ * Stage 4) NUNCA contam como stale aqui, por mais velhas que sejam — só
+ * `running` travado é sinal de abandono. Ver docblock de
+ * `EDITION_STALE_THRESHOLD_MS` para o caso legítimo que isso evita.
+ *
+ * Fail-open por design: sem timestamp parseável (nem `row.start` nem
+ * `doc.generated_at`) → false (nunca esconde uma edição por causa de metadado
+ * malformado; degrada graciosamente como o resto do arquivo).
+ */
+export function isStaleEditionDoc(doc: StageStatusDoc, now: Date): boolean {
+  const runningRows = doc.rows.filter((r) => r?.status === "running");
+  if (runningRows.length === 0) return false;
+
+  const docGeneratedAtMs = typeof doc.generated_at === "string" ? Date.parse(doc.generated_at) : NaN;
+
+  // A row mais antiga travada em "running" é o sinal mais forte de stall —
+  // se ela já passou do threshold, o doc inteiro é tratado como abandonado.
+  let oldestRunningMs = Infinity;
+  for (const row of runningRows) {
+    const rowStartMs = typeof row.start === "string" ? Date.parse(row.start) : NaN;
+    const effectiveMs = Number.isNaN(rowStartMs) ? docGeneratedAtMs : rowStartMs;
+    if (!Number.isNaN(effectiveMs) && effectiveMs < oldestRunningMs) oldestRunningMs = effectiveMs;
+  }
+  if (!Number.isFinite(oldestRunningMs)) return false; // nenhum timestamp parseável — fail-open
+
+  return now.getTime() - oldestRunningMs > EDITION_STALE_THRESHOLD_MS;
+}
+
+/**
  * IDLE bar default label — shown when there is NO active edition AND no overnight round.
  * (#2255) This is the "rescued product decision" — the editor confirmed the bar should
  * ALWAYS be present but did not specify idle content. The default below is pending
@@ -481,12 +548,21 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
  *     faz a overnight bar retomar o display (contrato docblock ln 27: "A barra de overnight
  *     volta ao display quando a edição encerra"). (Fix Finding #1.)
  *   - Edição all-pending (--init mas não rodando) também é ignorada — não é "em curso".
- *   - Retorna null se não houver edição alguma em curso.
+ *   - #2760: edição com row `running` travada há mais de `EDITION_STALE_THRESHOLD_MS`
+ *     (ver `isStaleEditionDoc`) é tratada como ABANDONADA — pulada como se estivesse
+ *     encerrada, para a overnight/idle bar assumir o display em vez da statusline
+ *     continuar reportando uma run morta como "em curso".
+ *   - Retorna null se não houver edição alguma em curso (ou só houver abandonadas).
  *
- * Nenhuma dependência de Date.now() / relógio — 100% determinístico.
+ * `now` é injetável (default `new Date()`) — mantém a função 100% testável e
+ * determinística mesmo com o guard de staleness dependente de relógio (#2760;
+ * mesmo padrão de `tierOf(m, now)` em `scripts/merge-clarice-subscribers.ts`).
+ * Chamadas sem passar `now` explicitamente continuam funcionando como antes.
  *
  * @param cwd  Raiz do projeto (cwd)
- * @returns    StageStatusDoc da edição mais recente EM CURSO (não encerrada, não all-pending), ou null.
+ * @param now  Instante de referência para o guard de staleness (default: `new Date()`)
+ * @returns    StageStatusDoc da edição mais recente EM CURSO (não encerrada, não all-pending,
+ *             não abandonada), ou null.
  */
 /**
  * Varre data/editions/{AAMMDD}/ (desc) e retorna todos os docs com rows não-vazios.
@@ -518,7 +594,7 @@ function scanEditionDocs(cwd: string): StageStatusDoc[] {
   }
 }
 
-export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
+export function readCurrentEditionDoc(cwd: string, now: Date = new Date()): StageStatusDoc | null {
   for (const doc of scanEditionDocs(cwd)) {
     // Skip all-pending editions (--init'd but not yet running).
     const hasStarted = doc.rows.some((r) => r.status !== "pending");
@@ -526,6 +602,9 @@ export function readCurrentEditionDoc(cwd: string): StageStatusDoc | null {
     // Finding #1: skip fully-encerrada editions — overnight bar must resume when edition ends.
     const isEncerrada = doc.rows.every((r) => STAGE_TERMINAL_STATUSES.has(r.status));
     if (isEncerrada) continue;
+    // #2760: skip editions with a "running" row stuck past the staleness threshold —
+    // treated as abandoned, same as encerrada, so the bar doesn't lie about "em curso".
+    if (isStaleEditionDoc(doc, now)) continue;
     // First in-progress edition → return it.
     return doc;
   }
