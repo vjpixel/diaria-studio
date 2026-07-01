@@ -1345,7 +1345,7 @@ export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
   cohorts: EngagementCohorts | null = null, // #2426: pré-computado via KV
-  mvStatus: MvStatus | null = null, // #2609: status MV por grupo
+  mvStatus: MvStatus | null = null, // #2609: status MV por grupo — #2736: param não-usado no corpo (seção removida da UI), mantido pra não quebrar a assinatura posicional nos call sites/testes; ver readKvTabs
   contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
@@ -2939,11 +2939,17 @@ export function renderContactsSummarySection(
   // `kvTable`) — reflete a ordem real da fila de re-envio (maior pontuação
   // recebe primeiro). "null" (sem pontuação atribuída ainda) vai por último.
   const renderPriorityPointsHistogram = (hist: Record<string, number>): string => {
-    const sorted = Object.entries(hist).sort(([a], [b]) => {
-      const na = a === "null" ? -Infinity : Number(a);
-      const nb = b === "null" ? -Infinity : Number(b);
-      return nb - na;
-    });
+    // priority_points é coluna INTEGER (schema) — Number(k) nunca deveria dar
+    // NaN aqui. Guard defensivo mesmo assim: um NaN não-tratado tornaria o
+    // sort implementation-defined (ordem imprevisível), mascarando um
+    // problema de qualidade de dado em vez de sinalizá-lo — NaN vai pro fim,
+    // igual "sem pontuação".
+    const rank = (k: string): number => {
+      if (k === "null") return -Infinity;
+      const num = Number(k);
+      return isNaN(num) ? -Infinity : num;
+    };
+    const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
     const rows = sorted.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
     ).join("\n");
@@ -3399,7 +3405,12 @@ export default {
           const token = typeof rawToken === 'string' ? rawToken : null
           // #2748: fail-CLOSED — sem AUTH_TOKEN, negar o login (não deixar
           // qualquer submissão entrar). Mesmo espírito de isAuthenticated().
-          if (!env.AUTH_TOKEN) return new Response('AUTH_TOKEN não configurado no worker — acesso negado.', { status: 500 })
+          // 403 genérico (não 500 nomeando a causa exata): um scanner externo
+          // não deve conseguir distinguir "AUTH_TOKEN nunca configurado" (mais
+          // interessante de tentar de novo) de "configurado, token errado" —
+          // e 500 sugeriria erro de servidor pra monitoramento externo, quando
+          // é uma negação de acesso deliberada.
+          if (!env.AUTH_TOKEN) return new Response('Acesso negado.', { status: 403 })
           if (/[;\r\n]/.test(env.AUTH_TOKEN)) return new Response('Invalid AUTH_TOKEN configuration', { status: 500 })
           if (token && token === env.AUTH_TOKEN) {
             const maxAge = 30 * 24 * 60 * 60  // 30 days

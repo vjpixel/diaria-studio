@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "../workers/diaria-dashboard/src/types.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 
 // #2738: chave KV do clarice-dashboard pro engajamento do "É IA?" (aba Engajamento).
 const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
@@ -348,6 +349,11 @@ function parseArgs(argv: string[]): { push: boolean; workerUrl: string } {
 }
 
 async function main(): Promise<void> {
+  // #2738: CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN (usados por
+  // pushEiaEngagementToBrevoKv) vêm de .env.local — sem isso, o push falha
+  // silenciosamente (fail-soft) mesmo com os secrets configurados na máquina
+  // (mesmo padrão de stripe-coupon-usage.ts/clarice-mv-status.ts/clarice-db-summary.ts).
+  loadProjectEnv();
   const args = parseArgs(process.argv.slice(2));
   const { push, workerUrl } = args;
   const dryRun = !push;
@@ -392,6 +398,23 @@ async function main(): Promise<void> {
  * Cloudflare, loga aviso e retorna — NUNCA aborta o --push principal, que já
  * escreveu o arquivo local com sucesso antes desta chamada.
  */
+/**
+ * #2738: extrai do `PollEiaSummary` completo (que carrega `leaderboard` com
+ * nicknames — PII-adjacent, específico do workers/diaria-dashboard) só o que
+ * a aba Engajamento do clarice-dashboard precisa: `editions` + `updated_at`.
+ * Função PURA e exportada separadamente — garante, com teste dedicado, que um
+ * futuro edit não troque isso por `JSON.stringify(summary)` inteiro (o que
+ * vazaria `leaderboard` pro KV do outro dashboard).
+ */
+export function buildEiaEngagementKvPayload(
+  summary: PollEiaSummary,
+): { editions: PollEiaEditionEntry[]; updated_at: string | null } {
+  return {
+    editions: summary.editions,
+    updated_at: summary.updated_at,
+  };
+}
+
 export async function pushEiaEngagementToBrevoKv(summary: PollEiaSummary): Promise<void> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = process.env.CLOUDFLARE_WORKERS_TOKEN ?? "";
@@ -402,10 +425,7 @@ export async function pushEiaEngagementToBrevoKv(summary: PollEiaSummary): Promi
     );
     return;
   }
-  const payload = {
-    editions: summary.editions,
-    updated_at: summary.updated_at,
-  };
+  const payload = buildEiaEngagementKvPayload(summary);
   try {
     await uploadTextToWorkerKV(JSON.stringify(payload), EIA_ENGAGEMENT_KV_KEY, {
       kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
