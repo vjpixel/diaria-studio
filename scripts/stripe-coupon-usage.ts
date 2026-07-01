@@ -6,14 +6,20 @@
  * Read-only: apenas GET requests. Nunca escreve nem publica nada.
  *
  * Uso:
- *   npx tsx scripts/stripe-coupon-usage.ts
+ *   npx tsx scripts/stripe-coupon-usage.ts [--write-kv] [--no-pii]
+ *
+ * Flags:
+ *   --write-kv  sobe o report pro KV `coupons:usage` do dashboard.
+ *   --no-pii    não imprime e-mail de cliente no stdout (mostra o cus_id) e não
+ *               grava o CSV local. Usar em CI (GitHub Actions) — os logs do
+ *               Actions são retidos e visíveis a colaboradores (#2750).
  *
  * Env:
- *   STRIPE_API_KEY  chave restrita (read-only: Coupons, Customers, Invoices,
- *                   Subscriptions, Charges = Read). Valor em .env.local.
+ *   STRIPE_API_KEY  chave restrita (read-only: Coupons, Promotion Codes,
+ *                   Customers, Subscriptions, Charges = Read). Valor em .env.local.
  *
  * Output:
- *   data/stripe-coupon-usage-YYYY-MM-DD.csv  (gitignored via data/)
+ *   data/stripe-coupon-usage-YYYY-MM-DD.csv  (gitignored via data/; pulado c/ --no-pii)
  *   Resumo por cupom no stdout.
  */
 
@@ -82,6 +88,15 @@ export function csvField(value: string | number | null): string {
   return s;
 }
 
+/**
+ * #2750: identificador do cliente pro stdout. Com `noPii` (CI), mostra o cus_id
+ * (opaco) em vez do e-mail — os logs do GitHub Actions são retidos/visíveis.
+ */
+export function redemptionWho(r: RedemptionRow, noPii: boolean): string {
+  if (noPii) return r.customer;
+  return r.customer_email || r.customer;
+}
+
 export function toCSV(rows: RedemptionRow[]): string {
   const header =
     "coupon_code,coupon_id,percent_off,duration,customer,customer_email,subscription,status,created,plan_amount_cents,currency,interval,discount_value_cents,paid_cents,commission_cents,first_payment_epoch,first_payment_is_forecast";
@@ -119,13 +134,11 @@ export function toCSV(rows: RedemptionRow[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Sobe o relatório de cupons pro KV do dashboard. Roda ANTES do early-return de
- * "0 resgates" (#2743): um report vazio ainda é válido e deve zerar o KV, em vez
- * de deixar dados velhos no dashboard. Requer CLOUDFLARE_ACCOUNT_ID +
- * CLOUDFLARE_WORKERS_TOKEN — se faltarem, é erro (o `--write-kv` foi pedido e
- * não pôde ser honrado): sai com código 1.
+ * Valida as credenciais do Cloudflare exigidas por `--write-kv`. Chamado cedo
+ * (antes do fetch caro na Stripe) pra fail-fast num run mal configurado, e de
+ * novo dentro de writeReportToKv. Se faltarem, sai com código 1.
  */
-async function writeReportToKv(report: unknown): Promise<void> {
+function assertKvCreds(): { accountId: string; token: string } {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = process.env.CLOUDFLARE_WORKERS_TOKEN ?? "";
   if (!accountId || !token) {
@@ -135,6 +148,16 @@ async function writeReportToKv(report: unknown): Promise<void> {
     );
     process.exit(1);
   }
+  return { accountId, token };
+}
+
+/**
+ * Sobe o relatório de cupons pro KV do dashboard. Roda ANTES do early-return de
+ * "0 resgates" (#2743): um report vazio ainda é válido e deve zerar o KV, em vez
+ * de deixar dados velhos no dashboard.
+ */
+async function writeReportToKv(report: unknown): Promise<void> {
+  const { accountId, token } = assertKvCreds();
   await uploadTextToWorkerKV(JSON.stringify(report), COUPONS_KV_KEY, {
     kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
     accountId,
@@ -160,6 +183,16 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const writeKv = process.argv.includes("--write-kv");
+  // #2750: --no-pii não imprime e-mail no stdout nem grava o CSV local — pra CI,
+  // onde os logs do Actions são retidos e visíveis a colaboradores.
+  const noPii = process.argv.includes("--no-pii");
+
+  // #2750: se vamos escrever no KV, validar credenciais do Cloudflare ANTES do
+  // fetch caro na Stripe — fail-fast, sem gastar quota da Stripe num run mal
+  // configurado.
+  if (writeKv) assertKvCreds();
+
   console.log("Buscando dados na Stripe API…");
   const report = await fetchCouponUsage(apiKey);
 
@@ -183,7 +216,7 @@ async function main(): Promise<void> {
           (r.first_payment_is_forecast ? "*" : "")
         : "—";
       console.log(
-        `    ${r.subscription}  ${r.customer_email || r.customer}  ` +
+        `    ${r.subscription}  ${redemptionWho(r, noPii)}  ` +
           `${r.status}${trial}  plan=${fmtBRL(r.plan_amount_cents)}/${r.interval}  ` +
           `pago=${fmtBRL(r.paid_cents ?? 0)}  comissão=${fmtBRL(r.commission_cents ?? 0)}  ` +
           `1ºpag=${payDate}`,
@@ -202,13 +235,20 @@ async function main(): Promise<void> {
   // #2743: `--write-kv` repopula o KV `coupons:usage` do dashboard (reproduzível,
   // em vez de wrangler kv put manual). Roda ANTES do early-return de "0 resgates"
   // — um report vazio ainda é válido e deve refletir no dashboard.
-  if (process.argv.includes("--write-kv")) {
+  if (writeKv) {
     await writeReportToKv(report);
   }
 
   const allRows = TARGET_CODES.flatMap((c) => report[c]?.redemptions ?? []);
   if (allRows.length === 0) {
     console.log("Nenhuma assinatura com esses cupons encontrada.");
+    return;
+  }
+
+  // #2750: o CSV carrega customer_email (PII). Em CI (--no-pii) não gravamos o
+  // arquivo — evita PII em disco no runner e em eventuais artifacts.
+  if (noPii) {
+    console.log(`CSV pulado (--no-pii). ${allRows.length} linha(s) no report.`);
     return;
   }
 
