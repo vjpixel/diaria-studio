@@ -1535,6 +1535,14 @@ export function renderDashboardHtml(
   /* #2758: lista de pagamentos individuais na célula "Pagamentos" (detalhe por assinatura) */
   .payments-list { margin: 4px 0 6px; padding-left: 20px; font-size: 0.8rem; }
   .payments-list li { padding: 1px 0; }
+  /* #2758: .links-ctr dentro de uma <td> normal (não numa <tr>/<td> full-bleed
+     como o "Links clicados") — a <td> já tem padding próprio, então zeramos o
+     do summary pra não dobrar o espaçamento. */
+  details.payments-cell summary.links-summary { padding: 0; }
+  /* #2758: separador entre os blocos de mês empilhados (sem tabela ao redor
+     pra dar borda, diferente do "Resumo por cupom" removido). */
+  details.coupon-month { border-bottom: 1px solid var(--rule); }
+  details.coupon-month summary.links-summary { padding: 8px; }
   /* #2542: tab navigation — CSS-only via radio+label+:checked (sem JS externo) */
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
@@ -3020,7 +3028,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
       const items = list.map((p) =>
         `<li>${escHtml(fmtBRL(p.amount_cents))} em ${escHtml(fmtDate(p.epoch))}</li>`,
       ).join("");
-      return `<details class="links-ctr">
+      return `<details class="links-ctr payments-cell">
         <summary class="links-summary">${list.length} pagamento${list.length > 1 ? "s" : ""} <span class="links-count-badge">${escHtml(fmtBRL(total))}</span></summary>
         <ul class="payments-list">${items}</ul>
       </details>`;
@@ -3054,9 +3062,22 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
   // agregação roda inteiramente sobre os `payments` já carregados no KV — sem
   // nova chamada à Stripe. Redemptions sem `payments` (KV pré-#2758) não
   // contribuem — degradação graciosa até o próximo refresh (#2750) repopular.
+  //
+  // Dedup por charge id (`seenChargeIds`): `payments` é filtrado só por
+  // cliente+janela (granularidade "por e-mail", #2743) — se o MESMO cliente
+  // tem 2 redemptions cujas janelas se sobrepõem (ex.: 2 assinaturas com
+  // cupom, ou resgate + reaplicação), o mesmo charge Stripe aparece na lista
+  // de payments de AMBAS as rows. Sem dedup, essa agregação cross-redemption
+  // contaria o pagamento 2×. O total por-código (`totalPaidCents`) já se
+  // protege disso via max-por-cliente; aqui, mais granular (por charge
+  // individual), usamos o id do charge — mais preciso que "max por cliente"
+  // quando as janelas se sobrepõem só parcialmente.
   const monthly = new Map<string, { totalCents: number; items: FlatPayment[] }>();
+  const seenChargeIds = new Set<string>();
   for (const r of allRows) {
     for (const p of r.payments ?? []) {
+      if (seenChargeIds.has(p.id)) continue;
+      seenChargeIds.add(p.id);
       const key = brtMonthKey(p.epoch);
       if (!monthly.has(key)) monthly.set(key, { totalCents: 0, items: [] });
       const bucket = monthly.get(key)!;
@@ -3068,6 +3089,18 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
     }
   }
   const monthKeysDesc = [...monthly.keys()].sort().reverse();
+
+  // #2758: redemptions do KV pré-#2758 têm `paid_cents` real mas NÃO têm a
+  // lista `payments` (não sabemos em que mês cada pagamento caiu) — sem este
+  // aviso, "Total por mês" pareceria mostrar R$0 de receita quando na verdade
+  // há dinheiro real registrado (só sem quebra mensal ainda). Nota some
+  // sozinha assim que o refresh diário (#2750) repopular o KV no formato novo.
+  const legacyPaidCents = allRows
+    .filter((r) => (!r.payments || r.payments.length === 0) && (r.paid_cents ?? 0) > 0)
+    .reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
+  const legacyNote = legacyPaidCents > 0
+    ? `<p class="coupon-monthly-legacy-note" style="opacity:0.6;font-size:13px;margin-top:6px;">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh (#2750). Ver "Detalhe por assinatura" abaixo pro total real.</p>`
+    : "";
 
   const monthlySectionBody = monthKeysDesc.length === 0
     ? `<p class="coupon-monthly-empty" style="opacity:0.6;font-size:14px;">Nenhum pagamento registrado ainda (assinaturas em trial, ou KV aguardando refresh — ver #2750).</p>`
@@ -3082,7 +3115,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
           <td>${escHtml(fmtBRL(commissionCents(it.amount_cents)))}</td>
           <td>${escHtml(fmtDate(it.epoch))}</td>
         </tr>`).join("\n");
-        return `<details class="links-ctr" id="coupon-month-${escHtml(key)}">
+        return `<details class="links-ctr coupon-month" id="coupon-month-${escHtml(key)}">
   <summary class="links-summary">${escHtml(monthKeyToLabel(key))} <span class="links-count-badge">${bucket.items.length}</span> — pago ${escHtml(fmtBRL(bucket.totalCents))} · comissão ${escHtml(fmtBRL(commissionCents(bucket.totalCents)))}</summary>
   <div class="links-table-wrap">
   <table class="links-table">
@@ -3097,6 +3130,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
 <section class="phase2-section" id="coupon-monthly">
   <h2 class="section-title">Total por mês</h2>
   ${monthlySectionBody}
+  ${legacyNote}
 </section>
 <section class="phase2-section" id="coupon-detail">
   <h2 class="section-title">Detalhe por assinatura</h2>

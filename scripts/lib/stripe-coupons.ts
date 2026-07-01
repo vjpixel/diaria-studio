@@ -256,6 +256,13 @@ export function commissionCents(paidCents: number): number {
 export interface PaymentEntry {
   epoch: number;
   amount_cents: number;
+  // #2758: id do charge Stripe — permite deduplicar quando o MESMO charge
+  // aparece na lista de payments de duas redemptions do mesmo cliente (ex.:
+  // 2 assinaturas com cupom cujas janelas se sobrepõem). Sem isso, uma
+  // agregação cross-redemption (ex.: total por mês) contaria o mesmo
+  // pagamento 2×. Não é PII adicional (id opaco da Stripe, não um dado do
+  // cliente).
+  id: string;
 }
 
 /**
@@ -279,7 +286,7 @@ export function paymentsInWindow(
     if (c.status !== "succeeded" || !c.paid) continue;
     if (c.created < windowStart || c.created >= windowEnd) continue;
     const net = chargeNetCents(c);
-    if (net > 0) out.push({ epoch: c.created, amount_cents: net });
+    if (net > 0) out.push({ epoch: c.created, amount_cents: net, id: c.id });
   }
   out.sort((a, b) => a.epoch - b.epoch);
   return out;
