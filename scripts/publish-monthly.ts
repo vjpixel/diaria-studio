@@ -49,7 +49,11 @@ import {
 } from "./lib/mensal/monthly-paths.ts";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
-import { uploadMonthlyImage as uploadMonthlyImageLib, uploadDestaqueImages } from "./lib/mensal/monthly-image-upload.ts"; // #1914 #1916
+import {
+  uploadDestaqueImages as uploadDestaqueImagesDefault,
+  uploadEiaImages as uploadEiaImagesDefault,
+  uploadLivrosImage as uploadLivrosImageDefault,
+} from "./lib/mensal/monthly-image-upload.ts"; // #1914 #1916 #2802
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
 // main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
@@ -319,15 +323,13 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
   }
 }
 
-// #1914: monthlyEiaImageKey + uploadMonthlyImage extraídos pra
-// lib/mensal/monthly-image-upload.ts (compartilhados com monthly-preview-cloudflare.ts).
-// Re-export de monthlyEiaImageKey mantém back-compat (test/monthly-eia-image-key
-// importa daqui). uploadMonthlyImage local delega pra lib passando ROOT.
+// #1914: monthlyEiaImageKey extraído pra lib/mensal/monthly-image-upload.ts
+// (compartilhado com monthly-preview-cloudflare.ts). Re-export mantém back-compat
+// (test/monthly-eia-image-key importa daqui).
+// #2802: uploadEiaImages/uploadDestaqueImages/uploadLivrosImage (também da lib) agora
+// cobrem todos os uploads deste script — o wrapper local uploadMonthlyImage foi removido
+// por ficar sem callers.
 export { monthlyEiaImageKey } from "./lib/mensal/monthly-image-upload.ts";
-
-function uploadMonthlyImage(filePath: string, edition: string): Promise<string> {
-  return uploadMonthlyImageLib(filePath, edition, ROOT);
-}
 
 // #1844: cliente Brevo (brevoPost/GetCampaign/GetList/Put) → scripts/lib/brevo-client.ts. main() importa.
 
@@ -339,8 +341,25 @@ function uploadMonthlyImage(filePath: string, edition: string): Promise<string> 
  * @param monthlyDirOverride Opcional. Default = `data/monthly/{yymm}`.
  *                           Em testes, passar tempdir com fixture controlado
  *                           pra evitar tocar dados reais (#1029).
+ * @param uploadDeps Opcional (#2802). Overrides das funções de upload de imagem
+ *                    pro KV (lib/mensal/monthly-image-upload.ts). Em testes,
+ *                    injetar mocks que retornam URL fake em vez de fazer upload
+ *                    real — evita rede real (GUARD DE PUBLICAÇÃO) e permite testar
+ *                    a wiring do livrosImageUrl até o draftToEmail sem depender de
+ *                    credenciais Cloudflare.
  */
-export async function main(monthlyDirOverride?: string): Promise<void> {
+export async function main(
+  monthlyDirOverride?: string,
+  uploadDeps: {
+    uploadEiaImages: typeof uploadEiaImagesDefault;
+    uploadDestaqueImages: typeof uploadDestaqueImagesDefault;
+    uploadLivrosImage: typeof uploadLivrosImageDefault;
+  } = {
+    uploadEiaImages: uploadEiaImagesDefault,
+    uploadDestaqueImages: uploadDestaqueImagesDefault,
+    uploadLivrosImage: uploadLivrosImageDefault,
+  },
+): Promise<void> {
   // #2009: aviso de deprecação em runtime — fluxo canônico é multi-campanha.
   process.stderr.write(
     `\n⚠️  DEPRECATED (#2009): publish-monthly.ts é o fluxo legado de campanha única.\n` +
@@ -450,26 +469,21 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   // result page do voto monta. Computar antes do upload.
   const eiaEdition = eiaEditionFromYymm(yymm);
   if (!dryRun) {
-    const eiaNames = [
-      ["01-eia-A.jpg", "01-eia-B.jpg"],
-      ["01-eai-A.jpg", "01-eai-B.jpg"], // legacy naming
-    ];
-    for (const [nameA, nameB] of eiaNames) {
-      const pathA = resolve(monthlyDir, nameA);
-      const pathB = resolve(monthlyDir, nameB);
-      if (existsSync(pathA) && existsSync(pathB)) {
-        try {
-          process.stdout.write(`Uploading É IA? images to Cloudflare KV...\n`);
-          eiaImageUrlA = await uploadMonthlyImage(pathA, eiaEdition);
-          eiaImageUrlB = await uploadMonthlyImage(pathB, eiaEdition);
-          process.stdout.write(`Imagens enviadas:\n  A: ${eiaImageUrlA}\n  B: ${eiaImageUrlB}\n`);
-        } catch (e) {
-          process.stderr.write(`warn: upload de imagens É IA? falhou — ${(e as Error).message}\n`);
-        }
-        break;
+    try {
+      process.stdout.write(`Uploading É IA? images to Cloudflare KV...\n`);
+      // #2802: busca com fallback legado extraída pra lib/mensal/monthly-image-upload.ts
+      // (compartilhada com monthly-preview-cloudflare.ts — divergência era o bug do #1908).
+      const eia = await uploadDeps.uploadEiaImages(monthlyDir, eiaEdition, ROOT);
+      eiaImageUrlA = eia.a;
+      eiaImageUrlB = eia.b;
+      if (eiaImageUrlA) {
+        process.stdout.write(`Imagens enviadas:\n  A: ${eiaImageUrlA}\n  B: ${eiaImageUrlB}\n`);
+      } else {
+        process.stderr.write("warn: imagens É IA? não encontradas — seção sem imagens\n");
       }
+    } catch (e) {
+      process.stderr.write(`warn: upload de imagens É IA? falhou — ${(e as Error).message}\n`);
     }
-    if (!eiaImageUrlA) process.stderr.write("warn: imagens É IA? não encontradas — seção sem imagens\n");
 
     // Pré-registrar gabarito no Worker para resultado imediato ao votar
     await registerEiaAnswer(monthlyDir, eiaEdition);
@@ -479,11 +493,28 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   let destaqueImageUrls: Record<number, string> = {};
   if (!dryRun) {
     try {
-      destaqueImageUrls = await uploadDestaqueImages(monthlyDir, eiaEdition, ROOT);
+      destaqueImageUrls = await uploadDeps.uploadDestaqueImages(monthlyDir, eiaEdition, ROOT);
       const ns = Object.keys(destaqueImageUrls);
       process.stdout.write(ns.length ? `Imagens de destaque enviadas: D${ns.join(", D")}\n` : "warn: sem imagens de destaque (04-d{N}-2x1.jpg)\n");
     } catch (e) {
       process.stderr.write(`warn: upload de imagens de destaque falhou — ${(e as Error).message}\n`);
+    }
+  }
+
+  // #2802: imagem do box de curadoria de livros (04-livros-promo.jpg) → URL pública no
+  // KV, igual ao preview (monthly-preview-cloudflare.ts). Antes só o preview subia essa
+  // imagem — o email real publicado via Brevo saía sem ela.
+  let livrosImageUrl: string | undefined;
+  if (!dryRun) {
+    try {
+      livrosImageUrl = await uploadDeps.uploadLivrosImage(monthlyDir, eiaEdition, ROOT);
+      if (livrosImageUrl) {
+        process.stdout.write(`Imagem de livros enviada: ${livrosImageUrl}\n`);
+      } else {
+        process.stderr.write("warn: 04-livros-promo.jpg ausente — box de livros sem imagem\n");
+      }
+    } catch (e) {
+      process.stderr.write(`warn: upload da imagem de livros falhou — ${(e as Error).message}\n`);
     }
   }
 
@@ -497,7 +528,7 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   const destaqueImageCaption = captionForGenerator(platformConfig.image_generator ?? "gemini");
 
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption, livrosImageUrl);
 
   if (!subject) {
     process.stderr.write(

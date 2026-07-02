@@ -83,3 +83,60 @@ export async function uploadDestaqueImages(
   });
   return out;
 }
+
+/**
+ * Sobe as 2 imagens do É IA? mensal pro KV e devolve as URLs públicas,
+ * tolerando o naming legado `01-eai-*`. Retorna `{}` se não achar o par
+ * (seção sem imagem — não-fatal).
+ *
+ * Extraído de `monthly-preview-cloudflare.ts` (#2802) pra ser compartilhado
+ * com `publish-monthly.ts`, que tinha uma cópia quase-idêntica dessa busca
+ * com fallback legado — divergência de fonte é exatamente o bug do #1908.
+ */
+export async function uploadEiaImages(
+  monthlyDir: string,
+  eiaEdition: string,
+  root: string = DEFAULT_ROOT,
+): Promise<{ a?: string; b?: string }> {
+  const namePairs = [
+    ["01-eia-A.jpg", "01-eia-B.jpg"],
+    ["01-eai-A.jpg", "01-eai-B.jpg"], // legacy
+  ];
+  for (const [nameA, nameB] of namePairs) {
+    const pathA = resolve(monthlyDir, nameA);
+    const pathB = resolve(monthlyDir, nameB);
+    if (existsSync(pathA) && existsSync(pathB)) {
+      // Uploads independentes → paralelos (#1915 review).
+      const [a, b] = await Promise.all([
+        uploadMonthlyImage(pathA, eiaEdition, root),
+        uploadMonthlyImage(pathB, eiaEdition, root),
+      ]);
+      return { a, b };
+    }
+  }
+  return {};
+}
+
+/** Filename da imagem do box de curadoria de livros do digest mensal. */
+export const LIVROS_PROMO_FILENAME = "04-livros-promo.jpg";
+
+/**
+ * Sobe a imagem do box de curadoria de livros (`04-livros-promo.jpg`) do
+ * digest mensal pro KV e devolve a URL pública. Retorna `undefined` se o
+ * arquivo não existir na pasta da edição (degrade sem imagem — box de livros
+ * segue renderizando sem `<img>`, igual ao comportamento do É IA?/destaques).
+ *
+ * #2802: `publish-monthly.ts` (caminho real de publicação/Brevo) não subia
+ * essa imagem — só `monthly-preview-cloudflare.ts` fazia isso inline, então o
+ * email real saía sem a imagem do box de livros enquanto o preview a
+ * mostrava. Extraído aqui pra os dois callers compartilharem a mesma lógica.
+ */
+export async function uploadLivrosImage(
+  monthlyDir: string,
+  eiaEdition: string,
+  root: string = DEFAULT_ROOT,
+): Promise<string | undefined> {
+  const livrosPath = resolve(monthlyDir, LIVROS_PROMO_FILENAME);
+  if (!existsSync(livrosPath)) return undefined;
+  return uploadMonthlyImage(livrosPath, eiaEdition, root);
+}
