@@ -284,6 +284,9 @@ export interface ComputeOpts {
   // (#1568). Ex.: digest de maio/2605 empresta a 1ª semana de junho. Essas
   // edições NÃO entram no pool do Radar.
   useMelhorSource?: { edition: string; prefix: string }[];
+  // Override do nº de tutoriais no Use Melhor (default USE_MELHOR_COUNT = 3).
+  // Editor pode pedir mais no gate da Etapa 1 (ex.: 5) via --use-melhor-count.
+  useMelhorCount?: number;
 }
 
 export function compute(yymm: string, opts: ComputeOpts = {}) {
@@ -333,7 +336,7 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
     for (const [b, n] of clicks) clicksByUrl.set(b, (clicksByUrl.get(b) ?? 0) + n);
   }
 
-  const selected = selectSections(monthItems, sourceItems, clicksByUrl, themes);
+  const selected = selectSections(monthItems, sourceItems, clicksByUrl, themes, opts.useMelhorCount);
   warnings.push(...selected.warnings);
 
   return {
@@ -380,6 +383,7 @@ export function selectSections(
   sourceItems: LinkItem[],
   clicksByUrl: Map<string, number>,
   themeUrls: Set<string>,
+  useMelhorCount: number = USE_MELHOR_COUNT,
 ) {
   const allPool = new Map<string, Meta>();
   const useMelhorPool = new Map<string, Meta>();
@@ -398,7 +402,7 @@ export function selectSections(
   }
 
   const useMelhorRanked = rank(useMelhorPool, clicksByUrl);
-  const useMelhorTop = useMelhorRanked.slice(0, USE_MELHOR_COUNT);
+  const useMelhorTop = useMelhorRanked.slice(0, useMelhorCount);
   const useMelhorTopUrls = new Set(useMelhorTop.map((x) => x.url));
 
   const radarPool = new Map<string, Meta>();
@@ -412,9 +416,9 @@ export function selectSections(
   const radarTop = radarRanked.slice(0, RADAR_COUNT);
 
   const warnings: string[] = [];
-  if (useMelhorTop.length < USE_MELHOR_COUNT)
+  if (useMelhorTop.length < useMelhorCount)
     warnings.push(
-      `Use Melhor: só ${useMelhorTop.length} candidatos com seção use_melhor (esperado ${USE_MELHOR_COUNT})`,
+      `Use Melhor: só ${useMelhorTop.length} candidatos com seção use_melhor (esperado ${useMelhorCount})`,
     );
   if (radarTop.length < RADAR_COUNT)
     warnings.push(`Radar: só ${radarTop.length} candidatos elegíveis (esperado ${RADAR_COUNT})`);
@@ -446,7 +450,7 @@ export function buildSectionsBlock(result: {
 }): string {
   return (
     `## Use Melhor\n\n` +
-    `Os 3 tutoriais mais clicados do mês (seção Use Melhor das edições diárias):\n\n` +
+    `Os ${result.use_melhor.length} tutoriais mais clicados do mês (seção Use Melhor das edições diárias):\n\n` +
     `${renderItems(result.use_melhor, false)}\n\n` +
     `## Radar\n\n` +
     `Os 7 links mais clicados do mês (excluindo os já cobertos nos Destaques e no Use Melhor):\n\n` +
@@ -513,6 +517,20 @@ export function parseUseMelhorSource(argv: string[]): { edition: string; prefix:
     .filter((x) => /^\d{6}$/.test(x.edition) && /^[a-f0-9]+$/i.test(x.prefix ?? ""));
 }
 
+/** Lê `--use-melhor-count N` (ou `--use-melhor-count=N`). Retorna undefined se
+ *  ausente/inválido, deixando o default USE_MELHOR_COUNT valer. */
+export function parseUseMelhorCount(argv: string[]): number | undefined {
+  const eq = argv.find((a) => a.startsWith("--use-melhor-count="));
+  const raw = eq
+    ? eq.split("=")[1]
+    : (() => {
+        const i = argv.indexOf("--use-melhor-count");
+        return i !== -1 ? argv[i + 1] : "";
+      })();
+  const n = parseInt(raw ?? "", 10);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 function main() {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
@@ -527,7 +545,8 @@ function main() {
   // (via monthlyDir que aceita yymm com fallback). Passamos o ciclo completo
   // para que monthlyDir resolva corretamente o path {conteúdo}-{envio}.
   const useMelhorSource = parseUseMelhorSource(process.argv.slice(2));
-  const result = compute(cycle, { useMelhorSource });
+  const useMelhorCount = parseUseMelhorCount(process.argv.slice(2));
+  const result = compute(cycle, { useMelhorSource, useMelhorCount });
   if (useMelhorSource.length)
     console.log(`Use Melhor emprestado de: ${useMelhorSource.map((x) => x.edition).join(", ")}`);
 
@@ -539,7 +558,7 @@ function main() {
 
   console.log(`OK: Use Melhor ${result.use_melhor.length} | Radar ${result.radar.length} → ${outPath}`);
   console.log(`prioritized.md ${patched ? "atualizado (Outras Notícias → Use Melhor + Radar)" : "NÃO atualizado (seção não encontrada)"}`);
-  console.log("\nUse Melhor (top 3 por cliques):");
+  console.log(`\nUse Melhor (top ${result.use_melhor.length} por cliques):`);
   for (const x of result.use_melhor) console.log(`  ${x.clicks}  ${x.title} [${x.editions.join(",")}]`);
   console.log("\nRadar (top 7 por cliques):");
   for (const x of result.radar) console.log(`  ${x.clicks}  ${x.title} [${x.editions.join(",")}]`);
