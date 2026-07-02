@@ -151,8 +151,9 @@ export interface CheckIntraThemesResult {
  * silenciava TODA checagem estrutural entre `CategorizedJson["highlights"]` (raw,
  * `article.url` opcional) e o local `HighlightEntry` (article.url obrigatório, exigido
  * por `highlightTitle`/`highlightUrl` de dedup-intra-edition.ts), não só essa incompat
- * documentada. `NonNullable<...>[number]` evita ter que importar o tipo não-exportado
- * `CategorizedHighlight` de check-secondary-themes.ts.
+ * documentada. `NonNullable<...>[number]` evita ter que importar diretamente o
+ * tipo `Highlight` (#2834: agora em lib/types/categorized-json.ts, reexportado
+ * via check-secondary-themes.ts como parte de `CategorizedJson`).
  * Comportamento idêntico ao cast anterior: só promove `article` quando `article.url`
  * existe; senão omite `article` (highlightUrl/highlightTitle caem no fallback `h.url`/`h.title`).
  */

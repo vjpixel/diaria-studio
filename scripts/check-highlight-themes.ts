@@ -76,6 +76,8 @@ import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-
 // mesmo lugar). Ver nota "Consolidação parcial" mais abaixo, junto de
 // DEFAULT_SECONDARY_BUCKETS, para o que NÃO foi consolidado nesta passada.
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
+// #2834: CategorizedJson/Highlight local consolidado no reader canônico.
+import type { CategorizedJson } from "./lib/types/categorized-json.ts";
 
 // ---------------------------------------------------------------------------
 // Entity stopwords — entidades tão genéricas que não discriminam tema
@@ -145,20 +147,6 @@ interface HighlightCandidate {
   rank: number;
   title: string;
   url: string;
-}
-
-interface CategorizedHighlight {
-  rank?: number;
-  score?: number;
-  article?: { title?: string; url?: string };
-  url?: string;
-  title?: string;
-  [key: string]: unknown;
-}
-
-interface CategorizedJson {
-  highlights?: CategorizedHighlight[];
-  [key: string]: unknown;
 }
 
 export function extractHighlightCandidates(

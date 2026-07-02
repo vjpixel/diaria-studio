@@ -48,9 +48,9 @@
  */
 
 import "dotenv/config";
-import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
+import { loadBeehiivConfig, BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
 
-const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+const BEEHIIV_API = BEEHIIV_API_BASE; // #2834: base URL centralizada em lib/beehiiv-config.ts
 const PER_PAGE = 100;
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 5;

@@ -35,24 +35,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize, readPastEditionsMd, extractPastUrlsUnbounded } from "./dedup.ts";
-
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-interface Article {
-  url: string;
-  title?: string;
-  [key: string]: unknown;
-}
-
-interface CategorizedJson {
-  lancamento?: Article[];
-  radar?: Article[];
-  use_melhor?: Article[];
-  video?: Article[];
-  [key: string]: unknown;
-}
+// #2834: CategorizedJson/Article locais consolidados no reader canônico
+// (ver comentário em lib/types/categorized-json.ts sobre por que não é o
+// schema Zod estrito de lib/schemas/edition-state.ts).
+import type { Article } from "./lib/types/article.ts";
+import type { CategorizedJson } from "./lib/types/categorized-json.ts";
 
 export interface EvergreenDedupResult {
   kept: CategorizedJson;

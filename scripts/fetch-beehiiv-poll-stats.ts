@@ -41,6 +41,7 @@
 import 'dotenv/config';
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
 
 interface BeehiivPostContent {
   data?: {
@@ -160,14 +161,14 @@ async function fetchPostHtml(
   postId: string,
   opts: ApiOpts,
 ): Promise<string> {
-  const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
+  const base = opts.baseUrl ?? BEEHIIV_API_BASE; // #2834
   const url = `${base}/publications/${opts.publicationId}/posts/${postId}?expand[]=free_web_content`;
   const json = await fetchJson<BeehiivPostContent>(url, opts.apiKey);
   return json.data?.content?.free?.web ?? "";
 }
 
 async function fetchTriviaPollIds(opts: ApiOpts): Promise<Set<string>> {
-  const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
+  const base = opts.baseUrl ?? BEEHIIV_API_BASE; // #2834
   const ids = new Set<string>();
   let cursor: string | undefined;
   // Beehiiv REST ignora `?poll_type=trivia` e `?per_page=100` — paginação
@@ -192,7 +193,7 @@ async function fetchPollResponses(
   pollId: string,
   opts: ApiOpts,
 ): Promise<BeehiivPollResponseItem[]> {
-  const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
+  const base = opts.baseUrl ?? BEEHIIV_API_BASE; // #2834
   const all: BeehiivPollResponseItem[] = [];
   let cursor: string | undefined;
   while (true) {

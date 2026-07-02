@@ -36,6 +36,9 @@ import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { isHardFailure } from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
+// #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
+// aqui) ao helper genérico de lib/cli-args.ts — migrado.
+import { parseArgs } from "./lib/cli-args.ts";
 
 /**
  * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
@@ -949,26 +952,6 @@ export function writeDraft(draft: IssuesDraft, editionDir: string): string {
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(draft, null, 2) + "\n", "utf8");
   return outPath;
-}
-
-function parseArgs(argv: string[]): {
-  flags: Set<string>;
-  values: Record<string, string>;
-} {
-  const flags = new Set<string>();
-  const values: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (!argv[i].startsWith("--")) continue;
-    const key = argv[i].slice(2);
-    const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith("--")) {
-      values[key] = next;
-      i++;
-    } else {
-      flags.add(key);
-    }
-  }
-  return { flags, values };
 }
 
 function main(): void {
