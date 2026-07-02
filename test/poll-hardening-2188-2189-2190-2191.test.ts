@@ -23,6 +23,7 @@ import {
 } from "../workers/poll/src/index.ts";
 import { htmlEscape } from "../workers/poll/src/lib.ts";
 import { makeTrackedKv, readKv } from "./_helpers/make-tracked-kv.ts";
+import { makePollEnv } from "./_helpers/make-poll-env.ts";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,12 +31,7 @@ const ADMIN_SECRET = "test-admin-secret";
 const POLL_SECRET = "test-poll-secret";
 
 function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
-  return {
-    POLL: kv as unknown as KVNamespace,
-    POLL_SECRET,
-    ADMIN_SECRET,
-    ALLOWED_ORIGINS: "*",
-  };
+  return makePollEnv(kv, { pollSecret: POLL_SECRET, adminSecret: ADMIN_SECRET });
 }
 
 /** Monta URL de admin/correct com sig válido. */
