@@ -234,8 +234,14 @@ export function renderCoverage(text: string): string {
  * link/CTA) ficam no corpo normal. Para o parágrafo que seja só `→ [label](url)`
  * ou `[label](url)` (sem outro texto), o parágrafo inteiro vira o botão e não
  * é emitido como `<p>` de corpo — evita `→` orphan e <p> vazio.
+ *
+ * #2797: `forceCtaPill` ativa o mesmo botão pill do último parágrafo CTA-only
+ * em callouts NÃO-patrocinados. Usado pelo productBox (🛒) — que reusa este
+ * render sem o marcador 📣 (logo `sponsored=false`) mas quer o CTA como pill
+ * centralizado (ex: box Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Sem 📣,
+ * NÃO adiciona o separador "Divulgação" (o productBox já tem o seu).
  */
-export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = "serif"): string {
+export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = "serif", forceCtaPill = false): string {
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
@@ -261,7 +267,7 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
     // link como botão pill centralizado; remove-o dos parágrafos de corpo.
     let bodyParas = paras.slice(1);
     let ctaButtonHtml = "";
-    if (sponsored && bodyParas.length > 0) {
+    if ((sponsored || forceCtaPill) && bodyParas.length > 0) {
       const lastPara = bodyParas[bodyParas.length - 1];
       // Strip `→ ` / `Acesse ` prefix antes de testar se sobrou só um link.
       const lastStripped = lastPara.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
@@ -888,7 +894,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       parts.push(renderDivulgacaoSeparator());
       // `\r?\n?` cobre o 🛒 sozinho na própria linha (sem texto após), pra não
       // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
-      parts.push(renderIntroCallout(content.productBox.replace(/^🛒[ \t]*\r?\n?/u, "")));
+      parts.push(renderIntroCallout(content.productBox.replace(/^🛒[ \t]*\r?\n?/u, ""), "serif", true));
     }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
