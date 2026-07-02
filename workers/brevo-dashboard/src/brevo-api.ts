@@ -3,6 +3,11 @@ import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEME
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 
+/**
+ * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
+ * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
+ * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
+ */
 export function injectStaleBanner(html: string, retryAfterSecs: number | null): string {
   const retryMsg = retryAfterSecs != null ? `~${retryAfterSecs}s` : "alguns minutos";
   const banner =

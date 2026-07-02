@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -92,148 +93,176 @@ describe("stripHtmlComments (#875)", () => {
 describe("merge-social-md CLI", () => {
   it("happy path — ambos tmps válidos → merge OK + tmps deletados", () => {
     const dir = makeEditionDir();
-    writeFileSync(
-      join(dir, "_internal", "03-linkedin.tmp.md"),
-      "## d1\n\nLinkedIn d1 content\n\n## d2\n\nLinkedIn d2 content\n",
-    );
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "## d1\n\nFacebook d1 content\n",
-    );
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nLinkedIn d1 content\n\n## d2\n\nLinkedIn d2 content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook d1 content\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
-    const out = readFileSync(join(dir, "03-social.md"), "utf8");
-    assert.ok(out.startsWith("# LinkedIn\n\n"));
-    assert.ok(out.includes("LinkedIn d1 content"));
-    assert.ok(out.includes("# Facebook\n\n"));
-    assert.ok(out.includes("Facebook d1 content"));
-    // #1075: banner explica postagem manual de comment_pixel
-    assert.ok(out.includes("Postagem semi-automática"));
-    assert.ok(out.includes("comment_pixel"));
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(out.startsWith("# LinkedIn\n\n"));
+      assert.ok(out.includes("LinkedIn d1 content"));
+      assert.ok(out.includes("# Facebook\n\n"));
+      assert.ok(out.includes("Facebook d1 content"));
+      // #1075: banner explica postagem manual de comment_pixel
+      assert.ok(out.includes("Postagem semi-automática"));
+      assert.ok(out.includes("comment_pixel"));
 
-    // Tmps deletados após sucesso
-    assert.equal(
-      existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
-      false,
-    );
-    assert.equal(
-      existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
-      false,
-    );
+      // Tmps deletados após sucesso
+      assert.equal(
+        existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
+        false,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("LinkedIn tmp ausente → exit 1 com nome do agent", () => {
     const dir = makeEditionDir();
-    // Só Facebook tmp
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "## d1\n\nFacebook content\n",
-    );
+    try {
+      // Só Facebook tmp
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook content\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 1);
-    assert.ok(r.stderr.includes("social-linkedin"));
-    assert.ok(r.stderr.includes("ausente") || r.stderr.includes("FALHOU"));
-    // Output principal não foi gravado
-    assert.equal(existsSync(join(dir, "03-social.md")), false);
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes("social-linkedin"));
+      assert.ok(r.stderr.includes("ausente") || r.stderr.includes("FALHOU"));
+      // Output principal não foi gravado
+      assert.equal(existsSync(join(dir, "03-social.md")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("Facebook tmp ausente → exit 1 com nome do agent", () => {
     const dir = makeEditionDir();
-    writeFileSync(
-      join(dir, "_internal", "03-linkedin.tmp.md"),
-      "## d1\n\nLinkedIn content\n",
-    );
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nLinkedIn content\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 1);
-    assert.ok(r.stderr.includes("social-facebook"));
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes("social-facebook"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("tmp vazio (0 bytes) → exit 1", () => {
     const dir = makeEditionDir();
-    writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "");
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "## d1\n\nFB\n",
-    );
+    try {
+      writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "");
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFB\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 1);
-    assert.ok(r.stderr.includes("social-linkedin"));
-    assert.ok(r.stderr.includes("vazio"));
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes("social-linkedin"));
+      assert.ok(r.stderr.includes("vazio"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("HTML comments balanceados → strip OK", () => {
     const dir = makeEditionDir();
-    writeFileSync(
-      join(dir, "_internal", "03-linkedin.tmp.md"),
-      "## d1\n\n<!-- debug: source-id 42 -->\nLinkedIn content\n",
-    );
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "<!-- agent meta -->\n## d1\n\nFacebook content\n",
-    );
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\n<!-- debug: source-id 42 -->\nLinkedIn content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "<!-- agent meta -->\n## d1\n\nFacebook content\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
-    const out = readFileSync(join(dir, "03-social.md"), "utf8");
-    assert.ok(!out.includes("<!--"), "no opening comment marker should remain");
-    assert.ok(!out.includes("-->"), "no closing comment marker should remain");
-    assert.ok(out.includes("LinkedIn content"));
-    assert.ok(out.includes("Facebook content"));
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(!out.includes("<!--"), "no opening comment marker should remain");
+      assert.ok(!out.includes("-->"), "no closing comment marker should remain");
+      assert.ok(out.includes("LinkedIn content"));
+      assert.ok(out.includes("Facebook content"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("HTML comment não-balanceado em LinkedIn → exit 1", () => {
     const dir = makeEditionDir();
-    writeFileSync(
-      join(dir, "_internal", "03-linkedin.tmp.md"),
-      "## d1\n\n<!-- abc sem fechamento\nLinkedIn content\n",
-    );
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "## d1\n\nFB content\n",
-    );
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\n<!-- abc sem fechamento\nLinkedIn content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFB content\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 1);
-    assert.ok(r.stderr.includes("mal-formados") || r.stderr.includes("FALHOU"));
-    // Output principal não foi gravado (FS state preservado)
-    assert.equal(existsSync(join(dir, "03-social.md")), false);
-    // Tmps NÃO deletados em caso de erro (rollback-safe)
-    assert.equal(
-      existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
-      true,
-    );
-    assert.equal(
-      existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
-      true,
-    );
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes("mal-formados") || r.stderr.includes("FALHOU"));
+      // Output principal não foi gravado (FS state preservado)
+      assert.equal(existsSync(join(dir, "03-social.md")), false);
+      // Tmps NÃO deletados em caso de erro (rollback-safe)
+      assert.equal(
+        existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
+        true,
+      );
+      assert.equal(
+        existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
+        true,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 
   it("HTML comment nested → handle gracefully (merge sucede)", () => {
     const dir = makeEditionDir();
-    writeFileSync(
-      join(dir, "_internal", "03-linkedin.tmp.md"),
-      "## d1\n\n<!-- outer <!-- inner --> trailing -->\nVisible LinkedIn\n",
-    );
-    writeFileSync(
-      join(dir, "_internal", "03-facebook.tmp.md"),
-      "## d1\n\nVisible Facebook\n",
-    );
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\n<!-- outer <!-- inner --> trailing -->\nVisible LinkedIn\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nVisible Facebook\n",
+      );
 
-    const r = runScript(dir);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
-    const out = readFileSync(join(dir, "03-social.md"), "utf8");
-    assert.ok(!out.includes("<!--"));
-    assert.ok(!out.includes("-->"));
-    assert.ok(!out.includes("inner"));
-    assert.ok(!out.includes("trailing"));
-    assert.ok(out.includes("Visible LinkedIn"));
-    assert.ok(out.includes("Visible Facebook"));
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(!out.includes("<!--"));
+      assert.ok(!out.includes("-->"));
+      assert.ok(!out.includes("inner"));
+      assert.ok(!out.includes("trailing"));
+      assert.ok(out.includes("Visible LinkedIn"));
+      assert.ok(out.includes("Visible Facebook"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });

@@ -55,16 +55,16 @@ import {
 import { extractPublishedAtIso, extractPublishedDate } from "./lib/beehiiv-timestamp.ts";
 import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.ts";
 import { writeEditionReport } from "./send-edition-report.ts"; // #1950
-import { BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
+import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
 const MD_PATH = resolve(ROOT, "data/past-editions.md");
-// #2834: base URL centralizada em lib/beehiiv-config.ts (`BEEHIIV_API_URL`
+// #2834/#2850: base URL centralizada em lib/beehiiv-config.ts (`BEEHIIV_API_URL`
 // override permite que testes apontem pra mock server local — #895 — segue
 // honrado lá).
-const BEEHIIV_API = BEEHIIV_API_BASE;
+const BEEHIIV_API = beehiivApiBase();
 
 export interface RefreshConfig {
   apiKey: string;

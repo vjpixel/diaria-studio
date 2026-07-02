@@ -230,6 +230,97 @@ describe("withClariceRetry (#2338) — 4xx fast-fail, 5xx retries", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2852 — onAttempt callback que lança não pode mudar o resultado do retry
+// (observabilidade é sempre best-effort, nunca deve afetar o resultado real).
+// ---------------------------------------------------------------------------
+
+describe("withClariceRetry (#2852) — onAttempt que lança não afeta o resultado", () => {
+  const noSleep = async (_ms: number): Promise<void> => {};
+  const fastPolicy: RetryPolicy = {
+    maxAttempts: 3,
+    timeoutMs: 5_000,
+    baseBackoffMs: 0,
+  };
+
+  it("onAttempt lança no caminho de SUCESSO → resultado é preservado, sem retry extra", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response(JSON.stringify([{ from: "a", to: "b" }]), { status: 200 });
+    };
+    const onAttempt = () => {
+      throw new Error("callback boom (success path)");
+    };
+
+    const result = await withClariceRetry(
+      { apiKey: "k", text: "x", fetchImpl, onAttempt },
+      fastPolicy,
+      noSleep,
+    );
+
+    assert.equal(callCount, 1, "callback que lança no sucesso não deve gerar retry extra");
+    assert.equal(result.attempts, 1, "attempts deve refletir sucesso na 1ª tentativa");
+    assert.equal(result.suggestions.length, 1, "resultado BEM-SUCEDIDO deve ser preservado, não descartado");
+    assert.equal(result.suggestions[0].from, "a");
+  });
+
+  it("onAttempt lança no caminho de FALHA (4xx) → erro REAL preservado, is4xx break respeitado", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response("unauthorized", { status: 401 });
+    };
+    const onAttempt = () => {
+      throw new Error("callback boom (failure path)");
+    };
+
+    let caught: unknown;
+    try {
+      await withClariceRetry(
+        { apiKey: "k", text: "x", fetchImpl, onAttempt },
+        fastPolicy,
+        noSleep,
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.ok(
+      caught instanceof ClariceHttpError,
+      `erro propagado deve ser o ClariceHttpError REAL (401), não o erro do callback; got: ${(caught as Error)?.constructor?.name} — ${(caught as Error)?.message}`,
+    );
+    assert.equal((caught as ClariceHttpError).status, 401);
+    assert.equal(callCount, 1, "4xx deve continuar fast-failing (is4xx break) mesmo com callback que lança");
+  });
+
+  it("onAttempt lança no caminho de FALHA (5xx retryable) → retry continua normalmente até maxAttempts", async () => {
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount++;
+      return new Response("service unavailable", { status: 503 });
+    };
+    const onAttempt = () => {
+      throw new Error("callback boom (retryable failure path)");
+    };
+
+    await assert.rejects(
+      () =>
+        withClariceRetry(
+          { apiKey: "k", text: "x", fetchImpl, onAttempt },
+          fastPolicy,
+          noSleep,
+        ),
+      ClariceHttpError,
+    );
+    assert.equal(
+      callCount,
+      fastPolicy.maxAttempts,
+      "5xx retryable deve continuar tentando maxAttempts× mesmo com callback que lança a cada tentativa",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2626 — correctTextChunked: REST fallback com chunking para texto >10k
 // ---------------------------------------------------------------------------
 

@@ -1084,9 +1084,3 @@ ${generatedAtNote}
   ${forecastLegend}
 </section>`;
 }
-
-/**
- * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
- * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
- * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
- */

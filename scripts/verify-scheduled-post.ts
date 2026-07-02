@@ -43,13 +43,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBeehiivState } from "./lib/publish-state.ts";
-import { loadBeehiivConfig, type BeehiivConfig, BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
+import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 
 loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// BEEHIIV_API_URL override permite testes apontarem para mock server.
-const BEEHIIV_API = BEEHIIV_API_BASE; // #2834: base URL centralizada em lib/beehiiv-config.ts
+// BEEHIIV_API_URL override permite testes apontarem para mock server. Getter
+// lazy chamado AQUI, pós loadProjectEnv() — crítico pra honrar overrides
+// carregados via .env/.env.local (#2850).
+const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
