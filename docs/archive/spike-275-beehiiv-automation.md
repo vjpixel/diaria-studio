@@ -1,5 +1,7 @@
 # Spike #275 — Beehiiv automation: investigação Phase 1
 
+> **Status: arquivado — issue #275 fechada.** Os selectors/achados desta Phase 1 alimentaram a Phase 2 (implementação de `publish-newsletter`), que por sua vez foi retrabalhada em `docs/archive/spike-1046-clipboard-paste.md` e no fluxo Worker-hosted atual (`context/publishers/beehiiv-playbook.md`, #2550). Mantido como registro histórico do mapeamento inicial da DOM do editor Beehiiv.
+
 **Status:** investigação completa, plano pronto pra Phase 2 (implementação).
 **Issue:** [#275](https://github.com/vjpixel/diaria-studio/issues/275)
 **Sessão:** 2026-04-28 (live exploration via Claude in Chrome).

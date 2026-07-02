@@ -1,5 +1,7 @@
 # Spike #1113 — Embeddings pra Filtro 2 de research-reviewer
 
+> **Status: arquivado — issue #1113 fechada, decisão hold indefinido.** A proposta de substituir o Filtro 2 (Haiku pinned) por embeddings nunca foi implementada; não há sinal de que #344 tenha avançado desde então. `research-reviewer` continua em Haiku 4.5 pinned. Mantido como referência caso o custo do Filtro 2 vire dor pontual no futuro.
+
 **Status**: spike doc (methodology proposal). Experimento ainda não rodado.
 
 **Recomendação preliminar**: **hold** até que (a) #344 (embeddings em outras camadas) avance e estabeleça infra ou (b) custo do Filtro 2 LLM se torne dor pontual. Por hora, manter LLM Haiku pinned como está.
