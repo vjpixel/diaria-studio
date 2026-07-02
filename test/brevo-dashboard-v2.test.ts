@@ -50,7 +50,7 @@ function makeCampaign(
     subject: "Test",
     status: "sent",
     sentDate,
-    scheduledAt: "2026-06-15T06:00:00.000-03:00" as string | null,
+    scheduledAt: null as null,
     createdAt: sentDate,
     recipients: { lists: [id + 100] },
     listName: `List ${id}`,
@@ -61,9 +61,6 @@ function makeCampaign(
   };
 }
 
-
-/** resetAt retroativo — cenários legados (a agregação, não o reset 260702). */
-const PRE_RESET = "1970-01-01T00:00:00.000Z";
 const cycle2605Campaigns = [
   makeCampaign(38, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:05:00Z", { sent: 117, delivered: 115, uniqueViews: 20, trackableViews: 11, appleMppOpens: 8 }),
   makeCampaign(39, "Clarice News 2605 d01-B (qua)", "2026-06-10T09:06:00Z", { sent: 117, delivered: 117, uniqueViews: 32, trackableViews: 21, appleMppOpens: 11 }),
@@ -79,7 +76,7 @@ const baseCampaign = {
   subject: "Test subject",
   status: "sent",
   sentDate: "2026-06-11T09:00:00Z",
-  scheduledAt: "2026-06-15T06:00:00.000-03:00" as string | null,
+  scheduledAt: null as null,
   createdAt: "2026-06-11T09:00:00Z",
   recipients: { lists: [1] },
   listName: "T1-W1",
@@ -113,7 +110,7 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
       subject: "Test",
       status: "sent",
       sentDate: "2026-06-13T09:00:00Z",
-      scheduledAt: "2026-06-15T06:00:00.000-03:00" as string | null,
+      scheduledAt: null as null,
       createdAt: "2026-06-13T09:00:00Z",
       recipients: { lists: [196] },
       listName: "List 96",
@@ -136,7 +133,7 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
       },
     };
     const campaigns = [partialGsCampaign, ...cycle2605Campaigns];
-    const result = aggregateAbcSummary(campaigns, "2605", PRE_RESET);
+    const result = aggregateAbcSummary(campaigns, "2605");
 
     // Nenhuma célula deve ter openRate NaN
     for (const row of result) {
@@ -163,7 +160,7 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
       subject: "Test",
       status: "sent",
       sentDate: "2026-06-13T09:05:00Z",
-      scheduledAt: "2026-06-15T06:00:00.000-03:00" as string | null,
+      scheduledAt: null as null,
       createdAt: "2026-06-13T09:05:00Z",
       recipients: { lists: [197] },
       listName: "List 97",
@@ -185,7 +182,7 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
         },
       },
     };
-    const result = aggregateAbcSummary([partialDelivered, ...cycle2605Campaigns], "2605", PRE_RESET);
+    const result = aggregateAbcSummary([partialDelivered, ...cycle2605Campaigns], "2605");
     for (const row of result) {
       assert.ok(!isNaN(row.openRate),
         `openRate da célula ${row.cell} não deve ser NaN (foi ${row.openRate})`);
@@ -202,7 +199,7 @@ describe("#2207-2: colspan no-stats — contagem de <th> só no <thead> da tabel
     subject: "Subj",
     status: "sent",
     sentDate: "2026-06-11T09:00:00Z",
-    scheduledAt: "2026-06-15T06:00:00.000-03:00" as string | null,
+    scheduledAt: null as null,
     createdAt: "2026-06-11T09:00:00Z",
     recipients: { lists: [1] },
     listName: "T1-W2",
