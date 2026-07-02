@@ -156,6 +156,90 @@ describe("getCouponUsage — PII guard (/api/coupons)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regressão #2779: kvOnly — o caminho de erro (fallback de rate-limit) NUNCA
+// pode fazer chamada Stripe ao vivo, nem em KV miss. Antes do fix, um miss em
+// `coupons:usage` com STRIPE_API_KEY configurada caía no fetchCouponUsage
+// mesmo com isFresh=false — contradizendo o contrato do buildRateLimitFallback.
+// ---------------------------------------------------------------------------
+
+describe("getCouponUsage — kvOnly (#2779: KV é a única fonte no caminho de erro)", () => {
+  // Espião de fetch global: registra qualquer chamada externa e falha o caller.
+  const withFetchSpy = async (fn: (calls: string[]) => Promise<void>) => {
+    const realFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      calls.push(String(input));
+      throw new Error("chamada externa proibida neste teste");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    try {
+      await fn(calls);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  it("kvOnly=true + KV miss + STRIPE_API_KEY presente → null, SEM fetch (o bug do #2779)", async () => {
+    await withFetchSpy(async (calls) => {
+      const mockKv = { get: async () => null, put: async () => {} };
+      const result = await getCouponUsage(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
+        false,
+        true, // kvOnly
+      );
+      assert.equal(result, null, "KV miss em kvOnly → null (tab oculta), nunca Stripe");
+      assert.deepEqual(calls, [], "NENHUMA chamada externa pode acontecer com kvOnly=true");
+    });
+  });
+
+  it("kvOnly=true + KV hit → serve o cache sem fetch", async () => {
+    await withFetchSpy(async (calls) => {
+      const mockKv = { get: async () => syntheticUsage, put: async () => {} };
+      const result = await getCouponUsage(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
+        false,
+        true,
+      );
+      assert.deepEqual(result, syntheticUsage, "KV hit em kvOnly → serve o cache");
+      assert.deepEqual(calls, [], "sem chamada externa");
+    });
+  });
+
+  it("kvOnly=true sem STATS_CACHE → null, SEM fetch", async () => {
+    await withFetchSpy(async (calls) => {
+      const result = await getCouponUsage(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: undefined as any },
+        false,
+        true,
+      );
+      assert.equal(result, null);
+      assert.deepEqual(calls, [], "sem KV binding + kvOnly → null direto, nunca Stripe");
+    });
+  });
+
+  it("contraste: kvOnly=false (default) + KV miss + STRIPE_API_KEY → o fallback Stripe do caminho saudável segue vivo", async () => {
+    // Garante que o fix do #2779 NÃO desligou o fallback Stripe do render
+    // normal (KV com TTL 300s expira e é repopulado por esse caminho).
+    await withFetchSpy(async (calls) => {
+      const mockKv = { get: async () => null, put: async () => {} };
+      const result = await getCouponUsage(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
+        false,
+      );
+      // o fetch espião lança → getCouponUsage degrada pra null; o que importa
+      // é que a tentativa Stripe ACONTECEU no caminho saudável.
+      assert.equal(result, null);
+      assert.ok(calls.length > 0, "caminho saudável deve tentar a Stripe API em KV miss");
+      assert.match(calls[0], /api\.stripe\.com/);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: renderCouponTabPanel (unitário, sem deps do dashboard)
 // ---------------------------------------------------------------------------
 
