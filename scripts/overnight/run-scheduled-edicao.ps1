@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
 
