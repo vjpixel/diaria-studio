@@ -1,5 +1,7 @@
 # Análise: Migração de Agentes LLM → Scripts TypeScript
 
+> **Status: superado por `docs/agent-migration-triage.md`** (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do racional original que motivou a migração.
+
 ## Resumo executivo
 
 O pipeline Diar.ia roda 20+ agentes LLM distribuídos em 4 etapas. Vários desses agentes executam tarefas cujo núcleo é determinístico (classificação por regra, sync de arquivo, verificação de link) mas foram implementados como LLM por conveniência histórica. Migrar esses agentes para scripts TypeScript reduz custo por edição, elimina variância de output e acelera o pipeline. Os agentes que requerem linguagem natural, julgamento editorial ou navegação de UI devem permanecer como LLM — a diferenciação central é: "pode ser expresso como função pura ou sequência de chamadas de API determinísticas?"

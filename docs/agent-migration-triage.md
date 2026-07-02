@@ -1,6 +1,6 @@
 # Triagem: agentes LLM → scripts TS determinísticos (#1094)
 
-Decisão por agente atual em `.claude/agents/`, com follow-ups concretos. Substitui (consolida) as análises prévias em [`llm-ts-migration-analysis.md`](./llm-ts-migration-analysis.md) e [`script-migration-plan.md`](./script-migration-plan.md) — a partir de 2026-05-11, este doc é o source-of-truth da triagem.
+Decisão por agente atual em `.claude/agents/`, com follow-ups concretos. Substitui (consolida) as análises prévias em [`archive/llm-ts-migration-analysis.md`](./archive/llm-ts-migration-analysis.md) e [`archive/script-migration-plan.md`](./archive/script-migration-plan.md) — a partir de 2026-05-11, este doc é o source-of-truth da triagem.
 
 ---
 
