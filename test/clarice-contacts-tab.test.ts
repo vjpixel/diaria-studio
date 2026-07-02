@@ -93,18 +93,11 @@ test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por ti
   };
   const html = renderContactsSummarySection(withHistogram);
   assert.doesNotMatch(html, /Por tier \(1º envio\)/, "tabela separada não existe mais");
-  // breakdown na linha 0 — by_tier {1:1167, 2:7269, null:131}, tier ASC, sem tier por último
-  assert.match(html, /T01: 1[.,]?167/);
-  assert.match(html, /T02: 7[.,]?269/);
-  assert.match(html, /sem tier: 131/);
-  const idxT01 = html.indexOf("T01:");
-  const idxT02 = html.indexOf("T02:");
-  const idxSem = html.indexOf("sem tier:");
-  assert.ok(idxT01 < idxT02 && idxT02 < idxSem, "ordem da fila de 1º envio: T01 → T02 → sem tier");
-  // o breakdown fica NA célula do valor 0 (mesmo <td>), não na linha do 15,
-  // com o rótulo do universo próprio (#2807 review) e 1 tier por linha (<br>)
-  assert.match(html, /<td>0 <span[^>]*>· 1º envio —<br>T01:/);
-  assert.match(html, /T01: 1[.,]?167<br>T02: 7[.,]?269<br>sem tier: 131/);
+  // O breakdown fica NA célula do valor 0 (mesmo <td>), com o rótulo do
+  // universo próprio (#2807 review) e 1 tier por linha (<br>). A regex única
+  // já cobre presença + valores + ordem (tier de número menor na linha mais
+  // acima, "sem tier" por último — pedido do editor).
+  assert.match(html, /<td>0 <span[^>]*>· 1º envio:<br>T01: 1[.,]?167<br>T02: 7[.,]?269<br>sem tier: 131/);
   assert.doesNotMatch(html, /<td>15[^<]*T01:/);
 });
 
