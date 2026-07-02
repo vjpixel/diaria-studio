@@ -140,6 +140,20 @@ export function computePriorityPoints(i: PriorityInput): number {
 }
 
 // ---------------------------------------------------------------------------
+// Emails internos (#2809) — editor + parceiro Clarice. Abrem/testam envios por
+// ofício; o engajamento deles não é sinal de audiência. EXCLUÍDOS das
+// agregações de priority_points do sumário (exibição/dashboard) — mas seguem
+// no store e na fila de envio normalmente (decisão do editor 260702: "é para
+// continuar enviando"). Fonte única — não espalhar os literais.
+// ---------------------------------------------------------------------------
+
+export const INTERNAL_EMAILS = [
+  "vjpixel@gmail.com",
+  "pixel@memelab.com.br",
+  "felipe@clarice.ai",
+] as const;
+
+// ---------------------------------------------------------------------------
 // send_eligible / ineligible_reason — corte de supressão e entregabilidade
 //
 // Ordem de prioridade (primeira condição que bate vira a razão). Soft bounce é
