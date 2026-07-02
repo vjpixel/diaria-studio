@@ -119,8 +119,9 @@ export interface CohortStatsRow {
   unsub_bounce: number;
   /** mv_bucket='verified' — sobre o TOTAL de contatos do cohort (não só quem recebeu). */
   mv_verified: number;
-  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média. */
-  priority_points_sum: number;
+  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média.
+   * null só em payload de KV antigo (pré-COALESCE do #2874); escrita nova nunca emite null. */
+  priority_points_sum: number | null;
 }
 
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {
@@ -351,7 +352,7 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       SUM(CASE WHEN sends_count>0 AND clicks_count>0 THEN 1 ELSE 0 END) AS clicked,
       SUM(CASE WHEN sends_count>0 AND (unsubscribed=1 OR hard_bounced=1) THEN 1 ELSE 0 END) AS unsub_bounce,
       ${MV_VERIFIED_CASE} AS mv_verified,
-      SUM(CASE WHEN sends_count>0 THEN priority_points ELSE 0 END) AS pp_sum
+      SUM(CASE WHEN sends_count>0 THEN COALESCE(priority_points,0) ELSE 0 END) AS pp_sum
     FROM clarice_users
     WHERE ${NOT_INTERNAL_SQL}
     GROUP BY cohort

@@ -241,6 +241,22 @@ test("computeStoreSummary: KV/payload sem contatos na Brevo → chave AUSENTE (s
 // #2864 — cohort_stats: comparativo de envio/engajamento por cohort
 // ---------------------------------------------------------------------------
 
+test("computeStoreSummary: cohort_stats — priority_points NULL em quem recebeu não anula o pp_sum do cohort (COALESCE; review #2872)", () => {
+  const db = openClariceDb(":memory:");
+  // Linha que recebeu envio mas com priority_points NULL direto (sem
+  // recomputeDerived — simula linha legada/parcial). Pré-fix: SUM(CASE WHEN
+  // sends>0 THEN priority_points ...) = NULL → payload violava o tipo number
+  // e o Worker renderizava "0.0" fake.
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, cohort, sends_count, priority_points) VALUES ('nullpp@x.com',1,'assinantes-ativos',2,NULL)",
+  ).run();
+  const s = computeStoreSummary(db);
+  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
+  assert.equal(typeof row.priority_points_sum, "number", "SUM com COALESCE nunca é null");
+  assert.equal(row.priority_points_sum, 0);
+  db.close();
+});
+
 test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envios/abriu/clicou/saiu/mv/pontos por cohort (#2864)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);

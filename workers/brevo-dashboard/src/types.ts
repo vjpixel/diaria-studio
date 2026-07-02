@@ -201,7 +201,8 @@ export interface CohortStatsRow {
   clicked: number;
   unsub_bounce: number;
   mv_verified: number;
-  priority_points_sum: number;
+  /** null só em KV antigo (pré-COALESCE do #2874) — o render trata; ver ppAvg. */
+  priority_points_sum: number | null;
 }
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por
