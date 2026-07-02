@@ -73,7 +73,10 @@ export function baseUrl(raw: string): string {
 // Classifica cada link por seção: "destaque", "use_melhor", ou "outro".
 type Section = "destaque" | "use_melhor" | "outro";
 
-function normalizeHeader(line: string): string {
+// Exportado (#2791) para reuso por `collect-monthly.ts` no modo local — a
+// mesma normalização (strip bold/emoji + uppercase) serve pra extrair a
+// categoria do header `**DESTAQUE N | EMOJI CATEGORIA**` do 02-reviewed.md.
+export function normalizeHeader(line: string): string {
   return line
     .replace(/\*/g, "")
     .replace(/[\p{Extended_Pictographic}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}‍]/gu, "")

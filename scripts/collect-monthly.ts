@@ -23,18 +23,22 @@
  */
 
 import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   MONTHLY_BASE,
   monthlyDir as resolveMonthlyDir,
   cycleToYymm,
   parseMonthlyCycleArg,
 } from "./lib/mensal/monthly-paths.ts";
+import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
 
 // Alias para compat com usos internos (path join na MONTHLY_BASE).
 const MONTHLY_DIR = MONTHLY_BASE;
 
-interface MonthlyDestaque {
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export interface MonthlyDestaque {
   edition: string;          // AAMMDD (extraída do nome do arquivo)
   beehiiv_post_id: string;  // prefixo do ID do post no Beehiiv
   position: 1 | 2 | 3;      // ordem na edição original
@@ -273,6 +277,183 @@ export function parsePost(file: RawPostFile, raw: string, warnings: string[]): M
   return destaques;
 }
 
+// ── Modo local (#2791) ───────────────────────────────────────────────
+//
+// Fonte canônica: quando `data/editions/{AAMMDD}/02-reviewed.md` existe (o
+// markdown final publicado, sempre disponível numa máquina local que rodou
+// a edição), lê DIRETO dele em vez de depender do raw-post baixado do
+// Beehiiv. Institucionaliza o workaround manual do ciclo 2606-07 (converter
+// 02-reviewed.md pro formato raw-post antes de rodar este script).
+
+/**
+ * Separador usado no MARKDOWN FINAL publicado (`02-reviewed.md`): HR padrão
+ * de 3 traços. Distinto do separador do raw-post do Beehiiv (10+ traços —
+ * ver `splitSections` acima); um threshold único de 3 mudaria o
+ * comportamento hoje testado de `splitSections` ("ignora linhas com menos
+ * de 10 traços"), por isso este é um splitter dedicado.
+ */
+export function splitLocalSections(md: string): string[] {
+  return md.split(/\r?\n-{3,}\r?\n/);
+}
+
+const LOCAL_DESTAQUE_HEADER_RE = /^\*\*DESTAQUE\s+(\d+)\s*\|\s*(.+?)\*\*\s*$/m;
+const WHY_DELIM_RE = /^\*?\*?Por que isso importa:?\*?\*?\s*$/im;
+const TITLE_LINK_LINE_RE = /^.*\[.+?\]\(https?:\/\/[^\s)]+\).*$/m;
+
+/**
+ * Parseia os destaques de um `02-reviewed.md` (markdown final publicado —
+ * modo LOCAL, #2791). Reaproveita `parseEdition` (o parser DE VERDADE já
+ * usado por `monthly-click-sections.ts` pra ler esse mesmo arquivo) pra
+ * extrair título/url do destaque de forma robusta — cobre os formatos
+ * antigo/novo de link e filtra links não-editoriais via `isEditorial`.
+ * `parseEdition` não devolve corpo/why completos (só um resumo de 1
+ * linha), então esses dois campos — e a categoria — são extraídos aqui, do
+ * texto bruto do mesmo bloco (não duplica a lógica de `parseEdition`,
+ * complementa o que ele não cobre).
+ */
+export function parseLocalEdition(edition: string, md: string): MonthlyDestaque[] {
+  const destaques: MonthlyDestaque[] = [];
+
+  for (const rawSection of splitLocalSections(md)) {
+    const trimmed = rawSection.trim();
+    if (!trimmed) continue;
+
+    const headerMatch = trimmed.match(LOCAL_DESTAQUE_HEADER_RE);
+    if (!headerMatch) continue; // não é um bloco de destaque (ex: intro, sorteio, É IA?)
+
+    const position = parseInt(headerMatch[1], 10);
+    if (position !== 1 && position !== 2 && position !== 3) continue;
+    const category = normalizeHeader(headerMatch[2]);
+
+    // parseEdition() de verdade, aplicado ao bloco isolado do destaque.
+    const link = parseEdition(edition, trimmed).find((it) => it.section === "destaque");
+    if (!link) continue;
+
+    const afterHeader = trimmed.slice(trimmed.indexOf(headerMatch[0]) + headerMatch[0].length);
+    const titleLineMatch = afterHeader.match(TITLE_LINK_LINE_RE);
+    const afterTitle = titleLineMatch
+      ? afterHeader.slice(afterHeader.indexOf(titleLineMatch[0]) + titleLineMatch[0].length)
+      : afterHeader;
+
+    const whyMatch = afterTitle.match(WHY_DELIM_RE);
+    let bodyRaw: string;
+    let whyRaw: string;
+    if (whyMatch) {
+      const idx = afterTitle.indexOf(whyMatch[0]);
+      bodyRaw = afterTitle.slice(0, idx);
+      whyRaw = afterTitle.slice(idx + whyMatch[0].length);
+    } else {
+      bodyRaw = afterTitle;
+      whyRaw = "";
+    }
+
+    const body = bodyRaw
+      .split(/\r?\n/)
+      .filter((line) => !/^View image:/i.test(line.trim()))
+      .filter((line) => !/^Caption:/i.test(line.trim()))
+      .join("\n")
+      .trim();
+    const why = whyRaw.trim();
+
+    const brazil = detectBrazil({ category, url: link.url, title: link.title, body });
+
+    destaques.push({
+      edition,
+      // Modo local não tem o post_id do Beehiiv à mão (só existe no
+      // filename do raw-post baixado via API). O campo não é consumido
+      // programaticamente em nenhum lugar downstream (analyst-monthly /
+      // writer-monthly só o exibem como referência) — vazio é seguro aqui.
+      beehiiv_post_id: "",
+      position: position as 1 | 2 | 3,
+      category,
+      title: link.title,
+      url: link.url,
+      body,
+      why,
+      is_brazil: brazil.is_brazil,
+      brazil_signals: brazil.signals,
+    });
+  }
+
+  return destaques;
+}
+
+export interface CollectMonthResult {
+  destaques: MonthlyDestaque[];
+  warnings: string[];
+  source_counts: { local: number; raw: number; missing: number };
+}
+
+/**
+ * Coleta os destaques do mês combinando as duas fontes, com precedência
+ * LOCAL > raw-post (por edição — pode ser misto dentro do mesmo mês).
+ *
+ * @param yymm mês do conteúdo (ex: "2606")
+ * @param rawPostsRoot diretório do ciclo mensal que contém `raw-posts/`
+ *   (normalmente `resolveMonthlyDir(cycle)`; testável com um dir arbitrário)
+ * @param editionsRoot diretório que contém `{AAMMDD}/02-reviewed.md`
+ *   (normalmente `data/editions/`; testável com um dir arbitrário)
+ */
+export function collectMonth(
+  yymm: string,
+  rawPostsRoot: string,
+  editionsRoot: string,
+): CollectMonthResult {
+  const warnings: string[] = [];
+  const rawFiles = listRawPosts(rawPostsRoot);
+  const rawByEdition = new Map(rawFiles.map((f) => [f.edition, f]));
+
+  const localEditionRe = new RegExp(`^${yymm}\\d{2}$`);
+  const localSet = new Set(
+    existsSync(editionsRoot) ? readdirSync(editionsRoot).filter((n) => localEditionRe.test(n)) : [],
+  );
+
+  const allEditions = [...new Set([...localSet, ...rawByEdition.keys()])].sort();
+
+  const allDestaques: MonthlyDestaque[] = [];
+  const source_counts = { local: 0, raw: 0, missing: 0 };
+
+  for (const edition of allEditions) {
+    const localPath = join(editionsRoot, edition, "02-reviewed.md");
+    if (localSet.has(edition) && existsSync(localPath)) {
+      const md = readFileSync(localPath, "utf8");
+      const dest = parseLocalEdition(edition, md);
+      // Paridade com parsePost (raw-post): avisa tanto no caso 0 quanto no
+      // caso parcial (1-2 de 3 esperados) — sem isso, uma edição com só 1-2
+      // blocos DESTAQUE N reconhecidos passava batido, sem warning.
+      if (dest.length === 0) {
+        warnings.push(
+          `${edition}: 0 destaques via modo local (02-reviewed.md presente, mas nenhum bloco DESTAQUE N casou) — verificar formato`,
+        );
+      } else if (dest.length < 3) {
+        warnings.push(
+          `${edition}: parseou ${dest.length} destaques via modo local (esperado 3)`,
+        );
+      }
+      allDestaques.push(...dest);
+      source_counts.local++;
+      continue;
+    }
+
+    const rawFile = rawByEdition.get(edition);
+    if (rawFile) {
+      const text = readFileSync(rawFile.path, "utf8");
+      allDestaques.push(...parsePost(rawFile, text, warnings)); // parsePost já empurra warning em 0
+      source_counts.raw++;
+      continue;
+    }
+
+    // Diretório da edição existe em `editionsRoot` (ex: pipeline rodou o
+    // Stage 1 mas não chegou no Stage 2), porém sem 02-reviewed.md — e sem
+    // raw-post correspondente. Nunca falha silenciosa (#2794): warning
+    // explícito, contribui 0 destaques, e o script segue normalmente.
+    warnings.push(`${edition}: nem 02-reviewed.md local nem raw-post encontrado — 0 destaques`);
+    source_counts.missing++;
+  }
+
+  return { destaques: allDestaques, warnings, source_counts };
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
 function main() {
@@ -291,29 +472,25 @@ function main() {
   const yymm = cycleToYymm(cycle);
   // #2048 item 2: escrita sempre usa o formato novo — sem fallback legado.
   const editionDir = resolveMonthlyDir(cycle, { allowLegacyFallback: false });
+  const editionsRoot = join(ROOT, "data", "editions");
 
-  const files = listRawPosts(editionDir);
-  if (files.length === 0) {
+  const result = collectMonth(yymm, editionDir, editionsRoot);
+  const editionsProcessed = result.source_counts.local + result.source_counts.raw;
+  if (editionsProcessed === 0) {
     console.error(
-      `Nenhum raw-post encontrado em ${editionDir}/raw-posts/. ` +
-        `Rode fetch-monthly-posts.ts antes do script (ver SKILL.md Stage 1a).`,
+      `Nenhuma edição encontrada para ${yymm}: nem 02-reviewed.md em ${editionsRoot}/${yymm}XX/ (modo local, #2791), ` +
+        `nem raw-post em ${editionDir}/raw-posts/. Rode fetch-monthly-posts.ts antes do script (ver SKILL.md Stage 1a) ` +
+        `ou confira se as edições diárias do mês existem localmente.`,
     );
     process.exit(1);
   }
 
-  const allDestaques: MonthlyDestaque[] = [];
-  const warnings: string[] = [];
-
-  for (const f of files) {
-    const text = readFileSync(f.path, "utf8");
-    const dest = parsePost(f, text, warnings);
-    allDestaques.push(...dest);
-  }
+  const { destaques: allDestaques, warnings } = result;
 
   const output: MonthlyOutput = {
     yymm,
     generated_at: new Date().toISOString(),
-    editions_count: files.length,
+    editions_count: editionsProcessed,
     destaques_count: allDestaques.length,
     destaques: allDestaques,
     warnings,
@@ -326,8 +503,13 @@ function main() {
 
   const brCount = allDestaques.filter((d) => d.is_brazil).length;
   console.log(
-    `OK: ${allDestaques.length} destaques de ${files.length} edições (${brCount} marcados Brasil) → ${outPath}`,
+    `OK: ${allDestaques.length} destaques de ${editionsProcessed} edições ` +
+      `(local: ${result.source_counts.local}, raw: ${result.source_counts.raw}, ` +
+      `${brCount} marcados Brasil) → ${outPath}`,
   );
+  if (result.source_counts.missing > 0) {
+    console.log(`${result.source_counts.missing} edição(ões) sem local nem raw-post (ver warnings).`);
+  }
   if (warnings.length > 0) {
     console.log(`Warnings: ${warnings.length}`);
     for (const w of warnings) console.log(`  - ${w}`);
