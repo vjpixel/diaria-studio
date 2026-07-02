@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeStoreSummary } from "../scripts/clarice-db-summary.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
+import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES } from "../scripts/lib/cohorts.ts";
 
 test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () => {
   const db = openClariceDb(":memory:");
@@ -23,15 +24,16 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   const s = computeStoreSummary(db);
 
   assert.equal(s.total, 5);
-  // #2732: by_tier espelha o universo `firstSend` de segmentFromStore —
-  // send_eligible=1 E sends_count=0. tier 1 → a,e (2, ambos elegíveis e
-  // nunca enviados); tier 2 → b(sends=3, já enviado)+c(sends=2 mas unsub →
-  // inelegível) EXCLUÍDOS; null → d (dispute → inelegível, mesmo com
-  // sends_count=0) também EXCLUÍDO — nunca-enviado NÃO basta, precisa ser
+  // #2732: by_cohort_first_send (#2857 fase B, sucessor de by_tier) espelha o
+  // universo `firstSend` de segmentFromStore — send_eligible=1 E sends_count=0.
+  // tier 1 → cohort assinantes-ativos: a,e (2, ambos elegíveis e nunca
+  // enviados); tier 2 → cohort ex-assinantes: b(sends=3, já enviado)+c(sends=2
+  // mas unsub → inelegível) EXCLUÍDOS; null → d (dispute → inelegível, mesmo
+  // com sends_count=0) também EXCLUÍDO — nunca-enviado NÃO basta, precisa ser
   // elegível (senão nunca vai pra fila real de 1º envio).
-  assert.equal(s.by_tier["1"], 2);
-  assert.equal(s.by_tier["2"], undefined);
-  assert.equal(s.by_tier["null"], undefined);
+  assert.equal(s.by_cohort_first_send[COHORT_ASSINANTES_ATIVOS], 2);
+  assert.equal(s.by_cohort_first_send[COHORT_EX_ASSINANTES], undefined);
+  assert.equal(s.by_cohort_first_send["null"], undefined);
   // elegibilidade: c (unsub) e d (dispute) cortados → 3 elegíveis, 2 inelegíveis
   assert.equal(s.eligibility.eligible, 3);
   assert.equal(s.eligibility.ineligible, 2);
@@ -62,9 +64,10 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(vHist["60"], 1, "b: verified com 60 pontos");
   assert.equal(vHist["40"], undefined, "e: optin sem MV → ausente");
   assert.equal(vHist["-20"], undefined, "c: sem MV → ausente");
-  // by_tier_verified: universo firstSend ∩ verified — só a (tier 1, nunca
-  // enviado, verified). e é firstSend mas sem MV; b é verified mas reSend.
-  assert.deepEqual(s.by_tier_verified, { "1": 1 });
+  // by_cohort_first_send_verified: universo firstSend ∩ verified — só a
+  // (tier 1 → cohort assinantes-ativos, nunca enviado, verified). e é
+  // firstSend mas sem MV; b é verified mas reSend.
+  assert.deepEqual(s.by_cohort_first_send_verified, { [COHORT_ASSINANTES_ATIVOS]: 1 });
   // mv: verified (a,b)=2; none (c,d,e)=3
   assert.equal(s.mv["verified"], 2);
   assert.equal(s.mv["none"], 3);
@@ -75,25 +78,25 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   db.close();
 });
 
-test("computeStoreSummary: by_tier exclui nunca-enviado MAS inelegível (dispute/unsub) — só firstSend real (#2732)", () => {
+test("computeStoreSummary: by_cohort_first_send exclui nunca-enviado MAS inelegível (dispute/unsub) — só firstSend real (#2732, #2857 fase B)", () => {
   // Regressão: a 1ª versão do fix filtrava by_tier só por sends_count=0, sem
   // checar send_eligible. Um contato nunca-enviado mas permanentemente
   // bloqueado (disputa, mv_rejected, unsub antes do 1º envio) tem
   // sends_count=0 e passaria no filtro antigo — mas segmentFromStore roteia
-  // esse contato pra `excluded`, nunca `firstSend`. by_tier tinha que
-  // acompanhar isso ou infla a contagem "1º envio" com gente que nunca vai
+  // esse contato pra `excluded`, nunca `firstSend`. by_cohort_first_send tinha
+  // que acompanhar isso ou infla a contagem "1º envio" com gente que nunca vai
   // ser enviada.
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
-  // elegível, nunca enviado, tier 3, mv verified — DEVE contar
+  // elegível, nunca enviado, tier 3 (cohort leads-2026-jan-abr), mv verified — DEVE contar
   ins("INSERT INTO clarice_users (email, status, tier, mv_bucket) VALUES ('ok@x.com','active',3,'verified')");
   // disputado, nunca enviado (sends_count implícito 0), tier 3 — NÃO deve contar
   ins("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('disputa@x.com',3,10)");
   recomputeDerived(db);
 
   const s = computeStoreSummary(db);
-  assert.equal(s.by_tier["3"], 1); // só ok@x.com
+  assert.equal(s.by_cohort_first_send["leads-2026-jan-abr"], 1); // só ok@x.com
   db.close();
 });
 

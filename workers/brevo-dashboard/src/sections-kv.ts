@@ -1,6 +1,11 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport, type CouponCodeReport, commissionCents } from "../../../scripts/lib/stripe-coupons.ts";
 import { tierRank, cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
+// #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
+// (sucessor do tierRank, ver tierBreakdownRows/cohortFirstSendBreakdownRows
+// abaixo). cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
+// clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
+import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, CLARICE_PLAN_TOTAL, ENVIOS_TOOLTIP } from "./sections-core.ts";
 
@@ -616,6 +621,42 @@ export function renderContactsSummarySection(
         `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(tierLabel(k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byTierVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
       .join("");
   };
+  // #2857 fase B: sucessor de tierBreakdownRows — MESMO papel (sub-linhas "1º
+  // envio" logo após a linha 0), mas agrupado por `cohort` em vez de `tier`
+  // (`by_cohort_first_send`, ver clarice-db-summary.ts). Ordem: cohortSendRank
+  // ASC (mesma regra de prioridade de envio que `segmentFromStore` usa —
+  // #2857 fase B trocou `tierRank` por `cohortSendRank` lá também), "sem
+  // cohort" por último. Rótulo pt-BR via `cohortLabel` (mesma função da
+  // tabela "Por safra", `cohortSection` abaixo).
+  const cohortFirstSendBreakdownRows = (
+    byCohortFirstSend: Record<string, number> | undefined,
+    byCohortFirstSendVerified: Record<string, number> | undefined,
+  ): string => {
+    const entries = Object.entries(byCohortFirstSend ?? {});
+    if (entries.length === 0) return "";
+    const withVerifiedCol = byCohortFirstSendVerified !== undefined;
+    const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
+    return entries
+      .sort(([a], [b]) => rank(a) - rank(b))
+      .map(([k, v]) =>
+        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
+      .join("");
+  };
+  // Escolhe qual breakdown de "1º envio" renderizar: `by_cohort_first_send`
+  // (payload novo, #2857 fase B) tem PRECEDÊNCIA sobre `by_tier` (payload
+  // legado, pré-fase-B) — os dois nunca deveriam coexistir num mesmo payload
+  // real (clarice-db-summary.ts emite um OU outro, nunca ambos), mas a
+  // precedência documenta o comportamento se algum dia coexistirem (ex: script
+  // de migração manual do KV). Sem nenhum dos dois campos → sem breakdown.
+  const firstSendBreakdownRows = (
+    byCohortFirstSend: Record<string, number> | undefined,
+    byCohortFirstSendVerified: Record<string, number> | undefined,
+    byTier: Record<string, number> | undefined,
+    byTierVerified: Record<string, number> | undefined,
+  ): string =>
+    byCohortFirstSend
+      ? cohortFirstSendBreakdownRows(byCohortFirstSend, byCohortFirstSendVerified)
+      : tierBreakdownRows(byTier, byTierVerified);
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
     "zero (sem histórico)": pp.eq0,
@@ -643,11 +684,21 @@ export function renderContactsSummarySection(
     // traz o campo novo; payload antigo renderiza a tabela de 2 colunas.
     const vHist = s.priority_points_histogram_verified;
     const withVerified = vHist !== undefined;
-    // #2805: logo após a linha 0 entram as sub-linhas do breakdown por tier
+    // #2805: logo após a linha 0 entram as sub-linhas do breakdown de 1º envio
     // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
-    // mas não coincide com ela; ver comentário do tierBreakdownRows).
+    // mas não coincide com ela; ver comentário do tierBreakdownRows). #2857
+    // fase B: cohort tem precedência sobre tier (firstSendBreakdownRows).
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${k === "0" ? tierBreakdownRows(s.by_tier, withVerified ? (s.by_tier_verified ?? {}) : undefined) : ""}`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${
+        k === "0"
+          ? firstSendBreakdownRows(
+              s.by_cohort_first_send,
+              withVerified ? (s.by_cohort_first_send_verified ?? {}) : undefined,
+              s.by_tier,
+              withVerified ? (s.by_tier_verified ?? {}) : undefined,
+            )
+          : ""
+      }`,
     ).join("\n");
     return `<div class="table-wrap"><table>
       <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
@@ -665,12 +716,16 @@ export function renderContactsSummarySection(
   const renderPriorityPointsFallback = (
     map: Record<string, number>,
     byTier: Record<string, number> | undefined,
+    byCohortFirstSend: Record<string, number> | undefined,
   ): string => {
     const rows = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => {
         const row = `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`;
-        return k === "zero (sem histórico)" ? row + tierBreakdownRows(byTier, undefined) : row;
+        // #2857 fase B: cohort tem precedência sobre tier (firstSendBreakdownRows).
+        return k === "zero (sem histórico)"
+          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined, byTier, undefined)
+          : row;
       })
       .join("\n");
     return `<div class="table-wrap"><table>
@@ -681,7 +736,7 @@ export function renderContactsSummarySection(
   // breakdown por tier anexado à faixa "zero", #2812 item 6).
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
-    : renderPriorityPointsFallback(ppMap, s.by_tier);
+    : renderPriorityPointsFallback(ppMap, s.by_tier, s.by_cohort_first_send);
   const brevoBadge = brevo.has_signal
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;

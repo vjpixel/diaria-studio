@@ -146,7 +146,18 @@ export interface ContactsSummary {
   generated_at: string;
   total: number;
   brevo: { synced_rows: number; has_signal: boolean };
-  by_tier: Record<string, number>;
+  // #2857 fase B: `by_tier`/`by_tier_verified` NÃO são mais emitidos por
+  // clarice-db-summary.ts (sucessor: `by_cohort_first_send`/
+  // `by_cohort_first_send_verified`, abaixo) — mantidos aqui só OPCIONAIS pra
+  // o render continuar lendo um KV cacheado gravado ANTES desta migração
+  // (mesmo padrão de opcionalidade de `by_cohort`/#2817 logo abaixo).
+  by_tier?: Record<string, number>;
+  by_tier_verified?: Record<string, number>;
+  // #2857 fase B: sucessor de by_tier/by_tier_verified (universo firstSend,
+  // agrupado por cohort em vez de tier). Opcionais — KV pré-fase-B não tem;
+  // o render degrada pro by_tier legado (ver sections-kv.ts).
+  by_cohort_first_send?: Record<string, number>;
+  by_cohort_first_send_verified?: Record<string, number>;
   eligibility: {
     eligible: number;
     ineligible: number;
@@ -165,7 +176,6 @@ export interface ContactsSummary {
   // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
   // tier firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
   priority_points_histogram_verified?: Record<string, number>;
-  by_tier_verified?: Record<string, number>;
   // #2817: agregado por safra mensal (opcionais — KV antigo não tem os campos;
   // render degrada omitindo a tabela "Por safra (cohort)" inteira).
   by_cohort?: Record<string, number>;

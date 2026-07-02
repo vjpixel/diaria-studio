@@ -145,7 +145,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const db = openClariceDb(dbPath);
   const rows = db
     .prepare(
-      `SELECT email, name, tier, priority_points, send_eligible, ineligible_reason, sends_count
+      `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count
          FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
     )
     .all(...(cohort ? [cohort] : [])) as unknown as BuilderRow[];

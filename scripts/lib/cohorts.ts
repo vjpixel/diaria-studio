@@ -116,6 +116,22 @@ const LEGACY_LEAD_PERIOD_START: Record<string, string> = {
 /** Casa 'leads-YYYY-MM' (safra mensal, forma canônica de `cohortFromSafra`). */
 const MONTHLY_SAFRA_RE = /^leads-(\d{4})-(\d{2})$/;
 
+/** Todos os slugs derivados de tier (`TIER_TO_COHORT`) — usado por `isKnownCohortSlug`. */
+const KNOWN_TIER_COHORT_SLUGS = new Set<string>(Object.values(TIER_TO_COHORT));
+
+/**
+ * `slug` é um cohort reconhecido pela taxonomia (#2857 fase B — CLIs aceitam o
+ * slug canônico diretamente em `--cohort`, além dos aliases pt-BR/legado/tier,
+ * ver `resolveCohortArg` em `clarice-segment.ts`)? Cobre os 10 slugs derivados
+ * de tier (`TIER_TO_COHORT` — inclui os 3 nomes fixos + os 7 semestrais/range
+ * legados) + qualquer safra mensal `leads-YYYY-MM` (mesmo `MONTHLY_SAFRA_RE`
+ * de `leadPeriodStartMs` abaixo — sem lista hardcoded de meses futuros, mesmo
+ * padrão de `cohortSendRank`/`cohortDisplayLabel`).
+ */
+export function isKnownCohortSlug(slug: string): boolean {
+  return KNOWN_TIER_COHORT_SLUGS.has(slug) || MONTHLY_SAFRA_RE.test(slug);
+}
+
 /**
  * Início do período (epoch ms, UTC) de um cohort "leads-*" reconhecido.
  * `null` se não for um cohort de lead reconhecido (assinantes/ex-assinantes/

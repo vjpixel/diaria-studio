@@ -11,13 +11,23 @@ import {
   deriveCohort,
   cohortLabel,
   resolveCohortArg,
+  tierRank,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
+import { cohortFromTier } from "../scripts/lib/cohorts.ts";
 
+// #2857 fase B: `cohort` (não mais `tier`) governa a ordem de 1º envio em
+// segmentFromStore — default derivado de `tier` (mesma regra que
+// recomputeDerived aplica no store real, ver clarice-db.ts), sobrescrevível
+// via `p.cohort` explícito quando um teste quer simular um cohort divergente
+// do tier (ex: safra mensal, que não tem tier residual real na prática mas é
+// útil pra exercitar o caminho isoladamente).
 function row(p: Partial<StoreRow> & { email: string }): StoreRow {
+  const tier = p.tier ?? null;
   return {
-    tier: null,
+    tier,
+    cohort: cohortFromTier(tier),
     priority_points: 0,
     send_eligible: 1,
     ineligible_reason: null,
@@ -350,4 +360,148 @@ test("resolveCohortArg: rótulo pt-BR (case-insensitive) resolve pro slug do ano
 test("resolveCohortArg: input não reconhecido lança erro claro", () => {
   assert.throws(() => resolveCohortArg("fevereiro-de-2099"), /não reconhecido/);
   assert.throws(() => resolveCohortArg(""), /não reconhecido/);
+});
+
+// ---------------------------------------------------------------------------
+// #2857 fase B — resolveCohortArg: slug canônico direto + alias de tier legado
+// ---------------------------------------------------------------------------
+
+test("resolveCohortArg: slug canônico da taxonomia é aceito diretamente (#2857 fase B)", () => {
+  assert.equal(resolveCohortArg("assinantes-ativos"), "assinantes-ativos");
+  assert.equal(resolveCohortArg("ex-assinantes"), "ex-assinantes");
+  assert.equal(resolveCohortArg("leads-2025h2"), "leads-2025h2");
+  assert.equal(resolveCohortArg("leads-2026-jan-abr"), "leads-2026-jan-abr");
+  assert.equal(resolveCohortArg("leads-caudao"), "leads-caudao");
+  // forma canônica de safra passada DIRETO (já com prefixo leads-), sem passar
+  // pelo caminho pt-BR/YYYY-MM cru.
+  assert.equal(resolveCohortArg("leads-2026-06"), "leads-2026-06");
+});
+
+test("resolveCohortArg: slug inventado (não reconhecido) continua lançando erro", () => {
+  assert.throws(() => resolveCohortArg("cohort-que-nao-existe"), /não reconhecido/);
+  // "leads-9999-99" TEM a forma sintática de safra mensal (\d{4}-\d{2}) — mesma
+  // leniência de cohortDisplayLabel/cohortSendRank (não validam mês 1-12, ver
+  // test/cohorts.test.ts "forma corrompida/desconhecida"), então É aceito por
+  // isKnownCohortSlug. "leads-lixo", sem a forma numérica, não é reconhecido.
+  assert.doesNotThrow(() => resolveCohortArg("leads-9999-99"));
+  assert.throws(() => resolveCohortArg("leads-lixo"), /não reconhecido/);
+});
+
+test("resolveCohortArg: alias de tier legado 't04'/'T4' (case-insensitive) resolve pro cohort, com warning de deprecação (#2857 fase B)", () => {
+  const warnings: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  try {
+    assert.equal(resolveCohortArg("t04"), "leads-2025h2");
+    assert.equal(resolveCohortArg("T4"), "leads-2025h2");
+    assert.equal(resolveCohortArg("t01"), "assinantes-ativos");
+    assert.equal(resolveCohortArg("t02"), "ex-assinantes");
+    assert.equal(resolveCohortArg("t10"), "leads-caudao");
+  } finally {
+    console.error = orig;
+  }
+  assert.ok(
+    warnings.some((w) => /alias de tier LEGADO/.test(w)),
+    "deve emitir warning de deprecação em stderr ao resolver um alias de tier",
+  );
+});
+
+test("resolveCohortArg: alias de tier fora do mapa (t00/t11) lança o mesmo erro genérico, sem warning silencioso", () => {
+  const warnings: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  try {
+    assert.throws(() => resolveCohortArg("t00"), /não reconhecido/);
+    assert.throws(() => resolveCohortArg("t11"), /não reconhecido/);
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(warnings.length, 0, "tier fora do mapa não deve emitir warning (o alias nunca foi válido)");
+});
+
+// ---------------------------------------------------------------------------
+// #2857 fase B — equivalência tier-order ⇄ cohort-order (gate da migração,
+// Refs #2857 fase B item 1: "ordenação de 1º envio passa de tierRank(tier)
+// pra cohortSendRank(cohort)")
+// ---------------------------------------------------------------------------
+
+/** Réplica PURA e independente da ordenação de 1º envio PRÉ-fase-B (tierRank
+ * ASC + email ASC) — oráculo que NÃO reusa segmentFromStore/cohortSendRank,
+ * pra um bug introduzido na migração não escapar por "comparar consigo mesma". */
+function firstSendOrderByTierOracle(rows: StoreRow[]): string[] {
+  return rows
+    .filter((r) => isFirstSend(r))
+    .slice()
+    .sort((a, b) => {
+      const ra = tierRank(a.tier);
+      const rb = tierRank(b.tier);
+      if (ra !== rb) return ra < rb ? -1 : 1;
+      return a.email.localeCompare(b.email);
+    })
+    .map((r) => r.email);
+}
+
+test("#2857 fase B equivalência (a): SEM safras mensais, a ordem de 1º envio por cohort é BYTE-IDÊNTICA à ordem antiga por tier", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // 2 contatos por tier (T01..T10) + 2 sem tier — todos elegíveis, nunca
+  // enviados, `created` ANTES do epoch da safra (2026-05) → nenhum cohort vem
+  // de safra (cohort = cohortFromTier(tier) pra todos, via recomputeDerived).
+  for (let t = 1; t <= 10; t++) {
+    ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, '2025-01-01T00:00:00Z')", `t${String(t).padStart(2, "0")}b@x.com`, t);
+    ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, '2025-01-01T00:00:00Z')", `t${String(t).padStart(2, "0")}a@x.com`, t);
+  }
+  ins("INSERT INTO clarice_users (email, created) VALUES ('nullb@x.com', '2025-01-01T00:00:00Z')");
+  ins("INSERT INTO clarice_users (email, created) VALUES ('nulla@x.com', '2025-01-01T00:00:00Z')");
+  recomputeDerived(db);
+
+  const rows = loadStoreRows(db);
+  const cohortOrder = segmentFromStore(rows).firstSend.map((r) => r.email);
+  const tierOracleOrder = firstSendOrderByTierOracle(rows);
+
+  assert.deepEqual(
+    cohortOrder,
+    tierOracleOrder,
+    "sem safras mensais, cohort-order (novo) deve ser byte-idêntica a tier-order (antigo)",
+  );
+  // sanidade: não é um empate degenerado (22 linhas elegíveis nunca-enviadas).
+  assert.equal(cohortOrder.length, 22);
+  db.close();
+});
+
+test("#2857 fase B equivalência (b): COM safras mensais, a diferença é EXATAMENTE a documentada (recência da safra > tier residual do merge)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // Os 3 contatos têm o MESMO tier=3 (o "semestre corrente" que o merge
+  // atribuiria a qualquer lead de jan-jun/2026, via tierOf em
+  // merge-clarice-subscribers.ts) — sob a ordenação ANTIGA (tier), eles
+  // empatam e desempatam só por email ASC, cegos à recência real.
+  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('a-janabr@x.com', 3, '2026-03-01T00:00:00Z')"); // pré-epoch → cohort do tier
+  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('b-mai@x.com', 3, '2026-05-10T00:00:00Z')");     // safra maio
+  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('c-jun@x.com', 3, '2026-06-10T00:00:00Z')");     // safra junho
+  recomputeDerived(db);
+
+  const rows = loadStoreRows(db);
+  const byEmail = new Map(rows.map((r) => [r.email, r]));
+  // sanidade (#2857 fase A): a safra venceu o tier residual na coluna cohort.
+  assert.equal(byEmail.get("a-janabr@x.com")!.cohort, "leads-2026-jan-abr");
+  assert.equal(byEmail.get("b-mai@x.com")!.cohort, "leads-2026-05");
+  assert.equal(byEmail.get("c-jun@x.com")!.cohort, "leads-2026-06");
+
+  const cohortOrder = segmentFromStore(rows).firstSend.map((r) => r.email);
+  const tierOracleOrder = firstSendOrderByTierOracle(rows);
+
+  // ANTES (tier, oráculo independente): mesmo tier(3) pros 3 → desempate só
+  // por email ASC (cego à recência).
+  assert.deepEqual(tierOracleOrder, ["a-janabr@x.com", "b-mai@x.com", "c-jun@x.com"]);
+  // DEPOIS (cohort, #2857 fase B): safras mensais por recência DECRESCENTE,
+  // acima do bucket legado (jan-abr) que herdou o MESMO tier numérico —
+  // junho (mais novo) primeiro, depois maio, depois o range legado.
+  assert.deepEqual(cohortOrder, ["c-jun@x.com", "b-mai@x.com", "a-janabr@x.com"]);
+  // a diferença documentada precisa ser OBSERVÁVEL (não um no-op disfarçado).
+  assert.notDeepEqual(cohortOrder, tierOracleOrder);
+
+  db.close();
 });

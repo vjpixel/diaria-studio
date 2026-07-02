@@ -11,21 +11,28 @@ import {
 } from "../scripts/clarice-build-waves-store.ts";
 import { CLARICE_SEED_EMAIL } from "../scripts/lib/clarice-seed.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
+import { cohortFromTier } from "../scripts/lib/cohorts.ts";
 
 type BR = {
   email: string;
   name: string | null;
   tier: number | null;
+  cohort?: string | null;
   priority_points: number;
   send_eligible: number;
   ineligible_reason: string | null;
   sends_count: number;
 };
 
+// #2857 fase B: cohort default derivado de tier (mesma regra do store real,
+// ver recomputeDerived em clarice-db.ts) — segmentFromStore ordena 1º envio
+// por cohort agora, não mais por tier.
 function brow(p: Partial<BR> & { email: string }): BR {
+  const tier = p.tier ?? null;
   return {
     name: "Fulano Sobrenome",
-    tier: null,
+    tier,
+    cohort: cohortFromTier(tier),
     priority_points: 0,
     send_eligible: 1,
     ineligible_reason: null,
@@ -242,6 +249,39 @@ test("main: --cohort com forma canônica 'YYYY-MM' funciona igual ao rótulo pt-
   }
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.eligible_total, 1);
+});
+
+test("main: --cohort aceita slug canônico direto e alias de tier legado (#2857 fase B)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-slug-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('ativo@x.com','Ativo','active',1,'2025-01-01T00:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('ex@x.com','Ex',NULL,2,'2025-01-01T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const run = (cohortArg: string): number => {
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+    try {
+      main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run", "--cohort", cohortArg]);
+    } finally {
+      console.log = orig;
+    }
+    return JSON.parse(logs.join("\n")).eligible_total;
+  };
+
+  // slug canônico direto (sem passar pelo caminho pt-BR/YYYY-MM)
+  assert.equal(run("assinantes-ativos"), 1, "slug direto filtra só o assinante ativo");
+  // alias de tier legado — resolve pro MESMO slug (t01 → assinantes-ativos)
+  assert.equal(run("t01"), 1, "alias de tier t01 resolve pro mesmo universo que o slug direto");
+  assert.equal(run("ex-assinantes"), 1, "slug direto ex-assinantes");
+  assert.equal(run("t02"), 1, "alias de tier t02 resolve pro mesmo universo");
 });
 
 test("buildWaveArtifacts: IS_SEED='true' mesmo quando editor já é assinante elegível", () => {
