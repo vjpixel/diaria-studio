@@ -2965,13 +2965,19 @@ export function renderContactsSummarySection(
   // último — via tierRank (fonte única com a segmentação de waves). Chave
   // corrompida/não-numérica (KV casteado sem validar shape) → NaN → tratada
   // como null (vai pro fim), nunca comparator NaN (ordem indefinida).
+  // `byTierVerified === undefined` ⇒ tabela SEM a coluna verified (o caller
+  // passa o campo só quando a coluna global está ativa — review #2815: os dois
+  // campos verified sempre nascem juntos no summary; payload parcial mostra 0,
+  // trade-off aceito e documentado). A mesma ressalva de universos vale pra
+  // coluna verified: o verified da linha 0 é do bucket inteiro (sem internos),
+  // o das sub-linhas é do firstSend — as somas não conciliam por design.
   const tierBreakdownRows = (
     byTier: Record<string, number> | undefined,
     byTierVerified: Record<string, number> | undefined,
-    withVerifiedCol: boolean,
   ): string => {
     const entries = Object.entries(byTier ?? {});
     if (entries.length === 0) return "";
+    const withVerifiedCol = byTierVerified !== undefined;
     const rank = (k: string): number => {
       const num = Number(k);
       return tierRank(k === "null" || isNaN(num) ? null : num);
@@ -3013,7 +3019,7 @@ export function renderContactsSummarySection(
     // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
     // mas não coincide com ela; ver comentário do tierBreakdownRows).
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${k === "0" ? tierBreakdownRows(s.by_tier, s.by_tier_verified, withVerified) : ""}`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${k === "0" ? tierBreakdownRows(s.by_tier, withVerified ? (s.by_tier_verified ?? {}) : undefined) : ""}`,
     ).join("\n");
     return `<div class="table-wrap"><table>
       <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>

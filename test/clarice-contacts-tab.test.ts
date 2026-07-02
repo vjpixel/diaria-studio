@@ -130,9 +130,10 @@ test("renderContactsSummarySection: KV antigo (sem campos verified) → tabela d
   };
   const html = renderContactsSummarySection(withHistogram);
   // (não usar />verified</ solto — a tabela do MillionVerifier tem a chave
-  // "verified" como linha legítima; o que não pode existir é o HEADER da coluna)
+  // "verified" como linha legítima; o que não pode existir é o HEADER da coluna.
+  // O shape da linha sem coluna extra já é coberto pela regex do teste "3ª
+  // iteração" acima — sem assert duplicado aqui, review #2815.)
   assert.doesNotMatch(html, /<th[^>]*>verified<\/th>/, "coluna não aparece sem o dado");
-  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><\/tr>/);
 });
 
 test("renderContactsSummarySection: chave corrompida no by_tier → vai pro fim, ordem estável (#2807 review)", () => {
