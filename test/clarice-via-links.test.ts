@@ -109,7 +109,7 @@ describe("arquivos commitados não têm link da Clarice sem via=diaria (#1910)",
   // este teste falha alto em vez de a cobertura encolher em silêncio.
   const MUST_COVER = [
     "scripts/stitch-newsletter.ts",
-    "scripts/lib/monthly-render.ts",
+    "scripts/lib/mensal/monthly-render.ts", // #2747: movido pra lib/mensal/
     "scripts/publish-monthly.ts",
     "workers/poll/src/lib.ts",
   ];
