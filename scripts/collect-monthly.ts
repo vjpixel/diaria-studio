@@ -359,6 +359,10 @@ export function parseLocalEdition(edition: string, md: string): MonthlyDestaque[
 
     destaques.push({
       edition,
+      // Modo local não tem o post_id do Beehiiv à mão (só existe no
+      // filename do raw-post baixado via API). O campo não é consumido
+      // programaticamente em nenhum lugar downstream (analyst-monthly /
+      // writer-monthly só o exibem como referência) — vazio é seguro aqui.
       beehiiv_post_id: "",
       position: position as 1 | 2 | 3,
       category,

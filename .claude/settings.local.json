@@ -32,7 +32,19 @@
       "Bash(rm -f .git/AUTO_MERGE)",
       "mcp__claude_ai_Stripe__stripe_api_execute",
       "Bash(powershell *)",
-      "Bash(claude mcp *)"
+      "Bash(claude mcp *)",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=12\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=20\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=25\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=40\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?status=queued&limit=10\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?status=scheduled&limit=10\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api\")",
+      "Bash(curl -s \"https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=100\")",
+      "Bash(gh issue *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Skill(code-review)"
     ]
   },
   "enableAllProjectMcpServers": true,
