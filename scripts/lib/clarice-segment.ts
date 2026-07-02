@@ -61,22 +61,48 @@ export function isSendEligible(r: Pick<StoreRow, "send_eligible">): boolean {
   return Boolean(r.send_eligible);
 }
 
-/** 1º envio: elegível E nunca recebeu email (sends_count 0 ou null). */
+/**
+ * 1º envio: elegível E nunca recebeu email (sends_count 0, null, negativo ou NaN).
+ *
+ * `!(sends_count > 0)` (não `=== 0`, #2812 item 5): sends_count é
+ * COUNT-derivado e nunca deveria ser negativo/NaN no schema atual (coluna
+ * INTEGER), mas um valor patológico (dado corrompido / migração futura /
+ * StoreRow construído fora do SQLite) tratado como "nunca enviado" é a
+ * leitura mais segura — restaura a partição implícita pré-#2782, onde
+ * qualquer valor que não fosse estritamente positivo caía no `else`
+ * (firstSend) por não bater a condição de re-envio. Com `=== 0` estrito, um
+ * sends_count negativo OU NaN caía silenciosamente em reSend (partição
+ * errada, sem sinalizar o dado ruim). `!(x > 0)` cobre os dois: `NaN > 0` e
+ * `-1 > 0` são ambos `false`, então a negação é `true` em ambos os casos —
+ * equivalente a `<= 0` para números reais, mas também correto para NaN
+ * (onde `NaN <= 0` seria `false`, o oposto do desejado).
+ */
 export function isFirstSend(
   r: Pick<StoreRow, "send_eligible" | "sends_count">,
 ): boolean {
-  return isSendEligible(r) && (r.sends_count ?? 0) === 0;
+  return isSendEligible(r) && !((r.sends_count ?? 0) > 0);
 }
 
 /**
  * Cláusula SQL equivalente a `isFirstSend` (pra agregar via SQL sem carregar o
  * store em JS). Espelhos: `send_eligible=1` ⇄ truthy (a coluna só assume 0|1|
- * NULL — schema em clarice-db.ts); `COALESCE(sends_count,0)=0` ⇄ `?? 0`.
+ * NULL — schema em clarice-db.ts); `COALESCE(sends_count,0)<=0` ⇄
+ * `!((?? 0) > 0)` — equivalentes para os valores reais que a coluna INTEGER
+ * pode assumir (SQLite não representa NaN numa coluna INTEGER, então `<=0`
+ * já cobre o mesmo universo que `!(x>0)` cobre em JS; #2812 item 5:
+ * sincronizado com o guard de negativo/NaN de `isFirstSend`).
  * Mudou a regra? Mude AQUI e em `isFirstSend` juntos — o teste de equivalência
  * pega drift.
+ *
+ * #2812 item 4: colunas qualificadas com `clarice_users.` — hoje o único
+ * consumidor (`scripts/clarice-db-summary.ts`) usa esta cláusula num
+ * `FROM clarice_users WHERE ...` single-table (grep confirmado), então a
+ * qualificação é redundante no uso atual, mas documenta a premissa e blinda
+ * contra ambiguidade silenciosa se um JOIN futuro introduzir outra tabela
+ * com colunas de mesmo nome (`send_eligible`/`sends_count`).
  */
 export const FIRST_SEND_SQL_PREDICATE =
-  "send_eligible=1 AND COALESCE(sends_count,0)=0";
+  "clarice_users.send_eligible=1 AND COALESCE(clarice_users.sends_count,0)<=0";
 
 /**
  * Segmenta o universo do store nos 3 grupos. Puro e determinístico.

@@ -60,6 +60,28 @@ test("renderContactsSummarySection: sem priority_points_histogram (KV pré-#2731
   assert.doesNotMatch(html, /valor exato/, "não deve mostrar o cabeçalho do histograma novo sem o campo");
 });
 
+test("renderContactsSummarySection: fallback pré-#2731 anexa o breakdown por tier à faixa 'zero' (#2812 item 6)", () => {
+  // `sample` tem by_tier mas NÃO tem priority_points_histogram — antes do
+  // #2812 item 6, o fallback não mostrava tier NENHUM (a tabela "Por tier"
+  // standalone foi removida no #2805, e o breakdown só existia dentro do
+  // histograma novo). Agora o fallback também anexa as sub-linhas "1º envio".
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /zero \(sem histórico\)/, "faixa 'zero' presente");
+  assert.match(html, /1º envio — T01/, "breakdown por tier (T01) anexado no fallback");
+  assert.match(html, /1º envio — T02/, "breakdown por tier (T02) anexado no fallback");
+  assert.match(html, /1º envio — sem tier/, "tier nulo rotulado 'sem tier'");
+  const idxZero = html.indexOf("zero (sem histórico)");
+  const idxTier = html.indexOf("1º envio — T01");
+  assert.ok(idxZero !== -1 && idxTier !== -1 && idxZero < idxTier, "breakdown vem DEPOIS da linha zero");
+});
+
+test("renderContactsSummarySection: fallback sem by_tier no payload → sem breakdown, não lança (#2812 item 6)", () => {
+  const noByTier = { ...sample, by_tier: undefined };
+  assert.doesNotThrow(() => renderContactsSummarySection(noByTier));
+  const html = renderContactsSummarySection(noByTier);
+  assert.doesNotMatch(html, /1º envio —/, "sem by_tier → sem sub-linhas de breakdown");
+});
+
 test("renderContactsSummarySection: com priority_points_histogram → valores exatos, ordenados DESC (#2731)", () => {
   const withHistogram: ContactsSummary = {
     ...sample,

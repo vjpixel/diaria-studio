@@ -35,6 +35,7 @@ import {
   type ContactsSummary,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { CouponUsageReport } from "../scripts/lib/stripe-coupons.ts";
+import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
 const syntheticCoupons: CouponUsageReport = {
   NEWS50: {
@@ -98,7 +99,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { couponUsage, contactsSummary, cohorts, mvStatus, eiaEngagement } = await readKvTabs(env as any, false);
+    const { couponUsage, contactsSummary, cohorts, mvStatus, eiaEngagement } = await readKvTabs(env as any, "cached");
     assert.notEqual(couponUsage, null, "Cupons deve vir do KV");
     assert.deepEqual(couponUsage, syntheticCoupons);
     assert.notEqual(contactsSummary, null, "Contatos deve vir do KV");
@@ -113,7 +114,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { cohorts, mvStatus, contactsSummary, eiaEngagement } = await readKvTabs(env as any, false);
+    const { cohorts, mvStatus, contactsSummary, eiaEngagement } = await readKvTabs(env as any, "cached");
     assert.equal(cohorts, null);
     assert.equal(mvStatus, null);
     assert.equal(contactsSummary, null);
@@ -159,7 +160,7 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "false", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { couponUsage } = await readKvTabs(env as any, false);
+    const { couponUsage } = await readKvTabs(env as any, "cached");
     assert.equal(couponUsage, null, "flag OFF → cupons null mesmo com KV populado");
   });
 });
@@ -201,23 +202,14 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
       // sem COUPONS_KV_KEY → miss
     });
     const env = { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: kv };
-    const realFetch = globalThis.fetch;
-    const externalCalls: string[] = [];
-    globalThis.fetch = (async (input: unknown) => {
-      externalCalls.push(String(input));
-      throw new Error("chamada externa proibida no fallback de rate-limit");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
-    try {
+    await withFetchSpy(async (externalCalls) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resp = await buildRateLimitFallback(env as any, 120);
       assert.strictEqual(resp.status, 200, "fallback continua servindo o stale 200");
       const body = await resp.text();
       assert.ok(body.includes("panel-contatos"), "abas de KV presentes normalmente");
       assert.deepEqual(externalCalls, [], "o caminho de erro NUNCA faz chamada externa (Stripe incluso)");
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+    });
   });
 
   it("STATS_CACHE ausente → 503 amigável (nunca crasha)", async () => {

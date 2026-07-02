@@ -376,41 +376,56 @@ export const LASTGOOD_TTL = 3600;
 export const COUPONS_KV_KEY = "coupons:usage";
 
 /**
+ * #2812 item 1: modo de leitura KV/Stripe pra `getCouponUsage`/`readKvTabs`.
+ * Substitui o par `(isFresh, kvOnly)` — os dois booleans adjacentes idênticos
+ * permitiam transposição silenciosa sem erro de compilação (risco concreto:
+ * reintroduzir o #2779 por troca de argumento), e `kvOnly=true` tornava
+ * `isFresh` morto (early-return antes de ele ser consultado) sem nenhuma
+ * documentação no tipo. Um enum torna a combinação "fresh + nunca chame
+ * Stripe" irrepresentável — ela nunca fez sentido de qualquer forma.
+ *   "cached"  → KV primeiro; Stripe só em miss (render saudável, default).
+ *   "fresh"   → bypassa KV quando Stripe está disponível (editor pediu ?fresh=1).
+ *   "kv-only" → NUNCA chama Stripe, nem em miss — caminho de erro do #2779
+ *               (fallback de rate-limit do Brevo não pode depender de
+ *               nenhuma chamada externa).
+ */
+export type CouponUsageMode = "cached" | "fresh" | "kv-only";
+
+/**
  * #2718: busca relatório de cupons com KV como fonte primária.
  *
  * Fluxo: KV (populado via MCP externo) → fallback Stripe API (só se
- * STRIPE_API_KEY configurada). Em KV-only (sem Stripe key), isFresh=true
+ * STRIPE_API_KEY configurada). Em KV-only (sem Stripe key), mode="fresh"
  * ainda serve KV — não há fonte mais fresca disponível. Retorna null quando
  * COUPONS_TAB_ENABLED !== "true", em KV miss sem STRIPE_API_KEY, ou em erro.
  *
- * `kvOnly` (#2779): o caminho de erro (fallback de rate-limit do Brevo) exige
- * ZERO chamadas externas — com kvOnly=true, o KV é a única fonte: hit retorna,
+ * `mode="kv-only"` (#2779): o caminho de erro (fallback de rate-limit do
+ * Brevo) exige ZERO chamadas externas — o KV é a única fonte: hit retorna,
  * miss retorna null (tab oculta), nunca cai no fetch Stripe ao vivo.
  */
 /** Exported for unit tests. */
 export async function getCouponUsage(
   env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
-  isFresh: boolean,
-  kvOnly = false,
+  mode: CouponUsageMode = "cached",
 ): Promise<CouponUsageReport | null> {
   if (env.COUPONS_TAB_ENABLED !== "true") return null;
   try {
     if (env.STATS_CACHE) {
       const cached = await env.STATS_CACHE.get<CouponUsageReport>(COUPONS_KV_KEY, "json")
         .catch((e) => { console.error("[#2718] KV read error:", (e as Error).message); return null; });
-      // #2779: kvOnly honra o KV como fonte única — hit OU miss, nunca segue
-      // pro Stripe (antes, um KV miss caía no fetch ao vivo mesmo no fallback).
-      if (kvOnly) return cached;
-      // KV hit: retorna imediatamente, EXCETO quando isFresh=true E Stripe disponível
+      // #2779: mode="kv-only" honra o KV como fonte única — hit OU miss, nunca
+      // segue pro Stripe (antes, um KV miss caía no fetch ao vivo mesmo no fallback).
+      if (mode === "kv-only") return cached;
+      // KV hit: retorna imediatamente, EXCETO quando mode="fresh" E Stripe disponível
       // (nesse caso Stripe tem dados mais frescos). Em KV-only (sem Stripe key), KV
-      // é a fonte mais fresca mesmo com isFresh=true.
-      if (cached !== null && (!isFresh || !env.STRIPE_API_KEY)) return cached;
+      // é a fonte mais fresca mesmo com mode="fresh".
+      if (cached !== null && (mode !== "fresh" || !env.STRIPE_API_KEY)) return cached;
     }
-    // KV miss ou isFresh com Stripe disponível: tenta Stripe API
-    if (kvOnly || !env.STRIPE_API_KEY) return null;
+    // KV miss ou mode="fresh" com Stripe disponível: tenta Stripe API
+    if (mode === "kv-only" || !env.STRIPE_API_KEY) return null;
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
-    // Sempre grava de volta ao KV — inclusive em isFresh, para atualizar o cache
-    // das sessões seguintes (não só do caller que pediu ?fresh=1).
+    // Sempre grava de volta ao KV — inclusive em mode="fresh", para atualizar o
+    // cache das sessões seguintes (não só do caller que pediu ?fresh=1).
     // Design: STRIPE_API_KEY e MCP-sourced data são mutuamente exclusivos.
     // Com STRIPE_API_KEY configurado, o TTL passa a ser 300s (Worker-managed);
     // sem ela, o KV é populado via MCP externo sem TTL (populate-once design).
@@ -442,8 +457,7 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  */
 export async function readKvTabs(
   env: Env,
-  isFresh: boolean,
-  kvOnly = false, // #2779: true no caminho de erro — cupons nunca chamam Stripe ao vivo
+  mode: CouponUsageMode = "cached", // #2812: era (isFresh, kvOnly) — ver CouponUsageMode
 ): Promise<{
   cohorts: EngagementCohorts | null;
   mvStatus: MvStatus | null;
@@ -453,12 +467,14 @@ export async function readKvTabs(
 }> {
   // As 5 leituras são independentes → paralelas (importa no fallback de 429,
   // que está no caminho crítico do render stale).
+  // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 4
+  // seções sempre leem o KV direto, sem noção de fresh/kv-only.
   const kv = env.STATS_CACHE;
   const [cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement] = await Promise.all([
     kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
     kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
     kv ? (kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) as Promise<ContactsSummary | null>) : Promise.resolve(null),
-    getCouponUsage(env, isFresh, kvOnly),
+    getCouponUsage(env, mode),
     kv ? (kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) as Promise<EiaEngagementSummary | null>) : Promise.resolve(null),
   ]);
   return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
@@ -470,11 +486,10 @@ export async function readKvTabs(
  * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
  * vez do HTML inteiro congelado, que escondia dado KV recém-publicado.
  *
- * `kvOnly=true` sempre (#2779): no caminho de erro nunca fazemos chamada
+ * `mode="kv-only"` sempre (#2779): no caminho de erro nunca fazemos chamada
  * externa ao vivo (getCouponUsage) — honramos o KV, e um KV miss de cupons
- * vira tab oculta em vez de fetch Stripe (isFresh=false sozinho não garantia
- * isso em miss). `Array.isArray` guarda contra KV corrompido. Se o re-render
- * lançar, degrada pro 503 amigável (nunca 500).
+ * vira tab oculta em vez de fetch Stripe. `Array.isArray` guarda contra KV
+ * corrompido. Se o re-render lançar, degrada pro 503 amigável (nunca 500).
  *
  * Exported for unit tests (#2733).
  */
@@ -486,7 +501,7 @@ export async function buildRateLimitFallback(
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
     .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, false, true);
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -2940,16 +2955,22 @@ export function renderContactsSummarySection(
   const genBRT = escHtml(fmtTimeBRT(s.generated_at));
 
   // tabelinha {rótulo → contagem}, ordenada por contagem desc.
+  // #2812 item 2: `relabel` (3º parâmetro opcional) foi removido — era morto
+  // desde o #2805 (o único caller com relabel, a tabela "Por tier", foi
+  // removido nesse PR). Verificado de novo agora (pós-#2817): a tabela "Por
+  // safra" nova NÃO usa kvTable — tem seu próprio render (cohortSection, com
+  // ordenação cronológica em vez de por-contagem) — então o parâmetro segue
+  // sem nenhum caller real. `tierLabel`/`cohortLabel` continuam vivos, usados
+  // diretamente por `tierBreakdownRows`/`cohortSection`, fora de kvTable.
   const kvTable = (
     title: string,
     map: Record<string, number> | undefined,
-    relabel: (k: string) => string = (k) => k,
   ): string => {
     const rows = Object.entries(map ?? {})
       .sort((a, b) => b[1] - a[1])
       .map(
         ([k, v]) =>
-          `<tr><td>${escHtml(relabel(k))}</td><td style="text-align:right">${n(v)}</td></tr>`,
+          `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
       )
       .join("\n");
     return `<div class="table-wrap"><table>
@@ -3031,10 +3052,35 @@ export function renderContactsSummarySection(
       <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
-  // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
+  // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
+  // mostrava NENHUM tier — a tabela "Por tier" foi removida no #2805 e o
+  // breakdown por tier só existe hoje dentro de renderPriorityPointsHistogram
+  // (linha 0 do histograma novo). Paridade mínima com o caminho novo: anexa o
+  // MESMO tierBreakdownRows à faixa "zero (sem histórico)" — onde o universo
+  // firstSend se CONCENTRA (mesma ressalva de universos do comentário acima
+  // de tierBreakdownRows). Sem coluna "verified" aqui: o payload que dispara
+  // este fallback é sempre o mais antigo dos dois formatos (pré-#2731), então
+  // nunca teria priority_points_histogram_verified/by_tier_verified também.
+  const renderPriorityPointsFallback = (
+    map: Record<string, number>,
+    byTier: Record<string, number> | undefined,
+  ): string => {
+    const rows = Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => {
+        const row = `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`;
+        return k === "zero (sem histórico)" ? row + tierBreakdownRows(byTier, undefined) : row;
+      })
+      .join("\n");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>priority_points (re-envio, por faixa — aguardando refresh #2731)</th><th style="text-align:right">contatos</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  };
+  // KV pré-#2731 não tem o histograma — degrada pras faixas antigas (com o
+  // breakdown por tier anexado à faixa "zero", #2812 item 6).
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
-    : kvTable("priority_points (re-envio, por faixa — aguardando refresh #2731)", ppMap);
+    : renderPriorityPointsFallback(ppMap, s.by_tier);
   const brevoBadge = brevo.has_signal
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
@@ -3638,7 +3684,7 @@ export default {
     // Não está inclusa na isenção /api/* (que é para automação interna sem cookie).
     if (path === "/api/coupons") {
       if (!isAuthenticated(request, env)) return loginPage();
-      const data = await getCouponUsage(env, isFresh);
+      const data = await getCouponUsage(env, isFresh ? "fresh" : "cached");
       if (!data) return new Response("Not found", { status: 404 });
       return new Response(JSON.stringify(data, null, 2), {
         headers: {
@@ -3664,7 +3710,7 @@ export default {
         const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-        const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh);
+        const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
         const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement);
         const response = new Response(html, {
           headers: {
