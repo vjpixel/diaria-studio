@@ -81,7 +81,7 @@ describe("applyWordJoiner (#2018)", () => {
 describe("word-joiner integração com monthly-render (#2018)", () => {
   it("renderTextInline aplica word-joiner via helper compartilhado", async () => {
     // Import dinâmico do módulo para usar a função exportada indiretamente
-    const { renderInline } = await import("../scripts/lib/monthly-render.ts");
+    const { renderInline } = await import("../scripts/lib/mensal/monthly-render.ts");
     const out = renderInline("Teste Clarice.ai aqui.");
     assert.ok(out.includes("Clarice.&#8288;ai"), `monthly-render deve aplicar word-joiner: ${out}`);
   });

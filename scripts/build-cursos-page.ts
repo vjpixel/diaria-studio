@@ -24,13 +24,13 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
-import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936/#1935: DS canônico
+import { COLORS, FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/cursos/index.html");
 
-// #1936/#1935: DS canônico (vjpixel/diaria-design via lib/design-tokens.ts).
+// #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
 // antigo) — agora os MESMOS tokens da diária/mensal/É IA?: teal #00A0A0,
 // Georgia, papel #FBFAF6, tinta #171411, molduras bege #EBE5D0.

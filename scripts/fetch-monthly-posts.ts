@@ -29,7 +29,7 @@ import {
   parseMonthlyCycleArg,
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BEEHIIV_API = "https://api.beehiiv.com/v2";

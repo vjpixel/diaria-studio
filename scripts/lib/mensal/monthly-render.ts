@@ -14,12 +14,12 @@
  * Georgia (email-safe), sans Geist. Teal = acento (links/kickers/marcas) + réguas
  * (decisão editorial #1936). Shell bege #EBE5D0, card papel #FBFAF6.
  */
-import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
-export { escHtml } from "./html-escape.ts"; // #1990: re-export for back-compat callers
-import { escHtml } from "./html-escape.ts"; // #1990: local usage
-import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper (refs #2048)
-import { buildMensalStyleBlock } from "./newsletter-styles.ts"; // #2635 — CSS base compartilhado
-import { DIARIA_FACEBOOK_PAGE_URL } from "./canonical-urls.ts"; // #2645 — reusa a URL canônica (mesma que a diária)
+import { COLORS, FONTS } from "../shared/design-tokens.ts"; // #1936
+export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat callers
+import { escHtml } from "../html-escape.ts"; // #1990: local usage
+import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
+import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { DIARIA_FACEBOOK_PAGE_URL } from "../canonical-urls.ts"; // #2645 — reusa a URL canônica (mesma que a diária)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0

@@ -38,7 +38,7 @@ import { createHmac } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
-import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/monthly-paths.ts"; // #2009 — marker mensal
+import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts"; // #2009 — marker mensal
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";

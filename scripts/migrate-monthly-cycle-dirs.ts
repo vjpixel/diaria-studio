@@ -38,7 +38,7 @@ import {
   isValidMonthlyCycle,
   yymmToCycle,
   MONTHLY_BASE,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const EXECUTE = process.argv.includes("--execute");
 

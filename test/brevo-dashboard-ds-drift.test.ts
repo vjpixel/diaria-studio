@@ -2,7 +2,7 @@
  * test/brevo-dashboard-ds-drift.test.ts (#2084, refatorado #2107)
  *
  * Garante que os tokens DS no worker não driftem dos valores canônicos em
- * scripts/lib/design-tokens.ts.
+ * scripts/lib/shared/design-tokens.ts.
  *
  * Arquitetura pós-#2107: o arquivo `workers/brevo-dashboard/src/ds-tokens.generated.ts`
  * é GERADO por `scripts/generate-worker-tokens.ts` a partir de design-tokens.ts.
@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COLORS, FONTS } from "../scripts/lib/design-tokens.ts";
+import { COLORS, FONTS } from "../scripts/lib/shared/design-tokens.ts";
 import { DS_COLORS, DS_FONTS } from "../workers/brevo-dashboard/src/ds-tokens.generated.ts";
 import { DS_TOKENS, DS_FONTS as DS_FONTS_INDEX, renderDashboardHtml } from "../workers/brevo-dashboard/src/index.ts";
 import { generateTokensContent } from "../scripts/generate-worker-tokens.ts";

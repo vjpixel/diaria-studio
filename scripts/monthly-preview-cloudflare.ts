@@ -34,8 +34,8 @@ loadProjectEnv();
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
-import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/monthly-image-upload.ts";
+import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
+import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/mensal/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
 import {
   parseMonthlyCycleArg,
@@ -45,7 +45,7 @@ import {
   monthlyWorkerKeyLegacy,
   isValidMonthlyCycle,
   isValidYymm,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

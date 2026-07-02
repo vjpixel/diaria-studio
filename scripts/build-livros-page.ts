@@ -21,13 +21,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936/#1935: DS canônico
+import { COLORS, FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 
-// #1936/#1935: DS canônico (lib/design-tokens.ts) — era ad-hoc (Newsreader +
+// #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
 const TEAL = COLORS.brand; // #00A0A0
 const INK = COLORS.ink; // #171411

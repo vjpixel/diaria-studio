@@ -2,7 +2,7 @@
  * test/monthly-render-extracted.test.ts (#1844)
  *
  * Guarda a extração da camada de render de publish-monthly.ts pro módulo
- * scripts/lib/monthly-render.ts: (a) módulo auto-contido importável direto,
+ * scripts/lib/mensal/monthly-render.ts: (a) módulo auto-contido importável direto,
  * (b) o re-export de back-compat de publish-monthly.ts aponta pra MESMA função.
  */
 
@@ -19,7 +19,7 @@ import {
   wrapEmail,
   renderCobrandHeader,
   renderSocialFooter,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 import {
   escHtml as escReexport,
   draftToEmail as d2eReexport,

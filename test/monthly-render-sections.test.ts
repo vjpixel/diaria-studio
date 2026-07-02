@@ -1,7 +1,7 @@
 /**
  * test/monthly-render-sections.test.ts (#1901/#1902)
  *
- * Regressão: o renderer mensal (scripts/lib/monthly-render.ts) precisa
+ * Regressão: o renderer mensal (scripts/lib/mensal/monthly-render.ts) precisa
  * reconhecer e renderizar as seções USE MELHOR DO MÊS e RADAR DO MÊS
  * (que substituíram OUTRAS NOTÍCIAS DO MÊS). Sem isso, o email publicado
  * não renderizava as seções novas como seções (caíam como prosa solta).
@@ -16,7 +16,7 @@ import {
   renderOutrasNoticias,
   renderEncerramento,
   draftToEmail,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 
 describe("isSectionLabel — novos labels Use Melhor / Radar", () => {
   it("reconhece **USE MELHOR DO MÊS**", () => {

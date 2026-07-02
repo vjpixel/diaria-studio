@@ -9,8 +9,8 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
-import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
-import { buildDiariaStyleBlock } from "./newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
+import { buildDiariaStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -30,7 +30,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // #1936: design system canônico (vjpixel/diaria-design) — valores inline via
-// scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
+// scripts/lib/shared/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
 // sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
 // (links, kickers, marcas). Réguas/bordas = bege (--rule); ver design-tokens.ts.
 // #1943: fundo do e-mail BRANCO (override email-only). O token canônico

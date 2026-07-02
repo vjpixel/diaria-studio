@@ -2,9 +2,9 @@
  * ds-tokens.generated.ts — GERADO AUTOMATICAMENTE. NÃO EDITAR.
  *
  * Gerado por scripts/generate-worker-tokens.ts (#2107) a partir de
- * scripts/lib/design-tokens.ts (fonte canônica do DS Diar.ia).
+ * scripts/lib/shared/design-tokens.ts (fonte canônica do DS Diar.ia).
  *
- * Para atualizar tokens: editar scripts/lib/design-tokens.ts e rodar:
+ * Para atualizar tokens: editar scripts/lib/shared/design-tokens.ts e rodar:
  *   npx tsx scripts/generate-worker-tokens.ts
  * (ou simplesmente: npm test / wrangler deploy — ambos disparam o build step)
  *

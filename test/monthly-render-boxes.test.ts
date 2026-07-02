@@ -17,7 +17,7 @@ import {
   renderClariceBox,
   renderCtaButton,
   draftToEmail,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 import { parseUseMelhorCount } from "../scripts/monthly-click-sections.ts";
 
 describe("isSectionLabel reconhece DIVULGAÇÃO e LIVROS", () => {

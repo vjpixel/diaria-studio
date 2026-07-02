@@ -12,7 +12,7 @@ import {
   renderParagraphs,
   renderIntro,
   renderDestaque,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 
 /** Falha se algum <p style="margin:..."> (corpo) não declarar font-family. */
 function assertBodyParasHaveFont(html: string, ctx: string): void {

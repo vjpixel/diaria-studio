@@ -42,7 +42,7 @@ import { isEditorial } from "./build-link-ctr.ts";
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
