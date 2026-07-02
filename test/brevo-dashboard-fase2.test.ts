@@ -2454,6 +2454,21 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
   });
 
+  test("entrada de KV parcial sem total_votes NÃO derruba o render (degrade '—'; review #2872)", () => {
+    const data = {
+      editions: [
+        { edition: "260701" }, // escrita parcial de KV — só o campo edition
+        { edition: "260630", total_votes: 25, voted_a: 15, voted_b: 10, pct_correct: 60, correct_choice: "A", correct_count: 15 },
+      ],
+      updated_at: "2026-07-02T09:00:00.000Z",
+    } as unknown as EiaEngagementSummary;
+    const html = renderEiaEngagementSection(data); // pré-fix: TypeError → 502 na dashboard inteira
+    assert.match(html, /260701/);
+    assert.match(html, /—/);
+    assert.match(html, /25/, "linha completa segue normal");
+    assert.doesNotMatch(html, /NaN|undefined/);
+  });
+
   test("#2860: renderiza 1 linha por EDIÇÃO (reverte a agregação mensal do #2773), header 'Edição', mais recente primeiro", () => {
     const data: EiaEngagementSummary = {
       editions: [

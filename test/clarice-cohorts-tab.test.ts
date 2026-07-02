@@ -18,9 +18,41 @@ test("renderCohortsTabPanel: stub gracioso quando cohortStats é undefined", () 
   assert.doesNotMatch(html, /undefined/);
 });
 
-test("renderCohortsTabPanel: stub gracioso quando cohortStats é objeto vazio", () => {
+test("renderCohortsTabPanel: {} (script rodou, base vazia) ≠ undefined — NÃO manda re-rodar o script (#2660, review #2872)", () => {
   const html = renderCohortsTabPanel({});
-  assert.match(html, /Dados ainda não gerados/);
+  assert.match(html, /Nenhum cohort no store/);
+  assert.doesNotMatch(html, /Dados ainda não gerados/);
+});
+
+test("renderCohortsTabPanel: payload parcial (numerador ausente) → '—', sem NaN%, sem envenenar colAvg (review #2872)", () => {
+  const partial = {
+    "assinantes-ativos": {
+      contacts: 100, eligible: 90, received: 50, sends_sum: 150,
+      clicked: 10, unsub_bounce: 1, mv_verified: 80, priority_points_sum: 500,
+      // `opened` AUSENTE (KV antigo/parcial) → openRate = NaN sem o guard
+    } as unknown as CohortStatsRow,
+    "ex-assinantes": {
+      contacts: 200, eligible: 180, received: 100, sends_sum: 300,
+      opened: 60, clicked: 20, unsub_bounce: 2, mv_verified: 150, priority_points_sum: 900,
+    },
+  };
+  const html = renderCohortsTabPanel(partial);
+  assert.doesNotMatch(html, /NaN/);
+  assert.match(html, /60\.0%/, "linha completa segue calculada (60/100 abriu)");
+});
+
+test("renderCohortsTabPanel: priority_points_sum null (SQL SUM de tudo-NULL pré-COALESCE) → '—', não 0.0 fake (review #2872)", () => {
+  const stats = {
+    "leads-2026-06": {
+      contacts: 10, eligible: 10, received: 5, sends_sum: 5,
+      opened: 2, clicked: 1, unsub_bounce: 0, mv_verified: 8,
+      priority_points_sum: null as unknown as number,
+    },
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.doesNotMatch(html, /NaN/);
+  assert.match(html, /<td>—<\/td>/, "Pts médio vira '—' (null/received seria 0.0 fake em JS)");
+  assert.doesNotMatch(html, /<td>0\.0<\/td>/);
 });
 
 test("renderCohortsTabPanel: renderiza contatos/elegíveis/recebeu/envios e taxas calculadas", () => {

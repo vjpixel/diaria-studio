@@ -783,16 +783,28 @@ export const COHORT_DEVIATION_THRESHOLD_PP = 20;
 export function renderCohortsTabPanel(
   cohortStats: Record<string, CohortStatsRow> | undefined,
 ): string {
-  if (!cohortStats || Object.keys(cohortStats).length === 0) {
+  // #2660 (review #2872): payload AUSENTE (KV antigo, script nunca rodou) ≠
+  // payload VAZIO (script rodou, store sem cohorts) — mensagens distintas.
+  if (!cohortStats) {
     return `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
   <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-db-summary.ts</code> para popular.</p>
 </section>`;
   }
+  if (Object.keys(cohortStats).length === 0) {
+    return `
+<section class="phase2-section" id="cohorts-tab">
+  <h2 class="section-title">Cohorts</h2>
+  <p class="section-note">Nenhum cohort no store (sumário gerado com base vazia).</p>
+</section>`;
+  }
 
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
-  const pctOrDash = (v: number | null): string => (v == null ? "—" : `${v.toFixed(1)}%`);
+  // NaN-safe (review #2872): payload KV parcial/antigo pode ter numerador
+  // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
+  const pctOrDash = (v: number | null): string =>
+    v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
 
   type Row = {
     cohort: string;
@@ -820,12 +832,19 @@ export function renderCohortsTabPanel(
       clickRate: c.received > 0 ? (c.clicked / c.received) * 100 : null,
       unsubBounceRate: c.received > 0 ? (c.unsub_bounce / c.received) * 100 : null,
       mvVerifiedRate: c.contacts > 0 ? (c.mv_verified / c.contacts) * 100 : null,
-      ppAvg: c.received > 0 ? c.priority_points_sum / c.received : null,
+      // typeof-guard (review #2872): KV antigo pode ter priority_points_sum
+      // null (SUM SQL de tudo-NULL, pré-COALESCE) — null/received = 0 em JS e
+      // renderia "0.0" como se medido; null → "—".
+      ppAvg:
+        c.received > 0 && typeof c.priority_points_sum === "number"
+          ? c.priority_points_sum / c.received
+          : null,
     }));
 
-  // Média simples da coluna (só sobre linhas com denominador > 0 — null não entra).
+  // Média simples da coluna (só sobre linhas com denominador > 0 — null não
+  // entra; NaN de payload parcial também não, review #2872).
   const colAvg = (vals: Array<number | null>): number | null => {
-    const present = vals.filter((v): v is number => v != null);
+    const present = vals.filter((v): v is number => v != null && Number.isFinite(v));
     if (present.length === 0) return null;
     return present.reduce((a, b) => a + b, 0) / present.length;
   };
@@ -1045,8 +1064,11 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
     : "";
 
   const tableRows = shown.map((e) => {
-    const total = e.total_votes.toLocaleString("pt-BR");
-    const pctFmt = e.pct_correct != null ? `${e.pct_correct.toFixed(1)}%` : "—";
+    // Degrade por campo (review #2872): entrada de KV parcial sem total_votes
+    // não pode derrubar o render inteiro (TypeError → 502) — vira "—", mesmo
+    // espírito do caminho mensal substituído no #2860.
+    const total = typeof e.total_votes === "number" ? e.total_votes.toLocaleString("pt-BR") : "—";
+    const pctFmt = typeof e.pct_correct === "number" ? `${e.pct_correct.toFixed(1)}%` : "—";
     return `<tr>
       <td><strong>${escHtml(e.edition)}</strong></td>
       <td>${total}</td>
