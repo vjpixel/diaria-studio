@@ -259,6 +259,44 @@ export function deriveCohort(created: string | null | undefined): string | null 
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+/**
+ * Deriva o slug de cohort de LEAD (já com prefixo `leads-`) a partir do
+ * PERÍODO REAL de `created` — #2857 fase B.1, correção pós dry-run no store
+ * real (achado: o mapa estático `TIER_TO_COHORT` herdava rótulo de período do
+ * tiering DESLIZANTE do momento do merge, que desalinha do `created` real a
+ * cada virada de semestre — ex: bucket 'leads-2025h2' continha `created`
+ * jan-abr/2026). Esta função é a fonte PRIMÁRIA do cohort de qualquer lead
+ * (tier != 1/2) com `created` presente — nunca o rótulo estático herdado do
+ * tier (`TIER_TO_COHORT`, que vira fallback só pra `created` ausente/inválido,
+ * ver `computeCohort` em `clarice-db.ts`):
+ *
+ *   - `created >= epoch da safra (2026-05)` → safra mensal ('leads-YYYY-MM',
+ *     via `deriveCohort` + `cohortFromSafra`).
+ *   - `created` válido mas ANTERIOR ao epoch → semestre REAL do created
+ *     ('leads-YYYYh1' jan-jun / 'leads-YYYYh2' jul-dez) — QUALQUER ano, sem
+ *     lista hardcoda (`cohortSendRank` em cohorts.ts também parseia
+ *     'leads-YYYYhN' genericamente, mesmo padrão).
+ *   - `created` ausente/inválido → `null` (quem chama decide o fallback).
+ *
+ * Consequência direta: o range especial 'leads-2026-jan-abr'
+ * (`TIER_TO_COHORT[3]`, nome herdado do corte parcial do export no momento do
+ * freeze da fase A) NUNCA é emitido por esta função — `created` 2026-01..04
+ * vira 'leads-2026h1' (semestre real), não o range. O slug antigo continua
+ * aceito em `isKnownCohortSlug`/`cohortDisplayLabel`/`resolveCohortArg`
+ * (legado-lido — dado KV/CSV pré-fase-B.1, ou o fallback de tier em casos
+ * raros de `created` ausente) — só não é mais EMITIDO por esta derivação.
+ */
+export function deriveLeadCohort(created: string | null | undefined): string | null {
+  const safra = deriveCohort(created);
+  if (safra) return cohortFromSafra(safra);
+  if (!created) return null;
+  const d = new Date(created);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  const half = d.getUTCMonth() + 1 <= 6 ? 1 : 2;
+  return `leads-${year}h${half}`;
+}
+
 const PT_MONTH_NAMES = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",

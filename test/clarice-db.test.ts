@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import {
   computePriorityPoints,
   classifyEligibility,
+  computeCohort,
   recomputeDerived,
   openClariceDb,
   SOFT_BOUNCE_LIMIT,
@@ -320,10 +321,78 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
 });
 
 // ---------------------------------------------------------------------------
+// computeCohort (#2857 fase B.1) — função pura, as 4 regras de precedência
+// isoladas de SQLite (regressão do bug #573-style: "fix → close → reaparece")
+// ---------------------------------------------------------------------------
+
+describe("computeCohort: regra 1 — pagante (tier 1/2) nunca vira lead", () => {
+  it("tier=1 → assinantes-ativos, independente de created", () => {
+    assert.equal(computeCohort(1, null), "assinantes-ativos");
+    assert.equal(computeCohort(1, "2025-01-01"), "assinantes-ativos");
+    assert.equal(computeCohort(1, "2026-06-04"), "assinantes-ativos", "created pós-epoch NÃO rebaixa pra leads-2026-06 (achado #1 do dry-run)");
+  });
+
+  it("tier=2 → ex-assinantes, independente de created", () => {
+    assert.equal(computeCohort(2, null), "ex-assinantes");
+    assert.equal(computeCohort(2, "2025-01-01"), "ex-assinantes");
+    assert.equal(computeCohort(2, "2026-06-04"), "ex-assinantes");
+  });
+});
+
+describe("computeCohort: regra 2 — lead (tier != 1/2) com created válido deriva do período REAL", () => {
+  it("created >= epoch (2026-05) → safra mensal, pra qualquer tier != 1/2 (inclui null)", () => {
+    assert.equal(computeCohort(null, "2026-06-04"), "leads-2026-06");
+    assert.equal(computeCohort(3, "2026-06-04"), "leads-2026-06");
+    assert.equal(computeCohort(10, "2026-06-04"), "leads-2026-06", "até tier 10 (caudão) deriva por created quando presente");
+  });
+
+  it("created < epoch → semestre REAL (h1 jan-jun, h2 jul-dez), ignorando o rótulo estático do tier", () => {
+    assert.equal(computeCohort(6, "2025-03-15"), "leads-2025h1", "tier 6 rotularia estaticamente leads-2024h2 — created MANDA");
+    assert.equal(computeCohort(null, "2023-08-01"), "leads-2023h2");
+    assert.equal(computeCohort(4, "2026-03-01"), "leads-2026h1", "created 2026-01..04 vira leads-2026h1, NUNCA o range leads-2026-jan-abr");
+  });
+
+  it("fronteira h1/h2: jun (mês 6) é h1, jul (mês 7) é h2", () => {
+    assert.equal(computeCohort(null, "2024-06-30"), "leads-2024h1");
+    assert.equal(computeCohort(null, "2024-07-01"), "leads-2024h2");
+  });
+});
+
+describe("computeCohort: regra 3 — fallback de tier quando created ausente/inválido", () => {
+  it("created NULL + tier >= 3 → TIER_TO_COHORT[tier] (rótulo pode não refletir período real)", () => {
+    assert.equal(computeCohort(3, null), "leads-2026-jan-abr");
+    assert.equal(computeCohort(4, null), "leads-2025h2");
+    assert.equal(computeCohort(10, null), "leads-caudao", "caso realista: T10 fóssil sem created");
+  });
+
+  it("created inválido (string não-parseável) + tier >= 3 → mesmo fallback de created ausente", () => {
+    assert.equal(computeCohort(5, "não-é-uma-data"), "leads-2025h1");
+    assert.equal(computeCohort(5, ""), "leads-2025h1");
+  });
+
+  it("tier fora do mapa (0, 99) + created ausente → null (cohortFromTier já retorna null)", () => {
+    assert.equal(computeCohort(0, null), null);
+    assert.equal(computeCohort(99, null), null);
+  });
+});
+
+describe("computeCohort: regra 4 — tier NULL + created ausente/inválido → null (fim da fila)", () => {
+  it("tier e created ambos ausentes → null", () => {
+    assert.equal(computeCohort(null, null), null);
+    assert.equal(computeCohort(undefined, undefined), null);
+  });
+
+  it("tier ausente + created inválido → null", () => {
+    assert.equal(computeCohort(null, "lixo"), null);
+    assert.equal(computeCohort(null, ""), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cohort (#2817) — derivação em recomputeDerived + migração idempotente
 // ---------------------------------------------------------------------------
 
-test("recomputeDerived: deriva cohort (slug de safra) a partir de created (maio/junho/julho/fora-do-range) — #2857 fase A", () => {
+test("recomputeDerived: deriva cohort (slug de safra) a partir de created (maio/junho/julho/pré-epoch/sem-created) — #2857 fase B.1", () => {
   const db = openClariceDb(":memory:");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("mai@x.com", "2026-05-10T00:00:00.000Z");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("jun@x.com", "2026-06-20T00:00:00.000Z");
@@ -339,26 +408,58 @@ test("recomputeDerived: deriva cohort (slug de safra) a partir de created (maio/
   assert.equal(cohortOf("mai@x.com"), "leads-2026-05");
   assert.equal(cohortOf("jun@x.com"), "leads-2026-06");
   assert.equal(cohortOf("jul@x.com"), "leads-2026-07");
-  // Sem safra (anterior a 2026-05 ou created ausente) E sem tier → NULL.
-  assert.equal(cohortOf("velho@x.com"), null, "anterior a 2026-05, sem tier → NULL (cai no fallback de tier)");
-  assert.equal(cohortOf("semcreated@x.com"), null, "created ausente, sem tier → NULL");
+  // #2857 fase B.1: created presente mas ANTERIOR ao epoch da safra não vira
+  // mais NULL — deriva o semestre REAL do created (rule 2, `deriveLeadCohort`),
+  // sem tier nenhum precisar estar setado (tier NULL também é "lead").
+  assert.equal(cohortOf("velho@x.com"), "leads-2025h2", "created 2025-12 (pré-epoch, sem tier) deriva o semestre real, não mais NULL");
+  // Só created REALMENTE ausente (e sem tier) cai em NULL.
+  assert.equal(cohortOf("semcreated@x.com"), null, "created ausente, sem tier → NULL (fim da fila)");
 
   db.close();
 });
 
-test("recomputeDerived: sem safra (created < epoch), cohort cai pro derivado de tier (#2857 fase A)", () => {
+test("recomputeDerived: pagante (tier 1/2) NUNCA vira lead — cohort fixo mesmo com created de lead (#2857 fase B.1, achado #1 do dry-run)", () => {
   const db = openClariceDb(":memory:");
+  // Réplica do achado real do dry-run: alyne.siqueira, tier=1, created
+  // 2026-06-04 — sob a precedência ANTIGA (safra > tier), created pós-epoch
+  // rebaixava o assinante pra 'leads-2026-06'.
   db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
-    "assinante@x.com", "2024-01-01T00:00:00.000Z", 1,
+    "alyne-like@x.com", "2026-06-04T00:00:00.000Z", 1,
   );
   db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
-    "exassinante@x.com", "2023-06-01T00:00:00.000Z", 2,
+    "ex-recente@x.com", "2026-06-04T00:00:00.000Z", 2,
   );
-  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run("caudao@x.com", 10);
-  // created >= epoch (tem safra) MAS tier também setado — safra tem precedência.
+
+  recomputeDerived(db);
+
+  const cohortOf = (email: string) =>
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get(email) as any).cohort;
+
+  assert.equal(cohortOf("alyne-like@x.com"), "assinantes-ativos", "tier=1 nunca vira leads-2026-06, mesmo com created recente");
+  assert.equal(cohortOf("ex-recente@x.com"), "ex-assinantes", "tier=2 nunca vira lead, mesmo com created recente");
+
+  db.close();
+});
+
+test("recomputeDerived: lead (tier != 1/2) deriva SEMPRE do período real do created — rótulo estático do tier nunca vence (#2857 fase B.1, achado #2 do dry-run)", () => {
+  const db = openClariceDb(":memory:");
+  // tier=6 estaticamente rotularia 'leads-2024h2' (TIER_TO_COHORT[6]) — mas o
+  // created REAL é 2025-03 (H1 2025). O período real MANDA.
+  db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
+    "lead-tier-desatualizado@x.com", "2025-03-15T00:00:00.000Z", 6,
+  );
+  // created >= epoch (tem safra mensal) COM tier residual do merge — a safra
+  // (período real) segue vencendo, igual antes.
   db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
     "safra-com-tier-residual@x.com", "2026-06-05T00:00:00.000Z", 4,
   );
+  // tier NULL + created presente pré-epoch — também deriva pelo created (lead).
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run(
+    "sem-tier-com-created@x.com", "2023-08-01T00:00:00.000Z",
+  );
+  // T10 (caudão) SEM created → fallback de tier (único caminho realista pro
+  // fallback, já que tierOf sempre popula created pra T3-T9).
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run("caudao-sem-created@x.com", 10);
 
   recomputeDerived(db);
 
@@ -367,16 +468,15 @@ test("recomputeDerived: sem safra (created < epoch), cohort cai pro derivado de 
   const tierOf = (email: string) =>
     (db.prepare("SELECT tier FROM clarice_users WHERE email = ?").get(email) as any).tier;
 
-  assert.equal(cohortOf("assinante@x.com"), "assinantes-ativos");
-  assert.equal(cohortOf("exassinante@x.com"), "ex-assinantes");
-  assert.equal(cohortOf("caudao@x.com"), "leads-caudao");
-  assert.equal(cohortOf("safra-com-tier-residual@x.com"), "leads-2026-06", "safra tem precedência sobre tier");
+  assert.equal(cohortOf("lead-tier-desatualizado@x.com"), "leads-2025h1", "created MANDA — não o rótulo estático 'leads-2024h2' do tier 6");
+  assert.equal(cohortOf("safra-com-tier-residual@x.com"), "leads-2026-06", "created (safra mensal) MANDA sobre o tier residual");
+  assert.equal(cohortOf("sem-tier-com-created@x.com"), "leads-2023h2", "tier NULL não impede a derivação por created");
+  assert.equal(cohortOf("caudao-sem-created@x.com"), "leads-caudao", "created ausente + tier 10 → fallback de tier (TIER_TO_COHORT)");
 
   // Dupla-escrita: tier fica INTACTO (recomputeDerived não escreve tier).
-  assert.equal(tierOf("assinante@x.com"), 1);
-  assert.equal(tierOf("exassinante@x.com"), 2);
-  assert.equal(tierOf("caudao@x.com"), 10);
+  assert.equal(tierOf("lead-tier-desatualizado@x.com"), 6);
   assert.equal(tierOf("safra-com-tier-residual@x.com"), 4);
+  assert.equal(tierOf("caudao-sem-created@x.com"), 10);
 
   db.close();
 });

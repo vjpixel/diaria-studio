@@ -128,12 +128,21 @@ export function renderComparisonReport(cmp: OrderComparison, top: number): strin
 
 ## Resumo
 - Posições divergentes (fila inteira): **${fmt(cmp.diffCount)}** de ${fmt(cmp.firstSendTotal)} (**${pct}%**).
-- Diferença ESPERADA (documentada, #2857 fase B): safras mensais (\`leads-YYYY-MM\`)
-  agora rankeiam por recência DECRESCENTE, acima de qualquer bucket legado
-  (semestral/range) que herdaria o MESMO tier residual do merge — antes, esses
-  contatos empatavam no tier e desempatavam só por email ASC.
-- Se \`diffCount\` for MUITO maior do que o esperado só pelas safras mensais
-  presentes no store, investigue antes de prosseguir pro cutover (fase C).
+- Diferença ESPERADA (documentada, #2857 fase B/B.1):
+  1. Safras mensais (\`leads-YYYY-MM\`) e semestres de lead (\`leads-YYYYhN\`)
+     rankeiam por recência DECRESCENTE do início do período REAL de
+     \`created\` — antes, contatos do MESMO tier empatavam e desempatavam só
+     por email ASC.
+  2. Pra tiers 3-9, o cohort deriva do período REAL de \`created\`, não mais
+     do rótulo estático que o tier atribuiria (fase B.1) — um lead \`created\`
+     em 2025-03 nunca mais aparece rotulado como o semestre que o tier
+     residual do merge "diria" que ele é.
+  3. Pagante (tier 1/2) SEMPRE fica em \`assinantes-ativos\`/\`ex-assinantes\`,
+     nunca cai pra um cohort de lead — mesma posição em ambas as ordens (a
+     ordem tier já cobria isso; a fase B.1 corrigiu um bug em que \`created\`
+     recente rebaixava o pagante indevidamente na ordem cohort).
+- Se \`diffCount\` for MUITO maior do que o esperado só pelo item 1/2 acima,
+  investigue antes de prosseguir pro cutover (fase C).
 
 ## Top ${top} — lado a lado (posição idêntica)
 | # | tier (antigo) | cohort (novo) |

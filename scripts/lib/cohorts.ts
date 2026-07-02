@@ -1,5 +1,5 @@
 /**
- * cohorts.ts — taxonomia canônica de cohorts (#2857, fase A).
+ * cohorts.ts — taxonomia canônica de cohorts (#2857).
  *
  * Unifica as duas dimensões paralelas que o store carregava até aqui
  * (`tier` numérico T01–T10 + `cohort` de safra mensal 'YYYY-MM', #2817) numa
@@ -8,11 +8,22 @@
  * `leads-YYYY-MM`), `leads-caudao`. Pedido do editor 260702 (issue #2857):
  * "T04" não diz nada, "leads-2025h2" diz tudo.
  *
- * FASE A (esta): dupla-escrita. `tier` INTEGER continua populado e
- * AUTORITATIVO — nenhum consumidor de envio (segmentFromStore/tierRank) lê
- * daqui ainda. A coluna `cohort` do store passa a guardar o slug (não mais só
- * a safra crua) — ver `recomputeDerived` em `clarice-db.ts`. Fase B troca os
- * consumidores pra ler cohort; fase C remove `tier`.
+ * FASE A: dupla-escrita. `tier` INTEGER continua populado (fase C remove).
+ * FASE B: consumidores de envio (segmentFromStore/cohortSendRank) passam a
+ * ler `cohort` em vez de `tier`.
+ * FASE B.1 (esta, correção pós dry-run no store real): 2 problemas achados —
+ * (1) pagante (tier 1/2) com `created` recente virava lead (`leads-YYYY-MM`),
+ * rebaixado da fila quente; (2) o mapa `TIER_TO_COHORT` (congelado no momento
+ * do freeze da fase A) atribuía rótulo de PERÍODO a leads pré-epoch com base
+ * no tier residual do merge, que desalinha do `created` real a cada virada de
+ * semestre (ex: bucket rotulado 'leads-2025h2' continha `created`
+ * jan-abr/2026). Fix, ver `computeCohort` em `clarice-db.ts` e
+ * `deriveLeadCohort` em `clarice-segment.ts`: pagante (tier 1/2) NUNCA vira
+ * lead (cohort fixo, `created` irrelevante); lead deriva o cohort do PERÍODO
+ * REAL do próprio `created` (mensal `leads-YYYY-MM` ≥ epoch da safra, senão
+ * semestre real `leads-YYYYhN`) — `TIER_TO_COHORT` deste arquivo vira
+ * FALLBACK, usado só quando `created` está ausente/inválido (rótulo pode não
+ * refletir o período real nesse caso raro, documentado onde é consumido).
  *
  * Dependency-free / Workers-safe (como `clarice-segment.ts`) — o worker
  * `brevo-dashboard` importa daqui diretamente, sem `node:sqlite` nem outras
@@ -40,19 +51,29 @@ export const COHORT_LEADS_CAUDAO = "leads-caudao";
  * pra eliminar — um "leads-2025h2" que silenciosamente vira "leads-2026h1"
  * seis meses depois seria pior que T04).
  *
- * Consequência do freeze: contatos com `created` ANTES do epoch da safra
- * (2026-05) são classificados por este mapa fixo pra sempre — a classe deles
- * não muda mais. Contatos com `created` A PARTIR do epoch não passam mais por
- * tier: entram direto como `leads-YYYY-MM` via `cohortFromSafra` (ver
- * `recomputeDerived`). T3–T9 e o caudão (T10) são, portanto, efetivamente
- * legado: só existem pra classificar a base pré-epoch.
+ * USO (#2857 fase B.1 — mudou desde o freeze original): T1/T2 continuam a
+ * ÚNICA fonte do cohort de pagante (`computeCohort` em `clarice-db.ts` nunca
+ * deixa `created` sobrescrever isso). Pra T3–T10 (leads), este mapa NÃO é
+ * mais a fonte primária do cohort — vira FALLBACK, consultado só quando
+ * `created` está ausente/inválido (a fonte primária passou a ser o período
+ * REAL do `created`, via `deriveLeadCohort` em `clarice-segment.ts`, que não
+ * fica desatualizado a cada virada de semestre porque não é um rótulo
+ * congelado). Na prática, dado que `tierOf` (`merge-clarice-subscribers.ts`)
+ * SEMPRE popula `created` pra T3–T9 (só T10 pode ficar sem — "sem data →
+ * fóssil"), o fallback deste mapa só é atingível de fato pra T10 com
+ * `created` NULL; T3–T9 ficam como fallback defensivo pra dados
+ * corrompidos/futuros que violem essa invariante.
  *
  * T3 é o único slug "range" (não segue o padrão semestral H1/H2) porque, no
  * momento em que esta taxonomia foi congelada, T3 (semestre corrente,
  * 2026-H1) estava PARCIAL por causa do corte do export — só ia até abril —
  * então herdou o nome descritivo real do arquivo já gerado pelo pipeline
  * (`tierFileName`, ver `merge-clarice-subscribers.ts`) em vez do nome
- * semestral "cheio".
+ * semestral "cheio". Desde a fase B.1, a derivação primária (`created`) NUNCA
+ * emite este range — created 2026-01..04 vira 'leads-2026h1' (semestre real).
+ * O slug 'leads-2026-jan-abr' continua reconhecido em `isKnownCohortSlug`/
+ * `cohortDisplayLabel`/`resolveCohortArg` (legado-lido) e alcançável por este
+ * fallback (T3 + created NULL, caso defensivo acima).
  */
 export const TIER_TO_COHORT: Record<number, string> = {
   1: COHORT_ASSINANTES_ATIVOS,
@@ -102,19 +123,38 @@ export function cohortFromSafra(safra: string): string {
 // só o nome do identificador.
 // ---------------------------------------------------------------------------
 
-/** Início do período (ISO date, UTC) dos cohorts legados (semestre/range fixo). */
+/**
+ * Início do período (ISO date, UTC) do único cohort "range" legado que NÃO
+ * casa com `SEMESTER_RE`/`MONTHLY_SAFRA_RE` (#2857 fase B.1 — os 6 buckets
+ * semestrais fixos que viviam aqui, 'leads-2023h1'..'leads-2025h2', saíram
+ * desta tabela: `leadPeriodStartMs` agora parseia QUALQUER 'leads-YYYYhN'
+ * genericamente via `SEMESTER_RE`, sem lista hardcoded de anos — necessário
+ * porque a derivação por período real do `created` (`deriveLeadCohort`, ver
+ * clarice-segment.ts) pode emitir semestres de QUALQUER ano, não só os 3
+ * anos que o freeze da fase A cobria). 'leads-2026-jan-abr' fica sozinho
+ * aqui porque é um formato de RANGE (não segue o padrão hN) — legado-lido:
+ * a derivação nunca mais o EMITE (ver `deriveLeadCohort`), só o fallback de
+ * tier (`TIER_TO_COHORT[3]`, created ausente) ou dado antigo em KV/CSV podem
+ * trazê-lo de volta.
+ */
 const LEGACY_LEAD_PERIOD_START: Record<string, string> = {
   "leads-2026-jan-abr": "2026-01-01",
-  "leads-2025h2": "2025-07-01",
-  "leads-2025h1": "2025-01-01",
-  "leads-2024h2": "2024-07-01",
-  "leads-2024h1": "2024-01-01",
-  "leads-2023h2": "2023-07-01",
-  "leads-2023h1": "2023-01-01",
 };
 
 /** Casa 'leads-YYYY-MM' (safra mensal, forma canônica de `cohortFromSafra`). */
 const MONTHLY_SAFRA_RE = /^leads-(\d{4})-(\d{2})$/;
+
+/**
+ * Casa 'leads-YYYYhN' (semestre — N ∈ {1,2}, h1 = jan-jun, h2 = jul-dez) de
+ * QUALQUER ano — usado tanto por `leadPeriodStartMs` (ranking) quanto por
+ * `cohortDisplayLabel` (rótulo pt-BR) e `isKnownCohortSlug` (reconhecimento).
+ * Genérico de propósito (#2857 fase B.1): `deriveLeadCohort` deriva o
+ * semestre REAL do `created` de um lead, que pode ser de qualquer ano
+ * passado — uma tabela fixa (como a removida `LEGACY_LEAD_PERIOD_START` de
+ * antes desta fase) ficaria desatualizada pra created mais antigo que ela
+ * cobria.
+ */
+const SEMESTER_RE = /^leads-(\d{4})h([12])$/;
 
 /** Todos os slugs derivados de tier (`TIER_TO_COHORT`) — usado por `isKnownCohortSlug`. */
 const KNOWN_TIER_COHORT_SLUGS = new Set<string>(Object.values(TIER_TO_COHORT));
@@ -124,12 +164,20 @@ const KNOWN_TIER_COHORT_SLUGS = new Set<string>(Object.values(TIER_TO_COHORT));
  * slug canônico diretamente em `--cohort`, além dos aliases pt-BR/legado/tier,
  * ver `resolveCohortArg` em `clarice-segment.ts`)? Cobre os 10 slugs derivados
  * de tier (`TIER_TO_COHORT` — inclui os 3 nomes fixos + os 7 semestrais/range
- * legados) + qualquer safra mensal `leads-YYYY-MM` (mesmo `MONTHLY_SAFRA_RE`
- * de `leadPeriodStartMs` abaixo — sem lista hardcoded de meses futuros, mesmo
- * padrão de `cohortSendRank`/`cohortDisplayLabel`).
+ * legados) + qualquer safra mensal `leads-YYYY-MM` + qualquer semestre
+ * `leads-YYYYhN` (mesmos `MONTHLY_SAFRA_RE`/`SEMESTER_RE` de
+ * `leadPeriodStartMs` abaixo — sem lista hardcoded de anos/meses futuros ou
+ * passados, mesmo padrão de `cohortSendRank`/`cohortDisplayLabel`; #2857 fase
+ * B.1 — antes só os 6 semestres congelados de `TIER_TO_COHORT` eram
+ * reconhecidos, o que rejeitaria um semestre real fora desse range, ex:
+ * 'leads-2019h2').
  */
 export function isKnownCohortSlug(slug: string): boolean {
-  return KNOWN_TIER_COHORT_SLUGS.has(slug) || MONTHLY_SAFRA_RE.test(slug);
+  return (
+    KNOWN_TIER_COHORT_SLUGS.has(slug) ||
+    MONTHLY_SAFRA_RE.test(slug) ||
+    SEMESTER_RE.test(slug)
+  );
 }
 
 /**
@@ -141,6 +189,13 @@ function leadPeriodStartMs(cohort: string): number | null {
   const monthly = cohort.match(MONTHLY_SAFRA_RE);
   if (monthly) {
     return Date.UTC(Number(monthly[1]), Number(monthly[2]) - 1, 1);
+  }
+  const semester = cohort.match(SEMESTER_RE);
+  if (semester) {
+    // h1 começa em jan (mês 0), h2 em jul (mês 6) — mesma convenção de
+    // `deriveLeadCohort` (clarice-segment.ts).
+    const month = semester[2] === "1" ? 0 : 6;
+    return Date.UTC(Number(semester[1]), month, 1);
   }
   const iso = LEGACY_LEAD_PERIOD_START[cohort];
   return iso ? Date.parse(`${iso}T00:00:00Z`) : null;
@@ -187,7 +242,8 @@ const PT_MONTHS_ABBR = [
   "jul", "ago", "set", "out", "nov", "dez",
 ];
 
-const SEMESTER_RE = /^leads-(\d{4})h([12])$/;
+// SEMESTER_RE é compartilhado com `leadPeriodStartMs`/`isKnownCohortSlug`
+// acima (declarado 1x, perto de MONTHLY_SAFRA_RE).
 const RANGE_RE = /^leads-(\d{4})-([a-z]{3})-([a-z]{3})$/;
 // Legado pré-fase-A: coluna guardava a safra crua 'YYYY-MM' (sem prefixo
 // `leads-`) — aceito aqui defensivamente (nunca lança) caso algum snapshot

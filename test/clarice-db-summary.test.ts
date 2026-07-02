@@ -191,13 +191,18 @@ test("computeStoreSummary: by_cohort agrega total+verified por safra (universo =
   db.close();
 });
 
-test("computeStoreSummary: by_cohort — chave 'null' quando created ausente ou anterior a 2026-05", () => {
+test("computeStoreSummary: by_cohort — leads pré-epoch usam o semestre REAL do created; só created ausente vira 'null' (#2857 fase B.1)", () => {
+  // #2857 fase B.1: created presente mas ANTERIOR ao epoch da safra (2026-05)
+  // não vira mais 'null' — deriva o semestre real via `deriveLeadCohort`
+  // (rótulo verdadeiro por construção, ver test/clarice-db.test.ts
+  // `computeCohort`). Só `created` genuinamente ausente cai em 'null'.
   const db = openClariceDb(":memory:");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES ('velho@x.com','2025-11-01T00:00:00Z')").run();
   db.prepare("INSERT INTO clarice_users (email) VALUES ('sem@x.com')").run();
   recomputeDerived(db);
 
   const s = computeStoreSummary(db);
-  assert.equal(s.by_cohort["null"], 2);
+  assert.equal(s.by_cohort["leads-2025h2"], 1, "created 2025-11 (pré-epoch) deriva o semestre real (não mais 'null')");
+  assert.equal(s.by_cohort["null"], 1, "só sem@x.com (created ausente) cai em 'null'");
   db.close();
 });

@@ -179,11 +179,13 @@ test("main: --cohort filtra o store pra uma safra ANTES de segmentar", () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
+  // #2857 fase B.1: pagante (tier 1/2) nunca vira lead — usar contatos SEM
+  // tier (leads reais) pra exercitar o filtro `--cohort` por safra mensal.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('mai@x.com','Mai','active',1,'2026-05-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -208,10 +210,10 @@ test("main: sem --cohort roda sobre a base inteira (sem regressão, cohort ausen
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('mai@x.com','Mai','active',1,'2026-05-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -234,7 +236,7 @@ test("main: --cohort com forma canônica 'YYYY-MM' funciona igual ao rótulo pt-
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();
