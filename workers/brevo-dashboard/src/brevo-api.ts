@@ -3,12 +3,6 @@ import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEME
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 
-/**
- * #2280: monta a resposta de fallback "último render bom" (200 + banner stale).
- * `X-Dashboard-Stale: rate-limit` permite que monitoria distinga render bom de
- * render stale (o HTTP é 200, então alertas de 5xx não pegam mais o rate-limit).
- * Exportada pra teste de regressão da rota.
- */
 export function injectStaleBanner(html: string, retryAfterSecs: number | null): string {
   const retryMsg = retryAfterSecs != null ? `~${retryAfterSecs}s` : "alguns minutos";
   const banner =
@@ -22,6 +16,12 @@ export function injectStaleBanner(html: string, retryAfterSecs: number | null): 
   return banner + html;
 }
 
+/**
+ * #2280: monta a resposta de fallback "último render bom" (200 + banner stale).
+ * `X-Dashboard-Stale: rate-limit` permite que monitoria distinga render bom de
+ * render stale (o HTTP é 200, então alertas de 5xx não pegam mais o rate-limit).
+ * Exportada pra teste de regressão da rota.
+ */
 export function buildStaleResponse(lastGoodHtml: string, retryAfterSecs: number | null): Response {
   return new Response(injectStaleBanner(lastGoodHtml, retryAfterSecs), {
     headers: {
