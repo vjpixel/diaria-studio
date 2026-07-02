@@ -1,5 +1,5 @@
 /**
- * lint-monthly-draft.ts (#423)
+ * lint-monthly-draft.ts (#423, guardrail de render #2794)
  *
  * Valida limites de caracteres por destaque no digest mensal:
  *   D1 ≤ 1.500 chars, D2/D3 ≤ 1.200 chars
@@ -8,12 +8,25 @@
  * excluindo a linha de cabeçalho (DESTAQUE N | TEMA), a linha de título
  * e os URLs de links ancorados [texto](url) — conta só o texto âncora.
  *
+ * #2794: além do lint de chars (advisory), roda um guardrail CRÍTICO — simula
+ * o render final (`draftToEmail`, o mesmo código que gera o email de verdade)
+ * e verifica que (a) todos os labels de seção esperados foram reconhecidos
+ * por `splitByLabels` e (b) o render produz pelo menos 1 `<img>` por destaque
+ * quando URLs de imagem são fornecidas. Isso reproduz deterministicamente o
+ * bug real do ciclo 2606-07 (writer-monthly emitiu labels em texto plano →
+ * draft inteiro virou 1 parágrafo de fallback → zero imagens, zero seções) —
+ * SEM depender de imagens reais (Etapa 3, que ainda não rodou neste ponto do
+ * pipeline), usando URLs de imagem fictícias como sonda.
+ *
  * Uso:
- *   npx tsx scripts/lint-monthly-draft.ts <YYMM>
- *   npx tsx scripts/lint-monthly-draft.ts 2604
+ *   npx tsx scripts/lint-monthly-draft.ts --cycle YYMM-MM
+ *   npx tsx scripts/lint-monthly-draft.ts 2604   (legado, --cycle preferido)
  *
  * Exit codes:
- *   0  Sempre (lint é advisory — não bloqueia pipeline)
+ *   0  Draft íntegro (warnings de char-limit, se houver, são advisory)
+ *   1  FALHA CRÍTICA de render (#2794): label(s) esperado(s) não reconhecido(s)
+ *      pelo parser, ou o render simulado produziria uma edição sem imagem —
+ *      nunca deve passar silencioso
  *   2  Erro de I/O (draft não encontrado)
  */
 
@@ -22,12 +35,82 @@ import { join } from "node:path";
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
+  cycleToYymm,
 } from "./lib/mensal/monthly-paths.ts";
+import { splitByLabels, normalizeLabel, draftToEmail } from "./lib/mensal/monthly-render.ts";
 
 const LIMITS: Record<string, number> = { D1: 1500, D2: 1200, D3: 1200 };
 
 function stripInlineLinks(text: string): string {
   return text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+}
+
+// ─── Guardrail crítico (#2794) ──────────────────────────────────────────────
+
+export interface SectionIntegrityResult {
+  ok: boolean;
+  missing: string[];
+  sectionCount: number;
+}
+
+/** Vocabulário mínimo de labels que TODO draft mensal deve conter (independente
+ * de estarem em negrito ou não — `splitByLabels` já tolera ambos, #2794). */
+export const REQUIRED_SECTION_CHECKS: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: "ASSUNTO", re: /^ASSUNTO\b/i },
+  { name: "INTRO", re: /^INTRO$/i },
+  { name: "DESTAQUE 1", re: /^DESTAQUE\s+1\b/i },
+  { name: "DESTAQUE 2", re: /^DESTAQUE\s+2\b/i },
+  { name: "DESTAQUE 3", re: /^DESTAQUE\s+3\b/i },
+  { name: "USE MELHOR", re: /^USE\s+MELHOR/i },
+  { name: "RADAR", re: /^RADAR/i },
+  { name: "É IA?", re: /^É\s*IA\?/i },
+  { name: "ENCERRAMENTO", re: /^(ENCERRAMENTO|PARA\s+ENCERRAR)$/i },
+];
+
+/**
+ * Pure: verifica se `splitByLabels` reconhece todos os labels obrigatórios do
+ * draft como fronteiras de seção distintas. `sectionCount` baixo (ex: 1) é o
+ * sintoma direto do bug #2794 — o draft inteiro caiu no fallback de 1 chunk.
+ */
+export function checkSectionIntegrity(draft: string): SectionIntegrityResult {
+  const sections = splitByLabels(draft);
+  const firstLines = sections.map((s) => normalizeLabel(s.split("\n")[0] ?? ""));
+  const missing = REQUIRED_SECTION_CHECKS.filter(
+    (c) => !firstLines.some((l) => c.re.test(l)),
+  ).map((c) => c.name);
+  return { ok: missing.length === 0, missing, sectionCount: sections.length };
+}
+
+export interface ImageRenderProbeResult {
+  ok: boolean;
+  imgCount: number;
+}
+
+/**
+ * Pure: simula o render final com URLs de imagem FICTÍCIAS pros 3 destaques
+ * (a Etapa 3 real ainda não rodou neste ponto do pipeline — Etapa 2). Se o
+ * HTML resultante tiver menos de 3 `<img>`, os labels DESTAQUE N não foram
+ * corretamente separados por `splitByLabels` e a edição sairia sem imagem em
+ * produção — a causa raiz real do ciclo 2606-07.
+ */
+export function checkImageRenderProbe(draft: string, yymm: string): ImageRenderProbeResult {
+  const probeUrls = {
+    1: "https://probe.invalid/lint-monthly-d1.jpg",
+    2: "https://probe.invalid/lint-monthly-d2.jpg",
+    3: "https://probe.invalid/lint-monthly-d3.jpg",
+  };
+  const { html } = draftToEmail(
+    draft,
+    "Assunto de sonda (lint-monthly-draft)",
+    yymm,
+    undefined,
+    undefined,
+    undefined,
+    probeUrls,
+    "Criada com IA",
+  );
+  const imgCount = (html.match(/<img\b/g) ?? []).length;
+  return { ok: imgCount >= 3, imgCount };
 }
 
 function extractBody(section: string): string {
@@ -72,6 +155,37 @@ function main(): void {
     process.exit(2);
   }
 
+  // #2794: guardrail crítico ANTES do lint de chars — nunca deve passar
+  // silencioso. Roda incondicionalmente (não é advisory como o resto deste
+  // script).
+  const yymm = cycleToYymm(cycle);
+  const sectionCheck = checkSectionIntegrity(text);
+  const imageCheck = checkImageRenderProbe(text, yymm);
+  let hasFatal = false;
+
+  if (!sectionCheck.ok) {
+    hasFatal = true;
+    console.error(
+      `[lint-monthly] FATAL: labels de seção não reconhecidos: ${sectionCheck.missing.join(", ")} ` +
+      `(apenas ${sectionCheck.sectionCount} seção(ões) detectada(s) no total). ` +
+      "O writer-monthly provavelmente emitiu labels em texto plano (sem **negrito**) — ver #2794.",
+    );
+  }
+  if (!imageCheck.ok) {
+    hasFatal = true;
+    console.error(
+      `[lint-monthly] FATAL: render simulado (draftToEmail com URLs de sonda) produziu apenas ` +
+      `${imageCheck.imgCount}/3 <img> para os destaques — a edição sairia SEM IMAGEM em produção. Ver #2794.`,
+    );
+  }
+  if (hasFatal) {
+    console.error("[lint-monthly] ══════════════════════════════════════════════════════════════");
+    console.error("[lint-monthly] DRAFT COM FALHA CRÍTICA DE RENDER — NÃO PROSSEGUIR SEM CORRIGIR O DRAFT.");
+    console.error("[lint-monthly] ══════════════════════════════════════════════════════════════");
+    process.exit(1);
+  }
+  console.log(`[lint-monthly] guardrail de render OK — ${sectionCheck.sectionCount} seções reconhecidas, ${imageCheck.imgCount}/3 <img> na sonda.`);
+
   const sections = text.split("\n---\n");
   const targets = [
     { label: "D1", prefix: "DESTAQUE 1 |" },
@@ -107,4 +221,13 @@ function main(): void {
   process.exit(0);
 }
 
-main();
+// Só roda main() quando invocado como CLI — permite importar as funções puras
+// (checkSectionIntegrity, checkImageRenderProbe) em testes sem disparar
+// process.exit() no import (#2794).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}

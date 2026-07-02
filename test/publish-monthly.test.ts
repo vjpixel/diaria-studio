@@ -84,12 +84,65 @@ describe("isSectionLabel", () => {
   it("rejeita texto comum", () => {
     assert.equal(isSectionLabel("Esta é uma frase normal."), false);
     assert.equal(isSectionLabel("**bold no meio do texto**"), false);
-    assert.equal(isSectionLabel("DESTAQUE 1 sem bold"), false);
   });
 
   it("rejeita linha vazia", () => {
     assert.equal(isSectionLabel(""), false);
     assert.equal(isSectionLabel("   "), false);
+  });
+});
+
+// ─── isSectionLabel — tolerância SEM negrito (#2794) ───────────────────────
+//
+// Causa raiz real do ciclo 2606-07: o writer-monthly emitiu labels em texto
+// plano (`DESTAQUE 1 | BRASIL`, sem `**`). Sem tolerância, isSectionLabel
+// rejeitava TODOS os labels do draft, splitByLabels não separava nada, e o
+// draft inteiro caía no fallback renderParagraphs — zero imagens, zero
+// seções. Este bloco cobre a defesa em profundidade adicionada no render.
+
+describe("isSectionLabel — labels SEM negrito (#2794, defesa em profundidade)", () => {
+  it("reconhece DESTAQUE N | TEMA sem bold (bug real 2606-07)", () => {
+    assert.equal(isSectionLabel("DESTAQUE 1 | BRASIL"), true);
+    assert.equal(isSectionLabel("DESTAQUE 2 | ANTHROPIC"), true);
+    assert.equal(isSectionLabel("DESTAQUE 3 | REGULAÇÃO"), true);
+    // formato livre de tema também — o prefixo já é suficientemente distinto.
+    assert.equal(isSectionLabel("DESTAQUE 1 sem bold"), true);
+  });
+
+  it("reconhece labels de vocabulário fixo sem bold (match de linha inteira)", () => {
+    assert.equal(isSectionLabel("ASSUNTO"), true);
+    assert.equal(isSectionLabel("ASSUNTO (3 OPÇÕES)"), true);
+    assert.equal(isSectionLabel("PREVIEW"), true);
+    assert.equal(isSectionLabel("INTRO"), true);
+    assert.equal(isSectionLabel("USE MELHOR"), true);
+    assert.equal(isSectionLabel("USE MELHOR DO MÊS"), true);
+    assert.equal(isSectionLabel("RADAR"), true);
+    assert.equal(isSectionLabel("RADAR DO MÊS"), true);
+    assert.equal(isSectionLabel("ENCERRAMENTO"), true);
+    assert.equal(isSectionLabel("PARA ENCERRAR"), true);
+  });
+
+  it("reconhece CLARICE — ... e É IA? ... sem bold", () => {
+    assert.equal(isSectionLabel("CLARICE — DIVULGAÇÃO"), true);
+    assert.equal(isSectionLabel("CLARICE — TUTORIAL"), true);
+    assert.equal(isSectionLabel("É IA? — DESTAQUE DO MÊS"), true);
+  });
+
+  it("NÃO confunde prosa comum em caixa mista com label (case-sensitive #2794)", () => {
+    // "Preview"/"Radar"/"Intro" como PALAVRA COMUM no corpo (caixa mista, não
+    // toda-maiúscula) não deve virar boundary de seção — só o formato exato
+    // do template (CAIXA ALTA) é reconhecido sem bold. Regressão real
+    // encontrada durante a implementação: uma fixture de teste usava "Preview"
+    // (caixa mista) como corpo e virava seção espúria antes do case-sensitive.
+    assert.equal(isSectionLabel("Preview"), false);
+    assert.equal(isSectionLabel("Radar"), false);
+    assert.equal(isSectionLabel("Intro"), false);
+    assert.equal(isSectionLabel("Destaque isso: cresceu 40%."), false); // minúsculo após "Destaque"
+  });
+
+  it("segue rejeitando prosa comum e linhas vazias sem bold", () => {
+    assert.equal(isSectionLabel("Esta é uma frase normal em caixa alta? NÃO."), false);
+    assert.equal(isSectionLabel(""), false);
   });
 });
 

@@ -2,24 +2,26 @@
 
 Formato exato do digest mensal. Cada destaque é uma narrativa multi-artigo cobrindo um tema do mês (não um único artigo, como no diário).
 
+**Todo label de seção (linha isolada tipo `ASSUNTO`, `DESTAQUE 1 | TEMA`, `INTRO` etc.) DEVE sair envolto em `**negrito**`** — é o único sinal que o render (`isSectionLabel`/`splitByLabels` em `scripts/lib/mensal/monthly-render.ts`) usa pra separar as seções do draft. Um label em texto plano (sem `**`) faz o draft inteiro colapsar num único bloco de prosa no email final — zero imagens, zero seções (#2794, causa raiz do ciclo 2606-07). O render tem uma tolerância de emergência para alguns labels sem negrito, mas ela é rede de segurança, não licença — sempre emitir com `**`.
+
 ```
-ASSUNTO (3 OPÇÕES)
+**ASSUNTO (3 OPÇÕES)**
 1. [opção 1 — máx. 70 chars, destaca o tema central do mês]
 2. [opção 2 — outro ângulo do mês]
 3. [opção 3 — terceira via]
 
-PREVIEW
+**PREVIEW**
 
 [1 linha — síntese do mês em até 100 chars]
 
-INTRO
+**INTRO**
 
 [2-3 frases contextualizando o mês: o que dominou a pauta, qual o tom geral.
 Não cita os 3 destaques explicitamente — abre cena.]
 
 ---
 
-DESTAQUE 1 | [TEMA]
+**DESTAQUE 1 | [TEMA]**
 
 [Título narrativo do tema — máx. 60 chars]
 
@@ -36,31 +38,31 @@ O fio condutor:
 
 ---
 
-CLARICE — DIVULGAÇÃO
+**CLARICE — DIVULGAÇÃO**
 
 [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link.]
 
 ---
 
-DESTAQUE 2 | [TEMA]
+**DESTAQUE 2 | [TEMA]**
 
 [mesmo formato]
 
 ---
 
-CLARICE — TUTORIAL
+**CLARICE — TUTORIAL**
 
 [Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais.]
 
 ---
 
-DESTAQUE 3 | [TEMA]
+**DESTAQUE 3 | [TEMA]**
 
 [mesmo formato]
 
 ---
 
-USE MELHOR DO MÊS
+**USE MELHOR DO MÊS**
 
 [[Título do tutorial 1](https://url)]
 
@@ -70,7 +72,7 @@ USE MELHOR DO MÊS
 
 ---
 
-RADAR DO MÊS
+**RADAR DO MÊS**
 
 [[Título do link 1](https://url)]
 
@@ -84,7 +86,7 @@ RADAR DO MÊS
 
 ---
 
-É IA? — DESTAQUE DO MÊS
+**É IA? — DESTAQUE DO MÊS**
 
 [Recap de UM É IA? do mês — preferir a edição cujo poll ficou mais próximo de 50% de acerto
 (mais ambígua para os leitores). Se poll não disponível, escolher a mais visualmente difícil.
@@ -93,7 +95,7 @@ imagem boa/difícil. 1-2 parágrafos curtos.]
 
 ---
 
-ENCERRAMENTO
+**ENCERRAMENTO**
 
 [Chamada padrão pra interação: responder ao e-mail, sugerir tema, indicar a
 newsletter pra colega. Tom igual ao diário. Incluir call-to-action para assinar
@@ -102,6 +104,16 @@ a newsletter diária com o link https://diaria.beehiiv.com/?utm_source=clarice
 da diária vieram pela mensal; usar diaria.beehiiv.com direto pois diar.ia.br
 dropa a query string no redirect — causa raiz do #2613 resolvida em 260626;
 ver #2457 e #2613).]
+```
+
+**Exemplo negativo (NÃO fazer) — #2794:**
+
+```
+DESTAQUE 1 | BRASIL          ← ERRADO: sem negrito, o render não reconhece
+                                 como label de seção. O draft inteiro vira um
+                                 parágrafo só, sem imagem, sem "O fio condutor".
+
+**DESTAQUE 1 | BRASIL**      ← CORRETO
 ```
 
 ## Limites de caracteres por destaque
@@ -136,7 +148,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 
 > Nota: as seções de instrução acima (fora do bloco de código) usam markdown (`**`, listas `-`) como formato de documento — isso não é output gerado. As regras abaixo se aplicam ao texto do draft em `out_path`.
 
-- Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.) no corpo da newsletter.
+- Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.) no **corpo** da newsletter (parágrafos, título, "O fio condutor:", itens de Use Melhor/Radar). **Exceção obrigatória (#2794): os labels de seção em si (`**ASSUNTO**`, `**DESTAQUE 1 | TEMA**`, `**INTRO**` etc.) SEMPRE levam `**` — não são "corpo", são o delimitador estrutural que o render usa pra fatiar o draft.** Confundir essa regra e tirar o `**` dos labels foi a causa raiz do ciclo 2606-07 (draft inteiro virou 1 parágrafo, zero imagens).
 - Não incluir texto fora do template.
 - Não adicionar emojis.
 - Não mencionar "Diar.ia" dentro do corpo dos destaques.
