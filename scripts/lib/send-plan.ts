@@ -228,7 +228,19 @@ export function parseBlocksArg(argv: string[], validBlocks: number[], fallback?:
     if (b !== -1) return b;
     return argv.indexOf("--weeks");
   })();
-  if (idx === -1) return fallback ? [...fallback] : [...validBlocks];
+  if (idx === -1) {
+    // Sem flag: usa o fallback do caller (ou validBlocks inteiro) — mas filtrado
+    // contra validBlocks, igual ao caminho explícito abaixo. Sem este filtro, um
+    // fallback desalinhado (ex: --cell-block N que não existe no plano, cujo
+    // caller usa [cellBlock] como fallback) produziria um `blocks` inválido em
+    // silêncio — a invocação processaria 0 dias sem erro nenhum.
+    const base = fallback ?? validBlocks;
+    const filtered = base.filter((b) => validBlocks.includes(b));
+    if (filtered.length === 0) {
+      throw new Error(`bloco padrão [${base.join(",")}] não existe no plano (blocos válidos: ${validBlocks.join(", ")}).`);
+    }
+    return filtered;
+  }
   const flagName = argv[idx];
   const val = argv[idx + 1];
   if (!val || val.startsWith("-")) {

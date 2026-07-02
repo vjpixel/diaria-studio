@@ -136,6 +136,21 @@ describe("parseBlocksArg (#2775 — generaliza parseWeeksArg, --weeks retrocompa
   it("mistura válido+inválido: mantém só os válidos", () => {
     assert.deepEqual(parseBlocksArg(["--blocks", "2,9"], validBlocks), [2]);
   });
+
+  // Regressão (self-review #2775): fallback desalinhado com o plano (ex: caller
+  // passa --cell-block 5 como fallback [5], mas o plano só tem blocos 1-3) não
+  // pode produzir um `blocks` silenciosamente inválido — sem este guard, a
+  // invocação processaria 0 dias sem nenhum erro.
+  it("fallback fora de validBlocks lança erro explícito (não retorna silenciosamente inválido)", () => {
+    assert.throws(
+      () => parseBlocksArg([], validBlocks, [5]),
+      /bloco padrão \[5\] não existe no plano/,
+    );
+  });
+
+  it("fallback parcialmente válido: filtra e mantém só o(s) válido(s)", () => {
+    assert.deepEqual(parseBlocksArg([], validBlocks, [2, 9]), [2]);
+  });
 });
 
 describe("loadSendPlan / loadSendsSummary (#2775 — I/O com cycleDir explícito)", () => {
