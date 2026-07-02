@@ -57,6 +57,9 @@ import {
   type CouponUsageReport,
   type CouponCodeReport,
 } from "../../../scripts/lib/stripe-coupons.ts";
+// Ordenação de tier: mesma fonte que a segmentação real de waves (#2782/#2807
+// review) — clarice-segment.ts é dependency-free (zero imports), Workers-safe.
+import { tierRank } from "../../../scripts/lib/clarice-segment.ts";
 
 const DS = {
   ...DS_COLORS,
@@ -369,24 +372,32 @@ export const COUPONS_KV_KEY = "coupons:usage";
  * STRIPE_API_KEY configurada). Em KV-only (sem Stripe key), isFresh=true
  * ainda serve KV — não há fonte mais fresca disponível. Retorna null quando
  * COUPONS_TAB_ENABLED !== "true", em KV miss sem STRIPE_API_KEY, ou em erro.
+ *
+ * `kvOnly` (#2779): o caminho de erro (fallback de rate-limit do Brevo) exige
+ * ZERO chamadas externas — com kvOnly=true, o KV é a única fonte: hit retorna,
+ * miss retorna null (tab oculta), nunca cai no fetch Stripe ao vivo.
  */
 /** Exported for unit tests. */
 export async function getCouponUsage(
   env: Pick<Env, "COUPONS_TAB_ENABLED" | "STRIPE_API_KEY" | "STATS_CACHE">,
   isFresh: boolean,
+  kvOnly = false,
 ): Promise<CouponUsageReport | null> {
   if (env.COUPONS_TAB_ENABLED !== "true") return null;
   try {
     if (env.STATS_CACHE) {
       const cached = await env.STATS_CACHE.get<CouponUsageReport>(COUPONS_KV_KEY, "json")
         .catch((e) => { console.error("[#2718] KV read error:", (e as Error).message); return null; });
+      // #2779: kvOnly honra o KV como fonte única — hit OU miss, nunca segue
+      // pro Stripe (antes, um KV miss caía no fetch ao vivo mesmo no fallback).
+      if (kvOnly) return cached;
       // KV hit: retorna imediatamente, EXCETO quando isFresh=true E Stripe disponível
       // (nesse caso Stripe tem dados mais frescos). Em KV-only (sem Stripe key), KV
       // é a fonte mais fresca mesmo com isFresh=true.
       if (cached !== null && (!isFresh || !env.STRIPE_API_KEY)) return cached;
     }
     // KV miss ou isFresh com Stripe disponível: tenta Stripe API
-    if (!env.STRIPE_API_KEY) return null;
+    if (kvOnly || !env.STRIPE_API_KEY) return null;
     const report = await fetchCouponUsage(env.STRIPE_API_KEY);
     // Sempre grava de volta ao KV — inclusive em isFresh, para atualizar o cache
     // das sessões seguintes (não só do caller que pediu ?fresh=1).
@@ -422,6 +433,7 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 export async function readKvTabs(
   env: Env,
   isFresh: boolean,
+  kvOnly = false, // #2779: true no caminho de erro — cupons nunca chamam Stripe ao vivo
 ): Promise<{
   cohorts: EngagementCohorts | null;
   mvStatus: MvStatus | null;
@@ -436,7 +448,7 @@ export async function readKvTabs(
     kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
     kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
     kv ? (kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) as Promise<ContactsSummary | null>) : Promise.resolve(null),
-    getCouponUsage(env, isFresh),
+    getCouponUsage(env, isFresh, kvOnly),
     kv ? (kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) as Promise<EiaEngagementSummary | null>) : Promise.resolve(null),
   ]);
   return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
@@ -448,9 +460,11 @@ export async function readKvTabs(
  * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
  * vez do HTML inteiro congelado, que escondia dado KV recém-publicado.
  *
- * `isFresh=false` sempre: no caminho de erro nunca fazemos chamada externa ao
- * vivo (getCouponUsage) — honramos o KV. `Array.isArray` guarda contra KV
- * corrompido. Se o re-render lançar, degrada pro 503 amigável (nunca 500).
+ * `kvOnly=true` sempre (#2779): no caminho de erro nunca fazemos chamada
+ * externa ao vivo (getCouponUsage) — honramos o KV, e um KV miss de cupons
+ * vira tab oculta em vez de fetch Stripe (isFresh=false sozinho não garantia
+ * isso em miss). `Array.isArray` guarda contra KV corrompido. Se o re-render
+ * lançar, degrada pro 503 amigável (nunca 500).
  *
  * Exported for unit tests (#2733).
  */
@@ -462,7 +476,7 @@ export async function buildRateLimitFallback(
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
     .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, false);
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, false, true);
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -2934,6 +2948,29 @@ export function renderContactsSummarySection(
   };
 
   const tierLabel = (k: string): string => (k === "null" ? "sem tier" : `T${k.padStart(2, "0")}`);
+  // #2805: breakdown por tier inline — substitui a antiga tabela "Por tier
+  // (1º envio)". ATENÇÃO (#2807 review): o universo do by_tier (firstSend:
+  // send_eligible=1 + sends_count=0, #2732) NÃO é idêntico à linha 0 do
+  // histograma — optin nunca-enviado tem +40 pts (fica na linha 40) e
+  // re-envio decaído/inelegível nunca-enviado pode ter 0 exato (conta na
+  // linha 0 mas está fora do firstSend). Por isso o rótulo "1º envio" é
+  // explícito: o breakdown descreve o universo próprio dele, não a linha.
+  // Ordem: tier ASC (fila real de 1º envio, T01 primeiro), "sem tier" por
+  // último — via tierRank (fonte única com a segmentação de waves). Chave
+  // corrompida/não-numérica (KV casteado sem validar shape) → NaN → tratada
+  // como null (vai pro fim), nunca comparator NaN (ordem indefinida).
+  const tierBreakdownInline = (byTier: Record<string, number> | undefined): string => {
+    const entries = Object.entries(byTier ?? {});
+    if (entries.length === 0) return "";
+    const rank = (k: string): number => {
+      const num = Number(k);
+      return tierRank(k === "null" || isNaN(num) ? null : num);
+    };
+    const parts = entries
+      .sort(([a], [b]) => rank(a) - rank(b))
+      .map(([k, v]) => `${escHtml(tierLabel(k))}: ${n(v)}`);
+    return ` <span style="opacity:0.65">· 1º envio — ${parts.join(" · ")}</span>`;
+  };
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
     "zero (sem histórico)": pp.eq0,
@@ -2957,8 +2994,11 @@ export function renderContactsSummarySection(
       return isNaN(num) ? -Infinity : num;
     };
     const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
+    // #2805: a linha 0 carrega o breakdown por tier inline (rotulado
+    // "1º envio" — universo firstSend, que se CONCENTRA na linha 0 mas não
+    // coincide com ela; ver comentário do tierBreakdownInline).
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}${k === "0" ? tierBreakdownInline(s.by_tier) : ""}</td><td style="text-align:right">${n(v)}</td></tr>`,
     ).join("\n");
     return `<div class="table-wrap"><table>
       <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th></tr></thead>
@@ -2976,9 +3016,8 @@ export function renderContactsSummarySection(
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
-  ${kvTable("Por tier (1º envio)", s.by_tier, tierLabel)}
-  ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${priorityPointsSection}
+  ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
 </section>`;

@@ -190,6 +190,36 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     assert.ok(body.includes("rate-limit"), "banner de rate-limit injetado");
   });
 
+  it("KV miss de cupons + STRIPE_API_KEY configurada → ZERO chamada externa (#2779)", async () => {
+    // Regressão #2779: o fallback de rate-limit é desenhado pra não depender de
+    // NENHUMA chamada externa — mas um KV miss em `coupons:usage` com
+    // STRIPE_API_KEY setada caía no fetchCouponUsage ao vivo (isFresh=false não
+    // cobria o miss). Cenário real: 429 do Brevo + TTL de 300s dos cupons
+    // expirado no mesmo instante (cold start / primeiro deploy).
+    const kv = makeKv({
+      [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
+      // sem COUPONS_KV_KEY → miss
+    });
+    const env = { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: kv };
+    const realFetch = globalThis.fetch;
+    const externalCalls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      externalCalls.push(String(input));
+      throw new Error("chamada externa proibida no fallback de rate-limit");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resp = await buildRateLimitFallback(env as any, 120);
+      assert.strictEqual(resp.status, 200, "fallback continua servindo o stale 200");
+      const body = await resp.text();
+      assert.ok(body.includes("panel-contatos"), "abas de KV presentes normalmente");
+      assert.deepEqual(externalCalls, [], "o caminho de erro NUNCA faz chamada externa (Stripe incluso)");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it("STATS_CACHE ausente → 503 amigável (nunca crasha)", async () => {
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: undefined };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

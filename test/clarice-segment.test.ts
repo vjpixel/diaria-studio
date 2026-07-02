@@ -5,6 +5,9 @@ import {
   priorityQueue,
   sliceIntoWaves,
   loadStoreRows,
+  isFirstSend,
+  isSendEligible,
+  FIRST_SEND_SQL_PREDICATE,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
@@ -205,5 +208,62 @@ test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave
   // sem regressão: mv_result="ok" continua elegível e vai pra 1º envio (firstSend).
   assert.deepEqual(s.firstSend.map((r) => r.email), ["ok@x.com"]);
 
+  db.close();
+});
+
+// ---------------------------------------------------------------------------
+// #2782 — predicado firstSend: fonte única JS ⇄ SQL
+// ---------------------------------------------------------------------------
+
+test("isFirstSend / isSendEligible: edges de NULL espelham segmentFromStore (#2782)", () => {
+  // send_eligible NULL (linha nunca-recomputada) → corte fail-safe, nunca firstSend.
+  assert.equal(isSendEligible({ send_eligible: null as unknown as number }), false);
+  assert.equal(isFirstSend({ send_eligible: null as unknown as number, sends_count: 0 }), false);
+  // sends_count NULL ⇄ 0 (coalesce): elegível nunca-enviado É firstSend.
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: null as unknown as number }), true);
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: 0 }), true);
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: 2 }), false);
+});
+
+test("FIRST_SEND_SQL_PREDICATE ⇄ segmentFromStore: mesmo by_tier sobre um store real (#2782)", () => {
+  // Regressão do padrão "2 cópias que divergem silenciosamente": o by_tier do
+  // clarice-db-summary (SQL) tem que contar EXATAMENTE o universo firstSend de
+  // segmentFromStore (JS). Se a regra de elegibilidade mudar num lado só (como
+  // #2732/#2735 quase fizeram), este teste quebra.
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // firstSend: elegível, nunca enviado — tiers variados (incl. null)
+  ins("INSERT INTO clarice_users (email, status, tier) VALUES ('a@x.com','active',1)");
+  ins("INSERT INTO clarice_users (email, status, tier) VALUES ('b@x.com','active',1)");
+  ins("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES ('c@x.com',3,'verified')");
+  ins("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES ('d@x.com',NULL,'verified')");
+  // reSend: elegível mas já enviado — NÃO conta no by_tier
+  ins("INSERT INTO clarice_users (email, tier, opens_count, sends_count, mv_bucket) VALUES ('vet@x.com',2,3,3,'verified')");
+  // excluded: nunca enviado mas inelegível (dispute / unsub) — NÃO conta
+  ins("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('disputa@x.com',3,10)");
+  ins("INSERT INTO clarice_users (email, tier, unsubscribed, sends_count) VALUES ('unsub@x.com',1,1,2)");
+  recomputeDerived(db);
+  // edge pós-recompute: linha crua com send_eligible NULL + sends_count NULL
+  // (nunca recomputada) — JS corta (falsy) e SQL corta (=1 falha em NULL).
+  ins("INSERT INTO clarice_users (email, tier, send_eligible, sends_count) VALUES ('cru@x.com',1,NULL,NULL)");
+
+  // Lado SQL — a MESMA cláusula que clarice-db-summary.ts usa no by_tier.
+  const sqlByTier: Record<string, number> = {};
+  for (const r of db
+    .prepare(`SELECT tier AS k, COUNT(*) n FROM clarice_users WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`)
+    .all() as Array<{ k: unknown; n: number }>) {
+    sqlByTier[r.k == null ? "null" : String(r.k)] = r.n;
+  }
+
+  // Lado JS — o universo firstSend real da segmentação de wave.
+  const jsByTier: Record<string, number> = {};
+  for (const r of segmentFromStore(loadStoreRows(db)).firstSend) {
+    const k = r.tier == null ? "null" : String(r.tier);
+    jsByTier[k] = (jsByTier[k] ?? 0) + 1;
+  }
+
+  assert.deepEqual(sqlByTier, jsByTier, "SQL e JS devem contar o mesmo universo firstSend");
+  assert.deepEqual(sqlByTier, { "1": 2, "3": 1, null: 1 }, "sanidade: a,b (T1), c (T3), d (sem tier)");
   db.close();
 });

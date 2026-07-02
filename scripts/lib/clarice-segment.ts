@@ -37,10 +37,46 @@ export interface Segmentation {
   excluded: Array<{ email: string; reason: string }>;
 }
 
-/** tier p/ ordenação: nulo vira +∞ (vai pro fim). */
-function tierRank(t: number | null): number {
+/**
+ * tier p/ ordenação: nulo vira +∞ (vai pro fim). Exportado (#2807 review):
+ * o brevo-dashboard ordena o breakdown por tier com a MESMA regra — não
+ * re-derivar lá (mesma classe de drift que o #2782 elimina pro firstSend).
+ */
+export function tierRank(t: number | null): number {
   return t == null ? Number.POSITIVE_INFINITY : t;
 }
+
+// ---------------------------------------------------------------------------
+// Predicados de segmentação — fonte ÚNICA (#2782)
+// ---------------------------------------------------------------------------
+// `segmentFromStore` (ação: fila real de wave) e os relatórios SQL do dashboard
+// (visão: clarice-db-summary.ts `by_tier`) precisam concordar sobre o que é
+// "firstSend". Antes eram 2 implementações paralelas (JS aqui, SQL cru lá) que
+// divergiam silenciosamente a cada mudança de regra (#2732/#2735). Agora ambos
+// consomem estes predicados; `test/clarice-segment.test.ts` assegura a
+// equivalência JS ⇄ SQL sobre um store real.
+
+/** Elegível pra envio? Falsy (0 OU null nunca-recomputado) → corte fail-safe. */
+export function isSendEligible(r: Pick<StoreRow, "send_eligible">): boolean {
+  return Boolean(r.send_eligible);
+}
+
+/** 1º envio: elegível E nunca recebeu email (sends_count 0 ou null). */
+export function isFirstSend(
+  r: Pick<StoreRow, "send_eligible" | "sends_count">,
+): boolean {
+  return isSendEligible(r) && (r.sends_count ?? 0) === 0;
+}
+
+/**
+ * Cláusula SQL equivalente a `isFirstSend` (pra agregar via SQL sem carregar o
+ * store em JS). Espelhos: `send_eligible=1` ⇄ truthy (a coluna só assume 0|1|
+ * NULL — schema em clarice-db.ts); `COALESCE(sends_count,0)=0` ⇄ `?? 0`.
+ * Mudou a regra? Mude AQUI e em `isFirstSend` juntos — o teste de equivalência
+ * pega drift.
+ */
+export const FIRST_SEND_SQL_PREDICATE =
+  "send_eligible=1 AND COALESCE(sends_count,0)=0";
 
 /**
  * Segmenta o universo do store nos 3 grupos. Puro e determinístico.
@@ -55,12 +91,12 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
   for (const r of rows) {
     // Fail-safe: send_eligible falsy (0 OU null de uma linha nunca recomputada)
     // → CORTE. Na dúvida NÃO enviar é a direção segura pro pipeline de envio.
-    if (!r.send_eligible) {
+    if (!isSendEligible(r)) {
       excluded.push({ email: r.email, reason: r.ineligible_reason ?? "unknown" });
-    } else if ((r.sends_count ?? 0) > 0) {
-      reSend.push(r);
-    } else {
+    } else if (isFirstSend(r)) {
       firstSend.push(r);
+    } else {
+      reSend.push(r);
     }
   }
 

@@ -24,6 +24,7 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
+import { FIRST_SEND_SQL_PREDICATE } from "./lib/clarice-segment.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -113,10 +114,12 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // do 1º envio) inflaria a contagem por tier mesmo nunca indo pra fila real
     // (segmentFromStore roteia esses pra `excluded`, não `firstSend`). tier
     // continua gravado no store pra auditoria, só não entra nesta contagem.
+    // #2782: o predicado vem da MESMA fonte que segmentFromStore usa — não
+    // reimplementar em SQL cru aqui (era 2 cópias que divergiam em silêncio).
     by_tier: groupCounts(
       db,
       `SELECT tier AS k, COUNT(*) n FROM clarice_users
-        WHERE send_eligible=1 AND COALESCE(sends_count,0)=0 GROUP BY tier`,
+        WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`,
     ),
     eligibility: {
       eligible: count(
