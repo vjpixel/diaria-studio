@@ -102,8 +102,9 @@ test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por ti
   const idxSem = html.indexOf("sem tier:");
   assert.ok(idxT01 < idxT02 && idxT02 < idxSem, "ordem da fila de 1º envio: T01 → T02 → sem tier");
   // o breakdown fica NA célula do valor 0 (mesmo <td>), não na linha do 15,
-  // e carrega o rótulo do universo próprio (#2807 review)
-  assert.match(html, /<td>0 <span[^>]*>· 1º envio — T01:/);
+  // com o rótulo do universo próprio (#2807 review) e 1 tier por linha (<br>)
+  assert.match(html, /<td>0 <span[^>]*>· 1º envio —<br>T01:/);
+  assert.match(html, /T01: 1[.,]?167<br>T02: 7[.,]?269<br>sem tier: 131/);
   assert.doesNotMatch(html, /<td>15[^<]*T01:/);
 });
 

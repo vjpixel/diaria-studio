@@ -2969,7 +2969,9 @@ export function renderContactsSummarySection(
     const parts = entries
       .sort(([a], [b]) => rank(a) - rank(b))
       .map(([k, v]) => `${escHtml(tierLabel(k))}: ${n(v)}`);
-    return ` <span style="opacity:0.65">· 1º envio — ${parts.join(" · ")}</span>`;
+    // 1 tier por linha (pedido do editor pós-#2807): rótulo do universo na
+    // 1ª linha, cada tier em linha própria dentro da mesma célula.
+    return ` <span style="opacity:0.65">· 1º envio —<br>${parts.join("<br>")}</span>`;
   };
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
