@@ -11,14 +11,15 @@ import {
   findExistingConflicts,
   buildPlan,
   loadWaveDefs,
-  WAVES,
+  type WaveDef,
 } from "../scripts/clarice-import-waves.ts";
 
-describe("loadWaveDefs (#2656)", () => {
-  it("sem manifest → WAVES legado", () => {
+describe("loadWaveDefs (#2656/#2844)", () => {
+  it("sem manifest → erro claro (rode clarice-build-waves-store)", () => {
     const dir = mkdtempSync(join(tmpdir(), "wd-legacy-"));
     try {
-      assert.deepEqual(loadWaveDefs(dir), WAVES);
+      assert.throws(() => loadWaveDefs(dir), /waves-manifest\.json ausente/);
+      assert.throws(() => loadWaveDefs(dir), /clarice-build-waves-store/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -56,11 +57,11 @@ describe("loadWaveDefs (#2656)", () => {
     }
   });
 
-  it("build store interrompido (w*-store.csv sem manifest) → erro, não fallback legado", () => {
+  it("build store interrompido (w*-store.csv sem manifest) → mesmo erro claro, não fallback legado", () => {
     const dir = mkdtempSync(join(tmpdir(), "wd-interrupted-"));
     try {
       writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,A\n");
-      assert.throws(() => loadWaveDefs(dir), /incompleto/);
+      assert.throws(() => loadWaveDefs(dir), /waves-manifest\.json ausente/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -89,57 +90,42 @@ describe("buildPlan via manifest (#2656)", () => {
 
 describe("listNameFor", () => {
   it("nome determinístico por wave + label", () => {
-    assert.equal(listNameFor(WAVES[0], "Jun/2026"), "Clarice Jun/2026 W1 — T1 abriu");
-    assert.equal(listNameFor(WAVES[2], "Jun/2026"), "Clarice Jun/2026 W3 — T2 parte1");
+    const w1: WaveDef = { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" };
+    const w3: WaveDef = { key: "W3", file: "w3-store.csv", desc: "1º envio (T06+)" };
+    assert.equal(listNameFor(w1, "Jun/2026"), "Clarice Jun/2026 W1 — re-envio (engajado)");
+    assert.equal(listNameFor(w3, "Jun/2026"), "Clarice Jun/2026 W3 — 1º envio (T06+)");
   });
 });
 
-describe("WAVES (proveniência no nome + W5 opcional)", () => {
-  it("nomes wX-{ferramenta}-{tier}: T1 via Brevo, T2/maio via MV", () => {
-    const byKey = Object.fromEntries(WAVES.map((w) => [w.key, w.file]));
-    assert.equal(byKey.W1, "w1-brevo-export-t1-openers.csv");
-    assert.equal(byKey.W2, "w2-brevo-export-t1-non-openers.csv");
-    assert.equal(byKey.W3, "w3-mv-export-t2.csv");
-    assert.equal(byKey.W4, "w4-mv-export-t2.csv");
-    assert.equal(byKey.W5, "w5-mv-export-maio.csv");
-  });
-  it("W1–W4 obrigatórias; só W5 (cohort do ciclo) é opcional", () => {
-    for (const w of WAVES) {
-      assert.equal(!!w.optional, w.key === "W5", `${w.key} optional flag`);
-    }
-  });
-});
-
-describe("buildPlan — opcional pula, obrigatória explode", () => {
+// #2844/260702: o cohort fixo W1–W5 (WAVES) era exclusivo do fallback legado,
+// removido com clarice-build-waves.ts. Waves store-driven são inteiramente
+// dinâmicas (manifest lista só o que de fato foi gerado) — sem shape fixo pra
+// testar aqui.
+describe("buildPlan — manifest-driven: obrigatória ausente explode", () => {
+  const SAMPLE: WaveDef[] = [
+    { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" },
+    { key: "W2", file: "w2-store.csv", desc: "1º envio (T01–T05)" },
+    { key: "W3", file: "w3-store.csv", desc: "1º envio (T06+)" },
+  ];
   const HEADER = "email,NOME\nfoo@bar.com,Foo\n";
-  const tmpWaves = (files: string[]): string => {
+  const tmpWaves = (waves: WaveDef[], filesToWrite: string[]): string => {
     const dir = mkdtempSync(join(tmpdir(), "clarice-waves-"));
-    for (const f of files) writeFileSync(join(dir, f), HEADER, "utf8");
+    writeFileSync(join(dir, "waves-manifest.json"), JSON.stringify(waves), "utf8");
+    for (const f of filesToWrite) writeFileSync(join(dir, f), HEADER, "utf8");
     return dir;
   };
 
-  it("todas presentes → 5 planos (W1–W5)", () => {
-    const dir = tmpWaves(WAVES.map((w) => w.file));
+  it("todas as waves do manifest com CSV presente → 1 plano por wave", () => {
+    const dir = tmpWaves(SAMPLE, SAMPLE.map((w) => w.file));
     try {
-      assert.equal(buildPlan("L", "2605-06", dir).length, 5);
+      assert.equal(buildPlan("L", "2605-06", dir).length, 3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("W5 (opcional) ausente → pula sem erro, 4 planos", () => {
-    const dir = tmpWaves(WAVES.filter((w) => !w.optional).map((w) => w.file));
-    try {
-      const plans = buildPlan("L", "2605-06", dir);
-      assert.equal(plans.length, 4);
-      assert.ok(!plans.some((p) => p.wave.key === "W5"), "W5 não deve entrar no plano");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("wave obrigatória (W3) ausente → throw (não importa parcial)", () => {
-    const dir = tmpWaves(WAVES.filter((w) => w.key !== "W3").map((w) => w.file));
+  it("wave do manifest sem CSV correspondente → throw (não importa parcial)", () => {
+    const dir = tmpWaves(SAMPLE, SAMPLE.filter((w) => w.key !== "W3").map((w) => w.file));
     try {
       assert.throws(() => buildPlan("L", "2605-06", dir), /wave faltando/);
     } finally {

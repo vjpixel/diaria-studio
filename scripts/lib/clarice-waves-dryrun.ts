@@ -6,8 +6,9 @@
  *
  * ⚠️ LIMITES DO MODELO (importante pra uma decisão de alto blast-radius):
  *  - Compara a SUPRESSÃO/ELEGIBILIDADE do universo, NÃO a seleção de cohort por
- *    ciclo. O pipeline atual (clarice-build-waves) envia, por ciclo, só T1
- *    (ativos) + T2 (ex-assinantes MV-verified) — ~milhares —, não a base toda.
+ *    ciclo. O pipeline pré-cutover (antigo clarice-build-waves.ts, removido em
+ *    #2844/260702) enviava, por ciclo, só T1 (ativos) + T2 (ex-assinantes
+ *    MV-verified) — ~milhares —, não a base toda.
  *    O cutover "swap total" passa a segmentar a BASE INTEIRA. São estratégias
  *    diferentes; aqui medimos quem é elegível/suprimido, não o tamanho da wave.
  *  - "Não está no Brevo" é o estado NORMAL: o editor só importa o cohort pro

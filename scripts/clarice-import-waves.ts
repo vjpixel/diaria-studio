@@ -2,9 +2,9 @@
 /**
  * clarice-import-waves.ts
  *
- * Importa pro Brevo as waves geradas por clarice-build-waves.ts: cria uma lista
- * por wave e sobe os contatos do CSV correspondente. Terça-feira vira 1 comando
- * em vez de import manual na UI.
+ * Importa pro Brevo as waves geradas por clarice-build-waves-store.ts: cria uma
+ * lista por wave e sobe os contatos do CSV correspondente. Terça-feira vira 1
+ * comando em vez de import manual na UI.
  *
  * SEGURANÇA: dry-run por padrão (só imprime o plano). `--execute` é que de fato
  * cria listas e importa contatos na conta de PRODUÇÃO da Clarice.
@@ -12,16 +12,16 @@
  * Uso:
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
- *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio (casa com clarice-build-waves --cycle)
+ *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio (casa com clarice-build-waves-store --cycle)
  *   [--folder-id N]              folder Brevo onde criar as listas (default 1)
  *
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (só usado em --execute)
  *
  * Inputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
- *   w1-brevo-export-t1-openers.csv · w2-brevo-export-t1-non-openers.csv ·
- *   w3-mv-export-t2.csv · w4-mv-export-t2.csv (gerados por clarice-build-waves) ·
- *   w5-mv-export-maio.csv (opcional — cohort de maio, pulado se ausente)
+ *   waves-manifest.json (gerado por clarice-build-waves-store.ts) + os
+ *   w*-store.csv correspondentes — único caminho suportado (#2656 cutover; o
+ *   fallback pro cohort legado T1/T2 foi removido em #2844/260702).
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -42,41 +42,26 @@ export interface WaveDef {
   file: string;
   /** Rótulo curto pro nome da lista. */
   desc: string;
-  /** Opcional: pula sem erro se o arquivo não existir (wave específica do ciclo,
-   *  ex: leads de maio). As W1–W4 são obrigatórias (faltar = build-waves falhou). */
+  /** Opcional: pula sem erro se o arquivo não existir. O manifest store-driven
+   *  nunca marca entradas como opcionais (só lista o que de fato gerou) — o
+   *  campo existe pra buildPlan tratar ausência de arquivo defensivamente. */
   optional?: boolean;
 }
 
-// Nome = wX + ferramenta que segmentou + tier (#provenance): T1 via opens da Brevo,
-// T2/maio via MV-verified. W1–W4 são geradas pelo build-waves (toda edição); W5
-// (leads frescos de maio) é cohort específico do ciclo → opcional.
-export const WAVES: WaveDef[] = [
-  { key: "W1", file: "w1-brevo-export-t1-openers.csv", desc: "T1 abriu" },
-  { key: "W2", file: "w2-brevo-export-t1-non-openers.csv", desc: "T1 nao-abriu" },
-  { key: "W3", file: "w3-mv-export-t2.csv", desc: "T2 parte1" },
-  { key: "W4", file: "w4-mv-export-t2.csv", desc: "T2 parte2" },
-  { key: "W5", file: "w5-mv-export-maio.csv", desc: "Leads maio (fresh)", optional: true },
-];
-
 /**
  * #2656: o builder store-driven (clarice-build-waves-store.ts) escreve um
- * `waves-manifest.json` no dir de waves listando as waves daquele ciclo. Se
- * existir, ele é a fonte de verdade (nº de waves é dinâmico no modelo novo);
- * senão, cai no WAVES hardcoded (ciclos legados do build-waves cohort).
+ * `waves-manifest.json` no dir de waves listando as waves daquele ciclo — é a
+ * ÚNICA fonte de verdade (#2844/260702: fallback pro cohort legado T1/T2
+ * removido junto com clarice-build-waves.ts). Sem manifest, erro claro em vez
+ * de silenciosamente montar um plano com CSVs que não existem mais.
  */
 export function loadWaveDefs(wavesDir: string): WaveDef[] {
   const manifestPath = resolve(wavesDir, "waves-manifest.json");
   if (!existsSync(manifestPath)) {
-    // Build store-driven INTERROMPIDO (escreveu CSVs mas não o manifest)? Não cair
-    // no WAVES legado em silêncio — os arquivos legados não existem e o erro
-    // mandaria rodar o script errado. Detecta CSVs store sem manifest.
-    if (existsSync(resolve(wavesDir, "w1-store.csv"))) {
-      throw new Error(
-        `há w*-store.csv mas falta waves-manifest.json em ${wavesDir} — build ` +
-          `store-driven incompleto. Re-rode 'clarice-build-waves-store.ts --cycle ...'.`,
-      );
-    }
-    return WAVES; // ciclo legado (cohort)
+    throw new Error(
+      `waves-manifest.json ausente em ${wavesDir} — gere com ` +
+        `'clarice-build-waves-store.ts --cycle ...'.`,
+    );
   }
   let parsed: unknown;
   try {
@@ -204,19 +189,19 @@ interface Plan {
 // `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
 export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
   const plans: Plan[] = [];
-  for (const wave of loadWaveDefs(wavesDir)) { // #2656: manifest > WAVES legado
+  for (const wave of loadWaveDefs(wavesDir)) { // #2656/#2844: manifest é a única fonte
     const path = resolve(wavesDir, wave.file);
     if (!existsSync(path)) {
-      // Opcional (ex: W5 maio) ausente → pula com aviso. Obrigatória ausente →
-      // erro (build-waves falhou; não importar parcial sem o editor saber).
+      // Opcional ausente → pula com aviso (defensivo — o manifest store-driven
+      // nunca marca entradas opcionais hoje). Obrigatória ausente → erro (build
+      // interrompido; não importar parcial sem o editor saber).
       if (wave.optional) {
         console.error(`ℹ️  wave opcional ausente, pulando: ${wave.key} (${wave.file})`);
         continue;
       }
-      const builder = existsSync(resolve(wavesDir, "waves-manifest.json"))
-        ? "clarice-build-waves-store.ts"
-        : "clarice-build-waves.ts";
-      throw new Error(`wave faltando: ${path} — rode '${builder} --cycle ${cycle}' antes.`);
+      throw new Error(
+        `wave faltando: ${path} — rode 'clarice-build-waves-store.ts --cycle ${cycle}' antes.`,
+      );
     }
     const raw = readFileSync(path, "utf-8");
     const csv = normalizeImportCsv(raw);

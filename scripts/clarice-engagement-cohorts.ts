@@ -5,7 +5,8 @@
  * (Brevo) e grava o resultado no KV do worker `clarice-dashboard`. O dashboard
  * (workers/brevo-dashboard) só RENDERIZA o JSON cacheado — nunca faz os GETs
  * per-contato no render (custo proibitivo + rate-limit). Roda como script,
- * análogo ao fetch per-contato de `clarice-build-waves.ts`.
+ * análogo ao fetch per-contato do antigo `clarice-build-waves.ts` (removido
+ * em #2844/260702).
  *
  * As 5 coortes são MUTUAMENTE EXCLUSIVAS (cada contato em exatamente uma):
  *   - "saídas" (bounce OU descadastro) têm PRECEDÊNCIA: um contato que deu
@@ -32,7 +33,7 @@
  *
  * O quirk de open agregado-zerado da Brevo não afeta este script: o evento
  * per-contato (`statistics.opened`) sobrevive — mesmo motivo do GET individual
- * em clarice-build-waves.ts.
+ * do antigo clarice-build-waves.ts (removido em #2844/260702).
  *
  * Env:
  *   BREVO_CLARICE_API_KEY     obrigatório (lê statistics per-contato)

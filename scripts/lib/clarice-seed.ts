@@ -1,10 +1,10 @@
 /**
  * clarice-seed.ts — constante e helper de injeção de seed address (#2683).
  *
- * O email do editor entra em TODA wave/lista gerada pelos builders de wave
- * (clarice-build-waves.ts e clarice-build-waves-store.ts), funcionando como
- * monitor address: o editor recebe cada envio para conferir render, inbox
- * placement (Gmail) e entregabilidade.
+ * O email do editor entra em TODA wave/lista gerada pelo builder de wave
+ * (clarice-build-waves-store.ts — sucessor único desde #2844/260702),
+ * funcionando como monitor address: o editor recebe cada envio para conferir
+ * render, inbox placement (Gmail) e entregabilidade.
  *
  * Regras:
  *   - Cada wave recebe o seed exatamente 1× (dedup DENTRO da wave).

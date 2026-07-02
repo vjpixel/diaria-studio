@@ -294,14 +294,14 @@ describe("brevo-client sibReset:0 → retryAfterMs=0 (#2307)", async () => {
   });
 });
 
-// ─── #2307: clarice-build-waves brevoGet header-aware ────────────────────────
+// ─── #2307: brevo-client brevoGet header-aware ────────────────────────────────
 
-describe("clarice-build-waves brevoGet: header-aware retry (#2307)", () => {
+describe("brevo-client brevoGet: header-aware retry (#2307)", () => {
   // Testa a lógica pura de parseBrevoRetryAfterMs via brevoGet+mock de fetch.
   // A assertiva é sobre quantas vezes fetch foi chamado — não timing.
 
   test("brevoGet: 429 com Retry-After:0 → retenta (não lança na 1ª tentativa)", async () => {
-    const { brevoGet } = await import("../scripts/clarice-build-waves.ts");
+    const { brevoGet } = await import("../scripts/lib/brevo-client.ts");
     let fetchCalls = 0;
     const origFetch = globalThis.fetch;
 
@@ -331,7 +331,7 @@ describe("clarice-build-waves brevoGet: header-aware retry (#2307)", () => {
   });
 
   test("brevoGet: 429 com x-sib-ratelimit-reset:0 → retenta (header-aware)", async () => {
-    const { brevoGet } = await import("../scripts/clarice-build-waves.ts");
+    const { brevoGet } = await import("../scripts/lib/brevo-client.ts");
     let fetchCalls = 0;
     const origFetch = globalThis.fetch;
 

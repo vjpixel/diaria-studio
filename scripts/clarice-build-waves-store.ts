@@ -2,8 +2,9 @@
 /**
  * clarice-build-waves-store.ts — builder de waves STORE-DRIVEN (#2656 cutover).
  *
- * Supera o clarice-build-waves.ts (cohort T1/T2 + fetch ao vivo do Brevo):
- * monta as waves a partir do store único (#2647), segmentando a BASE INTEIRA
+ * Sucessor do antigo clarice-build-waves.ts (cohort T1/T2 + fetch ao vivo do
+ * Brevo — removido em #2844/260702, cutover concluído): monta as waves a
+ * partir do store único (#2647), segmentando a BASE INTEIRA
  * por comportamento, decisão editorial registrada:
  *   - corte por send_eligible (supressão já consolidada no store)
  *   - re-envio ordenado por priority_points (histórico de abertura — o preditor

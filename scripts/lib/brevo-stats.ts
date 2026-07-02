@@ -7,7 +7,8 @@
  * `softBounces`, `unsubscriptions`, `complaints`. Contamos campanhas (length do
  * array) e extraímos o evento mais recente (last_*_at). O agregado de campanha
  * vem zerado num quirk da Brevo, mas os eventos per-contato sobrevivem — por isso
- * o GET individual (mesma razão de `fetchBrevoEngagement` em clarice-build-waves).
+ * o GET individual (mesma razão de `fetchBrevoEngagement` no antigo
+ * clarice-build-waves.ts, removido em #2844/260702).
  */
 
 export interface BrevoColumns {

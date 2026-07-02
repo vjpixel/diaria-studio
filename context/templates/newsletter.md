@@ -71,7 +71,7 @@ Por que isso importa:
 
 **📡 RADAR**
 
-[mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas. Papers podem ganhar prefix 🔬 inline pra dica visual — opcional, decidir após 2 edições piloto. #1569]
+[mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas.]
 
 ---
 
