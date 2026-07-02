@@ -35,7 +35,7 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 | `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
 | `/diaria-4-revisao AAMMDD` | Etapa 4 (Revisão: pré-render + gate humano pré-publicação). |
 | `/diaria-5-publicacao [all\|newsletter\|social] AAMMDD` | Etapa 5 (Beehiiv rascunho + LinkedIn + Facebook). |
-| `/diaria-mensal YYMM [--no-gate]` | Digest mensal (coleta → análise → escrita → imagens). |
+| `/diaria-mensal --cycle YYMM-MM [--no-gate]` | Digest mensal (coleta/análise → escrita → imagens → revisão consolidada → publicação Brevo, #2795). |
 | `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
 | `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |
 | `/diaria-refresh-dedup` | Regenera `data/past-editions.md` (usado pra evitar links repetidos). |
