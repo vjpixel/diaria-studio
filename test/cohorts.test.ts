@@ -11,7 +11,15 @@ import {
   cohortDisplayLabel,
   isKnownCohortSlug,
 } from "../scripts/lib/cohorts.ts";
-import { tierRank } from "../scripts/lib/clarice-segment.ts";
+
+// Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
+// clarice-segment.ts até a fase B, removida no cutover; o único consumidor de
+// produção que ainda precisava dela, scripts/cohort-order-dryrun.ts, ganhou a
+// própria cópia inline). Réplica idêntica só pra provar a propriedade de
+// equivalência abaixo — não reimporta nada de produção.
+function tierRank(t: number | null): number {
+  return t == null ? Number.POSITIVE_INFINITY : t;
+}
 
 // ---------------------------------------------------------------------------
 // cohortFromTier / TIER_TO_COHORT (#2857 fase A)

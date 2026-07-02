@@ -7,18 +7,19 @@
  *
  * Lê todos os *.csv de data/clarice-subscribers/ (schemas distintos OK),
  * dedups+merges por email com regras campo-a-campo, aplica filtros hard,
- * computa score, divide em tiers.
+ * computa score, classifica em COHORTS nomeados (#2857 fase C — sucessor da
+ * taxonomia numérica T01-T10).
  *
  * Uso:
  *   npx tsx scripts/merge-clarice-subscribers.ts [--filter-clrc-pt]
  *
- * Output (em data/clarice-subscribers/) — nome descritivo via tierFileName():
- *   stripe-export-t01-assinantes-ativos.csv   Tier 1: assinante atual
- *   stripe-export-t02-ex-assinantes.csv       Tier 2: ex-assinante
- *   stripe-export-t03-leads-2026-jan-abr.csv  Tier 3: lead semestre corrente (range real do corte)
- *   stripe-export-t04-leads-2025H2.csv        Tier 4: lead 2025-H2
- *   ...                                        (T4–T9: semestre deslizante)
- *   stripe-export-t10-leads-caudao.csv        Tier 10: lead caudão antigo
+ * Output (em data/clarice-subscribers/) — nome descritivo via cohortFileName():
+ *   stripe-export-assinantes-ativos.csv   Assinante atual
+ *   stripe-export-ex-assinantes.csv       Ex-assinante (pagou alguma vez)
+ *   stripe-export-leads-2026-06.csv       Lead — safra mensal (created >= epoch #2817)
+ *   stripe-export-leads-2025h2.csv        Lead — semestre real do created (pré-epoch)
+ *   ...                                    (1 arquivo por cohort presente na base)
+ *   stripe-export-leads-caudao.csv        Lead sem `created` (fóssil)
  *   stripe-export-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
@@ -27,6 +28,14 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
+import { deriveLeadCohort } from "./lib/clarice-segment.ts";
+import {
+  COHORT_ASSINANTES_ATIVOS,
+  COHORT_EX_ASSINANTES,
+  COHORT_LEADS_CAUDAO,
+  cohortSendRank,
+  cohortDisplayLabel,
+} from "./lib/cohorts.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DATA_DIR = resolve(ROOT, "data/clarice-subscribers");
@@ -396,154 +405,52 @@ export function openProbability(m: Merged, now: Date): number {
 }
 
 // ---------------------------------------------------------------------------
-// Tier — taxonomia 10-níveis pra warmup faseado (#1018).
+// Cohort — taxonomia nomeada pra warmup faseado (#2857 fase C — sucessor da
+// taxonomia numérica T01-T10 de #1018/#1020, cutover final).
 //
-// T1  = assinante atual (status ∈ {active, past_due, paused, trialing})
-// T2  = ex-assinante (pagou alguma vez E não está em T1)
-// T3  = lead 2026-H1 (nunca pagou, criado jan–jun/2026)
-// T4  = lead 2025-H2
-// T5  = lead 2025-H1
-// T6  = lead 2024-H2
-// T7  = lead 2024-H1
-// T8  = lead 2023-H2
-// T9  = lead 2023-H1
-// T10 = lead 2021–2022 (todo, agrupado — caudão antigo)
+// assinantes-ativos = status ∈ {active, past_due, paused, trialing}
+// ex-assinantes     = pagou alguma vez E não está em assinantes-ativos
+// leads-YYYY-MM     = nunca pagou, `created` >= epoch da safra (2026-05, #2817)
+// leads-YYYYhN      = nunca pagou, `created` anterior ao epoch (semestre REAL)
+// leads-caudao      = nunca pagou, sem `created` (fóssil)
 //
-// Critério: estado atual da relação (T1) → história de pagamento (T2) →
-// recência por semestre (T3–T10). Substitui o slicing por rank de score
-// (slice(0,1000)/slice(1000,5000)/slice(5000)) que tinha cortes arbitrários
-// no meio de empates.
+// Critério: estado atual da relação (assinante-ativo) → história de pagamento
+// (ex-assinante) → período REAL de `created` (lead). Payer é SEMPRE fixo
+// (created irrelevante) — mesma regra que `computeCohort` (clarice-db.ts) usa
+// como fallback pra dado legado; aqui computada com o contexto COMPLETO do
+// Stripe (payment_count/total_spend, que o store NÃO persiste — por isso é o
+// merge, não o store, quem precisa fazer essa distinção). Lead usa
+// `deriveLeadCohort` (scripts/lib/clarice-segment.ts) — MESMA fonte que o
+// store usa pra derivar cohort de linhas legadas, unifica a derivação e
+// elimina a divergência que existia entre o rótulo estático que o tier
+// residual do merge atribuía e o `created` real (motivo da fase B.1).
 // ---------------------------------------------------------------------------
 
-const TIER1_STATUSES = new Set(["active", "past_due", "paused", "trialing"]);
+const PAYER_ACTIVE_STATUSES = new Set(["active", "past_due", "paused", "trialing"]);
 
 /**
- * Computa "índice de semestre" de uma data: 0 = jan–jun do ano, 1 = jul–dez,
- * 2 = jan–jun do ano seguinte, etc. Permite calcular distância em semestres
- * entre duas datas via subtração.
+ * Cohort de um contato (#2857 fase C — sucessor de `tierOf`, removida nesta
+ * fase). Sem parâmetro `now`: ao contrário da antiga taxonomia por tier (que
+ * rotulava leads por SEMESTRE DESLIZANTE relativo à data do merge — rótulo que
+ * ficava errado a cada virada de semestre, motivo da fase B.1), o cohort de
+ * lead deriva do período REAL e ABSOLUTO de `created` — não muda com o tempo.
  */
-function semesterIndex(d: Date): number {
-  return d.getUTCFullYear() * 2 + (d.getUTCMonth() >= 6 ? 1 : 0);
+export function cohortOf(m: Merged): string {
+  if (m.status && PAYER_ACTIVE_STATUSES.has(m.status)) return COHORT_ASSINANTES_ATIVOS;
+  if (m.payment_count > 0 || m.total_spend > 0) return COHORT_EX_ASSINANTES;
+  const created = m.created ? m.created.toISOString() : null;
+  return deriveLeadCohort(created) ?? COHORT_LEADS_CAUDAO; // sem created → fóssil
 }
 
 /**
- * Distância em semestres entre `from` e `now`. 0 = mesmo semestre, 1 = semestre
- * anterior, etc. Negativos = futuro (raro mas possível em fixtures).
+ * Nome de arquivo DESCRITIVO do cohort — `stripe-export-{slug}.csv` (#2857
+ * fase C: o prefixo numérico `t{NN}-` foi removido — o slug do cohort JÁ é
+ * o identificador canônico e ordenável cronologicamente via `cohortSendRank`,
+ * não precisa mais de um índice artificial pra ordenar no filesystem).
  */
-function semestersBack(from: Date, now: Date): number {
-  return semesterIndex(now) - semesterIndex(from);
+export function cohortFileName(cohort: string): string {
+  return `stripe-export-${cohort}.csv`;
 }
-
-/**
- * Labels human-readable de cada tier — derivados dinamicamente pra refletir
- * semestres deslizantes baseados em `now` (#1020). Antes era objeto estático
- * que ficava errado a cada virada de semestre.
- *
- * Use esta função em vez de objeto estático — labels precisam ser
- * recalculados a cada chamada pra refletir `now` correto.
- */
-export function tierLabel(tier: number, now: Date = new Date()): string {
-  if (tier === 1) return "Assinante atual (active/past_due/paused/trialing)";
-  if (tier === 2) return "Ex-assinante (pagou alguma vez)";
-  if (tier === 10) return "Lead nunca-pagou — caudão antigo (≥7 semestres atrás)";
-
-  // T3 = semestre corrente, T4 = anterior, ..., T9 = 6 semestres atrás.
-  const semesterOffset: { [k: number]: number } = { 3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6 };
-  const offset = semesterOffset[tier];
-  if (offset === undefined) return `Tier ${tier} (desconhecido)`;
-
-  const sIdx = semesterIndex(now) - offset;
-  const year = Math.floor(sIdx / 2);
-  const half = sIdx % 2 === 1 ? "H2" : "H1";
-  return `Lead nunca-pagou — ${year}-${half}`;
-}
-
-const MONTHS_PT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
-
-/**
- * Nome de arquivo DESCRITIVO do tier. Mantém o prefixo `t{NN}-` (ordenação no
- * filesystem + os readers acham por ele), seguido de um slug legível:
- *   - T1/T2/T10: estáveis (`assinantes-ativos`, `ex-assinantes`, `leads-caudao`);
- *   - T4–T9: semestre deslizante (`leads-2025H2`…), acompanha `now` como tierLabel;
- *   - T3: semestre corrente — PARCIAL por causa do corte do export — então usa o
- *     range REAL de `created` dos dados (`leads-2026-jan-abr`). Assim o nome reflete
- *     o corte e se AUTO-CORRIGE no próximo export (vira jan-mai, jan-jun…), sem
- *     rename manual.
- */
-export function tierFileName(tier: number, now: Date, rows: Scored[]): string {
-  const nn = String(tier).padStart(2, "0");
-  let slug: string;
-  if (tier === 1) {
-    slug = "assinantes-ativos";
-  } else if (tier === 2) {
-    slug = "ex-assinantes";
-  } else if (tier === 10) {
-    slug = "leads-caudao";
-  } else if (tier === 3) {
-    const dates = rows.map((r) => r.created).filter((d): d is Date => !!d);
-    if (dates.length === 0) {
-      const sIdx = semesterIndex(now);
-      slug = `leads-${Math.floor(sIdx / 2)}-${sIdx % 2 === 1 ? "jul-dez" : "jan-jun"}`;
-    } else {
-      const min = dates.reduce((a, b) => (a < b ? a : b));
-      const max = dates.reduce((a, b) => (a > b ? a : b));
-      const minY = min.getUTCFullYear();
-      const maxY = max.getUTCFullYear();
-      const minM = MONTHS_PT[min.getUTCMonth()];
-      const maxM = MONTHS_PT[max.getUTCMonth()];
-      // Mesmo ano (caso normal — 1 semestre): leads-2026-jan-abr.
-      // Anos diferentes (raro — datas futuras em fixtures, back<0): inclui os DOIS
-      // anos pra não dropar o ano do max nem inverter os meses (leads-2025-dez-2026-jan).
-      slug = minY === maxY ? `leads-${minY}-${minM}-${maxM}` : `leads-${minY}-${minM}-${maxY}-${maxM}`;
-    }
-  } else {
-    // T4–T9: semestre deslizante (mesma matemática do tierLabel).
-    const offset: { [k: number]: number } = { 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6 };
-    const sIdx = semesterIndex(now) - (offset[tier] ?? 0);
-    slug = `leads-${Math.floor(sIdx / 2)}${sIdx % 2 === 1 ? "H2" : "H1"}`;
-  }
-  return `stripe-export-t${nn}-${slug}.csv`;
-}
-
-/**
- * Tier de um contato.
- *
- * @param m   Contato merged.
- * @param now Data de referência. Default = `new Date()` (uso em produção).
- *            Em testes, sempre passar explicitamente pra reprodutibilidade.
- *
- * Tiers (#1018, #1020):
- *  - T1: status atual (active, past_due, paused, trialing)
- *  - T2: ex-assinante (pagou alguma vez)
- *  - T3: lead nunca-pagou no semestre corrente
- *  - T4: lead nunca-pagou no semestre anterior
- *  - T5–T9: leads em semestres mais antigos (até 6 atrás)
- *  - T10: caudão (≥ 7 semestres atrás OU sem data)
- *
- * Self-adjusting: a definição de "semestre corrente" depende de `now`, então
- * o script não precisa update manual a cada virada de semestre.
- */
-export function tierOf(m: Merged, now: Date = new Date()): number {
-  if (m.status && TIER1_STATUSES.has(m.status)) return 1;
-  if (m.payment_count > 0 || m.total_spend > 0) return 2;
-  if (!m.created) return 10; // sem data → fóssil
-
-  const back = semestersBack(m.created, now);
-  // Futuro (semestre >= now): T3 (mais quente). Raro mas possível com fixtures.
-  if (back <= 0) return 3;
-  if (back === 1) return 4;
-  if (back === 2) return 5;
-  if (back === 3) return 6;
-  if (back === 4) return 7;
-  if (back === 5) return 8;
-  if (back === 6) return 9;
-  return 10; // ≥ 7 semestres atrás (~3,5+ anos)
-}
-
-// (TIER_LABELS estático foi removido em #1026 — substituído por `tierLabel(t, now)`.
-// Manter um objeto estático com `new Date()` em import-time congela os labels
-// no momento que o módulo é carregado, ficando errado depois de virar semestre.
-// Use a função pra labels corretos em qualquer ponto no tempo.)
 
 // ---------------------------------------------------------------------------
 // Output
@@ -553,10 +460,10 @@ export interface Scored extends Merged {
   score: number;
   verify_risk: number;
   open_probability: number;
-  tier: number;
+  cohort: string;
 }
 
-function formatTierRow(r: Scored): { [k: string]: string | number } {
+function formatCohortRow(r: Scored): { [k: string]: string | number } {
   // Schema mínimo pra import no Brevo (3 colunas — #1019):
   // - email             (identidade)
   // - NOME              (personalização: "Olá, {{NOME}}")
@@ -566,12 +473,12 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
   // (PT-BR: NOME mapeia pra firstname). Sem uppercase, o Brevo cria atributos
   // novos (first_name) em vez de popular os canônicos (verificado via API).
   //
-  // Tier é implícito no filename (stripe-export-t{NN}-{slug}.csv).
+  // Cohort é implícito no filename (stripe-export-{cohort}.csv).
   // Ordem das linhas implica ordenação por score (não precisa coluna).
   //
   // verify_risk não vai no output: a verificação MillionVerifier é um passo
-  // separado (`scripts/verify-emails-mv.ts`) rodado sobre o CSV do tier antes
-  // do envio. Convenção #1297: verify_risk ≥ 3 → MV (cobre T02+); 1–2 → skip.
+  // separado (`scripts/verify-emails-mv.ts`) rodado sobre o CSV do cohort antes
+  // do envio. Convenção #1297: cohorts não-assinantes verificam no MV.
   return {
     email: r.email,
     NOME: r.name?.split(" ")[0] || "",
@@ -677,7 +584,7 @@ export function buildUniverse(
       score: computeScore(m, now),
       verify_risk: verifyRisk(m, now),
       open_probability: openProbability(m, now),
-      tier: tierOf(m, now),
+      cohort: cohortOf(m),
     });
   }
 
@@ -689,9 +596,11 @@ export function buildUniverse(
 // ---------------------------------------------------------------------------
 
 /**
- * @param now Data de referência para tier/score/verify_risk. Default = `new Date()`
- *            (produção). Testes de integração devem passar explicitamente pra não
- *            ficarem sujeitos à virada de semestre do sistema (#2724 CI incident).
+ * @param now Data de referência para score/verify_risk (cohort não depende mais
+ *            de `now` desde a fase C — deriva do período ABSOLUTO de `created`,
+ *            ver `cohortOf`). Default = `new Date()` (produção). Testes de
+ *            integração devem passar explicitamente pra não ficarem sujeitos à
+ *            virada de semestre do sistema (#2724 CI incident).
  */
 export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
   const filterClrcPt = process.argv.includes("--filter-clrc-pt");
@@ -804,52 +713,61 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
     const score = computeScore(m, now);
     const verify_risk = verifyRisk(m, now);
     const open_probability = openProbability(m, now);
-    const tier = tierOf(m, now);
-    kept.push({ ...m, score, verify_risk, open_probability, tier });
+    const cohort = cohortOf(m);
+    kept.push({ ...m, score, verify_risk, open_probability, cohort });
   }
 
   console.error(`\n✅ kept: ${kept.length} · ❌ excluded: ${excluded.length}`);
 
-  // Agrupa por tier; dentro do tier ordena por score desc + email asc.
-  const byTier = new Map<number, Scored[]>();
+  // Agrupa por cohort; dentro do cohort ordena por score desc + email asc.
+  const byCohort = new Map<string, Scored[]>();
   for (const c of kept) {
-    if (!byTier.has(c.tier)) byTier.set(c.tier, []);
-    byTier.get(c.tier)!.push(c);
+    if (!byCohort.has(c.cohort)) byCohort.set(c.cohort, []);
+    byCohort.get(c.cohort)!.push(c);
   }
-  for (const arr of byTier.values()) {
+  for (const arr of byCohort.values()) {
     arr.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.email.localeCompare(b.email);
     });
   }
 
-  function writeTier(filename: string, rows: Scored[]): void {
-    const csv = Papa.unparse(rows.map(formatTierRow));
+  function writeCohort(filename: string, rows: Scored[]): void {
+    const csv = Papa.unparse(rows.map(formatCohortRow));
     writeFileSync(resolve(dataDir, filename), csv, "utf8");
   }
 
-  // Output: 10 CSVs com nome descritivo (stripe-export-t01-assinantes-ativos.csv …).
-  // O prefixo t{NN}- garante ordenação no filesystem + match dos readers.
+  // Output: 1 CSV por cohort presente na base (stripe-export-assinantes-ativos.csv …).
+  // Ordem determinística via cohortSendRank (morno→frio), só afeta a ordem do
+  // log/write — cada cohort vira seu próprio arquivo independente do resto.
   // Escrevemos ANTES de limpar (ver cleanup abaixo): os arquivos canônicos nunca
   // ficam ausentes numa janela — write sobrescreve, depois remove só os órfãos.
+  const cohortsSorted = [...byCohort.keys()].sort(
+    (a, b) => cohortSendRank(a) - cohortSendRank(b),
+  );
   const written = new Set<string>();
-  for (let t = 1; t <= 10; t++) {
-    const rows = byTier.get(t) ?? [];
-    const filename = tierFileName(t, now, rows);
-    writeTier(filename, rows);
+  for (const cohort of cohortsSorted) {
+    const rows = byCohort.get(cohort)!;
+    const filename = cohortFileName(cohort);
+    writeCohort(filename, rows);
     written.add(filename);
   }
 
-  // Cleanup de outputs órfãos: o atual `stripe-export-t{NN}-*` de OUTRO run/semestre
-  // (slug mudou) + os esquemas LEGADOS (`kit-import-*`, `brevo-import-tier{N}`, e o
-  // `brevo-import-t{NN}[-slug]` da nomenclatura pré-stripe-export). Roda DEPOIS do
-  // write e PULA os nomes recém-escritos (`written`) — nunca apaga o output deste run.
+  // Cleanup de outputs órfãos: `stripe-export-{cohort}.csv` de outro run cujo
+  // cohort não está mais presente na base (ex: safra mensal esvaziada) + o
+  // formato numérico ANTIGO `stripe-export-t{NN}-*` (#2857 fase C — migração
+  // one-time, o cutover troca de convenção) + os esquemas LEGADOS
+  // (`kit-import-*`, `brevo-import-tier{N}`, `brevo-import-t{NN}[-slug]`).
+  // Roda DEPOIS do write e PULA os nomes recém-escritos (`written`) — nunca
+  // apaga o output deste run. Nunca casa `stripe-export-excluded.csv` (não tem
+  // prefixo de cohort reconhecido).
   // (não pega -verified/-rejected/-unknown, que moram no dir do ciclo, não no root)
   const orphanPatterns = [
     /^kit-import-(tier\d+|excluded)\.csv$/,
     /^brevo-import-tier\d+\.csv$/, // legado sem padding (tier1, tier2, tier3 antigos)
     /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // legado pré-stripe-export (#1965)
-    /^stripe-export-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // atual: slug-drift entre runs ([A-Za-z…]: H maiúsculo do 2025H2)
+    /^stripe-export-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // formato numérico pré-#2857-fase-C
+    /^stripe-export-(assinantes-ativos|ex-assinantes|leads-[\w-]+)\.csv$/, // cohort atual: slug-drift entre runs
   ];
   for (const f of readdirSync(dataDir)) {
     if (written.has(f)) continue; // nunca remove o que acabamos de escrever
@@ -882,16 +800,15 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
   const reasons: { [k: string]: number } = {};
   for (const e of excluded) reasons[e.reason] = (reasons[e.reason] || 0) + 1;
 
-  // Tier counts pra log + JSON summary
-  const tierCounts: { [k: string]: number } = {};
-  for (let t = 1; t <= 10; t++) {
-    tierCounts[`t${String(t).padStart(2, "0")}`] = (byTier.get(t) ?? []).length;
+  // Cohort counts pra log + JSON summary
+  const cohortCounts: { [k: string]: number } = {};
+  for (const cohort of cohortsSorted) {
+    cohortCounts[cohort] = (byCohort.get(cohort) ?? []).length;
   }
 
   console.error(`\n📤 outputs em ${dataDir}:`);
-  for (let t = 1; t <= 10; t++) {
-    const n = tierCounts[`t${String(t).padStart(2, "0")}`];
-    console.error(`   t${String(t).padStart(2, "0")} (${tierLabel(t, now)}): ${n.toLocaleString("pt-BR")}`);
+  for (const cohort of cohortsSorted) {
+    console.error(`   ${cohort} (${cohortDisplayLabel(cohort)}): ${cohortCounts[cohort].toLocaleString("pt-BR")}`);
   }
   console.error(`   excluded: ${excluded.length.toLocaleString("pt-BR")}`);
 
@@ -900,11 +817,11 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
     console.error(`   ${r}: ${c}`);
   }
 
-  // Sample top 10 do T1 (assinantes atuais — quem vai primeiro num warmup).
-  const t1Sample = byTier.get(1) ?? [];
-  console.error(`\n🏆 sample top 10 do T1:`);
-  for (let i = 0; i < Math.min(10, t1Sample.length); i++) {
-    const t = t1Sample[i];
+  // Sample top 10 de assinantes-ativos (quem vai primeiro num warmup).
+  const payerSample = byCohort.get(COHORT_ASSINANTES_ATIVOS) ?? [];
+  console.error(`\n🏆 sample top 10 de ${COHORT_ASSINANTES_ATIVOS}:`);
+  for (let i = 0; i < Math.min(10, payerSample.length); i++) {
+    const t = payerSample[i];
     console.error(
       `   ${(i + 1).toString().padStart(2)}. ${t.email.padEnd(40)} ` +
         `score=${t.score.toFixed(2)} ` +
@@ -924,7 +841,7 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
         unique_emails: merged.size,
         kept: kept.length,
         excluded: excluded.length,
-        tiers: tierCounts,
+        cohorts: cohortCounts,
         exclude_reasons: reasons,
         distribution: {
           clrc_pt: distrClrcPt,

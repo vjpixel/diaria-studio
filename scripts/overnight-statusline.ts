@@ -742,7 +742,8 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
  *
  * `now` é injetável (default `new Date()`) — mantém a função 100% testável e
  * determinística mesmo com o guard de staleness dependente de relógio (#2760;
- * mesmo padrão de `tierOf(m, now)` em `scripts/merge-clarice-subscribers.ts`).
+ * mesmo padrão de `openProbability(m, now)` em
+ * `scripts/merge-clarice-subscribers.ts`).
  * Chamadas sem passar `now` explicitamente continuam funcionando como antes.
  *
  * @param cwd  Raiz do projeto (cwd)

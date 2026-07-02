@@ -32,6 +32,7 @@ import {
   COHORT_ASSINANTES_ATIVOS,
   COHORT_EX_ASSINANTES,
   cohortFromTier,
+  isKnownCohortSlug,
 } from "./cohorts.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
@@ -67,18 +68,28 @@ CREATE TABLE IF NOT EXISTS clarice_users (
   dispute_losses       REAL DEFAULT 0,
   refunded_volume      REAL DEFAULT 0,
 
-  tier                 INTEGER,         -- 1..10 (T01-T10). Dupla-escrita (#2857 fase A) — mantido
-                                         -- populado por compat/fallback; ordenacao de 1o envio
-                                         -- (segmentFromStore) le cohort desde a fase B.
-  cohort               TEXT,            -- slug de cohort nomeado (#2857 fase A/B.1 — ver
-                                         -- scripts/lib/cohorts.ts + computeCohort em clarice-db.ts):
-                                         -- tier 1/2 -> 'assinantes-ativos'/'ex-assinantes' SEMPRE;
-                                         -- senao (lead) -> periodo REAL do created (deriveLeadCohort:
-                                         -- 'leads-YYYY-MM' mensal >= epoch 2026-05, senao semestre real
-                                         -- 'leads-YYYYhN'); created ausente/invalido -> fallback
-                                         -- cohortFromTier(tier) (rotulo pode nao refletir periodo real);
-                                         -- tier NULL + sem created -> NULL. Antes do #2857 guardava so a
-                                         -- safra crua 'YYYY-MM' (#2817).
+  tier                 INTEGER,         -- LEGADO read-only (#2857 fase C — cutover). 1..10 (T01-T10),
+                                         -- so populado em linhas antigas (dupla-escrita da fase A ATE
+                                         -- a fase C). Ingest NOVO (ingestStripe, clarice-build-db.ts)
+                                         -- NAO escreve mais esta coluna -- cohort e escrito DIRETO a
+                                         -- partir de merge-clarice-subscribers.ts (que tem o contexto
+                                         -- Stripe completo: payment_count/total_spend, que este store
+                                         -- NAO persiste). Mantido so como fallback do computeCohort
+                                         -- pra linhas legadas sem cohort/created (ver recomputeDerived).
+                                         -- NAO DROPAR a coluna -- dado historico auditavel.
+  cohort               TEXT,            -- slug de cohort nomeado (#2857 -- ver scripts/lib/cohorts.ts).
+                                         -- Fase C: escrito DIRETO por ingestStripe a partir do cohort
+                                         -- ja computado por merge-clarice-subscribers.ts (contexto
+                                         -- completo: status+payment_count+total_spend+created) --
+                                         -- SEMPRE fresco a cada rebuild, para linhas com presenca no
+                                         -- export Stripe. recomputeDerived PRESERVA um cohort ja
+                                         -- reconhecido (isKnownCohortSlug) e so faz BACKFILL (via
+                                         -- computeCohort, fallback legado tier+created) quando a coluna
+                                         -- esta NULL ou com um valor nao-reconhecido (dado legado
+                                         -- pre-fase-A ainda nao migrado). tier 1/2 -> 'assinantes-ativos'
+                                         -- /'ex-assinantes' SEMPRE; lead -> periodo REAL do created
+                                         -- (deriveLeadCohort); created ausente/invalido -> fallback
+                                         -- cohortFromTier(tier); tier NULL + sem created -> NULL.
 
   -- MillionVerifier (ingestão total per-email)
   mv_result            TEXT,            -- ok | catch_all | invalid | disposable | unknown
@@ -264,9 +275,18 @@ export function classifyEligibility(i: EligibilityInput): {
 }
 
 /**
- * Deriva o cohort de uma linha a partir de `tier` + `created` (#2857 fase
- * B.1 — correção pós dry-run no store real sobre a fase A/B, decisão do
- * editor 260702). Precedência, nesta ordem:
+ * FALLBACK LEGADO (#2857 fase C): deriva o cohort de uma linha a partir de
+ * `tier` (coluna congelada, read-only desde a fase C) + `created`, pra
+ * linhas cujo `cohort` ainda está NULL ou num formato não-reconhecido
+ * (`isKnownCohortSlug`) — dado que predata qualquer ingest via
+ * `merge-clarice-subscribers.ts`/`ingestStripe` pós-cutover, que agora
+ * escrevem `cohort` DIRETO (contexto Stripe completo, este store não
+ * persiste `payment_count`/`total_spend`). Ver `recomputeDerived` — chamada
+ * só quando o `cohort` armazenado não é aproveitável.
+ *
+ * Precedência original (#2857 fase B.1 — correção pós dry-run no store real
+ * sobre a fase A/B, decisão do editor 260702), preservada intacta pra dado
+ * legado:
  *
  *   1. PAGANTE NUNCA VIRA LEAD: `tier === 1` → `assinantes-ativos`,
  *      `tier === 2` → `ex-assinantes`, SEMPRE — `created` é irrelevante pra
@@ -315,19 +335,24 @@ export function computeCohort(
 /**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
  * `send_eligible`, `ineligible_reason`, `cohort` — #2817, taxonomia
- * unificada #2857 fase A, correção de precedência #2857 fase B.1) pra todas
- * as linhas a partir do estado atual de Brevo/MV/Stripe + tabela
- * `priority_optin`. Idempotente — roda no fim de cada build e sempre que a
- * flag de optin muda.
+ * unificada #2857 fase A, correção de precedência #2857 fase B.1, cutover
+ * fase C) pra todas as linhas a partir do estado atual de Brevo/MV/Stripe +
+ * tabela `priority_optin`. Idempotente — roda no fim de cada build e sempre
+ * que a flag de optin muda.
  *
- * `cohort`: delega pra `computeCohort` (ver docstring acima pra precedência
- * completa). Como a derivação sempre recalcula do zero a partir de
- * `created`/`tier` correntes (nunca lê o `cohort` antigo), rodar sobre um
- * store com valores LEGADOS (safra crua 'YYYY-MM' de antes do #2857, cohort
- * de uma precedência anterior, ou o próprio `cohort` ainda NULL) é
- * automaticamente uma migração — idempotente por construção, sem passo de
- * migração separado. `tier` INTEGER não é escrito aqui (fica intacto —
- * dupla-escrita, fase A).
+ * `cohort` (#2857 fase C — mudou de comportamento): PRESERVA o valor já
+ * armazenado quando ele é um slug RECONHECIDO (`isKnownCohortSlug`) — desde
+ * a fase C, `ingestStripe` (clarice-build-db.ts) escreve `cohort` DIRETO a
+ * partir de `merge-clarice-subscribers.ts` (contexto Stripe completo: este
+ * store não persiste `payment_count`/`total_spend`, então só o merge pode
+ * distinguir payer/lead com segurança) — recalcular aqui a partir só de
+ * `tier`/`created` quebraria essa classificação pra linhas novas (tier deixa
+ * de ser escrito). Só faz BACKFILL via `computeCohort` (fallback legado
+ * tier+created) quando o `cohort` armazenado está NULL ou não é um slug
+ * reconhecido (dado legado pré-fase-A/formato cru ainda não migrado — migra
+ * automaticamente na 1ª passagem, idempotente na 2ª). `tier` INTEGER não é
+ * escrito aqui nem em nenhum ingest novo (fica intacto — legado read-only
+ * desde a fase C).
  */
 export function recomputeDerived(db: DatabaseSync): number {
   const optin = new Set<string>(
@@ -339,7 +364,7 @@ export function recomputeDerived(db: DatabaseSync): number {
   const rows = db
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
-              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -355,6 +380,7 @@ export function recomputeDerived(db: DatabaseSync): number {
     complained: number;
     created: string | null;
     tier: number | null;
+    cohort: string | null;
   }>;
 
   const update = db.prepare(
@@ -385,9 +411,13 @@ export function recomputeDerived(db: DatabaseSync): number {
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
       });
-      // #2857 fase B.1: precedência completa em `computeCohort` (pagante
-      // fixo > período real do created > fallback de tier).
-      const cohort = computeCohort(r.tier, r.created);
+      // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
+      // ingestStripe a partir do merge); backfill via computeCohort (fallback
+      // legado tier+created) só quando ausente/não-reconhecido.
+      const cohort =
+        r.cohort != null && isKnownCohortSlug(r.cohort)
+          ? r.cohort
+          : computeCohort(r.tier, r.created);
       update.run(
         isOptin ? 1 : 0,
         points,

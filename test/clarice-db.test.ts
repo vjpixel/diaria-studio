@@ -481,7 +481,17 @@ test("recomputeDerived: lead (tier != 1/2) deriva SEMPRE do período real do cre
   db.close();
 });
 
-test("recomputeDerived: cohort é recomputado (não fica stale) numa 2ª rodada após created mudar", () => {
+test("recomputeDerived: PRESERVA um cohort já reconhecido mesmo se `created` muda depois (#2857 fase C — mudou de comportamento)", () => {
+  // #2857 fase C: desde o cutover, `cohort` é escrito DIRETO por `ingestStripe`
+  // (clarice-build-db.ts) a partir do merge — que tem o contexto Stripe
+  // completo (payment_count/total_spend) que este store não persiste.
+  // `recomputeDerived` sozinho NÃO pode mais recalcular cohort com segurança a
+  // cada passagem (`tier` deixou de ser escrito pra linhas novas — recalcular
+  // do zero via tier+created quebraria a classificação payer/lead de um
+  // payer sem tier). Por isso: um cohort já RECONHECIDO (`isKnownCohortSlug`)
+  // é preservado — só um novo `ingestStripe` (que sobrescreve `cohort` fresco
+  // via UPSERT, fora do escopo de `recomputeDerived`) reflete uma mudança de
+  // `created`. Ver o teste seguinte pro caminho de BACKFILL (cohort ausente).
   const db = openClariceDb(":memory:");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("x@x.com", "2026-05-01T00:00:00.000Z");
   recomputeDerived(db);
@@ -494,7 +504,56 @@ test("recomputeDerived: cohort é recomputado (não fica stale) numa 2ª rodada 
   recomputeDerived(db);
   assert.equal(
     (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
+    "leads-2026-05",
+    "cohort já reconhecido é PRESERVADO — recomputeDerived não recalcula sozinho",
+  );
+
+  db.close();
+});
+
+test("recomputeDerived: um ingestStripe-style overwrite (UPDATE direto de `cohort`) É respeitado — é assim que a freshness real acontece (fase C)", () => {
+  // Simula o que `ingestStripe` faz de verdade: escreve `cohort` DIRETO (não
+  // passa por `computeCohort`). `recomputeDerived`, chamado depois, preserva
+  // esse valor fresco (mesmo teste acima, agora explicitando a fonte real da
+  // atualização em produção).
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("x@x.com", "2026-05-01T00:00:00.000Z");
+  recomputeDerived(db);
+  db.prepare("UPDATE clarice_users SET created = ?, cohort = ? WHERE email = 'x@x.com'").run(
+    "2026-06-01T00:00:00.000Z",
     "leads-2026-06",
+  );
+  recomputeDerived(db);
+  assert.equal(
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
+    "leads-2026-06",
+    "cohort fresco escrito por fora (estilo ingestStripe) é preservado, não sobrescrito",
+  );
+  db.close();
+});
+
+test("recomputeDerived: BACKFILL via computeCohort quando o cohort armazenado está ausente/não-reconhecido (#2857 fase C)", () => {
+  const db = openClariceDb(":memory:");
+  // cohort NUNCA populado (linha legada/nova sem ingestStripe rodar ainda) —
+  // recomputeDerived faz o backfill normal via tier/created.
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("y@x.com", "2026-06-05T00:00:00.000Z");
+  recomputeDerived(db);
+  assert.equal(
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email='y@x.com'").get() as any).cohort,
+    "leads-2026-06",
+    "cohort ausente → backfill via computeCohort(tier, created)",
+  );
+
+  // cohort com valor NÃO-RECONHECIDO (formato legado cru, pré-#2857) — mesmo
+  // backfill (equivalente ao teste de migração idempotente já existente).
+  db.prepare("INSERT INTO clarice_users (email, created, cohort) VALUES (?, ?, ?)").run(
+    "z@x.com", "2026-07-10T00:00:00.000Z", "lixo-nao-reconhecido",
+  );
+  recomputeDerived(db);
+  assert.equal(
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email='z@x.com'").get() as any).cohort,
+    "leads-2026-07",
+    "cohort não-reconhecido (isKnownCohortSlug=false) → tratado como ausente, backfill",
   );
 
   db.close();

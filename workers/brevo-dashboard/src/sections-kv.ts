@@ -1,9 +1,10 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport, type CouponCodeReport, commissionCents } from "../../../scripts/lib/stripe-coupons.ts";
-import { tierRank, cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
+import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
-// (sucessor do tierRank, ver tierBreakdownRows/cohortFirstSendBreakdownRows
-// abaixo). cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
+// (sucessor do antigo tierRank — o fallback de render pro payload legado
+// by_tier foi removido na fase C, ver firstSendBreakdownRows abaixo).
+// cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT } from "./render-links.ts";
@@ -584,51 +585,34 @@ export function renderContactsSummarySection(
       <tbody>${rows}</tbody></table></div>`;
   };
 
-  const tierLabel = (k: string): string => (k === "null" ? "sem tier" : `T${k.padStart(2, "0")}`);
-  // #2805 → 3ª iteração (pedido do editor, 260702): o breakdown por tier são
-  // SUB-LINHAS reais da tabela — 1 <tr> por tier, com a contagem na coluna
+  // #2805 → 3ª iteração (pedido do editor, 260702): o breakdown de 1º envio são
+  // SUB-LINHAS reais da tabela — 1 <tr> por cohort, com a contagem na coluna
   // "contatos" — em vez de lista <br> espremida na célula da linha 0.
-  // ATENÇÃO (#2807 review): o universo do by_tier (firstSend: send_eligible=1
-  // + sends_count=0, #2732) NÃO é idêntico à linha 0 do histograma — optin
-  // nunca-enviado tem +40 pts (fica na linha 40) e re-envio decaído/
-  // inelegível nunca-enviado pode ter 0 exato (conta na linha 0 mas está fora
-  // do firstSend). Por isso cada sub-linha carrega o rótulo "1º envio":
-  // descreve o universo próprio dele, não uma partição da linha 0.
-  // Ordem: tier ASC (fila real de 1º envio, T01 primeiro), "sem tier" por
-  // último — via tierRank (fonte única com a segmentação de waves). Chave
-  // corrompida/não-numérica (KV casteado sem validar shape) → NaN → tratada
-  // como null (vai pro fim), nunca comparator NaN (ordem indefinida).
-  // `byTierVerified === undefined` ⇒ tabela SEM a coluna verified (o caller
-  // passa o campo só quando a coluna global está ativa — review #2815: os dois
-  // campos verified sempre nascem juntos no summary; payload parcial mostra 0,
-  // trade-off aceito e documentado). A mesma ressalva de universos vale pra
-  // coluna verified: o verified da linha 0 é do bucket inteiro (sem internos),
-  // o das sub-linhas é do firstSend — as somas não conciliam por design.
-  const tierBreakdownRows = (
-    byTier: Record<string, number> | undefined,
-    byTierVerified: Record<string, number> | undefined,
-  ): string => {
-    const entries = Object.entries(byTier ?? {});
-    if (entries.length === 0) return "";
-    const withVerifiedCol = byTierVerified !== undefined;
-    const rank = (k: string): number => {
-      const num = Number(k);
-      return tierRank(k === "null" || isNaN(num) ? null : num);
-    };
-    return entries
-      .sort(([a], [b]) => rank(a) - rank(b))
-      .map(([k, v]) =>
-        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(tierLabel(k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byTierVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
-      .join("");
-  };
-  // #2857 fase B: sucessor de tierBreakdownRows — MESMO papel (sub-linhas "1º
-  // envio" logo após a linha 0), mas agrupado por `cohort` em vez de `tier`
-  // (`by_cohort_first_send`, ver clarice-db-summary.ts). Ordem: cohortSendRank
-  // ASC (mesma regra de prioridade de envio que `segmentFromStore` usa —
-  // #2857 fase B trocou `tierRank` por `cohortSendRank` lá também), "sem
-  // cohort" por último. Rótulo pt-BR via `cohortLabel` (mesma função da
-  // tabela "Por safra", `cohortSection` abaixo).
-  const cohortFirstSendBreakdownRows = (
+  // ATENÇÃO (#2807 review): o universo do by_cohort_first_send (firstSend:
+  // send_eligible=1 + sends_count=0, #2732) NÃO é idêntico à linha 0 do
+  // histograma — optin nunca-enviado tem +40 pts (fica na linha 40) e
+  // re-envio decaído/inelegível nunca-enviado pode ter 0 exato (conta na
+  // linha 0 mas está fora do firstSend). Por isso cada sub-linha carrega o
+  // rótulo "1º envio": descreve o universo próprio dele, não uma partição da
+  // linha 0.
+  // Ordem: cohortSendRank ASC (fila real de 1º envio, assinante-ativo
+  // primeiro — mesma regra de prioridade de envio que `segmentFromStore`
+  // usa), "sem cohort" por último. Rótulo pt-BR via `cohortLabel` (mesma
+  // função da tabela "Por safra", `cohortSection` abaixo).
+  // `byCohortFirstSendVerified === undefined` ⇒ tabela SEM a coluna verified
+  // (o caller passa o campo só quando a coluna global está ativa — review
+  // #2815: os dois campos verified sempre nascem juntos no summary; payload
+  // parcial mostra 0, trade-off aceito e documentado). A mesma ressalva de
+  // universos vale pra coluna verified: o verified da linha 0 é do bucket
+  // inteiro (sem internos), o das sub-linhas é do firstSend — as somas não
+  // conciliam por design.
+  //
+  // #2857 fase C (cutover): o fallback pro payload legado `by_tier`
+  // (pré-fase-B) foi REMOVIDO — clarice-db-summary.ts nunca mais emite esse
+  // campo, e qualquer KV vivo em produção já é pós-fase-B/B.1 (refresh
+  // periódico). Sem nenhum dos dois campos (payload cru pré-#2731 sem
+  // priority_points_histogram) → sem breakdown, ver renderPriorityPointsFallback.
+  const firstSendBreakdownRows = (
     byCohortFirstSend: Record<string, number> | undefined,
     byCohortFirstSendVerified: Record<string, number> | undefined,
   ): string => {
@@ -642,21 +626,6 @@ export function renderContactsSummarySection(
         `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
       .join("");
   };
-  // Escolhe qual breakdown de "1º envio" renderizar: `by_cohort_first_send`
-  // (payload novo, #2857 fase B) tem PRECEDÊNCIA sobre `by_tier` (payload
-  // legado, pré-fase-B) — os dois nunca deveriam coexistir num mesmo payload
-  // real (clarice-db-summary.ts emite um OU outro, nunca ambos), mas a
-  // precedência documenta o comportamento se algum dia coexistirem (ex: script
-  // de migração manual do KV). Sem nenhum dos dois campos → sem breakdown.
-  const firstSendBreakdownRows = (
-    byCohortFirstSend: Record<string, number> | undefined,
-    byCohortFirstSendVerified: Record<string, number> | undefined,
-    byTier: Record<string, number> | undefined,
-    byTierVerified: Record<string, number> | undefined,
-  ): string =>
-    byCohortFirstSend
-      ? cohortFirstSendBreakdownRows(byCohortFirstSend, byCohortFirstSendVerified)
-      : tierBreakdownRows(byTier, byTierVerified);
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
     "zero (sem histórico)": pp.eq0,
@@ -686,16 +655,13 @@ export function renderContactsSummarySection(
     const withVerified = vHist !== undefined;
     // #2805: logo após a linha 0 entram as sub-linhas do breakdown de 1º envio
     // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
-    // mas não coincide com ela; ver comentário do tierBreakdownRows). #2857
-    // fase B: cohort tem precedência sobre tier (firstSendBreakdownRows).
+    // mas não coincide com ela; ver comentário do firstSendBreakdownRows).
     const rows = sorted.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${
         k === "0"
           ? firstSendBreakdownRows(
               s.by_cohort_first_send,
               withVerified ? (s.by_cohort_first_send_verified ?? {}) : undefined,
-              s.by_tier,
-              withVerified ? (s.by_tier_verified ?? {}) : undefined,
             )
           : ""
       }`,
@@ -705,26 +671,24 @@ export function renderContactsSummarySection(
       <tbody>${rows}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
-  // mostrava NENHUM tier — a tabela "Por tier" foi removida no #2805 e o
-  // breakdown por tier só existe hoje dentro de renderPriorityPointsHistogram
-  // (linha 0 do histograma novo). Paridade mínima com o caminho novo: anexa o
-  // MESMO tierBreakdownRows à faixa "zero (sem histórico)" — onde o universo
-  // firstSend se CONCENTRA (mesma ressalva de universos do comentário acima
-  // de tierBreakdownRows). Sem coluna "verified" aqui: o payload que dispara
-  // este fallback é sempre o mais antigo dos dois formatos (pré-#2731), então
-  // nunca teria priority_points_histogram_verified/by_tier_verified também.
+  // mostrava NENHUM breakdown — a tabela "Por tier"/cohort só existe hoje
+  // dentro de renderPriorityPointsHistogram (linha 0 do histograma novo).
+  // Paridade mínima com o caminho novo: anexa o MESMO firstSendBreakdownRows
+  // à faixa "zero (sem histórico)" — onde o universo firstSend se CONCENTRA
+  // (mesma ressalva de universos do comentário acima). Sem coluna "verified"
+  // aqui: o payload que dispara este fallback é sempre o mais antigo dos dois
+  // formatos (pré-#2731), então nunca teria priority_points_histogram_verified/
+  // by_cohort_first_send_verified também.
   const renderPriorityPointsFallback = (
     map: Record<string, number>,
-    byTier: Record<string, number> | undefined,
     byCohortFirstSend: Record<string, number> | undefined,
   ): string => {
     const rows = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => {
         const row = `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`;
-        // #2857 fase B: cohort tem precedência sobre tier (firstSendBreakdownRows).
         return k === "zero (sem histórico)"
-          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined, byTier, undefined)
+          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined)
           : row;
       })
       .join("\n");
@@ -733,10 +697,10 @@ export function renderContactsSummarySection(
       <tbody>${rows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas (com o
-  // breakdown por tier anexado à faixa "zero", #2812 item 6).
+  // breakdown de 1º envio anexado à faixa "zero", #2812 item 6).
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
-    : renderPriorityPointsFallback(ppMap, s.by_tier, s.by_cohort_first_send);
+    : renderPriorityPointsFallback(ppMap, s.by_cohort_first_send);
   const brevoBadge = brevo.has_signal
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;

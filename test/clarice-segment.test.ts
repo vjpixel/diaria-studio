@@ -11,11 +11,19 @@ import {
   deriveCohort,
   cohortLabel,
   resolveCohortArg,
-  tierRank,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { cohortFromTier } from "../scripts/lib/cohorts.ts";
+
+// Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
+// clarice-segment.ts até a fase B, removida no cutover; ver
+// scripts/cohort-order-dryrun.ts, que ganhou a própria cópia inline pro único
+// consumidor de produção restante). Réplica idêntica só pro oráculo
+// `firstSendOrderByTierOracle` abaixo — não reimporta nada de produção.
+function tierRank(t: number | null): number {
+  return t == null ? Number.POSITIVE_INFINITY : t;
+}
 
 // #2857 fase B: `cohort` (não mais `tier`) governa a ordem de 1º envio em
 // segmentFromStore — default derivado de `tier` (mesma regra que
@@ -363,7 +371,9 @@ test("resolveCohortArg: input não reconhecido lança erro claro", () => {
 });
 
 // ---------------------------------------------------------------------------
-// #2857 fase B — resolveCohortArg: slug canônico direto + alias de tier legado
+// #2857 fase B — resolveCohortArg: slug canônico direto
+// (alias de tier legado, introduzido na fase B como ponte de migração, foi
+// REMOVIDO no cutover da fase C — ver testes logo abaixo.)
 // ---------------------------------------------------------------------------
 
 test("resolveCohortArg: slug canônico da taxonomia é aceito diretamente (#2857 fase B)", () => {
@@ -387,26 +397,23 @@ test("resolveCohortArg: slug inventado (não reconhecido) continua lançando err
   assert.throws(() => resolveCohortArg("leads-lixo"), /não reconhecido/);
 });
 
-test("resolveCohortArg: alias de tier legado 't04'/'T4' (case-insensitive) resolve pro cohort, com warning de deprecação (#2857 fase B)", () => {
+test("resolveCohortArg: alias de tier legado ('t04'/'T4'/'t01'/'t02'/'t10') NÃO é mais aceito (#2857 fase C — cutover remove o alias introduzido na fase B)", () => {
   const warnings: string[] = [];
   const orig = console.error;
   console.error = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
   try {
-    assert.equal(resolveCohortArg("t04"), "leads-2025h2");
-    assert.equal(resolveCohortArg("T4"), "leads-2025h2");
-    assert.equal(resolveCohortArg("t01"), "assinantes-ativos");
-    assert.equal(resolveCohortArg("t02"), "ex-assinantes");
-    assert.equal(resolveCohortArg("t10"), "leads-caudao");
+    assert.throws(() => resolveCohortArg("t04"), /não reconhecido/);
+    assert.throws(() => resolveCohortArg("T4"), /não reconhecido/);
+    assert.throws(() => resolveCohortArg("t01"), /não reconhecido/);
+    assert.throws(() => resolveCohortArg("t02"), /não reconhecido/);
+    assert.throws(() => resolveCohortArg("t10"), /não reconhecido/);
   } finally {
     console.error = orig;
   }
-  assert.ok(
-    warnings.some((w) => /alias de tier LEGADO/.test(w)),
-    "deve emitir warning de deprecação em stderr ao resolver um alias de tier",
-  );
+  assert.equal(warnings.length, 0, "nenhum warning de deprecação — o caminho do alias foi removido, não só desativado");
 });
 
-test("resolveCohortArg: alias de tier fora do mapa (t00/t11) lança o mesmo erro genérico, sem warning silencioso", () => {
+test("resolveCohortArg: formas 't{NN}' fora do mapa (t00/t11) lançam o mesmo erro genérico que qualquer 't{NN}' (nunca mais um alias válido)", () => {
   const warnings: string[] = [];
   const orig = console.error;
   console.error = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };

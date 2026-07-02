@@ -67,7 +67,7 @@ const syntheticContacts: ContactsSummary = {
   generated_at: "2026-06-30T23:00:00.000Z",
   total: 100,
   brevo: { synced_rows: 40, has_signal: true },
-  by_tier: { "1": 10, "2": 20 },
+  by_cohort_first_send: { "assinantes-ativos": 10, "ex-assinantes": 20 },
   eligibility: { eligible: 95, ineligible: 5, by_reason: { mv_rejected: 5 } },
   priority_points: { lt0: 3, eq0: 90, p1_40: 6, p41_80: 1, gt80: 0, optin: 0 },
   mv: { verified: 40, none: 60 },
