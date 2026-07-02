@@ -564,13 +564,24 @@ export interface CellSummary {
 }
 
 /**
+ * Reset do teste A/B/C (pedido do editor, 260702): o teste do ciclo 2605 foi
+ * ENCERRADO e documentado (B venceu — consolidada em d06) e um teste NOVO será
+ * rodado em breve. Campanhas agendadas até este corte ficam FORA do resumo —
+ * a tabela renasce sozinha quando as células -A/-B/-C do teste novo entrarem.
+ */
+export const ABC_RESET_AT = "2026-07-02T23:59:59.000-03:00";
+
+/**
  * Agrega resumo A/B/C das campanhas S1 (d01–d07) de um ciclo Clarice.
  * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
+ * `resetAt` (260702): campanhas agendadas até o corte são ignoradas — injetável
+ * pra teste; produção usa ABC_RESET_AT.
  * Exportado pra teste unitário.
  */
 export function aggregateAbcSummary(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string,
+  resetAt: string = ABC_RESET_AT,
 ): CellSummary[] {
   const cells: Record<
     "A" | "B" | "C",
@@ -581,6 +592,7 @@ export function aggregateAbcSummary(
     C: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
   };
 
+  const resetMs = Date.parse(resetAt);
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || parsed.cycle !== cycle) continue;
@@ -588,6 +600,10 @@ export function aggregateAbcSummary(
     if (parsed.cell === null) continue;
     // S1 = d01–d07
     if (parsed.dayNum > 7) continue;
+    // Reset 260702: campanha agendada até o corte (ou sem scheduledAt parseável)
+    // sai do resumo — ver ABC_RESET_AT acima.
+    const schedMs = c.scheduledAt ? Date.parse(c.scheduledAt) : NaN;
+    if (!Number.isFinite(schedMs) || schedMs <= resetMs) continue;
 
     // #2254: escolha de fonte centralizada. #2252: fallback p/ campaignStats
     // quando globalStats 429/zerado — sem ele a seção A/B/C INTEIRA sumia.
