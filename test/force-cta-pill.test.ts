@@ -58,4 +58,23 @@ describe("renderIntroCallout forceCtaPill (#2797)", () => {
     assert.match(html, /Estou testando a Alexa\+ há alguns dias/);
     assert.match(html, /Equipe sua casa com a Alexa\+/);
   });
+
+  // #2797 boundary: a prateleira de afiliados (productBox 260629-style) cujo
+  // ÚLTIMO parágrafo é rotulado ("Fire TV: [link]") NÃO deve virar pill mesmo
+  // com forceCtaPill=true — o rótulo torna o parágrafo não-CTA-only, então os
+  // links seguem inline (comportamento documentado do productBox). Guarda contra
+  // o forceCtaPill converter prateleiras rotuladas em botões.
+  it("forceCtaPill NÃO vira pill quando o último parágrafo é rotulado (prateleira)", () => {
+    const SHELF = `Equipe sua casa com a Alexa+. Veja os dispositivos:
+
+Smart displays Echo: [Show 5](https://link.amazon/B0bSeNbs9) · [Show 8](https://link.amazon/B00RlxPou)
+
+Fire TV: [Stick HD](https://link.amazon/B0hs12yXc)`;
+    const html = renderIntroCallout(SHELF, "serif", true);
+    assert.equal(PILL_RE.test(html), false, "prateleira rotulada não deve virar pill");
+    // Todos os 3 links seguem presentes (inline), nenhum perdido.
+    for (const key of ["B0bSeNbs9", "B00RlxPou", "B0hs12yXc"]) {
+      assert.match(html, new RegExp(key), `link ${key} deve seguir inline`);
+    }
+  });
 });

@@ -885,8 +885,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
     // Box de produtos (🛒) — prateleira de afiliados. Reusa renderIntroCallout
-    // (preserva TODOS os links inline, ao contrário do renderMidCallout que
-    // extrai um único CTA). #2665: posicionado após o destaque da lacuna em que
+    // com forceCtaPill=true (#2797): links em parágrafos rotulados/de corpo
+    // seguem inline (ex: "Fire TV: [Stick HD](…)"), mas um ÚLTIMO parágrafo que
+    // seja SÓ o link CTA (sem rótulo) vira botão pill centralizado (ex: box
+    // Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Difere do renderMidCallout,
+    // que sempre extrai só o 1º link como CTA. #2665: posicionado após o destaque da lacuna em que
     // foi encontrado (default 1 = D2/D3, legado). O marcador 🛒 é estrutural
     // (detecção) — removido do HTML pra não aparecer ao leitor, igual aos
     // marcadores 📚/📣/🎉 que o renderMidCallout já remove.
