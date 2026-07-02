@@ -30,6 +30,7 @@ import {
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
+import { convertBeehiivHtmlToMarkdown } from "./lib/mensal/monthly-html-convert.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BEEHIIV_API = "https://api.beehiiv.com/v2";
@@ -222,9 +223,21 @@ async function main() {
     if (content.markdown) {
       text = content.markdown;
     } else if (content.html) {
-      text = content.html;
+      // #2791: sem markdown, converte o HTML pro pseudo-markdown que
+      // collect-monthly.ts (parsePost/splitSections) já sabe parsear —
+      // em vez de gravar HTML bruto, que o parser não entende (0 destaques).
       htmlFallback++;
-      warnings.push(`${filename}: markdown ausente — gravado HTML (parser pode falhar)`);
+      const converted = convertBeehiivHtmlToMarkdown(content.html, filename);
+      warnings.push(...converted.warnings);
+      if (converted.destaquesFound > 0) {
+        text = converted.markdown;
+      } else {
+        // Conservador (#2794): nunca falha silenciosa — se a conversão não
+        // achou nada limpo, grava o HTML bruto mesmo (comportamento antigo)
+        // e deixa o warning acima explícito pro editor investigar.
+        text = content.html;
+        warnings.push(`${filename}: gravado HTML bruto (fallback da conversão) — parser provavelmente zera destaques`);
+      }
     } else {
       warnings.push(`${filename}: sem conteúdo — pulado`);
       continue;

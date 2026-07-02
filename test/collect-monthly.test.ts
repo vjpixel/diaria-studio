@@ -1,9 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   detectBrazil,
   parsePost,
   splitSections,
+  splitLocalSections,
+  parseLocalEdition,
+  collectMonth,
 } from "../scripts/collect-monthly.ts";
 
 const sampleFile = {
@@ -364,5 +370,197 @@ Why.
     const dest = parsePost(sampleFile, text, warnings);
     assert.equal(dest.length, 1);
     assert.equal(dest[0].title, "Destaque real");
+  });
+});
+
+// ── Modo local (#2791) ─────────────────────────────────────────────────
+
+describe("splitLocalSections", () => {
+  it("divide em separadores de 3+ traços (HR padrão de 02-reviewed.md)", () => {
+    const text = "primeira\n\n---\n\nsegunda\n\n---\n\nterceira";
+    const sections = splitLocalSections(text);
+    assert.equal(sections.length, 3);
+    assert.equal(sections[1].trim(), "segunda");
+  });
+});
+
+// Recorte real-shaped de um 02-reviewed.md publicado (formato usado por
+// /diaria-2-escrita — ver data/editions/260701/02-reviewed.md).
+const REAL_SHAPED_02_REVIEWED = `---
+intentional_error:
+  description: "erro de exemplo"
+---
+TÍTULO
+
+Anthropic lança Sonnet 5
+
+---
+
+**🎉 Sorteio
+
+Texto do sorteio.**
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Anthropic lança Sonnet 5](https://www.anthropic.com/news/claude-sonnet-5)**
+
+A Anthropic lançou o Claude Sonnet 5, um modelo de médio porte.
+
+O Sonnet 5 mira tarefas que pedem raciocínio encadeado.
+
+Por que isso importa:
+
+A Anthropic chega perto do desempenho do Opus pelo preço do Sonnet.
+
+---
+
+**DESTAQUE 2 | 🇧🇷 BRASIL**
+
+**[STF regula uso de IA no Judiciário](https://www.stf.jus.br/noticia/ia-regulamentacao)**
+
+O STF publicou uma resolução sobre uso de IA em decisões judiciais.
+
+Por que isso importa:
+
+Regula um uso sensível da IA dentro do próprio judiciário brasileiro.
+
+---
+
+**DESTAQUE 3 | 💼 TRABALHO**
+
+**[Ford recontrata veteranos após falha das ferramentas](https://canaltech.com.br/mercado/ford-recontrata)**
+
+A montadora Ford recontratou cerca de 350 inspetores de qualidade.
+
+Segundo a Bloomberg, o que a montadora colocou no lugar não chegou ao padrão.
+
+Por que isso importa:
+
+A automação esbarrou num caso real de processo industrial complexo.
+
+---
+
+**É IA?**
+
+Legenda da imagem.
+
+---
+
+**🛠️ USE MELHOR**
+
+**[Currículo com IA](https://www.digitow.com.br/blog/curriculo-com-ia/)**
+Guia prático.
+`;
+
+describe("parseLocalEdition", () => {
+  it("parseia 3 destaques completos de um 02-reviewed.md real-shaped", () => {
+    const dest = parseLocalEdition("260701", REAL_SHAPED_02_REVIEWED);
+    assert.equal(dest.length, 3);
+
+    assert.equal(dest[0].position, 1);
+    assert.equal(dest[0].category, "LANÇAMENTO");
+    assert.equal(dest[0].title, "Anthropic lança Sonnet 5");
+    assert.equal(dest[0].url, "https://www.anthropic.com/news/claude-sonnet-5");
+    assert.ok(dest[0].body.includes("modelo de médio porte"));
+    assert.ok(dest[0].body.includes("raciocínio encadeado"));
+    assert.equal(dest[0].why, "A Anthropic chega perto do desempenho do Opus pelo preço do Sonnet.");
+    assert.equal(dest[0].edition, "260701");
+    assert.equal(dest[0].beehiiv_post_id, "");
+
+    assert.equal(dest[1].position, 2);
+    assert.equal(dest[1].category, "BRASIL");
+    assert.equal(dest[1].is_brazil, true, "categoria BRASIL deve flagar is_brazil");
+    assert.ok(dest[1].brazil_signals.includes("category:BRASIL"));
+
+    assert.equal(dest[2].position, 3);
+    assert.equal(dest[2].category, "TRABALHO");
+    assert.equal(dest[2].title, "Ford recontrata veteranos após falha das ferramentas");
+  });
+
+  it("não confunde outras seções (Sorteio, É IA?, Use Melhor) com destaques", () => {
+    const dest = parseLocalEdition("260701", REAL_SHAPED_02_REVIEWED);
+    assert.equal(dest.length, 3, "só os 3 blocos DESTAQUE N viram destaque — resto é ignorado");
+  });
+
+  it("02-reviewed.md sem nenhum bloco DESTAQUE N retorna array vazio (sem crash)", () => {
+    const dest = parseLocalEdition("260701", "TÍTULO\n\nAlgo\n\n---\n\nOutra seção qualquer.");
+    assert.deepEqual(dest, []);
+  });
+});
+
+describe("collectMonth", () => {
+  function withTmpDirs(fn: (rawPostsRoot: string, editionsRoot: string) => void) {
+    const base = mkdtempSync(join(tmpdir(), "diaria-collect-monthly-"));
+    const rawPostsRoot = join(base, "cycle");
+    const editionsRoot = join(base, "editions");
+    mkdirSync(join(rawPostsRoot, "raw-posts"), { recursive: true });
+    mkdirSync(editionsRoot, { recursive: true });
+    try {
+      fn(rawPostsRoot, editionsRoot);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  it("edição com 02-reviewed.md local usa o modo local (precedência sobre raw-post)", () => {
+    withTmpDirs((rawPostsRoot, editionsRoot) => {
+      mkdirSync(join(editionsRoot, "260701"), { recursive: true });
+      writeFileSync(join(editionsRoot, "260701", "02-reviewed.md"), REAL_SHAPED_02_REVIEWED, "utf8");
+      // raw-post da MESMA edição também existe — local deve vencer.
+      writeFileSync(
+        join(rawPostsRoot, "raw-posts", "post_aaaaaaaa_260701.txt"),
+        "<html>lixo que não deveria ser usado</html>",
+        "utf8",
+      );
+
+      const result = collectMonth("2607", rawPostsRoot, editionsRoot);
+      assert.equal(result.source_counts.local, 1);
+      assert.equal(result.source_counts.raw, 0);
+      assert.equal(result.destaques.length, 3);
+      assert.equal(result.destaques[0].title, "Anthropic lança Sonnet 5");
+    });
+  });
+
+  it("mistura local + raw-post dentro do mesmo mês (por edição)", () => {
+    withTmpDirs((rawPostsRoot, editionsRoot) => {
+      mkdirSync(join(editionsRoot, "260701"), { recursive: true });
+      writeFileSync(join(editionsRoot, "260701", "02-reviewed.md"), REAL_SHAPED_02_REVIEWED, "utf8");
+
+      const rawMd = `
+----------
+##### GEOPOLÍTICA
+
+# [Título raw](https://example.com/raw)
+
+Corpo raw.
+
+**Por que isso importa:**
+
+Why raw.
+`;
+      writeFileSync(join(rawPostsRoot, "raw-posts", "post_bbbbbbbb_260702.txt"), rawMd, "utf8");
+
+      const result = collectMonth("2607", rawPostsRoot, editionsRoot);
+      assert.equal(result.source_counts.local, 1);
+      assert.equal(result.source_counts.raw, 1);
+      assert.equal(result.destaques.length, 4); // 3 local + 1 raw
+    });
+  });
+
+  it("edição sem 02-reviewed.md e sem raw-post: warning explícito, contagem 0 (não crasha)", () => {
+    withTmpDirs((rawPostsRoot, editionsRoot) => {
+      // Diretório da edição existe (ex: Stage 1 rodou) mas sem 02-reviewed.md.
+      mkdirSync(join(editionsRoot, "260703"), { recursive: true });
+
+      const result = collectMonth("2607", rawPostsRoot, editionsRoot);
+      assert.equal(result.destaques.length, 0);
+      assert.equal(result.source_counts.missing, 1);
+      assert.ok(
+        result.warnings.some((w) => /260703.*nem 02-reviewed\.md.*nem raw-post/.test(w)),
+        `esperava warning explícito sobre 260703, recebeu: ${JSON.stringify(result.warnings)}`,
+      );
+    });
   });
 });
