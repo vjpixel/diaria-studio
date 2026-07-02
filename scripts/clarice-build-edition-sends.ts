@@ -1,98 +1,59 @@
 #!/usr/bin/env node
 /**
- * clarice-build-edition-sends.ts (#2605-06 / Plano de Envio Edição Maio)
+ * clarice-build-edition-sends.ts (#2775 — cutover store-driven da rampa diária)
  *
- * Monta os 21 envios diários da Edição Maio (ciclo 2605-06) a partir do plano
- * aprovado (Plano de Envio v3). Substitui o modelo W1–W5 do clarice-build-waves
- * para ESTE ciclo: rampa diária morno->frio + validação de dia-da-semana em blocos.
+ * Monta os envios diários de um ciclo de rampa (warm-up morno->frio) a partir
+ * do STORE único (#2647, `clarice-segment.ts`) + de um plano de envio EXTERNO
+ * (`{ciclo}/send-plan.json` — datas/volumes/blocos, editável pelo operador).
  *
- * Modelo (ver doc "Plano de Envio — Edição Maio (ciclo 2605-06)"):
- *   - 3 semanas (blocos), 7 envios/semana (1 por dia da semana), 21 no total.
- *   - Volume cresce monotonicamente (warm-up). Total = 40.000 (teto Brevo Standard).
- *   - Pool morno->frio: S1 = T1-abriu + T1-não-abriu + maio + topo-recência T2;
- *     S2 = resto T2 + topo T3; S3 = resto T3 + topo T4.
- *   - DENTRO de cada semana, todo dia recebe a MESMA composição estratificada
- *     (fatia representativa de cada tier, espalhada pela recência) -> mantém o
- *     teste de dia-da-semana limpo (cada dia = mesma mistura; o bloco/semana
- *     absorve a diferença morno->frio entre semanas).
- *   - Assunto ÚNICO (sem A/B/C). Sort: T1 por abriu/não-abriu (arquivos prontos);
- *     demais por recência (ordem das linhas dos arquivos verificados).
+ * Substitui o modelo legado (`SENDS` hardcoded do ciclo 2605-06 + 6 CSVs de
+ * tier nomeados à mão) por:
+ *   1. `loadStoreRows(db)` → `segmentFromStore` → `priorityQueue` (fila única
+ *      ordenada: re-envio engajado → 1º envio por tier → re-envio decaído).
+ *   2. `loadSendPlan(cycleDir)` — plano de blocos/dias/volumes do ciclo.
+ *   3. Fatia a fila CONSECUTIVAMENTE por bloco (rampa: bloco 1 = topo/mais
+ *      quente da fila, blocos seguintes drenam trechos progressivamente mais
+ *      frios) — usando o plano INTEIRO como cursor, mesmo quando só um
+ *      subconjunto de blocos é escrito nesta invocação (`--blocks`), pra evitar
+ *      duplo-envio entre blocos processados em invocações separadas.
+ *   4. DENTRO de cada bloco, estratifica (`stratify`, streaming largest-
+ *      remainder) as linhas entre os dias do bloco, proporcional ao volume de
+ *      cada dia — mesma composição em todo dia do bloco, neutralizando o teste
+ *      de dia-da-semana (a diferença morno->frio fica só entre blocos).
  *
- * Por que não precisa de Brevo aqui: só o T1 já foi enviado (Edição Abril), então
- * só o T1 pode ter unsub/blacklist — e isso já está resolvido nos arquivos
- * w1/w2 (build-waves suprimiu). T2/maio/T3/T4 nunca foram importados -> sem
- * blacklist possível. Logo, recombinação pura de arquivos, sem fetch externo.
+ * Shape de output preservado (blast radius mínimo nos consumidores
+ * downstream): `d{NN}-{date}.csv` (email,NOME,TIER,IS_SEED) + `sends-summary.json`
+ * (agora com `block` no lugar de `week`, e `date`/`scheduledAt`/`volume` por
+ * dia — ver `scripts/lib/send-plan.ts`).
  *
  * Uso:
- *   npx tsx scripts/clarice-build-edition-sends.ts --cycle 2605-06 [--weeks 1,2,3] [--dry-run]
- *   (T3/T4 verificados precisam existir p/ as semanas 2-3; rode o MV antes.)
+ *   npx tsx scripts/clarice-build-edition-sends.ts --cycle 2605-06 [--blocks 1,2,3] [--dry-run] [--db path]
+ *   (Requer {ciclo}/send-plan.json — ver scripts/send-plan.example.json.)
  *
- * Inputs (em data/clarice-subscribers/{ciclo}/):
- *   waves/w1-brevo-export-t1-openers.csv       T1 abriu     (email,NOME,...)
- *   waves/w2-brevo-export-t1-non-openers.csv   T1 não-abriu
- *   mv-export-maio-verified.csv                maio verificado
- *   mv-export-t02-ex-assinantes-verified.csv   T2 verificado (recência DESC)
- *   mv-export-t03-leads-2026-jan-abr-verified.csv  T3 verificado (após MV)
- *   mv-export-t04-leads-2025H2-verified.csv        T4 verificado (após MV)
+ * Inputs:
+ *   data/clarice-subscribers/clarice-users.db      store único (#2647)
+ *   data/clarice-subscribers/{ciclo}/send-plan.json  plano de envio (blocos/dias/volumes)
  *
  * Outputs (em data/clarice-subscribers/{ciclo}/sends/):
- *   d01-10jun.csv … d21-30jun.csv   (colunas: email,NOME,TIER,IS_SEED — #2697 item 1)
+ *   d01-10jun.csv … dNN-*.csv   (colunas: email,NOME,TIER,IS_SEED)
  *   sends-summary.json
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readdirSync, unlinkSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { segmentFromStore, priorityQueue, type StoreRow } from "./lib/clarice-segment.ts";
+import { loadSendPlan, allBlocks, planByBlock, parseBlocksArg, type SendPlanEntry, type SendsSummaryEntry } from "./lib/send-plan.ts";
+import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
 
 loadProjectEnv();
 
 type Row = Record<string, string>;
-
-// ---------------------------------------------------------------------------
-// Plano: 21 envios (data, dia, semana, volume). Volumes batem os totais por
-// semana (S1=5.600, S2=13.300, S3=21.100; total 40.000). Editar AQUI muda o plano.
-// ---------------------------------------------------------------------------
-
-export interface SendDef {
-  n: number;          // 1..21
-  date: string;       // "10jun"
-  day: string;        // "qua"
-  week: 1 | 2 | 3;
-  volume: number;
-  /** Data de envio agendada: 06:00 BRT = 09:00 UTC em ISO 8601 Z. (#2125)
-   *  Fonte canônica das datas do ciclo — scheduledAtFor deriva daqui. */
-  scheduledAt: string;
-}
-
-export const SENDS: SendDef[] = [
-  { n: 1,  date: "10jun", day: "qua", week: 1, volume:  350, scheduledAt: "2026-06-10T09:00:00.000Z" },
-  { n: 2,  date: "11jun", day: "qui", week: 1, volume:  550, scheduledAt: "2026-06-11T09:00:00.000Z" },
-  { n: 3,  date: "12jun", day: "sex", week: 1, volume:  700, scheduledAt: "2026-06-12T09:00:00.000Z" },
-  { n: 4,  date: "13jun", day: "sab", week: 1, volume:  850, scheduledAt: "2026-06-13T09:00:00.000Z" },
-  { n: 5,  date: "14jun", day: "dom", week: 1, volume:  950, scheduledAt: "2026-06-14T09:00:00.000Z" },
-  { n: 6,  date: "15jun", day: "seg", week: 1, volume: 1050, scheduledAt: "2026-06-15T09:00:00.000Z" },
-  { n: 7,  date: "16jun", day: "ter", week: 1, volume: 1150, scheduledAt: "2026-06-16T09:00:00.000Z" },
-  { n: 8,  date: "17jun", day: "qua", week: 2, volume: 1450, scheduledAt: "2026-06-17T09:00:00.000Z" },
-  { n: 9,  date: "18jun", day: "qui", week: 2, volume: 1650, scheduledAt: "2026-06-18T09:00:00.000Z" },
-  { n: 10, date: "19jun", day: "sex", week: 2, volume: 1800, scheduledAt: "2026-06-19T09:00:00.000Z" },
-  { n: 11, date: "20jun", day: "sab", week: 2, volume: 1900, scheduledAt: "2026-06-20T09:00:00.000Z" },
-  { n: 12, date: "21jun", day: "dom", week: 2, volume: 2000, scheduledAt: "2026-06-21T09:00:00.000Z" },
-  { n: 13, date: "22jun", day: "seg", week: 2, volume: 2100, scheduledAt: "2026-06-22T09:00:00.000Z" },
-  { n: 14, date: "23jun", day: "ter", week: 2, volume: 2400, scheduledAt: "2026-06-23T09:00:00.000Z" },
-  { n: 15, date: "24jun", day: "qua", week: 3, volume: 2600, scheduledAt: "2026-06-24T09:00:00.000Z" },
-  { n: 16, date: "25jun", day: "qui", week: 3, volume: 2800, scheduledAt: "2026-06-25T09:00:00.000Z" },
-  { n: 17, date: "26jun", day: "sex", week: 3, volume: 2950, scheduledAt: "2026-06-26T09:00:00.000Z" },
-  { n: 18, date: "27jun", day: "sab", week: 3, volume: 3050, scheduledAt: "2026-06-27T09:00:00.000Z" },
-  { n: 19, date: "28jun", day: "dom", week: 3, volume: 3150, scheduledAt: "2026-06-28T09:00:00.000Z" },
-  { n: 20, date: "29jun", day: "seg", week: 3, volume: 3250, scheduledAt: "2026-06-29T09:00:00.000Z" },
-  { n: 21, date: "30jun", day: "ter", week: 3, volume: 3300, scheduledAt: "2026-06-30T09:00:00.000Z" },
-];
-
-export const TIERS = ["T1-abriu", "T1-nao-abriu", "maio", "T2", "T3", "T4"] as const;
-export type Tier = (typeof TIERS)[number];
 
 // ---------------------------------------------------------------------------
 // Pure: apportionment por maior-resto (ints somando `total`, proporcionais a fracs)
@@ -111,15 +72,15 @@ export function apportion(total: number, fracs: number[]): number[] {
 }
 
 // ---------------------------------------------------------------------------
-// Pure: estratificação determinística de `rows` (em ordem de recência) em K
+// Pure: estratificação determinística de `rows` (em ordem de prioridade) em K
 // baldes de capacidades `caps` (sum(caps) === rows.length), espalhando cada
-// balde uniformemente pela faixa de recência (streaming largest-remainder /
-// Bresenham). Garante que cada dia carregue toda a faixa, não um bloco contíguo.
+// balde uniformemente pela faixa (streaming largest-remainder / Bresenham).
+// Garante que cada dia carregue toda a faixa do bloco, não um trecho contíguo.
 // ---------------------------------------------------------------------------
 
-export function stratify(rows: Row[], caps: number[]): Row[][] {
+export function stratify<T>(rows: T[], caps: number[]): T[][] {
   const k = caps.length;
-  const out: Row[][] = caps.map(() => []);
+  const out: T[][] = caps.map(() => []);
   const N = rows.length;
   if (N === 0) return out;
   const credit = new Array<number>(k).fill(0);
@@ -140,186 +101,117 @@ export function stratify(rows: Row[], caps: number[]): Row[][] {
 }
 
 // ---------------------------------------------------------------------------
-// CSV helpers
+// StoreRow -> CSV row
 // ---------------------------------------------------------------------------
 
-function readCsv(path: string): Row[] {
-  const parsed = Papa.parse<Row>(readFileSync(path, "utf-8"), {
-    header: true,
-    skipEmptyLines: true,
-  });
-  return parsed.data;
-}
-
-function emailKeyOf(row: Row | undefined): string {
-  if (!row) return "email";
-  const k = Object.keys(row).find((f) => /e-?mail/i.test(f.trim()));
-  if (!k) throw new Error(`CSV sem coluna de email: colunas=${Object.keys(row ?? {}).join(",")}`);
-  return k;
-}
+const pad = (t: number): string => `T${String(t).padStart(2, "0")}`;
 
 /**
- * Normaliza uma linha pro output: email + NOME + TIER (descarta MV_*, OPEN_PROBABILITY).
+ * Normaliza uma `StoreRow` pro output: email + NOME + TIER + IS_SEED.
  *
- * Propaga `IS_SEED` (#2697 item 1, self-review #2696) — os arquivos w1/w2 consumidos
- * pelo tier T1 (`waves/w1-brevo-export-t1-openers.csv`, `w2-...-non-openers.csv`) já
- * carregam a row do seed (`vjpixel@gmail.com`) marcada `IS_SEED="true"` (injetada por
- * `clarice-build-waves.ts` via `injectSeed`, #2683). Antes deste fix, este builder
- * legado normalizava a row pra `{email, NOME, TIER}` e descartava a coluna `IS_SEED` —
- * o seed continuava recebendo o envio, mas SEM o marcador que permite excluí-lo das
- * métricas de open-rate/CTR no Brevo. Só T1 pode carregar o seed aqui: maio/T2/T3/T4
- * vêm de arquivos MV-verified sem `IS_SEED` (o seed nunca foi injetado nesses tiers
- * neste caminho legado) — `r["IS_SEED"]` é `undefined` para essas rows, resultando em
- * `IS_SEED: ""` no output (coluna sempre presente para shape consistente do CSV).
+ * TIER deriva do tier numérico do store (`T01`..`T10`; vazio se nulo — leads
+ * sem proveniência Stripe). Análogo ao `pad()` de `clarice-build-waves-store.ts`
+ * (#2656) — mesma convenção de rótulo entre os dois builders store-driven.
+ *
+ * IS_SEED: marca `true` se a row for o endereço de monitoramento do editor
+ * (`CLARICE_SEED_EMAIL`) e ele aparecer NATURALMENTE na fila (é assinante
+ * elegível de verdade) — não força injeção de uma row extra por dia (isso
+ * multiplicaria o seed por N dias; ver decisão documentada no PR #2775).
  */
-export function outRow(r: Row, emailKey: string, tier: Tier): Row {
+export function outRow(r: StoreRow, name: string): Row {
+  const isSeed = r.email.trim().toLowerCase() === CLARICE_SEED_EMAIL.toLowerCase();
   return {
-    email: (r[emailKey] ?? "").trim(),
-    NOME: r["NOME"] ?? r["nome"] ?? "",
-    TIER: tier,
-    IS_SEED: r["IS_SEED"] === "true" ? "true" : "",
+    email: r.email,
+    NOME: name,
+    TIER: r.tier != null ? pad(r.tier) : "",
+    IS_SEED: isSeed ? "true" : "",
   };
 }
 
 // ---------------------------------------------------------------------------
-// Montagem dos pools por semana (data-driven a partir dos tamanhos reais)
+// Montagem por bloco (pura sobre a fila + o plano)
 // ---------------------------------------------------------------------------
 
-interface TierRows {
-  tier: Tier;
+export interface BuiltDay {
+  n: number;
+  date: string;
+  day: string;
+  block: number;
+  scheduledAt: string;
+  volume: number;
   rows: Row[];
-  emailKey: string;
-}
-
-/** Quanto cada tier contribui por semana, derivado dos totais de volume + tamanhos reais. */
-export interface WeekPlan {
-  week: 1 | 2 | 3;
-  total: number;
-  segments: { tier: Tier; count: number }[];
 }
 
 /**
- * Deriva, dos tamanhos reais dos tiers, quantas linhas cada tier dá a cada semana.
- * Regras (morno->frio, recência drena entre semanas):
- *   S1 = T1-abriu(all) + T1-não-abriu(all) + maio(all) + topo-T2 (fill até 5.600)
- *   S2 = resto T2 + topo T3 (fill até 13.300)
- *   S3 = resto T3 + topo T4 (fill até 21.100)
+ * Fatia `queue` (já ordenada por prioridade) consecutivamente por bloco
+ * (rampa) e estratifica dentro de cada bloco pelos dias do plano.
+ *
+ * `queue` deve conter PELO MENOS a soma de volumes do plano inteiro — cada
+ * bloco consome o próximo trecho da fila em ordem, então blocos requisitados
+ * fora de ordem ainda avançam o cursor corretamente (mesma fila, mesmo
+ * offset acumulado) desde que `plan` seja o plano COMPLETO do ciclo.
+ *
+ * @param nameByEmail primeiro nome por email (personalização; "" se ausente)
  */
-export function planWeeks(sizes: Record<Tier, number>, weeks: number[] = [1, 2, 3]): WeekPlan[] {
-  const wk = (w: 1 | 2 | 3): number =>
-    SENDS.filter((s) => s.week === w).reduce((a, s) => a + s.volume, 0);
-  const [S1, S2, S3] = [wk(1), wk(2), wk(3)];
-
-  // Aritmética sequencial pura (independe de quais arquivos foram carregados).
-  const t2InS1 = S1 - (sizes["T1-abriu"] + sizes["T1-nao-abriu"] + sizes["maio"]);
-  const t2InS2 = sizes["T2"] - t2InS1;
-  const t3InS2 = S2 - t2InS2;
-  const t3InS3 = sizes["T3"] - t3InS2;
-  const t4InS3 = S3 - t3InS3;
-
-  const all: WeekPlan[] = [
-    {
-      week: 1,
-      total: S1,
-      segments: [
-        { tier: "T1-abriu", count: sizes["T1-abriu"] },
-        { tier: "T1-nao-abriu", count: sizes["T1-nao-abriu"] },
-        { tier: "maio", count: sizes["maio"] },
-        { tier: "T2", count: t2InS1 },
-      ],
-    },
-    { week: 2, total: S2, segments: [{ tier: "T2", count: t2InS2 }, { tier: "T3", count: t3InS2 }] },
-    { week: 3, total: S3, segments: [{ tier: "T3", count: t3InS3 }, { tier: "T4", count: t4InS3 }] },
-  ];
-
-  // Valida só as semanas pedidas (permite testar S1 antes do MV de T3/T4).
-  if (weeks.includes(1)) {
-    if (t2InS1 < 0) throw new Error(`Pool quente (T1+maio) já passa de ${S1} na S1 (${-t2InS1} a mais)`);
-    if (t2InS1 > sizes["T2"]) throw new Error(`T2 insuficiente p/ S1: precisa ${t2InS1}, tem ${sizes["T2"]}`);
-  }
-  if (weeks.includes(2)) {
-    if (t2InS2 < 0) throw new Error(`T2 insuficiente: apenas ${sizes["T2"]} disponíveis, mas S1 consome ${t2InS1} (${-t2InS2} a menos p/ S2)`);
-    if (t3InS2 < 0) throw new Error(`T2 restante (${t2InS2}) já passa de ${S2} na S2`);
-    if (t3InS2 > sizes["T3"]) throw new Error(`T3 insuficiente p/ S2: precisa ${t3InS2}, tem ${sizes["T3"]}`);
-  }
-  if (weeks.includes(3)) {
-    if (t4InS3 < 0) throw new Error(`T3 restante (${t3InS3}) já passa de ${S3} na S3`);
-    if (t4InS3 > sizes["T4"]) throw new Error(`T4 insuficiente p/ S3: precisa ${t4InS3}, tem ${sizes["T4"]}`);
+export function buildSends(
+  queue: StoreRow[],
+  plan: SendPlanEntry[],
+  nameByEmail: Map<string, string>,
+): BuiltDay[] {
+  const blocks = planByBlock(plan);
+  const totalNeeded = blocks.reduce((a, b) => a + b.total, 0);
+  if (queue.length < totalNeeded) {
+    throw new Error(
+      `fila de prioridade insuficiente: plano precisa de ${totalNeeded} contatos elegíveis, fila tem ${queue.length}.`,
+    );
   }
 
-  return all.filter((p) => weeks.includes(p.week));
+  const out: BuiltDay[] = [];
+  let offset = 0;
+  for (const bp of blocks) {
+    const blockSlice = queue.slice(offset, offset + bp.total);
+    offset += bp.total;
+
+    const dayVols = bp.sends.map((s) => s.volume);
+    const fracs = dayVols.map((v) => v / bp.total);
+    const caps = apportion(bp.total, fracs);
+    const perDay = stratify<StoreRow>(blockSlice, caps);
+
+    bp.sends.forEach((s, di) => {
+      const rows = perDay[di].map((r) => outRow(r, nameByEmail.get(r.email) ?? ""));
+      out.push({ n: s.n, date: s.date, day: s.day, block: s.block, scheduledAt: s.scheduledAt, volume: s.volume, rows });
+    });
+  }
+  return out;
+}
+
+/** 1º nome p/ personalização (ex: "Azevedo, Ana" → "Azevedo"). */
+function firstName(name: string | null | undefined): string {
+  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
 }
 
 /**
- * Computa quantas linhas de cada tier foram consumidas pelas `skippedWeeks`
- * usando APENAS aritmética pura — SEM os throws de validação do `planWeeks`.
+ * Merge cirúrgico (#495) entre a recomputação FRESCA (`freshSends`, sempre
+ * cobre o plano inteiro) e o `sends-summary.json` pré-existente: dias cujo
+ * bloco está FORA de `blocksInScope` nesta invocação preservam a entrada já
+ * gravada anteriormente (com `listId` injetado por `clarice-import-sends`, se
+ * houver) — não sobrescrevem com números frescos de um CSV que não foi
+ * re-escrito agora.
  *
- * Destinado ao cálculo de cursor de tier em `main()`: ao calcular quais linhas
- * das semanas PULADAS (skippedWeeks) já foram consumidas, `planWeeks` valida os
- * tamanhos dos tiers — o que lança quando T3 < t3InS2 mesmo que a semana pedida
- * seja legítima. `advanceCursors` computa o mesmo `consumed` sem essas validações.
+ * Sem isso, uma invocação parcial (ex: `--blocks 2,3` rodada depois de o
+ * store ter mudado) reescreveria a entrada do bloco-célula com uma composição
+ * que não bate mais com o CSV real já importado/agendado (drift silencioso).
  *
- * **Escopo:** corrige APENAS o cursor das semanas puladas (skippedWeeks).
- * A chamada `planWeeks(sizes, weeks)` para as semanas PEDIDAS em `main()` ainda
- * valida os tamanhos — se os pools das semanas pedidas forem insuficientes,
- * `planWeeks` ainda lança normalmente. O operador deve garantir pools adequados
- * para as semanas efetivamente enviadas; `advanceCursors` só elimina o throw
- * espúrio do cursor de semanas puladas.
- *
- * #2048 item 4b — extraído para eliminar throw de validação no cursor de skippedWeeks.
+ * Pura + exportada pra testabilidade (#633, #2775).
  */
-export function advanceCursors(
-  sizes: Record<Tier, number>,
-  skippedWeeks: number[],
-): Record<Tier, number> {
-  const consumed: Record<Tier, number> = {
-    "T1-abriu": 0,
-    "T1-nao-abriu": 0,
-    maio: 0,
-    T2: 0,
-    T3: 0,
-    T4: 0,
-  };
-
-  if (skippedWeeks.length === 0) return consumed;
-
-  const wk = (w: 1 | 2 | 3): number =>
-    SENDS.filter((s) => s.week === w).reduce((a, s) => a + s.volume, 0);
-  const [S1, S2, S3] = [wk(1), wk(2), wk(3)];
-
-  const t2InS1 = S1 - (sizes["T1-abriu"] + sizes["T1-nao-abriu"] + sizes["maio"]);
-  const t2InS2 = sizes["T2"] - t2InS1;
-  const t3InS2 = S2 - t2InS2;
-  const t3InS3 = sizes["T3"] - t3InS2;
-  const t4InS3 = S3 - t3InS3;
-
-  if (skippedWeeks.includes(1)) {
-    consumed["T1-abriu"] += sizes["T1-abriu"];
-    consumed["T1-nao-abriu"] += sizes["T1-nao-abriu"];
-    consumed["maio"] += sizes["maio"];
-    consumed["T2"] += t2InS1;
-  }
-  if (skippedWeeks.includes(2)) {
-    consumed["T2"] += t2InS2;
-    consumed["T3"] += t3InS2;
-  }
-  if (skippedWeeks.includes(3)) {
-    consumed["T3"] += t3InS3;
-    consumed["T4"] += t4InS3;
-  }
-
-  return consumed;
+export function mergeSummaryAcrossBlocks(
+  freshSends: SendsSummaryEntry[],
+  prevSends: SendsSummaryEntry[] | undefined,
+  blocksInScope: number[],
+): SendsSummaryEntry[] {
+  const prevByN = new Map((prevSends ?? []).map((s) => [s.n, s]));
+  return freshSends.map((s) => (blocksInScope.includes(s.block) ? s : prevByN.get(s.n) ?? s));
 }
-
-// #2048 item 4c: conjunto de semanas derivado de SENDS em vez de literal [1,2,3].
-// NOTA (#2061): ALL_WEEKS captura todas as semanas presentes em SENDS, MAS
-// advanceCursors tem blocos hardcoded pra semanas 1/2/3 — se SENDS ganhar uma
-// semana 4, ALL_WEEKS a incluirá corretamente, mas advanceCursors precisará de
-// um bloco `if (skippedWeeks.includes(4)) { ... }` correspondente (semana 4 em
-// skippedWeeks seria ignorada em silêncio sem ele). Estender juntos.
-export const ALL_WEEKS: number[] = [...new Set(SENDS.map((s) => s.week))].sort(
-  (a, b) => a - b,
-);
 
 // ---------------------------------------------------------------------------
 // Main
@@ -327,146 +219,118 @@ export const ALL_WEEKS: number[] = [...new Set(SENDS.map((s) => s.week))].sort(
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = requireCycleArg(argv);
-  const dryRun = argv.includes("--dry-run");
-  const weeksIdx = argv.indexOf("--weeks");
-  const weeksArg = weeksIdx !== -1 ? argv[weeksIdx + 1] : undefined;
-  // --weeks sem valor ou valor inválido (ex: --weeks --dry-run) → erro explícito
-  if (argv.includes("--weeks")) {
-    if (!weeksArg || weeksArg.startsWith("-")) {
-      throw new Error(`--weeks requer um valor (ex: --weeks 1 ou --weeks 2,3). Recebido: ${weeksArg ?? "(nada)"}`);
-    }
-  }
-  // #2048 item 4c: semanas válidas derivadas de SENDS em vez de literal [1,2,3].
-  const weeksRaw = weeksArg
-    ? weeksArg.split(",").map((x) => Number(x.trim())).filter((x) => ALL_WEEKS.includes(x))
-    : [...ALL_WEEKS];
-  if (argv.includes("--weeks") && weeksRaw.length === 0) {
-    throw new Error(`--weeks "${weeksArg}" não contém semanas válidas (use ${ALL_WEEKS.join(", ")}).`);
-  }
-  const weeks = weeksRaw;
+  const dryRun = hasFlag(argv, "dry-run");
+  const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
 
   const cycleDir = clariceCycleDir(cycle);
-  const wavesDir = clariceWavesDir(cycle);
-  const src: Record<Tier, string> = {
-    "T1-abriu": resolve(wavesDir, "w1-brevo-export-t1-openers.csv"),
-    "T1-nao-abriu": resolve(wavesDir, "w2-brevo-export-t1-non-openers.csv"),
-    maio: resolve(cycleDir, "mv-export-maio-verified.csv"),
-    T2: resolve(cycleDir, "mv-export-t02-ex-assinantes-verified.csv"),
-    T3: resolve(cycleDir, "mv-export-t03-leads-2026-jan-abr-verified.csv"),
-    T4: resolve(cycleDir, "mv-export-t04-leads-2025H2-verified.csv"),
-  };
+  const plan = loadSendPlan(cycleDir);
+  const validBlocks = allBlocks(plan);
+  const blocks = parseBlocksArg(argv, validBlocks);
 
-  // planWeeks precisa do tamanho de TODOS os tiers que afetam o fill das semanas pedidas,
-  // incluindo tiers de semanas anteriores (cursor de T2 depende do tamanho consumido pela S1).
-  // #2048 item 4a: bloco único — T1+maio+T2 sempre necessários para cálculo de cursores;
-  // T3 para semanas 2/3; T4 só para semana 3. Eliminados os dois blocos sobrepostos anteriores.
-  const neededTiers = new Set<Tier>();
-  (["T1-abriu", "T1-nao-abriu", "maio", "T2"] as Tier[]).forEach((t) => neededTiers.add(t));
-  if (weeks.includes(2) || weeks.includes(3)) neededTiers.add("T3");
-  if (weeks.includes(3)) neededTiers.add("T4");
-
-  const pool: Partial<Record<Tier, TierRows>> = {};
-  const sizes = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 } as Record<Tier, number>;
-  // Dedup GLOBAL em ordem de prioridade (TIERS = morno->frio): um contato em
-  // mais de um tier (ex: maio ∩ T3 — o cohort maio é aditivo, não disjunto dos
-  // tiers) fica só na fatia mais quente. Sem isso, alguém recebe 2 emails.
-  const seenGlobal = new Set<string>();
-  for (const tier of TIERS) {
-    if (!neededTiers.has(tier)) continue;
-    if (!existsSync(src[tier])) {
-      throw new Error(
-        `Arquivo do tier ${tier} não existe: ${src[tier]}\n` +
-          (tier === "T3" || tier === "T4"
-            ? `Rode o MV antes: npx tsx scripts/verify-emails-mv.ts --cycle ${cycle} --input stripe-export-${tier === "T3" ? "t03-leads-2026-jan-abr" : "t04-leads-2025H2"}.csv`
-            : ""),
-      );
-    }
-    const rows = readCsv(src[tier]);
-    const ek = emailKeyOf(rows[0]);
-    const kept: Row[] = [];
-    let dropped = 0;
-    for (const r of rows) {
-      const e = (r[ek] ?? "").trim().toLowerCase();
-      if (!e || seenGlobal.has(e)) {
-        dropped++;
-        continue;
-      }
-      seenGlobal.add(e);
-      kept.push(r);
-    }
-    pool[tier] = { tier, rows: kept, emailKey: ek };
-    sizes[tier] = kept.length;
-    if (dropped) console.error(`  ${tier}: -${dropped} (dup global / email vazio)`);
+  const db = openClariceDb(dbPath);
+  let storeRows: (StoreRow & { name?: string | null })[];
+  try {
+    storeRows = db
+      .prepare(
+        `SELECT email, name, tier, priority_points, send_eligible, ineligible_reason, sends_count
+           FROM clarice_users`,
+      )
+      .all() as unknown as (StoreRow & { name?: string | null })[];
+  } finally {
+    db.close();
   }
 
-  console.error("Tamanhos dos tiers:", sizes);
-  const plans = planWeeks(sizes, weeks);
+  if (storeRows.length === 0) {
+    throw new Error("store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.");
+  }
 
-  // Para cada semana: para cada tier-segmento, fatia em 7 baldes (1 por dia)
-  // proporcionais ao volume do dia; depois combina por dia.
+  const nameByEmail = new Map(storeRows.map((r) => [r.email, firstName(r.name)]));
+  const seg = segmentFromStore(storeRows);
+  const queue = priorityQueue(seg);
+
+  console.error(
+    `Fila de prioridade: ${queue.length} elegíveis (re-envio=${seg.reSend.length} 1º-envio=${seg.firstSend.length} excluídos=${seg.excluded.length})`,
+  );
+
+  const built = buildSends(queue, plan, nameByEmail);
+
   const sendsDir = ensureDir(resolve(cycleDir, "sends"));
-  const summary: any = { cycle, total: 0, perTier: {}, sends: [] };
-  for (const t of TIERS) summary.perTier[t] = 0;
+  const summary: { cycle: string; total: number; sends: SendsSummaryEntry[] } = {
+    cycle,
+    total: 0,
+    sends: [],
+  };
 
-  // cursor por tier: quantas linhas já consumidas por semanas ANTERIORES às pedidas.
-  // Inicializar a 0 e avançar as semanas não pedidas que precedem as pedidas evita o
-  // bug de duplo-envio: --weeks 2 sem esse ajuste começaria o T2 do início, enviando
-  // as mesmas linhas que a S1 já recebeu. (#2007 / #2018)
-  //
-  // #2048 item 4b: usa `advanceCursors` (puro, sem throws de validação) em vez de
-  // `planWeeks(sizes, skippedWeeks)`. Isso permite rodar `--weeks 3` após os CSVs de
-  // T3 já terem sido aparados pós-S2 (T3=0), sem lançar `T3 insuficiente p/ S2`.
-  // #2048 item 4c: `ALL_WEEKS` derivado de `SENDS` em vez do literal [1,2,3].
-  const skippedWeeks = ALL_WEEKS.filter((w) => !weeks.includes(w) && w < Math.max(...weeks));
-  const consumed = advanceCursors(sizes, skippedWeeks);
+  for (const day of built) {
+    const file = `d${String(day.n).padStart(2, "0")}-${day.date}.csv`;
+    const comp: Record<string, number> = {};
+    for (const r of day.rows) comp[r.TIER || "(sem tier)"] = (comp[r.TIER || "(sem tier)"] ?? 0) + 1;
 
-  for (const plan of plans) {
-    const daySends = SENDS.filter((s) => s.week === plan.week);
-    const dayVols = daySends.map((s) => s.volume);
-    const fracs = dayVols.map((v) => v / plan.total);
-    // dia -> linhas acumuladas
-    const dayRows: Row[][] = daySends.map(() => []);
+    const entry: SendsSummaryEntry = {
+      n: day.n,
+      date: day.date,
+      day: day.day,
+      block: day.block,
+      volume: day.volume,
+      scheduledAt: day.scheduledAt,
+      file,
+      planned: day.volume,
+      actual: day.rows.length,
+      comp,
+    };
+    summary.sends.push(entry);
+    summary.total += day.rows.length;
 
-    for (const seg of plan.segments) {
-      const tr = pool[seg.tier];
-      if (!tr) throw new Error(`pool do tier ${seg.tier} não carregado`);
-      // pega o trecho deste tier para esta semana (topo->resto via cursor)
-      const start = consumed[seg.tier];
-      const slice = tr.rows.slice(start, start + seg.count);
-      consumed[seg.tier] = start + seg.count;
-      if (slice.length !== seg.count) {
-        throw new Error(`tier ${seg.tier}: esperado ${seg.count}, fatiou ${slice.length} (cursor ${start})`);
-      }
-      // distribui as `seg.count` linhas nos 7 dias, proporcional ao volume
-      const caps = apportion(seg.count, fracs);
-      const perDay = stratify(slice, caps);
-      perDay.forEach((rowsForDay, di) => {
-        for (const r of rowsForDay) dayRows[di].push(outRow(r, tr.emailKey, seg.tier));
-        summary.perTier[seg.tier] += rowsForDay.length;
-      });
+    console.error(
+      `  ${file}  dia=${day.day} bloco=${day.block} plan=${day.volume} real=${day.rows.length}  ${JSON.stringify(comp)}${
+        blocks.includes(day.block) ? "" : "  (fora de --blocks — não escrito)"
+      }`,
+    );
+
+    if (!dryRun && blocks.includes(day.block)) {
+      writeFileAtomic(
+        resolve(sendsDir, file),
+        Papa.unparse({ fields: ["email", "NOME", "TIER", "IS_SEED"], data: day.rows }),
+      );
     }
-
-    daySends.forEach((s, di) => {
-      const rows = dayRows[di];
-      const comp: Record<string, number> = {};
-      for (const r of rows) comp[r.TIER] = (comp[r.TIER] ?? 0) + 1;
-      summary.total += rows.length;
-      summary.sends.push({ n: s.n, file: `d${String(s.n).padStart(2, "0")}-${s.date}.csv`, day: s.day, week: s.week, planned: s.volume, actual: rows.length, comp });
-      const name = `d${String(s.n).padStart(2, "0")}-${s.date}.csv`;
-      if (!dryRun) {
-        // IS_SEED (#2697 item 1): coluna sempre presente pra manter o shape do CSV
-        // consistente entre dias com/sem seed presente naquele dia específico.
-        writeFileAtomic(resolve(sendsDir, name), Papa.unparse({ fields: ["email", "NOME", "TIER", "IS_SEED"], data: rows }));
-      }
-      console.error(`  ${name}  dia=${s.day} plan=${s.volume} real=${rows.length}  ${JSON.stringify(comp)}`);
-    });
   }
 
   if (!dryRun) {
-    writeFileAtomic(resolve(sendsDir, "sends-summary.json"), JSON.stringify(summary, null, 2));
+    // Limpa CSVs de dias stale (ex: plano encolheu) que não constam mais do plano atual.
+    const keep = new Set(built.filter((d) => blocks.includes(d.block)).map((d) => `d${String(d.n).padStart(2, "0")}-${d.date}.csv`));
+    for (const f of readdirSync(sendsDir)) {
+      if (/^d\d{2}-.*\.csv$/.test(f) && !keep.has(f)) {
+        // Só remove arquivos de dias DENTRO dos blocos pedidos nesta invocação —
+        // não mexe em CSVs de blocos que não fazem parte de `--blocks` (podem
+        // ter sido escritos por uma invocação anterior e ainda ser válidos).
+        const match = f.match(/^d(\d{2})-/);
+        const n = match ? Number(match[1]) : null;
+        const dayPlan = n != null ? built.find((d) => d.n === n) : undefined;
+        if (dayPlan && blocks.includes(dayPlan.block)) {
+          unlinkSync(resolve(sendsDir, f));
+          console.error(`🧹 removido stale: ${f}`);
+        }
+      }
+    }
+
+    // Merge cirúrgico (#495) com sends-summary.json pré-existente — ver
+    // mergeSummaryAcrossBlocks. Blocos fora de `--blocks` preservam a entrada já
+    // gravada (com `listId`, se já importado); só os blocos pedidos são frescos.
+    const summaryPath = resolve(sendsDir, "sends-summary.json");
+    let finalSends = summary.sends;
+    if (existsSync(summaryPath)) {
+      try {
+        const prev: { sends?: SendsSummaryEntry[] } = JSON.parse(readFileSync(summaryPath, "utf8"));
+        finalSends = mergeSummaryAcrossBlocks(summary.sends, prev.sends, blocks);
+      } catch (e) {
+        console.error(`⚠️  sends-summary.json existente corrompido (JSON inválido) — sobrescrevendo do zero: ${String(e)}`);
+      }
+    }
+    const finalTotal = finalSends.reduce((a, s) => a + s.actual, 0);
+    writeFileAtomic(summaryPath, JSON.stringify({ cycle, total: finalTotal, sends: finalSends }, null, 2));
   }
-  console.error(`\nTotal: ${summary.total}  perTier:`, summary.perTier);
-  console.error(dryRun ? "(dry-run: nada escrito)" : `Escrito em ${sendsDir}`);
+  console.error(`\nTotal (plano inteiro): ${summary.total}`);
+  console.error(dryRun ? "(dry-run: nada escrito)" : `Escrito em ${sendsDir} (blocos: ${blocks.join(",")})`);
 }
 
 // CLI guard (#tests importam helpers sem disparar main)
