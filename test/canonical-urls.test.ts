@@ -222,7 +222,9 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
     const root = join(import.meta.dirname, "..");
     const consumers = [
       "scripts/lib/mensal/monthly-render.ts",
-      "scripts/lint-social-md.ts",
+      // #2833: DIARIA_LINKEDIN_PAGE_SLUG import moved from lint-social-md.ts
+      // to lib/social-lint-rules.ts (pure extraction) — check the new home.
+      "scripts/lib/social-lint-rules.ts",
       "scripts/build-link-ctr.ts",
       "scripts/stitch-newsletter.ts",
     ];
