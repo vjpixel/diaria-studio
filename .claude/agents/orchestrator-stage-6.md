@@ -214,13 +214,14 @@ npx tsx scripts/pipeline-sentinel.ts write \
   --outputs "_internal/05-published.json"
 ```
 
-**Marcar Stage 6 `done`:**
-
-```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 6 --status done
-```
-
 Sentinel ausente = Stage 6 incompleto para fins de resume. Falha → logar warn, nao bloquear auto-reporter.
+
+**NAO marcar Stage 6 `done` aqui (#2800).** `blockReasonForMarkingStageDone` (stage 6) exige
+`_internal/edition-report.html`, que so e gerado no passo 6b-6 (Etapa 6b — Auto-reporter,
+ABAIXO neste arquivo). Chamar `update-stage-status --stage 6 --status done` neste ponto
+sempre bloqueia (exit 1, doc nao gravado) porque o report ainda nao existe — a causa-raiz
+do bug em que a barra de status ficava presa em `running` apos a edicao ja ter concluido
+de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser escrito.
 
 ### 6g. Check invariants Stage 6
 
@@ -288,6 +289,22 @@ npx tsx scripts/send-edition-report.ts \
 **INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatorio de edicao`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL). **NUNCA construir htmlBody programaticamente.**
 
 **Falha nao bloqueia** — logar warn e seguir.
+
+### 6b-7. Marcar Stage 6 `done` (#2800)
+
+Ultimo passo do pipeline. So agora `_internal/edition-report.html` existe (escrito em 6b-6) —
+`blockReasonForMarkingStageDone` para o stage 6 exige esse arquivo (+ `scheduled_at` em
+`05-published.json`, ja setado em 6e) — entao rodar o `--status done` AQUI (e nao em 6f)
+e a transicao tem sucesso:
+
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 6 --status done
+```
+
+Falha (exit != 0) → logar warn com o motivo impresso pelo script; nao bloquear o resto do
+fluxo (relatorio ja foi enviado). Se isso acontecer, a barra de status pode ficar presa em
+`running` ate reconciliacao (ver `reconcileZombieRunningRows` em `scripts/overnight-statusline.ts`,
+que detecta `.step-6-done.json` presente + row `running` e corrige a exibicao sem escrita).
 
 ---
 
