@@ -203,13 +203,6 @@ Técnica de encadear chamadas de LLM com exemplo em Python (15 min).
 
 **Links com parênteses (#1634):** se a URL do item contém `(` ou `)` (ex: PDF com `(1)` no nome), o render já tolera parênteses balanceados (`processInlineLinks`). Mesmo assim, prefira URL-encode (`%28`/`%29`) na fonte quando houver parênteses desbalanceados.
 
-### Validação pós-piloto
-
-Após ~10 edições com a seção ativa, avaliar:
-- CTR sustentar > 1.5% → seção fixa permanente
-- CTR cair pra < 0.5% → reformular ou retirar
-- Editor escolhe candidato bom em ≥ 80% das edições → cobertura suficiente
-
 ### Integração no pipeline
 
 Status (após #1568): implementado.
