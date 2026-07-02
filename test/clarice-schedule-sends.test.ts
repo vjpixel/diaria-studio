@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
 import { SENDS } from "../scripts/clarice-build-edition-sends.ts";
-import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
+import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/mensal/monthly-paths.ts";
 
 // (#2101: guard de runtime movido para assertScheduledAtFuture — scheduledAtFor
 // é função pura de computação de data, sem side effects de clock)

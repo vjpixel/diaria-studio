@@ -33,8 +33,8 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, parseArgs } from "./cli-args.ts";
-import { isValidCycle } from "./clarice-paths.ts";
+import { getArg, parseArgs } from "../cli-args.ts";
+import { isValidCycle } from "../clarice-paths.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 

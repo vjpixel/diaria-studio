@@ -24,7 +24,7 @@ import {
   parseMonthlyCycleArg,
   requireMonthlyCycleArg,
   MONTHLY_BASE,
-} from "../scripts/lib/monthly-paths.ts";
+} from "../scripts/lib/mensal/monthly-paths.ts";
 
 const norm = (p: string): string => p.split(sep).join("/");
 

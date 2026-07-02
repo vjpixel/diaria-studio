@@ -34,8 +34,8 @@ loadProjectEnv();
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
-import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/monthly-image-upload.ts";
+import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
+import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/mensal/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
 import {
   parseMonthlyCycleArg,
@@ -45,7 +45,7 @@ import {
   monthlyWorkerKeyLegacy,
   isValidMonthlyCycle,
   isValidYymm,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -156,6 +156,7 @@ async function main(): Promise<void> {
   const eiaEdition = eiaEditionFromYymm(yymm);
   let eia: { a?: string; b?: string } = {};
   let destaqueImages: Record<number, string> = {};
+  let livrosImageUrl: string | undefined;
   if (!dryRun) {
     try {
       eia = await uploadEiaImages(monthlyDir, eiaEdition);
@@ -174,6 +175,18 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`warn: upload de imagens de destaque falhou — ${(e as Error).message}`);
     }
+    // #editor: imagem do box de curadoria de livros (04-livros-promo.jpg), igual à diária.
+    try {
+      const livrosPath = resolve(monthlyDir, "04-livros-promo.jpg");
+      if (existsSync(livrosPath)) {
+        livrosImageUrl = await uploadMonthlyImage(livrosPath, eiaEdition, ROOT);
+        console.error(`Imagem de livros enviada: ${livrosImageUrl}`);
+      } else {
+        console.error("warn: 04-livros-promo.jpg ausente — box de livros sem imagem");
+      }
+    } catch (e) {
+      console.error(`warn: upload da imagem de livros falhou — ${(e as Error).message}`);
+    }
   }
 
   // Legenda do É IA? vem do 01-eia.md (o draft só tem o placeholder). #1914
@@ -190,7 +203,7 @@ async function main(): Promise<void> {
   const destaqueImageCaption = captionForGenerator(imageGenerator);
 
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption);
+  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl);
 
   // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
   const internalDir = resolve(monthlyDir, "_internal");

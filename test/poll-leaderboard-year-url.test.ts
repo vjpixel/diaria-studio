@@ -13,7 +13,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderEia } from "../scripts/lib/monthly-render.ts";
+import { renderEia } from "../scripts/lib/mensal/monthly-render.ts";
 
 // ── (a) monthly-render.ts — URL anual no link do leaderboard ───────────────
 

@@ -16,7 +16,7 @@ import {
   renderEia,
   draftToEmail,
   eiaEditionFromYymm,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 
 describe("parseEiaLegend (#1914)", () => {
   it("extrai a legenda do 01-eia.md (sem frontmatter nem header)", () => {
@@ -77,9 +77,12 @@ describe("renderEia layout = diária (#1918)", () => {
     assert.match(html, /<a href="[^"]*choice=A[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*A\.jpg/);
     assert.match(html, /<a href="[^"]*choice=B[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*B\.jpg/);
   });
-  it("imagens lado a lado com mob-stack (empilham no mobile)", () => {
-    assert.match(html, /width="50%"[^>]*class="mob-stack"/);
-    assert.equal((html.match(/class="mob-stack"/g) || []).length, 2, "duas células mob-stack");
+  it("imagens empilhadas A acima de B, em desktop e mobile (#2541 diária)", () => {
+    assert.ok(!html.includes("mob-stack"), "sem mob-stack — não é mais lado a lado");
+    assert.ok(!html.includes('width="50%"'), "sem células de 50% (não é 2 colunas)");
+    const ai = html.indexOf("A.jpg");
+    const bi = html.indexOf("B.jpg");
+    assert.ok(ai > 0 && bi > ai, "imagem A renderiza acima da B");
   });
   it("mantém o merge tag Brevo e a legenda", () => {
     assert.ok(html.includes("{{ contact.EMAIL }}"), "merge tag Brevo preservado");

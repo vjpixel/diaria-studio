@@ -22,7 +22,7 @@ import { join } from "node:path";
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 const LIMITS: Record<string, number> = { D1: 1500, D2: 1200, D3: 1200 };
 

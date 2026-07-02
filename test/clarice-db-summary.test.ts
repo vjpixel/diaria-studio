@@ -86,3 +86,65 @@ test("computeStoreSummary: by_tier exclui nunca-enviado MAS inelegível (dispute
   assert.equal(s.by_tier["3"], 1); // só ok@x.com
   db.close();
 });
+
+test("computeStoreSummary: emails internos fora do bloco priority_points, mas dentro do resto (#2809)", () => {
+  // vjpixel@gmail.com abre tudo por ofício (score alto) — NÃO pode aparecer no
+  // histograma/faixas de priority_points; mas segue no total/mv/engagement
+  // (só exibição: continua no store e na fila de envio).
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // interno engajado: 4 opens de 4 → +80 (seria o topo do histograma)
+  ins("INSERT INTO clarice_users (email, opens_count, clicks_count, sends_count, mv_bucket) VALUES ('vjpixel@gmail.com',4,2,4,'verified')");
+  // interno com optin: +40 — também não conta no `optin` filtrado
+  ins("INSERT INTO clarice_users (email, status) VALUES ('felipe@clarice.ai','active')");
+  ins("INSERT INTO priority_optin (email, added_at) VALUES ('felipe@clarice.ai','2026-06-01T00:00:00Z')");
+  // assinante real: 3 opens de 3 → +60
+  ins("INSERT INTO clarice_users (email, tier, opens_count, sends_count) VALUES ('real@x.com',1,3,3)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  // total NÃO filtra internos (eles existem no store)
+  assert.equal(s.total, 3);
+  assert.equal(s.priority_points.internal_excluded, 2);
+
+  // histograma: só o assinante real (60); o 80 do interno NÃO aparece
+  const hist = s.priority_points_histogram;
+  assert.equal(hist["60"], 1, "real@x.com: 3 opens ×20");
+  assert.equal(hist["80"], undefined, "interno +80 excluído do histograma");
+  assert.equal(hist["40"], undefined, "interno optin +40 excluído do histograma");
+
+  // faixas: só o real (41–80); optin filtrado (o único optin é interno)
+  assert.equal(s.priority_points.p41_80, 1);
+  assert.equal(s.priority_points.p1_40, 0);
+  assert.equal(s.priority_points.optin, 0, "optin interno não conta na exibição");
+
+  // invariante ajustado (#2809): faixas/histograma particionam total - internal_excluded
+  const pp = s.priority_points;
+  assert.equal(
+    pp.lt0 + pp.eq0 + pp.p1_40 + pp.p41_80 + pp.gt80,
+    s.total - pp.internal_excluded,
+  );
+  assert.equal(
+    Object.values(hist).reduce((s2, v) => s2 + v, 0),
+    s.total - pp.internal_excluded,
+  );
+
+  // demais agregações seguem contando os internos (sem filtro)
+  assert.equal(s.engagement.with_opens, 2, "interno + real");
+  assert.equal(s.engagement.with_clicks, 1, "interno");
+  assert.equal(s.mv["verified"], 1, "interno verified conta no mv");
+
+  db.close();
+});
+
+test("computeStoreSummary: filtro de internos é case-insensitive (#2809)", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, opens_count, sends_count) VALUES ('VJPixel@Gmail.com',2,2)").run();
+  recomputeDerived(db);
+  const s = computeStoreSummary(db);
+  assert.equal(s.priority_points.internal_excluded, 1);
+  assert.equal(s.priority_points_histogram["40"], undefined, "variação de caixa também excluída");
+  db.close();
+});

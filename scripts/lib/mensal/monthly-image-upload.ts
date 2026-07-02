@@ -11,7 +11,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
+import { uploadImageToWorkerKV } from "../cloudflare-kv-upload.ts";
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 

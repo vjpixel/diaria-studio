@@ -52,7 +52,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
-import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/monthly-paths.ts";
+import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { SENDS } from "./clarice-build-edition-sends.ts";
 import { CELLS } from "./clarice-split-cells.ts";
 

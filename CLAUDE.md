@@ -166,6 +166,11 @@ context/          # carregado no system prompt → cacheado
   publishers/            # roteiros Claude in Chrome por plataforma (Beehiiv, LinkedIn, Facebook)
 seed/sources.csv  # 35 fontes iniciais
 scripts/          # utilitários TypeScript (Node)
+  lib/shared/     # genérico usado por diária E mensal (design-tokens, newsletter-styles) — NÃO importa de diaria/ nem mensal/
+  lib/mensal/     # mensal-específico (monthly-*) — cruzamento com diária só via shared/
+  lib/diaria/     # (futuro) diária-específico; raiz de lib/ = legado não-classificado, migra sob demanda
+                  # Fronteira lint-enforced por test/lib-boundary.test.ts (#2747): import cruzado quebra o teste —
+                  # a falha força a pergunta "isso devia ser genérico?" (aí move pra shared/ via git mv)
 data/past-editions.md    # gerado (#1847: movido de context/ — regenera todo Stage 0, não cacheado)
 data/editions/{AAMMDD}/  # outputs por edição (gate-facing no root, pipeline internals em _internal/)
 platform.config.json     # { newsletter: "beehiiv", socials: [...] }
