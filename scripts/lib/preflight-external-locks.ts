@@ -71,14 +71,18 @@ export interface LockCheckResult {
  * @param tokenHealthFn  Injetável para testes — substitui checkTokenHealth por mock.
  *                       Útil para exercer o ramo "expired" sem precisar de
  *                       data/.credentials.json no disco (#633).
+ * @param credentialsPath Injetável para testes — substitui o path de
+ *                       `data/.credentials.json` real. Default preserva o
+ *                       comportamento de produção (#2846: torna o teste
+ *                       "OAuth ausente" hermético em máquinas com a junction
+ *                       `data/` do OneDrive, onde o arquivo real existe).
  */
 export async function checkOAuthLock(
   fetchImpl: typeof fetch = fetch,
   _now?: number,
   tokenHealthFn?: (f: typeof fetch) => ReturnType<typeof checkTokenHealth>,
+  credentialsPath: string = resolve(ROOT, "data", ".credentials.json"),
 ): Promise<LockCheckResult> {
-  const credentialsPath = resolve(ROOT, "data", ".credentials.json");
-
   // Quando o tokenHealthFn é injetado (testes), pular o existsSync — o mock
   // simula o comportamento pós-credentials, incluindo expirado.
   if (tokenHealthFn === undefined && !existsSync(credentialsPath)) {
