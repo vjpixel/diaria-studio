@@ -1,55 +1,72 @@
 #!/usr/bin/env npx tsx
 /**
- * overnight-statusline.ts (#2184, #2250, #2255)
+ * overnight-statusline.ts (#2184, #2250, #2255, #2803)
  *
- * Barra de progresso horizontal para a statusLine do Claude Code.
- * Suporta três modos, com precedência definida:
+ * Barra de progresso horizontal para a statusLine do Claude Code. Apesar do
+ * nome (histórico — ver nota de rename abaixo), é FLUXO-NEUTRO desde #2637:
+ * cobre edição, `/diaria-overnight` E `/diaria-develop`. Suporta quatro
+ * fontes, com precedência definida:
  *
- *   1. Edição em curso (PRIORIDADE ALTA — #2250):
+ *   1. Edição em curso (PRIORIDADE MÁXIMA — #2250):
  *      "{branch}  edição 260615  [██████░░░░░░] 3/7  Imagens"
  *      Encerrada: "{branch}  edição 260615  [████████████] 7/7  Agendamento"
  *
- *   2. Rodada /diaria-overnight (FALLBACK quando não há edição ativa):
+ *   2. Sessão /diaria-develop ativa (#2803 — abaixo da edição, acima do overnight):
+ *      "{branch}  develop 260702  [████░░░░░░░░] 3/8  · desbloqueando"
+ *      Mesmo critério de progresso/rótulo de `renderOvernightBar` (issues
+ *      terminais em `plan.json`), só que lido de `data/develop/{AAMMDD}/`.
+ *      Um `plan.json` de develop ANTIGO (sessão abandonada, dias atrás) não
+ *      sequestra a barra — ver `isStaleDevelopPlan` (reusa o padrão de guard
+ *      de zumbi introduzido no #2800: fail-open, threshold de tempo).
+ *
+ *   3. Rodada /diaria-overnight (FALLBACK quando não há edição nem develop ativos):
  *      "{branch}  [████████░░░░] 67%  (4/6)"
  *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
  *
- *   3. IDLE — barra presente sem edição nem overnight (#2255):
+ *   4. IDLE — barra presente sem edição, develop nem overnight (#2255):
  *      Sem edição alguma:  "{branch}  [████████████] Diar.ia · sem rodada ativa"
  *
- *   4. EDIÇÃO CONCLUÍDA sem overnight (#2618): barra SOME — só o branch (ou "" em
+ *   5. EDIÇÃO CONCLUÍDA sem develop/overnight (#2618): barra SOME — só o branch (ou "" em
  *      detached HEAD). Distinto do idle: "sem rodada ativa" é quando não há edição;
  *      "barra some" é quando a última edição terminou (todos stages terminais).
  *
- * Precedência: edição em curso > overnight > idle > (edição concluída → barra some).
+ * Precedência: edição em curso > develop > overnight > idle > (edição concluída → barra some).
  * NOTA (#2618): a barra NÃO é mais sempre presente — após uma edição concluir, sem
- * overnight, o output é só o branch (ou vazio). A composição vive em `renderStatusline`.
+ * develop/overnight, o output é só o branch (ou vazio). A composição vive em `renderStatusline`.
  *
- * Critério de "rodada encerrada" overnight: TODAS as entradas de `issues` têm status
+ * Critério de "rodada encerrada" overnight/develop: TODAS as entradas de `issues` têm status
  * terminal (`mergeada` | `draft-ci-vermelho` | `pulada`). Quando encerrada,
  * mostra 100% e permanece visível — NÃO oculta (#2246, requisito do editor).
  *
  * Critério de "edição encerrada" (#2250): todos os stages têm status terminal
  * (`done` | `failed`). Quando encerrada, mostra N/N (7/7) e permanece visível
- * (espelhando #2246). A barra de overnight volta ao display quando a edição encerra.
+ * (espelhando #2246). A barra de develop/overnight volta ao display quando a edição encerra.
  *
  * Degrada graciosamente:
- *   - stage-status.json ausente/malformado → ignora (fallback overnight)
- *   - rows ausente/vazio                   → ignora (fallback overnight)
- *   - plan.json ausente                    → idle bar (fora de rodada overnight)
- *   - plan.json malformado                 → idle bar (sem throw)
- *   - total de issues = 0                  → idle bar
- *   - qualquer read failure                → idle bar, nunca string vazia
+ *   - stage-status.json ausente/malformado → ignora (fallback develop/overnight)
+ *   - rows ausente/vazio                   → ignora (fallback develop/overnight)
+ *   - plan.json (overnight/develop) ausente    → idle bar (fora de rodada)
+ *   - plan.json (overnight/develop) malformado → idle bar (sem throw)
+ *   - total de issues = 0                      → idle bar
+ *   - qualquer read failure                    → idle bar, nunca string vazia
+ *
+ * Rename considerado no #2803 (overnight-statusline.ts → statusline.ts) e descartado:
+ * o path é referenciado por configs de statusLine já instaladas no editor
+ * (`.claude/settings.json` / equivalente do usuário) — renomear quebraria
+ * esses setups sem aviso. Preferido o menor-churn: só este docblock documenta
+ * a natureza fluxo-neutra; o nome do arquivo fica histórico.
  *
  * Uso (Claude Code statusLine):
  *   npx tsx scripts/overnight-statusline.ts
  */
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
 import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
+import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
 
@@ -102,6 +119,13 @@ export interface Plan {
 // Single-letter suffix garante ordenação lexicográfica correta: 260613c > 260613b > 260613 > 260611.
 // Dois sufixos (260613aa) mis-ordenariam lexicograficamente — não são gerados pelo pipeline.
 export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
+/**
+ * `data/develop/{AAMMDD}/plan.json` (#2803) — mesmo schema do overnight
+ * (SKILL.md: "Reusa o schema do overnight"). Sem sufixo de letra: diferente
+ * do overnight, `/diaria-develop` não documenta rodadas suplementares no
+ * mesmo dia (uma sessão supervisionada por AAMMDD).
+ */
+export const DEVELOP_DIR_RE = /^\d{6}$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
 
@@ -384,6 +408,108 @@ export function readTodayPlan(cwd: string): Plan | null {
   }
 }
 
+// ─── /diaria-develop (#2803) ──────────────────────────────────────────────────
+
+/** Plan de develop + o AAMMDD do diretório de onde foi lido (necessário pro rótulo da barra). */
+export interface DevelopPlanEntry {
+  id: string;
+  plan: Plan;
+}
+
+/**
+ * Guard de zumbi (#2800/#2803): um `plan.json` de `/diaria-develop` ANTIGO
+ * (sessão abandonada dias atrás, nunca chegou a todos-terminal) não deve
+ * sequestrar a barra pra sempre. Reusa o mesmo threshold + fail-open de
+ * `isStaleEditionDoc` (#2800/#2760) — "mesma classe de zumbi", agora aplicada
+ * a `plan.json` em vez de `stage-status.json`.
+ *
+ * Diferente de `isStaleEditionDoc` (que usa timestamps DENTRO do doc — `row.start`
+ * / `generated_at`), aqui usamos o mtime do próprio arquivo em disco: `plan.json`
+ * de develop é reescrito a cada iteração da sessão (SKILL.md: "Atualizar
+ * plan.json" a cada onda) — mtime recente é prova direta de sessão viva, mesmo
+ * quando a sessão atravessa a meia-noite (SKILL.md: "a sessão pode cruzar meia-
+ * noite" — por isso NÃO filtramos por "dir é hoje", só por idade do arquivo).
+ *
+ * Fail-open: `statSync` falhar (arquivo sumiu entre o `existsSync` do caller e
+ * aqui, permissão, etc.) → false (nunca esconde um plan por erro de leitura).
+ */
+export function isStaleDevelopPlan(
+  planPath: string,
+  now: Date,
+  thresholdMs: number = EDITION_STALE_THRESHOLD_MS,
+): boolean {
+  try {
+    const stat = statSync(planPath);
+    return now.getTime() - stat.mtimeMs > thresholdMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Encontra a sessão `/diaria-develop` corrente escaneando
+ * `data/develop/{AAMMDD}/plan.json` (análogo a `readTodayPlan`, #2246 pt2).
+ *
+ * Contrato:
+ *   - Sort lexicográfico desc (mais recente primeiro).
+ *   - Deve ter `issues.length > 0` (plan vazio é ignorado — sessão não iniciou de fato).
+ *   - `plan.json` mais velho que o threshold de staleness (`isStaleDevelopPlan`)
+ *     é PULADO — não sequestra a barra; continua procurando em dirs mais antigos
+ *     (mesmo comportamento de "cair pro próximo candidato" de `readCurrentEditionDoc`).
+ *   - Não importa se a sessão está em progresso ou encerrada (100% terminal) —
+ *     `renderOvernightBar` decide como exibir; mesmo espírito de #2246 pt2.
+ *   - Retorna `null` se não houver `data/develop/`, nenhum dir válido, ou todos
+ *     os candidatos forem vazios/stale.
+ *
+ * `now` é injetável (default `new Date()`) — mantém a função determinística e
+ * testável sem relógio real, mesmo com o guard de staleness dependente de tempo.
+ */
+export function readTodayDevelopPlan(cwd: string, now: Date = new Date()): DevelopPlanEntry | null {
+  try {
+    const developDir = join(cwd, "data", "develop");
+    if (!existsSync(developDir)) return null;
+
+    const entries = readdirSync(developDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && DEVELOP_DIR_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse(); // most recent first (lexicographic desc)
+
+    if (entries.length === 0) return null;
+
+    for (const dirName of entries) {
+      const planPath = join(developDir, dirName, "plan.json");
+      const plan = readPlanFromDir(planPath);
+      if (!plan) continue;
+      if (!Array.isArray(plan.issues) || plan.issues.length === 0) continue;
+      if (isStaleDevelopPlan(planPath, now)) continue; // #2800/#2803: zumbi — não sequestra a barra
+      return { id: dirName, plan };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Renderiza a barra de progresso de uma sessão `/diaria-develop` ativa (#2803).
+ *
+ * Reusa `renderOvernightBar` (mesmo schema de `plan.json`, mesma lógica de
+ * progresso/rótulo — fluxo-neutro desde #2637) e só prefixa `develop {AAMMDD}`
+ * pra distinguir visualmente da barra de overnight (que não tem prefixo de id).
+ *
+ * @param entry  Doc + id do dir (ou null se nenhuma sessão develop ativa).
+ * @returns      String da barra, ou "" quando deve ser ocultada (mesmas regras
+ *               de `renderOvernightBar`: plan vazio/malformado → "").
+ */
+export function renderDevelopBar(entry: DevelopPlanEntry | null): string {
+  if (!entry) return "";
+  const inner = renderOvernightBar(entry.plan);
+  if (!inner) return "";
+  return `develop ${entry.id}  ${inner}`;
+}
+
 /**
  * Retorna o branch git atual (ex: "master"), ou "" em caso de erro ou detached HEAD.
  *
@@ -502,9 +628,69 @@ export function renderEditionBar(doc: StageStatusDoc | null | undefined): string
 }
 
 /**
+ * Reconcilia rows presas em `status: "running"` cujo sentinel de conclusão do
+ * stage (`.step-{N}-done.json`) já foi escrito (#2800).
+ *
+ * Root cause do #2800: `blockReasonForMarkingStageDone` (stage 6) exige
+ * `edition-report.html`, gerado só DEPOIS do antigo ponto onde o orchestrator
+ * chamava `update-stage-status --stage 6 --status done` — a chamada sempre
+ * falhava (exit 1, doc não gravado), e a falha era tratada como "logar warn,
+ * não bloquear". A row ficava `running` para sempre, mesmo com o sentinel do
+ * stage já escrito (prova de que o trabalho terminou). A ordem foi corrigida
+ * em `.claude/agents/orchestrator-stage-6.md` (§6b-7), mas isso só previne
+ * NOVAS ocorrências — edições já afetadas (ex: 260702) ficam com o artefato
+ * em disco desatualizado.
+ *
+ * Este guard é **read-only** (não persiste em disco — nunca escreve em
+ * `data/`): sempre que um leitor (statusline, `send-edition-report.ts`, etc.)
+ * carrega o doc, qualquer row `running` cujo sentinel do MESMO stage já exista
+ * é tratada como `done` só para fins de EXIBIÇÃO. Autocura a barra sem exigir
+ * reprocessar a edição nem editar o artefato manualmente.
+ *
+ * Escopo deliberado: só rows `running` (nunca `pending`/`failed`) — mesmo
+ * critério de "trabalho em andamento que na verdade terminou" usado por
+ * `autoUpdateStageStatusOnSentinel` (`scripts/pipeline-sentinel.ts`, #1563/#2374
+ * também cobre `pending`, mas aqui o objetivo é só consertar a EXIBIÇÃO de um
+ * caso já observado — `running` é o sintoma relatado no #2800).
+ *
+ * Fail-open: qualquer erro ao checar/ler o sentinel deixa a row como estava
+ * (nunca lança, nunca esconde o doc original).
+ */
+export function reconcileZombieRunningRows(doc: StageStatusDoc, editionDir: string): StageStatusDoc {
+  let changed = false;
+  const newRows = doc.rows.map((r) => {
+    if (r?.status !== "running") return r;
+    let hasSentinel: boolean;
+    try {
+      hasSentinel = sentinelExists(editionDir, r.stage);
+    } catch {
+      return r;
+    }
+    if (!hasSentinel) return r;
+
+    const sentinel = readSentinel(editionDir, r.stage);
+    const end = r.end ?? sentinel?.completed_at ?? doc.generated_at;
+    const startMs = r.start ? Date.parse(r.start) : NaN;
+    const endMs = typeof end === "string" ? Date.parse(end) : NaN;
+    const duration_ms =
+      !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs
+        ? endMs - startMs
+        : r.duration_ms;
+
+    changed = true;
+    return { ...r, status: "done" as StageStatus, end, duration_ms };
+  });
+  return changed ? { ...doc, rows: newRows } : doc;
+}
+
+/**
  * Lê e parseia stage-status.json de um diretório de edição.
  * Falls back to the legacy stage-status.md via loadDoc() for pre-#1216 editions.
  * Retorna null em qualquer erro ou se o formato for inválido.
+ *
+ * #2800: aplica `reconcileZombieRunningRows` antes de retornar — rows `running`
+ * com sentinel de stage já escrito são exibidas como `done` (read-only, ver
+ * docblock da função).
  */
 function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
   try {
@@ -517,7 +703,7 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
         const parsed = JSON.parse(readFileSync(jsonPath, "utf8")) as StageStatusDoc;
         // Finding #9: use typeof instead of falsy check so edition:'' is not rejected.
         if (typeof parsed.edition !== "string" || !Array.isArray(parsed.rows)) return null;
-        return parsed;
+        return reconcileZombieRunningRows(parsed, editionDir);
       } catch {
         // corrupted JSON — fall through to loadDoc MD fallback
       }
@@ -532,7 +718,7 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
     if (typeof doc.edition !== "string" || !Array.isArray(doc.rows) || doc.rows.length === 0) {
       return null;
     }
-    return doc;
+    return reconcileZombieRunningRows(doc, editionDir);
   } catch {
     return null;
   }
@@ -666,15 +852,16 @@ export function findMostRecentEditionId(cwd: string): string | null {
  *
  * Função pura testável — não lê disco, não chama git. Toda I/O fica no CLI entrypoint.
  *
- * Precedência (#2255, atualizado #2618):
+ * Precedência (#2255, atualizado #2618, #2803):
  *   1. Edição EM CURSO (started, não encerrada) → renderEditionBar
- *   2. Rodada overnight ativa/encerrada → renderOvernightBar
- *   3. Edição CONCLUÍDA (todas terminais) + sem overnight → string vazia (#2618: barra some)
- *   4. Idle sem edição → renderIdleBar (fallback padrão)
+ *   2. Sessão /diaria-develop ativa → renderDevelopBar (#2803, só quando sem edição em curso)
+ *   3. Rodada overnight ativa/encerrada → renderOvernightBar (só quando sem edição nem develop)
+ *   4. Edição CONCLUÍDA (todas terminais) + sem develop/overnight → string vazia (#2618: barra some)
+ *   5. Idle sem edição → renderIdleBar (fallback padrão)
  *
  * #2618: quando a edição mais recente está concluída (todos stages terminais) e não há
- * overnight ativa, a barra desaparece (retorna ""). A intenção é sinalizar "turno encerrado
- * sem atividade" — diferente de "sem edição" (que mostra idle com "sem rodada ativa").
+ * develop/overnight ativa, a barra desaparece (retorna ""). A intenção é sinalizar "turno
+ * encerrado sem atividade" — diferente de "sem edição" (que mostra idle com "sem rodada ativa").
  *
  * @param editionDoc       doc da edição EM CURSO (null quando nenhuma ou encerrada)
  * @param plan             plan.json overnight (null quando sem rodada)
@@ -684,7 +871,9 @@ export function findMostRecentEditionId(cwd: string): string | null {
  *                         o encerrada-check usa `editionDoc === null` por construção, eliminando
  *                         o estado contraditório editionDoc≠null + encerrada=true (#2624 Finding 1)).
  * @param branch           branch git atual (ou "" em detached/sem repo)
- * @returns                string da statusline (pode ser "" quando edição concluída sem overnight)
+ * @param developEntry     sessão /diaria-develop ativa (null quando nenhuma) — #2803, parâmetro
+ *                         opcional no fim pra não quebrar call sites posicionais existentes.
+ * @returns                string da statusline (pode ser "" quando edição concluída sem develop/overnight)
  */
 export function renderStatusline(
   editionDoc: StageStatusDoc | null,
@@ -692,6 +881,7 @@ export function renderStatusline(
   mostRecentEditionId: string | null,
   mostRecentDoc: StageStatusDoc | null,
   branch: string,
+  developEntry: DevelopPlanEntry | null = null,
 ): string {
   // #2624 Finding 1: derivar encerrada internamente garante consistência por construção.
   // Quando editionDoc é não-null, a edição está em curso — encerrada é sempre false.
@@ -706,16 +896,19 @@ export function renderStatusline(
   // Source 1: Edição em curso (não encerrada).
   const editionBar = renderEditionBar(editionDoc);
 
-  // Source 2: Rodada overnight — só quando sem edição em curso.
-  const overnightBar = editionBar ? "" : renderOvernightBar(plan);
+  // Source 2 (#2803): sessão /diaria-develop ativa — só quando sem edição em curso.
+  const developBar = editionBar ? "" : renderDevelopBar(developEntry);
 
-  // Source 3: fallback — só entra quando não há editionBar nem overnightBar.
+  // Source 3: Rodada overnight — só quando sem edição em curso nem develop ativo.
+  const overnightBar = editionBar || developBar ? "" : renderOvernightBar(plan);
+
+  // Source 4: fallback — só entra quando não há editionBar, developBar nem overnightBar.
   // #2618: se a edição mais recente está concluída → barra some (""); senão idle bar (#2255).
   // (A primeira condição é redundante via short-circuit do `||` abaixo, mas torná-la
   //  explícita evita computar renderIdleBar quando já há bar.)
   const fallback = mostRecentEditionEncerrada ? "" : renderIdleBar(mostRecentEditionId);
 
-  const bar = editionBar || overnightBar || fallback;
+  const bar = editionBar || developBar || overnightBar || fallback;
 
   // Sem nenhuma barra → retornar só o branch (se houver), sem espaços extras.
   if (!bar) return branch;
@@ -745,6 +938,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // Load state — all I/O here, renderStatusline is pure.
   const editionDoc = readCurrentEditionDoc(cwd);
   const plan = readTodayPlan(cwd);
+  const developEntry = readTodayDevelopPlan(cwd); // #2803
 
   // #2618: when editionDoc is non-null the edition is in-progress (readCurrentEditionDoc
   // skips encerrada), so it can't be encerrada; only scan for the most-recent doc otherwise.
@@ -758,6 +952,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
   // #2624 Finding 1: encerrada-check agora é derivado internamente em renderStatusline.
   // Passamos mostRecentDoc diretamente — a função garante consistência por construção.
-  const output = renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentDoc, branch);
+  const output = renderStatusline(editionDoc, plan, mostRecentEditionId, mostRecentDoc, branch, developEntry);
   process.stdout.write(output + "\n");
 }
