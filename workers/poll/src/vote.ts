@@ -1,0 +1,864 @@
+import type { Env } from "./index";
+import { type Brand, editionToMonthSlug, BRAND_INFO } from "./lib";
+import {
+  formatEditionDate,
+  parseValidEditions,
+  isValidEdition,
+  isUnsubstitutedMergeTag,
+  classify403Reason,
+} from "./lib";
+import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
+import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
+
+export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+  // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
+  // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
+  const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
+  const email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
+  const edition = url.searchParams.get("edition");
+  const choice = url.searchParams.get("choice")?.toUpperCase();
+  // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
+  const sig = url.searchParams.get("sig");
+  // #1236: ?test=1 valida tudo (gate + sig + dedup) mas NÃO escreve em KV.
+  // Útil pra smoke test / debug em prod sem poluir leaderboard.
+  const testMode = url.searchParams.get("test") === "1";
+
+  if (!email || !edition || !choice) {
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #2262: rejeita merge tag NÃO-substituída como email (vira voto-lixo no
+  // leaderboard público). Helper testável `isUnsubstitutedMergeTag` em ./lib.
+  if (isUnsubstitutedMergeTag(email)) {
+    return voteHtmlResponse(votePageHtml("Link inválido — abra o voto pelo botão no email.", false, null, null, null, brand), 400);
+  }
+
+  if (!["A", "B"].includes(choice)) {
+    return voteHtmlResponse(votePageHtml("Escolha inválida.", false, null, null, null, brand), 400);
+  }
+
+  // #1083 / #1086: gate de edições válidas. Se key `valid_editions` setada e
+  // edition não estiver no set, rejeita. Vazia/ausente/corrupted → aceita
+  // qualquer (compat + fail-open). Corrupted loga console.error.
+  //
+  // #2018 (nota operacional): a key `clarice:valid_editions` NUNCA foi
+  // populada no KV — o brand=clarice opera em fail-open permanente (aceita
+  // qualquer edition). Isso é intencional para o ciclo de lançamento: o
+  // fluxo mensal não tem pipeline de add-valid-edition.ts análogo ao diário.
+  // Se no futuro for necessário restringir o gate: usar scripts/add-valid-edition.ts
+  // com --brand clarice, que grava `clarice:valid_editions` via brandedNamespace.
+  // Enquanto a key não for populada, parseValidEditions retorna null → fail-open.
+  const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
+  if (!isValidEdition(validSet, edition)) {
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
+  }
+
+  // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
+  // Tenta novo formato primeiro; fallback pro legacy. Ausente = merge-tag mode.
+  if (sig !== null) {
+    const newValid = await hmacVerify(env.POLL_SECRET, email, sig);
+    const legacyValid = newValid
+      ? true
+      : await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
+    if (!newValid && !legacyValid) {
+      // #1468: log estruturado pra distinguir sig_empty (subscriber sem
+      // poll_sig populado — cenário do #1186) de sig_invalid (HMAC mismatch).
+      // Cloudflare Logs filtra por reason. email_domain só pra detectar
+      // bot/spam pattern, evita vazar PII completa em log retention.
+      const reason = classify403Reason(sig);
+      console.log(JSON.stringify({
+        event: "poll_vote_403",
+        reason,
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 403);
+    }
+  }
+
+  // #2187: Serializar o dedup via Durable Object (fortemente consistente).
+  // O DO elimina a race read-modify-write que o KV eventual-consistent expunha:
+  // dois requests concorrentes do mesmo email agora são processados em série
+  // dentro do mesmo DO — o 2º vê o estado do 1º e é rejeitado como duplicado.
+  //
+  // Compat/migration: o KV `vote:{edition}:{email}` é lido ANTES da chamada ao
+  // DO para verificar votos legados (gravados antes do deploy do DO). Se o KV
+  // tem o voto, passamos o header X-KV-Vote-Exists: "1" para o DO inicializar
+  // seu estado interno como "voted=true" (sincroniza o estado DO com o legado KV).
+  //
+  // Fallback gracioso: se VOTE_DEDUP não estiver configurado (ex: testes sem
+  // binding DO), cai no comportamento anterior (leitura direta do KV).
+  const voteKey = `vote:${edition}:${email}`;
+  const existingFromKv = await env.POLL.get(voteKey);
+
+  // P2-13: içar doStub para escopo compartilhado (usado em authorize + /confirm).
+  // Evita dois idFromName/get duplicados (um aqui e outro na fase /confirm abaixo).
+  let doStub: DurableObjectStub | null = null;
+
+  if (env.VOTE_DEDUP) {
+    // Caminho serializado via DO (#2187)
+    // Brand prefixado no nome do DO para isolar por brand: dois votos do mesmo
+    // edition:email em brands distintos (diaria vs clarice) não colidiriam no
+    // mesmo DO (que resultaria em silêncio do 2º brand quando o 1º já votou).
+    // Formato: `{brand}:{edition}:{email}` — brand sempre presente (default "diaria").
+    const doId = env.VOTE_DEDUP.idFromName(`${brand}:${edition}:${email}`);
+    doStub = env.VOTE_DEDUP.get(doId);
+    const doHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (existingFromKv !== null) {
+      // Sinaliza ao DO que o KV legacy ja tem este voto.
+      doHeaders["X-KV-Vote-Exists"] = "1";
+      // #2229 item 3: voteKey existe = ou legado ou todas escritas KV desta sessao
+      // sucederam (incluindo voteKey) mas /confirm falhou. O DO reconcilia
+      // pending->voted dentro do bloco pending-fresco (sem re-auth/re-incremento).
+      doHeaders["X-KV-VoteKey-Committed"] = "1";
+    }
+    // #1236 fix: ?test=1 NÃO deve queimar o slot do DO. Short-circuit ANTES
+    // de chamar o DO — request de teste não persiste estado de "voted".
+    if (testMode) {
+      // Pular DO inteiramente em test mode; seguirá para o testMode check abaixo.
+    } else {
+    // #2220: single retry antes do fail-open — reduz a janela de double-vote
+    // sob erro transiente do DO (5xx/timeout) sem introduzir latência significativa
+    // em produção (apenas 1 retry, sem backoff). Trade-off documentado:
+    //   - fail-open (continua como firstVote=true em erro do DO) prioriza
+    //     disponibilidade sobre integridade exata — melhor duplicar raramente
+    //     do que bloquear votante legítimo permanentemente.
+    //   - Dois requests concorrentes que AMBOS pegam erro do DO (após retry)
+    //     caem como firstVote=true e ambos incrementam. Esta janela é estreita
+    //     (requer falha simultânea do DO em dois requests do mesmo email) e é
+    //     preferível ao bloqueio permanente de votante legítimo.
+    //   - Em caso de erro persistente do DO, o monitoramento deve ser acionado
+    //     via logs `vote_dedup_do_error` (event abaixo).
+    //
+    // #2231 (decisão do editor, briefing 260613c): MANTER fail-open.
+    // Sob erro do DO, o voto PASSA (não bloqueia votante legítimo). Raro double-count
+    // sob falha simultânea do DO (ambos os requests pegam 5xx após retry) é o trade-off
+    // aceito: prioriza não perder voto legítimo. Sem mudança de comportamento — apenas
+    // documentado aqui para rastreabilidade da decisão de design.
+    //
+    // P1-3: envolver em try/catch — doStub.fetch() pode LANÇAR (timeout de rede,
+    // DO não disponível), não só retornar !ok. Exceção aciona o mesmo fail-open.
+    //
+    // P2-10: retry APENAS em status >= 500 (erro transitório). 4xx (ex: 405 Method
+    // Not Allowed) são erros permanentes — retry não ajuda e mascara o problema.
+    let doResp: Response | null = null;
+    let doError: unknown = null;
+    try {
+      doResp = await doStub.fetch("https://internal/vote-dedup", {
+        method: "POST",
+        headers: doHeaders,
+        // body: payload interno — reservado para validação futura pelo DO;
+        // atualmente o DO não lê o body (decisão baseada só no estado stored + header).
+      });
+      if (doResp.status >= 500) {
+        // Retry único antes de fail-open (apenas erros transitórios 5xx)
+        try {
+          doResp = await doStub.fetch("https://internal/vote-dedup", {
+            method: "POST",
+            headers: doHeaders,
+          });
+        } catch (retryErr) {
+          doError = retryErr;
+          doResp = null;
+        }
+      }
+    } catch (e) {
+      doError = e;
+      doResp = null;
+    }
+
+    if (doResp === null || doResp.status >= 500) {
+      console.error(JSON.stringify({
+        event: "vote_dedup_do_error",
+        status: doResp?.status ?? "exception",
+        error: doError !== null ? String(doError) : undefined,
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      // fail-open (#2231): continua como firstVote=true após retry.
+      // Decisão de design documentada no bloco #2220/#2231 acima — voto não é
+      // bloqueado mesmo com DO indisponível. Raro double-count sob falha simultânea
+      // do DO é o trade-off aceito (ver issue #2231 para rastreabilidade).
+      // P2-6: neste caminho (DO errou), NÃO chamar /confirm — o voto NÃO foi
+      // autorizado pelo DO, então não há pending a confirmar.
+      doStub = null; // sinaliza "não chamar /confirm" abaixo
+    } else {
+    // Fix #1: doResp.json() envolto em try/catch — resposta malformada do DO
+    // (ex: truncada por timeout) não crasha handleVote. Falha de parse é tratada
+    // como erro do DO (fail-open documentado, igual ao caminho 5xx acima).
+    let firstVote: boolean;
+    try {
+      const parsed = await doResp.json() as { firstVote: boolean };
+      firstVote = parsed.firstVote;
+    } catch (parseErr) {
+      console.error(JSON.stringify({
+        event: "vote_dedup_do_parse_error",
+        error: String(parseErr),
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      // fail-open: resposta malformada do DO é tratada como erro transitório.
+      // NÃO chama /confirm (doStub nulificado) — não há pending a confirmar.
+      doStub = null; // sinaliza "não chamar /confirm" abaixo
+      firstVote = true; // autoriza o voto (fail-open)
+    }
+
+    if (!firstVote) {
+      // Duplicado detectado pelo DO — servir página "já votou"
+      // Lê o voto do KV para mostrar a choice anterior (pode ser legacy ou recente).
+      // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente chegou
+      // tão rapidamente que o KV eventual ainda não propagou o put do 1º request.
+      // O DO rejeita o 2º corretamente (sem double-vote), mas o KV não tem o choice
+      // ainda para exibir. O "?" é mostrado ao leitor e desaparece em milissegundos
+      // quando o KV propaga — não afeta a integridade do voto.
+      const prev = existingFromKv ? JSON.parse(existingFromKv) : { choice: "?" };
+      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
+        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
+        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      let prevNicknameForm: { email: string; sig: string } | null = null;
+      const prevScoreRaw = await env.POLL.get(`score:${email}`);
+      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+      if (!prevScoreObj?.nickname) {
+        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+        prevNicknameForm = { email, sig: prevSig };
+      }
+      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+    }
+    // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
+    } // fim if (doResp === null || doResp.status >= 500) ... else
+    } // fim if (testMode) ... else
+  } else {
+    // Fallback: sem VOTE_DEDUP binding (ex: testes legados) — comportamento anterior via KV.
+    // ATENÇÃO: este caminho mantém a race condition original (#2187). Só usado em ambientes
+    // sem o binding DO (testes Node sem miniflare). Em produção, VOTE_DEDUP sempre presente.
+    if (existingFromKv) {
+      const prev = JSON.parse(existingFromKv);
+      // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
+      // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
+      // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
+      // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
+      // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
+      // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
+      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
+        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
+        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
+      // determinar se o votante ainda precisa do form de nickname — sem isso, um
+      // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
+      // inacessível para sempre.
+      // Fix #2189 (plausible): leitura KV condicional — só lê score:{email} quando
+      // de fato precisa servir o nickname form. Evita get incondicional pra quem
+      // já tem nickname (resultado não era usado).
+      let prevNicknameForm: { email: string; sig: string } | null = null;
+      const prevScoreRaw = await env.POLL.get(`score:${email}`);
+      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+      if (!prevScoreObj?.nickname) {
+        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+        prevNicknameForm = { email, sig: prevSig };
+      }
+      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+    }
+  }
+
+  // Gravar voto
+  const correctRaw = await env.POLL.get(`correct:${edition}`);
+  const correct = correctRaw ? choice === correctRaw : null;
+
+  // #2189 / #2190: ler score:${email} ANTES do put(voteKey).
+  // Razão #2189: se a leitura posterior lançasse, o voto já gravado deixava o
+  // votante no branch "já votou" com nicknameForm=null (inacessível). Lendo
+  // antes, qualquer exceção acontece ANTES do commit — retry chega no caminho
+  // normal do vote.
+  // Razão #2190: essa leitura é reutilizada abaixo para updateScore (que faria
+  // um get redundante). Ler uma vez aqui evita re-leitura no updateScore.
+  const scoreRaw = await env.POLL.get(`score:${email}`);
+  const scoreObj = scoreRaw ? JSON.parse(scoreRaw) : null;
+
+  // #1236: test mode — short-circuit antes de qualquer KV write. Mantém
+  // validação completa (gate, sig, dedup) acima pra que o test reflita
+  // request real. Resposta indica claramente que não foi gravado.
+  if (testMode) {
+    const testMsg = correct === true
+      ? "✅ [TEST] Acertou! Era a imagem gerada por IA. (não gravado em KV)"
+      : correct === false
+      ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
+      : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
+    return voteHtmlResponse(votePageHtml(testMsg, true, null, null, null, brand), 200);
+  }
+
+  // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
+  const voteTs = new Date().toISOString();
+
+  // #2229: Incrementos IDEMPOTENTES por (edition,email).
+  //
+  // INVARIANTE CENTRAL: cada um dos 3 incrementos (stats, score, score-by-month)
+  // roda AT MOST 1x por (edition,email), mesmo em retries apos falha parcial.
+  //
+  // Mecanismo: guard-keys KV `counted:{edition}:{email}:stats|score|month`.
+  // Antes de cada incremento, checa o guard. Se presente = ja executado (skip).
+  // Apos incremento bem-sucedido, escreve o guard imediatamente.
+  // Em retry apos pending expirar: DO re-autoriza (firstVote:true), worker ve
+  // guards presentes e pula os ja executados — zero double-count.
+  //
+  // Por que nao usar so o voteKey como guard?
+  // O voteKey e gravado por ULTIMO (commit definitivo). Se um incremento falha
+  // antes do voteKey ser escrito, o retry nao ve o voteKey e re-executaria TUDO.
+  // Os guard-keys por incremento permitem completar apenas os incrementos faltantes.
+  //
+  // #2220 commit em 2 fases:
+  //   Fase 1: DO autoriza (pending). Fase 2: Worker escreve KV, chama /confirm.
+  //   Se escrita KV falha, /confirm nao e chamado. Pending expira em 5min, retry re-autoriza.
+  //   Com guard-keys: retry completa so os incrementos faltantes. Sem double-count.
+  //
+  // #8: score e score-by-month sao chaves KV independentes — paralelizaveis sem
+  // read-after-write entre eles (mantido nesta implementacao via Promise.all).
+
+  const statsGuardKey = `counted:${edition}:${email}:stats`;
+  const scoreGuardKey = `counted:${edition}:${email}:score`;
+  const monthGuardKey = `counted:${edition}:${email}:month`;
+
+  // Stats — idempotente via guard-key
+  //
+  // JANELA RESIDUAL ESTREITA (#2229): há uma janela entre o incremento e a
+  // escrita do guard-key — um crash ENTRE os dois deixaria o guard não-gravado,
+  // e um retry posterior re-incrementaria. Esta janela é MUITO menor do que o
+  // bug original (que re-incrementava em TODO retry sem qualquer guard). KV não
+  // é transacional; mover o guard para ANTES não funcionaria (bloquearia um
+  // incremento que ainda não aconteceu). A ordem correta é incremento→guard;
+  // o risco é crash no exato μs entre os dois, que é raríssimo em produção.
+  // Documentado como residual conhecido e aceitável.
+  //
+  // FAIL-OPEN DOUBLE-COUNT STATS (#2245, estende #2231):
+  // Este guard-key é verificado via KV.get FORA da serialização do DO (VoteDedup).
+  // No caminho normal, o VoteDedup garante que apenas um request por email passa
+  // por aqui (firstVote:true). Porém, no fail-open (DO com erro 5xx após retry),
+  // doStub é nulificado e AMBOS os requests concorrentes caem como firstVote:true.
+  // Se ambos chegarem aqui com guard-key ausente (janela antes do primeiro put),
+  // ambos passarão pelo null-check e ambos chamarão updateStatsCounter → double-count.
+  // Esta é consequência DIRETA do fail-open aceito em #2231 (decisão do editor):
+  // prioriza não perder voto legítimo sob falha do DO, aceitando raro double-count.
+  // Mover este check para dentro da serialização do DO resolveria a janela, mas
+  // mudaria a semântica do fail-open — alteração deliberadamente rejeitada em #2231.
+  // Documentado aqui como extensão do residual aceito. Monitorar via event
+  // `vote_dedup_do_error` nos logs para detectar frequência de fail-open em produção.
+  if (!(await env.POLL.get(statsGuardKey))) {
+    await updateStatsCounter(env, edition, choice as "A" | "B", correct, brand);
+    await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+  }
+
+  // Score e score-by-month — idempotentes via guard-keys individuais.
+  // #1080: sempre atualizar score, mesmo sem gabarito ainda.
+  // #2190: passa scoreRaw ja lido acima (evita re-leitura redundante).
+  // #1345: score-by-month indexado pela publication date da edicao.
+  // #8 / Efficiency: score + month + stats (já guarded acima) são independentes
+  // entre si — score e month não têm read-after-write um sobre o outro, e ambos
+  // usam scoreRaw já lido. Promise.all paralleliza as 2 IIFE sem risco de
+  // dependência. (Stats já foi processado acima, antes deste bloco, por precisar
+  // de sua própria janela de documentação residual — separação deliberada.)
+  await Promise.all([
+    (async () => {
+      if (!(await env.POLL.get(scoreGuardKey))) {
+        await updateScore(env, email, edition, correct, scoreRaw);
+        await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
+    (async () => {
+      if (!(await env.POLL.get(monthGuardKey))) {
+        await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+        await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
+  ]);
+
+  // Commit definitivo do voto no KV — marca o voto como totalmente processado.
+  // Gravado por ULTIMO para que retries intermediarios (pendente expirado) possam
+  // completar os incrementos faltantes via guard-keys.
+  // Quando voteKey ja existe (retry apos /confirm falho), o worker passa
+  // X-KV-VoteKey-Committed:1 ao DO, que reconcilia pending->voted (#2229 item 3).
+  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
+
+  // #2220 fase 2: confirmar para o DO que as escritas KV completaram.
+  // Transiciona o estado DO de pending→voted definitivamente.
+  //
+  // P2-6: só chamar /confirm quando o DO autorizou o voto (doStub !== null).
+  //   doStub é nulificado no path fail-open — não há pending a confirmar.
+  //
+  // P2-7: retry único no /confirm (paridade com authorize). Falha transiente
+  //   não deve deixar pending órfão com KV correto.
+  //
+  // Secundário: try/catch para nunca quebrar o fluxo de resposta ao votante;
+  // em caso de falha persistente, o DO ficará em `pending=true` — estado stale
+  // expirado em PENDING_TTL_MS (5 min) permitindo retry pelo votante.
+  if (doStub !== null) {
+    try {
+      let confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+      if (confirmResp.status >= 500) {
+        // Retry único em erro transitório
+        try {
+          confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+        } catch (retryErr) {
+          console.error(JSON.stringify({ event: "vote_dedup_confirm_retry_failed", edition, error: String(retryErr) }));
+        }
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_dedup_confirm_failed", edition, error: String(e) }));
+    }
+  }
+
+  // #1657: log de voto pra analytics. SECUNDÁRIO — try/catch pra nunca quebrar
+  // o voto do leitor se a escrita do log falhar. Só roda em voto novo (dup
+  // retorna acima; test mode short-circuita antes do put).
+  try {
+    await recordVoteLog(env, email, edition, choice as "A" | "B", correct, voteTs);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "vote_log_failed", edition, error: String(e) }));
+  }
+
+  const msg = correct === true
+    ? "✅ Acertou! Era a imagem gerada por IA."
+    : correct === false
+    ? "❌ Não foi dessa vez — era a foto real."
+    : "Voto registrado! O resultado sai na próxima edição.";
+
+  // #1078 — primeiro voto: oferecer nickname pra leaderboard. scoreObj já foi
+  // lido antes do put (ver #2189/#2190 acima) — reusar sem nova leitura.
+  const needsNickname = !scoreObj?.nickname;
+  let nicknameForm: { email: string; sig: string } | null = null;
+  if (needsNickname) {
+    const sig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+    nicknameForm = { email, sig };
+  }
+
+  // #1351: mostrar as duas imagens (A e B) na página de resultado.
+  // Highlight da que o leitor clicou + label "🤖 IA" e "📷 Real" pra que é
+  // qual. Só aparece quando temos gabarito (correct ∈ {true, false}).
+  // Sem gabarito (correct === null), pular — leitor verá só msg.
+  const showImages = correct !== null;
+  // correctRaw armazena qual lado é IA — usar direto.
+  const aiSide: "A" | "B" | null = showImages && correctRaw
+    ? (correctRaw as "A" | "B")
+    : null;
+  const resultImages = showImages && aiSide
+    ? {
+        edition,
+        aiSide,
+        clickedSide: choice as "A" | "B",
+      }
+    : null;
+
+  // #2113(a): passa voteTs como cache-buster pra quebrar cache do navegador no link
+  // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
+  // fica com a versão vazia em cache. SÓ neste link (tráfego orgânico inalterado).
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs), 200);
+}
+
+/**
+ * Mantém counter agregado stats:{edition} — evita N+1 reads no /stats.
+ *
+ * #2223: usa StatsCounter DO (se disponível) para serializar o increment edition-wide.
+ * Antes: read-modify-write não-serializado em KV eventual — sob burst, vários requests
+ * concorrentes liam o mesmo valor stale e escreviam +1, perdendo incrementos.
+ * Com o DO: `blockConcurrencyWhile` serializa os increments — zero perda sob burst.
+ *
+ * Routing:
+ *   Se STATS_COUNTER binding presente → roteia pelo DO (serializado, sem perda).
+ *   Fallback (sem binding) → comportamento anterior (KV RMW, aceito em testes/dev).
+ *
+ * Após o incremento via DO, espelha o valor no KV `stats:{edition}` para compat
+ * com scripts externos que leem diretamente o KV (ex: rebuild-stats.ts).
+ * Falha do espelho KV é logada mas não propaga — o DO tem o valor autoritativo.
+ *
+ * `brand` é necessário para o DO id (`{brand}:{edition}`) — isola diaria×clarice.
+ */
+async function updateStatsCounter(
+  env: Env,
+  edition: string,
+  choice: "A" | "B",
+  correct: boolean | null,
+  brand: Brand = "diaria",
+): Promise<void> {
+  const statsKey = `stats:${edition}`;
+
+  if (env.STATS_COUNTER) {
+    // Caminho serializado via DO (#2223)
+    const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+    const doStub = env.STATS_COUNTER.get(doId);
+    const doResp = await doStub.fetch("https://internal/increment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice, correct }),
+    });
+    if (doResp.ok) {
+      const { stats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+      // Espelha no KV para compat com leitores externos (não-autoritativo).
+      // Falha do espelho não propaga — o DO é a fonte de verdade.
+      try {
+        await env.POLL.put(statsKey, JSON.stringify(stats));
+      } catch (e) {
+        console.error(JSON.stringify({ event: "stats_kv_mirror_failed", edition, error: String(e) }));
+      }
+      return;
+    }
+
+    // DO retornou erro de cliente (4xx) — sinal de erro de programação.
+    // (#2245): um DO 400 (choice inválido) é inalcançável em produção porque
+    // handleVote já valida `choice as "A"|"B"`. Mas se um bug futuro passar choice
+    // malformado, o comportamento correto é:
+    //   - NÃO lançar: throw propaga não-capturado por handleVote → 500 pro votante
+    //     + voteKey nunca gravado + /confirm nunca chamado (pior que o bug original).
+    //   - NÃO cair no KV RMW: re-introduziria a race que o #2223 corrigiu.
+    //   - Logar warning (sinal de bug de programação) e PULAR o incremento de stats,
+    //     deixando o restante do fluxo de voto completar normalmente (200 + voteKey + /confirm).
+    // (#2293 self-review HIGH): substituído throw por warn+return (skip stats, vote completes).
+    if (doResp.status >= 400 && doResp.status < 500) {
+      const body = await doResp.text().catch(() => "(unreadable)");
+      console.warn(JSON.stringify({ event: "stats_counter_do_client_error", status: doResp.status, body, edition, action: "skip_stats_increment" }));
+      return; // pula incremento de stats — vote path continua (voteKey + /confirm intactos)
+    }
+
+    // DO retornou erro de servidor (5xx) — fallback para KV RMW (aceita perda residual, loga).
+    console.error(JSON.stringify({ event: "stats_counter_do_error", status: doResp.status, edition }));
+  }
+
+  // Fallback: KV read-modify-write (sem binding DO, ou em erro do DO).
+  // ATENÇÃO: mantém a race original (#2223) — usado apenas em testes/dev ou em
+  // caso de falha do DO. Em produção, STATS_COUNTER binding deve estar presente.
+  const raw = await env.POLL.get(statsKey);
+  const stats = raw ? JSON.parse(raw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  stats.total += 1;
+  if (choice === "A") stats.voted_a += 1;
+  if (choice === "B") stats.voted_b += 1;
+  if (correct === true) stats.correct_count += 1;
+  await env.POLL.put(statsKey, JSON.stringify(stats));
+}
+
+/**
+ * #2206: espelha a bidirecionalidade do adjustScoreCorrectOnly no lado MENSAL.
+ *
+ * Ajusta APENAS o campo `correct` de `score-by-month:{mês}:{email}` em ±1
+ * conforme a direção da mudança:
+ *   - false/null → true: incrementa correct (+1)
+ *   - true → false:      decrementa correct (−1, clampado em 0)
+ *
+ * Invariantes (idênticos ao adjustScoreCorrectOnly):
+ *   - NUNCA toca total/streak/nickname — apenas correct.
+ *   - Idempotente: quando prevCorrect === newCorrect, não escreve nada.
+ *   - Clamp: correct nunca negativo (Math.max(0, ...)).
+ *   - Mês derivado de editionToMonthSlug (mesma derivação do resto do código
+ *     — NÃO usa relógio vivo).
+ *   - Sem entry existente (vote pré-#1345): skip silencioso.
+ *
+ * Chamado de handleAdminCorrect — substitui o adjustScoreByMonthCorrect
+ * increment-only anterior (removido em #2206).
+ */
+export async function adjustScoreByMonthCorrectOnly(
+  env: Env,
+  email: string,
+  edition: string,
+  prevCorrect: boolean | null,
+  newCorrect: boolean,
+): Promise<void> {
+  // Idempotente: sem mudança, sem escrita.
+  if (prevCorrect === newCorrect) return;
+
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return;
+  const key = `score-by-month:${monthSlug}:${email}`;
+  const raw = await env.POLL.get(key);
+  // Sem entry mensal = vote pré-#1345; nada a ajustar no snapshot.
+  if (!raw) return;
+
+  const entry = JSON.parse(raw);
+
+  if (prevCorrect !== true && newCorrect === true) {
+    // false/null → true: incrementa
+    entry.correct = (entry.correct ?? 0) + 1;
+  } else if (prevCorrect === true && newCorrect === false) {
+    // true → false: decrementa, clampado em 0
+    entry.correct = Math.max(0, (entry.correct ?? 0) - 1);
+  } else {
+    // null→false ou outro par sem mudança real em correct: skip write+invalidation.
+    return;
+  }
+  // total, streak, nickname NÃO são tocados (invariante do backfill)
+
+  await env.POLL.put(key, JSON.stringify(entry));
+  // Invalidação feita pelo caller (handleAdminCorrect) uma vez após o loop — não aqui.
+}
+
+/**
+ * Ajuste correto-only para backfill do admin (#2202):
+ * corrige APENAS o campo `correct` sem re-incrementar `total` ou `streak`.
+ * Chamado de handleAdminCorrect em vez de updateScore.
+ *
+ * Invariante: handleVote incrementa `total` uma vez (voto original).
+ *             handleAdminCorrect usa este helper — NUNCA mexe em total/streak
+ *             (streak é mantido como estava: não tem como recalcular streak
+ *             de sequência multi-edição de forma correta aqui; mantemos o
+ *             invariante de não regredir — só ajusta o campo `correct`).
+ *
+ * @param prevCorrect  valor anterior de `vote.correct` (antes do backfill)
+ * @param newCorrect   novo valor calculado contra o gabarito correto
+ */
+export async function adjustScoreCorrectOnly(
+  env: Env,
+  email: string,
+  prevCorrect: boolean | null,
+  newCorrect: boolean,
+): Promise<void> {
+  const scoreKey = `score:${email}`;
+  const raw = await env.POLL.get(scoreKey);
+  if (!raw) return; // sem score — handleVote não rodou ainda; skip
+
+  const score = JSON.parse(raw);
+
+  // Ajusta apenas o campo `correct`:
+  //  - false/null → true: incrementa correct
+  //  - true → false: decrementa correct (gabarito mudou; este voto era antes correto)
+  if (prevCorrect !== true && newCorrect === true) {
+    score.correct = (score.correct ?? 0) + 1;
+  } else if (prevCorrect === true && newCorrect === false) {
+    score.correct = Math.max(0, (score.correct ?? 0) - 1);
+  }
+  // total e streak NÃO são tocados (invariante do backfill)
+
+  await env.POLL.put(scoreKey, JSON.stringify(score));
+}
+
+/**
+ * #1345: incrementa `score-by-month:{YYYY-MM}:{email}` onde YYYY-MM vem da
+ * publication date da edição. Esse é o índice canônico do leaderboard
+ * mensal — `/leaderboard/{YYYY-MM}` lê só este prefix.
+ *
+ * Nickname é copiado de `score:{email}` (source-of-truth global). Pode ficar
+ * stale se nickname mudar pós-vote — handleSetName propaga (#1345).
+ *
+ * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no handleVote
+ * (pré-commit). Quando fornecido, evita a re-leitura da mesma chave para
+ * copiar o nickname. Quando omitido, faz o get normalmente (outras calls).
+ */
+async function updateScoreByMonth(
+  env: Env,
+  email: string,
+  edition: string,
+  correct: boolean | null,
+  preloadedScoreRaw?: string | null,
+): Promise<void> {
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return; // edition malformado — não corrompe schema
+
+  const key = `score-by-month:${monthSlug}:${email}`;
+  const raw = await env.POLL.get(key);
+  const entry = raw
+    ? JSON.parse(raw)
+    : { total: 0, correct: 0, last_edition: null, nickname: null };
+
+  entry.total += 1;
+  if (correct === true) entry.correct += 1;
+  entry.last_edition = edition;
+  // #1383: timestamp do voto pra tiebreaker no leaderboard. Voto mais recente
+  // vence empate de (correct, total). Sobrescreve a cada vote (não acumula).
+  entry.last_vote_ts = new Date().toISOString();
+
+  // Pull nickname from global score key. handleSetName propaga em writes
+  // subsequentes, mas o snapshot no momento do vote já é capturado aqui.
+  // #2190: usa o preloadedScoreRaw se disponível (já lido antes do commit do voto).
+  if (entry.nickname === null) {
+    const scoreRaw = preloadedScoreRaw !== undefined
+      ? preloadedScoreRaw
+      : await env.POLL.get(`score:${email}`);
+    if (scoreRaw) {
+      const scoreObj = JSON.parse(scoreRaw);
+      entry.nickname = scoreObj.nickname ?? null;
+    }
+  }
+
+  await env.POLL.put(key, JSON.stringify(entry));
+
+  // #2113(b): upsert da própria entry no snapshot pré-computado do mês.
+  // KV eventual consistency: `list()` em computeSnapshotEntries pode demorar
+  // até ~60s pra enxergar a key recém-gravada → leitor vê "Ainda sem votos"
+  // no próprio ranking. `get()` por key é muito mais confiável (read-your-own-write).
+  // Race entre votos concorrentes: OK — snapshot é cache, recompute corrige.
+  // Em vez de só invalidar, ler + upsert + regravar garante que o próximo
+  // GET /leaderboard já veja o voto sem precisar recomputar.
+  // #2123: passa last_vote_ts pra que o tiebreaker de dense-rank funcione
+  // também via snapshot (sem o campo, `rankEntries` caía em displayKey).
+  await upsertOwnEntryInSnapshot(env, monthSlug, {
+    email,
+    nickname: entry.nickname ?? null,
+    correct: entry.correct,
+    total: entry.total,
+    last_vote_ts: entry.last_vote_ts,
+  });
+}
+
+/**
+ * #1657: entrada do log de votos pra analytics de comportamento (latência
+ * envio→voto, hora-do-dia, recorrência, acerto×latência). `email_hash` é um
+ * HMAC domain-separado (`votelog:{email}`) — id estável de coorte SEM PII crua.
+ * Review: NÃO reusar o poll_sig (HMAC do email cru) — ele viaja no `?sig=` das
+ * URLs de voto; se uma URL vazar, o dump do log permitiria re-identificar o
+ * histórico. O prefixo `votelog:` desacopla o id de coorte do sig de auth.
+ */
+export interface VoteLogEntry {
+  ts: string;
+  edition: string;
+  month_slug: string;
+  email_hash: string;
+  choice: "A" | "B";
+  correct: boolean | null;
+}
+
+/** Pure (#1657): monta a entrada do vote-log. Exportada pra teste. */
+export function buildVoteLogEntry(args: {
+  ts: string;
+  edition: string;
+  monthSlug: string;
+  emailHash: string;
+  choice: "A" | "B";
+  correct: boolean | null;
+}): VoteLogEntry {
+  return {
+    ts: args.ts,
+    edition: args.edition,
+    month_slug: args.monthSlug,
+    email_hash: args.emailHash,
+    choice: args.choice,
+    correct: args.correct,
+  };
+}
+
+/**
+ * #1657: grava 1 entrada por voto em key PRÓPRIA — race-free, sem
+ * read-modify-write (votos concorrentes logo após o envio não se sobrescrevem,
+ * que é justamente a janela que a análise de latência quer medir).
+ * Key: `vote-log:{month}:{edition}:{email_hash}` — listável por mês.
+ * `monthSlug` null (edition malformado) → skip silencioso.
+ */
+export async function recordVoteLog(
+  env: Env,
+  email: string,
+  edition: string,
+  choice: "A" | "B",
+  correct: boolean | null,
+  ts: string,
+): Promise<void> {
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return;
+  // Review #1736: domain-separado (`votelog:`) — NÃO é o poll_sig (HMAC do email
+  // cru, que vaza no ?sig= das URLs). Mantém estabilidade por coorte sem permitir
+  // re-identificação cruzando log + sig vazado.
+  const emailHash = await hmacSign(env.POLL_SECRET, `votelog:${email}`);
+  const entry = buildVoteLogEntry({ ts, edition, monthSlug, emailHash, choice, correct });
+  await env.POLL.put(
+    `vote-log:${monthSlug}:${edition}:${emailHash}`,
+    JSON.stringify(entry),
+  );
+}
+
+/**
+ * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no caller
+ * (handleVote lê antes do commit do voto para evitar re-leitura redundante,
+ * ver #2189). Quando omitido (ex: chamadas do admin backfill) faz o get normalmente.
+ */
+async function updateScore(
+  env: Env,
+  email: string,
+  edition: string,
+  correct: boolean | null,
+  preloadedScoreRaw?: string | null,
+): Promise<void> {
+  const scoreKey = `score:${email}`;
+  // #2190: usa o valor pré-lido se disponível; senão faz o get (backfill do admin).
+  const raw = preloadedScoreRaw !== undefined ? preloadedScoreRaw : await env.POLL.get(scoreKey);
+  const score = raw
+    ? JSON.parse(raw)
+    : { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
+
+  score.total += 1;
+  // correct === null → gabarito ainda não definido: incrementa total mas não
+  // mexe em correct/streak (preserva estado pra reconciliação futura).
+  if (correct === true) {
+    score.correct += 1;
+    score.streak = (score.streak || 0) + 1;
+  } else if (correct === false) {
+    score.streak = 0;
+  }
+  score.last_edition = edition;
+  // Preserve nickname if already set (don't overwrite)
+  if (score.nickname === undefined) score.nickname = null;
+
+  await env.POLL.put(scoreKey, JSON.stringify(score));
+}
+
+// ── /stats ────────────────────────────────────────────────────────────────────
+
+/**
+ * #2223: se STATS_COUNTER binding disponível, lê do DO (fonte autoritativa).
+ * Fallback para KV `stats:{edition}` se o DO não estiver disponível ou retornar erro.
+ * `brand` é necessário para derivar o DO id correto (`{brand}:{edition}`).
+ */
+export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+  const edition = url.searchParams.get("edition");
+  if (!edition) return json({ error: "missing edition" }, 400, env);
+
+  // Fix #4: correctRaw é independente dos stats — paralela as duas leituras.
+  // Antes: correctRaw era lido APÓS a lógica de DO/fallback (sequencial).
+  // Agora: a leitura do DO/KV e a leitura de correct:${edition} correm em paralelo.
+  const [doStatsResult, correctRaw] = await Promise.all([
+    // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
+    (async () => {
+      if (env.STATS_COUNTER) {
+        try {
+          const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
+          const doStub = env.STATS_COUNTER.get(doId);
+          const doResp = await doStub.fetch("https://internal/stats", { method: "GET" });
+          if (doResp.ok) {
+            const { stats: doStats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+            return doStats;
+          }
+        } catch (e) {
+          console.error(JSON.stringify({ event: "stats_counter_do_read_error", edition, error: String(e) }));
+        }
+      }
+      return null;
+    })(),
+    env.POLL.get(`correct:${edition}`),
+  ]);
+
+  // Fallback: KV counter (pode estar ligeiramente stale sob burst, mas é melhor que erro)
+  let stats: { total: number; voted_a: number; voted_b: number; correct_count: number };
+  if (doStatsResult !== null) {
+    stats = doStatsResult;
+  } else {
+    const statsRaw = await env.POLL.get(`stats:${edition}`);
+    stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  }
+
+  const total = stats.total;
+
+  return json({
+    edition,
+    total,
+    voted_a: stats.voted_a,
+    voted_b: stats.voted_b,
+    correct_answer: correctRaw,
+    correct_count: stats.correct_count,
+    correct_pct: total > 0 ? Math.round((stats.correct_count / total) * 100) : null,
+  }, 200, env);
+}
+
+// ── /leaderboard/top1 (#1160) ────────────────────────────────────────────────
+
+/**
+ * Pure (#1160): retorna apenas os subscribers em 1º lugar (com tie support).
+ * Empates compartilham a posição 1 (dense rank). Sem entries = []. Sem score
+ * com nickname = []. Privacy: só nickname, nunca email cru.
+ *
+ * Threshold mínimo: pelo menos 1 voto. Subscribers que ainda não votaram
+ * (mesmo que tenham nickname seedado) não aparecem.
+ *
+ * Output shape compatível com `render-newsletter-html.ts` integration plan
+ * (#1160 follow-up).
+ */
