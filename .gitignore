@@ -24,3 +24,7 @@ worker-configuration.d.ts
 lint-result-*.json
 review-result-*.json
 .claude/worktrees/
+# #2825: settings.local.json é machine-local por convenção do Claude Code
+# (allowlist de permissões pessoais/locais) e nunca deve ser versionado —
+# vazou acidentalmente via `git add -A` num subagente overnight (#2824).
+.claude/settings.local.json
