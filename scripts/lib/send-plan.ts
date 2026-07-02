@@ -62,6 +62,17 @@ export interface SendsSummaryEntry extends SendPlanEntry {
 
 export interface SendsSummary {
   cycle: string;
+  /**
+   * Cohort RESOLVIDO (forma canônica 'YYYY-MM') aplicado à fila de prioridade
+   * na 1ª invocação do ciclo, ou `null` se rodado sem `--cohort` (#2851).
+   * Campo TOP-LEVEL (1 cohort por ciclo é o invariante — não por-entry): a
+   * fila é fatiada consecutivamente por bloco a partir de um único universo,
+   * então misturar cohorts dentro do mesmo ciclo corromperia o cursor.
+   * Ausente (`undefined`) em summaries legados gravados antes do #2851 —
+   * `clarice-build-edition-sends.ts` trata esse caso como retrocompat na
+   * 1ª invocação pós-#2851 (grava o campo e segue, ver `assertCohortConsistent`).
+   */
+  cohort?: string | null;
   total: number;
   sends: SendsSummaryEntry[];
 }

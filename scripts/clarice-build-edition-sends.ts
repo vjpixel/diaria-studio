@@ -32,7 +32,14 @@
  *   --cohort X   OPCIONAL (#2817) — restringe a fila de prioridade a uma safra
  *                mensal antes de segmentar (mesmo `resolveCohortArg` do
  *                clarice-build-waves-store.ts). Sem a flag, roda sobre a base
- *                inteira (comportamento pré-#2817, sem mudança).
+ *                inteira (comportamento pré-#2817, sem mudança). O cohort
+ *                RESOLVIDO é gravado top-level em `sends-summary.json`
+ *                (`SendsSummary.cohort`) na 1ª invocação do ciclo e VALIDADO
+ *                em toda invocação seguinte (#2851, `assertCohortConsistent`)
+ *                — invocações mistas do mesmo ciclo (ex: bloco 1 com
+ *                `--cohort junho`, bloco 2 sem `--cohort`) fatiam filas
+ *                DIFERENTES pelo mesmo offset numérico (overlap/pulo
+ *                silencioso); divergência aborta cedo com erro claro.
  *
  * Inputs:
  *   data/clarice-subscribers/clarice-users.db      store único (#2647)
@@ -51,7 +58,15 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { segmentFromStore, priorityQueue, resolveCohortArg, type StoreRow } from "./lib/clarice-segment.ts";
-import { loadSendPlan, allBlocks, planByBlock, parseBlocksArg, type SendPlanEntry, type SendsSummaryEntry } from "./lib/send-plan.ts";
+import {
+  loadSendPlan,
+  allBlocks,
+  planByBlock,
+  parseBlocksArg,
+  sendsSummaryPath,
+  type SendPlanEntry,
+  type SendsSummaryEntry,
+} from "./lib/send-plan.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
 
@@ -218,6 +233,88 @@ export function mergeSummaryAcrossBlocks(
 }
 
 // ---------------------------------------------------------------------------
+// Guard de coerência de --cohort entre invocações do mesmo ciclo (#2851)
+// ---------------------------------------------------------------------------
+
+/**
+ * Valida que o `--cohort` resolvido nesta invocação é coerente com o cohort
+ * já gravado (top-level, `SendsSummary.cohort`) por invocações ANTERIORES do
+ * MESMO ciclo. Pura + exportada pra testabilidade (#633).
+ *
+ * Por quê: a fila de prioridade é fatiada CONSECUTIVAMENTE por bloco usando o
+ * plano inteiro como cursor (`buildSends`). `--cohort` muda o universo
+ * (WHERE cohort = ? no SELECT) — logo muda composição/ordem/tamanho da fila.
+ * Invocações mistas do mesmo ciclo (ex: bloco 1 com `--cohort junho`, bloco 2
+ * sem `--cohort`) fatiariam o MESMO offset numérico de filas DIFERENTES →
+ * overlap (envio duplicado) ou pulo, sem erro — o único guard pré-#2851 era
+ * agregado (`queue.length < totalNeeded`), cego a identidade.
+ *
+ * @param hasPrevSummary `true` se `sends-summary.json` já existe pra este
+ *                        ciclo (invocação NÃO é a 1ª). `false` = 1ª invocação
+ *                        do ciclo — nada foi gravado ainda, qualquer
+ *                        `resolvedCohort` é aceito sem checagem (nada com que
+ *                        divergir). Distinguir de `prevCohort === undefined`
+ *                        é o que resolve a ambiguidade "nunca rodou" vs
+ *                        "rodou mas é legado sem o campo".
+ * @param prevCohort     `SendsSummary.cohort` do `sends-summary.json` já
+ *                        existente (só relevante quando `hasPrevSummary`):
+ *                        - `undefined` → summary LEGADO (gravado antes do
+ *                          #2851, campo nunca existiu).
+ *                        - `null`      → campo gravado explicitamente como
+ *                          "sem cohort" (invocação anterior pós-#2851 rodou
+ *                          sem `--cohort`, base inteira).
+ *                        - string      → campo gravado com uma safra
+ *                          específica ('YYYY-MM').
+ * @param resolvedCohort cohort desta invocação (`resolveCohortArg(...)`, ou
+ *                        `null` se `--cohort` foi omitido).
+ * @throws se houver divergência — mesmo padrão de mensagem clara da validação
+ *         de `--cycle` (`requireCycleArg`/`isValidCycle`).
+ *
+ * ASSIMETRIA do caso legado (documentada — #2851): summary EXISTENTE sem o
+ * campo (`hasPrevSummary && prevCohort === undefined`) não é o mesmo que "sem
+ * cohort gravado explicitamente" (`null`). Sem o campo, não há garantia de
+ * que os blocos já gravados rodaram sem filtro — mas essa é a única leitura
+ * possível de um summary anterior ao #2851 (o filtro `--cohort` já existia
+ * via #2817, porém sem ser persistido). Por isso:
+ *   - legado (`undefined`) + invocação atual SEM `--cohort` (`null`) → OK,
+ *     grava `null` e segue (retrocompat — nenhuma mudança de comportamento
+ *     observável, pois nunca houve filtro).
+ *   - legado (`undefined`) + invocação atual COM `--cohort` (string) → ABORTA.
+ *     Presume-se (na ausência de qualquer registro) que os blocos já gravados
+ *     rodaram SEM filtro (universo = base inteira) — aplicar `--cohort` agora
+ *     fatiaria a partir de uma fila logicamente diferente da já processada,
+ *     o mesmo risco de overlap/pulo que este guard existe pra prevenir.
+ */
+export function assertCohortConsistent(
+  hasPrevSummary: boolean,
+  prevCohort: string | null | undefined,
+  resolvedCohort: string | null,
+): void {
+  if (!hasPrevSummary) return; // 1ª invocação do ciclo — nada gravado ainda, nada com que divergir.
+  if (prevCohort === undefined) {
+    if (resolvedCohort !== null) {
+      throw new Error(
+        `--cohort '${resolvedCohort}' divergente do ciclo já em andamento: o sends-summary.json existente é LEGADO ` +
+          `(gravado antes do #2851, sem o campo 'cohort') — presume-se que os blocos já gravados rodaram SEM filtro de ` +
+          `safra (universo = base inteira). Aplicar --cohort agora fatiaria a partir de uma fila diferente da já ` +
+          `processada (overlap/pulo silencioso entre blocos). Regenere o ciclo do zero com --cohort desde a 1ª ` +
+          `invocação, ou omita --cohort para manter consistência com os blocos já gravados.`,
+      );
+    }
+    return; // legado + sem --cohort agora: grava o campo (null) e segue — retrocompat.
+  }
+  if (prevCohort !== resolvedCohort) {
+    throw new Error(
+      `--cohort divergente do ciclo já em andamento: sends-summary.json existente foi gravado com ` +
+        `cohort=${JSON.stringify(prevCohort)}, esta invocação resolveu cohort=${JSON.stringify(resolvedCohort)}. ` +
+        `Invocações do mesmo ciclo devem usar o MESMO --cohort (ou nenhum) — misturar filtros fatia filas ` +
+        `diferentes pelo mesmo offset numérico e causa overlap/pulo silencioso entre blocos. Regenere o ciclo do ` +
+        `zero (apague sends-summary.json e os CSVs) se quiser trocar de cohort.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -236,6 +333,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // (segmentFromStore/priorityQueue/buildSends) fica intocada.
   const cohortArg = getArg(argv, "cohort");
   const cohort = cohortArg ? resolveCohortArg(cohortArg) : null;
+
+  // #2851: valida coerência de --cohort ANTES de tocar no store (fail-fast) —
+  // ver assertCohortConsistent. summaryPath resolvido aqui e reaproveitado no
+  // merge final (evita 2 leituras redundantes do mesmo arquivo pequeno).
+  const summaryPath = sendsSummaryPath(cycleDir);
+  let hasPrevSummary = false;
+  let prevCohort: string | null | undefined;
+  if (existsSync(summaryPath)) {
+    try {
+      const prev: { cohort?: string | null } = JSON.parse(readFileSync(summaryPath, "utf8"));
+      prevCohort = prev.cohort;
+      hasPrevSummary = true;
+    } catch {
+      // corrompido — tratado adiante (sobrescreve do zero, mesmo comportamento
+      // do bloco de merge final); não é motivo pra bloquear o guard de cohort —
+      // trata como se não houvesse summary prévio (hasPrevSummary fica false).
+    }
+  }
+  assertCohortConsistent(hasPrevSummary, prevCohort, cohort);
 
   const db = openClariceDb(dbPath);
   let storeRows: (StoreRow & { name?: string | null })[];
@@ -334,7 +450,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // Merge cirúrgico (#495) com sends-summary.json pré-existente — ver
     // mergeSummaryAcrossBlocks. Blocos fora de `--blocks` preservam a entrada já
     // gravada (com `listId`, se já importado); só os blocos pedidos são frescos.
-    const summaryPath = resolve(sendsDir, "sends-summary.json");
+    // (summaryPath já resolvido acima, reaproveitado do guard de --cohort.)
     let finalSends = summary.sends;
     if (existsSync(summaryPath)) {
       try {
@@ -345,7 +461,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }
     }
     const finalTotal = finalSends.reduce((a, s) => a + s.actual, 0);
-    writeFileAtomic(summaryPath, JSON.stringify({ cycle, total: finalTotal, sends: finalSends }, null, 2));
+    // #2851: cohort RESOLVIDO gravado top-level — guard de invocações futuras
+    // (assertCohortConsistent) valida contra este campo.
+    writeFileAtomic(summaryPath, JSON.stringify({ cycle, cohort, total: finalTotal, sends: finalSends }, null, 2));
   }
   console.error(`\nTotal (plano inteiro): ${summary.total}`);
   console.error(dryRun ? "(dry-run: nada escrito)" : `Escrito em ${sendsDir} (blocos: ${blocks.join(",")})`);
