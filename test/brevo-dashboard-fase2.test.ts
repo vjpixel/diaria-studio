@@ -79,7 +79,7 @@ function makeCampaign(id: number, name: string, sentDate: string, gsOverrides: P
     subject: "Test",
     status: "sent",
     sentDate,
-    scheduledAt: null,
+    scheduledAt: "2026-06-15T06:00:00.000-03:00",
     createdAt: sentDate,
     recipients: { lists: [id + 100] },
     listName: `List ${id}`,
@@ -90,6 +90,10 @@ function makeCampaign(id: number, name: string, sentDate: string, gsOverrides: P
   };
 }
 
+
+/** resetAt retroativo: preserva os cenários legados destes testes (que validam a
+ * AGREGAÇÃO, não o reset 260702 — o reset tem describe próprio abaixo). */
+const PRE_RESET = "1970-01-01T00:00:00.000Z";
 /** Campanhas representativas do ciclo 2605 (Clarice News) */
 const cycle2605Campaigns = [
   makeCampaign(38, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:05:00Z", { sent: 117, delivered: 115, uniqueViews: 20, trackableViews: 11, appleMppOpens: 8 }),
@@ -158,7 +162,7 @@ describe("parseClariceCampaignKey", () => {
 
 describe("aggregateAbcSummary", () => {
   test("agrega open rate MPP-inclusivo por célula (fixtures reais d01+d02) (#2258)", () => {
-    const result = aggregateAbcSummary(allCampaigns, "2605");
+    const result = aggregateAbcSummary(allCampaigns, "2605", PRE_RESET);
     const a = result.find((r) => r.cell === "A")!;
     const b = result.find((r) => r.cell === "B")!;
     const c = result.find((r) => r.cell === "C")!;
@@ -189,7 +193,7 @@ describe("aggregateAbcSummary", () => {
   });
 
   test("retorna sempre as 3 células mesmo com ciclo sem dados", () => {
-    const result = aggregateAbcSummary(allCampaigns, "9999");
+    const result = aggregateAbcSummary(allCampaigns, "9999", PRE_RESET);
     assert.equal(result.length, 3);
     for (const r of result) {
       assert.equal(r.totalViews, 0);
@@ -202,7 +206,7 @@ describe("aggregateAbcSummary", () => {
   test("exclui dias S2 (dayNum > 7) da agregação S1", () => {
     const s2Campaign = makeCampaign(50, "Clarice News 2605 d08-A (qui)", "2026-06-12T09:00:00Z",
       { sent: 200, delivered: 198, uniqueViews: 50 });
-    const result = aggregateAbcSummary([...cycle2605Campaigns, s2Campaign], "2605");
+    const result = aggregateAbcSummary([...cycle2605Campaigns, s2Campaign], "2605", PRE_RESET);
     const a = result.find((r) => r.cell === "A")!;
     // d08-A NÃO deve entrar: só d01-A e d02-A (count=2, não 3)
     assert.equal(a.campaignCount, 2);
@@ -210,7 +214,7 @@ describe("aggregateAbcSummary", () => {
   });
 
   test("exclui campanhas T1 (não Clarice News) da agregação", () => {
-    const result = aggregateAbcSummary(t1Campaigns, "2604");
+    const result = aggregateAbcSummary(t1Campaigns, "2604", PRE_RESET);
     // T1 campaigns não casam com parseClariceCampaignKey → count 0
     assert.ok(result.every((r) => r.campaignCount === 0));
   });
@@ -222,7 +226,7 @@ describe("aggregateAbcSummary", () => {
         globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0 }),
       },
     };
-    const result = aggregateAbcSummary([...cycle2605Campaigns, zeroStatsCampaign], "2605");
+    const result = aggregateAbcSummary([...cycle2605Campaigns, zeroStatsCampaign], "2605", PRE_RESET);
     const a = result.find((r) => r.cell === "A")!;
     // d03-A com sent=0 não deve entrar
     assert.equal(a.campaignCount, 2); // só d01-A e d02-A
@@ -245,7 +249,7 @@ describe("aggregateAbcSummary", () => {
         globalStats: undefined,
       },
     };
-    const result = aggregateAbcSummary([csOnlyCampaign], "2605");
+    const result = aggregateAbcSummary([csOnlyCampaign], "2605", PRE_RESET);
     const b = result.find((r) => r.cell === "B")!;
     assert.equal(b.campaignCount, 1, "campanha com só campaignStats deve entrar no agregado");
     assert.equal(b.totalViews, 50, "deve usar campaignStats.uniqueViews (MPP-incl)");
@@ -271,7 +275,7 @@ describe("aggregateAbcSummary", () => {
         globalStats: makeGlobalStats({ sent: 100, delivered: 99, uniqueViews: 40 }),
       },
     };
-    const result = aggregateAbcSummary([bothCampaign], "2605");
+    const result = aggregateAbcSummary([bothCampaign], "2605", PRE_RESET);
     const c = result.find((r) => r.cell === "C")!;
     assert.equal(c.totalViews, 40, "deve preferir globalStats.uniqueViews (40), não campaignStats (10)");
   });
@@ -287,7 +291,7 @@ describe("aggregateAbcSummary", () => {
         globalStats: makeGlobalStats({ sent: 100, delivered: 100, uniqueViews: 100, appleMppOpens: 30 }),
       },
     };
-    const result = aggregateAbcSummary([mppCampaign], "2605");
+    const result = aggregateAbcSummary([mppCampaign], "2605", PRE_RESET);
     const a = result.find((r) => r.cell === "A")!;
     assert.equal(a.totalViews, 100, "totalViews = uniqueViews (100), NÃO 100−30");
     assert.ok(Math.abs(a.openRate - 100) < 0.01, `openRate incl = 100/100 = 100% mas foi ${a.openRate}`);
@@ -316,7 +320,7 @@ describe("aggregateAbcSummary", () => {
         globalStats: undefined,
       },
     };
-    const result = aggregateAbcSummary([dayGlobal, dayFallback], "2605");
+    const result = aggregateAbcSummary([dayGlobal, dayFallback], "2605", PRE_RESET);
     const a = result.find((r) => r.cell === "A")!;
     assert.equal(a.campaignCount, 2, "ambos os dias contam (incl)");
     assert.equal(a.totalViews, 70, "uniqueViews incl: 40 + 30");
@@ -442,17 +446,49 @@ describe("#2359 renderTrendSection removida", () => {
 // ─── renderAbcSection ─────────────────────────────────────────────────────────
 
 describe("renderAbcSection", () => {
-  test("retorna string vazia quando todos os campaignCounts são 0", () => {
+  test("todos os campaignCounts 0 → placeholder do reset 260702 (não string vazia)", () => {
+    // Reset a pedido do editor (260702): a tabela zerada mostra o placeholder
+    // explicando o reset + resultado documentado do teste anterior, em vez de
+    // sumir (sumir seria indistinguível de bug de dado).
     const emptyRows = [
       { cell: "A" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0 },
       { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0 },
       { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0 },
     ];
-    assert.equal(renderAbcSection(emptyRows), "");
+    const html = renderAbcSection(emptyRows);
+    assert.match(html, /aguardando novo teste/);
+    assert.match(html, /variante B venceu/);
+    assert.doesNotMatch(html, /Célula A/, "tabela de células não renderiza zerada");
+  });
+
+  describe("reset A/B/C 260702 (ABC_RESET_AT)", () => {
+    test("cutoff default filtra campanhas agendadas antes do reset → tudo zerado", () => {
+      // cycle2605Campaigns têm scheduledAt 2026-06-15 (< ABC_RESET_AT 260702)
+      const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+      assert.ok(rows.every((r) => r.campaignCount === 0), "nenhuma célula contabilizada pós-reset");
+    });
+
+    test("campanha agendada APÓS o reset entra no resumo (teste novo repopula sozinho)", () => {
+      const nova = {
+        ...cycle2605Campaigns[0],
+        id: 900,
+        name: "Clarice News 2605 d01-A (qua)",
+        scheduledAt: "2026-07-10T06:00:00.000-03:00",
+      };
+      const rows = aggregateAbcSummary([nova], "2605");
+      const a = rows.find((r) => r.cell === "A");
+      assert.equal(a?.campaignCount, 1);
+    });
+
+    test("scheduledAt ausente/não-parseável → filtrada (conservador)", () => {
+      const semData = { ...cycle2605Campaigns[0], id: 901, scheduledAt: null as unknown as string };
+      const rows = aggregateAbcSummary([semData], "2605");
+      assert.ok(rows.every((r) => r.campaignCount === 0));
+    });
   });
 
   test("contém as 3 células no HTML", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605", PRE_RESET);
     const html = renderAbcSection(rows);
     assert.match(html, /Célula A/);
     assert.match(html, /Célula B/);
@@ -473,7 +509,7 @@ describe("renderAbcSection", () => {
   });
 
   test("marca vencedor provisório quando ≥2 células têm dados (e uma lidera)", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605", PRE_RESET);
     const html = renderAbcSection(rows);
     // Deve ter exatamente 1 LÍDER (a célula com maior open rate)
     const liderCount = (html.match(/LÍDER/g) ?? []).length;
@@ -505,7 +541,7 @@ describe("renderAbcSection", () => {
   });
 
   test("contém id='abc-summary' para âncora", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605", PRE_RESET);
     const html = renderAbcSection(rows);
     assert.match(html, /id="abc-summary"/);
   });
@@ -573,7 +609,7 @@ describe("#2360 parseClariceCampaignKey — sufixo opcional", () => {
     const d08 = makeCampaign(99, "Clarice News 2605 d08 (qua)", "2026-06-18T09:00:00Z",
       { sent: 1449, delivered: 1400, uniqueViews: 350 });
     // Não deve lançar exceção; não deve duplicar células
-    const result = aggregateAbcSummary([...cycle2605Campaigns, d08], "2605");
+    const result = aggregateAbcSummary([...cycle2605Campaigns, d08], "2605", PRE_RESET);
     assert.equal(result.length, 3, "deve ter exatamente 3 células A/B/C");
     // d08 sem célula NÃO deve ter entrado em nenhuma célula A/B/C
     const totalCampaignCount = result.reduce((s, r) => s + r.campaignCount, 0);
@@ -1653,7 +1689,7 @@ describe("regressão #2199 Finding 1: aggregateAbcSummary exclui campanha com gs
     };
 
     const campaigns = [campaignUndefinedSentGs, ...cycle2605Campaigns];
-    const result = aggregateAbcSummary(campaigns, "2605");
+    const result = aggregateAbcSummary(campaigns, "2605", PRE_RESET);
 
     // No NaN in any openRate
     for (const row of result) {
@@ -2075,7 +2111,7 @@ describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
   });
 
   test("seção A/B/C tem células A, B, C (não rótulos D1, D2)", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605", PRE_RESET);
     const html = renderAbcSection(rows);
     assert.match(html, /Célula A/i, "deve mostrar Célula A");
     assert.match(html, /Célula B/i, "deve mostrar Célula B");
@@ -2085,7 +2121,7 @@ describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
   });
 
   test("seção A/B/C preserva ordem de colunas Delivered/Opens (#2424)", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
+    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605", PRE_RESET);
     const html = renderAbcSection(rows);
     const idxDel = html.indexOf("Delivered");
     const idxOp = html.indexOf("Opens");

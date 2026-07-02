@@ -957,10 +957,19 @@ export function renderWeekdaySection(
 
 /**
  * Renderiza a seção de resumo A/B/C da S1.
+ * Zerada (reset 260702, ver ABC_RESET_AT): renderiza um placeholder explicando
+ * o reset em vez de sumir — o editor pediu a tabela "zerada" aguardando o novo
+ * teste, e sumir silenciosamente seria indistinguível de bug de dado.
  * Exportado pra teste unitário.
  */
 export function renderAbcSection(abcRows: CellSummary[]): string {
-  if (abcRows.every((r) => r.campaignCount === 0)) return "";
+  if (abcRows.every((r) => r.campaignCount === 0)) {
+    return `
+<section class="phase2-section" id="abc-summary">
+  <h2 class="section-title">Resumo A/B/C — aguardando novo teste</h2>
+  <p class="section-note">Zerado em 02/07/2026 a pedido do editor (ver <code>ABC_RESET_AT</code>). Resultados do teste do ciclo 2605 estão documentados: <strong>variante B venceu</strong> (consolidada em d06). A tabela repopula automaticamente quando as células -A/-B/-C do próximo teste entrarem na Brevo.</p>
+</section>`;
+  }
 
   const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
   const allSampled = sampledRows.length >= 2;
