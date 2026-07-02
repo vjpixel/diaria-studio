@@ -93,12 +93,16 @@ test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por ti
   };
   const html = renderContactsSummarySection(withHistogram);
   assert.doesNotMatch(html, /Por tier \(1º envio\)/, "tabela separada não existe mais");
-  // O breakdown fica NA célula do valor 0 (mesmo <td>), com o rótulo do
-  // universo próprio (#2807 review) e 1 tier por linha (<br>). A regex única
-  // já cobre presença + valores + ordem (tier de número menor na linha mais
-  // acima, "sem tier" por último — pedido do editor).
-  assert.match(html, /<td>0 <span[^>]*>· 1º envio:<br>T01: 1[.,]?167<br>T02: 7[.,]?269<br>sem tier: 131/);
-  assert.doesNotMatch(html, /<td>15[^<]*T01:/);
+  // 3ª iteração (260702): o breakdown vira SUB-LINHAS reais — 1 <tr> por
+  // tier, contagem na coluna "contatos", rótulo "1º envio" (universo próprio,
+  // #2807 review). A regex cobre presença + valores + ordem (tier menor mais
+  // acima, "sem tier" por último) + posição logo após a linha 0.
+  assert.match(
+    html,
+    /<td>0<\/td><td[^>]*>427[.,]?520<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — T01<\/td><td[^>]*>1[.,]?167<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — T02<\/td><td[^>]*>7[.,]?269<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — sem tier<\/td><td[^>]*>131<\/td><\/tr>/,
+  );
+  // as sub-linhas aparecem exatamente 1x (só depois da linha 0, sem vazar)
+  assert.equal(html.split("1º envio — T01").length - 1, 1);
 });
 
 test("renderContactsSummarySection: chave corrompida no by_tier → vai pro fim, ordem estável (#2807 review)", () => {
@@ -112,10 +116,10 @@ test("renderContactsSummarySection: chave corrompida no by_tier → vai pro fim,
     priority_points_histogram: { "0": 24 },
   };
   const html = renderContactsSummarySection(corrupt);
-  const idxT01 = html.indexOf("T01:");
-  const idxT02 = html.indexOf("T02:");
-  const idxBad = html.indexOf("corrompida:");
-  const idxSem = html.indexOf("sem tier:");
+  const idxT01 = html.indexOf("— T01<");
+  const idxT02 = html.indexOf("— T02<");
+  const idxBad = html.indexOf("— Tcorrompida<");
+  const idxSem = html.indexOf("— sem tier<");
   assert.ok(idxT01 !== -1 && idxT02 !== -1 && idxBad !== -1 && idxSem !== -1, "todas as chaves renderizadas");
   assert.ok(idxT01 < idxT02, "tiers numéricos primeiro, ASC");
   assert.ok(idxT02 < idxBad && idxT02 < idxSem, "chave corrompida e null vão pro fim");
