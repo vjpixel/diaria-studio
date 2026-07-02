@@ -18,6 +18,13 @@
  * SEM depender de imagens reais (Etapa 3, que ainda não rodou neste ponto do
  * pipeline), usando URLs de imagem fictícias como sonda.
  *
+ * #2818 (self-review finding 1): o guardrail crítico acima só cobre o
+ * subconjunto de labels que causa zero-imagem/zero-seção se perdido. Um
+ * segundo check (`checkOptionalSectionIntegrity`) generaliza pros labels
+ * OPCIONAIS (CLARICE —, LIVROS, PREVIEW, REMETENTE, APRESENTAÇÃO,
+ * LABORATÓRIO CLARICE, OUTRAS NOTÍCIAS DO MÊS): se PRESENTES no draft,
+ * exige que sejam reconhecidos como seção — sem exigir presença.
+ *
  * Uso:
  *   npx tsx scripts/lint-monthly-draft.ts --cycle YYMM-MM
  *   npx tsx scripts/lint-monthly-draft.ts 2604   (legado, --cycle preferido)
@@ -78,6 +85,55 @@ export function checkSectionIntegrity(draft: string): SectionIntegrityResult {
   const missing = REQUIRED_SECTION_CHECKS.filter(
     (c) => !firstLines.some((l) => c.re.test(l)),
   ).map((c) => c.name);
+  return { ok: missing.length === 0, missing, sectionCount: sections.length };
+}
+
+/**
+ * Labels OPCIONAIS — podem faltar em drafts legítimos (CLARICE é mensal e às
+ * vezes omitida, LIVROS é um box promocional opcional, PREVIEW/REMETENTE só
+ * existem no header, LABORATÓRIO CLARICE nem sempre roda). Diferente de
+ * REQUIRED_SECTION_CHECKS, a AUSÊNCIA aqui nunca é falha.
+ *
+ * `presentRe` é um detector independente de "isso parece uma tentativa desse
+ * label" (nome exato, com ou sem `**`/`*` ao redor, tolerando negrito
+ * assimétrico/malformado — ex: `**LIVROS` sem fechar). `re` é o mesmo padrão
+ * usado em REQUIRED_SECTION_CHECKS pra verificar se o label de fato virou
+ * fronteira de seção reconhecida por `splitByLabels`.
+ *
+ * Self-review finding #1 do PR #2818 (#2794 follow-up): o guardrail original
+ * só cobria o subconjunto crítico de labels (os que causam zero-imagem/
+ * zero-seção se perdidos). Uma perda de negrito ISOLADA numa seção CLARICE/
+ * LIVROS/PREVIEW/REMETENTE (ex: negrito assimétrico do Drive export) não
+ * derrubava sectionCount nem zerava <img>, então passava despercebida — a
+ * seção só caía silenciosamente no fallback `renderParagraphs` (perde o box
+ * estilizado, listas numeradas, botão CTA). Este check generaliza: para
+ * QUALQUER label desse vocabulário que esteja PRESENTE no draft, exige que
+ * `splitByLabels` o reconheça como seção própria — sem tornar nenhum deles
+ * obrigatório.
+ */
+export const OPTIONAL_SECTION_CHECKS: ReadonlyArray<{ name: string; presentRe: RegExp; re: RegExp }> = [
+  { name: "REMETENTE", presentRe: /^\**REMETENTE\**\s*$/m, re: /^REMETENTE\b/i },
+  { name: "PREVIEW", presentRe: /^\**PREVIEW\**\s*$/m, re: /^PREVIEW\b/i },
+  { name: "APRESENTAÇÃO", presentRe: /^\**APRESENTA[ÇC][ÃA]O\**\s*$/m, re: /^APRESENTA[ÇC][ÃA]O\b/i },
+  { name: "LIVROS", presentRe: /^\**LIVROS\**\s*$/m, re: /^LIVROS\b/i },
+  { name: "CLARICE —", presentRe: /^\**CLARICE\s+—/m, re: /^CLARICE\s+—/i },
+  { name: "LABORATÓRIO CLARICE", presentRe: /^\**LABORAT[ÓO]RIO\s+CLARICE\**\s*$/m, re: /^LABORAT[ÓO]RIO\s+CLARICE\b/i },
+  { name: "OUTRAS NOTÍCIAS DO MÊS", presentRe: /^\**OUTRAS\s+NOT[ÍI]CIAS\s+DO\s+M[ÊE]S\**\s*$/m, re: /^OUTRAS\s+NOT[ÍI]CIAS\s+DO\s+M[ÊE]S\b/i },
+];
+
+/**
+ * Pure: para cada label OPCIONAL cuja presença é detectada no draft (bold,
+ * sem bold ou negrito malformado), verifica se `splitByLabels` de fato o
+ * reconheceu como fronteira de seção. Ausência total do label (`presentRe`
+ * não bate em nenhuma linha) nunca entra em `missing` — só presença sem
+ * reconhecimento.
+ */
+export function checkOptionalSectionIntegrity(draft: string): SectionIntegrityResult {
+  const sections = splitByLabels(draft);
+  const firstLines = sections.map((s) => normalizeLabel(s.split("\n")[0] ?? ""));
+  const missing = OPTIONAL_SECTION_CHECKS.filter((c) => c.presentRe.test(draft))
+    .filter((c) => !firstLines.some((l) => c.re.test(l)))
+    .map((c) => c.name);
   return { ok: missing.length === 0, missing, sectionCount: sections.length };
 }
 
@@ -160,6 +216,7 @@ function main(): void {
   // script).
   const yymm = cycleToYymm(cycle);
   const sectionCheck = checkSectionIntegrity(text);
+  const optionalSectionCheck = checkOptionalSectionIntegrity(text);
   const imageCheck = checkImageRenderProbe(text, yymm);
   let hasFatal = false;
 
@@ -169,6 +226,14 @@ function main(): void {
       `[lint-monthly] FATAL: labels de seção não reconhecidos: ${sectionCheck.missing.join(", ")} ` +
       `(apenas ${sectionCheck.sectionCount} seção(ões) detectada(s) no total). ` +
       "O writer-monthly provavelmente emitiu labels em texto plano (sem **negrito**) — ver #2794.",
+    );
+  }
+  if (!optionalSectionCheck.ok) {
+    hasFatal = true;
+    console.error(
+      `[lint-monthly] FATAL: label(s) opcional(is) presente(s) no draft mas não reconhecido(s) como seção: ` +
+      `${optionalSectionCheck.missing.join(", ")}. Provavelmente negrito perdido ou malformado (assimétrico) — ` +
+      "a seção vai cair silenciosamente no fallback renderParagraphs (perde box estilizado/CTA/lista). Ver #2794, #2818.",
     );
   }
   if (!imageCheck.ok) {

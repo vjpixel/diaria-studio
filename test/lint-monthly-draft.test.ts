@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import {
   checkSectionIntegrity,
   checkImageRenderProbe,
+  checkOptionalSectionIntegrity,
   REQUIRED_SECTION_CHECKS,
 } from "../scripts/lint-monthly-draft.ts";
 
@@ -156,6 +157,109 @@ function unrecognizableDraft(): string {
   ].join("\n");
 }
 
+/**
+ * Draft mínimo com todos os REQUIRED_SECTION_CHECKS + CLARICE — DIVULGAÇÃO e
+ * LIVROS (labels OPCIONAIS) em negrito bem formado.
+ */
+function draftWithClariceLivrosBold(): string {
+  return [
+    "**ASSUNTO**",
+    "Diar.ia | Edição de teste",
+    "",
+    "**INTRO**",
+    "",
+    "Texto de intro.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 1 | TEMA**",
+    "",
+    "Título do destaque 1",
+    "",
+    "Corpo do destaque 1 com [link](https://example.com/1).",
+    "",
+    "O fio condutor:",
+    "Fio condutor do destaque 1.",
+    "",
+    "---",
+    "",
+    "**CLARICE — DIVULGAÇÃO**",
+    "",
+    "Conheça a Clarice. Teste grátis: https://example.com/clarice",
+    "",
+    "---",
+    "",
+    "**LIVROS**",
+    "",
+    "Confira nossa curadoria de livros: https://example.com/livros",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 2 | TEMA2**",
+    "",
+    "Título do destaque 2",
+    "",
+    "Corpo do destaque 2 com [link](https://example.com/2).",
+    "",
+    "O fio condutor:",
+    "Fio condutor do destaque 2.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 3 | TEMA3**",
+    "",
+    "Título do destaque 3",
+    "",
+    "Corpo do destaque 3 com [link](https://example.com/3).",
+    "",
+    "O fio condutor:",
+    "Fio condutor do destaque 3.",
+    "",
+    "---",
+    "",
+    "**USE MELHOR**",
+    "",
+    "[Tutorial](https://example.com/tutorial)",
+    "",
+    "---",
+    "",
+    "**RADAR**",
+    "",
+    "[Radar](https://example.com/radar)",
+    "",
+    "---",
+    "",
+    "**É IA?**",
+    "",
+    "Recap.",
+    "",
+    "---",
+    "",
+    "**ENCERRAMENTO**",
+    "",
+    "Até a próxima.",
+  ].join("\n");
+}
+
+/** Mesmo draft, mas CLARICE e LIVROS perdem o negrito INTEIRO (bold simétrico
+ * removido dos dois lados) — já tolerado pelo vocabulário sem negrito #2794. */
+function draftWithClariceLivrosNoBold(): string {
+  return draftWithClariceLivrosBold()
+    .replace("**CLARICE — DIVULGAÇÃO**", "CLARICE — DIVULGAÇÃO")
+    .replace("**LIVROS**", "LIVROS");
+}
+
+/** Mesmo draft, mas CLARICE e LIVROS ficam com negrito MALFORMADO (assimétrico
+ * — só o `**` de abertura sobrevive). Cenário real de export do Drive/Docs
+ * (perda parcial de formatação) que `isSectionLabel` genuinamente não
+ * reconhece — nem pelo branch bold (falta o `**` de fechamento) nem pelo
+ * fallback sem negrito (a linha ainda começa com `**`). */
+function draftWithClariceLivrosMalformedBold(): string {
+  return draftWithClariceLivrosBold()
+    .replace("**CLARICE — DIVULGAÇÃO**", "**CLARICE — DIVULGAÇÃO")
+    .replace("**LIVROS**", "**LIVROS");
+}
+
 // ─── checkSectionIntegrity ──────────────────────────────────────────────────
 
 describe("checkSectionIntegrity (#2794)", () => {
@@ -212,5 +316,43 @@ describe("checkImageRenderProbe (#2794)", () => {
     const r = checkImageRenderProbe(unrecognizableDraft(), "2606");
     assert.equal(r.ok, false);
     assert.equal(r.imgCount, 0, "sem nenhum label DESTAQUE reconhecido, renderDestaque nunca roda — 0 imagens, exatamente o sintoma reportado em 2606-07");
+  });
+});
+
+// ─── checkOptionalSectionIntegrity (#2818 self-review finding 1) ──────────────
+//
+// REQUIRED_SECTION_CHECKS só cobre o subconjunto crítico (o que zera imagens/
+// seções se perdido). Uma perda de negrito isolada em CLARICE/LIVROS/PREVIEW/
+// REMETENTE não derruba sectionCount nem <img>, então passava despercebida —
+// a seção só caía silenciosamente no fallback renderParagraphs. Este bloco
+// cobre especificamente o caso citado no self-review: perda de negrito numa
+// seção CLARICE/LIVROS.
+
+describe("checkOptionalSectionIntegrity (#2818 self-review finding 1)", () => {
+  it("CLARICE e LIVROS em negrito bem formado: reconhecidos, nada em missing", () => {
+    const r = checkOptionalSectionIntegrity(draftWithClariceLivrosBold());
+    assert.equal(r.ok, true, `missing: ${r.missing.join(", ")}`);
+  });
+
+  it("CLARICE e LIVROS SEM negrito (perda completa e simétrica): já tolerado pelo vocabulário sem negrito (#2794) — guardrail confirma, não acusa regressão", () => {
+    const r = checkOptionalSectionIntegrity(draftWithClariceLivrosNoBold());
+    assert.equal(r.ok, true, `missing: ${r.missing.join(", ")}`);
+  });
+
+  it("CLARICE e LIVROS com negrito MALFORMADO (assimétrico, só abre **): guardrail acusa a perda de reconhecimento — não passa despercebido", () => {
+    const r = checkOptionalSectionIntegrity(draftWithClariceLivrosMalformedBold());
+    assert.equal(r.ok, false);
+    assert.ok(r.missing.includes("CLARICE —"), `missing deveria incluir "CLARICE —": ${r.missing.join(", ")}`);
+    assert.ok(r.missing.includes("LIVROS"), `missing deveria incluir "LIVROS": ${r.missing.join(", ")}`);
+  });
+
+  it("draft sem NENHUM label opcional (CLARICE/LIVROS/PREVIEW/REMETENTE ausentes): não é falha — nenhum deles é obrigatório", () => {
+    const withoutOptional = draftWithClariceLivrosBold()
+      .split("---")
+      .filter((chunk) => !chunk.includes("CLARICE —") && !chunk.includes("**LIVROS**"))
+      .join("---");
+    const r = checkOptionalSectionIntegrity(withoutOptional);
+    assert.equal(r.ok, true, `ausência total nunca deveria falhar — missing: ${r.missing.join(", ")}`);
+    assert.equal(r.missing.length, 0);
   });
 });
