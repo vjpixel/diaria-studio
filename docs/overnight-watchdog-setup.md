@@ -34,8 +34,17 @@ As duas camadas são complementares. O #2379 (existente na SKILL.md) permanece c
 
 **Requisito:** executar no clone permanente do repo, não em worktrees temporários.
 
+**Prefira `pwsh` (PowerShell 7) quando disponível** — o script usa UTF-8 com
+BOM desde o #2814, então roda em PowerShell 5.1 também, mas `pwsh` (UTF-8
+nativo, sem o gotcha de encoding localizado que causou o incidente #2768)
+é mais robusto se você tocar o arquivo depois com um editor sem BOM-awareness:
+
 ```powershell
-# No diretório raiz do repo:
+# No diretório raiz do repo (pwsh, preferido):
+pwsh -NoProfile -ExecutionPolicy Bypass `
+    -File scripts\overnight\setup-watchdog-schedule.ps1
+
+# Alternativa se pwsh 7 não estiver instalado (Windows PowerShell 5.1 default):
 powershell -NoProfile -ExecutionPolicy Bypass `
     -File scripts\overnight\setup-watchdog-schedule.ps1
 ```
