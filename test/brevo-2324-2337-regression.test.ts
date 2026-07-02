@@ -2,8 +2,9 @@
  * test/brevo-2324-2337-regression.test.ts
  *
  * Testes de regressão para:
- *   #2324 — parseRetryAfterMs compartilhado: exportado de brevo-client.ts,
- *            importado em clarice-build-waves.ts (eliminando cópia divergente).
+ *   #2324 — parseRetryAfterMs compartilhado: exportado de brevo-client.ts e
+ *            usado por brevoGet (mesmo arquivo), eliminando cópia divergente
+ *            que antes vivia em clarice-build-waves.ts (removido em #2844/260702).
  *   #2337 fix 1 — brevo-dashboard brevoFetch: literal retry-after:0 → 0ms;
  *                 elapsed epoch-reset → ≥250ms floor (não 0ms).
  *   #2337 fix 2 — brevo-dashboard KV-write churn: imutável com ls-fetch falho
@@ -508,13 +509,13 @@ describe("lsPending sentinel sobrevive quando gs TAMBÉM expirou (#2355 fix 3)",
   });
 });
 
-// ─── #2324: clarice-build-waves importa o helper compartilhado ───────────────
-// Verificação de integração: brevoGet em clarice-build-waves usa parseRetryAfterMs
-// importado de brevo-client. Comportamento esperado: retry-after:0 → wait 0ms.
+// ─── #2324: brevoGet usa o helper compartilhado ───────────────────────────────
+// Verificação de integração: brevoGet (scripts/lib/brevo-client.ts) usa
+// parseRetryAfterMs local. Comportamento esperado: retry-after:0 → wait 0ms.
 
-describe("clarice-build-waves brevoGet usa parseRetryAfterMs compartilhado (#2324)", () => {
-  test("brevoGet: retry-after:0 → retenta (importado de brevo-client)", async () => {
-    const { brevoGet } = await import("../scripts/clarice-build-waves.ts");
+describe("brevoGet usa parseRetryAfterMs compartilhado (#2324)", () => {
+  test("brevoGet: retry-after:0 → retenta (mesmo arquivo de brevo-client)", async () => {
+    const { brevoGet } = await import("../scripts/lib/brevo-client.ts");
     let fetchCalls = 0;
     const origFetch = globalThis.fetch;
 

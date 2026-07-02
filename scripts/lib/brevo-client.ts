@@ -15,10 +15,11 @@
  * Lê os headers de rate-limit da Brevo e retorna quantos milissegundos
  * devemos esperar antes de re-tentar. Capped em MAX_WAIT_MS (30s).
  *
- * #2324: exportado para reutilização em clarice-build-waves.ts (eliminando cópia
- * duplicada com comentário "idêntico ao brevo-client.ts"). O parâmetro opcional
- * `fallbackMs` permite que o chamador forneça um fallback baseado em attempt
- * (ex: RETRY_MS[attempt] em clarice-build-waves); se omitido, usa 2000ms.
+ * #2324: exportado para reutilização no antigo clarice-build-waves.ts (eliminando
+ * cópia duplicada com comentário "idêntico ao brevo-client.ts"; arquivo removido
+ * em #2844/260702). O parâmetro opcional `fallbackMs` permite que o chamador
+ * forneça um fallback baseado em attempt (ex: RETRY_MS[attempt] abaixo); se
+ * omitido, usa 2000ms.
  *
  * Semantica dos headers observada empiricamente (2026-06-14):
  *  - `retry-after`: RFC 7231, delta em segundos.
@@ -275,7 +276,7 @@ export async function brevoListAllLists(
 
 // ---------------------------------------------------------------------------
 // brevoGet — GET v3 genérico por path que FALHA ALTO (#2651: consolidado aqui,
-// antes vivia em clarice-build-waves.ts; build-waves re-exporta p/ compat).
+// antes vivia no antigo clarice-build-waves.ts, removido em #2844/260702).
 // ---------------------------------------------------------------------------
 
 const RETRY_MS = [1000, 3000, 9000];

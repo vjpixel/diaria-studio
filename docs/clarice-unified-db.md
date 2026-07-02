@@ -74,8 +74,10 @@ bounces; transitório).
 > Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam
 > no default → `send_eligible` reflete só MV + dispute, **não** captura
 > descadastro/bounce. O builder emite warning e reporta `brevo_synced: false`
-> nesse caso. Rode o sync do Brevo pra completar; até lá, o `clarice-build-waves.ts`
-> continua excluindo `emailBlacklisted` do Brevo de forma independente.
+> nesse caso. Rode o sync do Brevo pra completar antes de gerar waves —
+> `clarice-build-waves-store.ts` **não** tem fallback independente de exclusão de
+> blacklist (o antigo `clarice-build-waves.ts`, removido em #2844/260702, fazia
+> um fetch próprio de `emailBlacklisted`; hoje `send_eligible` é a única fonte).
 >
 > Queries de wave devem exigir `tier IS NOT NULL` além de `send_eligible = 1` —
 > linhas só-de-MV/Brevo (email ausente do Stripe) entram com `tier = NULL` e sem
@@ -103,20 +105,22 @@ A lógica de priorização (pontos + elegibilidade) vive em `scripts/lib/clarice
 O run é checkpoint-resumável: o progresso é durável no DB (upsert em batches
 transacionais) + `data/clarice-subscribers/.brevo-sync-checkpoint.json` de ids
 feitos. Se esgotar a cota / cair (exit 2), **re-rodar continua de onde parou**.
-Reusa o `brevoGet` de `clarice-build-waves.ts` (respeita `Retry-After`). Requer
+Reusa o `brevoGet` de `scripts/lib/brevo-client.ts` (respeita `Retry-After`). Requer
 `BREVO_CLARICE_API_KEY`. Use `--limit N` pra um sync parcial / teste.
 
 ## Cutover store-driven de waves (#2656) — FEITO
 
 `scripts/clarice-build-waves-store.ts` monta as waves a partir do store (base
-inteira), supera o `clarice-build-waves.ts` (cohort T1/T2 + fetch ao vivo):
-corte por `send_eligible`, re-envio por `priority_points`, 1º envio por `tier`.
+inteira) e é o único builder de waves em produção (legado — `clarice-build-waves.ts`,
+o cohort T1/T2 + fetch ao vivo — removido em #2844/260702): corte por
+`send_eligible`, re-envio por `priority_points`, 1º envio por `tier`.
 Fila (`priorityQueue`): engajado → 1º envio → re-envio decaído. Pega o topo até
 `--budget` (lever de expansão de alcance) e fatia em `--wave-size`. Escreve
 `wN-store.csv` + `waves-manifest.json`; o `clarice-import-waves.ts` lê o manifest
-(fallback no `WAVES` legado). Só escreve CSV — envio segue gated (import dry-run +
-schedule manual). Validado pelo dry-run comparativo (`clarice-waves-dryrun.ts`,
-#2662): na supressão é no-op vs o pipeline atual; o que muda é a segmentação.
+(sem fallback — manifest ausente é erro claro desde #2844). Só escreve CSV — envio
+segue gated (import dry-run + schedule manual). Validado pelo dry-run comparativo
+(`clarice-waves-dryrun.ts`, #2662): na supressão é no-op vs o pipeline pré-cutover;
+o que muda é a segmentação.
 
 Uso: `npx tsx scripts/clarice-build-waves-store.ts --cycle 2606-07 [--budget 8000] [--wave-size 2000] [--dry-run]`.
 
