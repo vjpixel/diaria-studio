@@ -1,5 +1,7 @@
 # Spike #1046 / #312 — paste HTML grande no TipTap (Beehiiv)
 
+> **Status: arquivado — issues #1046 e #312 fechadas.** O método canônico encontrado aqui (`editor.commands.insertContent({type:'text',...})` via `tr`) foi posteriormente substituído pelo fluxo Worker-hosted (`tr.insertText`, #2550, 260625) — ver `context/publishers/beehiiv-playbook.md` para o passo-a-passo atual. Mantido como registro do processo de investigação (4 rodadas de validação live, várias hipóteses descartadas).
+
 **Data**: 2026-05-09  
 **Contexto**: PR #1045 mergeou wiring HMAC pro Worker, mas `publish-newsletter` agent não rodou em 12 dias por bloqueio de paste de HTML grande no TipTap. Spike testou alternativas.
 

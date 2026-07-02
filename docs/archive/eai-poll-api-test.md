@@ -1,5 +1,7 @@
 # Teste — Beehiiv Trivia Poll API exposure (#107)
 
+> **Status: arquivado — issue #107 fechada via #201/PR #200**, mas não pela via testada aqui. A solução real foi `scripts/fetch-beehiiv-poll-stats.ts` + `compute-eai-poll-stats`, wired no orchestrator antes do dispatch do `eia-composer` (commit 52dbbd5). A hipótese Trivia aggregate-stats deste doc ficou sem "Resultados do teste" preenchidos — não foi essa a rota adotada. Mantido como referência caso a API Trivia seja revisitada.
+
 ## Hipótese
 
 Beehiiv tem 2 tipos de poll: **Voting** (que usamos) e **Trivia** (que não usamos). Trivia é desenhado pra "guess the right answer" — leitor escolhe, dashboard mostra "X% acertou". Hipótese: a API `aggregate-stats` expõe stats Trivia (correct_count / total) mesmo sem expor responses individuais. Se sim, **#107 fecha sem trocar de plataforma e sem nova infra**.

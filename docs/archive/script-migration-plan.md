@@ -1,5 +1,7 @@
 # Plano de migração: agentes LLM → scripts determinísticos
 
+> **Status: superado por `docs/agent-migration-triage.md`** (a partir de 2026-05-11, esse é o source-of-truth da triagem agente-a-agente). Mantido como registro do plano original (prioridades, status por agente na época).
+
 Vários subagentes na pipeline Diar.ia são invocados via `Task` (spawn de contexto + LLM) mas executam lógica que não precisa de IA: IO de arquivo, HTTP, comparação de strings, chamadas de API estruturadas. Cada `Task` custa latência (~2-5s de cold start) e tokens de contexto. Migrar para scripts TypeScript chamados diretamente via `Bash` pelo orchestrator elimina esse overhead sem perder funcionalidade.
 
 **Princípio:** se o "raciocínio" do agente pode ser reduzido a um conjunto de regras codificáveis, é script.
