@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { main } from "../scripts/publish-monthly.ts";
+import { uploadEiaImages, uploadDestaqueImages, LIVROS_PROMO_FILENAME } from "../scripts/lib/mensal/monthly-image-upload.ts";
 
 /**
  * Integration test do main() do publish-monthly com mock fetch (#1029).
@@ -315,5 +316,123 @@ describe("publish-monthly main(): test counter timing (#1029)", () => {
     // Counter deve continuar em 10 (não incrementou)
     const counter = readFileSync(counterPath, "utf8").trim();
     assert.equal(counter, "10", "Counter NÃO deve ter incrementado quando /sendTest falha");
+  });
+});
+
+// ─── #2802: box de Livros com imagem no caminho de PUBLISH (Brevo) ─────────
+//
+// Bug: publish-monthly.ts renderizava o box de Livros (LIVROS no draft.md)
+// mas NUNCA subia `04-livros-promo.jpg` pro KV nem passava `livrosImageUrl`
+// pro draftToEmail — só o preview (monthly-preview-cloudflare.ts) fazia isso.
+// Efeito: o email real saía sem a imagem do box, divergindo do preview.
+//
+// Fix: main() agora aceita um `uploadDeps` opcional (injeção de dependência,
+// #2802) com overrides das 3 funções de upload de imagem — permite testar a
+// wiring completa (upload → draftToEmail → htmlContent) SEM tocar rede real
+// (GUARD DE PUBLICAÇÃO), injetando um fake `uploadLivrosImage` que retorna
+// uma URL fake, e usando os uploaders reais de É IA?/destaque (que degradam
+// pra {} sem crashar quando os arquivos de imagem não existem na fixture).
+const DRAFT_WITH_LIVROS = `**ASSUNTO**
+
+Edição de Teste
+
+**PREVIEW**
+
+Preview do teste.
+
+**INTRO**
+
+Sumário do mês de teste.
+
+**\\[DESTAQUE 1\\] TESTE**
+
+**Título do destaque de teste**
+
+Body do destaque com [link](https://example.com).
+
+**LIVROS**
+
+**Descubra os livros do mês**
+
+Uma seleção de livros recomendados pela redação.
+
+**PARA ENCERRAR**
+
+Fim da edição de teste.
+`;
+
+describe("publish-monthly main(): box de Livros com imagem (#2802)", () => {
+  it("imagem presente + upload mockado → <img> do livros aparece no htmlContent enviado à Brevo", async () => {
+    writeFileSync(join(tmpDir, "draft.md"), DRAFT_WITH_LIVROS);
+    // Arquivo precisa existir pro fluxo real chegar a chamar o upload (mock só
+    // troca o QUE o upload retorna, não a checagem de existência).
+    writeFileSync(join(tmpDir, LIVROS_PROMO_FILENAME), Buffer.from([0xff, 0xd8, 0xff, 0xd9])); // JPEG mínimo
+
+    const FAKE_LIVROS_URL = "https://poll.diaria.workers.dev/img/img-260430-04-livros-promo-fake.jpg";
+
+    const brevoMock = mockAgent.get("https://api.brevo.com");
+    brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+      id: 9, name: "T1-W1", totalSubscribers: 50,
+    }, { headers: { "content-type": "application/json" } });
+
+    let capturedBody = "";
+    brevoMock.intercept({
+      path: "/v3/emailCampaigns",
+      method: "POST",
+      body: (body: string) => {
+        capturedBody = body;
+        return true;
+      },
+    }).reply(201, { id: 200 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+
+    await main(tmpDir, {
+      // Sem 01-eia-*/04-d{N}-2x1.jpg na fixture → degradam pra {} sem network real.
+      uploadEiaImages,
+      uploadDestaqueImages,
+      // Mock: simula upload bem-sucedido sem tocar rede/credenciais reais.
+      uploadLivrosImage: async () => FAKE_LIVROS_URL,
+    });
+
+    assert.ok(capturedBody, "POST /emailCampaigns deve ter sido chamado");
+    const parsed = JSON.parse(capturedBody) as { htmlContent: string };
+    assert.match(parsed.htmlContent, /<img[^>]*src="[^"]*img-260430-04-livros-promo-fake\.jpg"/,
+      "htmlContent deve conter <img> apontando pra URL retornada pelo upload de livros");
+  });
+
+  it("imagem ausente no dir → publish segue sem <img> do livros (degrade, sem crash)", async () => {
+    writeFileSync(join(tmpDir, "draft.md"), DRAFT_WITH_LIVROS);
+    // Deliberadamente SEM escrever 04-livros-promo.jpg em tmpDir.
+    assert.equal(existsSync(join(tmpDir, LIVROS_PROMO_FILENAME)), false);
+
+    const brevoMock = mockAgent.get("https://api.brevo.com");
+    brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+      id: 9, name: "T1-W1", totalSubscribers: 50,
+    }, { headers: { "content-type": "application/json" } });
+
+    let capturedBody = "";
+    brevoMock.intercept({
+      path: "/v3/emailCampaigns",
+      method: "POST",
+      body: (body: string) => {
+        capturedBody = body;
+        return true;
+      },
+    }).reply(201, { id: 201 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+
+    // Deps default (reais) — CLOUDFLARE_ACCOUNT_ID/TOKEN vazios no env do describe
+    // pai, mas isso é moot aqui: uploadLivrosImage nem tenta rede, pois o arquivo
+    // não existe (curto-circuita no existsSync).
+    await main(tmpDir);
+
+    assert.ok(capturedBody, "POST /emailCampaigns deve ter sido chamado mesmo sem imagem");
+    const parsed = JSON.parse(capturedBody) as { htmlContent: string };
+    // Box de livros (kicker "Livros") ainda renderiza — só sem <img>.
+    assert.match(parsed.htmlContent, /Livros/);
+    assert.doesNotMatch(parsed.htmlContent, /04-livros-promo/,
+      "sem upload bem-sucedido, htmlContent não deve referenciar a imagem de livros");
   });
 });

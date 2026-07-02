@@ -35,7 +35,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
-import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/mensal/monthly-image-upload.ts";
+import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage } from "./lib/mensal/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
 import {
   parseMonthlyCycleArg,
@@ -75,34 +75,6 @@ export function monthlyPreviewKey(cycle: string): string {
     return monthlyWorkerKeyLegacy(cycle);
   }
   throw new Error(`ciclo inválido para previewKey: "${cycle}"`);
-}
-
-/**
- * Sobe as 2 imagens do É IA? mensal pro KV e devolve as URLs públicas, tolerando
- * o naming legado `01-eai-*`. Retorna `{}` se não achar o par (seção sem imagem
- * — não-fatal, igual ao publish-monthly).
- */
-async function uploadEiaImages(
-  monthlyDir: string,
-  eiaEdition: string,
-): Promise<{ a?: string; b?: string }> {
-  const namePairs = [
-    ["01-eia-A.jpg", "01-eia-B.jpg"],
-    ["01-eai-A.jpg", "01-eai-B.jpg"], // legacy
-  ];
-  for (const [nameA, nameB] of namePairs) {
-    const pathA = resolve(monthlyDir, nameA);
-    const pathB = resolve(monthlyDir, nameB);
-    if (existsSync(pathA) && existsSync(pathB)) {
-      // Uploads independentes → paralelos (#1915 review).
-      const [a, b] = await Promise.all([
-        uploadMonthlyImage(pathA, eiaEdition, ROOT),
-        uploadMonthlyImage(pathB, eiaEdition, ROOT),
-      ]);
-      return { a, b };
-    }
-  }
-  return {};
 }
 
 async function main(): Promise<void> {
@@ -159,7 +131,7 @@ async function main(): Promise<void> {
   let livrosImageUrl: string | undefined;
   if (!dryRun) {
     try {
-      eia = await uploadEiaImages(monthlyDir, eiaEdition);
+      eia = await uploadEiaImages(monthlyDir, eiaEdition, ROOT);
       if (eia.a) {
         console.error(`Imagens É IA? enviadas:\n  A: ${eia.a}\n  B: ${eia.b}`);
       } else {
@@ -176,10 +148,10 @@ async function main(): Promise<void> {
       console.error(`warn: upload de imagens de destaque falhou — ${(e as Error).message}`);
     }
     // #editor: imagem do box de curadoria de livros (04-livros-promo.jpg), igual à diária.
+    // #2802: upload extraído pra lib/mensal/monthly-image-upload.ts (compartilhado com publish-monthly).
     try {
-      const livrosPath = resolve(monthlyDir, "04-livros-promo.jpg");
-      if (existsSync(livrosPath)) {
-        livrosImageUrl = await uploadMonthlyImage(livrosPath, eiaEdition, ROOT);
+      livrosImageUrl = await uploadLivrosImage(monthlyDir, eiaEdition, ROOT);
+      if (livrosImageUrl) {
         console.error(`Imagem de livros enviada: ${livrosImageUrl}`);
       } else {
         console.error("warn: 04-livros-promo.jpg ausente — box de livros sem imagem");
