@@ -1,5 +1,5 @@
 /**
- * check-watchdog-armed.ts (#2768)
+ * check-watchdog-armed.ts (#2768, #2814)
  *
  * Incidente 260630/260701: um subagente ficou ~4h30 sem progresso real e o
  * coordenador aceitou 5 notificações "ainda esperando" sem nunca comparar o
@@ -7,6 +7,17 @@
  * watchdog externo (#2688, `scripts/overnight-watchdog.ts`) nunca foi armado
  * nesta máquina — `scripts/overnight/setup-watchdog-schedule.ps1` é setup
  * manual one-time por máquina e ninguém rodou.
+ *
+ * #2814 (260702): a detecção original parseava o output textual de
+ * `schtasks /query /fo LIST` procurando uma linha `TaskName: ...` — mas o
+ * `schtasks` em Windows localizado (ex: PT-BR) emite o rótulo traduzido
+ * ("Nome da Tarefa:"), então o parser nunca casava e o check reportava
+ * `not_armed_warn` mesmo com a task presente e Ready. Fix: a detecção
+ * principal agora usa o **exit code** de `schtasks /query /tn "..."`
+ * (0 = task existe, != 0 = não existe) — locale-agnóstico, ver
+ * `queryWatchdogTaskExitCode` abaixo. `isWatchdogTaskScheduled` (parser
+ * textual legado) é mantido só porque `test/check-watchdog-armed.test.ts` o
+ * cobre com fixtures — não é mais usado no caminho de detecção real.
  *
  * Este módulo dá ao Passo 1 da Fase 0 de `/diaria-overnight` (e de
  * `/diaria-develop`, que roda por natureza local) uma forma determinística
@@ -122,8 +133,10 @@ export function buildWatchdogWarningMessage(): string {
     `Watchdog overnight (#2688) NÃO está armado no Task Scheduler desta máquina ` +
     `(task "${WATCHDOG_TASK_NAME}" ausente). Sem ele, um stall silencioso total ` +
     `(nenhum evento chega ao coordenador) só é descoberto manualmente — foi a ` +
-    `causa raiz #1 do incidente #2768. Arme com: ` +
-    `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\overnight\\setup-watchdog-schedule.ps1`
+    `causa raiz #1 do incidente #2768. Arme com (prefira pwsh se disponível — ` +
+    `evita o encoding gotcha do #2814 em PowerShell 5.1): ` +
+    `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\overnight\\setup-watchdog-schedule.ps1 ` +
+    `(ou "powershell" no lugar de "pwsh" se pwsh 7 não estiver instalado)`
   );
 }
 
@@ -132,27 +145,46 @@ export function buildWatchdogWarningMessage(): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Consulta o Task Scheduler real via `schtasks`. Retorna o output combinado
- * (stdout + stderr) — a task ausente sai com exit code != 0, mas ainda
- * imprime a mensagem de erro que o parser precisa ver. `null` = comando
- * indisponível (plataforma não-Windows, `schtasks` não encontrado) —
- * distinto de "task ausente" apenas para logging; ambos resultam em
- * `armed = false` no diagnóstico.
+ * Consulta o Task Scheduler via **exit code** (#2814, locale-agnóstico).
+ *
+ * `schtasks /query /tn "<task>"` sempre sai com exit code `0` quando a task
+ * existe e `!= 0` quando não existe (tipicamente `1`) — esse contrato de
+ * exit code não é afetado pelo idioma do Windows, ao contrário das strings
+ * impressas em stdout/stderr (que a versão anterior deste módulo parseava
+ * via `isWatchdogTaskScheduled`, e que quebravam em locales não-EN — ex.
+ * PT-BR "Nome da Tarefa:" em vez de "TaskName:", causando falso-negativo
+ * permanente mesmo com a task presente e Ready). Este é o caminho usado por
+ * `checkWatchdogArmed` para a detecção real.
+ *
+ * Retorna:
+ *   - `0`      → task existe (armada)
+ *   - `número` → task não existe, ou outro erro (ex: permissão negada) —
+ *                tratado como "não armada" de forma fail-soft; qualquer
+ *                exit code não-zero é conservador o suficiente (preferimos
+ *                warning espúrio a falso-positivo de "armada").
+ *   - `null`   → comando `schtasks` indisponível (ENOENT — plataforma
+ *                não-Windows); distinto apenas para diagnóstico, resulta em
+ *                `armed = false` do mesmo jeito.
+ *
+ * `exec` é injetável (default = `execFileSync` real) especificamente para
+ * permitir testar este caminho com um mock em `test/check-watchdog-armed.test.ts`
+ * sem chamar `schtasks` de verdade nem depender de module-mocking experimental
+ * do Node (`node:test`'s `mock.module` requer `--experimental-test-module-mocks`,
+ * flag que não está no `npm test` deste repo).
  */
-export function queryWatchdogTaskRaw(): string | null {
+export function queryWatchdogTaskExitCode(
+  exec: typeof execFileSync = execFileSync,
+): number | null {
   try {
-    return execFileSync(
-      "schtasks",
-      ["/query", "/tn", WATCHDOG_TASK_NAME, "/fo", "LIST"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-    );
+    exec("schtasks", ["/query", "/tn", WATCHDOG_TASK_NAME], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return 0;
   } catch (e: unknown) {
-    const err = e as { stdout?: string; stderr?: string; code?: string };
-    if (err.stdout || err.stderr) {
-      return `${err.stdout ?? ""}${err.stderr ?? ""}`;
-    }
-    // ENOENT (schtasks não existe — ex: não-Windows) ou erro sem output capturado.
-    return null;
+    const err = e as { status?: number | null; code?: string };
+    if (err.code === "ENOENT") return null;
+    return typeof err.status === "number" ? err.status : 1;
   }
 }
 
@@ -213,8 +245,7 @@ export function checkWatchdogArmed(): CheckWatchdogArmedResult {
 
   let armed = false;
   try {
-    const raw = queryWatchdogTaskRaw();
-    armed = raw !== null && isWatchdogTaskScheduled(raw);
+    armed = queryWatchdogTaskExitCode() === 0;
   } catch {
     armed = false;
   }

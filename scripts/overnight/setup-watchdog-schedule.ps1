@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Registra (ou atualiza/remove) a task "Diaria-Overnight-Watchdog" no Task Scheduler.
 
