@@ -19,7 +19,12 @@ export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat
 import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
-import { DIARIA_FACEBOOK_PAGE_URL } from "../canonical-urls.ts"; // #2645 — reusa a URL canônica (mesma que a diária)
+import {
+  DIARIA_FACEBOOK_PAGE_URL,
+  DIARIA_LINKEDIN_PAGE_URL,
+  DIARIA_INSTAGRAM_URL,
+  DIARIA_THREADS_URL,
+} from "../canonical-urls.ts"; // #2645/#2790 — reusa as URLs canônicas (mesmas que a diária)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
@@ -491,6 +496,24 @@ export function renderOutrasNoticias(chunk: string): string {
 }
 
 /**
+ * Pill outline compartilhado (#2790) entre `renderEncerramento` e
+ * `renderSocialFooter` — mesmo idioma visual (fundo + borda BEGE + radius
+ * 999px), variando só tamanho/padding/fundo entre os 2 usos. `renderCtaButton`
+ * (acima) NÃO usa este helper: sua estrutura é diferente (background/borda no
+ * `<td>` externo pra centralização via tabela, não no `<a>`) — refatorar pra
+ * unificar mudaria a estrutura de tags do botão CTA sem necessidade real
+ * (visualmente idêntico hoje), então foi deixado como está.
+ */
+function renderPillLink(
+  label: string,
+  url: string,
+  opts: { fontSize?: number; padding?: string; background?: string } = {},
+): string {
+  const { fontSize = 16, padding = "12px 22px", background = COLORS.paper } = opts;
+  return `<a href="${escHtml(url)}" style="display:inline-block;background:${background};border:1px solid ${BEGE};border-radius:999px;padding:${padding};margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:${fontSize}px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a>`;
+}
+
+/**
  * Encerramento no padrão da diária (#DS Tier 3): kicker "Para encerrar" + texto
  * de fechamento numa caixa bege; curadorias (bullets `- [texto](url)`) viram
  * pills outline. Degrada pra só kicker + caixa bege quando o conteúdo é simples.
@@ -506,9 +529,7 @@ export function renderEncerramento(body: string): string {
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
-        pills.push(
-          `<a href="${escHtml(normalizeKnownUrl(m[2]))}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;padding:12px 22px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
-        );
+        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2])));
         hadPill = true;
       } else {
         nonLink.push(line);
@@ -704,20 +725,18 @@ export function parseHeaderChunk(chunk: string): {
 }
 
 /**
- * #2645: URLs canônicas dos canais sociais da marca Diar.ia, reusadas no rodapé
- * co-brand do shell mensal. Facebook reusa a constante canônica de
- * `canonical-urls.ts` (a mesma usada pela diária/dedup); LinkedIn/Instagram/Threads
- * espelham os handles já hardcoded em outros pontos do código (`build-link-ctr.ts`
- * `ownChannels`, `platform.config.json#publishing.social.linkedin`, e o comentário
- * do handle Threads `@diar.ia.br` em `.env.example`/`publish-threads.ts`) — não há
- * hoje uma constante única compartilhada pra essas 3, então os literais aqui são a
- * fonte pra este render (mesmo padrão de duplicação já aceito no resto do repo).
+ * #2645/#2790: URLs canônicas dos canais sociais da marca Diar.ia, reusadas no
+ * rodapé co-brand do shell mensal. As 4 vêm de `canonical-urls.ts`
+ * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS}_PAGE_URL`/`_URL`) — fonte
+ * única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
+ * `lint-social-md.ts` (#2790 substituiu os literais hardcoded que existiam
+ * aqui antes, cada um copiado independentemente nesses outros pontos).
  */
 const SOCIAL_LINKS: ReadonlyArray<{ label: string; url: string }> = [
   { label: "Facebook", url: DIARIA_FACEBOOK_PAGE_URL },
-  { label: "LinkedIn", url: "https://www.linkedin.com/company/diar.ia.br/" },
-  { label: "Instagram", url: "https://www.instagram.com/diaria" },
-  { label: "Threads", url: "https://www.threads.net/@diar.ia.br" },
+  { label: "LinkedIn", url: DIARIA_LINKEDIN_PAGE_URL },
+  { label: "Instagram", url: DIARIA_INSTAGRAM_URL },
+  { label: "Threads", url: DIARIA_THREADS_URL },
 ];
 
 /**
@@ -752,9 +771,12 @@ export function renderCobrandHeader(): string {
 
 /**
  * Footer do shell mensal (#2645): ícones sociais (Facebook/LinkedIn/Instagram/
- * Threads — os canais configurados em `platform.config.json#socials`) que o Brevo
- * não anexa automaticamente (diferente do Beehiiv, que envolve a diária no seu
- * shell configurável de publicação, com esses ícones no footer). Renderizados
+ * Threads — a lista fixa em `SOCIAL_LINKS` acima, NÃO derivada de
+ * `platform.config.json#socials` em runtime — #2790: comentário anterior aqui
+ * afirmava o contrário; se o editor desabilitar um canal no config, este
+ * footer não reflete automaticamente) que o Brevo não anexa automaticamente
+ * (diferente do Beehiiv, que envolve a diária no seu shell configurável de
+ * publicação, com esses ícones no footer). Renderizados
  * como pills outline (mesmo idioma visual de `renderEncerramento`/`renderCtaButton`
  * — INK sobre PAPER com borda BEGE) em vez de `<svg>` inline: suporte de SVG em
  * clientes de email é inconsistente (Outlook/Gmail app frequentemente removem),
@@ -763,9 +785,8 @@ export function renderCobrandHeader(): string {
 export function renderSocialFooter(): string {
   // #1955/#2645: font-size restrito à type scale {12,16,22,26}px do DS — 12px
   // (mesmo tamanho de renderKicker/legendas) em vez de 13px.
-  const pills = SOCIAL_LINKS.map(
-    ({ label, url }) =>
-      `<a href="${escHtml(url)}" style="display:inline-block;background:${PAPER};border:1px solid ${BEGE};border-radius:999px;padding:10px 18px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a>`,
+  const pills = SOCIAL_LINKS.map(({ label, url }) =>
+    renderPillLink(label, url, { fontSize: 12, padding: "10px 18px", background: PAPER }),
   ).join("");
   return `<div style="border-top:1px solid ${BEGE};margin:28px 0 20px 0;line-height:0;font-size:0;">&nbsp;</div>
   <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Siga a Clarice &times; Diar.ia</p>

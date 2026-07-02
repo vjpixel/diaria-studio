@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   getCanonicalUrls,
   lookupCanonicalUrl,
@@ -8,6 +10,12 @@ import {
   FOOTER_DOMAINS,
   DIARIA_FACEBOOK_PAGE_SLUG,
   DIARIA_FACEBOOK_PAGE_URL,
+  DIARIA_LINKEDIN_PAGE_SLUG,
+  DIARIA_LINKEDIN_PAGE_URL,
+  DIARIA_INSTAGRAM_SLUG,
+  DIARIA_INSTAGRAM_URL,
+  DIARIA_THREADS_SLUG,
+  DIARIA_THREADS_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
 describe("getCanonicalUrls (#1456)", () => {
@@ -178,5 +186,63 @@ describe("findMismatchedUrls (#1456)", () => {
 [T2](https://b.com/y)
 `;
     assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+});
+
+describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
+  it("DIARIA_LINKEDIN_PAGE_SLUG/URL têm o handle canônico", () => {
+    assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diar.ia.br");
+    assert.equal(DIARIA_LINKEDIN_PAGE_URL, "https://www.linkedin.com/company/diar.ia.br/");
+  });
+
+  it("DIARIA_INSTAGRAM_SLUG/URL têm o handle canônico", () => {
+    assert.equal(DIARIA_INSTAGRAM_SLUG, "instagram.com/diaria");
+    assert.equal(DIARIA_INSTAGRAM_URL, "https://www.instagram.com/diaria");
+  });
+
+  it("DIARIA_THREADS_SLUG/URL têm o handle canônico", () => {
+    assert.equal(DIARIA_THREADS_SLUG, "threads.net/@diar.ia.br");
+    assert.equal(DIARIA_THREADS_URL, "https://www.threads.net/@diar.ia.br");
+  });
+
+  it("platform.config.json espelha DIARIA_LINKEDIN_PAGE_URL EXATAMENTE (não só o slug — reforça o drift-guard de lint-social-md.test.ts)", () => {
+    const cfg = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8"),
+    );
+    assert.equal(cfg.publishing.social.linkedin.diaria_linkedin_page_url, DIARIA_LINKEDIN_PAGE_URL);
+  });
+
+  // #2790: antes desta issue, LinkedIn tinha ≥5 cópias hardcoded independentes
+  // (monthly-render SOCIAL_LINKS, lint-social-md DIARIA_LINKEDIN_PAGE_SLUG,
+  // build-link-ctr ownChannels, stitch-newsletter PARA ENCERRAR,
+  // platform.config.json) — Instagram/Threads tinham 1-2. Agora os 4 arquivos
+  // de código importam de canonical-urls.ts; scan estático do source garante
+  // que ninguém reintroduz um literal duplicado no lugar do import.
+  it("consumidores importam de canonical-urls.ts em vez de hardcodar os literais de novo", () => {
+    const root = join(import.meta.dirname, "..");
+    const consumers = [
+      "scripts/lib/mensal/monthly-render.ts",
+      "scripts/lint-social-md.ts",
+      "scripts/build-link-ctr.ts",
+      "scripts/stitch-newsletter.ts",
+    ];
+    const bannedLiterals = [
+      "https://www.linkedin.com/company/diar.ia.br",
+      "https://www.instagram.com/diaria",
+      "https://www.threads.net/@diar.ia.br",
+    ];
+    for (const file of consumers) {
+      const src = readFileSync(join(root, file), "utf8");
+      assert.ok(
+        src.includes("canonical-urls.ts"),
+        `${file} deve importar de canonical-urls.ts`,
+      );
+      for (const literal of bannedLiterals) {
+        assert.ok(
+          !src.includes(literal),
+          `${file} não deve hardcodar "${literal}" de novo — usar a constante importada`,
+        );
+      }
+    }
   });
 });
