@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
 import { type CouponUsageReport, type CouponCodeReport, commissionCents } from "../../../scripts/lib/stripe-coupons.ts";
 import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
@@ -612,18 +612,23 @@ export function renderContactsSummarySection(
   // campo, e qualquer KV vivo em produção já é pós-fase-B/B.1 (refresh
   // periódico). Sem nenhum dos dois campos (payload cru pré-#2731 sem
   // priority_points_histogram) → sem breakdown, ver renderPriorityPointsFallback.
+  // #2865: 3º parâmetro opcional `byCohortFirstSendBrevo` — mesma semântica
+  // esparsa da coluna verified (ausente = 0), coluna extra só quando o KV traz
+  // o campo (payload antigo degrada sem a coluna, mesmo gate do verified).
   const firstSendBreakdownRows = (
     byCohortFirstSend: Record<string, number> | undefined,
     byCohortFirstSendVerified: Record<string, number> | undefined,
+    byCohortFirstSendBrevo: Record<string, number> | undefined,
   ): string => {
     const entries = Object.entries(byCohortFirstSend ?? {});
     if (entries.length === 0) return "";
     const withVerifiedCol = byCohortFirstSendVerified !== undefined;
+    const withBrevoCol = byCohortFirstSendBrevo !== undefined;
     const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
     return entries
       .sort(([a], [b]) => rank(a) - rank(b))
       .map(([k, v]) =>
-        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
+        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendVerified?.[k] ?? 0)}</td>` : ""}${withBrevoCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendBrevo?.[k] ?? 0)}</td>` : ""}</tr>`)
       .join("");
   };
   const ppMap: Record<string, number> = {
@@ -653,21 +658,25 @@ export function renderContactsSummarySection(
     // traz o campo novo; payload antigo renderiza a tabela de 2 colunas.
     const vHist = s.priority_points_histogram_verified;
     const withVerified = vHist !== undefined;
+    // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo gate opcional.
+    const bHist = s.priority_points_histogram_brevo;
+    const withBrevo = bHist !== undefined;
     // #2805: logo após a linha 0 entram as sub-linhas do breakdown de 1º envio
     // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
     // mas não coincide com ela; ver comentário do firstSendBreakdownRows).
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>${
         k === "0"
           ? firstSendBreakdownRows(
               s.by_cohort_first_send,
               withVerified ? (s.by_cohort_first_send_verified ?? {}) : undefined,
+              withBrevo ? (s.by_cohort_first_send_brevo ?? {}) : undefined,
             )
           : ""
       }`,
     ).join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
+      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
@@ -688,7 +697,7 @@ export function renderContactsSummarySection(
       .map(([k, v]) => {
         const row = `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`;
         return k === "zero (sem histórico)"
-          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined)
+          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined, undefined)
           : row;
       })
       .join("\n");
@@ -742,6 +751,134 @@ export function renderContactsSummarySection(
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
+</section>`;
+}
+
+/**
+ * #2864: aba "Cohorts" — comparativo de envio/engajamento por cohort. Pedido
+ * do editor 260702: entender se há padrão de comportamento que difere de um
+ * cohort pro outro (insumo pra estratégia da rampa/segmentação de conteúdo).
+ *
+ * Fonte: `ContactsSummary.cohort_stats` (novo bloco opcional do sumário do
+ * store, `scripts/clarice-db-summary.ts`) — contagens BRUTAS por cohort; as
+ * taxas (abertura/clique/unsub+bounce/MV) são calculadas AQUI, no render, com
+ * denominador 0 tratado como "—" (nunca NaN/Infinity).
+ *
+ * Ordenação: `cohortSendRank` ASC — mesma fila real de 1º envio das demais
+ * tabelas de cohort do dashboard (mais morno → mais frio), pra leitura
+ * vertical mostrar o gradiente e outliers saltarem à vista (pedido do editor).
+ *
+ * Destaque visual: célula ganha `class="alert"` quando a taxa da linha desvia
+ * mais de `COHORT_DEVIATION_THRESHOLD_PP` pontos percentuais da média SIMPLES
+ * da coluna (só sobre cohorts com denominador > 0) — é o "padrão que difere"
+ * que o editor busca. Escolha simples e determinística (a issue delegou a
+ * decisão do critério exato de destaque).
+ *
+ * Stub gracioso quando `cohortStats` é undefined/vazio (KV antigo sem o
+ * campo, ou store ainda sem contatos) — mesmo contrato das demais seções KV.
+ * Exportado pra teste unitário.
+ */
+export const COHORT_DEVIATION_THRESHOLD_PP = 20;
+
+export function renderCohortsTabPanel(
+  cohortStats: Record<string, CohortStatsRow> | undefined,
+): string {
+  if (!cohortStats || Object.keys(cohortStats).length === 0) {
+    return `
+<section class="phase2-section" id="cohorts-tab">
+  <h2 class="section-title">Cohorts</h2>
+  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-db-summary.ts</code> para popular.</p>
+</section>`;
+  }
+
+  const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
+  const pctOrDash = (v: number | null): string => (v == null ? "—" : `${v.toFixed(1)}%`);
+
+  type Row = {
+    cohort: string;
+    contacts: number;
+    eligible: number;
+    received: number;
+    sendsSum: number;
+    openRate: number | null;
+    clickRate: number | null;
+    unsubBounceRate: number | null;
+    mvVerifiedRate: number | null;
+    ppAvg: number | null;
+  };
+
+  const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
+  const rows: Row[] = Object.entries(cohortStats)
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([k, c]) => ({
+      cohort: k,
+      contacts: c.contacts,
+      eligible: c.eligible,
+      received: c.received,
+      sendsSum: c.sends_sum,
+      openRate: c.received > 0 ? (c.opened / c.received) * 100 : null,
+      clickRate: c.received > 0 ? (c.clicked / c.received) * 100 : null,
+      unsubBounceRate: c.received > 0 ? (c.unsub_bounce / c.received) * 100 : null,
+      mvVerifiedRate: c.contacts > 0 ? (c.mv_verified / c.contacts) * 100 : null,
+      ppAvg: c.received > 0 ? c.priority_points_sum / c.received : null,
+    }));
+
+  // Média simples da coluna (só sobre linhas com denominador > 0 — null não entra).
+  const colAvg = (vals: Array<number | null>): number | null => {
+    const present = vals.filter((v): v is number => v != null);
+    if (present.length === 0) return null;
+    return present.reduce((a, b) => a + b, 0) / present.length;
+  };
+  const avgOpen = colAvg(rows.map((r) => r.openRate));
+  const avgClick = colAvg(rows.map((r) => r.clickRate));
+  const avgUnsubBounce = colAvg(rows.map((r) => r.unsubBounceRate));
+  const avgMv = colAvg(rows.map((r) => r.mvVerifiedRate));
+
+  const cellAttr = (v: number | null, avg: number | null): string =>
+    v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP
+      ? ' class="alert"'
+      : "";
+
+  const tableRows = rows
+    .map((r) => {
+      return `<tr>
+      <td>${escHtml(cohortLabel(r.cohort === "null" ? null : r.cohort))}</td>
+      <td>${n(r.contacts)}</td>
+      <td>${n(r.eligible)}</td>
+      <td>${n(r.received)}</td>
+      <td>${n(r.sendsSum)}</td>
+      <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
+      <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
+      <td${cellAttr(r.unsubBounceRate, avgUnsubBounce)}>${pctOrDash(r.unsubBounceRate)}</td>
+      <td${cellAttr(r.mvVerifiedRate, avgMv)}>${pctOrDash(r.mvVerifiedRate)}</td>
+      <td>${r.ppAvg == null ? "—" : r.ppAvg.toFixed(1)}</td>
+    </tr>`;
+    })
+    .join("\n");
+
+  return `
+<section class="phase2-section" id="cohorts-tab">
+  <h2 class="section-title">Cohorts</h2>
+  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub+Bounce são sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é sobre o total de contatos do cohort. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Cohort (taxonomia #2857)">Cohort</th>
+        <th title="Total de contatos no cohort (exclui internos)">Contatos</th>
+        <th title="Contatos elegíveis para envio (send_eligible=1)">Elegíveis</th>
+        <th title="Contatos que já receberam ao menos 1 envio (sends_count>0)">Recebeu ≥1</th>
+        <th title="Soma de envios (eventos) do cohort">Envios (Σ)</th>
+        <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
+        <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
+        <th title="% de quem recebeu que descadastrou ou deu bounce">Unsub+Bounce</th>
+        <th title="% do cohort verificado no MillionVerifier (mv_bucket=verified)">MV verified</th>
+        <th title="priority_points médio de quem recebeu — engajamento composto">Pts médio</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
 </section>`;
 }
 
@@ -865,13 +1002,24 @@ export function aggregateEiaEngagementByMonth(editions: EiaEngagementEdition[]):
     });
 }
 
+// #2860: teto de linhas exibidas na tabela por edição — a lista pode crescer
+// indefinidamente (1 edição/dia), então cap explícito com nota, em vez de
+// paginação nova (decisão simples que a issue delegou pro PR).
+export const EIA_ENGAGEMENT_MAX_EDITIONS = 30;
+
 /**
- * #2738: renderiza a tabela de engajamento do poll "É IA?" — 1 linha por MÊS
- * (#2773, agregado via `aggregateEiaEngagementByMonth`; antes era 1 linha por
- * edição). Stub gracioso quando `eiaEngagement` é null (KV não populado ainda)
- * ou sem edições. Dado gravado por `scripts/build-poll-eia-data.ts --push`
- * (reusa a mesma agregação já usada pro workers/diaria-dashboard — sem
- * pipeline nova). Exportado pra teste unitário.
+ * #2860 (pedido do editor 260702): renderiza a tabela de engajamento do poll
+ * "É IA?" — voltou a ser 1 linha por EDIÇÃO (AAMMDD, header "Edição"), mais
+ * recente primeiro. Reverte a agregação mensal do #2773 (mantida disponível
+ * via `aggregateEiaEngagementByMonth`, ainda exportada/testada — só não é
+ * mais chamada aqui) — o dado por edição já está no payload KV
+ * (`eiaEngagement.editions`), então a mudança é só de render, sem pipeline
+ * nova. Lista limitada às `EIA_ENGAGEMENT_MAX_EDITIONS` mais recentes, com
+ * nota "mostrando as N mais recentes de M" quando o corte se aplica.
+ *
+ * Stub gracioso quando `eiaEngagement` é null (KV não populado ainda) ou sem
+ * edições. Dado gravado por `scripts/build-poll-eia-data.ts --push`.
+ * Exportado pra teste unitário.
  */
 export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary | null): string {
   if (!eiaEngagement || eiaEngagement.editions.length === 0) {
@@ -883,13 +1031,24 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   }
 
   const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
-  const monthly = aggregateEiaEngagementByMonth(eiaEngagement.editions);
 
-  const tableRows = monthly.map((m) => {
-    const total = m.total_votes.toLocaleString("pt-BR");
-    const pctFmt = m.pct_correct != null ? `${m.pct_correct.toFixed(1)}%` : "—";
+  // Guard: edition malformado (KV corrompido/escrita parcial) — mesmo filtro
+  // do agregador mensal (aggregateEiaEngagementByMonth), pra nunca renderizar
+  // uma linha "NaN"/vazia.
+  const validEditions = eiaEngagement.editions.filter((e) => /^\d{6}$/.test(e.edition));
+  // Mais recente primeiro — AAMMDD ordena lexicograficamente = cronologicamente.
+  const sorted = [...validEditions].sort((a, b) => b.edition.localeCompare(a.edition));
+  const totalCount = sorted.length;
+  const shown = sorted.slice(0, EIA_ENGAGEMENT_MAX_EDITIONS);
+  const capNote = totalCount > EIA_ENGAGEMENT_MAX_EDITIONS
+    ? ` Mostrando as ${EIA_ENGAGEMENT_MAX_EDITIONS} mais recentes de ${totalCount}.`
+    : "";
+
+  const tableRows = shown.map((e) => {
+    const total = e.total_votes.toLocaleString("pt-BR");
+    const pctFmt = e.pct_correct != null ? `${e.pct_correct.toFixed(1)}%` : "—";
     return `<tr>
-      <td><strong>${escHtml(m.label)}</strong></td>
+      <td><strong>${escHtml(e.edition)}</strong></td>
       <td>${total}</td>
       <td>${escHtml(pctFmt)}</td>
     </tr>`;
@@ -898,14 +1057,14 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   return `
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
-  <p class="section-note">Votos no poll "É IA?" por mês (últimos ${monthly.length}), mais recente primeiro.${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
+  <p class="section-note">Votos no poll "É IA?" por edição (${shown.length}), mais recente primeiro.${capNote}${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th title="Mês-calendário (extraído da edição AAMMDD)">Mês</th>
-        <th title="Total de votos registrados no mês">Votos</th>
-        <th title="Porcentagem de acerto agregada exata (Σ acertos / Σ votos), só sobre edições com gabarito configurado — se nenhuma qualificar">% acerto</th>
+        <th title="Edição (AAMMDD)">Edição</th>
+        <th title="Total de votos registrados na edição">Votos</th>
+        <th title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

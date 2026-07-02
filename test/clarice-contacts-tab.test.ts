@@ -313,6 +313,64 @@ test("renderContactsSummarySection: fallback pré-#2731 com by_cohort_first_send
   assert.match(html, /1º envio — Assinantes ativos/);
 });
 
+// ---------------------------------------------------------------------------
+// #2865 — coluna "Brevo" (brevo_list_ids IS NOT NULL) no histograma de
+// priority_points e no breakdown de 1º envio por cohort
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: coluna 'Brevo' aparece quando priority_points_histogram_brevo está presente (#2865)", () => {
+  const withBrevo: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_brevo: { "0": 29000, "15": 12 },
+  };
+  const html = renderContactsSummarySection(withBrevo);
+  assert.match(html, /<th style="text-align:right">Brevo<\/th>/, "header da coluna Brevo presente");
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>29[.,]?000<\/td>/, "linha 0 com valor Brevo");
+  assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>12<\/td>/, "linha 15 com valor Brevo");
+});
+
+test("renderContactsSummarySection: sub-linhas de 1º envio ganham coluna Brevo quando by_cohort_first_send_brevo presente (#2865)", () => {
+  const withBrevo: ContactsSummary = {
+    ...sample,
+    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
+    by_cohort_first_send_brevo: { "assinantes-ativos": 900 },
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_brevo: { "0": 29000 },
+  };
+  const html = renderContactsSummarySection(withBrevo);
+  assert.match(
+    html,
+    /1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/,
+    "sub-linha com valor Brevo",
+  );
+  assert.match(
+    html,
+    /1º envio — Ex-assinantes<\/td><td[^>]*>7[.,]?269<\/td><td[^>]*>0<\/td>/,
+    "cohort sem entrada no mapa Brevo → 0",
+  );
+});
+
+test("renderContactsSummarySection: KV antigo (sem priority_points_histogram_brevo) → sem header/coluna Brevo (retrocompat, #2865)", () => {
+  const noBrevo: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+  };
+  const html = renderContactsSummarySection(noBrevo);
+  assert.doesNotMatch(html, /<th[^>]*>Brevo<\/th>/, "coluna Brevo não aparece sem o dado");
+});
+
+test("renderContactsSummarySection: colunas verified e Brevo coexistem (mesma linha, 4 células)", () => {
+  const both: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+    priority_points_histogram_verified: { "0": 81000 },
+    priority_points_histogram_brevo: { "0": 29000 },
+  };
+  const html = renderContactsSummarySection(both);
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td><td[^>]*>29[.,]?000<\/td>/);
+});
+
 test("renderContactsSummarySection: by_cohort com verified → coluna extra; sem verified → 2 colunas só", () => {
   const withVerified: ContactsSummary = {
     ...sample,
