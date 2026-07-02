@@ -24,8 +24,10 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import {
   checkOAuthLock,
@@ -158,8 +160,19 @@ describe("checkOAuthLock (#2358)", () => {
   });
 
   it("3. OAuth ausente (sem credentials file) → state: missing + ação de reauth", async () => {
-    const result = await checkOAuthLock(throwingFetch("never called"));
-    // No worktree, data/.credentials.json não existe → missing
+    // Path injetado (#2846) aponta pra um tmpdir vazio, sem credentials —
+    // torna o teste hermético independente da junction data/ (OneDrive) real
+    // existir na máquina local. Mesmo padrão de DI dos demais checks do arquivo
+    // (ex: checkWranglerLock recebe apiToken explícito em vez de ler o env).
+    const emptyDir = mkdtempSync(join(tmpdir(), "diaria-oauth-missing-"));
+    const fakeCredentialsPath = join(emptyDir, ".credentials.json");
+
+    const result = await checkOAuthLock(
+      throwingFetch("never called"),
+      undefined,
+      undefined,
+      fakeCredentialsPath,
+    );
     assert.equal(result.state, "missing");
     assert.ok(result.blocks_stages.length > 0, "deve bloquear pelo menos 1 stage");
     assert.ok(
@@ -170,6 +183,36 @@ describe("checkOAuthLock (#2358)", () => {
       result.detail?.includes(".credentials.json"),
       "detail deve mencionar o arquivo de credentials",
     );
+  });
+
+  it("3b. OAuth presente (credentials file existe no path injetado) → state != missing (#2846)", async () => {
+    // Simetria do teste 3: com um arquivo de credentials fake no path injetado,
+    // o ramo "missing" não deve disparar — o fluxo segue para tokenHealthFn.
+    // tokenHealthFn é mockado (não real checkTokenHealth) para não fazer I/O
+    // de rede real, conforme HARD CONSTRAINT do topo do arquivo.
+    const dirWithCreds = mkdtempSync(join(tmpdir(), "diaria-oauth-present-"));
+    const fakeCredentialsPath = join(dirWithCreds, ".credentials.json");
+    writeFileSync(
+      fakeCredentialsPath,
+      JSON.stringify({ refresh_token: "fake_refresh_token_for_test" }),
+      "utf8",
+    );
+
+    const okHealthFn = async (_f: FetchFn): Promise<TokenHealth> => ({
+      ok: true,
+      status: "valid",
+      detail: "mock: token válido",
+    });
+
+    const result = await checkOAuthLock(
+      throwingFetch("never called"),
+      undefined,
+      okHealthFn,
+      fakeCredentialsPath,
+    );
+
+    assert.notEqual(result.state, "missing");
+    assert.equal(result.state, "ok");
   });
 });
 
