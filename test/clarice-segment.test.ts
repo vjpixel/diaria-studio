@@ -229,6 +229,18 @@ test("isFirstSend / isSendEligible: edges de NULL espelham segmentFromStore (#27
   assert.equal(isFirstSend({ send_eligible: 1, sends_count: 2 }), false);
 });
 
+test("isFirstSend: sends_count negativo/NaN (dado patológico) cai em firstSend, não reSend (#2812 item 5)", () => {
+  // Inalcançável hoje com o writer real (MAX de um array.length, sempre >= 0),
+  // mas o invariante "sends_count >= 0" é só implícito — um `=== 0` estrito
+  // mandaria esses valores pra reSend (partição errada) em vez de tratá-los
+  // como "sem histórico confiável de envio", que é a leitura mais segura.
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: -1 }), true, "negativo → firstSend");
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: -5 }), true, "negativo (mais extremo) → firstSend");
+  assert.equal(isFirstSend({ send_eligible: 1, sends_count: NaN }), true, "NaN → firstSend (NaN > 0 é false)");
+  // controle: elegibilidade continua sendo checada primeiro (fail-safe não muda).
+  assert.equal(isFirstSend({ send_eligible: 0, sends_count: -1 }), false, "inelegível + patológico continua false");
+});
+
 test("FIRST_SEND_SQL_PREDICATE ⇄ segmentFromStore: mesmo by_tier sobre um store real (#2782)", () => {
   // Regressão do padrão "2 cópias que divergem silenciosamente": o by_tier do
   // clarice-db-summary (SQL) tem que contar EXATAMENTE o universo firstSend de
@@ -253,6 +265,11 @@ test("FIRST_SEND_SQL_PREDICATE ⇄ segmentFromStore: mesmo by_tier sobre um stor
   ins("INSERT INTO clarice_users (email, tier, send_eligible, sends_count) VALUES ('cru@x.com',1,NULL,NULL)");
 
   // Lado SQL — a MESMA cláusula que clarice-db-summary.ts usa no by_tier.
+  // #2812 item 7: este loop reimplementa a agregação MANUALMENTE (não importa
+  // `groupCounts`/`groupCountsWithVerified` de clarice-db-summary.ts) DE
+  // PROPÓSITO — um oráculo independente do código de produção pega bug que um
+  // teste que reusa a mesma função de agregação não pegaria (ex: um bug na
+  // própria groupCounts passaria despercebido, pois "comparando com si mesma").
   const sqlByTier: Record<string, number> = {};
   for (const r of db
     .prepare(`SELECT tier AS k, COUNT(*) n FROM clarice_users WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`)

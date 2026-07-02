@@ -18,6 +18,7 @@ import {
   getCouponUsage,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { CouponUsageReport, RedemptionRow } from "../scripts/lib/stripe-coupons.ts";
+import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture sintética — IDs e emails exclusivamente @example.com
@@ -105,53 +106,53 @@ describe("getCouponUsage — PII guard (/api/coupons)", () => {
     }) as any;
 
   it("retorna null quando COUPONS_TAB_ENABLED está ausente", async () => {
-    const result = await getCouponUsage(makeEnv({}), false);
+    const result = await getCouponUsage(makeEnv({}), "cached");
     assert.equal(result, null, "deve retornar null → rota retornaria 404");
   });
 
   it("retorna null quando COUPONS_TAB_ENABLED='false'", async () => {
-    const result = await getCouponUsage(makeEnv({ tabEnabled: "false" }), false);
+    const result = await getCouponUsage(makeEnv({ tabEnabled: "false" }), "cached");
     assert.equal(result, null, "deve retornar null → rota retornaria 404");
   });
 
   it("retorna null quando KV e STRIPE_API_KEY estão ausentes (flag ON)", async () => {
     // Cobre o path: STATS_CACHE undefined → sem KV → sem Stripe key → null
-    const result = await getCouponUsage(makeEnv({ tabEnabled: "true" }), false);
+    const result = await getCouponUsage(makeEnv({ tabEnabled: "true" }), "cached");
     assert.equal(result, null, "KV vazio + sem Stripe key → deve retornar null → rota retornaria 404");
   });
 
   // Regressão #2726: o comportamento KV-first (cobre o path principal do PR)
-  it("retorna dados do KV mesmo sem STRIPE_API_KEY quando KV tem dados (isFresh=false)", async () => {
+  it("retorna dados do KV mesmo sem STRIPE_API_KEY quando KV tem dados (mode=cached)", async () => {
     const mockKv = { get: async () => syntheticUsage, put: async () => {} };
     const result = await getCouponUsage(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
-      false,
+      "cached",
     );
     assert.notEqual(result, null, "KV hit deve retornar dados mesmo sem STRIPE_API_KEY");
     assert.deepEqual(result, syntheticUsage);
   });
 
-  it("retorna dados do KV quando isFresh=true mas STRIPE_API_KEY ausente (KV-only deployment)", async () => {
-    // Em KV-only, isFresh=true não tem fonte mais fresca que o KV — deve servir KV.
+  it("retorna dados do KV quando mode=fresh mas STRIPE_API_KEY ausente (KV-only deployment)", async () => {
+    // Em KV-only, mode=fresh não tem fonte mais fresca que o KV — deve servir KV.
     const mockKv = { get: async () => syntheticUsage, put: async () => {} };
     const result = await getCouponUsage(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
-      true, // isFresh=true
+      "fresh",
     );
-    assert.notEqual(result, null, "KV-only + isFresh=true: sem Stripe disponível → retorna KV como melhor disponível");
+    assert.notEqual(result, null, "KV-only + mode=fresh: sem Stripe disponível → retorna KV como melhor disponível");
     assert.deepEqual(result, syntheticUsage);
   });
 
-  it("retorna null quando isFresh=true, KV vazio e STRIPE_API_KEY ausente", async () => {
+  it("retorna null quando mode=fresh, KV vazio e STRIPE_API_KEY ausente", async () => {
     const mockKv = { get: async () => null, put: async () => {} };
     const result = await getCouponUsage(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: undefined, STATS_CACHE: mockKv as any },
-      true,
+      "fresh",
     );
-    assert.equal(result, null, "isFresh=true + KV vazio + sem Stripe → null");
+    assert.equal(result, null, "mode=fresh + KV vazio + sem Stripe → null");
   });
 });
 
@@ -162,65 +163,46 @@ describe("getCouponUsage — PII guard (/api/coupons)", () => {
 // mesmo com isFresh=false — contradizendo o contrato do buildRateLimitFallback.
 // ---------------------------------------------------------------------------
 
-describe("getCouponUsage — kvOnly (#2779: KV é a única fonte no caminho de erro)", () => {
-  // Espião de fetch global: registra qualquer chamada externa e falha o caller.
-  const withFetchSpy = async (fn: (calls: string[]) => Promise<void>) => {
-    const realFetch = globalThis.fetch;
-    const calls: string[] = [];
-    globalThis.fetch = (async (input: unknown) => {
-      calls.push(String(input));
-      throw new Error("chamada externa proibida neste teste");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
-    try {
-      await fn(calls);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-  };
-
-  it("kvOnly=true + KV miss + STRIPE_API_KEY presente → null, SEM fetch (o bug do #2779)", async () => {
+describe("getCouponUsage — mode=kv-only (#2779: KV é a única fonte no caminho de erro)", () => {
+  it("mode=kv-only + KV miss + STRIPE_API_KEY presente → null, SEM fetch (o bug do #2779)", async () => {
     await withFetchSpy(async (calls) => {
       const mockKv = { get: async () => null, put: async () => {} };
       const result = await getCouponUsage(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
-        false,
-        true, // kvOnly
+        "kv-only",
       );
-      assert.equal(result, null, "KV miss em kvOnly → null (tab oculta), nunca Stripe");
-      assert.deepEqual(calls, [], "NENHUMA chamada externa pode acontecer com kvOnly=true");
+      assert.equal(result, null, "KV miss em kv-only → null (tab oculta), nunca Stripe");
+      assert.deepEqual(calls, [], "NENHUMA chamada externa pode acontecer com mode=kv-only");
     });
   });
 
-  it("kvOnly=true + KV hit → serve o cache sem fetch", async () => {
+  it("mode=kv-only + KV hit → serve o cache sem fetch", async () => {
     await withFetchSpy(async (calls) => {
       const mockKv = { get: async () => syntheticUsage, put: async () => {} };
       const result = await getCouponUsage(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
-        false,
-        true,
+        "kv-only",
       );
-      assert.deepEqual(result, syntheticUsage, "KV hit em kvOnly → serve o cache");
+      assert.deepEqual(result, syntheticUsage, "KV hit em kv-only → serve o cache");
       assert.deepEqual(calls, [], "sem chamada externa");
     });
   });
 
-  it("kvOnly=true sem STATS_CACHE → null, SEM fetch", async () => {
+  it("mode=kv-only sem STATS_CACHE → null, SEM fetch", async () => {
     await withFetchSpy(async (calls) => {
       const result = await getCouponUsage(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: undefined as any },
-        false,
-        true,
+        "kv-only",
       );
       assert.equal(result, null);
-      assert.deepEqual(calls, [], "sem KV binding + kvOnly → null direto, nunca Stripe");
+      assert.deepEqual(calls, [], "sem KV binding + kv-only → null direto, nunca Stripe");
     });
   });
 
-  it("contraste: kvOnly=false (default) + KV miss + STRIPE_API_KEY → o fallback Stripe do caminho saudável segue vivo", async () => {
+  it("contraste: mode=cached (default) + KV miss + STRIPE_API_KEY → o fallback Stripe do caminho saudável segue vivo", async () => {
     // Garante que o fix do #2779 NÃO desligou o fallback Stripe do render
     // normal (KV com TTL 300s expira e é repopulado por esse caminho).
     await withFetchSpy(async (calls) => {
@@ -228,7 +210,7 @@ describe("getCouponUsage — kvOnly (#2779: KV é a única fonte no caminho de e
       const result = await getCouponUsage(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { COUPONS_TAB_ENABLED: "true", STRIPE_API_KEY: "sk_test_synthetic", STATS_CACHE: mockKv as any },
-        false,
+        "cached",
       );
       // o fetch espião lança → getCouponUsage degrada pra null; o que importa
       // é que a tentativa Stripe ACONTECEU no caminho saudável.
