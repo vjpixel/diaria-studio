@@ -236,6 +236,18 @@ test("eligibility #2876: dispute + priority_points > 0 → SEGUE dispute (não �
   assert.equal(r.ineligible_reason, "dispute");
 });
 
+test("eligibility #2876: complaint + priority_points > 0 → SEGUE complaint (consentimento NÃO é sobreposto)", () => {
+  const r = classifyEligibility({ ...CLEAN, complained: true, mv_bucket: "rejected", priority_points: 60 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "complaint");
+});
+
+test("eligibility #2876: soft_bounce >= limite + priority_points > 0 → SEGUE soft_bounce (entrega real, não veredito MV)", () => {
+  const r = classifyEligibility({ ...CLEAN, soft_bounce_count: SOFT_BOUNCE_LIMIT, priority_points: 60 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "soft_bounce");
+});
+
 // ---------------------------------------------------------------------------
 // recomputeDerived — integração com SQLite in-memory
 // ---------------------------------------------------------------------------
@@ -311,6 +323,51 @@ test("recomputeDerived: mv_bucket=unknown vira send_eligible=0 + ineligible_reas
     n: number;
   };
   assert.equal(total.n, 1);
+
+  db.close();
+});
+
+test("recomputeDerived #2876: mv_bucket=rejected + abertura real (opens>0) → send_eligible=1 END-TO-END (wiring de points→elegibilidade)", () => {
+  const db = openClariceDb(":memory:");
+
+  // engajado (2 aberturas de 3 → points = 40-10 = 30 > 0) mas MV reprovou:
+  // o override recupera. Prova que recomputeDerived passa o `points` FRESCO
+  // pra classifyEligibility (não um valor stale/campo errado).
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket) VALUES (?, ?, ?, ?)",
+  ).run("engajado-rejeitado@x.com", 2, 3, "rejected");
+  // controle: mesmo mv_bucket=rejected, mas SEM engajamento (points ≤ 0) →
+  // segue cortado. Sem este controle, o teste não distingue o override de
+  // "rejected nunca corta".
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket) VALUES (?, ?, ?, ?)",
+  ).run("frio-rejeitado@x.com", 0, 2, "rejected");
+  // controle 2: consentimento vence engajamento — unsub + opens altos +
+  // rejected → segue unsubscribed (não recuperado).
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket, unsubscribed) VALUES (?, ?, ?, ?, 1)",
+  ).run("engajado-mas-unsub@x.com", 5, 5, "rejected");
+
+  recomputeDerived(db);
+
+  const rec = db
+    .prepare("SELECT priority_points, send_eligible, ineligible_reason FROM clarice_users WHERE email = ?")
+    .get("engajado-rejeitado@x.com") as any;
+  assert.equal(rec.priority_points, 30);
+  assert.equal(rec.send_eligible, 1, "engajamento>0 recupera o rejected via round-trip real");
+  assert.equal(rec.ineligible_reason, null);
+
+  const frio = db
+    .prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?")
+    .get("frio-rejeitado@x.com") as any;
+  assert.equal(frio.send_eligible, 0);
+  assert.equal(frio.ineligible_reason, "mv_rejected");
+
+  const unsub = db
+    .prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?")
+    .get("engajado-mas-unsub@x.com") as any;
+  assert.equal(unsub.send_eligible, 0);
+  assert.equal(unsub.ineligible_reason, "unsubscribed");
 
   db.close();
 });

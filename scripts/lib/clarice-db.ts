@@ -248,13 +248,18 @@ export interface EligibilityInput {
   soft_bounce_count: number;
   /**
    * priority_points do contato (#2876). Engajamento POSITIVO (>0 — só possível
-   * via opt-in explícito ou abertura real, ver computePriorityPoints) sobrepõe
-   * um veredito NEGATIVO do MillionVerifier (`mv_rejected`/`mv_unknown`): a
-   * abertura é prova empírica de entregabilidade (o Brevo entregou e a pessoa
-   * abriu), mais forte que a heurística estática do MV, que dá falso-positivo
-   * em catch-all/greylist. NÃO sobrepõe sinais de consentimento/entrega real
-   * (unsub/blacklist/hard_bounce/complaint/dispute/soft_bounce) — esses são
-   * checados ANTES e cortam sempre.
+   * via opt-in explícito +40 OU abertura real +20, ver computePriorityPoints)
+   * sobrepõe um veredito NEGATIVO do MillionVerifier (`mv_rejected`/
+   * `mv_unknown`), ambos mais fortes que a heurística estática do MV (que dá
+   * falso-positivo em catch-all/greylist):
+   *   - abertura real = prova EMPÍRICA de entregabilidade (o Brevo entregou e
+   *     a pessoa abriu);
+   *   - opt-in = prova de INTENÇÃO (pediu pra entrar). Não garante entrega —
+   *     mas se o e-mail for de fato inválido, o 1º envio real quica e o
+   *     `hard_bounced` (checado ANTES do MV) corta no próximo recompute:
+   *     auto-corretivo.
+   * NÃO sobrepõe sinais de consentimento/entrega real (unsub/blacklist/
+   * hard_bounce/complaint/dispute/soft_bounce) — checados ANTES e cortam sempre.
    */
   priority_points: number;
 }

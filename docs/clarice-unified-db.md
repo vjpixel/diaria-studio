@@ -69,6 +69,15 @@ primeira pela ordem:
 `mv_rejected` → `mv_unknown` → `dispute` → `soft_bounce` (só após **3** soft
 bounces; transitório).
 
+> **Override de engajamento (#2876, editor 260702).** `priority_points > 0`
+> (opt-in explícito OU abertura real) **sobrepõe** os vereditos do MV
+> (`mv_rejected`/`mv_unknown`) — a abertura é prova empírica de entregabilidade,
+> mais forte que a heurística estática do MV (falso-positivo em catch-all/
+> greylist). Vale **só** pros vereditos do MV: consentimento e entrega real
+> (`unsubscribed`/blacklist/`hard_bounce`/`complaint`/`dispute`/`soft_bounce`,
+> checados **antes**) cortam sempre, engajamento não anula. Opt-in num e-mail
+> inválido é auto-corretivo: o 1º envio quica e o `hard_bounce` corta depois.
+
 > ⚠️ **Histórico — `mv_unverified` (#2656, REVERTIDO em #2804).** Entre #2656 e
 > #2804, tier != 1 (incl. sem-tier) exigia `mv_bucket === "verified"` pra ser
 > elegível — contato nunca submetido ao MV (`mv_bucket` NULL) virava inelegível
