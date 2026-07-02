@@ -35,6 +35,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { tokenizeForJaccard, jaccardSimilarity } from "./dedup.ts"; // #1861
+import { DIARIA_LINKEDIN_PAGE_SLUG } from "./lib/canonical-urls.ts"; // #2790 fonte única (reexportada abaixo p/ back-compat)
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportadas pra tests
@@ -613,12 +614,16 @@ function extractSection(md: string, sectionTitle: string): string | null {
 
 /**
  * URL canônica da página da Diar.ia no LinkedIn (sem https://, sem ponto final).
- * #2458 — esta constante é a FONTE para o lint (determinístico, sem ler config em
- * runtime). `platform.config.json#...diaria_linkedin_page_url` espelha este valor
+ * #2458 — usada pro lint (determinístico, sem ler config em runtime).
+ * `platform.config.json#...diaria_linkedin_page_url` espelha este valor
  * para o fluxo de publish; o teste de drift em lint-social-md.test.ts garante que
  * os dois não divergem.
+ *
+ * #2790: a definição canônica mudou pra `lib/canonical-urls.ts` (fonte única ao
+ * lado de `DIARIA_FACEBOOK_PAGE_SLUG`/`DIARIA_INSTAGRAM_SLUG`/etc.) — reexportada
+ * aqui pra não quebrar os imports existentes deste módulo.
  */
-export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diar.ia.br";
+export { DIARIA_LINKEDIN_PAGE_SLUG };
 
 export interface LinkedinPageLinkError {
   section: string;

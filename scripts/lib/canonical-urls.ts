@@ -25,7 +25,11 @@
  * rodapé/afiliado (Beehiiv, LinkedIn, Facebook, Wikipedia/Wikimedia,
  * Workers de template) usada tanto por `findMismatchedUrls` acima quanto
  * por `newsletter-count.ts` e `check-stage2-invariants.ts` — e as
- * constantes `DIARIA_FACEBOOK_PAGE_SLUG`/`DIARIA_FACEBOOK_PAGE_URL`.
+ * constantes `DIARIA_FACEBOOK_PAGE_SLUG`/`DIARIA_FACEBOOK_PAGE_URL` (#2695) e,
+ * desde #2790, `DIARIA_LINKEDIN_PAGE_SLUG`/`_URL`, `DIARIA_INSTAGRAM_SLUG`/
+ * `_URL` e `DIARIA_THREADS_SLUG`/`_URL` — fonte única pras URLs dos canais
+ * sociais da marca, reusada por `monthly-render.ts`, `stitch-newsletter.ts`,
+ * `build-link-ctr.ts` e `lint-social-md.ts`.
  */
 
 import { normalizeTitle } from "../dedup.ts";
@@ -42,6 +46,43 @@ export const DIARIA_FACEBOOK_PAGE_SLUG = "facebook.com/diar.ia.br";
 
 /** URL completa (com protocolo + `www.`) derivada do slug canônico acima. */
 export const DIARIA_FACEBOOK_PAGE_URL = `https://www.${DIARIA_FACEBOOK_PAGE_SLUG}`;
+
+/**
+ * Slug canônico da página da Diar.ia no LinkedIn (sem `https://`, sem `www.`).
+ * #2790 — movida pra cá (era definida só em `lint-social-md.ts`, #2458/#2695)
+ * pra virar fonte única ao lado das demais constantes canônicas de redes
+ * sociais; `lint-social-md.ts` reexporta esta constante pra não quebrar os
+ * imports existentes (lint de CTA social + testes). `platform.config.json`
+ * espelha o mesmo valor em `publishing.social.linkedin.diaria_linkedin_page_url`
+ * (drift-guard em `test/lint-social-md.test.ts`).
+ */
+export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diar.ia.br";
+
+/** URL completa (com protocolo + `www.` + trailing slash) derivada do slug acima. */
+export const DIARIA_LINKEDIN_PAGE_URL = `https://www.${DIARIA_LINKEDIN_PAGE_SLUG}/`;
+
+/**
+ * Slug/URL canônicos da página da Diar.ia no Instagram (#2790). Antes desta
+ * constante existir, o handle estava hardcoded em paralelo em
+ * `monthly-render.ts` (`SOCIAL_LINKS`) e `build-link-ctr.ts` (`ownChannels`)
+ * — nenhuma fonte única. Centralizado aqui pro mesmo padrão do
+ * Facebook/LinkedIn acima.
+ */
+export const DIARIA_INSTAGRAM_SLUG = "instagram.com/diaria";
+
+/** URL completa (com protocolo + `www.`) derivada do slug acima. */
+export const DIARIA_INSTAGRAM_URL = `https://www.${DIARIA_INSTAGRAM_SLUG}`;
+
+/**
+ * Slug/URL canônicos da página da Diar.ia no Threads (#2790). Handle
+ * `@diar.ia.br` — mesmo referenciado em `.env.example`/`publish-threads.ts`
+ * (conta vinculada ao App do Facebook). Só havia 1 cópia hardcoded antes
+ * (`monthly-render.ts` `SOCIAL_LINKS`); centralizado aqui por consistência.
+ */
+export const DIARIA_THREADS_SLUG = "threads.net/@diar.ia.br";
+
+/** URL completa (com protocolo + `www.`) derivada do slug acima. */
+export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
 
 interface ArticleLike {
   url?: string;

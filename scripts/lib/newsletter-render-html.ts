@@ -475,7 +475,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:16px 20px;">
       ${bodyHtml}
-      ${cta}
+      ${cta ? `<div style="text-align:center;margin-top:12px;">${cta}</div>` : ""}
     </td></tr>
   </table>
 </td></tr>`;

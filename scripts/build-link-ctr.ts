@@ -10,7 +10,7 @@ import * as path from 'path';
 import Papa from 'papaparse';
 // #1844: classificador de links extraído pra módulo dedicado (puro, testável).
 import { categorize } from './lib/link-ctr-categorize.ts';
-import { DIARIA_FACEBOOK_PAGE_SLUG } from './lib/canonical-urls.ts'; // #2695 fonte única
+import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
@@ -48,8 +48,8 @@ export function isEditorial(url: string): boolean {
 
   // Skip own social channels
   const ownChannels = [
-    DIARIA_FACEBOOK_PAGE_SLUG, 'linkedin.com/company/diar.ia.br',
-    'youtube.com/@diaria', 'instagram.com/diaria',
+    DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG,
+    'youtube.com/@diaria', DIARIA_INSTAGRAM_SLUG,
   ];
   if (ownChannels.some(s => url.includes(s))) return false;
 

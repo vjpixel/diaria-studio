@@ -31,7 +31,7 @@ import {
   normalizeDashToParens,
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
-import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
+import { DIARIA_FACEBOOK_PAGE_URL, DIARIA_LINKEDIN_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695/#2790 fonte única
 
 interface ArticleLike {
   url?: string;
@@ -68,7 +68,7 @@ Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesqui
 - [Cursos de IA](https://cursos.diaria.workers.dev)
 - [Livros sobre IA](https://livros.diaria.workers.dev)
 
-Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`,
+Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`,
 
   erro_intencional_placeholder: `**ERRO INTENCIONAL**
 
