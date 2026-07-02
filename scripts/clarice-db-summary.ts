@@ -23,7 +23,7 @@ import { DatabaseSync } from "node:sqlite";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
-import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -46,6 +46,11 @@ export interface StoreSummary {
     p41_80: number;
     gt80: number;
     optin: number;
+    // #2809: quantos emails internos (INTERNAL_EMAILS) existem no store e foram
+    // EXCLUÍDOS destas agregações + do histograma abaixo (só exibição — eles
+    // seguem no store e na fila de envio). Com internos presentes, as faixas e
+    // o histograma particionam `total - internal_excluded`, não `total`.
+    internal_excluded: number;
   };
   // #2731: distribuição por VALOR EXATO de priority_points (não em faixas) —
   // Record<string, number> (chave = valor como string, "null" = sem pontuação
@@ -58,20 +63,28 @@ export interface StoreSummary {
   engagement: { with_opens: number; with_clicks: number };
 }
 
-function count(db: DatabaseSync, sql: string): number {
-  return (db.prepare(sql).get() as { n: number }).n;
+function count(db: DatabaseSync, sql: string, params: string[] = []): number {
+  return (db.prepare(sql).get(...params) as { n: number }).n;
 }
 
 function groupCounts(
   db: DatabaseSync,
   sql: string,
+  params: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const r of db.prepare(sql).all() as Array<{ k: unknown; n: number }>) {
+  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number }>) {
     out[r.k == null ? "null" : String(r.k)] = r.n;
   }
   return out;
 }
+
+// #2809: fragmento SQL + params pra excluir os emails internos das agregações
+// de priority_points (case-insensitive por segurança — o store normaliza, mas
+// LOWER() protege contra variação de ingestão). SÓ exibição: nenhuma outra
+// agregação (total, by_tier, mv, engagement, eligibility) filtra internos.
+const NOT_INTERNAL_SQL = `LOWER(email) NOT IN (${INTERNAL_EMAILS.map(() => "?").join(",")})`;
+const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 
 /** Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS. */
 export function computeStoreSummary(db: DatabaseSync): StoreSummary {
@@ -120,28 +133,55 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
           WHERE send_eligible=0 GROUP BY ineligible_reason`,
       ),
     },
+    // #2809: TODO o bloco priority_points (faixas + optin + histograma) exclui
+    // os INTERNAL_EMAILS — engajamento de ofício não é sinal de audiência.
     priority_points: {
-      lt0: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_points<0"),
-      eq0: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_points=0"),
+      lt0: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_points<0 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
+      eq0: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_points=0 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
       p1_40: count(
         db,
-        "SELECT COUNT(*) n FROM clarice_users WHERE priority_points BETWEEN 1 AND 40",
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_points BETWEEN 1 AND 40 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
       ),
       p41_80: count(
         db,
-        "SELECT COUNT(*) n FROM clarice_users WHERE priority_points BETWEEN 41 AND 80",
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_points BETWEEN 41 AND 80 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
       ),
-      gt80: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_points>80"),
+      gt80: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_points>80 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
       // priority_optin=1 NA clarice_users (quem de fato recebeu o +40 nesta
       // distribuição) — não a tabela priority_optin crua, que pode ter emails
       // ainda ausentes do store.
-      optin: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE priority_optin=1"),
+      optin: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE priority_optin=1 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
+      internal_excluded: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE NOT (${NOT_INTERNAL_SQL})`,
+        INTERNAL_PARAMS,
+      ),
     },
     // #2731: distribuição por valor exato — groupCounts já trata NULL como
     // chave "null" (mesmo padrão de `mv`/`by_reason`/`by_tier` acima).
+    // #2809: internos excluídos (mesmo filtro do bloco acima).
     priority_points_histogram: groupCounts(
       db,
-      "SELECT priority_points AS k, COUNT(*) n FROM clarice_users GROUP BY priority_points",
+      `SELECT priority_points AS k, COUNT(*) n FROM clarice_users WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
+      INTERNAL_PARAMS,
     ),
     mv: groupCounts(
       db,
