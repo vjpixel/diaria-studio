@@ -2,6 +2,19 @@
 /**
  * clarice-build-waves.ts
  *
+ * ⚠️ CANDIDATO A LEGADO (#2835/#2808) — `docs/clarice-unified-db.md` ("Cutover
+ * store-driven de waves (#2656) — FEITO") documenta `scripts/clarice-build-waves-store.ts`
+ * como sucessor: monta as waves a partir do store único (Stripe+Brevo+MV) por
+ * `send_eligible`/`priority_points`/`tier`, "supera" (superset de) este script
+ * (cohort T1/T2 + fetch ao vivo do Brevo). NÃO removido nesta rodada porque
+ * `CLAUDE.md` (seção "Verificar emails no MillionVerifier...") ainda documenta
+ * `clarice-build-waves --cycle` (este script, sem `-store`) como parte do fluxo
+ * de 3 comandos do ciclo (verify-emails-mv → clarice-build-waves → clarice-import-waves)
+ * — discrepância não resolvida entre a doc operacional e o cutover já concluído.
+ * Ver nota no PR #2835 pro editor decidir: atualizar CLAUDE.md pra `-store`
+ * (com `--budget` obrigatório) e arquivar este arquivo, ou confirmar que os
+ * dois fluxos coexistem intencionalmente.
+ *
  * Monta os CSVs de waves do próximo envio Clarice, prontos pra importar no Brevo.
  * Decisão de targeting fundamentada nos Achados #1 (recência/score não predizem
  * abertura; o sinal real é comportamento de abertura passado):
