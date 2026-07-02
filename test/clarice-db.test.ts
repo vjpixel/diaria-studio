@@ -94,6 +94,7 @@ const CLEAN = {
   mv_bucket: "verified",
   dispute_losses: 0,
   soft_bounce_count: 0,
+  priority_points: 0,
 };
 
 test("eligibility: tudo limpo → elegível, sem razão", () => {
@@ -190,6 +191,49 @@ test("eligibility: ordem — unsubscribed vence hard_bounce quando ambos batem",
     hard_bounced: true,
   });
   assert.equal(r.ineligible_reason, "unsubscribed");
+});
+
+// #2876 — priority_points > 0 (engajamento real) sobrepõe veredito MV
+// ---------------------------------------------------------------------------
+
+test("eligibility #2876: mv_rejected + priority_points > 0 → ELEGÍVEL (abertura/optin sobrepõe MV)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "rejected", priority_points: 20 });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #2876: mv_unknown + priority_points > 0 → ELEGÍVEL", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown", priority_points: 40 });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #2876: mv_rejected + priority_points == 0 → SEGUE mv_rejected (sem regressão)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "rejected", priority_points: 0 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_rejected");
+});
+
+test("eligibility #2876: mv_rejected + priority_points < 0 (recebeu, não abriu) → SEGUE mv_rejected", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "rejected", priority_points: -10 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_rejected");
+});
+
+test("eligibility #2876: unsubscribed + priority_points > 0 → SEGUE unsubscribed (consentimento NÃO é sobreposto)", () => {
+  const r = classifyEligibility({ ...CLEAN, unsubscribed: true, mv_bucket: "rejected", priority_points: 60 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "unsubscribed");
+});
+
+test("eligibility #2876: hard_bounce + priority_points > 0 → SEGUE hard_bounce (entrega real NÃO é sobreposta)", () => {
+  const r = classifyEligibility({ ...CLEAN, hard_bounced: true, priority_points: 60 });
+  assert.equal(r.ineligible_reason, "hard_bounce");
+});
+
+test("eligibility #2876: dispute + priority_points > 0 → SEGUE dispute (não é veredito MV)", () => {
+  const r = classifyEligibility({ ...CLEAN, dispute_losses: 5, priority_points: 60 });
+  assert.equal(r.ineligible_reason, "dispute");
 });
 
 // ---------------------------------------------------------------------------

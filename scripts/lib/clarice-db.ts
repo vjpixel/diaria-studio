@@ -246,26 +246,42 @@ export interface EligibilityInput {
   mv_bucket: string | null | undefined;
   dispute_losses: number;
   soft_bounce_count: number;
+  /**
+   * priority_points do contato (#2876). Engajamento POSITIVO (>0 — só possível
+   * via opt-in explícito ou abertura real, ver computePriorityPoints) sobrepõe
+   * um veredito NEGATIVO do MillionVerifier (`mv_rejected`/`mv_unknown`): a
+   * abertura é prova empírica de entregabilidade (o Brevo entregou e a pessoa
+   * abriu), mais forte que a heurística estática do MV, que dá falso-positivo
+   * em catch-all/greylist. NÃO sobrepõe sinais de consentimento/entrega real
+   * (unsub/blacklist/hard_bounce/complaint/dispute/soft_bounce) — esses são
+   * checados ANTES e cortam sempre.
+   */
+  priority_points: number;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
   send_eligible: boolean;
   ineligible_reason: IneligibleReason | null;
 } {
+  // Consentimento + entrega real: SEMPRE suprimem — engajamento não anula
+  // (unsubscribe é opt-out legal; hard_bounce/complaint são fatos do Brevo).
   if (i.unsubscribed || i.email_blacklisted)
     return { send_eligible: false, ineligible_reason: "unsubscribed" };
   if (i.hard_bounced)
     return { send_eligible: false, ineligible_reason: "hard_bounce" };
   if (i.complained)
     return { send_eligible: false, ineligible_reason: "complaint" };
-  if (i.mv_bucket === "rejected")
+  // #2876: pontuação positiva sobrepõe o veredito estático do MV (reject/
+  // unknown). Só o corte de MV é sobreposto — os sinais acima já cortaram.
+  const engaged = i.priority_points > 0;
+  if (i.mv_bucket === "rejected" && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_rejected" };
   // MV inconclusivo (unknown/reverify/unverified/error, #2735) — mesma lógica
   // defensiva de rejected, mas NÃO é permanente: o registro fica no store (só
   // send_eligible=0), então uma re-verificação futura pode reabilitar. Contatos
   // nunca submetidos ao MV (mv_bucket NULL, ex: T01 ativo) não são afetados —
   // só quem tem uma linha `-unknown.csv` ingerida de fato.
-  if (i.mv_bucket === "unknown")
+  if (i.mv_bucket === "unknown" && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_unknown" };
   if (i.dispute_losses > 0)
     return { send_eligible: false, ineligible_reason: "dispute" };
@@ -410,6 +426,7 @@ export function recomputeDerived(db: DatabaseSync): number {
         mv_bucket: r.mv_bucket,
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
+        priority_points: points, // #2876 — engajamento>0 sobrepõe veredito MV
       });
       // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
       // ingestStripe a partir do merge); backfill via computeCohort (fallback
