@@ -143,7 +143,7 @@ O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh 
 npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
 ```
 
-Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars.
+Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars. **Guardrail crítico (#2794, exit 1 — bloqueia):** o script também simula o render final e falha se algum label de seção não for reconhecido ou se a sonda de imagens produzir menos de 3 `<img>` para os 3 destaques — sinal de que o draft sairia sem imagem em produção (causa raiz do ciclo 2606-07: writer-monthly emitiu labels sem negrito). Se isso disparar, NÃO prosseguir — corrigir o draft (reforçar `**negrito**` nos labels) e re-rodar o lint antes de seguir pra Etapa 2c.
 
 ### 2c. Humanizador
 

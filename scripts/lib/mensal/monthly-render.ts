@@ -822,21 +822,47 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 </html>`;
 }
 
+// #2794: vocabulário de labels SEM negrito — usado como defesa em profundidade
+// quando o writer-monthly emite `DESTAQUE 1 | TEMA` em texto plano (causa raiz
+// real do ciclo 2606-07: sem `**`, splitByLabels não separava NADA e o draft
+// inteiro caía no fallback renderParagraphs — zero imagens, zero seções).
+//
+// Deliberadamente restrito, DUPLAMENTE:
+//   1. Labels de vocabulário FIXO (sem parte variável) exigem match da linha
+//      INTEIRA ($ ancorado) — uma linha de prosa comum não pode virar seção
+//      por acidente. Só os 3 formatos com parte variável (`DESTAQUE N | TEMA`,
+//      `CLARICE — ...`, `É IA? ...`) usam prefixo.
+//   2. CASE-SENSITIVE (sem flag `/i`) — o template sempre emite labels em
+//      CAIXA ALTA ("PREVIEW", "DESTAQUE 1 | BRASIL"). Prosa comum do corpo
+//      não é toda-maiúscula, então isso evita falso-positivo em corpo que
+//      contenha a MESMA palavra em caixa mista como texto comum (ex: a
+//      palavra "Preview" apareceria como body text sem ser confundida com
+//      o label `PREVIEW`; sem essa restrição um teste real capturou esse
+//      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
+const FIXED_LABEL_RE_NO_BOLD =
+  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
+const VARIABLE_TAIL_LABEL_RE_NO_BOLD = /^(DESTAQUE \d+\b|CLARICE —|É ?IA\?)/;
+
 /**
  * Detecta se uma linha é um label de seção (formatado como `**LABEL**` ou
- * `**\[LABEL\]**` no Drive markdown). Não depende de `---` separators.
+ * `**\[LABEL\]**` no Drive markdown, OU — #2794 — em texto plano sem negrito,
+ * restrito ao vocabulário conhecido). Não depende de `---` separators.
  */
 export function isSectionLabel(line: string): boolean {
   const trimmed = line.trim();
-  if (!trimmed.startsWith("**") || !trimmed.endsWith("**")) return false;
-  const normalized = normalizeLabel(trimmed);
-  // #1904-followup: aceita os rótulos com OU sem " DO MÊS" — o editor encurta
-  // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
-  // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
-  // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
-  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
-    normalized
-  );
+  if (!trimmed) return false;
+  if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+    const normalized = normalizeLabel(trimmed);
+    // #1904-followup: aceita os rótulos com OU sem " DO MÊS" — o editor encurta
+    // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
+    // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
+    // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
+    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+      normalized
+    );
+  }
+  // #2794: fallback sem negrito — ver comentário do vocabulário acima.
+  return FIXED_LABEL_RE_NO_BOLD.test(trimmed) || VARIABLE_TAIL_LABEL_RE_NO_BOLD.test(trimmed);
 }
 
 /**
@@ -908,7 +934,10 @@ export function draftToEmail(
     if (label === "REMETENTE") continue;
 
     // ASSUNTO: extrai como subject (override se chosenSubject não setado).
-    if (label === "ASSUNTO") {
+    // #2794: tolera o sufixo " (3 OPÇÕES)" (template atual) — sem isso, o
+    // match exato falhava e a seção inteira caía no fallback renderParagraphs,
+    // vazando "ASSUNTO (3 OPÇÕES)\n1. ...\n2. ...\n3. ..." como prosa no corpo.
+    if (label === "ASSUNTO" || /^ASSUNTO\b/i.test(label)) {
       const body = chunkBody(chunk);
       const lines = body.split("\n").map((l) => l.trim()).filter(Boolean);
       let candidate = "";

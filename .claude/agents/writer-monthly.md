@@ -14,6 +14,12 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
 
+## Formato dos labels de seção (#2794 — CRÍTICO)
+
+Todo label de seção — `ASSUNTO`, `PREVIEW`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `ENCERRAMENTO` — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
+
+Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRASIL` (sem `**`) em vez de `**DESTAQUE 1 | BRASIL**`. Sem o negrito, o render não reconheceu NENHUM label — o draft inteiro colapsou num único parágrafo de fallback: zero imagens, zero "O fio condutor" destacado, zero seções Use Melhor/Radar/É IA?/Encerramento renderizadas como tal. Verificar visualmente antes de gravar `out_path`: toda linha de label deve começar E terminar com `**`.
+
 ## Contexto obrigatório (leia antes de escrever)
 
 - `context/editorial-rules.md` — regras absolutas (sem markdown, sem agregadores, etc.).
@@ -25,12 +31,12 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 1. **Ler inputs.** Extrair de `prioritized_path`: 3 destaques (D1/D2/D3) com tema + URLs de suporte, a seção `## Use Melhor` (3 itens) e a seção `## Radar` (7 itens). Cada item de Use Melhor/Radar já vem com título + URL (e contagem de cliques entre parênteses, que NÃO entra no draft). Para cada URL, recuperar o objeto completo de `raw_path` (campos `body`, `why`, `title`, `url`, `edition`) para derivar a descrição; URLs ausentes no JSON (ex.: Use Melhor emprestado de outro mês): usar o título do `prioritized.md` e derivar a descrição do próprio título, registrando warning.
 
-2. **Cabeçalho: subject line (3 opções) + preview.** Gerar 3 opções de assunto (cada ≤ 70 chars, PT-BR, mês por extenso), cada uma com ângulo distinto (tema central / ângulo alternativo / síntese do mês). Exemplos: `"Diar.ia | Abril 2026 — Brasil acelera regulação de IA"`. Gerar também 1 preview line ≤ 100 chars sintetizando o mês.
+2. **Cabeçalho: subject line (3 opções) + preview.** Labels `**ASSUNTO (3 OPÇÕES)**` e `**PREVIEW**` em negrito (#2794). Gerar 3 opções de assunto (cada ≤ 70 chars, PT-BR, mês por extenso), cada uma com ângulo distinto (tema central / ângulo alternativo / síntese do mês). Exemplos: `"Diar.ia | Abril 2026 — Brasil acelera regulação de IA"`. Gerar também 1 preview line ≤ 100 chars sintetizando o mês.
 
-3. **Intro (2-3 frases).** Abre cena — o que dominou o mês? Tom geral? Não cita os 3 destaques explicitamente. Sem endereçamento direto ao leitor ("Para profissionais de…").
+3. **Intro (2-3 frases).** Label `**INTRO**` em negrito (#2794). Abre cena — o que dominou o mês? Tom geral? Não cita os 3 destaques explicitamente. Sem endereçamento direto ao leitor ("Para profissionais de…").
 
 4. **Para cada destaque (D1, D2, D3)** — estrutura fixa:
-   - Cabeçalho: `DESTAQUE N | [CATEGORIA]` + título narrativo (máx. 60 chars). `[CATEGORIA]` deve ser uma **categoria editorial** do mesmo vocabulário do diário Diar.ia — nunca o nome de uma empresa ou país: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`. Exemplos: um destaque sobre Anthropic → `INDÚSTRIA`; sobre impacto no emprego brasileiro → `BRASIL`; sobre novo modelo → `LANÇAMENTO`; sobre captação/valuation → `MERCADO`.
+   - Cabeçalho (#2794 — SEMPRE em negrito): `**DESTAQUE N | [CATEGORIA]**` + título narrativo (máx. 60 chars). `[CATEGORIA]` deve ser uma **categoria editorial** do mesmo vocabulário do diário Diar.ia — nunca o nome de uma empresa ou país: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`. Exemplos: um destaque sobre Anthropic → `INDÚSTRIA`; sobre impacto no emprego brasileiro → `BRASIL`; sobre novo modelo → `LANÇAMENTO`; sobre captação/valuation → `MERCADO`.
    - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; quando o limite de chars apertar, fundir P3 e P4 em um único parágrafo conclusivo em vez de cortar o fio condutor.
    - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês] — **obrigatório**. Se na primeira escrita o destaque não couber com o fio condutor dentro do limite, reescrever cortando a prosa narrativa, nunca o fio condutor.
    - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
@@ -39,15 +45,15 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Seções Clarice (placeholders fixos).** Após D1 e antes de D2, emitir:
+5. **Seções Clarice (placeholders fixos).** Após D1 e antes de D2, emitir (label em negrito — #2794):
    ```
-   CLARICE — DIVULGAÇÃO
+   **CLARICE — DIVULGAÇÃO**
 
    [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link.]
    ```
    Após D2 e antes de D3, emitir:
    ```
-   CLARICE — TUTORIAL
+   **CLARICE — TUTORIAL**
 
    [Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais.]
    ```
@@ -55,7 +61,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 6. **Use Melhor + Radar do mês.** Duas seções compactas, na ordem do `prioritized.md`:
 
-   `USE MELHOR DO MÊS` → os 3 tutoriais de `## Use Melhor`. `RADAR DO MÊS` → os 7 links de `## Radar`. Para cada item:
+   `**USE MELHOR DO MÊS**` → os 3 tutoriais de `## Use Melhor`. `**RADAR DO MÊS**` → os 7 links de `## Radar` (labels em negrito — #2794). Para cada item:
    ```
    [Título](https://url)
 
@@ -65,7 +71,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
-8. **É IA? e encerramento.** **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Encerramento (não depois do Radar). Verificar se `eia-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457)
+8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**ENCERRAMENTO**` — #2794). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Encerramento (não depois do Radar). Verificar se `eia-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457)
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
@@ -74,7 +80,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? placeholder e encerramento presentes
-   - Sem markdown excêntrico; sem links de paywall/agregador
+   - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 
    Gravar `out_path`. Responder ao orchestrator com:
