@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
+description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. Etapas 0-5, espelhando a numeração/semântica da diária (#2795) — 0 Preflight, 1 Coleta/Análise, 2 Escrita, 3 Imagens, 4 Revisão consolidada (gate humano, #2793), 5 Publicação Brevo. Gate ao final de cada etapa 1-5.
 ---
 
 # /diaria-mensal
@@ -21,7 +21,9 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 **Variável interna `$CYCLE`:** após resolver o ciclo (pelo `--cycle` passado ou pela derivação do `YYMM` legado), usar `$CYCLE` como o rótulo do ciclo em todos os comandos abaixo. Ex: `CYCLE=2605-06`. O `$1` legado (YYMM) mapeia a `YYMM=${CYCLE:0:4}` quando necessário.
 
-## Pré-requisitos
+## Etapa 0 — Preflight
+
+Espelha o papel do Stage 0 da diária (setup + checks pré-edição, #2795) — sem gate, sem checkpoint (roda sempre, não é skippável por natureza).
 
 - Beehiiv MCP funcional (conector nativo do Claude Code).
 - `platform.config.json → beehiiv.publicationId` populado.
@@ -29,14 +31,32 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 **Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv, funcionando em qualquer máquina.
 
-## Resume check global
+## Resume check global (checkpoints unificados com a diária, #2795)
 
-Antes de iniciar, verificar o estado do disco (de baixo para cima):
+Cada etapa 1-5 grava, ao aprovar seu gate, um checkpoint `_internal/.step-N-done.json` — o MESMO formato de sentinel do diário (`scripts/lib/pipeline-state.ts`), só que sob `data/monthly/{ciclo}/` em vez de `data/editions/{AAMMDD}/` (via `--dir`, #2795). Antes de iniciar, checar de baixo para cima:
 
-- `01-eia.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
-- `draft.md` existe → Etapa 2 completa. Pular para Etapa 3.
-- `prioritized.md` existe → Etapa 1 completa. Pular para Etapa 2.
-- Caso contrário → começar pela Etapa 1.
+```bash
+npx tsx scripts/pipeline-sentinel.ts assert --edition $CYCLE --step N --dir "data/monthly/$CYCLE" --outputs "arquivo1,arquivo2"
+```
+
+- exit 0 → sentinel presente + outputs íntegros → etapa N completa, pular.
+- exit 3 → sentinel AUSENTE mas outputs em disco (ciclo legado, anterior ao #2795 — retrocompat) → tratar como completa (WARN, nunca bloqueia um ciclo antigo).
+- exit 1/2 → etapa incompleta → executar.
+
+Ordem de checagem (mais avançada primeiro):
+
+- Etapa 5: `--step 5 --outputs "_internal/05-published.json"` completo → pipeline mensal já concluído (nada a fazer). Se incompleto, a Etapa 5 tem seu PRÓPRIO resume check de granularidade fina (`_internal/05-published.json` existe com `status: "test_sent"` → pular 5a-5c, ir direto ao gate — ver seção da Etapa 5, não duplicado aqui).
+- Etapa 4: `--step 4 --outputs "_internal/04-fact-check.json"` → pular para Etapa 5.
+- Etapa 3: `--step 3 --outputs "04-d1-2x1.jpg,01-eia.md"` → pular para Etapa 4.
+- Etapa 2: `--step 2 --outputs "draft.md"` → pular para Etapa 3.
+- Etapa 1: `--step 1 --outputs "prioritized.md"` → pular para Etapa 2.
+- Nenhum sentinel nem output em disco → começar pela Etapa 1.
+
+Ao final do gate de cada etapa (exceto quando `retry`/`editar` volta pro topo), gravar o checkpoint:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step N --dir "data/monthly/$CYCLE" --outputs "arquivo1,arquivo2"
+```
 
 ---
 
@@ -125,6 +145,11 @@ Aprovar? sim / editar / retry
 - `editar` → editor edita `prioritized.md` local/Drive; re-rodar analista após confirmação.
 - `retry` → re-disparar `analyst-monthly`.
 
+Após aprovação (`sim`), gravar o checkpoint (#2795):
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 1 --dir "data/monthly/$CYCLE" --outputs "prioritized.md"
+```
+
 ---
 
 ## Etapa 2 — Escrita
@@ -202,11 +227,16 @@ Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empreg
 
 **Invariante do ASSUNTO:** qualquer passo posterior que modifique `draft.md` (humanizador, Clarice, ajustes de formato) deve usar `Edit` (substituição pontual), nunca `Write` (overwrite completo). Se `Write` for inevitável, ler `02-chosen-subject.txt` antes e restaurar o ASSUNTO correto imediatamente após. O ASSUNTO escolhido pelo editor nunca pode ser sobrescrito silenciosamente.
 
+Após aprovação, gravar o checkpoint (#2795):
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 2 --dir "data/monthly/$CYCLE" --outputs "draft.md"
+```
+
 ---
 
 ## Etapa 3 — Imagens
 
-**Resume check:** `04-d1-2x1.jpg` e `01-eia.md` existem → pular Etapa 3, ir para Etapa 4.
+**Resume check:** `04-d1-2x1.jpg` e `01-eia.md` existem → pular Etapa 3, ir para Etapa 4 (Revisão consolidada).
 
 Disparar **em paralelo** (mesma mensagem):
 
@@ -258,15 +288,24 @@ Apresentar:
 Aprovar? sim / regenerar-d1 / regenerar-eia
 ```
 
+Este gate é uma checagem rápida das imagens em si — a revisão CONSOLIDADA (draft completo + lint + fact-check) acontece na Etapa 4 a seguir, que roda o preview de novo (fresco, refletindo qualquer regeneração feita aqui).
+
+Após aprovação, gravar o checkpoint (#2795):
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 3 --dir "data/monthly/$CYCLE" --outputs "04-d1-2x1.jpg,01-eia.md"
+```
+
 ---
 
-## Etapa 4 — Publicação Brevo
+## Etapa 4 — Revisão consolidada (#2793)
 
-**Resume check:** `_internal/05-published.json` existe com `status: "test_sent"` → pular para o gate.
+Espelha o Stage 4 da diária (gate humano pré-publicação, #1694): antes de criar a campanha Brevo, monta um **pré-render COMPLETO** da edição (mesmo HTML que vai pro Brevo — imagens D1/D2/D3 2:1 + É IA? A/B + todas as seções) e um resumo consolidado (lint + fact-check), com aprovação humana explícita. Resolve o gap do ciclo 2606-07 (#2793): antes desta etapa, o gate da Escrita (Etapa 2) mostrava `draft.md` cru — placeholders `[...]` do É IA?, sem imagens, sem preview — e o preview Cloudflare (Etapa 3) era acessório, não o artefato central de aprovação.
+
+**Resume check:** `_internal/04-fact-check.json` existe → pular para Etapa 5 (ou, se ausente mas `_internal/05-published.json` já existe com `status: "test_sent"`, idem — ciclo legado que pulou a Etapa 4 antes dela existir, #2795 retrocompat).
 
 ### 4a. Drive sync pull
 
-Pull do `draft.md` antes de converter (editor pode ter editado no Drive após Etapa 2):
+Pull do `draft.md` antes de renderizar (editor pode ter editado no Drive após a Etapa 2):
 
 ```bash
 npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$CYCLE/ --stage 4 --files draft.md
@@ -274,7 +313,93 @@ npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$CYCLE/ --s
 
 Warning se falhar, nunca bloqueia.
 
-### 4b. Verificar pré-requisitos do Brevo
+### 4b. Pré-render completo (reusa Etapa 3c)
+
+Re-roda o preview Cloudflare — idempotente, garante que o HTML reflita o `draft.md` mais recente (pull do 4a) e as imagens definitivas da Etapa 3:
+
+```bash
+npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
+```
+
+Esse é o MESMO `draftToEmail` que gera o email real — o preview mostra o É IA? com a legenda de `01-eia.md` já mesclada (não o placeholder `[...]` que aparece no `draft.md` cru) e as imagens D1/D2/D3 2:1 embutidas via `<img>`, não só referenciadas por path. Se falhar (`ADMIN_SECRET`/Cloudflare indisponível): warning, seguir sem preview — mas sinalizar isso claramente no resumo do gate (4e) já que o "artefato principal" fica ausente.
+
+### 4c. Lint do draft (sumarizado)
+
+```bash
+npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
+```
+
+Exit 1 = **guardrail crítico (#2794) disparou** (labels de seção não reconhecidos ou sonda de imagem < 3 `<img>`) — NÃO prosseguir pro gate; voltar pra Etapa 2 e corrigir o draft (reforçar `**negrito**` nos labels), re-rodar 2b→2c→2d→4a→4b→4c. Exit 0 = ok (warnings de char-limit, se houver, são advisory — incluir no resumo do gate).
+
+### 4d. Fact-check dos claims
+
+Disparar `fact-checker` via `Agent` em modo mensal (#2793):
+
+```
+Agent({
+  subagent_type: "fact-checker",
+  prompt: "
+    newsletter_path: data/monthly/$CYCLE/draft.md
+    mode: monthly
+    out_path: data/monthly/$CYCLE/_internal/04-fact-check.json
+  "
+})
+```
+
+Sem `social_path`/`approved_json_path` (não existem no mensal — o fact-checker extrai as URLs de fonte diretamente dos links ancorados dentro de cada `DESTAQUE N`, ver `.claude/agents/fact-checker.md` § Modo mensal). Sem auto-bloqueio — resultado vai pro resumo do gate (4e).
+
+### 4e. Resumo consolidado + gate humano (pulado com `--no-gate`)
+
+Apresentar ao editor:
+
+```
+📋 Revisão consolidada — Diar.ia Mensal {YYMM}
+
+🌐 Preview completo (artefato principal): https://draft.diaria.workers.dev/m{YYMM}-{MM}
+
+Lint (scripts/lint-monthly-draft.ts):
+  Guardrail de render: {N} seções reconhecidas, {N}/3 <img> na sonda — OK
+  D1: {chars} / 1.500 {✓|⚠}
+  D2: {chars} / 1.200 {✓|⚠}
+  D3: {chars} / 1.200 {✓|⚠}
+
+Fact-check (_internal/04-fact-check.json):
+  {total} claims verificados — {sustained} sustentados, {attention_items} pedem atenção
+  {listar DIVERGENT + superlativos não-sustentados, se houver}
+
+⚠️  Seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS
+    ([Placeholder — inserir aqui...]) — preenchidas manualmente pela Clarice
+    antes do envio real, NÃO pelo pipeline. O preview acima mostra o
+    placeholder literal, não o conteúdo final dessas 2 seções.
+
+Aprovar? sim / editar / retry
+```
+
+- `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4d após confirmação.
+- `retry` → re-rodar 4b→4c→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b).
+
+Após aprovação (`sim`), gravar o checkpoint (#2795):
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 4 --dir "data/monthly/$CYCLE" --outputs "_internal/04-fact-check.json"
+```
+
+---
+
+## Etapa 5 — Publicação Brevo
+
+**Resume check:** `_internal/05-published.json` existe com `status: "test_sent"` → pular para o gate.
+
+### 5a. Drive sync pull
+
+Pull do `draft.md` antes de converter (editor pode ter editado no Drive após Etapa 4):
+
+```bash
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$CYCLE/ --stage 5 --files draft.md
+```
+
+Warning se falhar, nunca bloqueia.
+
+### 5b. Verificar pré-requisitos do Brevo
 
 Antes de rodar o script, verificar se `brevo_monthly.list_id` e `brevo_monthly.sender_email` estão preenchidos:
 
@@ -307,9 +432,9 @@ Para desbloquear, complete a configuração da conta Brevo (#653):
 Alternativa manual: abrir https://app.brevo.com e criar a campanha manualmente colando draft.md.
 ```
 
-Encerrar Etapa 4 (não é bloqueio de pipeline — editor pode publicar manualmente).
+Encerrar Etapa 5 (não é bloqueio de pipeline — editor pode publicar manualmente).
 
-### 4c. Criar campanha e enviar email de teste
+### 5c. Criar campanha e enviar email de teste
 
 ```bash
 npx tsx scripts/publish-monthly.ts --cycle $CYCLE --send-test
@@ -327,7 +452,7 @@ Se o script falhar com erro de API:
 - Se `list_id` ou `sender_email` ainda nulos: ver mensagem de bloqueio acima
 - Se erro HTTP 4xx da API Brevo: exibir mensagem completa ao editor e encerrar (não retry)
 
-### 4d. Revisar email de teste
+### 5d. Revisar email de teste
 
 Disparar `review-test-email` via `Agent`:
 
@@ -348,7 +473,7 @@ O agente busca o email de teste via Gmail MCP (from:brevo.com) e verifica a estr
 
 Se `review-test-email` retornar `issues` não-vazias, exibir ao editor junto com o gate.
 
-### Gate Etapa 4 (pulado com `--no-gate`)
+### Gate Etapa 5 (pulado com `--no-gate`)
 
 Ler `_internal/05-published.json` e apresentar:
 
@@ -372,8 +497,13 @@ Próximos passos manuais (Etapa Clarice):
 Aprovado? sim / retry (regenerar campanha)
 ```
 
-- `retry` → re-rodar 4c com nova campanha (o script sempre cria uma campanha nova; a anterior fica como rascunho no Brevo e pode ser deletada manualmente)
+- `retry` → re-rodar 5c com nova campanha (o script sempre cria uma campanha nova; a anterior fica como rascunho no Brevo e pode ser deletada manualmente)
 - `sim` → encerrar pipeline mensal
+
+Após aprovação (`sim`), gravar o checkpoint final (#2795):
+```bash
+npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 5 --dir "data/monthly/$CYCLE" --outputs "_internal/05-published.json"
+```
 
 ---
 
@@ -388,17 +518,21 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
 - `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
-- `_internal/05-published.json` — campanha Brevo criada (Etapa 4)
+- `_internal/cloudflare-preview.html` — pré-render completo, artefato principal do gate (Etapa 4)
+- `_internal/04-fact-check.json` — claims verificados (Etapa 4)
+- `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
+- `_internal/05-published.json` — campanha Brevo criada (Etapa 5)
 
 ## Notas
 
 - **Apenas manual** — sem agendamento automático.
 - **Publicação final é responsabilidade da Clarice** — o pipeline cria o rascunho, eles preenchem as seções de divulgação e enviam para a lista deles.
-- **Brevo list_id e sender_email** precisam estar configurados em `platform.config.json → brevo_monthly` (#653). Se nulos, Etapa 4 exibe instruções e encerra sem bloquear.
+- **Brevo list_id e sender_email** precisam estar configurados em `platform.config.json → brevo_monthly` (#653). Se nulos, Etapa 5 exibe instruções e encerra sem bloquear.
+- **Retrocompat de ciclos legados (#2795):** ciclos processados antes desta renumeração não têm `_internal/.step-N-done.json` nem `_internal/04-fact-check.json`. O resume check (acima) degrada graciosamente: sentinel ausente + output legado em disco (`draft.md`, `04-d1-2x1.jpg`, etc.) → tratado como etapa completa via fallback exit 3 do `pipeline-sentinel.ts assert`; sentinel ausente + Etapa 4 nunca tendo rodado (ciclo pré-#2793) → a ausência de `_internal/04-fact-check.json` faz a Etapa 4 rodar normalmente antes da Etapa 5 (idempotente e não-destrutivo — só produz um preview/lint/fact-check novos sobre o `draft.md`/imagens já existentes).
 
 ## Fluxo multi-campanha Clarice (canônico — #2009)
 
-O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedule-sends` é o caminho **canônico** para ciclos com múltiplos envios (S1 A/B/C + S2/S3). O `publish-monthly.ts` (Etapa 4 acima) é o fluxo legado e será removido em release futuro.
+O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedule-sends` é o caminho **canônico** para ciclos com múltiplos envios (S1 A/B/C + S2/S3). O `publish-monthly.ts` (Etapa 5 acima) é o fluxo legado e será removido em release futuro.
 
 **Passo obrigatório antes do `clarice-schedule-sends --schedule`**: setar o gabarito do É IA?:
 
@@ -416,4 +550,4 @@ Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem
 
 Para pular a verificação (não recomendado): `clarice-schedule-sends --schedule --skip-eia-guard`.
 
-**Test-loop no fluxo multi-campanha**: usar `clarice-schedule-sends --send-test` antes do `--schedule`. Envia test email das células `d01-A/B/C` (S1) ou `d08` (S2/S3) para `brevo_monthly.test_email`. Disparar `review-test-email` via Agent após (mesmo fluxo da Etapa 4d acima).
+**Test-loop no fluxo multi-campanha**: usar `clarice-schedule-sends --send-test` antes do `--schedule`. Envia test email das células `d01-A/B/C` (S1) ou `d08` (S2/S3) para `brevo_monthly.test_email`. Disparar `review-test-email` via Agent após (mesmo fluxo da Etapa 5d acima).

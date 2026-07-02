@@ -11,6 +11,12 @@
  *   write-marker  --edition AAMMDD --name <kebab-case> [--details '{"k":"v"}']
  *   assert-marker --edition AAMMDD --name <kebab-case>
  *
+ * `--dir <path>` (opcional, #2795): sobrepõe o diretório default
+ * `data/editions/{edition}` — usado por pipelines com outro layout (ex:
+ * `/diaria-mensal` → `--dir data/monthly/{ciclo}`). `--edition` continua
+ * obrigatório mesmo com `--dir` (vira label do editionId; auto-update de
+ * stage-status é no-op fora do layout da diária). Ver `resolveEditionDir`.
+ *
  * Exit codes para `assert`:
  *   0 — sentinel presente + todos os outputs existem (pass)
  *   1 — sentinel ausente (hard fail); com --outputs, só retorna 1 se algum
@@ -113,6 +119,28 @@ export function autoUpdateStageStatusOnSentinel(
   }
 }
 
+/**
+ * #2795: resolve o diretório alvo do sentinel. Comportamento DEFAULT inalterado
+ * (compat com a diária): resolve `data/editions/{edition}`. Quando `--dir` é
+ * passado explicitamente, usa esse path (relativo a `cwd`) em vez do layout
+ * `data/editions/` — permite reusar a mesma infra de sentinel/checkpoint
+ * (`.step-N-done.json`) para outros pipelines com layout de diretório
+ * diferente, ex: `/diaria-mensal` (#2795), cujos outputs vivem em
+ * `data/monthly/{ciclo}/`, não `data/editions/{AAMMDD}/`.
+ *
+ * `--edition` continua obrigatório mesmo com `--dir` — vira só o `editionId`
+ * usado como label pro auto-update de stage-status (no-op fora do layout da
+ * diária: `autoUpdateStageStatusOnSentinel` exige `_internal/stage-status.json`
+ * no dir, ausente em outros pipelines — ver guard no topo da função).
+ */
+export function resolveEditionDir(
+  args: { edition?: string; dir?: string },
+  cwd: string = process.cwd(),
+): string {
+  if (args.dir) return resolve(cwd, args.dir);
+  return resolve(cwd, "data", "editions", args.edition ?? "");
+}
+
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -140,7 +168,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const editionDir = resolve(process.cwd(), "data", "editions", args.edition);
+  const editionDir = resolveEditionDir(args, process.cwd());
 
   // Marker subcmds só precisam de --name. Step subcmds precisam de --step.
   const isMarkerCmd = subcmd === "write-marker" || subcmd === "assert-marker";
