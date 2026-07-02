@@ -324,7 +324,10 @@ export function renderCtaButton(line: string): string {
   // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
   // paper #FBFAF6 + borda 1px bege, radius 999px, texto INK bold 16px (tamanho
   // do corpo). Centralizado.
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;"><a href="${escHtml(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
+  // Centralização à prova de balas: wrapper full-width com td align=center
+  // (Gmail e afins ignoram margin:auto em <table>). O pill interno encolhe ao
+  // conteúdo e fica centralizado pela td.
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:20px 0 0;"><tr><td align="center"><table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;"><tr><td style="background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;"><a href="${escHtml(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table></td></tr></table>`;
 }
 
 /**
@@ -364,7 +367,7 @@ export function renderLaboratorio(chunk: string): string {
  *   1. Item lista ...
  *   → CTA: [link](url)
  */
-export function renderClariceBox(chunk: string, headerLabelText: string): string {
+export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string): string {
   const lines = chunk.split("\n");
   // Skip header (o rótulo de seção) + blank lines.
   let i = 1;
@@ -405,9 +408,15 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
     ? `<h3 style="margin:0 0 16px 0;font-size:22px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
     : "";
 
+  // #editor: imagem no topo do box (full-bleed, cantos superiores arredondados),
+  // como o box de curadoria de livros da diária (renderMidCallout).
+  const imageRow = imageUrl
+    ? `<tr><td style="padding:0;line-height:0;font-size:0;"><img src="${escHtml(imageUrl)}" width="100%" alt="${escHtml(subtitle || headerLabelText)}" style="display:block;width:100%;height:auto;border:0;border-radius:12px 12px 0 0;" /></td></tr>`
+    : "";
   return [
     renderKicker(headerLabelText),
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-radius:12px;background:${BEGE};">`,
+    imageRow,
     `<tr><td style="padding:24px 28px;">`,
     subtitleHtml,
     renderedBlocks.join("\n"),
@@ -598,7 +607,7 @@ export function renderEia(
     const inner = imgUrl
       ? `<a href="${voteUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;"><img src="${escHtml(imgUrl)}" alt="Imagem ${label}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0" /></a>`
       : `<div style="width:100%;height:160px;background:${BEGE};border:2px dashed ${INK};border-radius:6px;text-align:center;line-height:160px;color:${INK};font-family:${FONT_SANS};font-size:12px;">Imagem ${label}</div>`;
-    return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">${inner}</td>`;
+    return inner;
   };
 
   return renderKicker("É IA?") + `
@@ -608,12 +617,10 @@ export function renderEia(
     <!-- Título -->
     <p style="margin:0 0 16px;font-family:${FONT_SERIF};font-size:26px;line-height:1.2;color:${INK};">Clique na imagem que foi gerada por IA.</p>
 
-    <!-- Imagens A / B lado a lado (clicáveis, sem botão) -->
+    <!-- Imagens A / B empilhadas (A acima de B), como na diária (#2541) -->
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 4px;">
-      <tr>
-        ${imageCell("A", imageUrlA, voteUrlA)}
-        ${imageCell("B", imageUrlB, voteUrlB)}
-      </tr>
+      <tr><td>${imageCell("A", imageUrlA, voteUrlA)}</td></tr>
+      <tr><td style="padding-top:16px;">${imageCell("B", imageUrlB, voteUrlB)}</td></tr>
     </table>
 
     <!-- Crédito -->
@@ -748,7 +755,7 @@ export function isSectionLabel(line: string): boolean {
   // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
   // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
   // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
-  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
     normalized
   );
 }
@@ -798,6 +805,7 @@ export function draftToEmail(
   eiaCredit?: string,
   destaqueImageUrls?: Record<number, string>, // #1916: {1: url, 2: url, 3: url}
   destaqueImageCaption?: string, // #2018: legenda parametrizada do gerador
+  livrosImageUrl?: string, // #editor: imagem do box de curadoria de livros
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -851,6 +859,20 @@ export function draftToEmail(
     if (["APRESENTAÇÃO", "APRESENTACAO"].includes(label)) {
       const body = chunkBody(chunk);
       if (body) bodyParts.push(renderParagraphs(body));
+      continue;
+    }
+
+    // DIVULGAÇÃO: box de divulgação/afiliado (bege) pra 1 item avulso (ex: acesso
+    // a produto) antes do Use Melhor. Reusa o box do Clarice com rótulo "Divulgação".
+    if (label === "DIVULGAÇÃO") {
+      bodyParts.push(renderClariceBox(chunk, "Divulgação"));
+      continue;
+    }
+
+    // LIVROS: box promovendo a página de curadoria de livros da Diar.ia (bege),
+    // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
+    if (label === "LIVROS") {
+      bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));
       continue;
     }
 
