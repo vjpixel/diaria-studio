@@ -59,7 +59,9 @@ import {
 } from "../../../scripts/lib/stripe-coupons.ts";
 // Ordenação de tier: mesma fonte que a segmentação real de waves (#2782/#2807
 // review) — clarice-segment.ts é dependency-free (zero imports), Workers-safe.
-import { tierRank } from "../../../scripts/lib/clarice-segment.ts";
+// cohortLabel (#2817): idem — tradução do valor canônico 'YYYY-MM' pro rótulo
+// pt-BR de exibição ('junho' etc), fonte única com o builder de waves.
+import { tierRank, cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 
 const DS = {
   ...DS_COLORS,
@@ -329,6 +331,10 @@ export interface ContactsSummary {
   // tier firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
   priority_points_histogram_verified?: Record<string, number>;
   by_tier_verified?: Record<string, number>;
+  // #2817: agregado por safra mensal (opcionais — KV antigo não tem os campos;
+  // render degrada omitindo a tabela "Por safra (cohort)" inteira).
+  by_cohort?: Record<string, number>;
+  by_cohort_verified?: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -3033,10 +3039,39 @@ export function renderContactsSummarySection(
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
 
+  // #2817: "Por safra (cohort)" — mesmo padrão visual do kvTable, com a coluna
+  // "verified" (como as demais tabelas com par total+verified). Campo OPCIONAL
+  // (KV antigo sem by_cohort) → tabela inteira omitida, não renderizada vazia.
+  // Ordenação CRONOLÓGICA (não por contagem, ao contrário do kvTable padrão) —
+  // "safra" é uma dimensão de tempo, então maio→junho→julho faz mais sentido
+  // que ordenar por volume; "sem safra" (null) sempre por último. A forma
+  // canônica 'YYYY-MM' ordena lexicograficamente = cronologicamente.
+  const cohortSection = s.by_cohort
+    ? (() => {
+        const byCohortVerified = s.by_cohort_verified;
+        const withVerifiedCol = byCohortVerified !== undefined;
+        const rows = Object.entries(s.by_cohort!)
+          .sort(([a], [b]) => {
+            if (a === "null") return 1;
+            if (b === "null") return -1;
+            return a < b ? -1 : a > b ? 1 : 0;
+          })
+          .map(
+            ([k, v]) =>
+              `<tr><td>${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right">${n(byCohortVerified?.[k] ?? 0)}</td>` : ""}</tr>`,
+          )
+          .join("\n");
+        return `<div class="table-wrap"><table>
+      <thead><tr><th>Por safra (cohort)</th><th style="text-align:right">contatos</th>${withVerifiedCol ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+      })()
+    : "";
+
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
+  ${cohortSection}
   ${priorityPointsSection}
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}

@@ -20,8 +20,12 @@
  * o plano sem escrever.
  *
  * Uso:
- *   npx tsx scripts/clarice-build-waves-store.ts --cycle 2605-06 --budget 8000 [--wave-size 2000] [--dry-run]
+ *   npx tsx scripts/clarice-build-waves-store.ts --cycle 2605-06 --budget 8000 [--wave-size 2000] [--dry-run] [--cohort junho]
  *   --budget N   OBRIGATÓRIO (>0) — contatos a enviar neste ciclo (lever de alcance).
+ *   --cohort X   OPCIONAL (#2817) — restringe a segmentação a uma safra mensal
+ *                (rótulo pt-BR, ex: "junho", ou forma canônica "YYYY-MM", ex:
+ *                "2026-06" — ver `resolveCohortArg`). Sem a flag, roda sobre a
+ *                base inteira (comportamento pré-#2817, sem mudança).
  */
 
 import { writeFileSync, readdirSync, unlinkSync } from "node:fs";
@@ -32,6 +36,7 @@ import {
   segmentFromStore,
   priorityQueue,
   sliceIntoWaves,
+  resolveCohortArg,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
@@ -129,17 +134,32 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const waveSize = Number(getArg(argv, "wave-size")) || 2000;
   const dryRun = hasFlag(argv, "dry-run");
 
+  // #2817: --cohort restringe a segmentação a uma safra mensal específica.
+  // Resolvido ANTES do SELECT (falha cedo se o rótulo/forma não for reconhecido
+  // — ver resolveCohortArg) e aplicado como WHERE, não como filtro pós-carga:
+  // mudança mínima, `segmentFromStore`/`priorityQueue` continuam intocados.
+  const cohortArg = getArg(argv, "cohort");
+  const cohort = cohortArg ? resolveCohortArg(cohortArg) : null;
+
   const db = openClariceDb(dbPath);
   const rows = db
     .prepare(
       `SELECT email, name, tier, priority_points, send_eligible, ineligible_reason, sends_count
-         FROM clarice_users`,
+         FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
     )
-    .all() as unknown as BuilderRow[];
+    .all(...(cohort ? [cohort] : [])) as unknown as BuilderRow[];
   db.close();
 
+  if (cohort) {
+    console.error(`🎯 filtro --cohort aplicado: cohort='${cohort}' (${rows.length} linha(s) no universo)`);
+  }
+
   if (rows.length === 0) {
-    console.error("❌ store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.");
+    console.error(
+      cohort
+        ? `❌ 0 contatos com cohort='${cohort}' — verifique se o store já foi rebuildado após o import da safra.`
+        : "❌ store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.",
+    );
     process.exit(1);
   }
 
@@ -161,6 +181,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     source: "store-driven (#2656)",
     budget,
     wave_size: waveSize,
+    // #2817: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
+    cohort: cohort ?? undefined,
     // Contagens de assinantes reais (pré-seed). O seed (IS_SEED=true) é injetado
     // em cada wave CSV como +1 row extra de monitoramento (#2683).
     seed_email: CLARICE_SEED_EMAIL,

@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   computePriorityPoints,
   classifyEligibility,
@@ -313,4 +317,94 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
   assert.equal(unk.ineligible_reason, "mv_unknown");
 
   db.close();
+});
+
+// ---------------------------------------------------------------------------
+// cohort (#2817) — derivação em recomputeDerived + migração idempotente
+// ---------------------------------------------------------------------------
+
+test("recomputeDerived: deriva cohort a partir de created (maio/junho/julho/fora-do-range)", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("mai@x.com", "2026-05-10T00:00:00.000Z");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("jun@x.com", "2026-06-20T00:00:00.000Z");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("jul@x.com", "2026-07-01T00:00:00.000Z");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("velho@x.com", "2025-12-25T00:00:00.000Z");
+  db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("semcreated@x.com");
+
+  recomputeDerived(db);
+
+  const cohortOf = (email: string) =>
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get(email) as any).cohort;
+
+  assert.equal(cohortOf("mai@x.com"), "2026-05");
+  assert.equal(cohortOf("jun@x.com"), "2026-06");
+  assert.equal(cohortOf("jul@x.com"), "2026-07");
+  assert.equal(cohortOf("velho@x.com"), null, "anterior a 2026-05 → NULL (sem safra rotulada)");
+  assert.equal(cohortOf("semcreated@x.com"), null, "created ausente → NULL");
+
+  db.close();
+});
+
+test("recomputeDerived: cohort é recomputado (não fica stale) numa 2ª rodada após created mudar", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("x@x.com", "2026-05-01T00:00:00.000Z");
+  recomputeDerived(db);
+  assert.equal(
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
+    "2026-05",
+  );
+
+  db.prepare("UPDATE clarice_users SET created = ? WHERE email = 'x@x.com'").run("2026-06-01T00:00:00.000Z");
+  recomputeDerived(db);
+  assert.equal(
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
+    "2026-06",
+  );
+
+  db.close();
+});
+
+test("openClariceDb: migração de cohort é idempotente pra store pré-existente (roda 2x sem perder dados)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "clarice-cohort-migration-"));
+  const dbPath = resolve(dir, "legacy.db");
+
+  // Simula um store LEGADO criado ANTES da coluna `cohort` existir: cria a
+  // tabela manualmente sem a coluna (schema pré-#2817) e insere uma linha.
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE clarice_users (
+      email TEXT PRIMARY KEY,
+      name TEXT,
+      status TEXT,
+      created TEXT,
+      tier INTEGER,
+      priority_points INTEGER DEFAULT 0,
+      send_eligible INTEGER DEFAULT 1,
+      ineligible_reason TEXT,
+      priority_optin INTEGER DEFAULT 0
+    );
+  `);
+  legacy.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run(
+    "legado@x.com",
+    "2026-06-10T00:00:00.000Z",
+  );
+  legacy.close();
+
+  // 1ª abertura: openClariceDb roda a migração (ALTER TABLE ADD COLUMN cohort).
+  const db1 = openClariceDb(dbPath);
+  const before = db1.prepare("SELECT email, created FROM clarice_users WHERE email = ?").get("legado@x.com") as any;
+  assert.equal(before.email, "legado@x.com", "dado pré-existente preservado após a migração");
+  assert.equal(before.created, "2026-06-10T00:00:00.000Z");
+  const colsAfter1 = (db1.prepare("PRAGMA table_info(clarice_users)").all() as Array<{ name: string }>).map((c) => c.name);
+  assert.ok(colsAfter1.includes("cohort"), "coluna cohort adicionada na 1ª abertura");
+  db1.close();
+
+  // 2ª abertura sobre o MESMO arquivo: coluna já existe — migração deve ser
+  // no-op (não lançar "duplicate column name") e os dados seguem intactos.
+  const db2 = openClariceDb(dbPath);
+  const after = db2.prepare("SELECT email, created FROM clarice_users WHERE email = ?").get("legado@x.com") as any;
+  assert.equal(after.email, "legado@x.com", "dado sobrevive à 2ª migração (no-op)");
+  const total = (db2.prepare("SELECT COUNT(*) n FROM clarice_users").get() as any).n;
+  assert.equal(total, 1, "nenhuma linha duplicada/perdida entre as 2 aberturas");
+  db2.close();
 });

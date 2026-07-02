@@ -27,6 +27,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import type { BrevoColumns } from "./brevo-stats.ts";
+import { deriveCohort } from "./clarice-segment.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS clarice_users (
   refunded_volume      REAL DEFAULT 0,
 
   tier                 INTEGER,         -- 1..10 (T01–T10)
+  cohort               TEXT,            -- 'YYYY-MM' (#2817), derivado de created; NULL antes de 2026-05
 
   -- MillionVerifier (ingestão total per-email)
   mv_result            TEXT,            -- ok | catch_all | invalid | disposable | unknown
@@ -113,7 +115,26 @@ export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  migrateSchema(db);
   return db;
+}
+
+/**
+ * Migrações idempotentes pra stores existentes criados ANTES de uma coluna
+ * nova entrar no SCHEMA acima — `CREATE TABLE IF NOT EXISTS` não adiciona
+ * colunas a uma tabela já existente, e SQLite não tem `ADD COLUMN IF NOT
+ * EXISTS`, então guardamos via `PRAGMA table_info`. Roda a cada `openClariceDb`
+ * (barato — 1 PRAGMA + no-op se a coluna já existe); seguro rodar 2x.
+ *
+ * #2817: adiciona `cohort` pra stores criados antes desta migração.
+ */
+function migrateSchema(db: DatabaseSync): void {
+  const cols = (
+    db.prepare("PRAGMA table_info(clarice_users)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!cols.includes("cohort")) {
+    db.exec("ALTER TABLE clarice_users ADD COLUMN cohort TEXT;");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,9 +250,9 @@ export function classifyEligibility(i: EligibilityInput): {
 
 /**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
- * `send_eligible`, `ineligible_reason`) pra todas as linhas a partir do estado
- * atual de Brevo/MV/Stripe + tabela `priority_optin`. Idempotente — roda no
- * fim de cada build e sempre que a flag de optin muda.
+ * `send_eligible`, `ineligible_reason`, `cohort` — #2817) pra todas as linhas
+ * a partir do estado atual de Brevo/MV/Stripe + tabela `priority_optin`.
+ * Idempotente — roda no fim de cada build e sempre que a flag de optin muda.
  */
 export function recomputeDerived(db: DatabaseSync): number {
   const optin = new Set<string>(
@@ -243,7 +264,7 @@ export function recomputeDerived(db: DatabaseSync): number {
   const rows = db
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
-              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -257,11 +278,12 @@ export function recomputeDerived(db: DatabaseSync): number {
     unsubscribed: number;
     hard_bounced: number;
     complained: number;
+    created: string | null;
   }>;
 
   const update = db.prepare(
     `UPDATE clarice_users
-        SET priority_optin = ?, priority_points = ?, send_eligible = ?, ineligible_reason = ?
+        SET priority_optin = ?, priority_points = ?, send_eligible = ?, ineligible_reason = ?, cohort = ?
       WHERE email = ?`,
   );
 
@@ -292,6 +314,7 @@ export function recomputeDerived(db: DatabaseSync): number {
         points,
         elig.send_eligible ? 1 : 0,
         elig.ineligible_reason,
+        deriveCohort(r.created),
         r.email,
       );
       n++;
