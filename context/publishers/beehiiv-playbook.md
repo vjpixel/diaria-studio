@@ -1203,5 +1203,3 @@ O script monta um SVG com design de marca (fundo papel `#FBFAF6`, acento teal `#
 3. Salvar
 
 Isso basta — o Beehiiv usa esse thumbnail em todos os posts que não tiverem capa própria configurada.
-
-**Custo medido**: newsletter 16KB = b64 22KB ≈ 4 chunks ≈ ~30K tokens (paste só), 16+ passos sequenciais. Worker-hosted (Fase 2 recomendada) faz tudo em ~5K tokens e 1 javascript_tool call.
