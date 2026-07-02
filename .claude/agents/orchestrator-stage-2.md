@@ -254,9 +254,10 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
        --in data/editions/{AAMMDD}/_internal/{FILENAME} \
        --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json \
        --corrected-out data/editions/{AAMMDD}/_internal/02-clarice-corrected.md \
-       --retry
+       --retry \
+       --edition {AAMMDD}
      ```
-     `--retry` usa 3 tentativas × 60s timeout com backoff exponencial (0s → 5s → 10s entre tentativas). Teto **por chunk**: ~3min15s; para textos multi-chunk o teto total é ~N × 3min15s (N = nº de chunks). Sem `--retry`, timeout é 30s e há apenas 1 tentativa (comportamento legado). Em sucesso, **consumir `02-clarice-corrected.md` diretamente no passo 3** (já é o texto corrigido — pular `clarice-apply.ts`).
+     `--retry` usa 3 tentativas × 60s timeout com backoff exponencial (0s → 5s → 10s entre tentativas). Teto **por chunk**: ~3min15s; para textos multi-chunk o teto total é ~N × 3min15s (N = nº de chunks). Sem `--retry`, timeout é 30s e há apenas 1 tentativa (comportamento legado). Em sucesso, **consumir `02-clarice-corrected.md` diretamente no passo 3** (já é o texto corrigido — pular `clarice-apply.ts`). **Observabilidade por tentativa (#2798):** com `--edition`, cada tentativa (sucesso/retry/falha fatal) é logada em `data/run-log.jsonl` (`message: "clarice_rest_attempt"`, `details: {attempt, elapsedMs, payloadBytes, outcome, status?}`) — útil pra diagnosticar se o timeout é consistente em chunks grandes (>5k chars) via `/diaria-log {AAMMDD}`.
 
      Logar warn no run-log antes de invocar o script:
      ```bash

@@ -21,6 +21,16 @@
  *     [--retry]               # habilita retry com backoff exponencial (recomendado)
  *     [--timeout-ms N]        # timeout por tentativa em ms (default: 60000 com --retry, 30000 sem)
  *     [--max-attempts N]      # número máximo de tentativas com --retry (default: 3)
+ *     [--edition AAMMDD]      # (#2798) contexto pra observabilidade em data/run-log.jsonl
+ *     [--stage N]             # (#2798) default 2 — só usado se --edition/--retry
+ *     [--agent nome]          # (#2798) default "clarice-correct-rest"
+ *
+ * Observabilidade (#2798): com --retry, cada tentativa (sucesso, retry por
+ * timeout/5xx, ou falha fatal por 4xx) é logada em data/run-log.jsonl via
+ * scripts/lib/run-log.ts com message "clarice_rest_attempt" e details
+ * { attempt, maxAttempts, elapsedMs, payloadBytes, outcome, status?, errorMessage? }.
+ * Isso permite diagnosticar padrões como "timeout consistente em payloads >5k
+ * chars" (ver #2320, #2798) direto no run-log, sem precisar reproduzir o skip.
  *
  * Saída:
  *   --out: JSON array de `{ from, to, rule?, explanation? }` — lista plana de todas as
@@ -55,6 +65,7 @@ import {
   type TextChunk,
   type ClariceChunkSuggestion,
 } from "./lib/clarice-chunk.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 
@@ -80,6 +91,33 @@ export interface CorrectOptions {
   fetchImpl?: typeof fetch;
   /** Timeout em ms por tentativa — default 30s (60s quando via withClariceRetry). */
   timeoutMs?: number;
+  /**
+   * Observabilidade por tentativa (#2798) — callback opcional invocado após CADA
+   * tentativa (sucesso ou falha) dentro de `withClariceRetry`. Sem callback,
+   * nenhum I/O extra acontece (no-op por padrão) — isso mantém `withClariceRetry`
+   * puro de efeito colateral em testes que não passam `onAttempt`, evitando
+   * poluir `data/run-log.jsonl` real durante `npm test`. O caller CLI (`main`)
+   * conecta este callback a `logEvent` (scripts/lib/run-log.ts).
+   */
+  onAttempt?: (entry: AttemptLogEntry) => void;
+}
+
+/**
+ * Payload de uma tentativa individual do REST fallback, repassado ao callback
+ * `onAttempt` (#2798). Pensado para virar `details` de um evento em
+ * `data/run-log.jsonl` sem transformação adicional.
+ */
+export interface AttemptLogEntry {
+  /** 1-indexed — primeira tentativa = 1. */
+  attempt: number;
+  maxAttempts: number;
+  elapsedMs: number;
+  payloadBytes: number;
+  outcome: "success" | "retryable_failure" | "fatal_failure";
+  suggestionsCount?: number;
+  /** HTTP status quando disponível (ClariceHttpError). */
+  status?: number;
+  errorMessage?: string;
 }
 
 /**
@@ -151,17 +189,28 @@ export async function withClariceRetry(
     new Promise((r) => setTimeout(r, ms)),
 ): Promise<RetryResult> {
   let lastError: Error | undefined;
+  const payloadBytes = Buffer.byteLength(opts.text, "utf8");
   for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
     const delay = backoffDelayMs(attempt, policy.baseBackoffMs);
     if (delay > 0) await sleepFn(delay);
+    const attemptStart = Date.now();
     try {
       const suggestions = await correctTextViaREST({
         ...opts,
         timeoutMs: opts.timeoutMs ?? policy.timeoutMs,
       });
+      opts.onAttempt?.({
+        attempt: attempt + 1,
+        maxAttempts: policy.maxAttempts,
+        elapsedMs: Date.now() - attemptStart,
+        payloadBytes,
+        outcome: "success",
+        suggestionsCount: suggestions.length,
+      });
       return { suggestions, attempts: attempt + 1 };
     } catch (e) {
       lastError = e as Error;
+      const elapsedMs = Date.now() - attemptStart;
       // HTTP 4xx = não é problema de disponibilidade — não há sentido em retry.
       // Detecção estrutural: ClariceHttpError carrega .status — preferir isso a
       // string-matching da mensagem, que falha quando proxy/wrapper altera o prefixo
@@ -169,6 +218,18 @@ export async function withClariceRetry(
       const is4xx =
         (e instanceof ClariceHttpError && e.status >= 400 && e.status < 500) ||
         /^HTTP 4\d\d/.test(lastError.message ?? "");
+      // #2798 — observabilidade por tentativa: registra timeout/5xx/4xx antes de
+      // decidir retry vs. fast-fail, pra permitir diagnosticar padrões (ex: timeout
+      // consistente em payloads >5k chars) sem depender só do resultado final.
+      opts.onAttempt?.({
+        attempt: attempt + 1,
+        maxAttempts: policy.maxAttempts,
+        elapsedMs,
+        payloadBytes,
+        outcome: is4xx ? "fatal_failure" : "retryable_failure",
+        status: e instanceof ClariceHttpError ? e.status : undefined,
+        errorMessage: lastError.message,
+      });
       if (is4xx) break;
       // Timeout (AbortError) e erros de rede (TypeError: fetch failed) → retry.
       // HTTP 5xx → retry.
@@ -487,6 +548,10 @@ export interface CliArgs {
   retry: boolean;
   timeoutMs?: number;
   maxAttempts?: number;
+  /** #2798 — contexto opcional pra observabilidade em data/run-log.jsonl. */
+  edition?: string;
+  stage?: number;
+  agent?: string;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs | null {
@@ -519,16 +584,28 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
       out.maxAttempts = n;
       i++;
     }
+    else if (flag === "--edition" && value) { out.edition = value; i++; }
+    else if (flag === "--stage" && value) {
+      const n = Number(value);
+      if (!Number.isInteger(n)) {
+        console.error(`--stage deve ser um inteiro (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.stage = n;
+      i++;
+    }
+    else if (flag === "--agent" && value) { out.agent = value; i++; }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
 }
 
-async function main(): Promise<void> {
+/** Exportado pra testes CLI end-to-end (#2798) — invocado automaticamente no bottom do arquivo. */
+export async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome]",
     );
     process.exit(1);
   }
@@ -557,8 +634,26 @@ async function main(): Promise<void> {
         timeoutMs: args.timeoutMs ?? DEFAULT_RETRY_POLICY.timeoutMs,
         baseBackoffMs: DEFAULT_RETRY_POLICY.baseBackoffMs,
       };
+      // #2798 — loga cada tentativa (sucesso/retry/fatal) em data/run-log.jsonl,
+      // pra permitir diagnosticar padrões (ex: timeout consistente em chunks >5k
+      // chars) sem depender só do resultado final consolidado.
+      const onAttempt = (entry: AttemptLogEntry): void => {
+        logEvent({
+          edition: args.edition ?? null,
+          stage: args.stage ?? 2,
+          agent: args.agent ?? "clarice-correct-rest",
+          level:
+            entry.outcome === "success"
+              ? "info"
+              : entry.outcome === "fatal_failure"
+                ? "error"
+                : "warn",
+          message: "clarice_rest_attempt",
+          details: entry,
+        });
+      };
       const result = await withClariceRetryChunked(
-        { apiKey, text, timeoutMs: args.timeoutMs },
+        { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
         policy,
       );
       rawSuggestions = result.rawSuggestions;
