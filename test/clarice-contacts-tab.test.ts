@@ -263,6 +263,80 @@ test("renderContactsSummarySection: com by_cohort → tabela 'Por safra' com ró
   assert.ok(idxJunho < idxSemCohort, "sem cohort (null) vai por último");
 });
 
+// ---------------------------------------------------------------------------
+// #2857 fase B — by_cohort_first_send (sucessor de by_tier: mesma posição
+// "sub-linhas da linha 0 do histograma", agora agrupado por cohort)
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: payload novo (by_cohort_first_send, sem by_tier) → sub-linhas com rótulo de cohort, tabela por-tier antiga NÃO aparece", () => {
+  const withCohortFirstSend: ContactsSummary = {
+    ...sample,
+    by_tier: undefined,
+    by_tier_verified: undefined,
+    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269, null: 131 },
+    priority_points_histogram: { "0": 427520, "15": 40, null: 12 },
+  };
+  const html = renderContactsSummarySection(withCohortFirstSend);
+  assert.match(html, /1º envio — Assinantes ativos/, "sub-linha com rótulo de cohort (não T01)");
+  assert.match(html, /1º envio — Ex-assinantes/);
+  assert.match(html, /1º envio — sem cohort/, "cohort null rotulado 'sem cohort' (via cohortLabel)");
+  assert.doesNotMatch(html, /1º envio — T01/, "não deve cair no fallback de tier quando by_cohort_first_send está presente");
+  // ordem: cohortSendRank ASC (assinantes-ativos < ex-assinantes < null/desconhecido)
+  const idxAssinantes = html.indexOf("1º envio — Assinantes ativos");
+  const idxEx = html.indexOf("1º envio — Ex-assinantes");
+  const idxSem = html.indexOf("1º envio — sem cohort");
+  assert.ok(idxAssinantes < idxEx && idxEx < idxSem, "ordem cohortSendRank ASC, null por último");
+});
+
+test("renderContactsSummarySection: payload novo com verified (by_cohort_first_send_verified) → coluna extra nas sub-linhas de cohort", () => {
+  const withVerified: ContactsSummary = {
+    ...sample,
+    by_tier: undefined,
+    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
+    by_cohort_first_send_verified: { "assinantes-ativos": 900 },
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_verified: { "0": 81000, "15": 7 },
+  };
+  const html = renderContactsSummarySection(withVerified);
+  assert.match(html, /<th style="text-align:right">verified<\/th>/);
+  assert.match(html, /1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/);
+  assert.match(html, /1º envio — Ex-assinantes<\/td><td[^>]*>7[.,]?269<\/td><td[^>]*>0<\/td>/, "cohort sem entrada no verified → 0");
+});
+
+test("renderContactsSummarySection: by_cohort_first_send tem PRECEDÊNCIA sobre by_tier quando ambos presentes no payload (defensivo)", () => {
+  const both: ContactsSummary = {
+    ...sample,
+    by_tier: { "1": 999 }, // NÃO deve aparecer se by_cohort_first_send estiver presente
+    by_cohort_first_send: { "assinantes-ativos": 1167 },
+    priority_points_histogram: { "0": 427520 },
+  };
+  const html = renderContactsSummarySection(both);
+  assert.match(html, /1º envio — Assinantes ativos/);
+  assert.doesNotMatch(html, /1º envio — T01/);
+});
+
+test("renderContactsSummarySection: fallback pré-#2731 com by_cohort_first_send (payload novo + KV pré-#2731) anexa breakdown de cohort à faixa 'zero'", () => {
+  // `sample` não tem priority_points_histogram — dispara o fallback antigo
+  // (renderPriorityPointsFallback), que também precisa saber preferir cohort.
+  const fallbackWithCohort: ContactsSummary = {
+    ...sample,
+    by_tier: undefined,
+    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
+  };
+  const html = renderContactsSummarySection(fallbackWithCohort);
+  assert.match(html, /zero \(sem histórico\)/);
+  assert.match(html, /1º envio — Assinantes ativos/);
+  assert.doesNotMatch(html, /1º envio — T01/);
+});
+
+test("renderContactsSummarySection: legado (só by_tier, sem by_cohort_first_send) continua com o breakdown por tier — degrade gracioso (#2857 fase B)", () => {
+  // `sample` já cobre isso (não tem by_cohort_first_send) — teste explícito
+  // documentando a garantia de compat com KV cacheado pré-fase-B.
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /1º envio — T01/);
+  assert.match(html, /1º envio — T02/);
+});
+
 test("renderContactsSummarySection: by_cohort com verified → coluna extra; sem verified → 2 colunas só", () => {
   const withVerified: ContactsSummary = {
     ...sample,

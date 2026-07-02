@@ -34,7 +34,6 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 export interface StoreSummary {
   total: number;
   brevo: { synced_rows: number; has_signal: boolean };
-  by_tier: Record<string, number>;
   eligibility: {
     eligible: number;
     ineligible: number;
@@ -64,8 +63,15 @@ export interface StoreSummary {
   // por valor exato de priority_points, quantos têm mv_bucket='verified'.
   // Mesma exclusão de internos do histograma (#2809).
   priority_points_histogram_verified: Record<string, number>;
-  // Idem para as sub-linhas de tier (universo firstSend do by_tier + verified).
-  by_tier_verified: Record<string, number>;
+  // #2857 fase B: sucessor de `by_tier`/`by_tier_verified` (removidos deste
+  // payload — o render em sections-kv.ts degrada pro código antigo quando lê
+  // um KV cacheado ANTES desta migração, mesmo padrão de opcionalidade das
+  // demais migrações de KV, ver #2817/#2731 acima). Mesmo universo firstSend
+  // (send_eligible=1 AND sends_count<=0, `FIRST_SEND_SQL_PREDICATE`) e mesma
+  // semântica de "sub-linhas da linha 0 do histograma" — só a dimensão de
+  // agrupamento muda de `tier` pra `cohort` (GROUP BY cohort em vez de tier).
+  by_cohort_first_send: Record<string, number>;
+  by_cohort_first_send_verified: Record<string, number>;
   // #2817: agregado por safra mensal (`cohort`, derivado de `created`). Ao
   // contrário do by_tier, universo é o STORE INTEIRO (não só firstSend) — a
   // pergunta do editor é "quantos contatos são de junho", não "quantos de
@@ -128,10 +134,12 @@ const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   // Pares total+verified em SCAN ÚNICO por universo (review #2815 — antes eram
   // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
-  const byTierPair = groupCountsWithVerified(
+  // #2857 fase B: GROUP BY cohort (não mais tier) — mesmo predicado firstSend,
+  // sucessor de by_tier/by_tier_verified (ver StoreSummary acima).
+  const byCohortFirstSendPair = groupCountsWithVerified(
     db,
-    `SELECT tier AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
-      WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`,
+    `SELECT cohort AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
+      WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY cohort`,
   );
   const ppHistPair = groupCountsWithVerified(
     db,
@@ -160,19 +168,6 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
                OR unsubscribed=1 OR hard_bounced=1 OR complained=1`,
         ) > 0,
     },
-    // #2732: tier só governa a ordenação de 1º envio (segmentFromStore em
-    // clarice-segment.ts) — uma vez que o contato JÁ recebeu ≥1 email
-    // (sends_count>0), o preditor de reenvio vira priority_points (histórico
-    // real de abertura), nunca mais tier (atributo estático do Stripe).
-    // by_tier aqui espelha o universo `firstSend` de segmentFromStore: além
-    // de sends_count=0, exige send_eligible=1 — sem isso, contato nunca-enviado
-    // mas permanentemente bloqueado (dispute, mv_rejected, unsubscribed antes
-    // do 1º envio) inflaria a contagem por tier mesmo nunca indo pra fila real
-    // (segmentFromStore roteia esses pra `excluded`, não `firstSend`). tier
-    // continua gravado no store pra auditoria, só não entra nesta contagem.
-    // #2782: o predicado vem da MESMA fonte que segmentFromStore usa — não
-    // reimplementar em SQL cru aqui (era 2 cópias que divergiam em silêncio).
-    by_tier: byTierPair.total,
     eligibility: {
       eligible: count(
         db,
@@ -237,12 +232,13 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // Coluna "verified" (260702): mesmo universo do histograma (sem internos,
     // #2809), restrito a mv_bucket='verified'. Chave ausente = 0 verificados.
     priority_points_histogram_verified: ppHistPair.verified,
-    // Verified das sub-linhas de tier: universo firstSend (#2782, mesma fonte
-    // do by_tier — que, como o by_tier, NÃO filtra internos; a exclusão #2809
-    // é exclusiva do bloco priority_points) ∩ mv_bucket='verified'. T1 tende a
-    // 0/baixo — assinante ativo é validado por pagamento, não passa pelo MV
-    // (#1297).
-    by_tier_verified: byTierPair.verified,
+    // #2857 fase B: sucessor de by_tier/by_tier_verified — universo firstSend
+    // (#2782, #2732: tier/cohort só governam a ordenação/agrupamento de 1º
+    // envio; uma vez enviado, sends_count>0 tira o contato daqui) agrupado por
+    // cohort. NÃO filtra internos (mesmo padrão do by_tier antigo — a exclusão
+    // #2809 é exclusiva do bloco priority_points).
+    by_cohort_first_send: byCohortFirstSendPair.total,
+    by_cohort_first_send_verified: byCohortFirstSendPair.verified,
     by_cohort: byCohortPair.total,
     by_cohort_verified: byCohortPair.verified,
     mv: groupCounts(

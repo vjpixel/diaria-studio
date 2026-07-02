@@ -11,22 +11,41 @@
  *   - `send_eligible = 0`  → CORTE (vai pra `excluded` com a razão).
  *   - re-envio (`sends_count > 0`) → ordenado por `priority_points` DESC
  *     (mais engajado primeiro; quem ignorou/decaiu, por último).
- *   - 1º envio (`sends_count = 0`) → ordenado por `tier` ASC (T01 ativo primeiro,
- *     depois ex-assinante, depois leads); tier nulo (só-MV/Brevo, sem proveniência
- *     Stripe) por último.
+ *   - 1º envio (`sends_count = 0`) → ordenado por `cohort` (#2857 fase B —
+ *     antes era `tier` ASC; `cohortSendRank` é um sucessor PROVADO equivalente
+ *     pros 10 cohorts derivados de tier, ver test/cohorts.test.ts): assinante
+ *     ativo primeiro, depois ex-assinante, depois leads por recência
+ *     decrescente (safra mensal mais nova primeiro), depois caudão; cohort
+ *     nulo/desconhecido por último. `tier` permanece no `StoreRow` (dupla-
+ *     escrita, compat da fase B — a remoção é fase C).
  *
  * Desempate estável por email ASC em todos os grupos → output determinístico
  * (reproduzível, pré-requisito do pipeline).
  */
 
-// cohortDisplayLabel/cohortFromSafra: cohorts.ts é dependency-free/Workers-safe
-// como este módulo (sem import de volta pra cá) — importar daqui não introduz
-// ciclo nem dependência de node:sqlite.
-import { cohortDisplayLabel, cohortFromSafra } from "./cohorts.ts";
+// cohortDisplayLabel/cohortFromSafra/cohortSendRank/cohortFromTier/
+// isKnownCohortSlug: cohorts.ts é dependency-free/Workers-safe como este
+// módulo (sem import de volta pra cá) — importar daqui não introduz ciclo nem
+// dependência de node:sqlite.
+import {
+  cohortDisplayLabel,
+  cohortFromSafra,
+  cohortFromTier,
+  cohortSendRank,
+  isKnownCohortSlug,
+} from "./cohorts.ts";
 
 export interface StoreRow {
   email: string;
   tier: number | null;
+  // #2857 fase B: coluna nova do store (slug de cohort nomeado — ver
+  // scripts/lib/cohorts.ts). Governa a ordenação de 1º envio (ver
+  // `segmentFromStore` abaixo, que troca `tierRank` por `cohortSendRank`).
+  // Opcional (compat): consumidores que não passam pelo store real (ex:
+  // scripts/lib/clarice-waves-dryrun.ts, que só mede elegibilidade/supressão,
+  // não ordem) continuam válidos sem popular o campo — `cohortSendRank(undefined)`
+  // degrada com segurança pro fim da fila (mesmo destino de `null`/desconhecido).
+  cohort?: string | null;
   priority_points: number;
   send_eligible: number; // 0 | 1
   ineligible_reason: string | null;
@@ -46,6 +65,14 @@ export interface Segmentation {
  * tier p/ ordenação: nulo vira +∞ (vai pro fim). Exportado (#2807 review):
  * o brevo-dashboard ordena o breakdown por tier com a MESMA regra — não
  * re-derivar lá (mesma classe de drift que o #2782 elimina pro firstSend).
+ *
+ * #2857 fase B: `segmentFromStore` NÃO usa mais esta função pra ordenar o
+ * 1º envio (trocado por `cohortSendRank`, ver import de cohorts.ts) — `tier`
+ * virou um atributo derivado/legado do StoreRow (dupla-escrita, fase A/B).
+ * `tierRank` continua exportada e viva: o brevo-dashboard degrada pra ela
+ * quando o payload do KV é um `by_tier` ANTIGO (pré-#2857-fase-B, ver
+ * `workers/brevo-dashboard/src/sections-kv.ts`) — remover só na fase C,
+ * quando não houver mais risco de KV cacheado nesse formato.
  */
 export function tierRank(t: number | null): number {
   return t == null ? Number.POSITIVE_INFINITY : t;
@@ -136,11 +163,17 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
       (b.priority_points ?? 0) - (a.priority_points ?? 0) ||
       a.email.localeCompare(b.email),
   );
-  // Comparador explícito (não subtrai ranks) — tierRank pode ser +∞ e
-  // (+∞)−(+∞)=NaN quebraria a ordenação entre dois tiers nulos.
+  // #2857 fase B: cohortSendRank (não mais tierRank) governa a ordem de 1º
+  // envio — sucessor PROVADO equivalente pros 10 cohorts derivados de tier
+  // (test/cohorts.test.ts, propriedade testada) + extensão pras safras
+  // mensais (ordenadas por recência, não pelo tier residual que o merge
+  // atribuiria). Comparador explícito (não subtrai ranks) — cohortSendRank
+  // pode retornar valores enormes (RANK_UNKNOWN/RANK_LEADS_CAUDAO) cuja
+  // subtração poderia estourar precisão de float; a comparação direta evita
+  // qualquer edge de NaN/overflow.
   firstSend.sort((a, b) => {
-    const ra = tierRank(a.tier);
-    const rb = tierRank(b.tier);
+    const ra = cohortSendRank(a.cohort);
+    const rb = cohortSendRank(b.cohort);
     if (ra !== rb) return ra < rb ? -1 : 1;
     return a.email.localeCompare(b.email);
   });
@@ -185,7 +218,7 @@ export function loadStoreRows(db: {
 }): StoreRow[] {
   return db
     .prepare(
-      `SELECT email, tier, priority_points, send_eligible, ineligible_reason, sends_count
+      `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count
          FROM clarice_users`,
     )
     .all() as StoreRow[];
@@ -245,18 +278,29 @@ export function cohortLabel(cohort: string | null): string {
   return cohortDisplayLabel(cohort);
 }
 
+/** Casa alias de tier legado ("t04", "T4", case-insensitive) — #2857 fase B. */
+const TIER_ALIAS_RE = /^t(\d{1,2})$/i;
+
 /**
- * Resolve o valor de `--cohort` passado na CLI (rótulo pt-BR tipo "junho" OU
- * a forma canônica "YYYY-MM") pro valor exato armazenado na coluna `cohort`.
- * Rótulo pt-BR só é reconhecido pra o ano corrente da epoch (2026 — único ano
- * com safras rotuladas até agora); pra outro ano, use a forma canônica direto
- * ("2027-01"). Lança se o input não bater com nenhuma das duas formas —
- * preferível a um filtro silenciosamente vazio.
+ * Resolve o valor de `--cohort` passado na CLI pro valor exato armazenado na
+ * coluna `cohort`. Formas aceitas, nesta ordem de tentativa:
+ *   1. forma canônica de safra "YYYY-MM" → `cohortFromSafra`.
+ *   2. rótulo pt-BR do mês ("junho") → resolvido pro ano-epoch (2026).
+ *   3. alias de tier LEGADO ("t04"/"T4", #2857 fase B) → `cohortFromTier`,
+ *      com warning de depreciação em stderr (o alias é uma ponte de migração,
+ *      não o identificador canônico — remoção prevista na fase C).
+ *   4. slug canônico da taxonomia já resolvido ("assinantes-ativos",
+ *      "leads-2025h2", "leads-2026-06", ...) → devolvido como está
+ *      (`isKnownCohortSlug`), depois de rejeitar as 3 formas acima.
+ * Rótulo pt-BR (forma 2) só é reconhecido pra o ano corrente da epoch (2026 —
+ * único ano com safras rotuladas até agora); pra outro ano, use a forma
+ * canônica direto ("2027-01"). Lança se o input não bater com NENHUMA das 4
+ * formas — preferível a um filtro silenciosamente vazio.
  *
  * #2857 fase A: a coluna `cohort` guarda o slug `leads-YYYY-MM` (não mais a
- * safra crua) — o retorno agora passa pelo mesmo `cohortFromSafra` que
- * `recomputeDerived` usa pra popular a coluna, então o resultado sempre bate
- * com o valor armazenado (`resolveCohortArg('junho')` → `'leads-2026-06'`).
+ * safra crua) — o retorno das formas 1/2 passa pelo mesmo `cohortFromSafra`
+ * que `recomputeDerived` usa pra popular a coluna, então o resultado sempre
+ * bate com o valor armazenado (`resolveCohortArg('junho')` → `'leads-2026-06'`).
  * Assinatura preservada (string → string) — nenhum caller precisa mudar.
  */
 export function resolveCohortArg(input: string): string {
@@ -266,8 +310,27 @@ export function resolveCohortArg(input: string): string {
   if (idx !== -1) {
     return cohortFromSafra(`${COHORT_EPOCH_YEAR}-${String(idx + 1).padStart(2, "0")}`);
   }
+  const tierAlias = trimmed.match(TIER_ALIAS_RE);
+  if (tierAlias) {
+    const tierNum = Number(tierAlias[1]);
+    const resolved = cohortFromTier(tierNum);
+    if (resolved) {
+      console.error(
+        `⚠️  --cohort "${input}" é um alias de tier LEGADO (#2857 fase A/B) — ` +
+          `resolvido pra "${resolved}". Prefira o slug nomeado diretamente; o ` +
+          `alias "t${String(tierNum).padStart(2, "0")}" será removido na fase C ` +
+          `(cutover, remoção de tier).`,
+      );
+      return resolved;
+    }
+    // Número fora do mapa (ex: t00, t11) — cai no erro genérico abaixo, mesma
+    // mensagem que qualquer outro input não reconhecido.
+  }
+  if (isKnownCohortSlug(trimmed)) return trimmed;
   throw new Error(
-    `--cohort "${input}" não reconhecido — use um rótulo pt-BR (ex: junho) ` +
-      `ou a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06).`,
+    `--cohort "${input}" não reconhecido — use um rótulo pt-BR (ex: junho), ` +
+      `a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06), um slug da ` +
+      `taxonomia (ex: assinantes-ativos, leads-2025h2) ou o alias de tier ` +
+      `legado (ex: t04).`,
   );
 }

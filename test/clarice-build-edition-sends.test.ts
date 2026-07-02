@@ -5,6 +5,7 @@ import type { SendsSummaryEntry } from "../scripts/lib/send-plan.ts";
 import type { SendPlanEntry } from "../scripts/lib/send-plan.ts";
 import type { StoreRow } from "../scripts/lib/clarice-segment.ts";
 import { CLARICE_SEED_EMAIL } from "../scripts/lib/clarice-seed.ts";
+import { cohortFromTier } from "../scripts/lib/cohorts.ts";
 
 describe("apportion (maior-resto)", () => {
   it("soma sempre = total", () => {
@@ -54,9 +55,12 @@ describe("stratify (espalha cada balde pela faixa de prioridade — genérico #2
 // outRow (#2775 — StoreRow -> CSV row, substitui o outRow tier-string legado)
 // ---------------------------------------------------------------------------
 
+// #2857 fase B: cohort default derivado de tier (mesma regra do store real).
 function srow(p: Partial<StoreRow> & { email: string }): StoreRow {
+  const tier = p.tier ?? null;
   return {
-    tier: null,
+    tier,
+    cohort: cohortFromTier(tier),
     priority_points: 0,
     send_eligible: 1,
     ineligible_reason: null,

@@ -9,6 +9,7 @@ import {
   cohortFromSafra,
   cohortSendRank,
   cohortDisplayLabel,
+  isKnownCohortSlug,
 } from "../scripts/lib/cohorts.ts";
 import { tierRank } from "../scripts/lib/clarice-segment.ts";
 
@@ -157,5 +158,30 @@ describe("cohortDisplayLabel", () => {
       const label = cohortDisplayLabel(slug);
       assert.notEqual(label, slug, `tier ${t} (${slug}) deveria ter rótulo != slug cru`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isKnownCohortSlug — #2857 fase B (resolveCohortArg em clarice-segment.ts
+// consome isto pra aceitar o slug canônico direto em --cohort)
+// ---------------------------------------------------------------------------
+
+describe("isKnownCohortSlug", () => {
+  it("os 10 slugs derivados de tier são reconhecidos", () => {
+    for (let t = 1; t <= 10; t++) {
+      assert.ok(isKnownCohortSlug(cohortFromTier(t)!), `tier ${t} deveria ser reconhecido`);
+    }
+  });
+
+  it("qualquer safra mensal 'leads-YYYY-MM' (passada ou futura, sem lista hardcoded) é reconhecida", () => {
+    assert.ok(isKnownCohortSlug("leads-2026-06"));
+    assert.ok(isKnownCohortSlug("leads-2030-01"));
+    assert.ok(isKnownCohortSlug(cohortFromSafra("2027-12")));
+  });
+
+  it("slug inventado ou forma crua (sem prefixo leads-) NÃO é reconhecido", () => {
+    assert.equal(isKnownCohortSlug("cohort-que-nao-existe"), false);
+    assert.equal(isKnownCohortSlug("2026-06"), false, "safra crua pré-#2857 não é o slug canônico");
+    assert.equal(isKnownCohortSlug(""), false);
   });
 });
