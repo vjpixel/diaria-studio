@@ -24,6 +24,8 @@ import { computeMvStatus } from "../scripts/clarice-mv-status.ts";
 import {
   parseClariceCampaignKey,
   aggregateAbcSummary,
+  isPostAbcReset,
+  ABC_RESET_AT,
   calcCumulativeSent,
   detectActiveCycle,
   renderAbcSection,
@@ -2063,14 +2065,79 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
 
 // ─── #2600: Resumo A/B/C restaurado como seção principal ─────────────────────
 
-describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
-  test("renderDashboardHtml inclui seção 'Resumo A/B/C' (não apenas D1-D5)", () => {
+describe("reset A/B/C 260702 (#2871): isPostAbcReset + placeholder condicional", () => {
+  test("isPostAbcReset: pós-corte → true; exatamente no corte → true; pré-corte → false", () => {
+    assert.equal(isPostAbcReset({ scheduledAt: "2026-07-10T06:00:00.000-03:00" }), true);
+    assert.equal(isPostAbcReset({ scheduledAt: ABC_RESET_AT }), true);
+    assert.equal(isPostAbcReset({ scheduledAt: "2026-06-15T06:00:00.000-03:00" }), false);
+  });
+
+  test("isPostAbcReset: scheduledAt ausente/não-parseável → false (conservador)", () => {
+    assert.equal(isPostAbcReset({ scheduledAt: null }), false);
+    assert.equal(isPostAbcReset({ scheduledAt: "não-é-data" }), false);
+  });
+
+  test("all-zero SEM resetNote → oculta (neutro, comportamento pré-reset preservado)", () => {
+    const emptyRows = [
+      { cell: "A" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+    ];
+    assert.equal(renderAbcSection(emptyRows), "");
+  });
+
+  test("all-zero COM resetNote → placeholder com data derivada de ABC_RESET_AT", () => {
+    const emptyRows = [
+      { cell: "A" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
+    ];
+    const html = renderAbcSection(emptyRows, true);
+    assert.match(html, /aguardando novo teste/);
+    assert.match(html, /variante B venceu/);
+    // Data exibida DERIVA do const (achado A2 do review #2870 — sem drift):
+    assert.match(html, /03\/07\/2026/);
+    assert.match(html, /#2871/);
+    assert.doesNotMatch(html, /Célula A/, "tabela de células não renderiza zerada");
+  });
+
+  test("integração renderDashboardHtml: ciclo com células só pré-reset → placeholder (o corte causou o zero)", () => {
+    // allCampaigns têm scheduledAt null (fixtures legadas) → isPostAbcReset false
+    // → abcRows zerado; abcRowsAll (sem filtro) tem células → resetNote=true.
     const html = renderDashboardHtml(allCampaigns);
+    assert.match(html, /aguardando novo teste/);
+    assert.doesNotMatch(html, /Célula A/);
+  });
+
+  test("integração renderDashboardHtml: ciclo SEM células A/B/C (S2/S3 puro) → nada renderiza (neutro)", () => {
+    // Campanha sem sufixo -A/-B/-C: participa do ciclo (detectActiveCycle) mas
+    // não do A/B/C → abcRowsAll TAMBÉM zerado → sem placeholder (achado A1/B1).
+    const s2Only = [{ ...allCampaigns[0], id: 950, name: "Clarice News 2605 d08 (qua)" }];
+    const html = renderDashboardHtml(s2Only);
+    assert.doesNotMatch(html, /aguardando novo teste/);
+    assert.doesNotMatch(html, /Resumo A\/B\/C — S1/);
+  });
+});
+
+describe("regressão #2600: abcSection usa A/B/C (não D1-D5)", () => {
+  // Reset #2871: scheduledAt pós-corte pra exercitar a TABELA REAL no caminho
+  // renderDashboardHtml (com as fixtures default pré-reset, o filtro do call
+  // site derruba tudo e só o placeholder renderiza — o assert /Resumo A\/B\/C/
+  // casaria com ambos os branches e a regressão #2600 ficaria sem cobertura;
+  // achado C2 do review #2870).
+  const postResetCampaigns = allCampaigns.map((c) => ({
+    ...c,
+    scheduledAt: "2026-07-10T06:00:00.000-03:00",
+  }));
+
+  test("renderDashboardHtml inclui seção 'Resumo A/B/C' (não apenas D1-D5)", () => {
+    const html = renderDashboardHtml(postResetCampaigns);
     assert.match(html, /Resumo A\/B\/C/i, "deve conter seção Resumo A/B/C");
+    assert.match(html, /Célula A/i, "tabela REAL renderizada (não o placeholder do reset #2871)");
   });
 
   test("renderDashboardHtml NÃO inclui mais a seção D1-D5 (removida em #2736)", () => {
-    const html = renderDashboardHtml(allCampaigns);
+    const html = renderDashboardHtml(postResetCampaigns);
     assert.doesNotMatch(html, /Resumo D1.D5/i, "seção D1-D5 foi removida da aba Engajamento (#2736)");
   });
 

@@ -130,8 +130,18 @@ export function renderDashboardHtml(
   const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
   // #2600: restaura Resumo A/B/C como seção principal (revertendo #2492 que havia substituído).
   // D1–D5 mantido como seção SEPARADA logo após.
-  const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
-  const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
+  // Reset A/B/C (#2871): o filtro fica AQUI no call site — aggregateAbcSummary
+  // permanece pura (review #2870: embutir o cutoff nela quebrava a cobertura
+  // das regressões #2199/#2600 e armava um trap pra callers futuros). O
+  // placeholder só aparece quando o CORTE causou o zero (havia células
+  // pré-reset); ciclo sem A/B/C planejado segue renderizando nada (neutro).
+  const abcRowsAll = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
+  const abcRows = activeCycle
+    ? aggregateAbcSummary(campaigns.filter(isPostAbcReset), activeCycle)
+    : [];
+  const abcResetNote =
+    abcRowsAll.some((r) => r.campaignCount > 0) && abcRows.every((r) => r.campaignCount === 0);
+  const abcSection = activeCycle ? renderAbcSection(abcRows, abcResetNote) : "";
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
   // e testadas (reuso futuro), só não são mais chamadas aqui.
@@ -564,6 +574,28 @@ export interface CellSummary {
 }
 
 /**
+ * Reset do teste A/B/C (#2871, pedido do editor 260702): o teste do ciclo 2605
+ * foi ENCERRADO e documentado (B venceu — consolidada em d06); um teste novo
+ * será rodado em breve. Campanhas agendadas ANTES deste corte ficam fora do
+ * Resumo A/B/C — o filtro (isPostAbcReset) é aplicado no CALL SITE
+ * (renderDashboardHtml), nunca dentro de aggregateAbcSummary (review #2870).
+ * Lifecycle do cutoff (próximo reset, opção KV sem deploy): ver #2871.
+ */
+export const ABC_RESET_AT = "2026-07-03T00:00:00.000-03:00";
+
+/**
+ * true se a campanha foi agendada NO cutoff ou depois — participa do Resumo
+ * A/B/C pós-reset (#2871). `scheduledAt` ausente/não-parseável → false
+ * (conservador). Verificação empírica 260702: o listing `status=sent` da
+ * Brevo devolve `scheduledAt` populado (28/28 campanhas de junho conferidas
+ * via API) — campanhas do teste novo passam normalmente.
+ */
+export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
+  const ms = c.scheduledAt ? Date.parse(c.scheduledAt) : NaN;
+  return Number.isFinite(ms) && ms >= Date.parse(ABC_RESET_AT);
+}
+
+/**
  * Agrega resumo A/B/C das campanhas S1 (d01–d07) de um ciclo Clarice.
  * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
  * Exportado pra teste unitário.
@@ -943,8 +975,21 @@ export function renderWeekdaySection(
  * Renderiza a seção de resumo A/B/C da S1.
  * Exportado pra teste unitário.
  */
-export function renderAbcSection(abcRows: CellSummary[]): string {
-  if (abcRows.every((r) => r.campaignCount === 0)) return "";
+export function renderAbcSection(abcRows: CellSummary[], resetNote = false): string {
+  if (abcRows.every((r) => r.campaignCount === 0)) {
+    // Sem resetNote (ciclo sem A/B/C planejado, ex: S2/S3 puro): oculta, como
+    // sempre. Com resetNote (#2871 — o corte do reset removeu células reais):
+    // placeholder explicativo — sumir seria indistinguível de bug de dado.
+    if (!resetNote) return "";
+    const resetDate = new Date(ABC_RESET_AT).toLocaleDateString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+    });
+    return `
+<section class="phase2-section" id="abc-summary">
+  <h2 class="section-title">Resumo A/B/C — aguardando novo teste</h2>
+  <p class="section-note">Zerado a pedido do editor (#2871): resultados do teste do ciclo 2605 estão documentados — <strong>variante B venceu</strong> (consolidada em d06). Campanhas de teste agendadas a partir de <strong>${resetDate}</strong> repopulam esta tabela automaticamente.</p>
+</section>`;
+  }
 
   const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
   const allSampled = sampledRows.length >= 2;
