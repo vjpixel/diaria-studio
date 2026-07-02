@@ -42,6 +42,11 @@ import {
   senderDomain,
 } from "./inject-inbox-urls.ts";
 import type { SyntheticInboxArticle } from "./inject-inbox-urls.ts";
+// #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
+// de auto-forward-newsletters.ts). Reexportado aqui pra não quebrar imports
+// existentes deste módulo (incl. test/capture-newsletter-urls.test.ts).
+import { stripHtml } from "./lib/strip-html.ts";
+export { stripHtml };
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -91,35 +96,6 @@ export function saveCursor(cursorPath: string, cursor: CapturedCursor): void {
   const tmpPath = cursorPath + ".tmp";
   writeFileSync(tmpPath, JSON.stringify(cursor, null, 2), "utf8");
   renameSync(tmpPath, cursorPath);
-}
-
-// ---------------------------------------------------------------------------
-// HTML stripping (lightweight, no external deps)
-// ---------------------------------------------------------------------------
-
-/**
- * Strip HTML tags to extract readable text. Preserves href attribute values
- * as inline text so URL extraction still works on HTML bodies.
- */
-export function stripHtml(html: string): string {
-  // Replace <a href="..."> with the URL followed by a space
-  let text = html.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>/gi, "$1 ");
-  // Replace <br>, <p>, <div> closings with newlines
-  text = text.replace(/<\/(p|div|tr|li)>/gi, "\n");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  // Strip remaining tags
-  text = text.replace(/<[^>]+>/g, " ");
-  // Decode common HTML entities
-  text = text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ");
-  // Collapse multiple spaces/newlines
-  text = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
-  return text.trim();
 }
 
 // ---------------------------------------------------------------------------

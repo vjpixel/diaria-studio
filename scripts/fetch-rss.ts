@@ -20,6 +20,10 @@
 import { XMLParser } from "fast-xml-parser";
 import { capArticles, MAX_ARTICLES_PER_SOURCE, type Article } from "./lib/article-cap.ts";
 import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
+// #2834: era byte-idêntico ao stripHtml de lib/fetch-sitemap.ts — consolidado
+// em lib/strip-html.ts como stripHtmlBasic (nome distinto do stripHtml
+// anchor-preserving de auto-forward-newsletters.ts/capture-newsletter-urls.ts).
+import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -89,18 +93,6 @@ const xmlParser = new XMLParser({
   parseTagValue: false,
 });
 
-function stripHtml(input: string): string {
-  return input
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function coerceText(val: unknown): string {
   if (val == null) return "";

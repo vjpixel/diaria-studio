@@ -9,6 +9,11 @@
  * Contrato: lê BEEHIIV_API_KEY do env (obrigatório) e publicationId
  * de BEEHIIV_PUBLICATION_ID (env) ou platform.config.json (fallback).
  * Em caso de erro, escreve em stderr e chama process.exit(2).
+ *
+ * #2834: também hospeda `BEEHIIV_API_BASE` — a constante de base URL da API
+ * pública da Beehiiv, hardcoded (com o mesmo fallback `?? "https://api.
+ * beehiiv.com/v2"`) em pelo menos 9 scripts. `BEEHIIV_API_URL` (env) segue
+ * como override — usado por testes que apontam pra mock server local.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -17,6 +22,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
+
+/** Base URL da API pública da Beehiiv. `BEEHIIV_API_URL` (env) override pra tests. */
+export const BEEHIIV_API_BASE = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
 
 export interface BeehiivConfig {
   apiKey: string;

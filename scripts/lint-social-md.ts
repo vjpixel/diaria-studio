@@ -36,6 +36,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { tokenizeForJaccard, jaccardSimilarity } from "./dedup.ts"; // #1861
 import { DIARIA_LINKEDIN_PAGE_SLUG } from "./lib/canonical-urls.ts"; // #2790 fonte única (reexportada abaixo p/ back-compat)
+import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada em publish-instagram.ts/publish-threads.ts)
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportadas pra tests
@@ -598,18 +599,6 @@ export function lintInstagramEmailCTA(md: string): LinkedinEmailCtaResult {
   }
 
   return { ok: errors.length === 0, errors };
-}
-
-/**
- * Extrai a seção de uma plataforma arbitrária do md por título (`# {Title}`).
- * Versão mais genérica de extractPlatformSection que aceita qualquer título.
- * Usada internamente por lintInstagramEmailCTA para buscar `# Instagram`.
- */
-function extractSection(md: string, sectionTitle: string): string | null {
-  const normalized = md.replace(/\r\n/g, "\n");
-  const re = new RegExp(`(?:^|\\n)# ${sectionTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
-  const m = normalized.match(re);
-  return m ? m[1] : null;
 }
 
 /**

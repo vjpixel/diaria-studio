@@ -43,12 +43,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seoSlug } from "./lib/slug.ts";
+import { BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
 
 loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// `BEEHIIV_API_URL` override allows tests to point to a mock server.
-const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+// #2834: base URL centralizada em lib/beehiiv-config.ts (`BEEHIIV_API_URL`
+// override pra tests continua honrado lá).
+const BEEHIIV_API = BEEHIIV_API_BASE;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

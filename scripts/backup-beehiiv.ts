@@ -49,12 +49,12 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { loadBeehiivConfig, type BeehiivConfig } from "./lib/beehiiv-config.ts";
+import { loadBeehiivConfig, type BeehiivConfig, BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
 const BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
-const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+const BEEHIIV_API = BEEHIIV_API_BASE; // #2834: base URL centralizada em lib/beehiiv-config.ts
 
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 5;

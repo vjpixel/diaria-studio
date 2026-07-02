@@ -35,6 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
+import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -63,24 +64,6 @@ function loadPublished(path: string): SocialPublished {
     return JSON.parse(readFileSync(path, "utf8"));
   }
   return { posts: [] };
-}
-
-/**
- * Extrai o conteúdo de uma seção `# {Title}` do 03-social.md.
- * Implementação inline para suportar "Instagram" (além de linkedin/facebook
- * do extractPlatformSection de lint-social-md.ts).
- */
-function extractSection(md: string, sectionTitle: string): string | null {
-  // #2486: normalizar CRLF→LF como o gêmeo em lint-social-md.ts. Sem isso, em
-  // arquivos com CRLF (Windows) o `\n` da regex não casa e a seção Instagram
-  // não é encontrada → fallback silencioso pro caption do Facebook.
-  const normalized = md.replace(/\r\n/g, "\n");
-  const re = new RegExp(
-    `(?:^|\\n)# ${sectionTitle}\\n([\\s\\S]*?)(?=\\n# |$)`,
-    "i",
-  );
-  const m = normalized.match(re);
-  return m ? m[1] : null;
 }
 
 /**

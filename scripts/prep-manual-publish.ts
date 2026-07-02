@@ -23,7 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
+import { loadBeehiivConfig, BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
 import { dohFetch } from "./lib/doh-fetch.ts"; // #2551: stats fetch via DoH quando DNS local filtra
 
@@ -55,7 +55,7 @@ async function findDefaultTemplateUrl(opts: {
 }): Promise<string> {
   const HARDCODED_FALLBACK =
     "https://app.beehiiv.com/posts/5232180a-0224-4cd2-a0cb-276aadc7b4f6/edit";
-  const baseUrl = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/posts`;
+  const baseUrl = `${BEEHIIV_API_BASE}/publications/${opts.publicationId}/posts`; // #2834
   let cursor: string | undefined;
   try {
     while (true) {

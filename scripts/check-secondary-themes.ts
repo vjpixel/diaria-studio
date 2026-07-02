@@ -71,6 +71,10 @@ import {
   jaccardSimilarity,
 } from "./dedup.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts";
+// #2834: CategorizedJson reexportado do reader canônico (consumido por
+// check-intra-themes.ts via `import { CategorizedJson } from "./check-secondary-themes.ts"`).
+import type { CategorizedJson } from "./lib/types/categorized-json.ts";
+export type { CategorizedJson };
 
 // ---------------------------------------------------------------------------
 // Company entity list — high-signal names for cross-edition theme matching.
@@ -226,23 +230,6 @@ export interface CurrentCandidate {
   url: string;
   title: string;
   bucket: string; // "highlight" | "radar" | "lancamento" | "use_melhor" | "video"
-}
-
-interface CategorizedHighlight {
-  rank?: number;
-  url?: string;
-  title?: string;
-  article?: { url?: string; title?: string };
-  [key: string]: unknown;
-}
-
-export interface CategorizedJson {
-  highlights?: CategorizedHighlight[];
-  radar?: ApprovedEntry[];
-  lancamento?: ApprovedEntry[];
-  use_melhor?: ApprovedEntry[];
-  video?: ApprovedEntry[];
-  [key: string]: unknown;
 }
 
 /**

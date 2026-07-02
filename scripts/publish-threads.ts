@@ -43,6 +43,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
+import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -78,17 +79,6 @@ function loadPublished(path: string): SocialPublished {
     return JSON.parse(readFileSync(path, "utf8"));
   }
   return { posts: [] };
-}
-
-/**
- * Extrai a seção genérica `# {Title}` do 03-social.md.
- * Normaliza CRLF → LF.
- */
-function extractSection(md: string, sectionTitle: string): string | null {
-  const normalized = md.replace(/\r\n/g, "\n");
-  const re = new RegExp(`(?:^|\\n)# ${sectionTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
-  const m = normalized.match(re);
-  return m ? m[1] : null;
 }
 
 /**

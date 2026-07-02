@@ -41,27 +41,13 @@ const ROOT = resolve(import.meta.dirname, "..");
 // render-categorized-md.ts usa o tipo canônico — antes tinha shape duplicado
 // que divergia em pequenos detalhes (rank, score, highlight, launch_candidate).
 import type { Article } from "./lib/types/article.ts";
-
-interface Highlight {
-  /** URL flat (formato legado pré-#229). */
-  url?: string;
-  /** Article com URL nested (formato spec-compliant pós-#229). */
-  article?: { url?: string; [key: string]: unknown };
-  [key: string]: unknown;
-}
-
-interface CategorizedJson {
-  highlights?: Highlight[];
-  runners_up?: unknown[];
-  lancamento: Article[];
-  radar: Article[];
-  use_melhor?: Article[];
-  video?: Article[];
-  /** Número total de artigos considerados antes da filtragem do scorer.
-   * Injetado pelo orchestrator a partir de `_internal/tmp-categorized.json`
-   * ou auto-descoberto pelo render script se ausente (#477). */
-  total_considered?: number;
-}
+// #2834: Highlight/CategorizedJson consolidados no reader canônico (mesmo
+// shape que este arquivo já tinha — flat-or-nested #229 — agora
+// compartilhado com check-highlight-themes.ts, check-secondary-themes.ts e
+// dedup-evergreen-buckets.ts). `lancamento`/`radar` eram `required` aqui;
+// o guard `if (!data.lancamento || !data.radar)` em main() abaixo (com
+// `process.exit(1)`, tipado `never`) preserva a mesma garantia via narrowing.
+import type { Highlight, CategorizedJson } from "./lib/types/categorized-json.ts";
 
 interface SourceHealth {
   sources: Record<
