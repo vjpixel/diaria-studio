@@ -169,15 +169,15 @@ export const INTERNAL_EMAILS = [
 // mv_unknown (#2735): mv_bucket="unknown" (MV inconclusivo — reverify/error)
 // vira inelegível, mas é transitório (uma re-verificação pode reabilitar).
 //
-// mv_unverified (#2656 cutover): tier != 1 exige mv_bucket==="verified" —
-// "unknown" já foi tratado acima com razão própria; aqui cobre NULL/nunca-
-// verificado. Tier 1 (assinante ativo, validado implicitamente pelo pagamento
-// Stripe) é isento APENAS dessa exigência específica — se um tier-1 carregar
-// mv_bucket="rejected" (ou "unknown") de uma vida anterior como lead (antes de
-// assinar), a razão reportada continua a original (checada ACIMA, tier-
-// agnóstico), não "mv_unverified". T1 nunca reverifica no MV, então esse
-// mv_bucket velho nunca se autocorrige — comportamento pré-existente, fora do
-// escopo deste cutover.
+// mv_unverified (#2656 cutover, REVERTIDO em #2804): entre #2656 e #2804,
+// tier != 1 exigia mv_bucket==="verified" — contato nunca submetido ao MV
+// (mv_bucket NULL) virava inelegível com razão "mv_unverified". Decisão do
+// editor em 260702 (briefing overnight, comentário na issue #2804): "elegível
+// pra todos" — contato nunca-verificado (mv_bucket NULL, qualquer tier) volta
+// a ser ELEGÍVEL. A verificação MV (#1297) segue recomendada antes de enviar
+// pra tiers ≥ T02, mas deixou de ser bloqueante no store. `mv_rejected` e
+// `mv_unknown` continuam cortando normalmente (checados acima, tier-
+// agnóstico) — só o corte específico de "nunca verificado" foi removido.
 // ---------------------------------------------------------------------------
 
 export const SOFT_BOUNCE_LIMIT = 3;
@@ -188,7 +188,6 @@ export type IneligibleReason =
   | "complaint"
   | "mv_rejected"
   | "mv_unknown"
-  | "mv_unverified"
   | "dispute"
   | "soft_bounce";
 
@@ -200,9 +199,6 @@ export interface EligibilityInput {
   mv_bucket: string | null | undefined;
   dispute_losses: number;
   soft_bounce_count: number;
-  /** Usado só pra isentar tier 1 da exigência de mv_bucket==="verified" — ver
-   *  comentário de `mv_unverified` acima (ordem de prioridade). */
-  tier: number | null;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -228,11 +224,6 @@ export function classifyEligibility(i: EligibilityInput): {
     return { send_eligible: false, ineligible_reason: "dispute" };
   if (i.soft_bounce_count >= SOFT_BOUNCE_LIMIT)
     return { send_eligible: false, ineligible_reason: "soft_bounce" };
-  // mv_unverified por último: é "ainda não processado" (transitório, vira
-  // elegível assim que a verificação rodar), não uma supressão ativa — razões
-  // mais explícitas acima devem aparecer no relatório quando ambas batem.
-  if (i.tier !== 1 && i.mv_bucket !== "verified")
-    return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }
 
@@ -251,13 +242,12 @@ export function recomputeDerived(db: DatabaseSync): number {
 
   const rows = db
     .prepare(
-      `SELECT email, tier, opens_count, sends_count, soft_bounce_count, dispute_losses,
+      `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
               mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained
        FROM clarice_users`,
     )
     .all() as Array<{
     email: string;
-    tier: number | null;
     opens_count: number;
     sends_count: number;
     soft_bounce_count: number;
@@ -296,7 +286,6 @@ export function recomputeDerived(db: DatabaseSync): number {
         mv_bucket: r.mv_bucket,
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
-        tier: r.tier,
       });
       update.run(
         isOptin ? 1 : 0,

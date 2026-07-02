@@ -162,8 +162,9 @@ test("loadStoreRows + segmentFromStore: ponta-a-ponta sobre o store", () => {
   const db = openClariceDb(":memory:");
   // ativo, 1º envio
   db.prepare("INSERT INTO clarice_users (email, status, tier) VALUES (?, 'active', 1)").run("novo@x.com");
-  // veterano engajado (re-envio): seta opens/sends direto (mv_bucket verified —
-  // tier != 1 exige MV verificado desde #2656/mv_unverified)
+  // veterano engajado (re-envio): seta opens/sends direto (mv_bucket verified;
+  // desde #2804 o MV não é mais exigido pra tier != 1 ser elegível, mas
+  // manter o dado explícito aqui documenta o caso "verificado" também)
   db.prepare(
     "INSERT INTO clarice_users (email, tier, opens_count, sends_count, mv_bucket) VALUES (?, 2, 3, 3, 'verified')",
   ).run("vet@x.com");

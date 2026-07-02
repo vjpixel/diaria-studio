@@ -57,16 +57,18 @@ Emails inválidos/disposable/test/role ficam só no audit CSV.
 primeira pela ordem:
 
 `unsubscribed` (ou `emailBlacklisted`) → `hard_bounce` → `complaint` →
-`mv_rejected` → `dispute` → `soft_bounce` (só após **3** soft bounces; transitório) →
-`mv_unverified` (#2656 — nunca verificado no MV; tier 1 é isento, único caso).
+`mv_rejected` → `mv_unknown` → `dispute` → `soft_bounce` (só após **3** soft
+bounces; transitório).
 
-> ⚠️ **`mv_unverified` é "ainda não processado", não supressão ativa.** Tier != 1
-> (incl. sem-tier) exige `mv_bucket === "verified"` pra ser elegível — "unknown"/
-> nunca-verificado não conta até a verificação MV rodar (sob demanda, por lote,
-> via `verify-emails-mv.ts` + `clarice-build-db.ts`). **Tier 1 só é isento dessa
-> exigência específica** — se um tier-1 carregar `mv_bucket="rejected"` de uma
-> vida anterior como lead (antes de assinar), a razão reportada continua sendo
-> `mv_rejected` (checado antes, tier-agnóstico), não `mv_unverified`.
+> ⚠️ **Histórico — `mv_unverified` (#2656, REVERTIDO em #2804).** Entre #2656 e
+> #2804, tier != 1 (incl. sem-tier) exigia `mv_bucket === "verified"` pra ser
+> elegível — contato nunca submetido ao MV (`mv_bucket` NULL) virava inelegível
+> com razão `mv_unverified`; tier 1 era isento dessa exigência específica.
+> Decisão do editor em 260702 (#2804): **"elegível pra todos"** — contato
+> nunca-verificado volta a ser elegível em qualquer tier. A verificação MV
+> (#1297) segue recomendada antes de enviar pra tiers ≥ T02, mas deixou de ser
+> bloqueante no store — `mv_rejected` e `mv_unknown` (ambos tier-agnósticos,
+> checados acima) continuam cortando normalmente.
 
 > ⚠️ **`send_eligible` só é autoritativo após `clarice-sync-brevo.ts` rodar.**
 > Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam
