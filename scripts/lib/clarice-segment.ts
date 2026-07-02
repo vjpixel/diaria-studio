@@ -37,8 +37,12 @@ export interface Segmentation {
   excluded: Array<{ email: string; reason: string }>;
 }
 
-/** tier p/ ordenação: nulo vira +∞ (vai pro fim). */
-function tierRank(t: number | null): number {
+/**
+ * tier p/ ordenação: nulo vira +∞ (vai pro fim). Exportado (#2807 review):
+ * o brevo-dashboard ordena o breakdown por tier com a MESMA regra — não
+ * re-derivar lá (mesma classe de drift que o #2782 elimina pro firstSend).
+ */
+export function tierRank(t: number | null): number {
   return t == null ? Number.POSITIVE_INFINITY : t;
 }
 

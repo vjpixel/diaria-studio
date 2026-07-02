@@ -82,10 +82,11 @@ test("renderContactsSummarySection: com priority_points_histogram → valores ex
 });
 
 test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por tier vai pra linha 0 do histograma (#2805)", () => {
-  // #2805: o universo da antiga tabela "Por tier (1º envio)" (firstSend =
-  // send_eligible=1 + sends_count=0, #2732) é EXATAMENTE a linha
-  // priority_points=0 do histograma — as duas visões duplicavam informação.
-  // A tabela sai; o breakdown por tier aparece inline na linha 0.
+  // #2805: a antiga tabela "Por tier (1º envio)" (firstSend = send_eligible=1
+  // + sends_count=0, #2732) vira breakdown inline na linha 0 do histograma.
+  // O universo NÃO é idêntico à linha (#2807 review: optin nunca-enviado tem
+  // 40 pts; re-envio decaído pode ter 0 exato) — daí o rótulo explícito
+  // "1º envio" no span.
   const withHistogram: ContactsSummary = {
     ...sample,
     priority_points_histogram: { "0": 427520, "15": 40, null: 12 },
@@ -100,9 +101,30 @@ test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por ti
   const idxT02 = html.indexOf("T02:");
   const idxSem = html.indexOf("sem tier:");
   assert.ok(idxT01 < idxT02 && idxT02 < idxSem, "ordem da fila de 1º envio: T01 → T02 → sem tier");
-  // o breakdown fica NA célula do valor 0 (mesmo <td>), não na linha do 15
-  assert.match(html, /<td>0 <span[^>]*>· T01:/);
+  // o breakdown fica NA célula do valor 0 (mesmo <td>), não na linha do 15,
+  // e carrega o rótulo do universo próprio (#2807 review)
+  assert.match(html, /<td>0 <span[^>]*>· 1º envio — T01:/);
   assert.doesNotMatch(html, /<td>15[^<]*T01:/);
+});
+
+test("renderContactsSummarySection: chave corrompida no by_tier → vai pro fim, ordem estável (#2807 review)", () => {
+  // Regressão do guard de NaN: sem ele, Number("corrompida") = NaN fazia o
+  // comparator retornar NaN → ordem implementation-defined. Com o guard, a
+  // chave não-numérica é tratada como null (fim da fila), e o resto ordena
+  // tier ASC normalmente.
+  const corrupt: ContactsSummary = {
+    ...sample,
+    by_tier: { "2": 5, corrompida: 9, "1": 3, null: 7 } as Record<string, number>,
+    priority_points_histogram: { "0": 24 },
+  };
+  const html = renderContactsSummarySection(corrupt);
+  const idxT01 = html.indexOf("T01:");
+  const idxT02 = html.indexOf("T02:");
+  const idxBad = html.indexOf("corrompida:");
+  const idxSem = html.indexOf("sem tier:");
+  assert.ok(idxT01 !== -1 && idxT02 !== -1 && idxBad !== -1 && idxSem !== -1, "todas as chaves renderizadas");
+  assert.ok(idxT01 < idxT02, "tiers numéricos primeiro, ASC");
+  assert.ok(idxT02 < idxBad && idxT02 < idxSem, "chave corrompida e null vão pro fim");
 });
 
 test("renderContactsSummarySection: sem histograma (KV pré-#2731) → tabela 'Por tier' também não volta (#2805)", () => {

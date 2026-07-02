@@ -57,6 +57,9 @@ import {
   type CouponUsageReport,
   type CouponCodeReport,
 } from "../../../scripts/lib/stripe-coupons.ts";
+// Ordenação de tier: mesma fonte que a segmentação real de waves (#2782/#2807
+// review) — clarice-segment.ts é dependency-free (zero imports), Workers-safe.
+import { tierRank } from "../../../scripts/lib/clarice-segment.ts";
 
 const DS = {
   ...DS_COLORS,
@@ -2946,18 +2949,27 @@ export function renderContactsSummarySection(
 
   const tierLabel = (k: string): string => (k === "null" ? "sem tier" : `T${k.padStart(2, "0")}`);
   // #2805: breakdown por tier inline — substitui a antiga tabela "Por tier
-  // (1º envio)". O universo dela (firstSend: send_eligible=1 + sends_count=0,
-  // #2732) é exatamente a linha priority_points=0 do histograma (quem nunca
-  // recebeu não tem histórico) — duas visões do mesmo dado viravam duplicação.
-  // Ordem: tier ASC (fila real de 1º envio, T01 primeiro), "sem tier" por último.
+  // (1º envio)". ATENÇÃO (#2807 review): o universo do by_tier (firstSend:
+  // send_eligible=1 + sends_count=0, #2732) NÃO é idêntico à linha 0 do
+  // histograma — optin nunca-enviado tem +40 pts (fica na linha 40) e
+  // re-envio decaído/inelegível nunca-enviado pode ter 0 exato (conta na
+  // linha 0 mas está fora do firstSend). Por isso o rótulo "1º envio" é
+  // explícito: o breakdown descreve o universo próprio dele, não a linha.
+  // Ordem: tier ASC (fila real de 1º envio, T01 primeiro), "sem tier" por
+  // último — via tierRank (fonte única com a segmentação de waves). Chave
+  // corrompida/não-numérica (KV casteado sem validar shape) → NaN → tratada
+  // como null (vai pro fim), nunca comparator NaN (ordem indefinida).
   const tierBreakdownInline = (byTier: Record<string, number> | undefined): string => {
     const entries = Object.entries(byTier ?? {});
     if (entries.length === 0) return "";
-    const rank = (k: string): number => (k === "null" ? Number.POSITIVE_INFINITY : Number(k));
+    const rank = (k: string): number => {
+      const num = Number(k);
+      return tierRank(k === "null" || isNaN(num) ? null : num);
+    };
     const parts = entries
       .sort(([a], [b]) => rank(a) - rank(b))
       .map(([k, v]) => `${escHtml(tierLabel(k))}: ${n(v)}`);
-    return ` <span style="opacity:0.65">· ${parts.join(" · ")}</span>`;
+    return ` <span style="opacity:0.65">· 1º envio — ${parts.join(" · ")}</span>`;
   };
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
@@ -2982,8 +2994,9 @@ export function renderContactsSummarySection(
       return isNaN(num) ? -Infinity : num;
     };
     const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
-    // #2805: a linha 0 (sem histórico) carrega o breakdown por tier inline —
-    // é o mesmo universo firstSend da antiga tabela "Por tier (1º envio)".
+    // #2805: a linha 0 carrega o breakdown por tier inline (rotulado
+    // "1º envio" — universo firstSend, que se CONCENTRA na linha 0 mas não
+    // coincide com ela; ver comentário do tierBreakdownInline).
     const rows = sorted.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}${k === "0" ? tierBreakdownInline(s.by_tier) : ""}</td><td style="text-align:right">${n(v)}</td></tr>`,
     ).join("\n");
