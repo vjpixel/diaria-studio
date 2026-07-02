@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apportion, stratify, outRow, buildSends, mergeSummaryAcrossBlocks } from "../scripts/clarice-build-edition-sends.ts";
+import { apportion, stratify, outRow, buildSends, mergeSummaryAcrossBlocks, assertCohortConsistent } from "../scripts/clarice-build-edition-sends.ts";
 import type { SendsSummaryEntry } from "../scripts/lib/send-plan.ts";
 import type { SendPlanEntry } from "../scripts/lib/send-plan.ts";
 import type { StoreRow } from "../scripts/lib/clarice-segment.ts";
@@ -246,5 +246,42 @@ describe("mergeSummaryAcrossBlocks", () => {
     const fresh = [summaryEntry({ n: 5, block: 3, actual: 42 })];
     const merged = mergeSummaryAcrossBlocks(fresh, [], [1, 2]); // bloco 3 nunca foi processado antes
     assert.equal(merged[0].actual, 42, "sem prévio pra n=5, usa o fresco mesmo fora de --blocks");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertCohortConsistent (#2851 — guard de invocações mistas do mesmo ciclo)
+// ---------------------------------------------------------------------------
+
+describe("assertCohortConsistent", () => {
+  it("sem summary prévio (1ª invocação do ciclo, arquivo não existe): qualquer cohort passa, sem/com --cohort", () => {
+    assert.doesNotThrow(() => assertCohortConsistent(false, undefined, null));
+    assert.doesNotThrow(() => assertCohortConsistent(false, undefined, "2026-06"));
+  });
+
+  it("cohort consistente entre invocações (mesmo valor) -> ok", () => {
+    assert.doesNotThrow(() => assertCohortConsistent(true, "2026-06", "2026-06"));
+    assert.doesNotThrow(() => assertCohortConsistent(true, null, null));
+  });
+
+  it("cohort divergente (string != string) -> aborta com mensagem clara", () => {
+    assert.throws(() => assertCohortConsistent(true, "2026-06", "2026-07"), /--cohort divergente/);
+  });
+
+  it("cohort divergente (gravado sem cohort explícito, invocação atual com --cohort) -> aborta", () => {
+    // prevCohort=null (campo GRAVADO como "sem cohort", pós-#2851) != resolvedCohort="2026-06"
+    assert.throws(() => assertCohortConsistent(true, null, "2026-06"), /--cohort divergente/);
+  });
+
+  it("cohort divergente (gravado com cohort, invocação atual sem --cohort) -> aborta", () => {
+    assert.throws(() => assertCohortConsistent(true, "2026-06", null), /--cohort divergente/);
+  });
+
+  it("summary LEGADO (existe mas campo cohort ausente) + invocação atual SEM --cohort -> ok (retrocompat, grava null)", () => {
+    assert.doesNotThrow(() => assertCohortConsistent(true, undefined, null));
+  });
+
+  it("summary LEGADO (existe mas campo cohort ausente) + invocação atual COM --cohort -> aborta (assimetria documentada)", () => {
+    assert.throws(() => assertCohortConsistent(true, undefined, "2026-06"), /LEGADO/);
   });
 });
