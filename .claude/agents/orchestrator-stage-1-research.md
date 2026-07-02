@@ -9,8 +9,7 @@ description: Stage 1 do orchestrator Diar.ia — pesquisa (inbox drain, RSS, res
 
 ## Stage 1 — Research
 
-**MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Clarice, Beehiiv, Gmail, Chrome, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759). **Sempre acompanhar** com halt banner pra alertar o editor: `npx tsx scripts/render-halt-banner.ts --stage "1 — Pesquisa" --reason "mcp__{server} desconectado" --action "reconecte e responda 'retry', ou 'abort' para abortar"` (#737).
-**Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
+**MCP disconnect logging:** ver `orchestrator.md` § "MCP disconnect — logging + halt banner" (#759/#737). Nesta etapa: `--stage 1`, banner `--stage "1 — Pesquisa"`.
 
 ### 1a. Inbox drain
 
@@ -618,7 +617,7 @@ npx tsx scripts/validate-stage-1-completeness.ts \
 
 Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir.
 
-Razão (#1091): incidente 2026-05-11 na edição 260512. Orchestrator pulou 1f silenciosamente após RSS batch trazer 109 artigos. Validador é defesa primária; memory `feedback_no_skip_playbook.md` é defesa secundária; warning no início da seção 1f acima é tercer layer.
+Defesa em 3 camadas contra o skip silencioso de 1f (#1091): warning no início da seção 1f (1ª), memory `feedback_no_skip_playbook.md` (2ª), este validator (3ª e primária — bloqueia o gate).
 
 ### 1w-bis. Pre-gate validator (#581, #828)
 

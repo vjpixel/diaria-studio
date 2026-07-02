@@ -90,6 +90,10 @@ Aprovar e seguir para Etapa {N+1}? (sim / editar / retry)
 - Falha de sync vira warning, nunca bloqueia o pipeline.
 - Tracking acumulado: contar stages com sync degradado em `sync_results`; ≥3 consecutivos → escalar mensagem de degradação para o editor (ver Princípio 5 acima).
 
+### MCP disconnect — logging + halt banner (#759, #737)
+
+**Aplica-se a Stages 0-3** (Stages 4-6 têm cópia local própria — seus skills isolados não leem este arquivo raiz). Ao detectar `<system-reminder>` de MCP disconnect (subset varia por stage: 0/1 = Beehiiv+Gmail; 2 = +Clarice; 3 = +API de imagem), logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage {N} --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'` (reconexão: mesmo comando com `--level info --message "mcp_reconnect: {server}"`, persiste em `data/run-log.jsonl`) e **sempre acompanhar** com halt banner: `npx tsx scripts/render-halt-banner.ts --stage "{N} — {nome do stage}" --reason "mcp__{server} desconectado" --action "reconecte e responda 'retry', ou 'abort' para abortar"`.
+
 ### Confirmação antes de publicar (#336)
 
 **INVARIANTE:** NUNCA dispatch publish-* agent ou script publicador (Beehiiv, LinkedIn, Facebook) sem confirmação explícita do editor no turno atual. A exceção é `auto_approve = true` (via `--no-gates`), que registra warn no run-log mas prossegue automaticamente. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
