@@ -159,3 +159,77 @@ export function loadStoreRows(db: {
     )
     .all() as StoreRow[];
 }
+
+// ---------------------------------------------------------------------------
+// cohort (#2817) — safra mensal derivada de `created` (Stripe), dimensão
+// independente do `tier` numérico (que continua governando SÓ a ordenação de
+// 1º envio). Pedido do editor 260702: "coloque todos os contatos de junho no
+// tier junho e os de maio no maio" — modelado como coluna nova em vez de
+// tiers nomeados (ver decisão registrada na issue #2817).
+//
+// Funções puras aqui (não em clarice-db.ts, que importa `node:sqlite` — o
+// worker `brevo-dashboard` importa deste arquivo diretamente, igual `tierRank`,
+// porque o runtime do Worker não tem `node:sqlite`).
+// ---------------------------------------------------------------------------
+
+/** Primeiro mês com safra rotulada (decisão do editor, #2817). Anterior → NULL. */
+const COHORT_EPOCH_YEAR = 2026;
+const COHORT_EPOCH_MONTH = 5; // maio (1-indexed)
+
+/**
+ * Deriva a safra mensal ('YYYY-MM', forma canônica) a partir de `created`
+ * (ISO date/datetime da Stripe). NULL se `created` ausente/inválido ou
+ * anterior a 2026-05 (dado histórico sem safra rotulada). Extensível: qualquer
+ * mês >= 2026-05 vira 'YYYY-MM' sem precisar de mudança de código (não há
+ * lista hardcoded de meses futuros).
+ */
+export function deriveCohort(created: string | null | undefined): string | null {
+  if (!created) return null;
+  const d = new Date(created);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1; // 1-12
+  if (year < COHORT_EPOCH_YEAR || (year === COHORT_EPOCH_YEAR && month < COHORT_EPOCH_MONTH)) {
+    return null;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+const PT_MONTH_NAMES = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
+/**
+ * Rótulo de exibição pro dashboard: 'YYYY-MM' → mês em pt-BR minúsculo sem
+ * ano (ex: '2026-06' → 'junho'), NULL → 'sem safra'. Forma não-canônica
+ * (chave corrompida/formato inesperado) devolve a chave crua — nunca lança
+ * (render do dashboard não pode quebrar por um valor malformado no KV).
+ */
+export function cohortLabel(cohort: string | null): string {
+  if (cohort == null) return "sem safra";
+  const m = cohort.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return cohort;
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) return cohort;
+  return PT_MONTH_NAMES[month - 1];
+}
+
+/**
+ * Resolve o valor de `--cohort` passado na CLI (rótulo pt-BR tipo "junho" OU
+ * a forma canônica "YYYY-MM") pro valor exato armazenado na coluna `cohort`.
+ * Rótulo pt-BR só é reconhecido pra o ano corrente da epoch (2026 — único ano
+ * com safras rotuladas até agora); pra outro ano, use a forma canônica direto
+ * ("2027-01"). Lança se o input não bater com nenhuma das duas formas —
+ * preferível a um filtro silenciosamente vazio.
+ */
+export function resolveCohortArg(input: string): string {
+  const trimmed = input.trim();
+  if (/^\d{4}-\d{2}$/.test(trimmed)) return trimmed;
+  const idx = PT_MONTH_NAMES.indexOf(trimmed.toLowerCase());
+  if (idx !== -1) return `${COHORT_EPOCH_YEAR}-${String(idx + 1).padStart(2, "0")}`;
+  throw new Error(
+    `--cohort "${input}" não reconhecido — use um rótulo pt-BR (ex: junho) ` +
+      `ou a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06).`,
+  );
+}

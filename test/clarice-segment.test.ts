@@ -8,6 +8,9 @@ import {
   isFirstSend,
   isSendEligible,
   FIRST_SEND_SQL_PREDICATE,
+  deriveCohort,
+  cohortLabel,
+  resolveCohortArg,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
@@ -267,4 +270,61 @@ test("FIRST_SEND_SQL_PREDICATE ⇄ segmentFromStore: mesmo by_tier sobre um stor
   assert.deepEqual(sqlByTier, jsByTier, "SQL e JS devem contar o mesmo universo firstSend");
   assert.deepEqual(sqlByTier, { "1": 2, "3": 1, null: 1 }, "sanidade: a,b (T1), c (T3), d (sem tier)");
   db.close();
+});
+
+// ---------------------------------------------------------------------------
+// #2817 — cohort: derivação, rótulo de exibição, resolução de --cohort
+// ---------------------------------------------------------------------------
+
+test("deriveCohort: mês de `created` >= 2026-05 vira 'YYYY-MM'", () => {
+  assert.equal(deriveCohort("2026-05-15T00:00:00.000Z"), "2026-05");
+  assert.equal(deriveCohort("2026-06-01T00:00:00.000Z"), "2026-06");
+  assert.equal(deriveCohort("2026-07-30T23:59:59.999Z"), "2026-07");
+});
+
+test("deriveCohort: anterior a 2026-05 vira NULL (sem safra rotulada)", () => {
+  assert.equal(deriveCohort("2025-12-31T00:00:00.000Z"), null);
+  assert.equal(deriveCohort("2026-04-30T23:59:59.999Z"), null);
+});
+
+test("deriveCohort: created ausente/inválido vira NULL", () => {
+  assert.equal(deriveCohort(null), null);
+  assert.equal(deriveCohort(undefined), null);
+  assert.equal(deriveCohort(""), null);
+  assert.equal(deriveCohort("não-é-uma-data"), null);
+});
+
+test("deriveCohort: aceita data-only (sem horário) — 'created' vem como ISO date puro", () => {
+  assert.equal(deriveCohort("2026-06-15"), "2026-06");
+});
+
+test("cohortLabel: traduz 'YYYY-MM' de 2026 pro mês em pt-BR minúsculo", () => {
+  assert.equal(cohortLabel("2026-05"), "maio");
+  assert.equal(cohortLabel("2026-06"), "junho");
+  assert.equal(cohortLabel("2026-07"), "julho");
+});
+
+test("cohortLabel: null vira 'sem safra'", () => {
+  assert.equal(cohortLabel(null), "sem safra");
+});
+
+test("cohortLabel: forma corrompida/inesperada devolve a chave crua (nunca lança)", () => {
+  assert.equal(cohortLabel("lixo"), "lixo");
+  assert.equal(cohortLabel("2026-13"), "2026-13"); // mês inválido
+});
+
+test("resolveCohortArg: forma canônica 'YYYY-MM' passa direto", () => {
+  assert.equal(resolveCohortArg("2026-06"), "2026-06");
+  assert.equal(resolveCohortArg("2027-01"), "2027-01");
+});
+
+test("resolveCohortArg: rótulo pt-BR (case-insensitive) resolve pro canônico do ano-epoch (2026)", () => {
+  assert.equal(resolveCohortArg("junho"), "2026-06");
+  assert.equal(resolveCohortArg("Junho"), "2026-06");
+  assert.equal(resolveCohortArg("MAIO"), "2026-05");
+});
+
+test("resolveCohortArg: input não reconhecido lança erro claro", () => {
+  assert.throws(() => resolveCohortArg("fevereiro-de-2099"), /não reconhecido/);
+  assert.throws(() => resolveCohortArg(""), /não reconhecido/);
 });

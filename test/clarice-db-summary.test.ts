@@ -158,3 +158,42 @@ test("computeStoreSummary: filtro de internos é case-insensitive (#2809)", () =
   assert.equal(s.priority_points_histogram["40"], undefined, "variação de caixa também excluída");
   db.close();
 });
+
+// ---------------------------------------------------------------------------
+// by_cohort (#2817) — agregado total+verified por safra mensal
+// ---------------------------------------------------------------------------
+
+test("computeStoreSummary: by_cohort agrega total+verified por safra (universo = store inteiro, não só firstSend)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // maio: 2 contatos, 1 verified
+  ins("INSERT INTO clarice_users (email, created, mv_bucket) VALUES ('a@x.com','2026-05-01T00:00:00Z','verified')");
+  ins("INSERT INTO clarice_users (email, created) VALUES ('b@x.com','2026-05-15T00:00:00Z')");
+  // junho: 1 contato, verified, JÁ ENVIADO (sends_count>0 → fora do firstSend/by_tier,
+  // mas DEVE contar no by_cohort — universo é o store inteiro, não firstSend)
+  ins("INSERT INTO clarice_users (email, created, mv_bucket, sends_count) VALUES ('c@x.com','2026-06-01T00:00:00Z','verified',3)");
+  // sem safra (created ausente)
+  ins("INSERT INTO clarice_users (email) VALUES ('d@x.com')");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  assert.deepEqual(s.by_cohort, { "2026-05": 2, "2026-06": 1, null: 1 });
+  assert.deepEqual(s.by_cohort_verified, { "2026-05": 1, "2026-06": 1 }); // b sem MV → ausente (0)
+  // invariante: a soma do by_cohort particiona o total
+  assert.equal(Object.values(s.by_cohort).reduce((acc, v) => acc + v, 0), s.total);
+
+  db.close();
+});
+
+test("computeStoreSummary: by_cohort — chave 'null' quando created ausente ou anterior a 2026-05", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created) VALUES ('velho@x.com','2025-11-01T00:00:00Z')").run();
+  db.prepare("INSERT INTO clarice_users (email) VALUES ('sem@x.com')").run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+  assert.equal(s.by_cohort["null"], 2);
+  db.close();
+});

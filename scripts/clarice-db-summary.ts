@@ -66,6 +66,13 @@ export interface StoreSummary {
   priority_points_histogram_verified: Record<string, number>;
   // Idem para as sub-linhas de tier (universo firstSend do by_tier + verified).
   by_tier_verified: Record<string, number>;
+  // #2817: agregado por safra mensal (`cohort`, derivado de `created`). Ao
+  // contrário do by_tier, universo é o STORE INTEIRO (não só firstSend) — a
+  // pergunta do editor é "quantos contatos são de junho", não "quantos de
+  // junho ainda não receberam o 1º envio". Chave "null" = created ausente OU
+  // anterior a 2026-05 (sem safra rotulada).
+  by_cohort: Record<string, number>;
+  by_cohort_verified: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -131,6 +138,12 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
       WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
     INTERNAL_PARAMS,
+  );
+  // #2817: por safra (cohort), universo = store inteiro (sem filtro firstSend
+  // nem de internos — mesmo padrão de `mv`/`by_tier`, que também não filtram).
+  const byCohortPair = groupCountsWithVerified(
+    db,
+    `SELECT cohort AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users GROUP BY cohort`,
   );
   return {
     total: count(db, "SELECT COUNT(*) n FROM clarice_users"),
@@ -230,6 +243,8 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // 0/baixo — assinante ativo é validado por pagamento, não passa pelo MV
     // (#1297).
     by_tier_verified: byTierPair.verified,
+    by_cohort: byCohortPair.total,
+    by_cohort_verified: byCohortPair.verified,
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",

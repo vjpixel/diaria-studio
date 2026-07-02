@@ -206,3 +206,49 @@ test("renderDashboardHtml: sem summary → aba presente mas com stub", () => {
   assert.match(html, /id="panel-contatos"/);
   assert.match(html, /Dados ainda não gerados/);
 });
+
+// ---------------------------------------------------------------------------
+// #2817 — "Por safra (cohort)"
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: sem by_cohort (KV pré-#2817) → tabela 'Por safra' NÃO aparece, não lança", () => {
+  // `sample` não tem by_cohort — confirma o degrade gracioso do campo opcional.
+  assert.doesNotThrow(() => renderContactsSummarySection(sample));
+  const html = renderContactsSummarySection(sample);
+  assert.doesNotMatch(html, /Por safra \(cohort\)/);
+});
+
+test("renderContactsSummarySection: com by_cohort → tabela 'Por safra' com rótulo pt-BR, ordem cronológica", () => {
+  const withCohort: ContactsSummary = {
+    ...sample,
+    by_cohort: { "2026-06": 500, "2026-05": 1200, null: 300 },
+  };
+  const html = renderContactsSummarySection(withCohort);
+  assert.match(html, /Por safra \(cohort\)/);
+  assert.match(html, />maio</, "rótulo pt-BR traduzido");
+  assert.match(html, />junho</);
+  assert.match(html, /sem safra/);
+  // ordem cronológica (maio antes de junho), null por último
+  const idxMaio = html.indexOf(">maio<");
+  const idxJunho = html.indexOf(">junho<");
+  const idxSemSafra = html.indexOf("sem safra");
+  assert.ok(idxMaio < idxJunho, "maio (2026-05) antes de junho (2026-06)");
+  assert.ok(idxJunho < idxSemSafra, "sem safra (null) vai por último");
+});
+
+test("renderContactsSummarySection: by_cohort com verified → coluna extra; sem verified → 2 colunas só", () => {
+  const withVerified: ContactsSummary = {
+    ...sample,
+    by_cohort: { "2026-06": 500 },
+    by_cohort_verified: { "2026-06": 120 },
+  };
+  const htmlWithVerified = renderContactsSummarySection(withVerified);
+  assert.match(htmlWithVerified, />junho<\/td><td[^>]*>500<\/td><td[^>]*>120<\/td>/);
+
+  const withoutVerified: ContactsSummary = {
+    ...sample,
+    by_cohort: { "2026-06": 500 },
+  };
+  const htmlNoVerified = renderContactsSummarySection(withoutVerified);
+  assert.match(htmlNoVerified, />junho<\/td><td[^>]*>500<\/td><\/tr>/, "sem 3ª coluna quando by_cohort_verified ausente");
+});

@@ -27,8 +27,12 @@
  * dia — ver `scripts/lib/send-plan.ts`).
  *
  * Uso:
- *   npx tsx scripts/clarice-build-edition-sends.ts --cycle 2605-06 [--blocks 1,2,3] [--dry-run] [--db path]
+ *   npx tsx scripts/clarice-build-edition-sends.ts --cycle 2605-06 [--blocks 1,2,3] [--dry-run] [--db path] [--cohort junho]
  *   (Requer {ciclo}/send-plan.json — ver scripts/send-plan.example.json.)
+ *   --cohort X   OPCIONAL (#2817) — restringe a fila de prioridade a uma safra
+ *                mensal antes de segmentar (mesmo `resolveCohortArg` do
+ *                clarice-build-waves-store.ts). Sem a flag, roda sobre a base
+ *                inteira (comportamento pré-#2817, sem mudança).
  *
  * Inputs:
  *   data/clarice-subscribers/clarice-users.db      store único (#2647)
@@ -46,7 +50,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { segmentFromStore, priorityQueue, type StoreRow } from "./lib/clarice-segment.ts";
+import { segmentFromStore, priorityQueue, resolveCohortArg, type StoreRow } from "./lib/clarice-segment.ts";
 import { loadSendPlan, allBlocks, planByBlock, parseBlocksArg, type SendPlanEntry, type SendsSummaryEntry } from "./lib/send-plan.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
@@ -227,21 +231,35 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const validBlocks = allBlocks(plan);
   const blocks = parseBlocksArg(argv, validBlocks);
 
+  // #2817: --cohort restringe a fila de prioridade a uma safra mensal, aplicado
+  // como WHERE no carregamento — a segmentação/estratificação downstream
+  // (segmentFromStore/priorityQueue/buildSends) fica intocada.
+  const cohortArg = getArg(argv, "cohort");
+  const cohort = cohortArg ? resolveCohortArg(cohortArg) : null;
+
   const db = openClariceDb(dbPath);
   let storeRows: (StoreRow & { name?: string | null })[];
   try {
     storeRows = db
       .prepare(
         `SELECT email, name, tier, priority_points, send_eligible, ineligible_reason, sends_count
-           FROM clarice_users`,
+           FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
       )
-      .all() as unknown as (StoreRow & { name?: string | null })[];
+      .all(...(cohort ? [cohort] : [])) as unknown as (StoreRow & { name?: string | null })[];
   } finally {
     db.close();
   }
 
+  if (cohort) {
+    console.error(`🎯 filtro --cohort aplicado: cohort='${cohort}' (${storeRows.length} linha(s) no universo)`);
+  }
+
   if (storeRows.length === 0) {
-    throw new Error("store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.");
+    throw new Error(
+      cohort
+        ? `0 contatos com cohort='${cohort}' — verifique se o store já foi rebuildado após o import da safra.`
+        : "store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.",
+    );
   }
 
   const nameByEmail = new Map(storeRows.map((r) => [r.email, firstName(r.name)]));

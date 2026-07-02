@@ -164,6 +164,84 @@ test("buildWaveArtifacts: seed NÃO duplica quando editor já é assinante eleg�
   );
 });
 
+// ---------------------------------------------------------------------------
+// --cohort (#2817) — filtro opcional restringe a segmentação a uma safra
+// ---------------------------------------------------------------------------
+
+test("main: --cohort filtra o store pra uma safra ANTES de segmentar", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('mai@x.com','Mai','active',1,'2026-05-10T00:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run", "--cohort", "junho"]);
+  } finally {
+    console.log = orig;
+  }
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.eligible_total, 1, "só jun@x.com (cohort 2026-06) deve entrar no universo");
+  assert.equal(out.cohort, "2026-06", "cohort resolvido (rótulo pt-BR → canônico) fica auditável no summary");
+});
+
+test("main: sem --cohort roda sobre a base inteira (sem regressão, cohort ausente no summary)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-off-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('mai@x.com','Mai','active',1,'2026-05-10T00:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run"]);
+  } finally {
+    console.log = orig;
+  }
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.eligible_total, 2, "sem filtro, os dois contatos entram");
+  assert.equal(out.cohort, undefined, "cohort não aparece no summary quando a flag não foi usada");
+});
+
+test("main: --cohort com forma canônica 'YYYY-MM' funciona igual ao rótulo pt-BR", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-canon-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('jun@x.com','Jun','active',1,'2026-06-10T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run", "--cohort", "2026-06"]);
+  } finally {
+    console.log = orig;
+  }
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.eligible_total, 1);
+});
+
 test("buildWaveArtifacts: IS_SEED='true' mesmo quando editor já é assinante elegível", () => {
   const rowsWithEditor = [
     brow({ email: CLARICE_SEED_EMAIL, name: "Pixel Vjpixel", sends_count: 1, priority_points: 10, send_eligible: 1 }),
