@@ -18,6 +18,8 @@ import {
   replaceSectionsBlock,
   buildSectionsBlock,
   parseUseMelhorSource,
+  parseUseMelhorMinClicks,
+  useMelhorPrecedenceWarning,
   type LinkItem,
 } from "../scripts/monthly-click-sections.ts";
 
@@ -297,5 +299,110 @@ describe("selectSections", () => {
     const r = selectSections([item("https://w.com/1", "outro")], [], new Map(), new Set());
     assert.ok(r.warnings.some((w) => w.includes("Use Melhor")));
     assert.ok(r.warnings.some((w) => w.includes("Radar")));
+  });
+
+  // #2792: tamanho do Use Melhor configurável (flag + threshold por cliques).
+  it("useMelhorCount custom (6) retorna 6 itens; caption reflete a contagem real", () => {
+    const monthItems = Array.from({ length: 8 }, (_, i) => item(`https://u.com/${i}`, "use_melhor"));
+    const clicks = new Map(monthItems.map((it, i) => [it.baseUrl, i]));
+    const r = selectSections(monthItems, [], clicks, new Set(), 6);
+    assert.equal(r.use_melhor.length, 6);
+    // top-6 por cliques desc: 7,6,5,4,3,2 (índices 7..2)
+    assert.deepEqual(
+      r.use_melhor.map((x) => x.url),
+      ["https://u.com/7", "https://u.com/6", "https://u.com/5", "https://u.com/4", "https://u.com/3", "https://u.com/2"],
+    );
+    const block = buildSectionsBlock({ use_melhor: r.use_melhor, radar: r.radar } as any);
+    assert.ok(block.includes("Os 6 tutoriais mais clicados do mês"));
+  });
+
+  it("useMelhorMinClicks: inclui TODO tutorial com clicks >= N, empate na fronteira incluído", () => {
+    const monthItems = [
+      item("https://m.com/a", "use_melhor"), // 8
+      item("https://m.com/b", "use_melhor"), // 6 (fronteira, incluído)
+      item("https://m.com/c", "use_melhor"), // 6 (empate na fronteira, incluído)
+      item("https://m.com/d", "use_melhor"), // 5 (abaixo, excluído)
+    ];
+    const clicks = new Map([
+      ["https://m.com/a", 8],
+      ["https://m.com/b", 6],
+      ["https://m.com/c", 6],
+      ["https://m.com/d", 5],
+    ]);
+    const r = selectSections(monthItems, [], clicks, new Set(), 3, 6);
+    assert.deepEqual(
+      new Set(r.use_melhor.map((x) => x.url)),
+      new Set(["https://m.com/a", "https://m.com/b", "https://m.com/c"]),
+    );
+    assert.equal(r.use_melhor.length, 3);
+  });
+
+  it("useMelhorMinClicks tem precedência sobre useMelhorCount quando ambos são passados", () => {
+    const monthItems = [
+      item("https://p.com/a", "use_melhor"),
+      item("https://p.com/b", "use_melhor"),
+      item("https://p.com/c", "use_melhor"),
+    ];
+    const clicks = new Map([
+      ["https://p.com/a", 10],
+      ["https://p.com/b", 10],
+      ["https://p.com/c", 1],
+    ]);
+    // count=1 pediria só 1 item, mas minClicks=10 deve vencer e incluir os 2 empatados.
+    const r = selectSections(monthItems, [], clicks, new Set(), 1, 10);
+    assert.equal(r.use_melhor.length, 2);
+  });
+
+  it("useMelhorMinClicks sem candidatos: warning específico do threshold, não o de count/esperado", () => {
+    const r = selectSections([item("https://z.com/1", "use_melhor")], [], new Map([["https://z.com/1", 2]]), new Set(), 3, 6);
+    assert.equal(r.use_melhor.length, 0);
+    assert.ok(r.warnings.some((w) => w.includes("nenhum candidato com ≥6 cliques")));
+    // não deve emitir o warning "esperado N" (esse é do modo count fixo, não do threshold)
+    assert.ok(!r.warnings.some((w) => w.includes("Use Melhor") && w.includes("esperado")));
+  });
+
+  it("flag ausente: comportamento default (top-3) intacto", () => {
+    const monthItems = Array.from({ length: 5 }, (_, i) => item(`https://d.com/${i}`, "use_melhor"));
+    const clicks = new Map(monthItems.map((it, i) => [it.baseUrl, i]));
+    const r = selectSections(monthItems, [], clicks, new Set());
+    assert.equal(r.use_melhor.length, 3);
+  });
+});
+
+describe("parseUseMelhorMinClicks", () => {
+  it("--use-melhor-min-clicks 6", () => {
+    assert.equal(parseUseMelhorMinClicks(["--cycle", "2606-07", "--use-melhor-min-clicks", "6"]), 6);
+  });
+  it("--use-melhor-min-clicks=6", () => {
+    assert.equal(parseUseMelhorMinClicks(["--use-melhor-min-clicks=6"]), 6);
+  });
+  it("0 é um valor válido (inclui todo candidato)", () => {
+    assert.equal(parseUseMelhorMinClicks(["--use-melhor-min-clicks", "0"]), 0);
+  });
+  it("ausência → undefined", () => {
+    assert.equal(parseUseMelhorMinClicks(["--cycle", "2606-07"]), undefined);
+  });
+  it("valor inválido (negativo/NaN) → undefined", () => {
+    assert.equal(parseUseMelhorMinClicks(["--use-melhor-min-clicks", "-2"]), undefined);
+    assert.equal(parseUseMelhorMinClicks(["--use-melhor-min-clicks", "abc"]), undefined);
+  });
+});
+
+describe("useMelhorPrecedenceWarning", () => {
+  it("ambos passados: warning explícito nomeando os dois valores", () => {
+    const w = useMelhorPrecedenceWarning(3, 6);
+    assert.ok(w);
+    assert.ok(w!.includes("--use-melhor-count (3)"));
+    assert.ok(w!.includes("--use-melhor-min-clicks (6)"));
+    assert.ok(w!.includes("precedência"));
+  });
+  it("só count passado: sem warning", () => {
+    assert.equal(useMelhorPrecedenceWarning(3, undefined), undefined);
+  });
+  it("só min-clicks passado: sem warning", () => {
+    assert.equal(useMelhorPrecedenceWarning(undefined, 6), undefined);
+  });
+  it("nenhum passado: sem warning", () => {
+    assert.equal(useMelhorPrecedenceWarning(undefined, undefined), undefined);
   });
 });

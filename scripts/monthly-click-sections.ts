@@ -33,6 +33,12 @@
  *    "## Use Melhor" + "## Radar".
  *
  * Uso: npx tsx scripts/monthly-click-sections.ts <YYMM>
+ *
+ * Tamanho do Use Melhor é configurável (#2792):
+ *  - --use-melhor-count N: top-N fixo (default 3).
+ *  - --use-melhor-min-clicks N: threshold — TODO tutorial com clicks >= N,
+ *    empate na fronteira incluído. Tem precedência sobre --use-melhor-count
+ *    (se ambos forem passados, count é ignorado com warning).
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
@@ -290,6 +296,12 @@ export interface ComputeOpts {
   // Override do nº de tutoriais no Use Melhor (default USE_MELHOR_COUNT = 3).
   // Editor pode pedir mais no gate da Etapa 1 (ex.: 5) via --use-melhor-count.
   useMelhorCount?: number;
+  // Threshold: inclui TODO tutorial com clicks >= N (empate na fronteira
+  // incluído), em vez de um top-N fixo. Editor pediu isso no gate 2606-07
+  // ("todos com ≥6 cliques") — via --use-melhor-min-clicks. Tem PRECEDÊNCIA
+  // sobre useMelhorCount quando ambos são passados (count é ignorado, com
+  // warning).
+  useMelhorMinClicks?: number;
 }
 
 export function compute(yymm: string, opts: ComputeOpts = {}) {
@@ -339,7 +351,17 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
     for (const [b, n] of clicks) clicksByUrl.set(b, (clicksByUrl.get(b) ?? 0) + n);
   }
 
-  const selected = selectSections(monthItems, sourceItems, clicksByUrl, themes, opts.useMelhorCount);
+  const precedenceWarning = useMelhorPrecedenceWarning(opts.useMelhorCount, opts.useMelhorMinClicks);
+  if (precedenceWarning) warnings.push(precedenceWarning);
+
+  const selected = selectSections(
+    monthItems,
+    sourceItems,
+    clicksByUrl,
+    themes,
+    opts.useMelhorCount,
+    opts.useMelhorMinClicks,
+  );
   warnings.push(...selected.warnings);
 
   return {
@@ -356,6 +378,21 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
 }
 
 // ── Seleção pura (testável) ─────────────────────────────────────────
+
+/**
+ * Precedência entre --use-melhor-count e --use-melhor-min-clicks (#2792):
+ * min-clicks vence quando ambos são passados; count é ignorado (não erro —
+ * mantém o pipeline não-bloqueante). Retorna a mensagem de warning, ou
+ * undefined se não houver conflito (só um dos dois, ou nenhum, foi passado).
+ */
+export function useMelhorPrecedenceWarning(
+  useMelhorCount: number | undefined,
+  useMelhorMinClicks: number | undefined,
+): string | undefined {
+  if (useMelhorMinClicks === undefined || useMelhorCount === undefined) return undefined;
+  return `--use-melhor-count (${useMelhorCount}) ignorado — --use-melhor-min-clicks (${useMelhorMinClicks}) tem precedência.`;
+}
+
 type Meta = { title: string; desc: string; editions: Set<string>; sections: Set<Section> };
 
 function addToPool(pool: Map<string, Meta>, it: LinkItem) {
@@ -378,8 +415,14 @@ function addToPool(pool: Map<string, Meta>, it: LinkItem) {
 /**
  * Dado os itens editoriais do mês (com seção/edição), itens de Use Melhor
  * emprestados de fora, o mapa de cliques (baseUrl→clicks) e o conjunto de URLs
- * dos Destaques (temas), seleciona Use Melhor (top 3) e Radar (top 7).
+ * dos Destaques (temas), seleciona Use Melhor e Radar (top 7).
  * Radar exclui Destaques + qualquer URL da seção Use Melhor. Função pura.
+ *
+ * Use Melhor: por padrão top-N fixo (`useMelhorCount`, default 3). Se
+ * `useMelhorMinClicks` for passado, ignora `useMelhorCount` e inclui TODO
+ * candidato com clicks >= useMelhorMinClicks (empate na fronteira incluído —
+ * é a motivação da flag: "todos com ≥N cliques" em vez de um corte arbitrário
+ * de posição que quebra empates ao acaso).
  */
 export function selectSections(
   monthItems: LinkItem[],
@@ -387,6 +430,7 @@ export function selectSections(
   clicksByUrl: Map<string, number>,
   themeUrls: Set<string>,
   useMelhorCount: number = USE_MELHOR_COUNT,
+  useMelhorMinClicks?: number,
 ) {
   const allPool = new Map<string, Meta>();
   const useMelhorPool = new Map<string, Meta>();
@@ -405,7 +449,13 @@ export function selectSections(
   }
 
   const useMelhorRanked = rank(useMelhorPool, clicksByUrl);
-  const useMelhorTop = useMelhorRanked.slice(0, useMelhorCount);
+  // rank() ordena desc por clicks primeiro, então todo item com
+  // clicks >= useMelhorMinClicks forma um prefixo contíguo do array —
+  // filter() é seguro (não deixa "buracos" no meio da seleção).
+  const useMelhorTop =
+    useMelhorMinClicks !== undefined
+      ? useMelhorRanked.filter((x) => x.clicks >= useMelhorMinClicks)
+      : useMelhorRanked.slice(0, useMelhorCount);
   const useMelhorTopUrls = new Set(useMelhorTop.map((x) => x.url));
 
   const radarPool = new Map<string, Meta>();
@@ -419,10 +469,14 @@ export function selectSections(
   const radarTop = radarRanked.slice(0, RADAR_COUNT);
 
   const warnings: string[] = [];
-  if (useMelhorTop.length < useMelhorCount)
+  if (useMelhorMinClicks !== undefined) {
+    if (useMelhorTop.length === 0)
+      warnings.push(`Use Melhor: nenhum candidato com ≥${useMelhorMinClicks} cliques`);
+  } else if (useMelhorTop.length < useMelhorCount) {
     warnings.push(
       `Use Melhor: só ${useMelhorTop.length} candidatos com seção use_melhor (esperado ${useMelhorCount})`,
     );
+  }
   if (radarTop.length < RADAR_COUNT)
     warnings.push(`Radar: só ${radarTop.length} candidatos elegíveis (esperado ${RADAR_COUNT})`);
 
@@ -534,12 +588,29 @@ export function parseUseMelhorCount(argv: string[]): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+/** Lê `--use-melhor-min-clicks N` (ou `--use-melhor-min-clicks=N`). Retorna
+ *  undefined se ausente/inválido. Quando presente, tem precedência sobre
+ *  `--use-melhor-count` (ver `selectSections`). 0 é um valor válido (inclui
+ *  todo candidato, mesmo com 0 cliques) — só rejeita negativo/NaN. */
+export function parseUseMelhorMinClicks(argv: string[]): number | undefined {
+  const eq = argv.find((a) => a.startsWith("--use-melhor-min-clicks="));
+  const raw = eq
+    ? eq.split("=")[1]
+    : (() => {
+        const i = argv.indexOf("--use-melhor-min-clicks");
+        return i !== -1 ? argv[i + 1] : "";
+      })();
+  const n = parseInt(raw ?? "", 10);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
 function main() {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
   if (!cycle) {
     console.error(
       "Usage: npx tsx scripts/monthly-click-sections.ts --cycle YYMM-MM [--use-melhor-source AAMMDD:prefix,...]\n" +
+      "  [--use-melhor-count N | --use-melhor-min-clicks N]\n" +
       "Compat: npx tsx scripts/monthly-click-sections.ts <YYMM>",
     );
     process.exit(2);
@@ -549,7 +620,8 @@ function main() {
   // para que monthlyDir resolva corretamente o path {conteúdo}-{envio}.
   const useMelhorSource = parseUseMelhorSource(process.argv.slice(2));
   const useMelhorCount = parseUseMelhorCount(process.argv.slice(2));
-  const result = compute(cycle, { useMelhorSource, useMelhorCount });
+  const useMelhorMinClicks = parseUseMelhorMinClicks(process.argv.slice(2));
+  const result = compute(cycle, { useMelhorSource, useMelhorCount, useMelhorMinClicks });
   if (useMelhorSource.length)
     console.log(`Use Melhor emprestado de: ${useMelhorSource.map((x) => x.edition).join(", ")}`);
 

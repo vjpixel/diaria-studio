@@ -128,6 +128,11 @@ npx tsx scripts/monthly-click-sections.ts --cycle 2605-06 \
 
 Output: `_internal/monthly-clicks.json` + patch em `prioritized.md`. Warning (não bloqueia) se Use Melhor < 3 ou Radar < 7 candidatos.
 
+**Tamanho do Use Melhor configurável (#2792):** default é top-3 fixo. Se o editor pedir outro número no gate da Etapa 1, re-rodar com `--use-melhor-count N` (ex.: 5 tutoriais). Se o editor pedir por threshold ("todos com ≥N cliques" — inclui empate na fronteira, sem cortar arbitrariamente por posição), usar `--use-melhor-min-clicks N` em vez disso — tem precedência sobre `--use-melhor-count` se as duas forem passadas juntas (warning avisa qual foi ignorada). Ex.:
+```bash
+npx tsx scripts/monthly-click-sections.ts --cycle $CYCLE --use-melhor-min-clicks 6
+```
+
 ### Gate Etapa 1 (pulado com `--no-gate`)
 
 Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
