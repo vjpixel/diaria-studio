@@ -27,8 +27,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import type { BrevoColumns } from "./brevo-stats.ts";
-import { deriveCohort } from "./clarice-segment.ts";
-import { cohortFromSafra, cohortFromTier } from "./cohorts.ts";
+import { deriveLeadCohort } from "./clarice-segment.ts";
+import {
+  COHORT_ASSINANTES_ATIVOS,
+  COHORT_EX_ASSINANTES,
+  cohortFromTier,
+} from "./cohorts.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
@@ -63,14 +67,18 @@ CREATE TABLE IF NOT EXISTS clarice_users (
   dispute_losses       REAL DEFAULT 0,
   refunded_volume      REAL DEFAULT 0,
 
-  tier                 INTEGER,         -- 1..10 (T01-T10). Dupla-escrita (#2857 fase A) — continua
-                                         -- AUTORITATIVO pra ordenação de 1o envio (segmentFromStore/
-                                         -- tierRank); nenhum consumidor de envio lê a coluna cohort ainda.
-  cohort               TEXT,            -- slug de cohort nomeado (#2857 fase A — ver scripts/lib/cohorts.ts):
-                                         -- created >= epoch da safra (2026-05) -> 'leads-YYYY-MM'
-                                         -- (cohortFromSafra); senão -> derivado do tier (cohortFromTier,
-                                         -- ex: 'assinantes-ativos', 'leads-2025h2'); tier NULL + sem safra
-                                         -- -> NULL. Antes do #2857 guardava só a safra crua 'YYYY-MM' (#2817).
+  tier                 INTEGER,         -- 1..10 (T01-T10). Dupla-escrita (#2857 fase A) — mantido
+                                         -- populado por compat/fallback; ordenacao de 1o envio
+                                         -- (segmentFromStore) le cohort desde a fase B.
+  cohort               TEXT,            -- slug de cohort nomeado (#2857 fase A/B.1 — ver
+                                         -- scripts/lib/cohorts.ts + computeCohort em clarice-db.ts):
+                                         -- tier 1/2 -> 'assinantes-ativos'/'ex-assinantes' SEMPRE;
+                                         -- senao (lead) -> periodo REAL do created (deriveLeadCohort:
+                                         -- 'leads-YYYY-MM' mensal >= epoch 2026-05, senao semestre real
+                                         -- 'leads-YYYYhN'); created ausente/invalido -> fallback
+                                         -- cohortFromTier(tier) (rotulo pode nao refletir periodo real);
+                                         -- tier NULL + sem created -> NULL. Antes do #2857 guardava so a
+                                         -- safra crua 'YYYY-MM' (#2817).
 
   -- MillionVerifier (ingestão total per-email)
   mv_result            TEXT,            -- ok | catch_all | invalid | disposable | unknown
@@ -256,22 +264,70 @@ export function classifyEligibility(i: EligibilityInput): {
 }
 
 /**
+ * Deriva o cohort de uma linha a partir de `tier` + `created` (#2857 fase
+ * B.1 — correção pós dry-run no store real sobre a fase A/B, decisão do
+ * editor 260702). Precedência, nesta ordem:
+ *
+ *   1. PAGANTE NUNCA VIRA LEAD: `tier === 1` → `assinantes-ativos`,
+ *      `tier === 2` → `ex-assinantes`, SEMPRE — `created` é irrelevante pra
+ *      pagante (mesmo que ele tenha `created` recente, isso reflete só a
+ *      data da relação Stripe, nunca rebaixa o status de pagamento). Fix do
+ *      achado #1 do dry-run: um assinante tier=1 criado em 2026-06 virava
+ *      `leads-2026-06` e caía do topo da fila.
+ *   2. LEAD (tier != 1/2) COM `created` VÁLIDO: cohort deriva do PERÍODO
+ *      REAL de `created` (`deriveLeadCohort`, clarice-segment.ts — mensal
+ *      `leads-YYYY-MM` se `created >= epoch da safra` 2026-05, senão
+ *      semestre real `leads-YYYYhN`). Vale pra QUALQUER tier != 1/2
+ *      (incluindo `tier` NULL) — o rótulo ESTÁTICO herdado do tier
+ *      (`TIER_TO_COHORT`) NUNCA sobrescreve um `created` real presente,
+ *      porque esse rótulo é um snapshot do momento do merge
+ *      (`merge-clarice-subscribers.ts`, semestre deslizante relativo a
+ *      `now` do export) congelado desde a fase A — ele desalinha do período
+ *      real do `created` a cada virada de semestre. Fix do achado #2 do
+ *      dry-run: o bucket 'leads-2025h2' continha `created` jan-abr/2026.
+ *   3. FALLBACK (`created` ausente/inválido, `tier` presente e != 1/2):
+ *      `cohortFromTier(tier)` — único caso em que o rótulo ESTÁTICO do tier
+ *      é usado (o rótulo pode não refletir o período real do contato, mas é
+ *      a melhor informação disponível sem `created`). Na prática este
+ *      fallback só é atingível pra T10 com `created` NULL (fóssil sem
+ *      data) — `tierOf` (merge-clarice-subscribers.ts) sempre popula
+ *      `created` pra T3–T9, então o fallback pra esses tiers é defensivo
+ *      (dados corrompidos/futuros fora dessa invariante).
+ *   4. `tier` NULL + `created` ausente/inválido → `cohort` NULL (fim da
+ *      fila — `cohortSendRank(null)` já trata isso).
+ *
+ * Exportada pra teste direto (test/clarice-db.test.ts) — espelha
+ * `classifyEligibility`/`computePriorityPoints` acima (mesma classe de
+ * função pura testável isolada de SQLite).
+ */
+export function computeCohort(
+  tier: number | null | undefined,
+  created: string | null | undefined,
+): string | null {
+  if (tier === 1) return COHORT_ASSINANTES_ATIVOS;
+  if (tier === 2) return COHORT_EX_ASSINANTES;
+  const leadCohort = deriveLeadCohort(created);
+  if (leadCohort) return leadCohort;
+  if (tier != null) return cohortFromTier(tier);
+  return null;
+}
+
+/**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
  * `send_eligible`, `ineligible_reason`, `cohort` — #2817, taxonomia
- * unificada #2857 fase A) pra todas as linhas a partir do estado atual de
- * Brevo/MV/Stripe + tabela `priority_optin`. Idempotente — roda no fim de
- * cada build e sempre que a flag de optin muda.
+ * unificada #2857 fase A, correção de precedência #2857 fase B.1) pra todas
+ * as linhas a partir do estado atual de Brevo/MV/Stripe + tabela
+ * `priority_optin`. Idempotente — roda no fim de cada build e sempre que a
+ * flag de optin muda.
  *
- * `cohort` (#2857 fase A): `created >= epoch da safra (2026-05)` → cohort da
- * safra mensal (`cohortFromSafra(deriveCohort(created))`, forma
- * 'leads-YYYY-MM'); senão → cohort derivado do `tier` atual
- * (`cohortFromTier`, ex: 'assinantes-ativos', 'leads-2025h2'). `tier` NULL +
- * sem safra → `cohort` NULL. Como a derivação sempre recalcula do zero a
- * partir de `created`/`tier` correntes (nunca lê o `cohort` antigo), rodar
- * sobre um store com valores LEGADOS (safra crua 'YYYY-MM' de antes do
- * #2857, ou o próprio `cohort` ainda NULL) é automaticamente uma migração —
- * idempotente por construção, sem passo de migração separado. `tier`
- * INTEGER não é escrito aqui (fica intacto — dupla-escrita, fase A).
+ * `cohort`: delega pra `computeCohort` (ver docstring acima pra precedência
+ * completa). Como a derivação sempre recalcula do zero a partir de
+ * `created`/`tier` correntes (nunca lê o `cohort` antigo), rodar sobre um
+ * store com valores LEGADOS (safra crua 'YYYY-MM' de antes do #2857, cohort
+ * de uma precedência anterior, ou o próprio `cohort` ainda NULL) é
+ * automaticamente uma migração — idempotente por construção, sem passo de
+ * migração separado. `tier` INTEGER não é escrito aqui (fica intacto —
+ * dupla-escrita, fase A).
  */
 export function recomputeDerived(db: DatabaseSync): number {
   const optin = new Set<string>(
@@ -329,11 +385,9 @@ export function recomputeDerived(db: DatabaseSync): number {
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
       });
-      // #2857 fase A: safra mensal (created >= epoch) tem precedência sobre
-      // tier — um contato pode ter tier residual de um merge antigo mas
-      // created recente (raro, mas a safra é o sinal mais fresco/específico).
-      const safra = deriveCohort(r.created);
-      const cohort = safra ? cohortFromSafra(safra) : cohortFromTier(r.tier);
+      // #2857 fase B.1: precedência completa em `computeCohort` (pagante
+      // fixo > período real do created > fallback de tier).
+      const cohort = computeCohort(r.tier, r.created);
       update.run(
         isOptin ? 1 : 0,
         points,

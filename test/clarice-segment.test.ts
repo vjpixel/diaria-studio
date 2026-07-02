@@ -441,36 +441,79 @@ function firstSendOrderByTierOracle(rows: StoreRow[]): string[] {
     .map((r) => r.email);
 }
 
-test("#2857 fase B equivalência (a): SEM safras mensais, a ordem de 1º envio por cohort é BYTE-IDÊNTICA à ordem antiga por tier", () => {
+test("#2857 fase B equivalência (a): byte-idêntica QUANDO created é consistente com o tier (#2857 fase B.1: a semântica mudou — desde a B.1 quem manda é o período do created, não mais o tier)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
-  // 2 contatos por tier (T01..T10) + 2 sem tier — todos elegíveis, nunca
-  // enviados, `created` ANTES do epoch da safra (2026-05) → nenhum cohort vem
-  // de safra (cohort = cohortFromTier(tier) pra todos, via recomputeDerived).
+  // #2857 fase B.1: a ordem só é byte-idêntica à ordem antiga por tier QUANDO
+  // o `created` de cada contato é CONSISTENTE com o rótulo estático que
+  // `TIER_TO_COHORT` atribuiria àquele tier — porque a derivação primária do
+  // cohort de um lead (tier != 1/2) passou a ser o período REAL do `created`
+  // (`deriveLeadCohort`), não mais o tier residual do merge (ver teste
+  // "equivalência (b)" abaixo pra o caso em que created DIVERGE do tier).
+  //   T01/T02 (pagante): created é IRRELEVANTE (regra 1) — usamos uma data
+  //     qualquer pra provar isso.
+  //   T03 ('leads-2026-jan-abr', o único slug "range"): só alcançável pelo
+  //     FALLBACK de tier (created ausente) — a derivação primária NUNCA emite
+  //     esse range (created 2026-01..04 viraria 'leads-2026h1', ver teste (b)).
+  //   T04-T09 (semestrais): created dentro do semestre REAL que o slug estático
+  //     nomeia (ex: T04='leads-2025h2' → created em jul-dez/2025).
+  //   T10 ('leads-caudao'): created ausente (mesma invariante de `tierOf` —
+  //     "sem data → fóssil" — é o único caminho realista pro fallback).
+  //   sem tier: created TAMBÉM ausente — só assim cai em cohort NULL (fim da
+  //     fila) nos dois esquemas; com created presente, a regra 3c (tier NULL +
+  //     created presente → deriva por created) tiraria esses contatos do fim.
+  const createdByTier: Record<number, string | null> = {
+    1: "2020-01-01T00:00:00Z", // irrelevante (regra 1)
+    2: "2020-01-01T00:00:00Z", // irrelevante (regra 1)
+    3: null,                   // fallback (único jeito de emitir o range)
+    4: "2025-08-15T00:00:00Z", // H2 2025
+    5: "2025-03-15T00:00:00Z", // H1 2025
+    6: "2024-08-15T00:00:00Z", // H2 2024
+    7: "2024-03-15T00:00:00Z", // H1 2024
+    8: "2023-08-15T00:00:00Z", // H2 2023
+    9: "2023-03-15T00:00:00Z", // H1 2023
+    10: null,                  // fallback (fóssil sem data)
+  };
   for (let t = 1; t <= 10; t++) {
-    ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, '2025-01-01T00:00:00Z')", `t${String(t).padStart(2, "0")}b@x.com`, t);
-    ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, '2025-01-01T00:00:00Z')", `t${String(t).padStart(2, "0")}a@x.com`, t);
+    const created = createdByTier[t];
+    if (created) {
+      ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, ?)", `t${String(t).padStart(2, "0")}b@x.com`, t, created);
+      ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, ?)", `t${String(t).padStart(2, "0")}a@x.com`, t, created);
+    } else {
+      ins("INSERT INTO clarice_users (email, tier) VALUES (?, ?)", `t${String(t).padStart(2, "0")}b@x.com`, t);
+      ins("INSERT INTO clarice_users (email, tier) VALUES (?, ?)", `t${String(t).padStart(2, "0")}a@x.com`, t);
+    }
   }
-  ins("INSERT INTO clarice_users (email, created) VALUES ('nullb@x.com', '2025-01-01T00:00:00Z')");
-  ins("INSERT INTO clarice_users (email, created) VALUES ('nulla@x.com', '2025-01-01T00:00:00Z')");
+  ins("INSERT INTO clarice_users (email) VALUES ('nullb@x.com')");
+  ins("INSERT INTO clarice_users (email) VALUES ('nulla@x.com')");
   recomputeDerived(db);
 
   const rows = loadStoreRows(db);
+  const byEmail = new Map(rows.map((r) => [r.email, r]));
+  // sanidade: cada cohort derivado bate EXATAMENTE com o slug estático do
+  // tier (é isso que torna a ordem byte-idêntica possível).
+  assert.equal(byEmail.get("t01a@x.com")!.cohort, "assinantes-ativos");
+  assert.equal(byEmail.get("t02a@x.com")!.cohort, "ex-assinantes");
+  assert.equal(byEmail.get("t03a@x.com")!.cohort, "leads-2026-jan-abr");
+  assert.equal(byEmail.get("t04a@x.com")!.cohort, "leads-2025h2");
+  assert.equal(byEmail.get("t10a@x.com")!.cohort, "leads-caudao");
+  assert.equal(byEmail.get("nulla@x.com")!.cohort, null);
+
   const cohortOrder = segmentFromStore(rows).firstSend.map((r) => r.email);
   const tierOracleOrder = firstSendOrderByTierOracle(rows);
 
   assert.deepEqual(
     cohortOrder,
     tierOracleOrder,
-    "sem safras mensais, cohort-order (novo) deve ser byte-idêntica a tier-order (antigo)",
+    "created consistente com o tier em todos os contatos → cohort-order (novo) byte-idêntica a tier-order (antigo)",
   );
   // sanidade: não é um empate degenerado (22 linhas elegíveis nunca-enviadas).
   assert.equal(cohortOrder.length, 22);
   db.close();
 });
 
-test("#2857 fase B equivalência (b): COM safras mensais, a diferença é EXATAMENTE a documentada (recência da safra > tier residual do merge)", () => {
+test("#2857 fase B.1: quando created DIVERGE do rótulo estático do tier, o created MANDA (não é um no-op disfarçado)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
@@ -478,15 +521,19 @@ test("#2857 fase B equivalência (b): COM safras mensais, a diferença é EXATAM
   // atribuiria a qualquer lead de jan-jun/2026, via tierOf em
   // merge-clarice-subscribers.ts) — sob a ordenação ANTIGA (tier), eles
   // empatam e desempatam só por email ASC, cegos à recência real.
-  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('a-janabr@x.com', 3, '2026-03-01T00:00:00Z')"); // pré-epoch → cohort do tier
+  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('a-janabr@x.com', 3, '2026-03-01T00:00:00Z')"); // pré-epoch → semestre REAL do created
   ins("INSERT INTO clarice_users (email, tier, created) VALUES ('b-mai@x.com', 3, '2026-05-10T00:00:00Z')");     // safra maio
   ins("INSERT INTO clarice_users (email, tier, created) VALUES ('c-jun@x.com', 3, '2026-06-10T00:00:00Z')");     // safra junho
   recomputeDerived(db);
 
   const rows = loadStoreRows(db);
   const byEmail = new Map(rows.map((r) => [r.email, r]));
-  // sanidade (#2857 fase A): a safra venceu o tier residual na coluna cohort.
-  assert.equal(byEmail.get("a-janabr@x.com")!.cohort, "leads-2026-jan-abr");
+  // #2857 fase B.1: o created MANDA sobre o rótulo estático do tier —
+  // a-janabr (created 2026-03, pré-epoch) deriva o semestre REAL
+  // 'leads-2026h1', NUNCA o range estático 'leads-2026-jan-abr' que
+  // TIER_TO_COHORT[3] atribuiria (esse range só sai pelo fallback de tier,
+  // created ausente — ver teste "equivalência (a)" acima).
+  assert.equal(byEmail.get("a-janabr@x.com")!.cohort, "leads-2026h1", "created MANDA — não mais o range estático do tier");
   assert.equal(byEmail.get("b-mai@x.com")!.cohort, "leads-2026-05");
   assert.equal(byEmail.get("c-jun@x.com")!.cohort, "leads-2026-06");
 
@@ -496,9 +543,9 @@ test("#2857 fase B equivalência (b): COM safras mensais, a diferença é EXATAM
   // ANTES (tier, oráculo independente): mesmo tier(3) pros 3 → desempate só
   // por email ASC (cego à recência).
   assert.deepEqual(tierOracleOrder, ["a-janabr@x.com", "b-mai@x.com", "c-jun@x.com"]);
-  // DEPOIS (cohort, #2857 fase B): safras mensais por recência DECRESCENTE,
-  // acima do bucket legado (jan-abr) que herdou o MESMO tier numérico —
-  // junho (mais novo) primeiro, depois maio, depois o range legado.
+  // DEPOIS (cohort, #2857 fase B/B.1): por recência DECRESCENTE do início do
+  // período REAL — junho (mais novo) primeiro, depois maio, depois o
+  // semestre 2026-H1 (início jan/2026, o mais antigo dos 3).
   assert.deepEqual(cohortOrder, ["c-jun@x.com", "b-mai@x.com", "a-janabr@x.com"]);
   // a diferença documentada precisa ser OBSERVÁVEL (não um no-op disfarçado).
   assert.notDeepEqual(cohortOrder, tierOracleOrder);
