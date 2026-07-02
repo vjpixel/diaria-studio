@@ -60,6 +60,12 @@ export interface StoreSummary {
   // `priority_points` (faixas, acima) mantido pra contexto/fallback de KV
   // pré-#2731.
   priority_points_histogram: Record<string, number>;
+  // Coluna "verified" da tabela de priority_points (pedido do editor 260702):
+  // por valor exato de priority_points, quantos têm mv_bucket='verified'.
+  // Mesma exclusão de internos do histograma (#2809).
+  priority_points_histogram_verified: Record<string, number>;
+  // Idem para as sub-linhas de tier (universo firstSend do by_tier + verified).
+  by_tier_verified: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -80,6 +86,30 @@ function groupCounts(
   return out;
 }
 
+// SQL do subset MV-verificado — fonte única das agregações condicionais abaixo.
+const MV_VERIFIED_CASE = "SUM(CASE WHEN mv_bucket='verified' THEN 1 ELSE 0 END)";
+
+/**
+ * Variante do groupCounts pra par total+verified num ÚNICO scan (review #2815):
+ * a query deve projetar `k`, `n` (COUNT) e `nv` (MV_VERIFIED_CASE). O mapa
+ * `verified` preserva a semântica esparsa da query separada (bucket sem
+ * verificado = chave AUSENTE, não 0) — o render trata ausente como 0.
+ */
+function groupCountsWithVerified(
+  db: DatabaseSync,
+  sql: string,
+  params: string[] = [],
+): { total: Record<string, number>; verified: Record<string, number> } {
+  const total: Record<string, number> = {};
+  const verified: Record<string, number> = {};
+  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number; nv: number }>) {
+    const key = r.k == null ? "null" : String(r.k);
+    total[key] = r.n;
+    if (r.nv > 0) verified[key] = r.nv;
+  }
+  return { total, verified };
+}
+
 // #2809: fragmento SQL + params pra excluir os emails internos das agregações
 // de priority_points (case-insensitive por segurança — o store normaliza, mas
 // LOWER() protege contra variação de ingestão). SÓ exibição: nenhuma outra
@@ -89,6 +119,19 @@ const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 
 /** Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS. */
 export function computeStoreSummary(db: DatabaseSync): StoreSummary {
+  // Pares total+verified em SCAN ÚNICO por universo (review #2815 — antes eram
+  // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
+  const byTierPair = groupCountsWithVerified(
+    db,
+    `SELECT tier AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
+      WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`,
+  );
+  const ppHistPair = groupCountsWithVerified(
+    db,
+    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
+      WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
+    INTERNAL_PARAMS,
+  );
   return {
     total: count(db, "SELECT COUNT(*) n FROM clarice_users"),
     brevo: {
@@ -116,11 +159,7 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // continua gravado no store pra auditoria, só não entra nesta contagem.
     // #2782: o predicado vem da MESMA fonte que segmentFromStore usa — não
     // reimplementar em SQL cru aqui (era 2 cópias que divergiam em silêncio).
-    by_tier: groupCounts(
-      db,
-      `SELECT tier AS k, COUNT(*) n FROM clarice_users
-        WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY tier`,
-    ),
+    by_tier: byTierPair.total,
     eligibility: {
       eligible: count(
         db,
@@ -181,11 +220,16 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // #2731: distribuição por valor exato — groupCounts já trata NULL como
     // chave "null" (mesmo padrão de `mv`/`by_reason`/`by_tier` acima).
     // #2809: internos excluídos (mesmo filtro do bloco acima).
-    priority_points_histogram: groupCounts(
-      db,
-      `SELECT priority_points AS k, COUNT(*) n FROM clarice_users WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
-      INTERNAL_PARAMS,
-    ),
+    priority_points_histogram: ppHistPair.total,
+    // Coluna "verified" (260702): mesmo universo do histograma (sem internos,
+    // #2809), restrito a mv_bucket='verified'. Chave ausente = 0 verificados.
+    priority_points_histogram_verified: ppHistPair.verified,
+    // Verified das sub-linhas de tier: universo firstSend (#2782, mesma fonte
+    // do by_tier — que, como o by_tier, NÃO filtra internos; a exclusão #2809
+    // é exclusiva do bloco priority_points) ∩ mv_bucket='verified'. T1 tende a
+    // 0/baixo — assinante ativo é validado por pagamento, não passa pelo MV
+    // (#1297).
+    by_tier_verified: byTierPair.verified,
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",

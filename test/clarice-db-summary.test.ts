@@ -55,6 +55,16 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(hist["-20"], 1, "c");
   // invariante: a soma do histograma também particiona o total.
   assert.equal(Object.values(hist).reduce((s2, v) => s2 + v, 0), s.total);
+  // Coluna "verified" (260702): a (verified, 0 pts) e b (verified, 60 pts) —
+  // por bucket do histograma; buckets sem verificado ficam ausentes (= 0).
+  const vHist = s.priority_points_histogram_verified;
+  assert.equal(vHist["0"], 1, "a: verified com 0 pontos");
+  assert.equal(vHist["60"], 1, "b: verified com 60 pontos");
+  assert.equal(vHist["40"], undefined, "e: optin sem MV → ausente");
+  assert.equal(vHist["-20"], undefined, "c: sem MV → ausente");
+  // by_tier_verified: universo firstSend ∩ verified — só a (tier 1, nunca
+  // enviado, verified). e é firstSend mas sem MV; b é verified mas reSend.
+  assert.deepEqual(s.by_tier_verified, { "1": 1 });
   // mv: verified (a,b)=2; none (c,d,e)=3
   assert.equal(s.mv["verified"], 2);
   assert.equal(s.mv["none"], 3);
