@@ -1,118 +1,129 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
-import { SENDS } from "../scripts/clarice-build-edition-sends.ts";
+import {
+  scheduledAtFor,
+  assertScheduledAtFuture,
+  SUBJECTS,
+  PREVIEW_TEXT,
+  buildKeysInScope,
+  parseCellBlockArg,
+  checkEiaGuard,
+  isScheduledStatus,
+  applyVerifyResults,
+} from "../scripts/clarice-schedule-sends.ts";
+import type { SendsSummaryEntry } from "../scripts/lib/send-plan.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/mensal/monthly-paths.ts";
 
-// (#2101: guard de runtime movido para assertScheduledAtFuture — scheduledAtFor
-// é função pura de computação de data, sem side effects de clock)
-// BEFORE_CYCLE é usado apenas nos testes de assertScheduledAtFuture que precisam de clock injetável.
+// Fixture: mesmo shape/calendário do ciclo 2605-06 (3 blocos × 7 dias), agora
+// como sends-summary.json (SendsSummaryEntry[]) em vez do SENDS hardcoded.
+// bloco 1 = bloco-célula (equivalente à antiga S1).
+function fixtureSends(): SendsSummaryEntry[] {
+  const days = ["qua", "qui", "sex", "sab", "dom", "seg", "ter"];
+  const dates1 = ["10jun", "11jun", "12jun", "13jun", "14jun", "15jun", "16jun"];
+  const dates2 = ["17jun", "18jun", "19jun", "20jun", "21jun", "22jun", "23jun"];
+  const dates3 = ["24jun", "25jun", "26jun", "27jun", "28jun", "29jun", "30jun"];
+  const out: SendsSummaryEntry[] = [];
+  let n = 1;
+  for (const [block, dates] of [[1, dates1], [2, dates2], [3, dates3]] as [number, string[]][]) {
+    for (let i = 0; i < dates.length; i++) {
+      const date = dates[i];
+      const dd = date.slice(0, 2);
+      const scheduledAt = `2026-06-${dd}T09:00:00.000Z`;
+      out.push({
+        n,
+        date,
+        day: days[i],
+        block,
+        volume: 100,
+        scheduledAt,
+        file: `d${String(n).padStart(2, "0")}-${date}.csv`,
+        planned: 100,
+        actual: 100,
+        comp: {},
+      });
+      n++;
+    }
+  }
+  return out;
+}
+
+const SENDS = fixtureSends();
 const BEFORE_CYCLE = new Date("2026-06-09T00:00:00Z"); // 1 dia antes de d01
 
-// 06:00 BRT = 09:00 UTC (#2041 item 4: normalizado pra UTC Z via .toISOString())
-describe("scheduledAtFor (guard de range #2007/#2018)", () => {
+// 06:00 BRT = 09:00 UTC
+describe("scheduledAtFor (#2775 — lookup em sends-summary, guard de range)", () => {
   it("d01 → 10/jun/2026 09:00 UTC (= 06:00 BRT)", () => {
-    assert.equal(scheduledAtFor(1), "2026-06-10T09:00:00.000Z");
+    assert.equal(scheduledAtFor(SENDS, 1), "2026-06-10T09:00:00.000Z");
   });
 
-  it("d07 → 16/jun/2026 09:00 UTC (= 06:00 BRT, último dia S1)", () => {
-    assert.equal(scheduledAtFor(7), "2026-06-16T09:00:00.000Z");
+  it("d07 → 16/jun/2026 09:00 UTC (último dia bloco 1)", () => {
+    assert.equal(scheduledAtFor(SENDS, 7), "2026-06-16T09:00:00.000Z");
   });
 
-  it("d08 → 17/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S2)", () => {
-    assert.equal(scheduledAtFor(8), "2026-06-17T09:00:00.000Z");
+  it("d08 → 17/jun/2026 09:00 UTC (primeiro dia bloco 2)", () => {
+    assert.equal(scheduledAtFor(SENDS, 8), "2026-06-17T09:00:00.000Z");
   });
 
-  it("d14 → 23/jun/2026 09:00 UTC (= 06:00 BRT, último dia S2)", () => {
-    assert.equal(scheduledAtFor(14), "2026-06-23T09:00:00.000Z");
+  it("d21 → 30/jun/2026 09:00 UTC (último dia bloco 3)", () => {
+    assert.equal(scheduledAtFor(SENDS, 21), "2026-06-30T09:00:00.000Z");
   });
 
-  it("d15 → 24/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S3)", () => {
-    assert.equal(scheduledAtFor(15), "2026-06-24T09:00:00.000Z");
-  });
-
-  it("d21 → 30/jun/2026 09:00 UTC (= 06:00 BRT, último dia S3)", () => {
-    assert.equal(scheduledAtFor(21), "2026-06-30T09:00:00.000Z");
-  });
-
-  // Regressão #2041 item 4: saída deve ser UTC Z, não offset BRT
   it("formato de saída é UTC Z (termina em Z)", () => {
-    assert.ok(scheduledAtFor(1).endsWith("Z"), "deve terminar em Z (UTC)");
+    assert.ok(scheduledAtFor(SENDS, 1).endsWith("Z"), "deve terminar em Z (UTC)");
   });
 
-  it("horário UTC é 09:00 (= 06:00 BRT)", () => {
-    const iso = scheduledAtFor(1);
-    assert.ok(iso.includes("T09:00:00"), `esperado T09:00:00 no ISO, obtido: ${iso}`);
-  });
-
-  // Guard de range: n fora de 1..SENDS.length lança erro explícito (nunca data silenciosamente errada)
+  // Guard de range: n fora de 1..sends.length lança erro explícito (nunca data silenciosamente errada)
   it("n=0 lança erro (fora do range)", () => {
     const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
-    assert.throws(() => scheduledAtFor(0), rangeRe);
+    assert.throws(() => scheduledAtFor(SENDS, 0), rangeRe);
   });
 
   it(`n=${SENDS.length + 1} lança erro (fora do range)`, () => {
     const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
-    assert.throws(() => scheduledAtFor(SENDS.length + 1), rangeRe);
+    assert.throws(() => scheduledAtFor(SENDS, SENDS.length + 1), rangeRe);
   });
 
   it("n=1.5 lança erro (não-inteiro)", () => {
     const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
-    assert.throws(() => scheduledAtFor(1.5), rangeRe);
+    assert.throws(() => scheduledAtFor(SENDS, 1.5), rangeRe);
   });
 
-  // scheduledAtFor apenas computa a data (sem guard); assertScheduledAtFuture faz o guard
-  it("retorna data passada sem lançar (guard separado em assertScheduledAtFuture)", () => {
-    // d01 (10/jun/2026) já é passado no clock real — scheduledAtFor não deve lançar
-    assert.doesNotThrow(() => scheduledAtFor(1)); // sem nowOverride = clock real
-  });
-
-  // #2125: scheduledAtFor deve derivar de SENDS (fonte única do calendário), não de aritmética própria.
-  it("deriva do campo scheduledAt de SENDS[n-1] (fonte única do calendário)", () => {
-    for (const s of SENDS) {
-      assert.equal(
-        scheduledAtFor(s.n),
-        s.scheduledAt,
-        `scheduledAtFor(${s.n}) deve igualar SENDS[${s.n - 1}].scheduledAt`,
-      );
-    }
-  });
-
-  it("todos os 21 envios derivam de SENDS sem aritmética própria", () => {
-    // Verifica que a cobertura é total: 21 entradas, sem gaps.
-    assert.equal(SENDS.length, 21, "SENDS deve ter 21 entradas");
+  it("todos os 21 envios da fixture derivam do sends-summary sem gaps", () => {
+    assert.equal(SENDS.length, 21, "fixture deve ter 21 entradas");
     for (let n = 1; n <= 21; n++) {
       const send = SENDS.find((s) => s.n === n);
-      assert.ok(send, `SENDS deve ter entrada para n=${n}`);
-      assert.equal(scheduledAtFor(n), send!.scheduledAt);
+      assert.ok(send, `sends deve ter entrada para n=${n}`);
+      assert.equal(scheduledAtFor(SENDS, n), send!.scheduledAt);
     }
+  });
+
+  it("retorna data passada sem lançar (guard separado em assertScheduledAtFuture)", () => {
+    assert.doesNotThrow(() => scheduledAtFor(SENDS, 1)); // sem nowOverride = clock real; d01 é passado no clock real
   });
 });
 
-// Regressão #2101: assertScheduledAtFuture — guard de data futura separado de scheduledAtFor
-describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--schedule)", () => {
+describe("assertScheduledAtFuture (#2101/#2775 — guard de data futura em --create/--schedule)", () => {
   it("não lança quando data computada é no futuro (1ms antes)", () => {
     const justBeforeD01 = new Date("2026-06-10T08:59:59.999Z");
-    assert.doesNotThrow(() => assertScheduledAtFuture(1, justBeforeD01));
+    assert.doesNotThrow(() => assertScheduledAtFuture(SENDS, 1, justBeforeD01));
   });
 
   it("lança quando data computada é igual a now (date <= now)", () => {
     const exactlyD01 = new Date("2026-06-10T09:00:00Z");
     assert.throws(
-      () => assertScheduledAtFuture(1, exactlyD01),
+      () => assertScheduledAtFuture(SENDS, 1, exactlyD01),
       /data computada.*é passado ou presente/,
     );
   });
 
-  it("lança quando ciclo desatualizado (clock em julho, scheduledAt de SENDS ainda em junho)", () => {
+  it("lança quando ciclo desatualizado (clock em julho, plano ainda em junho)", () => {
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
-      () => assertScheduledAtFuture(1, afterCycle),
+      () => assertScheduledAtFuture(SENDS, 1, afterCycle),
       /desatualizado|passado ou presente/,
     );
   });
@@ -120,18 +131,18 @@ describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--
   it("lança para d21 também (último dia do ciclo) quando clock está em julho", () => {
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
-      () => assertScheduledAtFuture(21, afterCycle),
+      () => assertScheduledAtFuture(SENDS, 21, afterCycle),
       /desatualizado|passado ou presente/,
     );
   });
 
   it("n=0 lança erro de range (delegado a scheduledAtFor)", () => {
     const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
-    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), rangeRe);
+    assert.throws(() => assertScheduledAtFuture(SENDS, 0, BEFORE_CYCLE), rangeRe);
   });
 });
 
-describe("SUBJECTS / PREVIEW_TEXT (S1)", () => {
+describe("SUBJECTS / PREVIEW_TEXT (bloco-célula)", () => {
   it("tem 3 variantes A/B/C", () => {
     assert.ok("A" in SUBJECTS && "B" in SUBJECTS && "C" in SUBJECTS);
     assert.equal(Object.keys(SUBJECTS).length, 3);
@@ -142,118 +153,85 @@ describe("SUBJECTS / PREVIEW_TEXT (S1)", () => {
   });
 });
 
-describe("parseWeeksArg (#2007/#2018)", () => {
-  it("sem --weeks retorna [1] (default S1)", () => {
-    assert.deepEqual(parseWeeksArg([]), [1]);
-    assert.deepEqual(parseWeeksArg(["--cycle", "2605-06"]), [1]);
+describe("parseCellBlockArg (#2775 — qual bloco recebe o teste A/B/C)", () => {
+  it("sem --cell-block: default 1", () => {
+    assert.equal(parseCellBlockArg([]), 1);
   });
 
-  it("--weeks 1 retorna [1]", () => {
-    assert.deepEqual(parseWeeksArg(["--weeks", "1"]), [1]);
+  it("--cell-block 2 retorna 2", () => {
+    assert.equal(parseCellBlockArg(["--cell-block", "2"]), 2);
   });
 
-  it("--weeks 2,3 retorna [2,3]", () => {
-    assert.deepEqual(parseWeeksArg(["--weeks", "2,3"]), [2, 3]);
+  it("--cell-block sem valor lança erro explícito", () => {
+    assert.throws(() => parseCellBlockArg(["--cell-block"]), /--cell-block requer um valor/);
   });
 
-  it("--weeks 1,2,3 retorna [1,2,3]", () => {
-    assert.deepEqual(parseWeeksArg(["--weeks", "1,2,3"]), [1, 2, 3]);
-  });
-
-  // Regressão #2007: --weeks --dry-run (sem valor) não pode resultar em weeks=[] silencioso
-  it("--weeks --dry-run (sem valor) lança erro explícito", () => {
-    assert.throws(
-      () => parseWeeksArg(["--weeks", "--dry-run"]),
-      /--weeks requer um valor/,
-    );
-  });
-
-  it("--weeks sem valor no final do argv lança erro explícito", () => {
-    assert.throws(
-      () => parseWeeksArg(["--weeks"]),
-      /--weeks requer um valor/,
-    );
-  });
-
-  it("--weeks com valor inválido lança erro explícito", () => {
-    assert.throws(
-      () => parseWeeksArg(["--weeks", "abc"]),
-      /não contém semanas válidas/,
-    );
-  });
-
-  it("--weeks 4 (semana inexistente) lança erro explícito", () => {
-    assert.throws(
-      () => parseWeeksArg(["--weeks", "4"]),
-      /não contém semanas válidas/,
-    );
-  });
-
-  it("--weeks 2 retorna [2] (S2 isolada)", () => {
-    assert.deepEqual(parseWeeksArg(["--weeks", "2"]), [2]);
+  it("--cell-block inválido (0, negativo, não-numérico) lança erro explícito", () => {
+    assert.throws(() => parseCellBlockArg(["--cell-block", "0"]), /--cell-block deve ser um inteiro/);
+    assert.throws(() => parseCellBlockArg(["--cell-block", "abc"]), /--cell-block deve ser um inteiro/);
   });
 });
 
-// Fix #4 (cleanup): --update-html deve usar o mesmo filtro keysInScope que --schedule.
 // buildKeysInScope exportada como ponto de teste (#633): se o escopo divergir entre
 // --update-html e --schedule, um dos dois estará errado.
-describe("buildKeysInScope (#2007 cleanup -- --update-html respeita --weeks)", () => {
-  it("--weeks 1: só chaves S1 (dNN-A/B/C para d01-d07)", () => {
-    const keys = buildKeysInScope([1]);
-    // S1 tem 7 dias × 3 células = 21 chaves
-    assert.equal(keys.size, 21, "S1 deve ter 21 chaves (7 dias × 3 células A/B/C)");
-    // Todas devem ser do formato dNN-[ABC]
+describe("buildKeysInScope (#2775 — generaliza semana->bloco, cellBlock configurável)", () => {
+  it("bloco 1 (cellBlock=1): só chaves com sufixo A/B/C (dNN-A/B/C para d01-d07)", () => {
+    const keys = buildKeysInScope(SENDS, [1], 1);
+    assert.equal(keys.size, 21, "bloco 1 deve ter 21 chaves (7 dias × 3 células A/B/C)");
     for (const k of keys) {
-      assert.match(k, /^d(0[1-7])-[ABC]$/, `chave fora do range S1: ${k}`);
+      assert.match(k, /^d(0[1-7])-[ABC]$/, `chave fora do range bloco 1: ${k}`);
     }
-    // Não deve conter chaves S2/S3 (sem sufixo de célula)
-    assert.ok(!keys.has("d08"), "S2 não deve estar em --weeks 1");
-    assert.ok(!keys.has("d15"), "S3 não deve estar em --weeks 1");
+    assert.ok(!keys.has("d08"), "bloco 2 não deve estar em --blocks 1");
+    assert.ok(!keys.has("d15"), "bloco 3 não deve estar em --blocks 1");
   });
 
-  it("--weeks 2: só chaves S2 (d08-d14, sem sufixo de célula)", () => {
-    const keys = buildKeysInScope([2]);
-    assert.equal(keys.size, 7, "S2 deve ter 7 chaves (7 dias × 1 campanha)");
+  it("bloco 2 (cellBlock=1, bloco 2 != cellBlock): chaves sem sufixo de célula (d08-d14)", () => {
+    const keys = buildKeysInScope(SENDS, [2], 1);
+    assert.equal(keys.size, 7, "bloco 2 deve ter 7 chaves (7 dias × 1 campanha)");
     for (const k of keys) {
-      assert.match(k, /^d(0[89]|1[0-4])$/, `chave fora do range S2: ${k}`);
+      assert.match(k, /^d(0[89]|1[0-4])$/, `chave fora do range bloco 2: ${k}`);
     }
-    // Não deve conter chaves S1 (com sufixo de célula)
-    assert.ok(!keys.has("d01-A"), "S1 não deve estar em --weeks 2");
-    assert.ok(!keys.has("d15"), "S3 não deve estar em --weeks 2");
+    assert.ok(!keys.has("d01-A"), "bloco 1 não deve estar em --blocks 2");
+    assert.ok(!keys.has("d15"), "bloco 3 não deve estar em --blocks 2");
   });
 
-  it("--weeks 3: só chaves S3 (d15-d21)", () => {
-    const keys = buildKeysInScope([3]);
-    assert.equal(keys.size, 7, "S3 deve ter 7 chaves");
+  it("bloco 3: só chaves d15-d21", () => {
+    const keys = buildKeysInScope(SENDS, [3], 1);
+    assert.equal(keys.size, 7, "bloco 3 deve ter 7 chaves");
     for (const k of keys) {
-      assert.match(k, /^d(1[5-9]|2[01])$/, `chave fora do range S3: ${k}`);
+      assert.match(k, /^d(1[5-9]|2[01])$/, `chave fora do range bloco 3: ${k}`);
     }
-    assert.ok(!keys.has("d01-A"), "S1 não deve estar em --weeks 3");
-    assert.ok(!keys.has("d08"), "S2 não deve estar em --weeks 3");
+    assert.ok(!keys.has("d01-A"), "bloco 1 não deve estar em --blocks 3");
+    assert.ok(!keys.has("d08"), "bloco 2 não deve estar em --blocks 3");
   });
 
-  it("--weeks 2,3: chaves S2+S3 (d08-d21)", () => {
-    const keys = buildKeysInScope([2, 3]);
-    assert.equal(keys.size, 14, "S2+S3 deve ter 14 chaves");
-    assert.ok(keys.has("d08"), "d08 em --weeks 2,3");
-    assert.ok(keys.has("d14"), "d14 em --weeks 2,3");
-    assert.ok(keys.has("d15"), "d15 em --weeks 2,3");
-    assert.ok(keys.has("d21"), "d21 em --weeks 2,3");
-    assert.ok(!keys.has("d01-A"), "S1 não deve estar em --weeks 2,3");
+  it("blocos 2,3: chaves combinadas (d08-d21)", () => {
+    const keys = buildKeysInScope(SENDS, [2, 3], 1);
+    assert.equal(keys.size, 14, "blocos 2+3 devem ter 14 chaves");
+    assert.ok(keys.has("d08") && keys.has("d14") && keys.has("d15") && keys.has("d21"));
+    assert.ok(!keys.has("d01-A"), "bloco 1 não deve estar em --blocks 2,3");
   });
 
-  it("--weeks 1,3 (S2 omitida): contém S1 e S3, mas não S2", () => {
-    const keys = buildKeysInScope([1, 3]);
-    // S1: 7×3=21 + S3: 7×1=7 = 28
-    assert.equal(keys.size, 28, "--weeks 1,3 deve ter 28 chaves");
-    assert.ok(keys.has("d01-A"), "S1 deve estar em --weeks 1,3");
-    assert.ok(keys.has("d21"), "S3 deve estar em --weeks 1,3");
-    assert.ok(!keys.has("d08"), "S2 NÃO deve estar em --weeks 1,3");
+  it("blocos 1,3 (bloco 2 omitido): contém bloco 1 e 3, mas não 2", () => {
+    const keys = buildKeysInScope(SENDS, [1, 3], 1);
+    assert.equal(keys.size, 28, "--blocks 1,3 deve ter 28 chaves (21 + 7)");
+    assert.ok(keys.has("d01-A") && keys.has("d21"));
+    assert.ok(!keys.has("d08"), "bloco 2 NÃO deve estar em --blocks 1,3");
   });
 
-  it("--weeks 1,2,3: todas as 35 chaves (21 S1 + 7 S2 + 7 S3)", () => {
-    const keys = buildKeysInScope([1, 2, 3]);
-    assert.equal(keys.size, 35, "todas as semanas devem ter 35 chaves");
+  it("blocos 1,2,3: todas as 35 chaves (21 + 7 + 7)", () => {
+    const keys = buildKeysInScope(SENDS, [1, 2, 3], 1);
+    assert.equal(keys.size, 35);
+  });
+
+  it("cellBlock configurável: cellBlock=2 faz o bloco 2 ganhar sufixo A/B/C, bloco 1 vira chave simples", () => {
+    const keysBlock1 = buildKeysInScope(SENDS, [1], 2);
+    assert.equal(keysBlock1.size, 7, "bloco 1 (não é mais cellBlock) deve ter 7 chaves simples");
+    for (const k of keysBlock1) assert.match(k, /^d0[1-7]$/);
+
+    const keysBlock2 = buildKeysInScope(SENDS, [2], 2);
+    assert.equal(keysBlock2.size, 21, "bloco 2 (agora cellBlock) deve ter 21 chaves A/B/C");
+    for (const k of keysBlock2) assert.match(k, /^d(0[89]|1[0-4])-[ABC]$/);
   });
 });
 
@@ -261,7 +239,6 @@ describe("buildKeysInScope (#2007 cleanup -- --update-html respeita --weeks)", (
 describe("htmlPath resolução via resolveMonthlyDir (#2041 item 1)", () => {
   it("cycle 2605-06 aponta pra pasta 2605-06, não 2605", () => {
     const cycle = "2605-06";
-    // resolveMonthlyDir aceita ciclo sem exigir que a pasta exista (retorna path)
     const dir = resolveMonthlyDir(cycle, { allowLegacyFallback: false });
     assert.ok(dir.includes("2605-06"), `path deve conter '2605-06', obtido: ${dir}`);
     assert.ok(!dir.endsWith(`${sep}2605`), `path NÃO deve terminar em /2605, obtido: ${dir}`);
@@ -286,7 +263,7 @@ describe("nome de campanha derivado de cycleToYymm (#2041 item 2)", () => {
     assert.equal(cycleToYymm("2606-07"), "2606");
   });
 
-  it("nome de campanha S1 para 2606-07 contém '2606', não '2605'", () => {
+  it("nome de campanha bloco-célula para 2606-07 contém '2606', não '2605'", () => {
     const cycle = "2606-07";
     const yymm = cycleToYymm(cycle);
     const name = `Clarice News ${yymm} d01-A (qua)`;
@@ -294,7 +271,7 @@ describe("nome de campanha derivado de cycleToYymm (#2041 item 2)", () => {
     assert.ok(!name.includes("2605"), `nome NÃO deve conter '2605': ${name}`);
   });
 
-  it("nome de campanha S2/S3 para 2606-07 contém '2606', não '2605'", () => {
+  it("nome de campanha demais blocos para 2606-07 contém '2606', não '2605'", () => {
     const cycle = "2606-07";
     const yymm = cycleToYymm(cycle);
     const name = `Clarice News ${yymm} d08 (ter)`;
@@ -306,7 +283,6 @@ describe("nome de campanha derivado de cycleToYymm (#2041 item 2)", () => {
 // Regressão #2041 item 3: JSON.parse com try/catch — fixture truncada vira erro legível
 describe("robustez JSON.parse campaigns-summary / sends-summary (#2041 item 3)", () => {
   it("JSON truncado em campaigns-summary lança erro citando o arquivo", () => {
-    // Simulação: parse de JSON truncado deve lançar SyntaxError — nosso wrapper acrescenta path
     const truncated = '{"sends": [{"n": 1, "listId": 42';
     assert.throws(
       () => {
@@ -320,27 +296,8 @@ describe("robustez JSON.parse campaigns-summary / sends-summary (#2041 item 3)",
     );
   });
 
-  it("JSON truncado em sends-summary lança erro citando o arquivo", () => {
-    const truncated = '{"sends": [{"n": 1,';
-    assert.throws(
-      () => {
-        try {
-          JSON.parse(truncated);
-        } catch (e) {
-          throw new Error(`sends-summary.json corrompido (JSON inválido): /fake/path\n${String(e)}`);
-        }
-      },
-      /sends-summary\.json corrompido/,
-    );
-  });
-
   it("JSON válido em campaigns-summary não lança erro", () => {
     const valid = JSON.stringify([{ key: "d01-A", campaignId: 1, listId: 2, subject: "X", scheduledAt: "2026-06-10T09:00:00.000Z", status: "draft" }]);
-    assert.doesNotThrow(() => JSON.parse(valid));
-  });
-
-  it("JSON válido em sends-summary não lança erro", () => {
-    const valid = JSON.stringify({ sends: [{ n: 1, file: "d01.csv", day: "qua", week: 1, planned: 100, actual: 95, listId: 42 }] });
     assert.doesNotThrow(() => JSON.parse(valid));
   });
 });
@@ -348,7 +305,6 @@ describe("robustez JSON.parse campaigns-summary / sends-summary (#2041 item 3)",
 // Regressão #2009: gabarito-guard de É IA? em --schedule
 describe("checkEiaGuard (#2009 — guard gabarito É IA? antes do --schedule)", () => {
   it("skip=true → ok sem checar existência do marker", () => {
-    // qualquer path inexistente — deve ser ignorado quando skip=true
     const result = checkEiaGuard("2605-06", true, "/caminho/inexistente/.close-poll-clarice.json");
     assert.deepEqual(result, { ok: true });
   });
@@ -419,7 +375,6 @@ describe("isScheduledStatus (#2018 GET-verify pós --schedule)", () => {
 // (era Promise.all: 1 rejected → todos perdiam status; agora: fulfilled → escrito,
 // rejected → warn + fica pra retry, sem throw global)
 describe("applyVerifyResults (#2101 — sucesso parcial no GET-verify)", () => {
-  /** Monta um CampaignEntry mínimo para testes. */
   function makeCampaign(key: string, id: number): { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: "draft" | "scheduled" } {
     return { key, campaignId: id, listId: 1, subject: "X", scheduledAt: "2026-06-10T09:00:00.000Z", status: "draft" };
   }
@@ -449,21 +404,14 @@ describe("applyVerifyResults (#2101 — sucesso parcial no GET-verify)", () => {
       (msg) => { logs.push(msg); },
     );
 
-    // c1 e c3 devem estar scheduled
     assert.equal(c1.status, "scheduled", "c1 (fulfilled queued) deve estar scheduled");
     assert.equal(c3.status, "scheduled", "c3 (fulfilled scheduled) deve estar scheduled");
-    // c2 deve permanecer draft
     assert.equal(c2.status, "draft", "c2 (rejected) deve permanecer draft");
-
-    // 2 escritas no disco (uma por campanha bem-sucedida)
     assert.equal(writeCalls.length, 2, "deve escrever 2× no disco (c1 + c3)");
 
-    // warn para o rejeitado
     const warnLogs = logs.filter((m) => m.includes("d01-B") && m.includes("⚠"));
     assert.equal(warnLogs.length, 1, "deve haver 1 warn para d01-B");
     assert.ok(warnLogs[0].includes("re-tente --schedule"), "warn deve mencionar retry");
-
-    // sem throw global (test chegou aqui)
   });
 
   it("todos fulfilled com status aceito → todos scheduled, N escritas", () => {
@@ -523,7 +471,6 @@ describe('applyVerifyResults — invariante de tamanho (#2101 finding 2)', () =>
     const c2 = makeCampaignF2('d01-B', 2);
     const settled: PromiseSettledResult<{ status: string }>[] = [
       { status: 'fulfilled', value: { status: 'queued' } },
-      // c2 ausente — simula bug de chamador
     ];
     assert.throws(
       () => applyVerifyResults(settled, [c1, c2], [c1, c2], '/fake/path', () => {}, () => {}),
@@ -536,7 +483,7 @@ describe('applyVerifyResults — invariante de tamanho (#2101 finding 2)', () =>
     const c1 = makeCampaignF2('d01-A', 1);
     const settled: PromiseSettledResult<{ status: string }>[] = [
       { status: 'fulfilled', value: { status: 'queued' } },
-      { status: 'fulfilled', value: { status: 'queued' } }, // extra
+      { status: 'fulfilled', value: { status: 'queued' } },
     ];
     assert.throws(
       () => applyVerifyResults(settled, [c1], [c1], '/fake/path', () => {}, () => {}),
@@ -552,13 +499,9 @@ describe('applyVerifyResults — invariante de tamanho (#2101 finding 2)', () =>
 });
 
 // Regressão #2101 (finding 4): guard simétrico scheduledAt passado em --schedule
-// A validação precisa existir tanto em --create quanto ao iterar campanhas em --schedule.
-// Este teste exercita a lógica de guard isolada (sem precisar mockar brevoPut).
 describe('scheduledAt passado em --schedule — guard simétrico (#2101 finding 4)', () => {
   it('scheduledAt no passado é detectado pela comparacao direta (nao envolve assertScheduledAtFuture)', () => {
-    // Simula o guard adicionado antes do PUT em --schedule:
-    // new Date(c.scheduledAt) <= new Date() deve ser true para datas passadas
-    const pastIso = '2020-01-01T09:00:00.000Z'; // definitivamente passado
+    const pastIso = '2020-01-01T09:00:00.000Z';
     assert.ok(new Date(pastIso) <= new Date(), 'data passada deve ser detectavel pelo guard');
   });
 
@@ -568,16 +511,15 @@ describe('scheduledAt passado em --schedule — guard simétrico (#2101 finding 
   });
 
   it('assertScheduledAtFuture valida n=1 com clock no passado do ciclo', () => {
-    // Confirma que o guard de create funciona — clock antes do ciclo, d01 ainda e futuro
     const justBefore = new Date('2026-06-09T00:00:00Z');
-    assert.doesNotThrow(() => assertScheduledAtFuture(1, justBefore));
+    assert.doesNotThrow(() => assertScheduledAtFuture(SENDS, 1, justBefore));
   });
 
   it('assertScheduledAtFuture lanca para d21 com clock em julho (ciclo encerrado)', () => {
     const afterAllSends = new Date('2026-07-05T00:00:00Z');
     assert.throws(
-      () => assertScheduledAtFuture(21, afterAllSends),
-      /Mes hardcoded|desatualizado|passado ou presente/i,
+      () => assertScheduledAtFuture(SENDS, 21, afterAllSends),
+      /desatualizado|passado ou presente/i,
     );
   });
 });

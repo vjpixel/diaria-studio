@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * clarice-import-sends.ts (ciclo 2605-06 / Plano de Envio Edição Maio)
+ * clarice-import-sends.ts (#2775 — cutover store-driven da rampa diária)
  *
- * Importa pro Brevo os 21 envios diários gerados por clarice-build-edition-sends.ts:
+ * Importa pro Brevo os envios diários gerados por clarice-build-edition-sends.ts:
  * cria 1 lista por envio (dNN) e sobe os contatos do CSV correspondente. NÃO cria
  * campanhas — o agendamento depende do template/edição, que é uma etapa posterior.
  *
@@ -11,6 +11,11 @@
  * escorregar (a edição ainda pode não estar pronta). O agendamento real (depois)
  * é que fixa as datas.
  *
+ * #2775: lê o plano de envios de `sends-summary.json` (via `loadSendsSummary`,
+ * `scripts/lib/send-plan.ts`) em vez de importar o array `SENDS` hardcoded —
+ * o builder (`clarice-build-edition-sends.ts`) agora gera um plano diferente
+ * por ciclo, então o número de envios/nomes de arquivo não são mais fixos.
+ *
  * SEGURANÇA: dry-run por padrão. `--execute` cria listas + importa contatos na
  * conta de PRODUÇÃO da Clarice. Idempotente: recusa se alguma lista já existe.
  *
@@ -18,10 +23,11 @@
  *   npx tsx scripts/clarice-import-sends.ts --cycle 2605-06 --label "Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-sends.ts --cycle 2605-06 --label "Jun/2026" --execute  # cria + importa
  *   [--folder-id N]     folder Brevo (default 1)
- *   [--only 1,2,3]      importa só esses envios (default: todos os 21)
+ *   [--only 1,2,3]      importa só esses envios (default: todos os do plano)
  *
  * Env: BREVO_CLARICE_API_KEY (só usado em --execute)
- * Inputs: data/clarice-subscribers/{ciclo}/sends/dNN-*.csv (colunas email,NOME,TIER)
+ * Inputs: data/clarice-subscribers/{ciclo}/sends/sends-summary.json + dNN-*.csv
+ *         (colunas email,NOME,TIER,IS_SEED) — gerados por clarice-build-edition-sends.ts
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -32,7 +38,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
-import { SENDS } from "./clarice-build-edition-sends.ts";
+import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
 
 loadProjectEnv();
 
@@ -134,12 +140,13 @@ interface Plan {
 }
 
 export function buildPlan(label: string, cycle: string, only: number[] | null): Plan[] {
-  const sendsDir = resolve(clariceCycleDir(cycle), "sends");
+  const cycleDir = clariceCycleDir(cycle);
+  const sendsDir = resolve(cycleDir, "sends");
+  const summary = loadSendsSummary(cycleDir);
   const plans: Plan[] = [];
-  for (const s of SENDS) {
+  for (const s of summary.sends) {
     if (only && !only.includes(s.n)) continue;
-    const file = `d${String(s.n).padStart(2, "0")}-${s.date}.csv`;
-    const path = resolve(sendsDir, file);
+    const path = resolve(sendsDir, s.file);
     if (!existsSync(path)) {
       throw new Error(`envio faltando: ${path} — rode 'clarice-build-edition-sends.ts --cycle ${cycle}' antes.`);
     }
@@ -222,8 +229,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.error(`\n✅ ${results.length} listas criadas + imports disparados (assíncronos na Brevo).`);
 
   // Persiste {n → listId} em sends-summary.json para que clarice-schedule-sends
-  // possa ler os IDs Brevo das listas S2/S3 sem depender do stdout desta invocação.
-  const summaryPath = resolve(clariceCycleDir(args.cycle), "sends", "sends-summary.json");
+  // possa ler os IDs Brevo das listas de blocos posteriores sem depender do
+  // stdout desta invocação.
+  const summaryPath = sendsSummaryPath(clariceCycleDir(args.cycle));
   if (existsSync(summaryPath)) {
     const rawSummary = readFileSync(summaryPath, "utf-8");
     let summary: { sends: ({ n: number } & Record<string, unknown>)[] };

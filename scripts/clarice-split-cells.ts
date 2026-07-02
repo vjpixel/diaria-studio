@@ -1,21 +1,27 @@
 #!/usr/bin/env node
 /**
- * clarice-split-cells.ts (teste A/B/C de assunto — Edição Maio, ciclo 2605-06)
+ * clarice-split-cells.ts (teste A/B/C de assunto — #2775 cutover store-driven)
  *
- * Divide cada envio da SEMANA 1 (d01–d07) em 3 células estratificadas (A/B/C)
- * para o teste de assunto same-time: 3 campanhas por dia, mesmo horário, cada
- * uma com 1/3 do público daquele dia — mesma mistura de tiers em cada célula
- * (amostragem sistemática via stratify; os CSVs de send vêm agrupados por tier,
- * e o passo-a-passo round-robin preserva as proporções).
+ * Divide cada envio de UM BLOCO do plano (default: bloco 1) em 3 células
+ * estratificadas (A/B/C) para o teste de assunto same-time: 3 campanhas por
+ * dia, mesmo horário, cada uma com 1/3 do público daquele dia — mesma mistura
+ * de tiers em cada célula (amostragem sistemática via stratify; os CSVs de
+ * send vêm agrupados por tier, e o passo-a-passo round-robin preserva as
+ * proporções).
  *
- * Leitura do teste: agregado da SEMANA (≈1.867/variante) — célula diária é ruído.
- * Vencedor trava para S2-S3 (assunto único).
+ * Leitura do teste: agregado do BLOCO — célula diária é ruído. Vencedor trava
+ * para os blocos seguintes (assunto único).
+ *
+ * #2775: lê `sends-summary.json` (via `loadSendsSummary`) em vez do array
+ * `SENDS` hardcoded — o bloco a splitar é configurável (`--block N`, default 1,
+ * preserva o comportamento do ciclo 2605-06 onde só a S1/bloco-1 tinha teste A/B/C).
  *
  * Uso:
- *   npx tsx scripts/clarice-split-cells.ts --cycle 2605-06            # split + dry-run do plano
- *   npx tsx scripts/clarice-split-cells.ts --cycle 2605-06 --execute  # split + cria listas + importa no Brevo
+ *   npx tsx scripts/clarice-split-cells.ts --cycle 2605-06                    # bloco 1, dry-run do plano
+ *   npx tsx scripts/clarice-split-cells.ts --cycle 2605-06 --block 2          # outro bloco
+ *   npx tsx scripts/clarice-split-cells.ts --cycle 2605-06 --execute          # split + cria listas + importa no Brevo
  *
- * Inputs:  {ciclo}/sends/d01-*.csv … d07-*.csv (gerados por clarice-build-edition-sends)
+ * Inputs:  {ciclo}/sends/sends-summary.json + dNN-*.csv (gerados por clarice-build-edition-sends)
  * Outputs: {ciclo}/sends/cells/d0N-{A,B,C}.csv + listas Brevo "Clarice {label} d0N-{A|B|C} ({dia})"
  */
 
@@ -26,7 +32,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
-import { SENDS, stratify, apportion } from "./clarice-build-edition-sends.ts";
+import { stratify, apportion } from "./clarice-build-edition-sends.ts";
+import { loadSendsSummary } from "./lib/send-plan.ts";
 import { toImportCsv } from "./clarice-import-sends.ts";
 
 loadProjectEnv();
@@ -62,6 +69,24 @@ export function assertCellsNotDropped(cellsDir: string): void {
   }
 }
 
+/**
+ * Parseia --block N: qual bloco do plano splitar em A/B/C (default: 1 —
+ * preserva o comportamento do ciclo 2605-06, onde só a S1/bloco-1 tinha
+ * teste A/B/C). Exportada pra testabilidade (#2775, #633).
+ */
+export function parseBlockArg(argv: string[]): number {
+  const idx = argv.indexOf("--block");
+  const val = idx >= 0 ? argv[idx + 1] : undefined;
+  if (idx >= 0 && (!val || val.startsWith("-"))) {
+    throw new Error(`--block requer um valor (ex: --block 1). Recebido: ${val ?? "(nada)"}`);
+  }
+  const block = val ? Number(val) : 1;
+  if (!Number.isInteger(block) || block < 1) {
+    throw new Error(`--block deve ser um inteiro >= 1 (recebido: ${val}).`);
+  }
+  return block;
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -73,16 +98,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const label = labelIdx >= 0 && argv[labelIdx + 1] && !argv[labelIdx + 1].startsWith("--")
     ? argv[labelIdx + 1]
     : "Jun/2026";
+  const block = parseBlockArg(argv);
 
   const sendsDir = resolve(clariceCycleDir(cycle), "sends");
   const cellsDir = ensureDir(resolve(sendsDir, "cells"));
   assertCellsNotDropped(cellsDir); // não clobberar edição com células editadas à mão
-  const week1 = SENDS.filter((s) => s.week === 1);
+  const summary = loadSendsSummary(clariceCycleDir(cycle));
+  const targetBlock = summary.sends.filter((s) => s.block === block).sort((a, b) => a.n - b.n);
+  if (targetBlock.length === 0) {
+    throw new Error(`bloco ${block} não existe em sends-summary.json (blocos disponíveis: ${[...new Set(summary.sends.map((s) => s.block))].sort((a, b) => a - b).join(", ")}).`);
+  }
 
   // 1) Split estratificado de cada dia em 3 células (sempre roda; determinístico).
   const plan: { n: number; day: string; cell: string; file: string; count: number; csv: string }[] = [];
-  for (const s of week1) {
-    const file = `d${String(s.n).padStart(2, "0")}-${s.date}.csv`;
+  for (const s of targetBlock) {
+    const file = s.file;
     const path = resolve(sendsDir, file);
     if (!existsSync(path)) throw new Error(`envio faltando: ${path} — rode clarice-build-edition-sends antes.`);
     const rows = Papa.parse<Row>(readFileSync(path, "utf-8"), { header: true, skipEmptyLines: true }).data;
@@ -106,7 +136,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const total = plan.reduce((a, p) => a + p.count, 0);
   const perCell: Record<string, number> = {};
   for (const p of plan) perCell[p.cell] = (perCell[p.cell] ?? 0) + p.count;
-  console.error(`\n21 células escritas em ${cellsDir} · total ${total} · por variante: ${JSON.stringify(perCell)}`);
+  console.error(`\n${plan.length} células (bloco ${block}) escritas em ${cellsDir} · total ${total} · por variante: ${JSON.stringify(perCell)}`);
 
   if (!execute) {
     console.error("dry-run — listas NÃO criadas. Re-rode com --execute pra importar no Brevo.");

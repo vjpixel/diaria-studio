@@ -15,10 +15,11 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { SENDS as EDITION_SENDS } from "../scripts/clarice-build-edition-sends.ts";
+import { validateSendPlan } from "../scripts/lib/send-plan.ts";
 import { computeMvStatus } from "../scripts/clarice-mv-status.ts";
 import {
   parseClariceCampaignKey,
@@ -367,26 +368,34 @@ describe("calcCumulativeSent", () => {
     assert.equal(CLARICE_PLAN_S1, 5_600);
   });
 
-  // #2125: drift test — CLARICE_PLAN_TOTAL e CLARICE_PLAN_S1 não devem driftar de SENDS.
-  // Se o plano for ajustado (volumes no array SENDS), estas constantes hardcoded no
-  // dashboard devem ser atualizadas na mesma mudança. Este teste fará o CI falhar caso
-  // o editor atualize SENDS mas esqueça de sincronizar as constantes do dashboard.
-  test("CLARICE_PLAN_TOTAL não drifta de SENDS.volume total (#2125)", () => {
-    const totalFromSends = EDITION_SENDS.reduce((acc, s) => acc + s.volume, 0);
+  // #2125 / #2775: drift test — CLARICE_PLAN_TOTAL e CLARICE_PLAN_S1 não devem
+  // driftar do plano de envio do ciclo 2605-06. Pré-#2775 comparava contra o
+  // array `SENDS` hardcoded em clarice-build-edition-sends.ts; o cutover (#2775)
+  // moveu o plano pra input externo por-ciclo (`{ciclo}/send-plan.json`, em
+  // `data/` — não versionado). `scripts/send-plan.example.json` é o exemplo
+  // documentado E, não por acaso, o plano REAL do ciclo 2605-06 (mesmos números
+  // que geraram CLARICE_PLAN_TOTAL/CLARICE_PLAN_S1) — segue git-tracked, então
+  // continua servindo de guard de drift determinístico em CI.
+  const examplePlan = validateSendPlan(
+    JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "send-plan.example.json"), "utf8")),
+  );
+
+  test("CLARICE_PLAN_TOTAL não drifta do volume total de send-plan.example.json (#2125/#2775)", () => {
+    const totalFromPlan = examplePlan.reduce((acc, s) => acc + s.volume, 0);
     assert.equal(
       CLARICE_PLAN_TOTAL,
-      totalFromSends,
-      `CLARICE_PLAN_TOTAL (${CLARICE_PLAN_TOTAL}) driftou de SENDS total (${totalFromSends}) — ` +
+      totalFromPlan,
+      `CLARICE_PLAN_TOTAL (${CLARICE_PLAN_TOTAL}) driftou do total de scripts/send-plan.example.json (${totalFromPlan}) — ` +
       "atualize a constante em workers/brevo-dashboard/src/index.ts",
     );
   });
 
-  test("CLARICE_PLAN_S1 não drifta de SENDS semana 1 total (#2125)", () => {
-    const s1FromSends = EDITION_SENDS.filter((s) => s.week === 1).reduce((acc, s) => acc + s.volume, 0);
+  test("CLARICE_PLAN_S1 não drifta do total do bloco 1 de send-plan.example.json (#2125/#2775)", () => {
+    const s1FromPlan = examplePlan.filter((s) => s.block === 1).reduce((acc, s) => acc + s.volume, 0);
     assert.equal(
       CLARICE_PLAN_S1,
-      s1FromSends,
-      `CLARICE_PLAN_S1 (${CLARICE_PLAN_S1}) driftou de SENDS S1 total (${s1FromSends}) — ` +
+      s1FromPlan,
+      `CLARICE_PLAN_S1 (${CLARICE_PLAN_S1}) driftou do total do bloco 1 de scripts/send-plan.example.json (${s1FromPlan}) — ` +
       "atualize a constante em workers/brevo-dashboard/src/index.ts",
     );
   });

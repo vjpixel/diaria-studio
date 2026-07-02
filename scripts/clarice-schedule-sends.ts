@@ -1,45 +1,55 @@
 #!/usr/bin/env node
 /**
- * clarice-schedule-sends.ts (ciclo 2605-06 — S1 A/B/C + S2/S3 assunto único)
+ * clarice-schedule-sends.ts (#2775 cutover — bloco 1 A/B/C + blocos seguintes assunto único)
  *
- * Cria e agenda as campanhas Brevo do plano de envio da Edição Maio:
- *   - S1 (d01–d07, 10–16/jun): 3 campanhas/dia (células A/B/C, teste de assunto)
- *   - S2 (d08–d14, 17–23/jun): 1 campanha/dia (assunto único = vencedor A/B/C)
- *   - S3 (d15–d21, 24–30/jun): 1 campanha/dia (assunto único = vencedor A/B/C)
+ * Cria e agenda as campanhas Brevo do plano de envio de um ciclo de rampa:
+ *   - bloco "célula" (default: bloco 1): 3 campanhas/dia (células A/B/C, teste de assunto)
+ *   - demais blocos: 1 campanha/dia (assunto único = vencedor A/B/C, via --subject)
  *
- * Horário de envio: 06:00 BRT (-03:00) em todos os dias.
- * Listas: S1 usa listas-célula do cells-summary.json; S2/S3 usam d08…d21 do
- * sends-summary.json (IDs Brevo já importados via clarice-import-sends).
+ * #2775: lê `sends-summary.json` (via `loadSendsSummary`, `scripts/lib/send-plan.ts`)
+ * em vez do array `SENDS` hardcoded — o número de blocos/dias e os horários vêm
+ * do plano de envio do ciclo (`send-plan.json`), não mais fixos no código.
+ * `--weeks` funciona como alias retrocompat de `--blocks` (mesmo parser
+ * compartilhado, `parseBlocksArg`). Qual bloco recebe o teste A/B/C é
+ * configurável via `--cell-block N` (default 1 — preserva o comportamento do
+ * ciclo 2605-06, onde só a S1 tinha teste A/B/C).
+ *
+ * Listas: bloco-célula usa listas-célula do cells-summary.json (clarice-split-cells);
+ * demais blocos usam dNN do sends-summary.json (IDs Brevo já importados via
+ * clarice-import-sends).
  *
  * Fases (cada uma exige flag explícita; default = dry-run que só imprime o plano):
  *   --create         cria as campanhas como RASCUNHO (nada é enviado)
  *   --update-html    re-aplica o HTML render atual nas campanhas em draft
  *                    (pra propagar fix de render pós-create)
- *   --send-test      manda test email das células d01-A/B/C (S1) ou d08 (S2/S3) pro test_email
- *   --schedule       agenda TODAS as campanhas criadas (06:00 BRT nas datas do plano)
+ *   --send-test      manda test email do 1º dia do bloco-célula (A/B/C) e do
+ *                    1º dia de cada outro bloco pedido, pro test_email
+ *   --schedule       agenda TODAS as campanhas criadas (nas datas/horários do plano)
  *                    REQUER que o gabarito É IA? tenha sido setado antes via:
  *                      npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
  *                    Use --skip-eia-guard para pular esta verificação (não recomendado).
  *   --skip-eia-guard pula a verificação de gabarito É IA? no --schedule (ex: após setado manualmente)
  *
  * Flags de escopo:
- *   --weeks 1,2,3  quais semanas processar (default: 1; semanas 2-3 exigem --subject)
- *   --subject "…"  assunto único pra S2/S3 (obrigatório quando --weeks inclui 2 ou 3)
+ *   --blocks 1,2,3   quais blocos processar (default: [--cell-block], ex: [1])
+ *   --weeks 1,2,3    alias retrocompat de --blocks (mesmo parser)
+ *   --cell-block N   qual bloco recebe o teste A/B/C (default: 1)
+ *   --subject "…"    assunto único pros blocos != --cell-block (obrigatório se algum for pedido)
  *
- * Uso típico S1:
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06                 # plano S1
+ * Uso típico bloco-célula:
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06                 # plano bloco 1
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --create
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --send-test
  *   # ANTES do --schedule: setar gabarito É IA? (#2009)
  *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2605-06 --edition {AAMMDD} [--answer A|B]
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --schedule
  *
- * Uso típico S2/S3 (após checkpoint 17/jun):
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" # plano
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --create
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --send-test
- *   # close-poll já executado na S1 — marker reutilizado automaticamente
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --schedule
+ * Uso típico blocos seguintes (após checkpoint do vencedor A/B/C):
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --blocks 2,3 --subject "Assunto vencedor" # plano
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --blocks 2,3 --subject "Assunto vencedor" --create
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --blocks 2,3 --subject "Assunto vencedor" --send-test
+ *   # close-poll já executado no bloco-célula — marker reutilizado automaticamente
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --blocks 2,3 --subject "Assunto vencedor" --schedule
  *
  * Estado em {ciclo}/sends/cells/campaigns-summary.json (idempotência: --create
  * pula campanhas já criadas; --schedule usa os IDs gravados).
@@ -53,7 +63,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
-import { SENDS } from "./clarice-build-edition-sends.ts";
+import { loadSendsSummary, parseBlocksArg, type SendsSummaryEntry } from "./lib/send-plan.ts";
 import { CELLS } from "./clarice-split-cells.ts";
 
 loadProjectEnv();
@@ -69,26 +79,20 @@ export const SUBJECTS: Record<string, string> = {
 export const PREVIEW_TEXT =
   "Marco legal, unicórnio de IA e agentes substituindo equipes: maio foi o mês das decisões.";
 
-/** Retorna o `scheduledAt` (ISO 8601 UTC Z) do envio n (1..21) do ciclo 2605-06.
- *
- * (#2125) Fonte única: campo `scheduledAt` do array `SENDS` em
- * clarice-build-edition-sends.ts. Ao copiar pra próximo ciclo, atualizar apenas
- * os campos `scheduledAt` no array SENDS — esta função não precisa mais de ajuste.
- *
- * Guard de range: n fora de 1..SENDS.length lança erro explícito (nunca data
- * silenciosamente errada). (#2007 / #2018)
- *
- * Formato: UTC Z via .toISOString(). Equivalência horária: 06:00 BRT (-03:00) = 09:00Z.
+/**
+ * Retorna o `scheduledAt` (ISO 8601 UTC Z) do envio n (1..N) — lookup em
+ * `sends-summary.json` (fonte única do calendário do ciclo, #2775). Guard de
+ * range: n fora do conjunto de `sends` lança erro explícito (nunca data
+ * silenciosamente errada). (#2007 / #2018 / #2775)
  */
-export function scheduledAtFor(n: number): string {
-  const total = SENDS.length;
-  if (n < 1 || n > total || !Number.isInteger(n)) {
+export function scheduledAtFor(sends: SendsSummaryEntry[], n: number): string {
+  const total = sends.length;
+  if (!Number.isInteger(n) || n < 1 || n > total) {
     throw new Error(`scheduledAtFor: n deve ser inteiro 1..${total}, recebido: ${n}`);
   }
-  // SENDS é indexado por n (n=1 → índice 0). Verificamos invariante de forma defensiva.
-  const send = SENDS[n - 1];
-  if (send.n !== n) {
-    throw new Error(`scheduledAtFor: invariante SENDS[${n - 1}].n === ${n} quebrada (got ${send.n}) — SENDS está fora de ordem?`);
+  const send = sends.find((s) => s.n === n);
+  if (!send) {
+    throw new Error(`scheduledAtFor: n=${n} ausente em sends-summary.json (gap no plano?).`);
   }
   return send.scheduledAt;
 }
@@ -98,22 +102,24 @@ export function scheduledAtFor(n: number): string {
  * Separa a computação da data (usada no plano informativo, que exibe datas mesmo se passadas)
  * da validação de negócio (usada em --create e --schedule, onde agendar no passado é erro).
  *
- * Caso típico de erro: ciclo copiado para o próximo mês sem atualizar "2026-06" → todas
- * as 21 datas seriam passadas, Brevo recusaria silenciosamente ou agendaria mal.
+ * Caso típico de erro: send-plan.json copiado para o próximo ciclo sem atualizar
+ * `scheduledAt` → todas as datas seriam passadas, Brevo recusaria silenciosamente
+ * ou agendaria mal.
  *
- * @param n            Número do envio (1..21)
+ * @param sends        Entradas de sends-summary.json (fonte do calendário)
+ * @param n            Número do envio
  * @param nowOverride  Clock injetável para testes (default: new Date())
  * @throws se a data computada for <= now
  */
-export function assertScheduledAtFuture(n: number, nowOverride?: Date): void {
-  const iso = scheduledAtFor(n); // range já validado em scheduledAtFor
+export function assertScheduledAtFuture(sends: SendsSummaryEntry[], n: number, nowOverride?: Date): void {
+  const iso = scheduledAtFor(sends, n); // range já validado em scheduledAtFor
   const date = new Date(iso);
   const now = nowOverride ?? new Date();
   if (date <= now) {
     throw new Error(
       `scheduledAtFor: data computada (${iso}) é passado ou presente ` +
       `(now=${now.toISOString()}). ` +
-      `Mês do ciclo em SENDS está desatualizado — atualize scheduledAt em clarice-build-edition-sends.ts ao copiar para o próximo ciclo.`,
+      `send-plan.json do ciclo está desatualizado — atualize scheduledAt ao copiar para o próximo ciclo.`,
     );
   }
 }
@@ -121,7 +127,7 @@ export function assertScheduledAtFuture(n: number, nowOverride?: Date): void {
 interface CellEntry { list: string; listId: number; count: number }
 // Entrada no campaigns-summary.json; listId é o ID Brevo da lista que recebe a campanha.
 interface CampaignEntry {
-  key: string; // "d01-A" (S1) ou "d08" (S2/S3)
+  key: string; // "d01-A" (bloco-célula) ou "d08" (demais blocos)
   campaignId: number;
   listId: number;
   subject: string;
@@ -129,33 +135,22 @@ interface CampaignEntry {
   status: "draft" | "scheduled";
 }
 
-// Entrada do sends-summary.json gerado por clarice-build-edition-sends (S2/S3)
-interface SendSummaryEntry {
-  n: number;
-  file: string;
-  day: string;
-  week: number;
-  planned: number;
-  actual: number;
-  // listId é injetado por clarice-import-sends após importação no Brevo
-  listId?: number;
-}
-
 /**
- * Calcula o conjunto de chaves de campanha em escopo para as semanas pedidas.
+ * Calcula o conjunto de chaves de campanha em escopo para os blocos pedidos.
  * Exportado pra testabilidade: --update-html e --schedule devem usar o mesmo conjunto.
  *
- * S1 → chaves "dNN-A", "dNN-B", "dNN-C" (3 campanhas/dia)
- * S2/S3 → chaves "dNN" (1 campanha/dia)
+ * bloco-célula → chaves "dNN-A", "dNN-B", "dNN-C" (3 campanhas/dia)
+ * demais blocos → chaves "dNN" (1 campanha/dia)
  */
-export function buildKeysInScope(weeks: number[]): Set<string> {
-  const sendsToProcess = SENDS.filter((s) => weeks.includes(s.week));
+export function buildKeysInScope(sends: SendsSummaryEntry[], blocks: number[], cellBlock: number): Set<string> {
+  const sendsToProcess = sends.filter((s) => blocks.includes(s.block));
   const keys = new Set<string>();
   for (const s of sendsToProcess) {
-    if (s.week === 1) {
-      for (const cell of CELLS) keys.add(`d${String(s.n).padStart(2, "0")}-${cell}`);
+    const dNN = `d${String(s.n).padStart(2, "0")}`;
+    if (s.block === cellBlock) {
+      for (const cell of CELLS) keys.add(`${dNN}-${cell}`);
     } else {
-      keys.add(`d${String(s.n).padStart(2, "0")}`);
+      keys.add(dNN);
     }
   }
   return keys;
@@ -232,21 +227,6 @@ export function applyVerifyResults(
   }
 }
 
-/** Parseia --weeks e valida: retorna array com 1,2,3 ou subconjunto. */
-export function parseWeeksArg(argv: string[]): number[] {
-  const idx = argv.indexOf("--weeks");
-  if (idx === -1) return [1]; // default: só S1
-  const val = argv[idx + 1];
-  if (!val || val.startsWith("-")) {
-    throw new Error(`--weeks requer um valor (ex: --weeks 1 ou --weeks 2,3). Recebido: ${val ?? "(nada)"}`);
-  }
-  const parsed = val.split(",").map((x) => Number(x.trim())).filter((x) => [1, 2, 3].includes(x));
-  if (parsed.length === 0) {
-    throw new Error(`--weeks "${val}" não contém semanas válidas (use 1, 2 e/ou 3).`);
-  }
-  return parsed;
-}
-
 /**
  * #2009: verifica se o gabarito É IA? foi setado para o ciclo via close-poll
  * --brand clarice. Pura (testável sem rede): só verifica existência do marker.
@@ -303,6 +283,21 @@ function parseSubjectArg(argv: string[]): string | undefined {
   return val;
 }
 
+/** Parseia --cell-block N: qual bloco recebe o teste A/B/C (default: 1). */
+export function parseCellBlockArg(argv: string[]): number {
+  const idx = argv.indexOf("--cell-block");
+  if (idx === -1) return 1;
+  const val = argv[idx + 1];
+  if (!val || val.startsWith("-")) {
+    throw new Error(`--cell-block requer um valor (ex: --cell-block 1). Recebido: ${val ?? "(nada)"}`);
+  }
+  const n = Number(val);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`--cell-block deve ser um inteiro >= 1 (recebido: ${val}).`);
+  }
+  return n;
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -315,22 +310,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doSchedule = argv.includes("--schedule");
   const skipEiaGuard = argv.includes("--skip-eia-guard");
 
-  const weeks = parseWeeksArg(argv);
+  const cycleDir = clariceCycleDir(cycle);
+  const sendsSummary = loadSendsSummary(cycleDir);
+  const validBlocks = [...new Set(sendsSummary.sends.map((s) => s.block))].sort((a, b) => a - b);
+  const cellBlock = parseCellBlockArg(argv);
+  // default (sem --blocks/--weeks): só o bloco-célula, igual ao comportamento
+  // legado do ciclo 2605-06 (default era [1] = S1).
+  const blocks = parseBlocksArg(argv, validBlocks, [cellBlock]);
   const subject = parseSubjectArg(argv);
 
-  // S2/S3 exige --subject (o vencedor do A/B/C ainda não é conhecido em S1)
-  if ((weeks.includes(2) || weeks.includes(3)) && !subject) {
-    throw new Error(`--weeks ${weeks.join(",")} inclui S2/S3: --subject "Assunto vencedor" é obrigatório.`);
+  // Blocos != cellBlock exigem --subject (o vencedor do A/B/C ainda não é conhecido no bloco-célula)
+  if (blocks.some((b) => b !== cellBlock) && !subject) {
+    throw new Error(`--blocks ${blocks.join(",")} inclui bloco(s) != --cell-block (${cellBlock}): --subject "Assunto vencedor" é obrigatório.`);
   }
 
-  const cycleDir = clariceCycleDir(cycle);
   const cellsDir = resolve(cycleDir, "sends", "cells");
 
-  // Carrega cells-summary.json (necessário para S1)
+  // Carrega cells-summary.json (necessário quando o bloco-célula está em escopo)
   const cellsSummaryPath = resolve(cellsDir, "cells-summary.json");
   const hasCells = existsSync(cellsSummaryPath);
   const listByKey = new Map<string, CellEntry>();
-  if (weeks.includes(1)) {
+  if (blocks.includes(cellBlock)) {
     if (!hasCells) {
       throw new Error(`cells-summary.json não existe — rode clarice-split-cells.ts --execute antes.`);
     }
@@ -341,25 +341,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // Carrega sends-summary.json (necessário para S2/S3; injeta listId por envio)
-  const sendsSummaryPath = resolve(cycleDir, "sends", "sends-summary.json");
+  // listId por dia (injetado por clarice-import-sends após importação no Brevo) —
+  // necessário pros blocos != cellBlock (assunto único).
   const listByDay = new Map<number, number>(); // n -> listId Brevo
-  if (weeks.includes(2) || weeks.includes(3)) {
-    if (!existsSync(sendsSummaryPath)) {
-      throw new Error(`sends-summary.json não existe — rode clarice-build-edition-sends e clarice-import-sends antes.`);
-    }
-    let sendsSummary: { sends: SendSummaryEntry[] };
-    const rawSendsSummary = readFileSync(sendsSummaryPath, "utf8");
-    try {
-      sendsSummary = JSON.parse(rawSendsSummary);
-    } catch (e) {
-      throw new Error(`sends-summary.json corrompido (JSON inválido): ${sendsSummaryPath}\n${String(e)}`);
-    }
-    for (const s of sendsSummary.sends) {
-      if (s.listId != null) listByDay.set(s.n, s.listId);
-    }
-    // Valida que os dias das semanas pedidas têm listId
-    const missingSends = SENDS.filter((s) => weeks.includes(s.week) && s.week !== 1 && !listByDay.has(s.n));
+  for (const s of sendsSummary.sends) {
+    if (s.listId != null) listByDay.set(s.n, s.listId);
+  }
+  const nonCellBlocksRequested = blocks.filter((b) => b !== cellBlock);
+  if (nonCellBlocksRequested.length > 0) {
+    const missingSends = sendsSummary.sends.filter((s) => nonCellBlocksRequested.includes(s.block) && !listByDay.has(s.n));
     if (missingSends.length > 0) {
       const missing = missingSends.map((s) => `d${String(s.n).padStart(2, "0")}`).join(", ");
       throw new Error(`listId ausente p/ ${missing} — rode clarice-import-sends antes (sends-summary.json deve conter listId).`);
@@ -384,21 +374,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const byKey = new Map(campaigns.map((c) => [c.key, c]));
 
   // Monta lista de envios a processar nesta invocação
-  const sendsToProcess = SENDS.filter((s) => weeks.includes(s.week));
+  const sendsToProcess = sendsSummary.sends.filter((s) => blocks.includes(s.block));
 
   // --- Plano (sempre imprime) ---
-  const s1Count = sendsToProcess.filter((s) => s.week === 1).length * CELLS.length;
-  const s23Count = sendsToProcess.filter((s) => s.week !== 1).length;
-  const totalCampaigns = s1Count + s23Count;
-  console.error(`\n📋 Campanhas semanas ${weeks.join("+")} — ${totalCampaigns} campanhas`);
+  const cellCount = sendsToProcess.filter((s) => s.block === cellBlock).length * CELLS.length;
+  const singleCount = sendsToProcess.filter((s) => s.block !== cellBlock).length;
+  const totalCampaigns = cellCount + singleCount;
+  console.error(`\n📋 Campanhas blocos ${blocks.join("+")} (bloco-célula=${cellBlock}) — ${totalCampaigns} campanhas`);
   for (const s of sendsToProcess) {
-    if (s.week === 1) {
+    if (s.block === cellBlock) {
       for (const cell of CELLS) {
         const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
         const entry = listByKey.get(key);
         const existing = byKey.get(key);
         console.error(
-          `  ${key} (${s.day} ${scheduledAtFor(s.n)})  lista #${entry?.listId ?? "?"}  assunto ${cell}` +
+          `  ${key} (${s.day} ${scheduledAtFor(sendsSummary.sends, s.n)})  lista #${entry?.listId ?? "?"}  assunto ${cell}` +
             (existing ? `  [campanha #${existing.campaignId} ${existing.status}]` : ""),
         );
       }
@@ -407,7 +397,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const listId = listByDay.get(s.n);
       const existing = byKey.get(key);
       console.error(
-        `  ${key} (${s.day} ${scheduledAtFor(s.n)})  lista #${listId ?? "?"}  assunto único` +
+        `  ${key} (${s.day} ${scheduledAtFor(sendsSummary.sends, s.n)})  lista #${listId ?? "?"}  assunto único` +
           (existing ? `  [campanha #${existing.campaignId} ${existing.status}]` : ""),
       );
     }
@@ -429,15 +419,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // --- create (rascunhos; idempotente) ---
   if (doCreate) {
     for (const s of sendsToProcess) {
-      if (s.week === 1) {
-        // S1: 3 campanhas por dia (células A/B/C)
+      if (s.block === cellBlock) {
+        // bloco-célula: 3 campanhas por dia (células A/B/C)
         for (const cell of CELLS) {
           const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
           if (byKey.has(key)) {
             console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
             continue;
           }
-          assertScheduledAtFuture(s.n); // #2101: data passada = mês hardcoded desatualizado
+          assertScheduledAtFuture(sendsSummary.sends, s.n); // #2101: data passada = plano desatualizado
           const entry = listByKey.get(key);
           if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
           const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -454,7 +444,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             campaignId: resp.id,
             listId: entry.listId,
             subject: SUBJECTS[cell],
-            scheduledAt: scheduledAtFor(s.n),
+            scheduledAt: scheduledAtFor(sendsSummary.sends, s.n),
             status: "draft",
           };
           campaigns.push(c);
@@ -463,13 +453,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           console.error(`✓ ${key} → campanha #${resp.id} (rascunho)`);
         }
       } else {
-        // S2/S3: 1 campanha por dia (assunto único = vencedor)
+        // demais blocos: 1 campanha por dia (assunto único = vencedor)
         const key = `d${String(s.n).padStart(2, "0")}`;
         if (byKey.has(key)) {
           console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
           continue;
         }
-        assertScheduledAtFuture(s.n); // #2101: data passada = mês hardcoded desatualizado
+        assertScheduledAtFuture(sendsSummary.sends, s.n); // #2101: data passada = plano desatualizado
         const listId = listByDay.get(s.n);
         if (listId == null) throw new Error(`listId não encontrado pra ${key}`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -486,7 +476,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           campaignId: resp.id,
           listId,
           subject: subject!,
-          scheduledAt: scheduledAtFor(s.n),
+          scheduledAt: scheduledAtFor(sendsSummary.sends, s.n),
           status: "draft",
         };
         campaigns.push(c);
@@ -497,10 +487,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // --- update-html (propaga fix de render pras campanhas em draft das semanas pedidas) ---
+  // --- update-html (propaga fix de render pras campanhas em draft dos blocos pedidos) ---
   if (doUpdateHtml) {
-    // Aplica o mesmo filtro buildKeysInScope do --schedule: respeita --weeks.
-    const updateKeysInScope = buildKeysInScope(weeks);
+    // Aplica o mesmo filtro buildKeysInScope do --schedule: respeita --blocks.
+    const updateKeysInScope = buildKeysInScope(sendsSummary.sends, blocks, cellBlock);
     for (const c of campaigns) {
       if (!updateKeysInScope.has(c.key)) continue;
       if (c.status === "scheduled") {
@@ -512,20 +502,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // --- send-test (d01-A/B/C para S1; d08 para S2/S3) ---
+  // --- send-test (1º dia do bloco-célula em A/B/C; 1º dia de cada outro bloco pedido) ---
   if (doTest) {
-    if (weeks.includes(1)) {
+    if (blocks.includes(cellBlock)) {
+      const firstCellSend = sendsToProcess.filter((s) => s.block === cellBlock).sort((a, b) => a.n - b.n)[0];
+      if (!firstCellSend) throw new Error(`bloco-célula ${cellBlock} não tem envios em escopo.`);
       for (const cell of CELLS) {
-        const c = byKey.get(`d01-${cell}`);
-        if (!c) throw new Error(`campanha d01-${cell} não criada — rode --create antes.`);
+        const key = `d${String(firstCellSend.n).padStart(2, "0")}-${cell}`;
+        const c = byKey.get(key);
+        if (!c) throw new Error(`campanha ${key} não criada — rode --create antes.`);
         await brevoPost(apiKey, `/emailCampaigns/${c.campaignId}/sendTest`, { emailTo: [brevo.test_email] });
-        console.error(`✓ test email d01-${cell} (campanha #${c.campaignId}) → ${brevo.test_email}`);
+        console.error(`✓ test email ${key} (campanha #${c.campaignId}) → ${brevo.test_email}`);
       }
     }
-    // S2/S3: manda test do primeiro dia de cada semana pedida
-    for (const w of [2, 3]) {
-      if (!weeks.includes(w)) continue;
-      const firstSend = SENDS.find((s) => s.week === w);
+    // demais blocos: manda test do primeiro dia de cada bloco pedido
+    for (const b of nonCellBlocksRequested) {
+      const firstSend = sendsToProcess.filter((s) => s.block === b).sort((a, b2) => a.n - b2.n)[0];
       if (!firstSend) continue;
       const key = `d${String(firstSend.n).padStart(2, "0")}`;
       const c = byKey.get(key);
@@ -535,7 +527,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // --- schedule (todas as criadas nas semanas pedidas) ---
+  // --- schedule (todas as criadas nos blocos pedidos) ---
   if (doSchedule) {
     // #2009: guard — gabarito É IA? deve ser setado antes de agendar os envios.
     // checkEiaGuard verifica marker gravado por close-poll --brand clarice --cycle {cycle}.
@@ -550,7 +542,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(`⚠  --skip-eia-guard ativo — verificação de gabarito É IA? ignorada.`);
     }
 
-    const keysInScope = buildKeysInScope(weeks);
+    const keysInScope = buildKeysInScope(sendsSummary.sends, blocks, cellBlock);
     // #2061: PUTs sequenciais (ordem importa — Brevo pode ter rate-limit por
     // rajada, e a escrita atômica do campaigns-summary após cada verify precisa
     // do resultado individual). GETs de verify independentes → Promise.all.
@@ -566,8 +558,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (new Date(c.scheduledAt) <= new Date()) {
         throw new Error(
           `--schedule: ${c.key} (campanha #${c.campaignId}) tem scheduledAt no passado/presente ` +
-          `(${c.scheduledAt}). Atualize o campaigns-summary.json ou atualize o mês hardcoded ` +
-          `em scheduledAtFor antes de agendar.`,
+          `(${c.scheduledAt}). Atualize o campaigns-summary.json ou o send-plan.json do ciclo ` +
+          `antes de agendar.`,
         );
       }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
@@ -576,7 +568,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     // #2018 / regra #573 / #2061 / #2101: GET-verify em paralelo pós-PUTs — confirma que
     // o Brevo realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
-    // 21 campanhas × GET ~200ms sequencial ≈ 4s; paralelo ≈ 200ms.
     // Brevo pode aceitar PUT 204 mas não persistir em edge cases — divergência logada
     // e flag local NÃO atualizada (próximo --schedule re-tenta).
     //
