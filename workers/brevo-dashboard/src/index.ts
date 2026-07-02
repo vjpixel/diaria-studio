@@ -325,6 +325,10 @@ export interface ContactsSummary {
   };
   // #2731: distribuição por valor exato (opcional — KV pré-#2731 não tem).
   priority_points_histogram?: Record<string, number>;
+  // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
+  // tier firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
+  priority_points_histogram_verified?: Record<string, number>;
+  by_tier_verified?: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -2961,7 +2965,11 @@ export function renderContactsSummarySection(
   // último — via tierRank (fonte única com a segmentação de waves). Chave
   // corrompida/não-numérica (KV casteado sem validar shape) → NaN → tratada
   // como null (vai pro fim), nunca comparator NaN (ordem indefinida).
-  const tierBreakdownRows = (byTier: Record<string, number> | undefined): string => {
+  const tierBreakdownRows = (
+    byTier: Record<string, number> | undefined,
+    byTierVerified: Record<string, number> | undefined,
+    withVerifiedCol: boolean,
+  ): string => {
     const entries = Object.entries(byTier ?? {});
     if (entries.length === 0) return "";
     const rank = (k: string): number => {
@@ -2971,7 +2979,7 @@ export function renderContactsSummarySection(
     return entries
       .sort(([a], [b]) => rank(a) - rank(b))
       .map(([k, v]) =>
-        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(tierLabel(k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td></tr>`)
+        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(tierLabel(k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byTierVerified?.[k] ?? 0)}</td>` : ""}</tr>`)
       .join("");
   };
   const ppMap: Record<string, number> = {
@@ -2997,14 +3005,18 @@ export function renderContactsSummarySection(
       return isNaN(num) ? -Infinity : num;
     };
     const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
+    // 260702: coluna "verified" (mv_bucket='verified') — só quando o KV já
+    // traz o campo novo; payload antigo renderiza a tabela de 2 colunas.
+    const vHist = s.priority_points_histogram_verified;
+    const withVerified = vHist !== undefined;
     // #2805: logo após a linha 0 entram as sub-linhas do breakdown por tier
     // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
     // mas não coincide com ela; ver comentário do tierBreakdownRows).
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td></tr>${k === "0" ? tierBreakdownRows(s.by_tier) : ""}`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}</tr>${k === "0" ? tierBreakdownRows(s.by_tier, s.by_tier_verified, withVerified) : ""}`,
     ).join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th></tr></thead>
+      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.

@@ -60,6 +60,12 @@ export interface StoreSummary {
   // `priority_points` (faixas, acima) mantido pra contexto/fallback de KV
   // pré-#2731.
   priority_points_histogram: Record<string, number>;
+  // Coluna "verified" da tabela de priority_points (pedido do editor 260702):
+  // por valor exato de priority_points, quantos têm mv_bucket='verified'.
+  // Mesma exclusão de internos do histograma (#2809).
+  priority_points_histogram_verified: Record<string, number>;
+  // Idem para as sub-linhas de tier (universo firstSend do by_tier + verified).
+  by_tier_verified: Record<string, number>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -185,6 +191,22 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
       db,
       `SELECT priority_points AS k, COUNT(*) n FROM clarice_users WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
       INTERNAL_PARAMS,
+    ),
+    // Coluna "verified" (260702): mesmo universo do histograma (sem internos,
+    // #2809), restrito a mv_bucket='verified'. Chave ausente = 0 verificados.
+    priority_points_histogram_verified: groupCounts(
+      db,
+      `SELECT priority_points AS k, COUNT(*) n FROM clarice_users
+        WHERE mv_bucket='verified' AND ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
+      INTERNAL_PARAMS,
+    ),
+    // Verified das sub-linhas de tier: universo firstSend (#2782, mesma fonte
+    // do by_tier) ∩ mv_bucket='verified'. T1 tende a 0/baixo — assinante ativo
+    // é validado por pagamento e normalmente nunca passa pelo MV (#1297).
+    by_tier_verified: groupCounts(
+      db,
+      `SELECT tier AS k, COUNT(*) n FROM clarice_users
+        WHERE ${FIRST_SEND_SQL_PREDICATE} AND mv_bucket='verified' GROUP BY tier`,
     ),
     mv: groupCounts(
       db,

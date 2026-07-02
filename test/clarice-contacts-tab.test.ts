@@ -105,6 +105,36 @@ test("renderContactsSummarySection: tabela 'Por tier' removida; breakdown por ti
   assert.equal(html.split("1º envio — T01").length - 1, 1);
 });
 
+test("renderContactsSummarySection: coluna 'verified' quando o KV traz os campos novos (260702)", () => {
+  const withVerified: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_verified: { "0": 81000, "15": 7 },
+    by_tier_verified: { "1": 900, "2": 6100 },
+  };
+  const html = renderContactsSummarySection(withVerified);
+  assert.match(html, /<th style="text-align:right">verified<\/th>/, "header da coluna presente");
+  // linha 0: contatos e verified lado a lado
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td>/);
+  // linha 15
+  assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>7<\/td>/);
+  // sub-linha de tier com verified próprio; tier sem entrada no verified → 0
+  assert.match(html, /· 1º envio — T01<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/);
+  assert.match(html, /· 1º envio — sem tier<\/td><td[^>]*>131<\/td><td[^>]*>0<\/td>/);
+});
+
+test("renderContactsSummarySection: KV antigo (sem campos verified) → tabela de 2 colunas, sem header verified", () => {
+  const withHistogram: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+  };
+  const html = renderContactsSummarySection(withHistogram);
+  // (não usar />verified</ solto — a tabela do MillionVerifier tem a chave
+  // "verified" como linha legítima; o que não pode existir é o HEADER da coluna)
+  assert.doesNotMatch(html, /<th[^>]*>verified<\/th>/, "coluna não aparece sem o dado");
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><\/tr>/);
+});
+
 test("renderContactsSummarySection: chave corrompida no by_tier → vai pro fim, ordem estável (#2807 review)", () => {
   // Regressão do guard de NaN: sem ele, Number("corrompida") = NaN fazia o
   // comparator retornar NaN → ordem implementation-defined. Com o guard, a
