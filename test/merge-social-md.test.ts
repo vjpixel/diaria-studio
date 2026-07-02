@@ -3,19 +3,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripHtmlComments } from "../scripts/merge-social-md.ts";
+import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
 
 function makeEditionDir(): string {
-  const root = mkdtempSync(join(tmpdir(), "merge-social-"));
-  mkdirSync(join(root, "_internal"), { recursive: true });
-  return root;
+  return makeEditionDirWithPrefix("merge-social-");
 }
 
 function runScript(editionDir: string): {

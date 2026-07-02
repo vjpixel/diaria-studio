@@ -9,22 +9,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
-  mkdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 // #2154 pass-2: checkConsentBinding vive em stage-5.ts (dados pós-dispatch).
 // A cópia órfã em stage-4.ts foi removida; testes agora importam da fonte canônica.
 import { STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { checkConsentBinding, loadSocialsFromConfig, checkInstagramCredsSet, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
+import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
 
 function makeEditionDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "consent-binding-"));
-  mkdirSync(join(dir, "_internal"), { recursive: true });
-  return dir;
+  return makeEditionDirWithPrefix("consent-binding-");
 }
 
 function writeConsent(

@@ -11,20 +11,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
-  mkdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkStage4ReviewCompleted } from "../scripts/lib/invariant-checks/stage-5.ts";
 import { blockReasonForMarkingStageDone } from "../scripts/update-stage-status.ts";
+import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
 
 function makeEditionDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "stage4-review-"));
-  mkdirSync(join(dir, "_internal"), { recursive: true });
-  return dir;
+  return makeEditionDirWithPrefix("stage4-review-");
 }
 
 function writePublished(

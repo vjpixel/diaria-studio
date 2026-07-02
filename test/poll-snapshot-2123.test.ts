@@ -23,16 +23,12 @@ import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 import { rankEntries } from "../workers/poll/src/leaderboard.ts";
 import worker from "../workers/poll/src/index.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
+import { makePollEnv } from "./_helpers/make-poll-env.ts";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
-  return {
-    POLL: kv as unknown as KVNamespace,
-    POLL_SECRET: "test-secret",
-    ADMIN_SECRET: "test-admin",
-    ALLOWED_ORIGINS: "*",
-  };
+  return makePollEnv(kv);
 }
 
 // #2130 (pass2): makeWorkerEnv era duplicado em Fix-3 e no describe do #2130 —

@@ -24,16 +24,12 @@ import {
   type Env,
 } from "../workers/poll/src/index.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
+import { makePollEnv } from "./_helpers/make-poll-env.ts";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
-  return {
-    POLL: kv as unknown as KVNamespace,
-    POLL_SECRET: "test-secret",
-    ADMIN_SECRET: "test-admin",
-    ALLOWED_ORIGINS: "*",
-  };
+  return makePollEnv(kv);
 }
 
 // ── #2152: snapshot ausente com N>1 votantes — modelo híbrido (skip-on-missing) ──
