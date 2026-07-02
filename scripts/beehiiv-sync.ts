@@ -45,7 +45,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdir
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
-import { loadBeehiivConfig, type BeehiivConfig, BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
+import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
@@ -53,7 +53,7 @@ const CACHE_DIR = resolve(ROOT, "data/beehiiv-cache");
 const POSTS_DIR = resolve(CACHE_DIR, "posts");
 const POSTS_INDEX = resolve(POSTS_DIR, "index.json");
 const PUBLICATION_JSON = resolve(CACHE_DIR, "publication.json");
-const BEEHIIV_API = BEEHIIV_API_BASE; // #2834: base URL centralizada em lib/beehiiv-config.ts
+const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 5;

@@ -10,10 +10,19 @@
  * de BEEHIIV_PUBLICATION_ID (env) ou platform.config.json (fallback).
  * Em caso de erro, escreve em stderr e chama process.exit(2).
  *
- * #2834: também hospeda `BEEHIIV_API_BASE` — a constante de base URL da API
+ * #2834: também hospeda `beehiivApiBase()` — getter da base URL da API
  * pública da Beehiiv, hardcoded (com o mesmo fallback `?? "https://api.
  * beehiiv.com/v2"`) em pelo menos 9 scripts. `BEEHIIV_API_URL` (env) segue
  * como override — usado por testes que apontam pra mock server local.
+ *
+ * #2850: `beehiivApiBase()` é uma FUNÇÃO (lazy getter), não uma const de
+ * módulo. Uma const seria avaliada NO IMPORT — por semântica ESM, imports
+ * estáticos avaliam antes do corpo do módulo importador, então em scripts
+ * que carregam env via chamada de função `loadProjectEnv()` (em vez de
+ * `import "dotenv/config"` como side-effect), a const capturaria
+ * `process.env.BEEHIIV_API_URL` antes do `.env`/`.env.local` existir em
+ * `process.env` — override silenciosamente ignorado. O getter lê o env no
+ * primeiro uso (call site), não no import.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -23,8 +32,13 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 
-/** Base URL da API pública da Beehiiv. `BEEHIIV_API_URL` (env) override pra tests. */
-export const BEEHIIV_API_BASE = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+/**
+ * Base URL da API pública da Beehiiv. `BEEHIIV_API_URL` (env) override pra tests.
+ * Lazy getter (#2850) — lê `process.env` no momento da chamada, não no import.
+ */
+export function beehiivApiBase(): string {
+  return process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+}
 
 export interface BeehiivConfig {
   apiKey: string;

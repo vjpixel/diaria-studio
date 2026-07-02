@@ -31,13 +31,13 @@ import {
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
 import { convertBeehiivHtmlToMarkdown } from "./lib/mensal/monthly-html-convert.ts";
-import { BEEHIIV_API_BASE } from "./lib/beehiiv-config.ts";
+import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// #2834: base URL centralizada em lib/beehiiv-config.ts (antes hardcoded
+// #2834/#2850: base URL centralizada em lib/beehiiv-config.ts (antes hardcoded
 // sem suportar o override `BEEHIIV_API_URL` que os demais scripts Beehiiv
 // já respeitam — ganho incidental, mesmo valor default).
-const BEEHIIV_API = BEEHIIV_API_BASE;
+const BEEHIIV_API = beehiivApiBase();
 
 interface BeehiivPost {
   id: string;

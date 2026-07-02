@@ -149,14 +149,23 @@ export async function withClariceRetry(
         ...opts,
         timeoutMs: opts.timeoutMs ?? policy.timeoutMs,
       });
-      opts.onAttempt?.({
-        attempt: attempt + 1,
-        maxAttempts: policy.maxAttempts,
-        elapsedMs: Date.now() - attemptStart,
-        payloadBytes,
-        outcome: "success",
-        suggestionsCount: suggestions.length,
-      });
+      // #2852: observabilidade nunca pode mudar o resultado do retry. Sem este
+      // guard, um onAttempt que lança aqui derrubaria uma correção BEM-SUCEDIDA
+      // pro catch abaixo, descartando o resultado e retentando à toa.
+      try {
+        opts.onAttempt?.({
+          attempt: attempt + 1,
+          maxAttempts: policy.maxAttempts,
+          elapsedMs: Date.now() - attemptStart,
+          payloadBytes,
+          outcome: "success",
+          suggestionsCount: suggestions.length,
+        });
+      } catch (callbackError) {
+        process.stderr.write(
+          `[withClariceRetry] onAttempt (success) lançou: ${(callbackError as Error).message}\n`,
+        );
+      }
       return { suggestions, attempts: attempt + 1 };
     } catch (e) {
       lastError = e as Error;
@@ -171,15 +180,24 @@ export async function withClariceRetry(
       // #2798 — observabilidade por tentativa: registra timeout/5xx/4xx antes de
       // decidir retry vs. fast-fail, pra permitir diagnosticar padrões (ex: timeout
       // consistente em payloads >5k chars) sem depender só do resultado final.
-      opts.onAttempt?.({
-        attempt: attempt + 1,
-        maxAttempts: policy.maxAttempts,
-        elapsedMs,
-        payloadBytes,
-        outcome: is4xx ? "fatal_failure" : "retryable_failure",
-        status: e instanceof ClariceHttpError ? e.status : undefined,
-        errorMessage: lastError.message,
-      });
+      // #2852: guard contra callback que lança — sem isso, a exceção do callback
+      // ESCAPARIA no lugar do erro REAL (lastError), e pularia o `if (is4xx) break`
+      // abaixo (o throw interromperia o loop antes de chegar lá).
+      try {
+        opts.onAttempt?.({
+          attempt: attempt + 1,
+          maxAttempts: policy.maxAttempts,
+          elapsedMs,
+          payloadBytes,
+          outcome: is4xx ? "fatal_failure" : "retryable_failure",
+          status: e instanceof ClariceHttpError ? e.status : undefined,
+          errorMessage: lastError.message,
+        });
+      } catch (callbackError) {
+        process.stderr.write(
+          `[withClariceRetry] onAttempt (failure) lançou: ${(callbackError as Error).message}\n`,
+        );
+      }
       if (is4xx) break;
       // Timeout (AbortError) e erros de rede (TypeError: fetch failed) → retry.
       // HTTP 5xx → retry.
