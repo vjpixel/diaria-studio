@@ -323,7 +323,7 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
 // cohort (#2817) — derivação em recomputeDerived + migração idempotente
 // ---------------------------------------------------------------------------
 
-test("recomputeDerived: deriva cohort a partir de created (maio/junho/julho/fora-do-range)", () => {
+test("recomputeDerived: deriva cohort (slug de safra) a partir de created (maio/junho/julho/fora-do-range) — #2857 fase A", () => {
   const db = openClariceDb(":memory:");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("mai@x.com", "2026-05-10T00:00:00.000Z");
   db.prepare("INSERT INTO clarice_users (email, created) VALUES (?, ?)").run("jun@x.com", "2026-06-20T00:00:00.000Z");
@@ -336,11 +336,47 @@ test("recomputeDerived: deriva cohort a partir de created (maio/junho/julho/fora
   const cohortOf = (email: string) =>
     (db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get(email) as any).cohort;
 
-  assert.equal(cohortOf("mai@x.com"), "2026-05");
-  assert.equal(cohortOf("jun@x.com"), "2026-06");
-  assert.equal(cohortOf("jul@x.com"), "2026-07");
-  assert.equal(cohortOf("velho@x.com"), null, "anterior a 2026-05 → NULL (sem safra rotulada)");
-  assert.equal(cohortOf("semcreated@x.com"), null, "created ausente → NULL");
+  assert.equal(cohortOf("mai@x.com"), "leads-2026-05");
+  assert.equal(cohortOf("jun@x.com"), "leads-2026-06");
+  assert.equal(cohortOf("jul@x.com"), "leads-2026-07");
+  // Sem safra (anterior a 2026-05 ou created ausente) E sem tier → NULL.
+  assert.equal(cohortOf("velho@x.com"), null, "anterior a 2026-05, sem tier → NULL (cai no fallback de tier)");
+  assert.equal(cohortOf("semcreated@x.com"), null, "created ausente, sem tier → NULL");
+
+  db.close();
+});
+
+test("recomputeDerived: sem safra (created < epoch), cohort cai pro derivado de tier (#2857 fase A)", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
+    "assinante@x.com", "2024-01-01T00:00:00.000Z", 1,
+  );
+  db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
+    "exassinante@x.com", "2023-06-01T00:00:00.000Z", 2,
+  );
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run("caudao@x.com", 10);
+  // created >= epoch (tem safra) MAS tier também setado — safra tem precedência.
+  db.prepare("INSERT INTO clarice_users (email, created, tier) VALUES (?, ?, ?)").run(
+    "safra-com-tier-residual@x.com", "2026-06-05T00:00:00.000Z", 4,
+  );
+
+  recomputeDerived(db);
+
+  const cohortOf = (email: string) =>
+    (db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get(email) as any).cohort;
+  const tierOf = (email: string) =>
+    (db.prepare("SELECT tier FROM clarice_users WHERE email = ?").get(email) as any).tier;
+
+  assert.equal(cohortOf("assinante@x.com"), "assinantes-ativos");
+  assert.equal(cohortOf("exassinante@x.com"), "ex-assinantes");
+  assert.equal(cohortOf("caudao@x.com"), "leads-caudao");
+  assert.equal(cohortOf("safra-com-tier-residual@x.com"), "leads-2026-06", "safra tem precedência sobre tier");
+
+  // Dupla-escrita: tier fica INTACTO (recomputeDerived não escreve tier).
+  assert.equal(tierOf("assinante@x.com"), 1);
+  assert.equal(tierOf("exassinante@x.com"), 2);
+  assert.equal(tierOf("caudao@x.com"), 10);
+  assert.equal(tierOf("safra-com-tier-residual@x.com"), 4);
 
   db.close();
 });
@@ -351,15 +387,32 @@ test("recomputeDerived: cohort é recomputado (não fica stale) numa 2ª rodada 
   recomputeDerived(db);
   assert.equal(
     (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
-    "2026-05",
+    "leads-2026-05",
   );
 
   db.prepare("UPDATE clarice_users SET created = ? WHERE email = 'x@x.com'").run("2026-06-01T00:00:00.000Z");
   recomputeDerived(db);
   assert.equal(
     (db.prepare("SELECT cohort FROM clarice_users WHERE email='x@x.com'").get() as any).cohort,
-    "2026-06",
+    "leads-2026-06",
   );
+
+  db.close();
+});
+
+test("recomputeDerived: migração idempotente sobre valor LEGADO de cohort (safra crua 'YYYY-MM' pré-#2857) — 2x sem drift", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, created, cohort) VALUES (?, ?, ?)").run(
+    "legado@x.com", "2026-06-15T00:00:00.000Z", "2026-06", // valor cru, como #2817 gravava antes do #2857
+  );
+
+  recomputeDerived(db);
+  const after1 = (db.prepare("SELECT cohort FROM clarice_users WHERE email='legado@x.com'").get() as any).cohort;
+  assert.equal(after1, "leads-2026-06", "1ª rodada converte a safra crua pro slug novo");
+
+  recomputeDerived(db);
+  const after2 = (db.prepare("SELECT cohort FROM clarice_users WHERE email='legado@x.com'").get() as any).cohort;
+  assert.equal(after2, "leads-2026-06", "2ª rodada é no-op — não vira 'leads-leads-2026-06'");
 
   db.close();
 });

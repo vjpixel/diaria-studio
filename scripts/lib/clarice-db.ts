@@ -28,6 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import type { BrevoColumns } from "./brevo-stats.ts";
 import { deriveCohort } from "./clarice-segment.ts";
+import { cohortFromSafra, cohortFromTier } from "./cohorts.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
@@ -62,8 +63,14 @@ CREATE TABLE IF NOT EXISTS clarice_users (
   dispute_losses       REAL DEFAULT 0,
   refunded_volume      REAL DEFAULT 0,
 
-  tier                 INTEGER,         -- 1..10 (T01–T10)
-  cohort               TEXT,            -- 'YYYY-MM' (#2817), derivado de created; NULL antes de 2026-05
+  tier                 INTEGER,         -- 1..10 (T01-T10). Dupla-escrita (#2857 fase A) — continua
+                                         -- AUTORITATIVO pra ordenação de 1o envio (segmentFromStore/
+                                         -- tierRank); nenhum consumidor de envio lê a coluna cohort ainda.
+  cohort               TEXT,            -- slug de cohort nomeado (#2857 fase A — ver scripts/lib/cohorts.ts):
+                                         -- created >= epoch da safra (2026-05) -> 'leads-YYYY-MM'
+                                         -- (cohortFromSafra); senão -> derivado do tier (cohortFromTier,
+                                         -- ex: 'assinantes-ativos', 'leads-2025h2'); tier NULL + sem safra
+                                         -- -> NULL. Antes do #2857 guardava só a safra crua 'YYYY-MM' (#2817).
 
   -- MillionVerifier (ingestão total per-email)
   mv_result            TEXT,            -- ok | catch_all | invalid | disposable | unknown
@@ -250,9 +257,21 @@ export function classifyEligibility(i: EligibilityInput): {
 
 /**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
- * `send_eligible`, `ineligible_reason`, `cohort` — #2817) pra todas as linhas
- * a partir do estado atual de Brevo/MV/Stripe + tabela `priority_optin`.
- * Idempotente — roda no fim de cada build e sempre que a flag de optin muda.
+ * `send_eligible`, `ineligible_reason`, `cohort` — #2817, taxonomia
+ * unificada #2857 fase A) pra todas as linhas a partir do estado atual de
+ * Brevo/MV/Stripe + tabela `priority_optin`. Idempotente — roda no fim de
+ * cada build e sempre que a flag de optin muda.
+ *
+ * `cohort` (#2857 fase A): `created >= epoch da safra (2026-05)` → cohort da
+ * safra mensal (`cohortFromSafra(deriveCohort(created))`, forma
+ * 'leads-YYYY-MM'); senão → cohort derivado do `tier` atual
+ * (`cohortFromTier`, ex: 'assinantes-ativos', 'leads-2025h2'). `tier` NULL +
+ * sem safra → `cohort` NULL. Como a derivação sempre recalcula do zero a
+ * partir de `created`/`tier` correntes (nunca lê o `cohort` antigo), rodar
+ * sobre um store com valores LEGADOS (safra crua 'YYYY-MM' de antes do
+ * #2857, ou o próprio `cohort` ainda NULL) é automaticamente uma migração —
+ * idempotente por construção, sem passo de migração separado. `tier`
+ * INTEGER não é escrito aqui (fica intacto — dupla-escrita, fase A).
  */
 export function recomputeDerived(db: DatabaseSync): number {
   const optin = new Set<string>(
@@ -264,7 +283,7 @@ export function recomputeDerived(db: DatabaseSync): number {
   const rows = db
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
-              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -279,6 +298,7 @@ export function recomputeDerived(db: DatabaseSync): number {
     hard_bounced: number;
     complained: number;
     created: string | null;
+    tier: number | null;
   }>;
 
   const update = db.prepare(
@@ -309,12 +329,17 @@ export function recomputeDerived(db: DatabaseSync): number {
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
       });
+      // #2857 fase A: safra mensal (created >= epoch) tem precedência sobre
+      // tier — um contato pode ter tier residual de um merge antigo mas
+      // created recente (raro, mas a safra é o sinal mais fresco/específico).
+      const safra = deriveCohort(r.created);
+      const cohort = safra ? cohortFromSafra(safra) : cohortFromTier(r.tier);
       update.run(
         isOptin ? 1 : 0,
         points,
         elig.send_eligible ? 1 : 0,
         elig.ineligible_reason,
-        deriveCohort(r.created),
+        cohort,
         r.email,
       );
       n++;

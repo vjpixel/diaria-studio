@@ -309,7 +309,11 @@ export function assertCohortConsistent(
         `cohort=${JSON.stringify(prevCohort)}, esta invocação resolveu cohort=${JSON.stringify(resolvedCohort)}. ` +
         `Invocações do mesmo ciclo devem usar o MESMO --cohort (ou nenhum) — misturar filtros fatia filas ` +
         `diferentes pelo mesmo offset numérico e causa overlap/pulo silencioso entre blocos. Regenere o ciclo do ` +
-        `zero (apague sends-summary.json e os CSVs) se quiser trocar de cohort.`,
+        `zero (apague sends-summary.json e os CSVs) se quiser trocar de cohort. ` +
+        `NOTA (#2857): se cohort=${JSON.stringify(prevCohort)} parece a MESMA safra que ${JSON.stringify(resolvedCohort)} ` +
+        `só que sem o prefixo 'leads-' (ex: '2026-06' vs 'leads-2026-06'), essa divergência é ESPERADA uma única vez ` +
+        `num ciclo cujos blocos anteriores rodaram antes da migração de taxonomia de cohorts (#2857 fase A, que trocou ` +
+        `a coluna 'cohort' de safra crua pra slug nomeado) — o remédio ainda é regenerar o ciclo do zero, não ignorar o guard.`,
     );
   }
 }

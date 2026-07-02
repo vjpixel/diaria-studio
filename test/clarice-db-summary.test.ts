@@ -179,8 +179,9 @@ test("computeStoreSummary: by_cohort agrega total+verified por safra (universo =
 
   const s = computeStoreSummary(db);
 
-  assert.deepEqual(s.by_cohort, { "2026-05": 2, "2026-06": 1, null: 1 });
-  assert.deepEqual(s.by_cohort_verified, { "2026-05": 1, "2026-06": 1 }); // b sem MV → ausente (0)
+  // #2857 fase A: cohort agora guarda o slug ('leads-YYYY-MM'), não a safra crua.
+  assert.deepEqual(s.by_cohort, { "leads-2026-05": 2, "leads-2026-06": 1, null: 1 });
+  assert.deepEqual(s.by_cohort_verified, { "leads-2026-05": 1, "leads-2026-06": 1 }); // b sem MV → ausente (0)
   // invariante: a soma do by_cohort particiona o total
   assert.equal(Object.values(s.by_cohort).reduce((acc, v) => acc + v, 0), s.total);
 
