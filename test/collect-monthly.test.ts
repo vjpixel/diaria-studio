@@ -563,4 +563,35 @@ Why raw.
       );
     });
   });
+
+  it("modo local com parse PARCIAL (1-2 de 3 destaques) também emite warning — paridade com parsePost", () => {
+    withTmpDirs((rawPostsRoot, editionsRoot) => {
+      const partial = `TÍTULO
+
+Só um destaque
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Único destaque](https://example.com/unico)**
+
+Corpo do único destaque.
+
+Por que isso importa:
+
+Why único.
+`;
+      mkdirSync(join(editionsRoot, "260704"), { recursive: true });
+      writeFileSync(join(editionsRoot, "260704", "02-reviewed.md"), partial, "utf8");
+
+      const result = collectMonth("2607", rawPostsRoot, editionsRoot);
+      assert.equal(result.destaques.length, 1);
+      assert.equal(result.source_counts.local, 1);
+      assert.ok(
+        result.warnings.some((w) => /260704.*parseou 1 destaques via modo local/.test(w)),
+        `esperava warning de parse parcial, recebeu: ${JSON.stringify(result.warnings)}`,
+      );
+    });
+  });
 });

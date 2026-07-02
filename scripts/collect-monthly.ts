@@ -418,9 +418,16 @@ export function collectMonth(
     if (localSet.has(edition) && existsSync(localPath)) {
       const md = readFileSync(localPath, "utf8");
       const dest = parseLocalEdition(edition, md);
+      // Paridade com parsePost (raw-post): avisa tanto no caso 0 quanto no
+      // caso parcial (1-2 de 3 esperados) — sem isso, uma edição com só 1-2
+      // blocos DESTAQUE N reconhecidos passava batido, sem warning.
       if (dest.length === 0) {
         warnings.push(
           `${edition}: 0 destaques via modo local (02-reviewed.md presente, mas nenhum bloco DESTAQUE N casou) — verificar formato`,
+        );
+      } else if (dest.length < 3) {
+        warnings.push(
+          `${edition}: parseou ${dest.length} destaques via modo local (esperado 3)`,
         );
       }
       allDestaques.push(...dest);
