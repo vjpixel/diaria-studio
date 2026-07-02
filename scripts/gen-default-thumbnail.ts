@@ -24,12 +24,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
 // #2530 review: tokens do DS canônico (fonte única, #1936) — não duplicar
 // literais de cor/fonte (há drift-test pra esse padrão; um change no DS propaga).
-import { COLORS, FONTS } from "./lib/design-tokens.ts";
+import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "assets", "default-thumbnail-1200x630.png");
 
-// Design tokens (DS canônico — derivados de scripts/lib/design-tokens.ts, #1936).
+// Design tokens (DS canônico — derivados de scripts/lib/shared/design-tokens.ts, #1936).
 const COLOR_PAPER = COLORS.paper;
 const COLOR_TEAL = COLORS.brand;
 const COLOR_INK = COLORS.ink;

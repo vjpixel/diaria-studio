@@ -29,7 +29,7 @@ import {
   monthlyDir as resolveMonthlyDir,
   cycleToYymm,
   parseMonthlyCycleArg,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 
 // Alias para compat com usos internos (path join na MONTHLY_BASE).
 const MONTHLY_DIR = MONTHLY_BASE;

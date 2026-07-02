@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { COLORS } from "../scripts/lib/design-tokens.ts";
+import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 import {
   processInlineLinks,
   mdInlineToHtml,

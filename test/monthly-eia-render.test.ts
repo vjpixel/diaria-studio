@@ -16,7 +16,7 @@ import {
   renderEia,
   draftToEmail,
   eiaEditionFromYymm,
-} from "../scripts/lib/monthly-render.ts";
+} from "../scripts/lib/mensal/monthly-render.ts";
 
 describe("parseEiaLegend (#1914)", () => {
   it("extrai a legenda do 01-eia.md (sem frontmatter nem header)", () => {

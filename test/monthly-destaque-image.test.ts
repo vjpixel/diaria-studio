@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderDestaque, draftToEmail } from "../scripts/lib/monthly-render.ts";
+import { renderDestaque, draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 
 const CHUNK = [
   "**DESTAQUE 1 | BRASIL**",

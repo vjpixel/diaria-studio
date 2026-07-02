@@ -25,9 +25,9 @@ import {
   emailBaseRules,
   buildDiariaStyleBlock,
   buildMensalStyleBlock,
-} from "../scripts/lib/newsletter-styles.ts";
+} from "../scripts/lib/shared/newsletter-styles.ts";
 import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
-import { draftToEmail } from "../scripts/lib/monthly-render.ts";
+import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 
 // Tokens canônicos (de design-tokens.ts; hardcoded aqui para servir de GROUND TRUTH —
 // se os tokens mudarem, este teste falha intencionalmente pra chamar atenção).

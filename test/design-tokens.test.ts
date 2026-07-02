@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { COLORS, FONTS, BOX } from "../scripts/lib/design-tokens.ts";
+import { COLORS, FONTS, BOX } from "../scripts/lib/shared/design-tokens.ts";
 import { renderHTML } from "../scripts/render-newsletter-html.ts";
 import { draftToEmail } from "../scripts/publish-monthly.ts";
 

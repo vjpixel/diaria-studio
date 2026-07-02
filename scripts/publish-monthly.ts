@@ -46,10 +46,10 @@ import {
   yymmToCycle,
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
-} from "./lib/monthly-paths.ts";
+} from "./lib/mensal/monthly-paths.ts";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
-import { uploadMonthlyImage as uploadMonthlyImageLib, uploadDestaqueImages } from "./lib/monthly-image-upload.ts"; // #1914 #1916
+import { uploadMonthlyImage as uploadMonthlyImageLib, uploadDestaqueImages } from "./lib/mensal/monthly-image-upload.ts"; // #1914 #1916
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
 // main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
@@ -57,7 +57,7 @@ import {
   draftToEmail,
   parseEiaLegend,
   captionForGenerator, // #2018-fix: extraído pra evitar duplicação com monthly-preview-cloudflare
-} from "./lib/monthly-render.ts";
+} from "./lib/mensal/monthly-render.ts";
 // #1844: cliente HTTP Brevo (transporte) — wrappers que main() usa pra campanha.
 import {
   brevoPost,
@@ -85,7 +85,7 @@ export {
   isSectionLabel,
   splitByLabels,
   draftToEmail,
-} from "./lib/monthly-render.ts";
+} from "./lib/mensal/monthly-render.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -244,7 +244,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   return { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
 }
 
-// #1844: camada de render (escHtml/render*/draftToEmail/parse) → scripts/lib/monthly-render.ts. Re-export no topo; main() importa.
+// #1844: camada de render (escHtml/render*/draftToEmail/parse) → scripts/lib/mensal/monthly-render.ts. Re-export no topo; main() importa.
 
 // ─── Brevo API ─────────────────────────────────────────────────────────────
 
@@ -320,10 +320,10 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
 }
 
 // #1914: monthlyEiaImageKey + uploadMonthlyImage extraídos pra
-// lib/monthly-image-upload.ts (compartilhados com monthly-preview-cloudflare.ts).
+// lib/mensal/monthly-image-upload.ts (compartilhados com monthly-preview-cloudflare.ts).
 // Re-export de monthlyEiaImageKey mantém back-compat (test/monthly-eia-image-key
 // importa daqui). uploadMonthlyImage local delega pra lib passando ROOT.
-export { monthlyEiaImageKey } from "./lib/monthly-image-upload.ts";
+export { monthlyEiaImageKey } from "./lib/mensal/monthly-image-upload.ts";
 
 function uploadMonthlyImage(filePath: string, edition: string): Promise<string> {
   return uploadMonthlyImageLib(filePath, edition, ROOT);

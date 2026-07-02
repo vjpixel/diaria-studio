@@ -2,7 +2,7 @@
  * generate-worker-tokens.ts (#2107, updated #2132, #2125)
  *
  * Gera `workers/{worker}/src/ds-tokens.generated.ts` a partir dos
- * tokens canônicos de `scripts/lib/design-tokens.ts`.
+ * tokens canônicos de `scripts/lib/shared/design-tokens.ts`.
  *
  * Elimina o espelho manual: nenhum Worker precisa ter cópias inline dos
  * valores do DS. Este script é a única fonte de verdade para os tokens no bundle
@@ -26,14 +26,14 @@
  *   - Manualmente: `npx tsx scripts/generate-worker-tokens.ts`
  *
  * O arquivo gerado tem header "GERADO — não editar" para deixar claro que
- * mudanças devem ser feitas em `scripts/lib/design-tokens.ts`, não aqui.
+ * mudanças devem ser feitas em `scripts/lib/shared/design-tokens.ts`, não aqui.
  *
  * Flag opcional: --out-dir <dir>
  *   Gera apenas no diretório especificado (relativo ao repo root).
  *   Sem a flag: gera em TODOS os workers listados em OUT_DIRS (comportamento padrão).
  */
 
-import { COLORS, FONTS } from "./lib/design-tokens.ts";
+import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -64,9 +64,9 @@ export function generateTokensContent(colors: typeof COLORS, fonts: typeof FONTS
  * ds-tokens.generated.ts — GERADO AUTOMATICAMENTE. NÃO EDITAR.
  *
  * Gerado por scripts/generate-worker-tokens.ts (#2107) a partir de
- * scripts/lib/design-tokens.ts (fonte canônica do DS Diar.ia).
+ * scripts/lib/shared/design-tokens.ts (fonte canônica do DS Diar.ia).
  *
- * Para atualizar tokens: editar scripts/lib/design-tokens.ts e rodar:
+ * Para atualizar tokens: editar scripts/lib/shared/design-tokens.ts e rodar:
  *   npx tsx scripts/generate-worker-tokens.ts
  * (ou simplesmente: npm test / wrangler deploy — ambos disparam o build step)
  *
