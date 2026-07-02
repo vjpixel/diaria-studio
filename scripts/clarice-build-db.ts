@@ -3,8 +3,10 @@
  * clarice-build-db.ts — (re)constrói o store único de usuários da Clarice (#2647).
  *
  * Consolida num SQLite (keyed por email) o que hoje está fragmentado e lossy:
- *   1. Stripe  → base completa (T01–T10) + 5 campos mantidos + tier, via
- *      `buildUniverse()` do merge (preserva sinal que os CSVs de tier descartam).
+ *   1. Stripe  → base completa (cohorts nomeados, #2857 fase C) + 5 campos
+ *      mantidos + cohort, via `buildUniverse()` do merge (preserva sinal que
+ *      os CSVs de cohort descartam; cohort escrito DIRETO — o merge tem o
+ *      contexto completo do Stripe que este store não persiste).
  *   2. MV      → ingere os `mv-export-*-{verified,rejected,unknown}.csv` de cada
  *      ciclo `{conteúdo}-{envio}/` (result, code, quality, bucket, ciclo).
  *   3. Brevo   → engajamento/supressão (opens, clicks, bounces, unsub). Sync ao
@@ -48,7 +50,7 @@ function isoOrNull(d: Date | null): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Stripe → upsert identidade + 5 campos + tier
+// Stripe → upsert identidade + 5 campos + cohort (#2857 fase C — cutover)
 // ---------------------------------------------------------------------------
 
 function ingestStripe(
@@ -62,9 +64,16 @@ function ingestStripe(
   skipped_files: string[];
 } {
   const { kept, excluded, skippedFiles } = buildUniverse(dataDir, now);
+  // #2857 fase C: escreve `cohort` (não mais `tier` — a coluna vira legado
+  // read-only, ver clarice-db.ts) DIRETO a partir do cohort que o merge já
+  // computou com o contexto Stripe COMPLETO (status+payment_count+total_spend
+  // +created — este store só persiste os 5 campos abaixo, sem payment_count/
+  // total_spend, então só o merge pode distinguir payer/lead com segurança).
+  // Sobrescrito em TODO rebuild — sempre fresco pra qualquer linha presente no
+  // export Stripe atual; `recomputeDerived` só faz backfill quando ausente.
   const upsert = db.prepare(
     `INSERT INTO clarice_users
-       (email, name, stripe_ids, status, created, delinquent, dispute_losses, refunded_volume, tier, updated_at)
+       (email, name, stripe_ids, status, created, delinquent, dispute_losses, refunded_volume, cohort, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(email) DO UPDATE SET
        name = excluded.name,
@@ -74,7 +83,7 @@ function ingestStripe(
        delinquent = excluded.delinquent,
        dispute_losses = excluded.dispute_losses,
        refunded_volume = excluded.refunded_volume,
-       tier = excluded.tier,
+       cohort = excluded.cohort,
        updated_at = excluded.updated_at`,
   );
   const nowIso = now.toISOString();
@@ -89,15 +98,16 @@ function ingestStripe(
       m.delinquent == null ? null : m.delinquent ? 1 : 0,
       m.dispute_losses,
       m.refunded_volume,
-      m.tier,
+      m.cohort,
       nowIso,
     );
   }
   // Disputados (chargeback) são clientes REAIS — entram no store marcados como
   // inelegíveis (recomputeDerived → ineligible_reason='dispute'), não somem
-  // (#2647). tier=null: não recebem 1º envio, mas ficam visíveis e auditáveis.
-  // Os demais excluídos (invalid/disposable/test/role) são lixo → só no audit
-  // CSV, fora do store de usuários.
+  // (#2647). cohort=null: não recebem 1º envio classificado como payer/lead
+  // direto (mesmo espírito do antigo tier=null) — `recomputeDerived` ainda
+  // faz o backfill via `computeCohort` (fallback, deriva do `created` se
+  // presente) pra ficarem visíveis/auditáveis num cohort informativo.
   const disputed = excluded.filter((e) => e.reason === "dispute_losses");
   for (const m of disputed) {
     upsert.run(

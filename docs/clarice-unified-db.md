@@ -16,7 +16,7 @@ perder esse sinal e torna "priorizar envio" uma query, não um merge ad-hoc.
 
 | Fonte | Papel | Como entra |
 |---|---|---|
-| **Stripe** | quem é / relacionamento comercial (estático) | `buildUniverse()` do merge → 5 campos + tier |
+| **Stripe** | quem é / relacionamento comercial (estático) | `buildUniverse()` do merge → 5 campos + cohort |
 | **Brevo** | comportamento com nossos emails (dinâmico) | engajamento/supressão via `clarice-sync-brevo.ts` |
 | **MV** | entregabilidade (risco de bounce) | `mv-export-*` de cada ciclo `{conteúdo}-{envio}/` |
 
@@ -32,13 +32,22 @@ perder esse sinal e torna "priorizar envio" uma query, não um merge ad-hoc.
 audit `excluded.csv`).
 
 Disputados (chargeback) **entram** no store marcados como inelegíveis
-(`ineligible_reason='dispute'`, `tier=null`) — são clientes reais, não somem.
+(`ineligible_reason='dispute'`, `cohort=null` na escrita direta do ingest —
+`recomputeDerived` ainda faz backfill informativo via `created`, se presente).
+São clientes reais, não somem.
 Emails inválidos/disposable/test/role ficam só no audit CSV.
 
 ## Dois eixos de priorização
 
-- **`tier` (T01–T10)** — decide *quando* entra no **primeiro** envio (de
-  `status` + `created`).
+- **`cohort`** (slug nomeado — `assinantes-ativos`, `ex-assinantes`,
+  `leads-{período}`, `leads-caudao`; #2857 cutover fase C) — decide *quando*
+  entra no **primeiro** envio. `assinantes-ativos`/`ex-assinantes` são fixos
+  (de `status`/histórico de pagamento); leads derivam do período REAL de
+  `created` (mensal `leads-YYYY-MM` desde a safra #2817, senão semestre real
+  `leads-YYYYhN`). Ordem total via `cohortSendRank` (`scripts/lib/cohorts.ts`).
+  `tier` (T01–T10, INTEGER) é **coluna legado read-only** desde o cutover —
+  ingest novo não escreve mais nela; só serve de fallback pra linhas antigas
+  sem `cohort`/`created` (ver `computeCohort`, `scripts/lib/clarice-db.ts`).
 - **`priority_points`** — prioriza **re-envios** por comportamento:
 
   ```
@@ -79,9 +88,9 @@ bounces; transitório).
 > blacklist (o antigo `clarice-build-waves.ts`, removido em #2844/260702, fazia
 > um fetch próprio de `emailBlacklisted`; hoje `send_eligible` é a única fonte).
 >
-> Queries de wave devem exigir `tier IS NOT NULL` além de `send_eligible = 1` —
-> linhas só-de-MV/Brevo (email ausente do Stripe) entram com `tier = NULL` e sem
-> proveniência comercial.
+> Queries de wave devem exigir `cohort IS NOT NULL` além de `send_eligible = 1` —
+> linhas só-de-MV/Brevo (email ausente do Stripe) entram com `cohort = NULL` e
+> sem proveniência comercial.
 
 ## Scripts
 
@@ -113,7 +122,8 @@ Reusa o `brevoGet` de `scripts/lib/brevo-client.ts` (respeita `Retry-After`). Re
 `scripts/clarice-build-waves-store.ts` monta as waves a partir do store (base
 inteira) e é o único builder de waves em produção (legado — `clarice-build-waves.ts`,
 o cohort T1/T2 + fetch ao vivo — removido em #2844/260702): corte por
-`send_eligible`, re-envio por `priority_points`, 1º envio por `tier`.
+`send_eligible`, re-envio por `priority_points`, 1º envio por `cohort` (#2857
+fase C — sucessor de `tier`, que virou coluna legado read-only).
 Fila (`priorityQueue`): engajado → 1º envio → re-envio decaído. Pega o topo até
 `--budget` (lever de expansão de alcance) e fatia em `--wave-size`. Escreve
 `wN-store.csv` + `waves-manifest.json`; o `clarice-import-waves.ts` lê o manifest

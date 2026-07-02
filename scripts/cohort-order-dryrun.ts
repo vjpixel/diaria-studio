@@ -24,11 +24,22 @@
 
 import { writeFileSync } from "node:fs";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { loadStoreRows, tierRank, isFirstSend, type StoreRow } from "./lib/clarice-segment.ts";
+import { loadStoreRows, isFirstSend, type StoreRow } from "./lib/clarice-segment.ts";
 import { cohortSendRank } from "./lib/cohorts.ts";
 import { getArg } from "./lib/cli-args.ts";
 
 const DEFAULT_TOP = 50;
+
+/**
+ * tier p/ ordenação: nulo vira +∞ (vai pro fim). Oráculo LOCAL (#2857 fase C
+ * — antes vivia exportada em `scripts/lib/clarice-segment.ts` como `tierRank`;
+ * movida pra cá e des-exportada no cutover, já que este script é o ÚNICO
+ * consumidor que ainda precisa da ordenação pré-#2857-fase-B — ver
+ * `firstSendByTier` abaixo). Não usada em nenhum caminho de produção.
+ */
+function tierRank(t: number | null): number {
+  return t == null ? Number.POSITIVE_INFINITY : t;
+}
 
 /**
  * Ordena `firstSend` (elegível, nunca enviado) por TIER ASC + email ASC —

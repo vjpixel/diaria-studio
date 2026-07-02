@@ -8,9 +8,8 @@ import {
   verifyRisk,
   openProbability,
   hasClariceAudienceTag,
-  tierOf,
-  tierLabel,
-  tierFileName,
+  cohortOf,
+  cohortFileName,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -444,160 +443,90 @@ describe("openProbability", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tierOf — taxonomia 10 tiers (#1018)
+// cohortOf — taxonomia nomeada (#2857 fase C — sucessor de tierOf/#1018)
 // ---------------------------------------------------------------------------
 
-describe("tierOf", () => {
-  it("T1: status active", () => {
-    assert.equal(tierOf(merged({ status: "active" }), NOW), 1);
+describe("cohortOf", () => {
+  it("assinantes-ativos: status active", () => {
+    assert.equal(cohortOf(merged({ status: "active" })), "assinantes-ativos");
   });
 
-  it("T1: status past_due", () => {
-    assert.equal(tierOf(merged({ status: "past_due" }), NOW), 1);
+  it("assinantes-ativos: status past_due", () => {
+    assert.equal(cohortOf(merged({ status: "past_due" })), "assinantes-ativos");
   });
 
-  it("T1: status paused", () => {
-    assert.equal(tierOf(merged({ status: "paused" }), NOW), 1);
+  it("assinantes-ativos: status paused", () => {
+    assert.equal(cohortOf(merged({ status: "paused" })), "assinantes-ativos");
   });
 
-  it("T1: status trialing", () => {
-    assert.equal(tierOf(merged({ status: "trialing" }), NOW), 1);
+  it("assinantes-ativos: status trialing", () => {
+    assert.equal(cohortOf(merged({ status: "trialing" })), "assinantes-ativos");
   });
 
-  it("T2: pagou alguma vez (payment_count>0), não está em T1", () => {
+  it("ex-assinantes: pagou alguma vez (payment_count>0), não está em assinantes-ativos", () => {
     const c = merged({
       status: "canceled",
       payment_count: 1,
       total_spend: 100,
     });
-    assert.equal(tierOf(c, NOW), 2);
+    assert.equal(cohortOf(c), "ex-assinantes");
   });
 
-  it("T2: paid via total_spend>0 mesmo com payment_count=0", () => {
+  it("ex-assinantes: paid via total_spend>0 mesmo com payment_count=0", () => {
     const c = merged({
       status: "canceled",
       payment_count: 0,
       total_spend: 50,
     });
-    assert.equal(tierOf(c, NOW), 2);
+    assert.equal(cohortOf(c), "ex-assinantes");
   });
 
-  it("T1 tem precedência sobre T2 (active + paid)", () => {
+  it("assinantes-ativos tem precedência sobre ex-assinantes (active + paid)", () => {
     const c = merged({
       status: "active",
       payment_count: 5,
       total_spend: 500,
     });
-    assert.equal(tierOf(c, NOW), 1);
+    assert.equal(cohortOf(c), "assinantes-ativos");
   });
 
-  it("T3: lead nunca-pagou criado em 2026", () => {
+  it("lead: created >= epoch da safra (2026-05) vira safra mensal 'leads-YYYY-MM'", () => {
     const c = merged({
       status: "",
       payment_count: 0,
       total_spend: 0,
-      created: new Date("2026-03-15T00:00:00Z"),
+      created: new Date("2026-06-15T00:00:00Z"),
     });
-    assert.equal(tierOf(c, NOW), 3);
+    assert.equal(cohortOf(c), "leads-2026-06");
   });
 
-  it("T4: lead 2025-H2 (jul–dez)", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2025-09-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 4);
+  it("lead: created < epoch vira o semestre REAL 'leads-YYYYhN' (h1 jan-jun, h2 jul-dez)", () => {
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2026-03-15T00:00:00Z") })), "leads-2026h1");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2025-09-01T00:00:00Z") })), "leads-2025h2");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2025-03-01T00:00:00Z") })), "leads-2025h1");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2024-09-01T00:00:00Z") })), "leads-2024h2");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2024-02-01T00:00:00Z") })), "leads-2024h1");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2023-08-01T00:00:00Z") })), "leads-2023h2");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2023-01-15T00:00:00Z") })), "leads-2023h1");
   });
 
-  it("T5: lead 2025-H1 (jan–jun)", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2025-03-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 5);
+  it("lead: semestre real vale pra QUALQUER ano passado (sem tabela fixa/threshold de caudão)", () => {
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2022-03-01T00:00:00Z") })), "leads-2022h1");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2022-09-01T00:00:00Z") })), "leads-2022h2");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2021-06-01T00:00:00Z") })), "leads-2021h1");
+    assert.equal(cohortOf(merged({ status: "", created: new Date("2018-01-01T00:00:00Z") })), "leads-2018h1");
   });
 
-  it("T6: lead 2024-H2", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2024-09-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 6);
-  });
-
-  it("T7: lead 2024-H1", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2024-02-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 7);
-  });
-
-  it("T8: lead 2023-H2", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2023-08-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 8);
-  });
-
-  it("T9: lead 2023-H1", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2023-01-15T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 9);
-  });
-
-  it("T10: lead 2022 (todo H1+H2 → T10)", () => {
-    const cH1 = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2022-03-01T00:00:00Z"),
-    });
-    const cH2 = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2022-09-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(cH1), 10);
-    assert.equal(tierOf(cH2), 10);
-  });
-
-  it("T10: lead 2021 (todo H1+H2 → T10)", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2021-06-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 10);
-  });
-
-  it("T10: lead com created muito antigo (2018)", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2018-01-01T00:00:00Z"),
-    });
-    assert.equal(tierOf(c, NOW), 10);
-  });
-
-  it("T10 fallback: lead sem created date (sem data → fóssil)", () => {
+  it("leads-caudao: lead sem created date (sem data → fóssil)", () => {
     const c = merged({
       status: "",
       payment_count: 0,
       created: null,
     });
-    assert.equal(tierOf(c, NOW), 10);
+    assert.equal(cohortOf(c), "leads-caudao");
   });
 
-  it("Tag clrc-pt NÃO afeta tier — dois contatos idênticos com/sem tag dão mesmo tier", () => {
+  it("Tag clrc-pt NÃO afeta cohort — dois contatos idênticos com/sem tag dão mesmo cohort", () => {
     const base = {
       status: "",
       payment_count: 0,
@@ -606,173 +535,40 @@ describe("tierOf", () => {
     };
     const withTag = merged({ ...base, tag: "clrc-pt", description: "clrc-pt" });
     const withoutTag = merged({ ...base, tag: null, description: null });
-    assert.equal(tierOf(withTag, NOW), tierOf(withoutTag, NOW));
-    assert.equal(tierOf(withTag, NOW), 5);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tierOf com semestres deslizantes (#1020)
-// ---------------------------------------------------------------------------
-
-describe("tierOf — semestres deslizantes (#1020)", () => {
-  it("self-adjusting: contato Mar/2026 é T3 quando now=Mai/2026, mas T4 quando now=Ago/2026", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2026-03-15T00:00:00Z"),
-    });
-    // Mai/2026 — Mar/2026 = mesmo semestre (H1) → T3
-    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 3);
-    // Ago/2026 — Mar/2026 = 1 semestre atrás → T4
-    assert.equal(tierOf(c, new Date("2026-08-08T00:00:00Z")), 4);
-    // Mar/2027 — Mar/2026 = 2 semestres atrás → T5
-    assert.equal(tierOf(c, new Date("2027-03-15T00:00:00Z")), 5);
+    assert.equal(cohortOf(withTag), cohortOf(withoutTag));
+    assert.equal(cohortOf(withTag), "leads-2025h1");
   });
 
-  it("contato no futuro (raro) cai em T3 (mais quente)", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2026-12-01T00:00:00Z"),
-    });
-    // now = Mai/2026, contato no futuro
-    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 3);
+  it("cohort de lead NÃO muda com o tempo (ao contrário do antigo tierOf/#1020 — sem parâmetro `now`)", () => {
+    // #2857 fase C: o período de um lead deriva do PERÍODO REAL e ABSOLUTO de
+    // `created`, não de uma distância-em-semestres relativa a `now` — não há
+    // mais "self-adjusting sliding semester" (motivo original da fase B.1: o
+    // rótulo estático desalinhava do created real a cada virada de semestre).
+    const c = merged({ status: "", created: new Date("2026-03-15T00:00:00Z") });
+    assert.equal(cohortOf(c), "leads-2026h1");
+    // cohortOf não recebe `now` — chamando de novo (dias/anos depois, na
+    // prática) dá exatamente o mesmo resultado.
+    assert.equal(cohortOf(c), "leads-2026h1");
   });
 
-  it("T10 absorve qualquer coisa ≥ 7 semestres atrás", () => {
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2022-06-01T00:00:00Z"),
-    });
-    // 2022-H2 → 2026-H1 = ~7 semestres atrás → T10
-    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 10);
-  });
-
-  it("não muda no MEIO de um semestre (jul → dez 2026 todos no mesmo bucket)", () => {
-    // Lead criado jan/2026
-    const c = merged({
-      status: "",
-      payment_count: 0,
-      created: new Date("2026-01-15T00:00:00Z"),
-    });
-    // now ao longo do 2026-H2 (jul, set, dez): todos devem dar T4
-    assert.equal(tierOf(c, new Date("2026-07-01T00:00:00Z")), 4);
-    assert.equal(tierOf(c, new Date("2026-09-15T00:00:00Z")), 4);
-    assert.equal(tierOf(c, new Date("2026-12-31T00:00:00Z")), 4);
-  });
-
-  it("T1 e T2 não dependem de now (status/spend são sinais permanentes)", () => {
+  it("assinantes-ativos/ex-assinantes NÃO dependem de created (sinais permanentes)", () => {
     const t1 = merged({ status: "active", payment_count: 0 });
     const t2 = merged({ status: "canceled", payment_count: 5, total_spend: 100 });
-    const dates = [
-      new Date("2024-01-01T00:00:00Z"),
-      new Date("2026-05-08T00:00:00Z"),
-      new Date("2030-12-31T00:00:00Z"),
-    ];
-    for (const d of dates) {
-      assert.equal(tierOf(t1, d), 1, `T1 deve ser sempre 1 (now=${d.toISOString()})`);
-      assert.equal(tierOf(t2, d), 2, `T2 deve ser sempre 2 (now=${d.toISOString()})`);
-    }
+    assert.equal(cohortOf(t1), "assinantes-ativos");
+    assert.equal(cohortOf(t2), "ex-assinantes");
   });
 });
 
-describe("tierLabel — labels dinâmicos (#1020)", () => {
-  it("T1 e T2 têm labels fixos", () => {
-    const NOW = new Date("2026-05-08T00:00:00Z");
-    assert.match(tierLabel(1, NOW), /Assinante atual/);
-    assert.match(tierLabel(2, NOW), /Ex-assinante/);
-  });
+// ---------------------------------------------------------------------------
+// cohortFileName — nome de arquivo (#2857 fase C — sucessor de tierFileName)
+// ---------------------------------------------------------------------------
 
-  it("T3 = semestre corrente (varia com now)", () => {
-    assert.match(tierLabel(3, new Date("2026-05-08T00:00:00Z")), /2026-H1/);
-    assert.match(tierLabel(3, new Date("2026-08-08T00:00:00Z")), /2026-H2/);
-    assert.match(tierLabel(3, new Date("2027-02-01T00:00:00Z")), /2027-H1/);
-  });
-
-  it("T4 = semestre anterior", () => {
-    // Mai/2026 → corrente é 2026-H1; T4 = 2025-H2
-    assert.match(tierLabel(4, new Date("2026-05-08T00:00:00Z")), /2025-H2/);
-  });
-
-  it("T9 = 6 semestres atrás", () => {
-    // Mai/2026 (2026-H1) — 6 = 2023-H1
-    assert.match(tierLabel(9, new Date("2026-05-08T00:00:00Z")), /2023-H1/);
-  });
-
-  it("T10 tem label fixo de caudão (não depende de now)", () => {
-    // T10 absorve qualquer coisa ≥ 7 semestres atrás, então não tem
-    // semestre específico. Label deve indicar "caudão" + threshold.
-    const label = tierLabel(10, new Date("2026-05-08T00:00:00Z"));
-    assert.match(label, /caud[ãa]o/i, "T10 label deve mencionar 'caudão'");
-    assert.match(label, /≥7|≥ 7|7 semestres/, "T10 label deve indicar threshold de 7 semestres");
-    // Independência de now: mesmo label em outras datas
-    const labelFuture = tierLabel(10, new Date("2030-12-31T00:00:00Z"));
-    assert.equal(label, labelFuture, "T10 label não deve variar com now");
-  });
-
-  it("tier desconhecido retorna fallback", () => {
-    assert.match(tierLabel(99, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
-    assert.match(tierLabel(0, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
-  });
-});
-
-// tierFileName — nomes de arquivo descritivos (prefixo t{NN}- estável + slug)
-describe("tierFileName", () => {
-  const rows = (...dates: (Date | null)[]) =>
-    dates.map((created) => ({ created })) as unknown as Parameters<typeof tierFileName>[2];
-
-  it("T1/T2/T10 têm slug estável (sem semestre)", () => {
-    assert.equal(tierFileName(1, NOW, []), "stripe-export-t01-assinantes-ativos.csv");
-    assert.equal(tierFileName(2, NOW, []), "stripe-export-t02-ex-assinantes.csv");
-    assert.equal(tierFileName(10, NOW, []), "stripe-export-t10-leads-caudao.csv");
-  });
-
-  it("T4–T9 usam semestre deslizante (acompanha now, igual tierLabel)", () => {
-    // NOW = mai/2026 → corrente 2026-H1; T4 = 2025-H2, T9 = 2023-H1
-    assert.equal(tierFileName(4, NOW, []), "stripe-export-t04-leads-2025H2.csv");
-    assert.equal(tierFileName(9, NOW, []), "stripe-export-t09-leads-2023H1.csv");
-  });
-
-  it("T3 reflete o RANGE real de created (corte do export) e auto-corrige", () => {
-    // Dados jan–abr/2026 (corte 30/abr) → jan-abr
-    assert.equal(
-      tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-04-30T00:00:00Z"))),
-      "stripe-export-t03-leads-2026-jan-abr.csv",
-    );
-    // Export posterior (até maio) → jan-mai, SEM rename manual (auto-corrige)
-    assert.equal(
-      tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-05-20T00:00:00Z"))),
-      "stripe-export-t03-leads-2026-jan-mai.csv",
-    );
-  });
-
-  it("T3 sem datas cai no semestre corrente (fallback)", () => {
-    assert.equal(tierFileName(3, NOW, []), "stripe-export-t03-leads-2026-jan-jun.csv");
-  });
-
-  it("T3 com range cruzando o ano inclui os DOIS anos (não dropa, não inverte)", () => {
-    // Caso raro (datas futuras em fixture): min dez/2025, max jan/2026.
-    assert.equal(
-      tierFileName(3, NOW, rows(new Date("2025-12-20T00:00:00Z"), new Date("2026-01-10T00:00:00Z"))),
-      "stripe-export-t03-leads-2025-dez-2026-jan.csv",
-    );
-  });
-
-  it("T3 com 1 só data → mês repetido (min===max)", () => {
-    assert.equal(
-      tierFileName(3, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
-      "stripe-export-t03-leads-2026-fev-fev.csv",
-    );
-  });
-
-  it("prefixo t{NN}- estável (os readers acham por ele)", () => {
-    for (let t = 1; t <= 10; t++) {
-      assert.match(
-        tierFileName(t, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
-        new RegExp(`^stripe-export-t${String(t).padStart(2, "0")}-`),
-      );
-    }
+describe("cohortFileName", () => {
+  it("stripe-export-{cohort}.csv — sem prefixo numérico (cutover removeu t{NN}-)", () => {
+    assert.equal(cohortFileName("assinantes-ativos"), "stripe-export-assinantes-ativos.csv");
+    assert.equal(cohortFileName("ex-assinantes"), "stripe-export-ex-assinantes.csv");
+    assert.equal(cohortFileName("leads-caudao"), "stripe-export-leads-caudao.csv");
+    assert.equal(cohortFileName("leads-2026-06"), "stripe-export-leads-2026-06.csv");
+    assert.equal(cohortFileName("leads-2025h2"), "stripe-export-leads-2025h2.csv");
   });
 });

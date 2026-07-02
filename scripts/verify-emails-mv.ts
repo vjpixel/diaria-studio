@@ -12,8 +12,8 @@
  * não re-verifica (nem re-gasta crédito) o que já foi feito.
  *
  * Uso:
- *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06                          # T02 (default)
- *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --input stripe-export-t03-leads-2026-jan-abr.csv
+ *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06                          # ex-assinantes (default)
+ *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --input stripe-export-leads-2026-06.csv
  *   npx tsx scripts/verify-emails-mv.ts --single foo@bar.com     # smoke (1 crédito; sem --cycle)
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --limit 50               # só os 50 primeiros
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --concurrency 20
@@ -22,15 +22,16 @@
  * Env:
  *   MILLION_VERIFIER_API_KEY   obrigatório (dashboard MV → API)
  *
- * Input  (BASE, no root data/clarice-subscribers/):
- *   stripe-export-t02-ex-assinantes.csv   colunas: email,NOME,OPEN_PROBABILITY
+ * Input  (BASE, no root data/clarice-subscribers/) — nome = cohort (#2857 fase C,
+ * ver scripts/merge-clarice-subscribers.ts):
+ *   stripe-export-ex-assinantes.csv   colunas: email,NOME,OPEN_PROBABILITY
  *
  * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/). Proveniência:
  * input `stripe-export-` → saídas `mv-export-` (output do MillionVerifier):
- *   mv-export-t02-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
- *   mv-export-t02-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
- *   mv-export-t02-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
- *   .mv-cache-mv-export-t02-ex-assinantes.json checkpoint resumível (gitignored via data/)
+ *   mv-export-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
+ *   mv-export-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
+ *   mv-export-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
+ *   .mv-cache-mv-export-ex-assinantes.json checkpoint resumível (gitignored via data/)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
@@ -325,7 +326,7 @@ export function parseArgs(argv: string[]): Args {
   const rawLimit = get("--limit");
   const parsedLimit = rawLimit != null ? parseInt(rawLimit, 10) : NaN;
   return {
-    input: get("--input") ?? "stripe-export-t02-ex-assinantes.csv",
+    input: get("--input") ?? "stripe-export-ex-assinantes.csv",
     concurrency: posInt(get("--concurrency"), 12),
     timeout: posInt(get("--timeout"), 20),
     // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.

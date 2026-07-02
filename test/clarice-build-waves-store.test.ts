@@ -253,7 +253,7 @@ test("main: --cohort com forma canônica 'YYYY-MM' funciona igual ao rótulo pt-
   assert.equal(out.eligible_total, 1);
 });
 
-test("main: --cohort aceita slug canônico direto e alias de tier legado (#2857 fase B)", () => {
+test("main: --cohort aceita slug canônico direto (#2857 fase C — alias de tier legado REMOVIDO no cutover)", () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-slug-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
@@ -280,10 +280,10 @@ test("main: --cohort aceita slug canônico direto e alias de tier legado (#2857 
 
   // slug canônico direto (sem passar pelo caminho pt-BR/YYYY-MM)
   assert.equal(run("assinantes-ativos"), 1, "slug direto filtra só o assinante ativo");
-  // alias de tier legado — resolve pro MESMO slug (t01 → assinantes-ativos)
-  assert.equal(run("t01"), 1, "alias de tier t01 resolve pro mesmo universo que o slug direto");
   assert.equal(run("ex-assinantes"), 1, "slug direto ex-assinantes");
-  assert.equal(run("t02"), 1, "alias de tier t02 resolve pro mesmo universo");
+  // #2857 fase C: o alias de tier legado ("t01"/"t02") foi removido do cutover
+  // — resolveCohortArg agora lança pra qualquer forma "t{NN}".
+  assert.throws(() => run("t01"), /não reconhecido/, "alias de tier legado não é mais aceito");
 });
 
 test("buildWaveArtifacts: IS_SEED='true' mesmo quando editor já é assinante elegível", () => {

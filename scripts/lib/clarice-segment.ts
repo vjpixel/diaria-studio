@@ -16,35 +16,43 @@
  *     pros 10 cohorts derivados de tier, ver test/cohorts.test.ts): assinante
  *     ativo primeiro, depois ex-assinante, depois leads por recência
  *     decrescente (safra mensal mais nova primeiro), depois caudão; cohort
- *     nulo/desconhecido por último. `tier` permanece no `StoreRow` (dupla-
- *     escrita, compat da fase B — a remoção é fase C).
+ *     nulo/desconhecido por último. `tier` permanece no `StoreRow` como coluna
+ *     LEGADO read-only (cutover da fase C — ingest novo não escreve mais
+ *     `tier`; `tierRank` foi removida deste módulo, ver `cohort-order-dryrun.ts`
+ *     pro oráculo independente que ainda a usa).
  *
  * Desempate estável por email ASC em todos os grupos → output determinístico
  * (reproduzível, pré-requisito do pipeline).
  */
 
-// cohortDisplayLabel/cohortFromSafra/cohortSendRank/cohortFromTier/
-// isKnownCohortSlug: cohorts.ts é dependency-free/Workers-safe como este
-// módulo (sem import de volta pra cá) — importar daqui não introduz ciclo nem
-// dependência de node:sqlite.
+// cohortDisplayLabel/cohortFromSafra/cohortSendRank/isKnownCohortSlug:
+// cohorts.ts é dependency-free/Workers-safe como este módulo (sem import de
+// volta pra cá) — importar daqui não introduz ciclo nem dependência de
+// node:sqlite.
 import {
   cohortDisplayLabel,
   cohortFromSafra,
-  cohortFromTier,
   cohortSendRank,
   isKnownCohortSlug,
 } from "./cohorts.ts";
 
 export interface StoreRow {
   email: string;
+  // LEGADO read-only (#2857 fase C — cutover). Só populado em linhas antigas
+  // (dupla-escrita da fase A até a fase C); ingest novo não escreve mais esta
+  // coluna. Mantido no StoreRow porque ainda tem consumidores informativos
+  // (rótulo "1º envio (T0X)" em clarice-build-waves-store.ts/describeWave,
+  // coluna TIER de clarice-build-edition-sends.ts) — NENHUM deles usa `tier`
+  // pra ordenar/segmentar (isso é `cohort`, ver abaixo). Vai ficando vazio
+  // (`null`) pra contatos novos conforme o tempo passa.
   tier: number | null;
-  // #2857 fase B: coluna nova do store (slug de cohort nomeado — ver
+  // #2857 fase B: coluna do store (slug de cohort nomeado — ver
   // scripts/lib/cohorts.ts). Governa a ordenação de 1º envio (ver
-  // `segmentFromStore` abaixo, que troca `tierRank` por `cohortSendRank`).
-  // Opcional (compat): consumidores que não passam pelo store real (ex:
-  // scripts/lib/clarice-waves-dryrun.ts, que só mede elegibilidade/supressão,
-  // não ordem) continuam válidos sem popular o campo — `cohortSendRank(undefined)`
-  // degrada com segurança pro fim da fila (mesmo destino de `null`/desconhecido).
+  // `segmentFromStore` abaixo). Opcional (compat): consumidores que não
+  // passam pelo store real (ex: scripts/lib/clarice-waves-dryrun.ts, que só
+  // mede elegibilidade/supressão, não ordem) continuam válidos sem popular o
+  // campo — `cohortSendRank(undefined)` degrada com segurança pro fim da fila
+  // (mesmo destino de `null`/desconhecido).
   cohort?: string | null;
   priority_points: number;
   send_eligible: number; // 0 | 1
@@ -59,23 +67,6 @@ export interface Segmentation {
   firstSend: StoreRow[];
   /** send_eligible = 0 (cortados), com a razão. */
   excluded: Array<{ email: string; reason: string }>;
-}
-
-/**
- * tier p/ ordenação: nulo vira +∞ (vai pro fim). Exportado (#2807 review):
- * o brevo-dashboard ordena o breakdown por tier com a MESMA regra — não
- * re-derivar lá (mesma classe de drift que o #2782 elimina pro firstSend).
- *
- * #2857 fase B: `segmentFromStore` NÃO usa mais esta função pra ordenar o
- * 1º envio (trocado por `cohortSendRank`, ver import de cohorts.ts) — `tier`
- * virou um atributo derivado/legado do StoreRow (dupla-escrita, fase A/B).
- * `tierRank` continua exportada e viva: o brevo-dashboard degrada pra ela
- * quando o payload do KV é um `by_tier` ANTIGO (pré-#2857-fase-B, ver
- * `workers/brevo-dashboard/src/sections-kv.ts`) — remover só na fase C,
- * quando não houver mais risco de KV cacheado nesse formato.
- */
-export function tierRank(t: number | null): number {
-  return t == null ? Number.POSITIVE_INFINITY : t;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,24 +307,22 @@ export function cohortLabel(cohort: string | null): string {
   return cohortDisplayLabel(cohort);
 }
 
-/** Casa alias de tier legado ("t04", "T4", case-insensitive) — #2857 fase B. */
-const TIER_ALIAS_RE = /^t(\d{1,2})$/i;
-
 /**
  * Resolve o valor de `--cohort` passado na CLI pro valor exato armazenado na
  * coluna `cohort`. Formas aceitas, nesta ordem de tentativa:
  *   1. forma canônica de safra "YYYY-MM" → `cohortFromSafra`.
  *   2. rótulo pt-BR do mês ("junho") → resolvido pro ano-epoch (2026).
- *   3. alias de tier LEGADO ("t04"/"T4", #2857 fase B) → `cohortFromTier`,
- *      com warning de depreciação em stderr (o alias é uma ponte de migração,
- *      não o identificador canônico — remoção prevista na fase C).
- *   4. slug canônico da taxonomia já resolvido ("assinantes-ativos",
+ *   3. slug canônico da taxonomia já resolvido ("assinantes-ativos",
  *      "leads-2025h2", "leads-2026-06", ...) → devolvido como está
- *      (`isKnownCohortSlug`), depois de rejeitar as 3 formas acima.
+ *      (`isKnownCohortSlug`), depois de rejeitar as 2 formas acima.
  * Rótulo pt-BR (forma 2) só é reconhecido pra o ano corrente da epoch (2026 —
  * único ano com safras rotuladas até agora); pra outro ano, use a forma
- * canônica direto ("2027-01"). Lança se o input não bater com NENHUMA das 4
+ * canônica direto ("2027-01"). Lança se o input não bater com NENHUMA das 3
  * formas — preferível a um filtro silenciosamente vazio.
+ *
+ * #2857 fase C (cutover): o alias de tier LEGADO ("t04"/"T4", introduzido na
+ * fase B como ponte de migração) foi REMOVIDO — `tier` não é mais um
+ * identificador aceito em `--cohort`, use o slug nomeado diretamente.
  *
  * #2857 fase A: a coluna `cohort` guarda o slug `leads-YYYY-MM` (não mais a
  * safra crua) — o retorno das formas 1/2 passa pelo mesmo `cohortFromSafra`
@@ -348,27 +337,10 @@ export function resolveCohortArg(input: string): string {
   if (idx !== -1) {
     return cohortFromSafra(`${COHORT_EPOCH_YEAR}-${String(idx + 1).padStart(2, "0")}`);
   }
-  const tierAlias = trimmed.match(TIER_ALIAS_RE);
-  if (tierAlias) {
-    const tierNum = Number(tierAlias[1]);
-    const resolved = cohortFromTier(tierNum);
-    if (resolved) {
-      console.error(
-        `⚠️  --cohort "${input}" é um alias de tier LEGADO (#2857 fase A/B) — ` +
-          `resolvido pra "${resolved}". Prefira o slug nomeado diretamente; o ` +
-          `alias "t${String(tierNum).padStart(2, "0")}" será removido na fase C ` +
-          `(cutover, remoção de tier).`,
-      );
-      return resolved;
-    }
-    // Número fora do mapa (ex: t00, t11) — cai no erro genérico abaixo, mesma
-    // mensagem que qualquer outro input não reconhecido.
-  }
   if (isKnownCohortSlug(trimmed)) return trimmed;
   throw new Error(
     `--cohort "${input}" não reconhecido — use um rótulo pt-BR (ex: junho), ` +
-      `a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06), um slug da ` +
-      `taxonomia (ex: assinantes-ativos, leads-2025h2) ou o alias de tier ` +
-      `legado (ex: t04).`,
+      `a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06) ou um slug da ` +
+      `taxonomia (ex: assinantes-ativos, leads-2025h2).`,
   );
 }
