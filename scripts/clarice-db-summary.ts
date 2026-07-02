@@ -119,8 +119,9 @@ export interface CohortStatsRow {
   unsub_bounce: number;
   /** mv_bucket='verified' — sobre o TOTAL de contatos do cohort (não só quem recebeu). */
   mv_verified: number;
-  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média. */
-  priority_points_sum: number;
+  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média.
+   * null só em payload de KV antigo (pré-COALESCE do #2874); escrita nova nunca emite null. */
+  priority_points_sum: number | null;
 }
 
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {

@@ -2464,8 +2464,10 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     } as unknown as EiaEngagementSummary;
     const html = renderEiaEngagementSection(data); // pré-fix: TypeError → 502 na dashboard inteira
     assert.match(html, /260701/);
-    assert.match(html, /—/);
-    assert.match(html, /25/, "linha completa segue normal");
+    // célula específica (não /—/ solto — o título da seção contém em-dash e
+    // tornaria o assert tautológico; achado D2 do review deste PR):
+    assert.match(html, /<td>—<\/td>/);
+    assert.match(html, /<td>25<\/td>/, "linha completa segue normal");
     assert.doesNotMatch(html, /NaN|undefined/);
   });
 

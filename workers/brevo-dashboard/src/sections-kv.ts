@@ -785,26 +785,28 @@ export function renderCohortsTabPanel(
 ): string {
   // #2660 (review #2872): payload AUSENTE (KV antigo, script nunca rodou) ≠
   // payload VAZIO (script rodou, store sem cohorts) — mensagens distintas.
-  if (!cohortStats) {
-    return `
+  const stub = (note: string): string => `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-db-summary.ts</code> para popular.</p>
+  <p class="section-note">${note}</p>
 </section>`;
+  if (!cohortStats) {
+    return stub(
+      'Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-db-summary.ts</code> para popular.',
+    );
   }
   if (Object.keys(cohortStats).length === 0) {
-    return `
-<section class="phase2-section" id="cohorts-tab">
-  <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Nenhum cohort no store (sumário gerado com base vazia).</p>
-</section>`;
+    return stub("Nenhum cohort no store (sumário gerado com base vazia).");
   }
 
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
   // NaN-safe (review #2872): payload KV parcial/antigo pode ter numerador
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
-  const pctOrDash = (v: number | null): string =>
-    v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
+  // NB: isto NÃO substitui o typeof-guard do ppAvg — lá o valor ruim é `null`
+  // (JSON), e null/received = 0 (finito) em JS: passaria por aqui como "0.0".
+  const numOrDash = (v: number | null, suffix = ""): string =>
+    v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`;
+  const pctOrDash = (v: number | null): string => numOrDash(v, "%");
 
   type Row = {
     cohort: string;
@@ -870,7 +872,7 @@ export function renderCohortsTabPanel(
       <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
       <td${cellAttr(r.unsubBounceRate, avgUnsubBounce)}>${pctOrDash(r.unsubBounceRate)}</td>
       <td${cellAttr(r.mvVerifiedRate, avgMv)}>${pctOrDash(r.mvVerifiedRate)}</td>
-      <td>${r.ppAvg == null ? "—" : r.ppAvg.toFixed(1)}</td>
+      <td>${numOrDash(r.ppAvg)}</td>
     </tr>`;
     })
     .join("\n");
@@ -1067,8 +1069,8 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
     // Degrade por campo (review #2872): entrada de KV parcial sem total_votes
     // não pode derrubar o render inteiro (TypeError → 502) — vira "—", mesmo
     // espírito do caminho mensal substituído no #2860.
-    const total = typeof e.total_votes === "number" ? e.total_votes.toLocaleString("pt-BR") : "—";
-    const pctFmt = typeof e.pct_correct === "number" ? `${e.pct_correct.toFixed(1)}%` : "—";
+    const total = Number.isFinite(e.total_votes) ? e.total_votes.toLocaleString("pt-BR") : "—";
+    const pctFmt = Number.isFinite(e.pct_correct as number) ? `${(e.pct_correct as number).toFixed(1)}%` : "—";
     return `<tr>
       <td><strong>${escHtml(e.edition)}</strong></td>
       <td>${total}</td>
