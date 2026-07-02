@@ -191,7 +191,9 @@ test("main: --cohort filtra o store pra uma safra ANTES de segmentar", () => {
   }
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.eligible_total, 1, "só jun@x.com (cohort 2026-06) deve entrar no universo");
-  assert.equal(out.cohort, "2026-06", "cohort resolvido (rótulo pt-BR → canônico) fica auditável no summary");
+  // #2857 fase A: resolveCohortArg agora resolve pro slug guardado na coluna
+  // (cohortFromSafra), não mais a safra crua.
+  assert.equal(out.cohort, "leads-2026-06", "cohort resolvido (rótulo pt-BR → slug) fica auditável no summary");
 });
 
 test("main: sem --cohort roda sobre a base inteira (sem regressão, cohort ausente no summary)", () => {

@@ -315,30 +315,36 @@ test("deriveCohort: aceita data-only (sem horário) — 'created' vem como ISO d
   assert.equal(deriveCohort("2026-06-15"), "2026-06");
 });
 
-test("cohortLabel: traduz 'YYYY-MM' de 2026 pro mês em pt-BR minúsculo", () => {
-  assert.equal(cohortLabel("2026-05"), "maio");
-  assert.equal(cohortLabel("2026-06"), "junho");
-  assert.equal(cohortLabel("2026-07"), "julho");
+// #2857 fase A: a coluna `cohort` agora guarda o slug da taxonomia unificada
+// (`leads-YYYY-MM`, não mais a safra crua 'YYYY-MM') — cohortLabel/
+// resolveCohortArg foram atualizados de acordo (delegam a scripts/lib/
+// cohorts.ts, ver test/cohorts.test.ts pra cobertura de cohortDisplayLabel
+// nos demais slugs — assinantes-ativos, leads-2025h2, leads-caudao...).
+
+test("cohortLabel: traduz slug de safra 'leads-YYYY-MM' de 2026 pro mês/ano em pt-BR", () => {
+  assert.equal(cohortLabel("leads-2026-05"), "Leads mai/2026");
+  assert.equal(cohortLabel("leads-2026-06"), "Leads jun/2026");
+  assert.equal(cohortLabel("leads-2026-07"), "Leads jul/2026");
 });
 
-test("cohortLabel: null vira 'sem safra'", () => {
-  assert.equal(cohortLabel(null), "sem safra");
+test("cohortLabel: null vira 'sem cohort'", () => {
+  assert.equal(cohortLabel(null), "sem cohort");
 });
 
 test("cohortLabel: forma corrompida/inesperada devolve a chave crua (nunca lança)", () => {
   assert.equal(cohortLabel("lixo"), "lixo");
-  assert.equal(cohortLabel("2026-13"), "2026-13"); // mês inválido
+  assert.equal(cohortLabel("leads-2026-13"), "leads-2026-13"); // mês inválido
 });
 
-test("resolveCohortArg: forma canônica 'YYYY-MM' passa direto", () => {
-  assert.equal(resolveCohortArg("2026-06"), "2026-06");
-  assert.equal(resolveCohortArg("2027-01"), "2027-01");
+test("resolveCohortArg: forma canônica 'YYYY-MM' vira o slug 'leads-YYYY-MM' (coluna guarda o slug, #2857)", () => {
+  assert.equal(resolveCohortArg("2026-06"), "leads-2026-06");
+  assert.equal(resolveCohortArg("2027-01"), "leads-2027-01");
 });
 
-test("resolveCohortArg: rótulo pt-BR (case-insensitive) resolve pro canônico do ano-epoch (2026)", () => {
-  assert.equal(resolveCohortArg("junho"), "2026-06");
-  assert.equal(resolveCohortArg("Junho"), "2026-06");
-  assert.equal(resolveCohortArg("MAIO"), "2026-05");
+test("resolveCohortArg: rótulo pt-BR (case-insensitive) resolve pro slug do ano-epoch (2026)", () => {
+  assert.equal(resolveCohortArg("junho"), "leads-2026-06");
+  assert.equal(resolveCohortArg("Junho"), "leads-2026-06");
+  assert.equal(resolveCohortArg("MAIO"), "leads-2026-05");
 });
 
 test("resolveCohortArg: input não reconhecido lança erro claro", () => {

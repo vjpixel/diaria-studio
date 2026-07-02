@@ -19,6 +19,11 @@
  * (reproduzível, pré-requisito do pipeline).
  */
 
+// cohortDisplayLabel/cohortFromSafra: cohorts.ts é dependency-free/Workers-safe
+// como este módulo (sem import de volta pra cá) — importar daqui não introduz
+// ciclo nem dependência de node:sqlite.
+import { cohortDisplayLabel, cohortFromSafra } from "./cohorts.ts";
+
 export interface StoreRow {
   email: string;
   tier: number | null;
@@ -227,18 +232,17 @@ const PT_MONTH_NAMES = [
 ];
 
 /**
- * Rótulo de exibição pro dashboard: 'YYYY-MM' → mês em pt-BR minúsculo sem
- * ano (ex: '2026-06' → 'junho'), NULL → 'sem safra'. Forma não-canônica
- * (chave corrompida/formato inesperado) devolve a chave crua — nunca lança
- * (render do dashboard não pode quebrar por um valor malformado no KV).
+ * Rótulo de exibição pro dashboard. #2857 fase A: a coluna `cohort` do store
+ * passou a guardar o slug da taxonomia unificada (`assinantes-ativos`,
+ * `leads-2026-06`, `leads-2025h2`, `leads-caudao`...) em vez de só a safra
+ * crua 'YYYY-MM' (#2817) — delega pra `cohortDisplayLabel` (scripts/lib/
+ * cohorts.ts), que cobre todos os slugs da taxonomia. Mantido aqui (thin
+ * wrapper, mesma assinatura) porque é o símbolo que os callers existentes
+ * (`workers/brevo-dashboard`) importam — trocar o import em todo consumidor
+ * não é escopo da fase A.
  */
 export function cohortLabel(cohort: string | null): string {
-  if (cohort == null) return "sem safra";
-  const m = cohort.match(/^(\d{4})-(\d{2})$/);
-  if (!m) return cohort;
-  const month = Number(m[2]);
-  if (month < 1 || month > 12) return cohort;
-  return PT_MONTH_NAMES[month - 1];
+  return cohortDisplayLabel(cohort);
 }
 
 /**
@@ -248,12 +252,20 @@ export function cohortLabel(cohort: string | null): string {
  * com safras rotuladas até agora); pra outro ano, use a forma canônica direto
  * ("2027-01"). Lança se o input não bater com nenhuma das duas formas —
  * preferível a um filtro silenciosamente vazio.
+ *
+ * #2857 fase A: a coluna `cohort` guarda o slug `leads-YYYY-MM` (não mais a
+ * safra crua) — o retorno agora passa pelo mesmo `cohortFromSafra` que
+ * `recomputeDerived` usa pra popular a coluna, então o resultado sempre bate
+ * com o valor armazenado (`resolveCohortArg('junho')` → `'leads-2026-06'`).
+ * Assinatura preservada (string → string) — nenhum caller precisa mudar.
  */
 export function resolveCohortArg(input: string): string {
   const trimmed = input.trim();
-  if (/^\d{4}-\d{2}$/.test(trimmed)) return trimmed;
+  if (/^\d{4}-\d{2}$/.test(trimmed)) return cohortFromSafra(trimmed);
   const idx = PT_MONTH_NAMES.indexOf(trimmed.toLowerCase());
-  if (idx !== -1) return `${COHORT_EPOCH_YEAR}-${String(idx + 1).padStart(2, "0")}`;
+  if (idx !== -1) {
+    return cohortFromSafra(`${COHORT_EPOCH_YEAR}-${String(idx + 1).padStart(2, "0")}`);
+  }
   throw new Error(
     `--cohort "${input}" não reconhecido — use um rótulo pt-BR (ex: junho) ` +
       `ou a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06).`,

@@ -284,4 +284,24 @@ describe("assertCohortConsistent", () => {
   it("summary LEGADO (existe mas campo cohort ausente) + invocação atual COM --cohort -> aborta (assimetria documentada)", () => {
     assert.throws(() => assertCohortConsistent(true, undefined, "2026-06"), /LEGADO/);
   });
+
+  it("divergência esperada ao cruzar a migração #2857 (summary antigo com safra crua '2026-06' vs resolvido 'leads-2026-06') -> aborta com mensagem que explica o motivo", () => {
+    // #2857 fase A trocou a coluna `cohort` de safra crua ('YYYY-MM') pro slug
+    // nomeado ('leads-YYYY-MM') — resolveCohortArg() passou a devolver a forma
+    // NOVA. Um sends-summary.json gravado ANTES da migração (blocos já
+    // processados com a forma antiga) diverge do cohort resolvido agora, uma
+    // única vez, nesse ciclo específico. O guard segue abortando (não relaxa
+    // silenciosamente — o remédio continua sendo regenerar o ciclo do zero),
+    // mas a mensagem precisa deixar claro que essa divergência específica é
+    // conhecida/esperada, não um bug novo.
+    assert.throws(
+      () => assertCohortConsistent(true, "2026-06", "leads-2026-06"),
+      /--cohort divergente/,
+    );
+    assert.throws(
+      () => assertCohortConsistent(true, "2026-06", "leads-2026-06"),
+      /#2857/,
+      "mensagem deve citar #2857 pra explicar a divergência esperada na migração de taxonomia",
+    );
+  });
 });
