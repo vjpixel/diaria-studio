@@ -79,8 +79,48 @@ export interface StoreSummary {
   // anterior a 2026-05 (sem safra rotulada).
   by_cohort: Record<string, number>;
   by_cohort_verified: Record<string, number>;
+  // #2865 (pedido do editor 260702): coluna "Brevo" — quantos contatos de cada
+  // bucket têm `brevo_list_ids IS NOT NULL` (mesmo predicado de `brevo.synced_rows`
+  // acima). Mesmo padrão esparso/opcionalidade da coluna "verified" (#2815):
+  // bucket sem contato na Brevo = chave AUSENTE (render trata como 0). Só nos
+  // 2 pares que a issue pediu (histograma + breakdown de 1º envio) — o par
+  // `by_cohort` (safra) NÃO ganha a coluna Brevo (fora do escopo do #2865).
+  priority_points_histogram_brevo: Record<string, number>;
+  by_cohort_first_send_brevo: Record<string, number>;
+  // #2864 (pedido do editor 260702): comparativo de envio/engajamento por
+  // cohort — insumo pra estratégia da rampa. Universo = store inteiro MENOS
+  // internos (mesmo filtro do bloco priority_points, #2809 — engajamento de
+  // ofício não deve poluir a leitura de "cohort X abre mais que cohort Y").
+  // Chave "null" = sem cohort atribuído.
+  cohort_stats: Record<string, CohortStatsRow>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
+}
+
+/**
+ * #2864: 1 linha agregada por cohort pra aba "Cohorts" do dashboard. Contagens
+ * brutas (não percentuais) — o render calcula as taxas (opened/received,
+ * clicked/received, etc.) e trata denominador 0 como "—", nunca NaN/Infinity.
+ */
+export interface CohortStatsRow {
+  /** COUNT(*) do cohort (menos internos). */
+  contacts: number;
+  /** send_eligible=1. */
+  eligible: number;
+  /** sends_count>0 — "já recebeu ao menos 1 envio". */
+  received: number;
+  /** SUM(sends_count) — total de eventos de envio do cohort. */
+  sends_sum: number;
+  /** sends_count>0 AND opens_count>0 — abriu ≥1, dentre quem recebeu. */
+  opened: number;
+  /** sends_count>0 AND clicks_count>0 — clicou ≥1, dentre quem recebeu. */
+  clicked: number;
+  /** sends_count>0 AND (unsubscribed=1 OR hard_bounced=1) — saiu, dentre quem recebeu. */
+  unsub_bounce: number;
+  /** mv_bucket='verified' — sobre o TOTAL de contatos do cohort (não só quem recebeu). */
+  mv_verified: number;
+  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média. */
+  priority_points_sum: number;
 }
 
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {
@@ -101,6 +141,9 @@ function groupCounts(
 
 // SQL do subset MV-verificado — fonte única das agregações condicionais abaixo.
 const MV_VERIFIED_CASE = "SUM(CASE WHEN mv_bucket='verified' THEN 1 ELSE 0 END)";
+// #2865: SQL do subset "está na Brevo" — mesmo predicado de `brevo.synced_rows`
+// acima (brevo_list_ids IS NOT NULL = contato já visto/sincronizado numa lista).
+const BREVO_SYNCED_CASE = "SUM(CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 0 END)";
 
 /**
  * Variante do groupCounts pra par total+verified num ÚNICO scan (review #2815):
@@ -123,6 +166,32 @@ function groupCountsWithVerified(
   return { total, verified };
 }
 
+/**
+ * #2865: variante de `groupCountsWithVerified` com um 3º agregado condicional
+ * ("está na Brevo", `BREVO_SYNCED_CASE`) no MESMO scan — a query deve projetar
+ * `k`, `n`, `nv` (MV_VERIFIED_CASE) e `nb` (BREVO_SYNCED_CASE). Mesma semântica
+ * esparsa dos outros dois mapas (ausência = 0, nunca 0 explícito). Só os 2
+ * consumidores que a issue #2865 pede (histograma de priority_points +
+ * breakdown de 1º envio por cohort) usam esta variante — `by_cohort` (safra,
+ * #2817) fica com o par de 2 (fora do escopo do #2865).
+ */
+function groupCountsWithVerifiedAndBrevo(
+  db: DatabaseSync,
+  sql: string,
+  params: string[] = [],
+): { total: Record<string, number>; verified: Record<string, number>; brevo: Record<string, number> } {
+  const total: Record<string, number> = {};
+  const verified: Record<string, number> = {};
+  const brevo: Record<string, number> = {};
+  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number; nv: number; nb: number }>) {
+    const key = r.k == null ? "null" : String(r.k);
+    total[key] = r.n;
+    if (r.nv > 0) verified[key] = r.nv;
+    if (r.nb > 0) brevo[key] = r.nb;
+  }
+  return { total, verified, brevo };
+}
+
 // #2809: fragmento SQL + params pra excluir os emails internos das agregações
 // de priority_points (case-insensitive por segurança — o store normaliza, mas
 // LOWER() protege contra variação de ingestão). SÓ exibição: nenhuma outra
@@ -136,14 +205,16 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
   // #2857 fase B: GROUP BY cohort (não mais tier) — mesmo predicado firstSend,
   // sucessor de by_tier/by_tier_verified (ver StoreSummary acima).
-  const byCohortFirstSendPair = groupCountsWithVerified(
+  // #2865: os 2 pares que ganham a coluna Brevo usam a variante tripla
+  // (total+verified+brevo) — mesmo scan único, 1 agregado condicional a mais.
+  const byCohortFirstSendPair = groupCountsWithVerifiedAndBrevo(
     db,
-    `SELECT cohort AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
+    `SELECT cohort AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv, ${BREVO_SYNCED_CASE} nb FROM clarice_users
       WHERE ${FIRST_SEND_SQL_PREDICATE} GROUP BY cohort`,
   );
-  const ppHistPair = groupCountsWithVerified(
+  const ppHistPair = groupCountsWithVerifiedAndBrevo(
     db,
-    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv FROM clarice_users
+    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv, ${BREVO_SYNCED_CASE} nb FROM clarice_users
       WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
     INTERNAL_PARAMS,
   );
@@ -239,8 +310,14 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // #2809 é exclusiva do bloco priority_points).
     by_cohort_first_send: byCohortFirstSendPair.total,
     by_cohort_first_send_verified: byCohortFirstSendPair.verified,
+    // #2865: coluna Brevo do breakdown de 1º envio — mesmo universo firstSend.
+    by_cohort_first_send_brevo: byCohortFirstSendPair.brevo,
     by_cohort: byCohortPair.total,
     by_cohort_verified: byCohortPair.verified,
+    // #2865: coluna Brevo do histograma de priority_points — mesmo universo
+    // (sem internos, #2809) do histograma total/verified acima.
+    priority_points_histogram_brevo: ppHistPair.brevo,
+    cohort_stats: computeCohortStats(db),
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
@@ -250,6 +327,63 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
       with_clicks: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE clicks_count>0"),
     },
   };
+}
+
+/**
+ * #2864: agrega por cohort num scan único (mesmo padrão de
+ * `groupCountsWithVerified` acima) as métricas comparativas da aba "Cohorts":
+ * contatos, elegíveis, quem já recebeu ≥1 envio, soma de envios, quem abriu/
+ * clicou/saiu dentre os que receberam, quem está MV-verificado (sobre o total
+ * do cohort) e a soma de priority_points de quem recebeu (pro cálculo da
+ * média no render). Exclui INTERNAL_EMAILS (#2809) — mesmo racional do bloco
+ * priority_points: engajamento de ofício não é sinal de comportamento de
+ * audiência e distorceria a comparação entre cohorts.
+ */
+function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
+  const sql = `
+    SELECT
+      cohort AS k,
+      COUNT(*) AS contacts,
+      SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END) AS eligible,
+      SUM(CASE WHEN sends_count>0 THEN 1 ELSE 0 END) AS received,
+      SUM(COALESCE(sends_count,0)) AS sends_sum,
+      SUM(CASE WHEN sends_count>0 AND opens_count>0 THEN 1 ELSE 0 END) AS opened,
+      SUM(CASE WHEN sends_count>0 AND clicks_count>0 THEN 1 ELSE 0 END) AS clicked,
+      SUM(CASE WHEN sends_count>0 AND (unsubscribed=1 OR hard_bounced=1) THEN 1 ELSE 0 END) AS unsub_bounce,
+      ${MV_VERIFIED_CASE} AS mv_verified,
+      SUM(CASE WHEN sends_count>0 THEN priority_points ELSE 0 END) AS pp_sum
+    FROM clarice_users
+    WHERE ${NOT_INTERNAL_SQL}
+    GROUP BY cohort
+  `;
+  const out: Record<string, CohortStatsRow> = {};
+  const rows = db.prepare(sql).all(...INTERNAL_PARAMS) as Array<{
+    k: unknown;
+    contacts: number;
+    eligible: number;
+    received: number;
+    sends_sum: number;
+    opened: number;
+    clicked: number;
+    unsub_bounce: number;
+    mv_verified: number;
+    pp_sum: number;
+  }>;
+  for (const r of rows) {
+    const key = r.k == null ? "null" : String(r.k);
+    out[key] = {
+      contacts: r.contacts,
+      eligible: r.eligible,
+      received: r.received,
+      sends_sum: r.sends_sum,
+      opened: r.opened,
+      clicked: r.clicked,
+      unsub_bounce: r.unsub_bounce,
+      mv_verified: r.mv_verified,
+      priority_points_sum: r.pp_sum,
+    };
+  }
+  return out;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {

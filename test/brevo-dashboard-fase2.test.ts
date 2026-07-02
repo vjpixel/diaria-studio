@@ -1949,19 +1949,20 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     listSize: 500,
   };
 
-  test("HTML contém 4 inputs radio para as abas (tab state)", () => {
+  test("HTML contém 5 inputs radio para as abas (tab state)", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
-    // Cada aba precisa de 1 radio input (#2653: + aba Contatos)
+    // Cada aba precisa de 1 radio input (#2653: + aba Contatos; #2864: + aba Cohorts)
     const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
-    assert.equal(radioMatches.length, 4, "deve ter exatamente 4 radio inputs para as 4 abas");
+    assert.equal(radioMatches.length, 5, "deve ter exatamente 5 radio inputs para as 5 abas");
   });
 
-  test("HTML contém 4 labels de aba com textos corretos", () => {
+  test("HTML contém 5 labels de aba com textos corretos", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ CTR/, "deve ter label 'Links / CTR'");
     assert.match(html, />Contatos</, "deve ter label 'Contatos' (#2653)");
+    assert.match(html, />Cohorts</, "deve ter label 'Cohorts' (#2864)");
   });
 
   test("1ª aba tem checked por default (#2542: default = Visão geral)", () => {
@@ -2453,11 +2454,11 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     assert.doesNotMatch(html, /<tbody>/, "não deve renderizar tabela com tbody vazia");
   });
 
-  test("renderiza tabela por MÊS agregado (#2773), mais recente primeiro, sem colunas A/B", () => {
+  test("#2860: renderiza 1 linha por EDIÇÃO (reverte a agregação mensal do #2773), header 'Edição', mais recente primeiro", () => {
     const data: EiaEngagementSummary = {
       editions: [
-        // fora de ordem de propósito — o render deve reordenar desc por mês.
-        // 260415+260418 = mesmo mês (abril) → agregam numa linha só.
+        // fora de ordem de propósito — o render deve reordenar desc por edição.
+        // 260415+260418 = mesmo mês (abril), mas devem virar 2 LINHAS (não 1).
         { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
         { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A", correct_count: 30 },
         { edition: "260510", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A", correct_count: 6 },
@@ -2465,18 +2466,53 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
       updated_at: "2026-07-01T09:00:00.000Z",
     };
     const html = renderEiaEngagementSection(data);
-    assert.match(html, /Abr\/2026/);
-    assert.match(html, /Mai\/2026/);
-    // abril: 30+47=77 votos, (20+30)/(30+47)=64.9%
-    assert.match(html, /77/);
-    assert.match(html, /64\.9%/);
-    // maio: 10 votos, 6/10=60.0%
+    // 2 edições do mesmo mês (abril) → 2 linhas, não 1 agregada.
+    assert.match(html, /260415/);
+    assert.match(html, /260418/);
+    assert.match(html, /260510/);
+    assert.match(html, /66\.7%/, "% acerto por edição, não agregado");
+    assert.match(html, /63\.8%/);
     assert.match(html, /60\.0%/);
-    // maio (mais recente) vem ANTES de abril, mesmo com o input fora de ordem.
-    assert.ok(html.indexOf("Mai/2026") < html.indexOf("Abr/2026"), "Mai/2026 (mais recente) deve vir antes de Abr/2026");
-    // colunas A/B removidas — só Mês/Votos/% acerto.
+    // header "Edição" (não mais "Mês").
+    assert.match(html, /<th[^>]*>Edição<\/th>/);
+    assert.doesNotMatch(html, /<th[^>]*>Mês<\/th>/, "header 'Mês' não deve aparecer nesta tabela (#2860)");
+    // mais recente (260510) vem ANTES das demais, mesmo com o input fora de ordem.
+    assert.ok(html.indexOf("260510") < html.indexOf("260418"), "260510 (mais recente) deve vir antes de 260418");
+    assert.ok(html.indexOf("260418") < html.indexOf("260415"), "260418 deve vir antes de 260415");
+    // colunas A/B removidas — só Edição/Votos/% acerto.
     assert.doesNotMatch(html, /<th[^>]*>A<\/th>/);
     assert.doesNotMatch(html, /<th[^>]*>B<\/th>/);
+  });
+
+  test("#2860: lista com mais de 30 edições limita às 30 mais recentes, com nota de corte", () => {
+    const editions: EiaEngagementEdition[] = Array.from({ length: 35 }, (_, i) => ({
+      edition: `2604${String(i + 1).padStart(2, "0")}`, // 260401..260435 (datas inválidas tudo bem — só string p/ ordenação)
+      total_votes: 1,
+      voted_a: 1,
+      voted_b: 0,
+      pct_correct: 100,
+      correct_choice: "A",
+      correct_count: 1,
+    }));
+    const html = renderEiaEngagementSection({ editions, updated_at: null });
+    assert.match(html, /mostrando as 30 mais recentes de 35/i);
+    // a mais recente (260435) deve aparecer; a mais antiga (260401) deve ter sido cortada.
+    assert.match(html, /260435/);
+    assert.doesNotMatch(html, /260401/);
+  });
+
+  test("#2860: exatamente 30 edições NÃO mostra nota de corte", () => {
+    const editions: EiaEngagementEdition[] = Array.from({ length: 30 }, (_, i) => ({
+      edition: `2604${String(i + 1).padStart(2, "0")}`,
+      total_votes: 1,
+      voted_a: 1,
+      voted_b: 0,
+      pct_correct: 100,
+      correct_choice: "A",
+      correct_count: 1,
+    }));
+    const html = renderEiaEngagementSection({ editions, updated_at: null });
+    assert.doesNotMatch(html, /mostrando as/i);
   });
 
   test("pct_correct null → '—' (não 'null' nem 'NaN%'); votos ainda contam pro total do mês", () => {

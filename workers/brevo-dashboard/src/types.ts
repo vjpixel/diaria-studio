@@ -171,12 +171,37 @@ export interface ContactsSummary {
   // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
   // cohort firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
   priority_points_histogram_verified?: Record<string, number>;
+  // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo par opcional,
+  // mesmo degrade gracioso (KV antigo sem o campo → sem a coluna).
+  priority_points_histogram_brevo?: Record<string, number>;
+  by_cohort_first_send_brevo?: Record<string, number>;
   // #2817: agregado por safra mensal (opcionais — KV antigo não tem os campos;
   // render degrada omitindo a tabela "Por safra (cohort)" inteira).
   by_cohort?: Record<string, number>;
   by_cohort_verified?: Record<string, number>;
+  // #2864: comparativo de envio/engajamento por cohort (aba "Cohorts").
+  // Opcional — KV antigo sem o campo faz a aba renderizar o stub "dados ainda
+  // não gerados" (mesmo padrão de degrade gracioso das demais seções KV).
+  cohort_stats?: Record<string, CohortStatsRow>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
+}
+
+/**
+ * #2864: tipo DUPLICADO de `CohortStatsRow` (scripts/clarice-db-summary.ts) —
+ * mesmo padrão de `ContactsSummary`/`StoreSummary` (o script puxa node:sqlite,
+ * indisponível no runtime do Worker). MANTER EM SINCRONIA.
+ */
+export interface CohortStatsRow {
+  contacts: number;
+  eligible: number;
+  received: number;
+  sends_sum: number;
+  opened: number;
+  clicked: number;
+  unsub_bounce: number;
+  mv_verified: number;
+  priority_points_sum: number;
 }
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por
