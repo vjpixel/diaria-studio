@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   contactsListPath,
   deriveIncrementalSince,
+  anchorForIncremental,
 } from "../scripts/clarice-sync-brevo.ts";
 
 describe("contactsListPath (#2928)", () => {
@@ -61,5 +62,33 @@ describe("deriveIncrementalSince (#2928)", () => {
     assert.equal(deriveIncrementalSince(undefined), null);
     assert.equal(deriveIncrementalSince(""), null);
     assert.equal(deriveIncrementalSince("não-é-data"), null);
+  });
+});
+
+describe("anchorForIncremental — âncora estável no resume (#2929 review)", () => {
+  it("RESUME: reusa o cutoff do checkpoint, IGNORA o MAX que já avançou (o bug)", () => {
+    // checkpoint retomando com cutoff X; o MAX do DB já andou pra Y > X (porque o
+    // flush do run interrompido gravou brevo_modified_at). Deve reusar X — se
+    // re-derivasse de Y, pularia os contatos pendentes em [X, Y).
+    assert.equal(
+      anchorForIncremental("2026-06-29T13:30:00.000Z", "2026-07-03T00:00:00.000Z"),
+      "2026-06-29T13:30:00.000Z",
+    );
+  });
+
+  it("run novo (sem checkpoint) → deriva de MAX − buffer", () => {
+    assert.equal(
+      anchorForIncremental(null, "2026-06-29T13:35:00.000Z"),
+      "2026-06-29T13:30:00.000Z",
+    );
+    assert.equal(
+      anchorForIncremental(undefined, "2026-06-29T13:35:00.000Z"),
+      "2026-06-29T13:30:00.000Z",
+    );
+  });
+
+  it("sem checkpoint e sem MAX → null (cai pra full)", () => {
+    assert.equal(anchorForIncremental(null, null), null);
+    assert.equal(anchorForIncremental(undefined, undefined), null);
   });
 });

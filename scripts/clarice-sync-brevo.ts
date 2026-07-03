@@ -106,6 +106,23 @@ export function deriveIncrementalSince(
 }
 
 /**
+ * #2929 review: âncora do incremental, ESTÁVEL entre resumes. RESUME (checkpoint
+ * incremental pendente com cutoff) → REUSA o cutoff do checkpoint. **Não re-derivar
+ * num resume**: `MAX(brevo_modified_at)` avança conforme sincronizamos (flush por
+ * batch), então re-derivar estreitaria a janela e PULARIA os contatos ainda
+ * pendentes de `[cutoff_antigo, cutoff_novo)` — quebrando a resumibilidade sob
+ * rate-limit. Run novo (sem checkpoint) → deriva de MAX − buffer. Pure/testável.
+ */
+export function anchorForIncremental(
+  checkpointModifiedSince: string | null | undefined,
+  maxBrevoModifiedAt: string | null | undefined,
+  bufferMs = 5 * 60_000,
+): string | null {
+  if (checkpointModifiedSince) return checkpointModifiedSince;
+  return deriveIncrementalSince(maxBrevoModifiedAt, bufferMs);
+}
+
+/**
  * Enumera contatos (id + email) paginando /contacts. Resumível.
  * #2928: com `modifiedSince` (ISO), enumera SÓ os contatos modificados desde
  * então (Brevo `modifiedSince`) — o incremental. null = full.
@@ -160,11 +177,17 @@ export async function main(
   const explicitSince = getArg(argv, "modified-since");
   let modifiedSince: string | null = explicitSince || null;
   if (!modifiedSince && hasFlag(argv, "incremental")) {
+    // RESUME: reusa o cutoff do checkpoint incremental pendente; senão deriva de
+    // MAX − buffer. anchorForIncremental encapsula (não re-derivar num resume —
+    // review #2929, o MAX avança com o flush e pularia contatos pendentes).
+    const incCp = loadCheckpoint(CHECKPOINT_INC);
     const row = db
       .prepare("SELECT MAX(brevo_modified_at) AS m FROM clarice_users")
       .get() as { m: string | null };
-    modifiedSince = deriveIncrementalSince(row?.m);
-    if (modifiedSince) {
+    modifiedSince = anchorForIncremental(incCp?.modifiedSince, row?.m);
+    if (incCp?.modifiedSince) {
+      console.error(`⏩ incremental: retomando modifiedSince=${modifiedSince} (do checkpoint)`);
+    } else if (modifiedSince) {
       console.error(`⏩ incremental: modifiedSince=${modifiedSince} (MAX(brevo_modified_at) − 5min)`);
     } else {
       console.error("⚠️  --incremental mas store sem brevo_modified_at — caindo pra sync FULL.");
