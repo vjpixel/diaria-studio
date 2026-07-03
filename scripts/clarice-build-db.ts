@@ -34,6 +34,7 @@ import { isValidCycle } from "./lib/clarice-paths.ts";
 import {
   openClariceDb,
   recomputeDerived,
+  isTestAccount,
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
 
@@ -61,9 +62,17 @@ function ingestStripe(
   kept: number;
   disputed: number;
   excluded_audit_only: number;
+  test_accounts_excluded: number;
   skipped_files: string[];
 } {
-  const { kept, excluded, skippedFiles } = buildUniverse(dataDir, now);
+  const { kept: allKept, excluded, skippedFiles } = buildUniverse(dataDir, now);
+  // #2895: conta de teste do editor (vjpixel+test*@gmail.com) — exclusão
+  // PERMANENTE na ingestão, nunca inserida/mantida no store (mesmo vindo do
+  // universo Stripe completo). Filtrado ANTES do upsert — diferente de
+  // `excluded`/disputados (que entram no store marcados inelegíveis), test
+  // account não entra de forma alguma.
+  const kept = allKept.filter((m) => !isTestAccount(m.email));
+  const testAccountsInKept = allKept.length - kept.length;
   // #2857 fase C: escreve `cohort` (não mais `tier` — a coluna vira legado
   // read-only, ver clarice-db.ts) DIRETO a partir do cohort que o merge já
   // computou com o contexto Stripe COMPLETO (status+payment_count+total_spend
@@ -108,7 +117,12 @@ function ingestStripe(
   // direto (mesmo espírito do antigo tier=null) — `recomputeDerived` ainda
   // faz o backfill via `computeCohort` (fallback, deriva do `created` se
   // presente) pra ficarem visíveis/auditáveis num cohort informativo.
-  const disputed = excluded.filter((e) => e.reason === "dispute_losses");
+  // #2895: mesma exclusão de test account, aplicada aos disputados (chargeback
+  // é improvável numa conta de teste, mas mantém a garantia total — nenhum
+  // vjpixel+test* entra no store por NENHUM caminho de ingestStripe).
+  const disputedCandidates = excluded.filter((e) => e.reason === "dispute_losses");
+  const disputed = disputedCandidates.filter((e) => !isTestAccount(e.email));
+  const testAccountsInDisputed = disputedCandidates.length - disputed.length;
   for (const m of disputed) {
     upsert.run(
       m.email,
@@ -130,7 +144,8 @@ function ingestStripe(
   return {
     kept: kept.length,
     disputed: disputed.length,
-    excluded_audit_only: excluded.length - disputed.length,
+    excluded_audit_only: excluded.length - disputed.length - testAccountsInDisputed,
+    test_accounts_excluded: testAccountsInKept + testAccountsInDisputed,
     skipped_files: skippedFiles,
   };
 }
@@ -212,6 +227,9 @@ export function ingestMv(
       for (const row of parsed.data) {
         const email = (row["email"] || row["Email"] || "").trim().toLowerCase();
         if (!email) continue;
+        // #2895: conta de teste do editor — nunca insere/mantém no store,
+        // mesmo vinda de um CSV MV verificado.
+        if (isTestAccount(email)) continue;
         const result = (row["MV_RESULT"] || "").trim().toLowerCase() || null;
         const codeRaw = (row["MV_CODE"] || "").trim();
         const code = codeRaw ? Number(codeRaw) : null;
@@ -259,7 +277,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const stripe = ingestStripe(db, dataDir, now);
   console.error(
     `   kept=${stripe.kept} · disputed=${stripe.disputed} (inelegível no store) · ` +
-      `excluded_audit_only=${stripe.excluded_audit_only}`,
+      `excluded_audit_only=${stripe.excluded_audit_only} · ` +
+      `test_accounts_excluded=${stripe.test_accounts_excluded} (#2895)`,
   );
   if (stripe.skipped_files.length > 0) {
     console.error(
