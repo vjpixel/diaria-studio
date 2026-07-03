@@ -19,6 +19,11 @@
  *   npx tsx scripts/clarice-sync-brevo.ts [--db <p>] [--concurrency N] [--limit N]
  *   (--limit: processa só os N primeiros contatos — sync parcial / teste)
  *
+ * INCREMENTAL (#2928): --incremental sincroniza SÓ os contatos modificados desde
+ * o último sync (deriva de MAX(brevo_modified_at) − 5min), via `modifiedSince` da
+ * Brevo → uma fração das chamadas, sem hammering do teto horário. --modified-since
+ * <ISO> força uma data explícita. Sem nenhum dos dois = full (comportamento antigo).
+ *
  * Requer BREVO_CLARICE_API_KEY no env. Stdout: JSON summary. Stderr: progresso.
  */
 
@@ -34,7 +39,7 @@ import {
   recomputeDerived,
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, hasFlag } from "./lib/cli-args.ts";
 
 // import.meta.dirname pode vir undefined em loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd (scripts rodam da raiz do repo).
@@ -42,6 +47,12 @@ const ROOT = import.meta.dirname ? resolve(import.meta.dirname, "..") : process.
 const CHECKPOINT = resolve(
   ROOT,
   "data/clarice-subscribers/.brevo-sync-checkpoint.json",
+);
+// #2928: checkpoint SEPARADO pro incremental — enumera um conjunto diferente
+// (só os mudados), não pode clobberar o resume do full.
+const CHECKPOINT_INC = resolve(
+  ROOT,
+  "data/clarice-subscribers/.brevo-sync-checkpoint-inc.json",
 );
 const BATCH = 200; // flush no DB + checkpoint a cada N contatos (durabilidade)
 const PAGE_PACING_MS = 250; // pacing leve entre páginas do listing (memória brevo-hourly-ratelimit)
@@ -51,48 +62,79 @@ interface Checkpoint {
   listingComplete: boolean;
   ids: Array<{ id: number; email: string }>;
   doneIds: number[];
+  // #2928: qual modifiedSince gerou esta enumeração (null = full). Resume só é
+  // válido pra mesma data; datas/modos diferentes descartam o checkpoint.
+  modifiedSince?: string | null;
 }
 
-function loadCheckpoint(): Checkpoint | null {
-  if (!existsSync(CHECKPOINT)) return null;
+function loadCheckpoint(path: string): Checkpoint | null {
+  if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(CHECKPOINT, "utf8")) as Checkpoint;
+    return JSON.parse(readFileSync(path, "utf8")) as Checkpoint;
   } catch {
     return null;
   }
 }
 
-function saveCheckpoint(cp: Checkpoint): void {
-  writeFileSync(CHECKPOINT, JSON.stringify(cp), "utf8");
+function saveCheckpoint(cp: Checkpoint, path: string): void {
+  writeFileSync(path, JSON.stringify(cp), "utf8");
 }
 
-/** Enumera todos os contatos (id + email) paginando /contacts. Resumível. */
+/**
+ * #2928: path do listing de contatos (limit 500 + offset), com `modifiedSince`
+ * opcional encodado. Pure/testável.
+ */
+export function contactsListPath(offset: number, modifiedSince: string | null): string {
+  const since = modifiedSince ? `&modifiedSince=${encodeURIComponent(modifiedSince)}` : "";
+  return `/contacts?limit=500&offset=${offset}${since}`;
+}
+
+/**
+ * #2928: deriva o `modifiedSince` do incremental a partir de MAX(brevo_modified_at)
+ * menos um buffer (default 5min, pra não perder contatos na fronteira do último
+ * sync). Devolve ISO UTC, ou null se a data for ausente/inválida (→ cai pra full).
+ * Pure/testável.
+ */
+export function deriveIncrementalSince(
+  maxBrevoModifiedAt: string | null | undefined,
+  bufferMs = 5 * 60_000,
+): string | null {
+  if (!maxBrevoModifiedAt) return null;
+  const t = new Date(maxBrevoModifiedAt).getTime();
+  if (!Number.isFinite(t)) return null;
+  return new Date(t - bufferMs).toISOString();
+}
+
+/**
+ * Enumera contatos (id + email) paginando /contacts. Resumível.
+ * #2928: com `modifiedSince` (ISO), enumera SÓ os contatos modificados desde
+ * então (Brevo `modifiedSince`) — o incremental. null = full.
+ */
 async function enumerateContacts(
   apiKey: string,
   existing: Checkpoint | null,
+  modifiedSince: string | null,
+  checkpointPath: string,
 ): Promise<Checkpoint> {
   if (existing?.listingComplete) return existing;
   const ids: Array<{ id: number; email: string }> = existing?.ids ?? [];
   const doneIds = existing?.doneIds ?? [];
   let offset = ids.length;
   for (;;) {
-    const { body } = await brevoGet(
-      apiKey,
-      `/contacts?limit=500&offset=${offset}`,
-    );
+    const { body } = await brevoGet(apiKey, contactsListPath(offset, modifiedSince));
     const cs = body?.contacts ?? [];
     for (const c of cs)
       ids.push({ id: c.id, email: String(c.email ?? "").toLowerCase() });
     const complete = cs.length < 500;
     // checkpoint POR PÁGINA → se o listing cair no meio (rate-limit), re-rodar
     // retoma de offset=ids.length em vez de re-enumerar do zero.
-    saveCheckpoint({ listingComplete: complete, ids, doneIds });
-    console.error(`📇 listando contatos… ${ids.length}`);
+    saveCheckpoint({ listingComplete: complete, ids, doneIds, modifiedSince }, checkpointPath);
+    console.error(`📇 listando contatos${modifiedSince ? " (incremental)" : ""}… ${ids.length}`);
     if (complete) break;
     offset += 500;
     await sleep(PAGE_PACING_MS);
   }
-  return { listingComplete: true, ids, doneIds };
+  return { listingComplete: true, ids, doneIds, modifiedSince };
 }
 
 
@@ -113,8 +155,30 @@ export async function main(
   const db = openClariceDb(dbPath);
   const upsertBrevo = makeBrevoUpsert(db);
 
-  // Fase 1 — enumerar ids (resumível).
-  let cp = await enumerateContacts(apiKey, loadCheckpoint());
+  // #2928: modo incremental — --modified-since <ISO> explícito, ou --incremental
+  // deriva de MAX(brevo_modified_at) − 5min (buffer contra perder a fronteira).
+  const explicitSince = getArg(argv, "modified-since");
+  let modifiedSince: string | null = explicitSince || null;
+  if (!modifiedSince && hasFlag(argv, "incremental")) {
+    const row = db
+      .prepare("SELECT MAX(brevo_modified_at) AS m FROM clarice_users")
+      .get() as { m: string | null };
+    modifiedSince = deriveIncrementalSince(row?.m);
+    if (modifiedSince) {
+      console.error(`⏩ incremental: modifiedSince=${modifiedSince} (MAX(brevo_modified_at) − 5min)`);
+    } else {
+      console.error("⚠️  --incremental mas store sem brevo_modified_at — caindo pra sync FULL.");
+    }
+  }
+  const checkpointPath = modifiedSince ? CHECKPOINT_INC : CHECKPOINT;
+
+  // Fase 1 — enumerar ids (resumível). Checkpoint de outra data/modo → descarta.
+  let loaded = loadCheckpoint(checkpointPath);
+  if (loaded && (loaded.modifiedSince ?? null) !== modifiedSince) {
+    console.error("ℹ️  checkpoint de outra data/modo — recomeçando enumeração.");
+    loaded = null;
+  }
+  let cp = await enumerateContacts(apiKey, loaded, modifiedSince, checkpointPath);
   const done = new Set<number>(cp.doneIds);
   let pending = cp.ids.filter((c) => c.id && c.email && !done.has(c.id));
   if (limitArg > 0) pending = pending.slice(0, limitArg);
@@ -145,7 +209,7 @@ export async function main(
     // ids "feitos" sem linha no DB).
     for (const b of batch) done.add(b.id);
     cp.doneIds = [...done];
-    saveCheckpoint(cp);
+    saveCheckpoint(cp, checkpointPath);
   };
 
   try {
@@ -179,7 +243,7 @@ export async function main(
   // Concluído: recompute global + limpa checkpoint.
   console.error(`⚙️  recomputando derivados (send_eligible + priority_points)…`);
   const derived = recomputeDerived(db);
-  if (existsSync(CHECKPOINT)) unlinkSync(CHECKPOINT);
+  if (existsSync(checkpointPath)) unlinkSync(checkpointPath);
 
   const total = (
     db.prepare("SELECT COUNT(*) AS n FROM clarice_users").get() as { n: number }
@@ -195,6 +259,8 @@ export async function main(
     JSON.stringify(
       {
         db: dbPath,
+        mode: modifiedSince ? "incremental" : "full",
+        modified_since: modifiedSince,
         contacts_listed: cp.ids.length,
         contacts_synced: processed,
         users_total: total,
