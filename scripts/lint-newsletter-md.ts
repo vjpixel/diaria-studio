@@ -73,6 +73,11 @@ import {
   type TitleTrailingPeriodError,
   type TitleTrailingPeriodReport,
 } from "./lib/lint-checks/title-normalization.ts"; // #2664 + #2672
+import {
+  checkNoTrailingEllipsis,
+  type NoTrailingEllipsisError,
+  type NoTrailingEllipsisReport,
+} from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -157,6 +162,11 @@ export {
   type TitleTrailingPeriodError,
   type TitleTrailingPeriodReport,
 } from "./lib/lint-checks/title-normalization.ts"; // #2664 + #2672
+export {
+  checkNoTrailingEllipsis,
+  type NoTrailingEllipsisError,
+  type NoTrailingEllipsisReport,
+} from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -849,6 +859,42 @@ intentional_error:
     return;
   }
 
+  // Modo --check no-trailing-ellipsis (#2881) — item de seção secundária cuja
+  // descrição termina em `…`/`...` (reticências herdadas do snippet da fonte).
+  // Backstop para casos que escaparam de `sanitizeTrailingEllipsis` no Stage 1
+  // (ex: texto curado manualmente pelo editor). WARN-ONLY — mesma justificativa
+  // de title-publisher-suffix/title-trailing-period acima (#2715): heurística
+  // ampla, sem allowlist, não bloqueia o gate.
+  if (args.check === "no-trailing-ellipsis") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkNoTrailingEllipsis(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n⚠️  no-trailing-ellipsis: ${result.errors.length} item(ns) de seção secundária com descrição terminando em reticências:`,
+      );
+      for (const e of result.errors) {
+        console.error(
+          `  ${e.section} linha ${e.line}: "${e.titleExcerpt}" → descrição: "...${e.descriptionExcerpt}"`,
+        );
+      }
+      console.error(
+        `\nFix: a reticência é herdada do snippet/meta-description da fonte (não é nosso truncamento). Edite a descrição manualmente ou re-rode Stage 1 (enrich-inbox-articles.ts já sanitiza casos novos).`,
+      );
+      // WARN-ONLY (#2715): exit 0 mesmo com matches — não bloqueia o gate.
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -928,6 +974,7 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check secondary-items-have-summary --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>",
     );

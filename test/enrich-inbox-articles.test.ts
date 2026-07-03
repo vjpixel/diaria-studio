@@ -226,6 +226,32 @@ describe("mergeMetadata — merges without clobbering real titles", () => {
     assert.equal(out.titleUpdated, false);
     assert.equal(out.summaryUpdated, false);
   });
+
+  // #2881: og:description truncada pela FONTE (não por nós) não deve vazar
+  // reticência pro summary do artigo.
+  it("#2881: sanitiza reticência final herdada do og:description antes de gravar o summary", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      {
+        title: "OG title",
+        summary:
+          "com ênfase em ética, transparência, não-discriminação, segurança e soberania…",
+      },
+    );
+    assert.equal(
+      out.article.summary,
+      "com ênfase em ética, transparência, não-discriminação, segurança e soberania",
+    );
+    assert.equal(out.summaryUpdated, true);
+  });
+
+  it("#2881: summary sem reticência final passa intacto", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      { title: "OG title", summary: "A empresa vai investir R$ 10 milhões no projeto." },
+    );
+    assert.equal(out.article.summary, "A empresa vai investir R$ 10 milhões no projeto.");
+  });
 });
 
 describe("enrichArticles — orchestration with mocked fetcher", () => {
