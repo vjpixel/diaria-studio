@@ -48,8 +48,19 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // Se no futuro for necessário restringir o gate: usar scripts/add-valid-edition.ts
   // com --brand clarice, que grava `clarice:valid_editions` via brandedNamespace.
   // Enquanto a key não for populada, parseValidEditions retorna null → fail-open.
+  //
+  // #2867: `correct:{edition}` já lido AQUI (antes do gate) e reusado mais
+  // abaixo (ver "Gravar voto") — evita um 2º get redundante da mesma key.
+  // Uma edição com gabarito definido é SEMPRE votável, mesmo fora da janela
+  // recente do `valid_editions` (que cobre só os últimos N dias, #1233) — o
+  // gabarito só é setado por close-poll.ts (sig HMAC do ADMIN_SECRET) pós-
+  // publicação real, um sinal mais forte de "edição válida" que a janela.
+  // Sustenta o arquivo retroativo (`/leaderboard/{YYYY}/arquivo`, #2867):
+  // sem isso, votos em edições fora da janela de 7 dias voltariam 410 mesmo
+  // quando a edição foi de fato publicada e tem poll fechado.
+  const correctRaw = await env.POLL.get(`correct:${edition}`);
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
-  if (!isValidEdition(validSet, edition)) {
+  if (!isValidEdition(validSet, edition) && correctRaw === null) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
@@ -261,7 +272,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   }
 
   // Gravar voto
-  const correctRaw = await env.POLL.get(`correct:${edition}`);
+  // #2867: correctRaw já lido no gate de valid_editions acima — reusado aqui.
   const correct = correctRaw ? choice === correctRaw : null;
 
   // #2189 / #2190: ler score:${email} ANTES do put(voteKey).

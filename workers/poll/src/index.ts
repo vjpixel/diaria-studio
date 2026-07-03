@@ -214,6 +214,8 @@ import {
   handleLeaderboardByMonth,
   handleLeaderboardByMonthJson,
   handleLeaderboardByYear,
+  handleLeaderboardArchive,
+  handleArchiveVotePage,
   invalidateSnapshot,
   listAllKeys,
 } from "./leaderboard-routes";
@@ -670,6 +672,13 @@ export default {
     if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
+      // #2867: /leaderboard/{YYYY}/arquivo[/{AAMMDD}] — arquivo retroativo do
+      // ano. Checado ANTES do monthMatch/yearMatch abaixo (regex mais específica).
+      const archiveVoteMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo\/(\d{6})$/);
+      if (archiveVoteMatch) return handleArchiveVotePage(archiveVoteMatch[1], archiveVoteMatch[2], bEnv, brand);
+      const archiveListMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo$/);
+      if (archiveListMatch) return handleLeaderboardArchive(archiveListMatch[1], bEnv, brand);
+
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
       // #2114(b): auto-heal: links mensais já enviados com leaderboardPeriod="year"
       // redirecionam pra URL canônica anual. Antes renderizava in-place
@@ -705,7 +714,7 @@ export default {
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
