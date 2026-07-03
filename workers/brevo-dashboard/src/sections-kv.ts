@@ -8,7 +8,14 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT, cellClass } from "./render-links.ts";
-import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, CLARICE_PLAN_TOTAL, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import {
+  formatBillingWindowLabel,
+  BILLING_CYCLE_DAY,
+  BILLING_CYCLE_HOUR,
+  BILLING_CYCLE_MINUTE,
+  type BillingCycleWindow,
+} from "./billing-cycle.ts";
 
 // #2875: formatter pt-BR de contagem inteira — estava duplicado em
 // renderContactsSummarySection e renderCohortsTabPanel (mesmo corpo, 2
@@ -233,23 +240,52 @@ export function renderScheduledSection(
 /**
  * Renderiza a seção de Volume enviado no ciclo — primeira informação do dashboard
  * (decisão do editor 2026-06-11: volume vem ANTES do resumo A/B/C).
+ *
+ * #2910: `window` é o ciclo de COBRANÇA Brevo (dia 4, 15:45 BRT —
+ * `billingCycleWindow`), exibido explicitamente no rótulo pra nunca ser
+ * confundido com o ciclo de CONTEÚDO/envio do #2909/#2923 (mês corrente,
+ * planejamento de reenvio) — os dois são conceitos DIFERENTES por design.
+ * `planCredits` é o denominador DINÂMICO (créditos/limite do plano Brevo do
+ * mês corrente, varia mês a mês) — `null` quando indisponível (fetch ao vivo
+ * falhou e não há valor em cache): a seção mostra o número absoluto sem
+ * percentual/barra, NUNCA cai pra um total fixo hardcoded (bug do #2910 —
+ * era sempre 40.000, congelado na rampa de migração de junho).
  * Exportado pra teste unitário.
  */
-export function renderVolumeSection(cumulativeSent: number): string {
-  const pctBar = Math.min(100, (cumulativeSent / CLARICE_PLAN_TOTAL) * 100);
-  const pctLabel = pctBar.toFixed(1);
-  const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
-  const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
+export function renderVolumeSection(
+  cumulativeSent: number,
+  window: BillingCycleWindow,
+  planCredits: number | null,
+): string {
+  const windowLabel = formatBillingWindowLabel(window);
   // #2429: rótulo "E-mails (eventos)" (#2491: renomeado de "Envios (eventos)") deixa explícito
   // que este número conta eventos de envio (uma pessoa em 2 campanhas conta 2 vezes; inclui
   // bounces), não pessoas únicas.
   // Tooltip compartilhado via ENVIOS_TOOLTIP — mesma cópia usada na tabela por-campanha e mensal.
+  const sentLabel = `<strong title="${escHtml(ENVIOS_TOOLTIP)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong>`;
+
+  if (planCredits === null || planCredits <= 0) {
+    return `
+<section class="phase2-section" id="volume-ciclo">
+  <h2 class="section-title">Volume enviado no ciclo</h2>
+  <p class="section-note volume-note">
+    ${sentLabel} — créditos do plano Brevo indisponíveis (denominador não mostrado).<br>
+    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>
+  </p>
+</section>`;
+  }
+
+  const pctBar = Math.min(100, (cumulativeSent / planCredits) * 100);
+  const pctLabel = pctBar.toFixed(1);
+  const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
+  const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
   return `
 <section class="phase2-section" id="volume-ciclo">
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
-    <strong title="${escHtml(ENVIOS_TOOLTIP)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
-    <span class="spark-bar" title="${pctLabel}% do plano total">${bar}</span>
+    ${sentLabel} de ${planCredits.toLocaleString("pt-BR")} créditos do plano (${pctLabel}%)<br>
+    <span class="spark-bar" title="${pctLabel}% do plano do mês">${bar}</span><br>
+    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>
   </p>
 </section>`;
 }

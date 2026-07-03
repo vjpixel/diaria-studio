@@ -1,8 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
 import { computeStoreSummary, deriveCycleStart } from "../scripts/clarice-db-summary.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES } from "../scripts/lib/cohorts.ts";
@@ -432,49 +429,59 @@ test("computeStoreSummary: cycleStart=null → received_this_cycle=0 pra todos (
   db.close();
 });
 
-test("deriveCycleStart: base inexistente → null (fail-soft, #2909)", () => {
-  const missing = resolve(tmpdir(), `diaria-cycle-missing-${Date.now()}`);
-  assert.equal(deriveCycleStart(missing), null);
+// ---------------------------------------------------------------------------
+// #2923 — deriveCycleStart: 1º dia do mês corrente (BRT), não mais
+// send-plan.json (o pipeline real nunca grava esse arquivo — cycle_start
+// ficava sempre null, "Recebeu neste ciclo" sempre "—").
+// ---------------------------------------------------------------------------
+
+test("deriveCycleStart: meio do mês → 1º dia às 00:00 BRT (03:00 UTC), formato ISO (#2923)", () => {
+  // 15/jun/2026 12:00 UTC = 09:00 BRT (meio do mês, sem ambiguidade de fronteira).
+  const now = new Date("2026-06-15T12:00:00Z");
+  assert.equal(deriveCycleStart(now), "2026-06-01T03:00:00.000Z");
 });
 
-test("deriveCycleStart: escolhe o ciclo MAIS RECENTE e devolve a menor scheduledAt do send-plan (#2909)", () => {
-  const base = resolve(tmpdir(), `diaria-cycle-base-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  try {
-    // Ciclo antigo 2605-06 e mais recente 2606-07; um dir não-ciclo pra provar o filtro.
-    const mkPlan = (cycle: string, firstIso: string, secondIso: string) => {
-      const dir = resolve(base, cycle);
-      mkdirSync(dir, { recursive: true });
-      const plan = [
-        { n: 2, date: "11jun", day: "qui", block: 1, volume: 100, scheduledAt: secondIso },
-        { n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: firstIso },
-      ];
-      writeFileSync(resolve(dir, "send-plan.json"), JSON.stringify(plan));
-    };
-    mkPlan("2605-06", "2026-06-10T09:00:00Z", "2026-06-11T09:00:00Z");
-    mkPlan("2606-07", "2026-07-10T09:00:00Z", "2026-07-11T09:00:00Z");
-    // ruído: subdiretório que não é ciclo válido — deve ser ignorado.
-    mkdirSync(resolve(base, "cohorts"), { recursive: true });
-
-    // Ciclo mais recente = 2606-07; menor scheduledAt = a 1ª data (mesmo fora de ordem no arquivo).
-    assert.equal(deriveCycleStart(base), "2026-07-10T09:00:00Z");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
+test("deriveCycleStart: virada de mês/ano (31/dez → 1/jan) resolve pro ANO/MÊS corretos (#2923)", () => {
+  const now = new Date("2026-12-20T12:00:00Z");
+  assert.equal(deriveCycleStart(now), "2026-12-01T03:00:00.000Z");
 });
 
-test("deriveCycleStart: ciclo mais recente sem send-plan legível → cai pro anterior (#2909)", () => {
-  const base = resolve(tmpdir(), `diaria-cycle-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  try {
-    // 2606-07 existe mas sem send-plan.json; 2605-06 tem plano → deriva do 2605-06.
-    mkdirSync(resolve(base, "2606-07"), { recursive: true });
-    const olderDir = resolve(base, "2605-06");
-    mkdirSync(olderDir, { recursive: true });
-    writeFileSync(
-      resolve(olderDir, "send-plan.json"),
-      JSON.stringify([{ n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: "2026-06-10T09:00:00Z" }]),
-    );
-    assert.equal(deriveCycleStart(base), "2026-06-10T09:00:00Z");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
+test("deriveCycleStart: 1º dia do mês, ANTES da meia-noite BRT → ainda no mês anterior (fronteira, #2923)", () => {
+  // 2026-07-01T02:59:59Z = 2026-06-30T23:59:59 BRT (ainda junho em BRT).
+  const now = new Date("2026-07-01T02:59:59Z");
+  assert.equal(deriveCycleStart(now), "2026-06-01T03:00:00.000Z");
+});
+
+test("deriveCycleStart: 1º dia do mês, DEPOIS da meia-noite BRT → já no mês novo (fronteira, #2923)", () => {
+  // 2026-07-01T03:00:01Z = 2026-07-01T00:00:01 BRT (já julho em BRT).
+  const now = new Date("2026-07-01T03:00:01Z");
+  assert.equal(deriveCycleStart(now), "2026-07-01T03:00:00.000Z");
+});
+
+test("deriveCycleStart: default (sem argumento) usa a hora atual — sempre retorna string, nunca null/lança (#2923)", () => {
+  const iso = deriveCycleStart();
+  assert.equal(typeof iso, "string");
+  assert.ok(!Number.isNaN(Date.parse(iso)), "deve ser ISO 8601 parseável");
+});
+
+test("computeStoreSummary + deriveCycleStart: fonte real (mês corrente) popula received_this_cycle, sem depender de send-plan.json (#2923)", () => {
+  const db = openClariceDb(":memory:");
+  const now = new Date("2026-06-15T12:00:00Z");
+  const cycleStart = deriveCycleStart(now);
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('b@x.com',1,1,'2026-05-20T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, cycleStart);
+  assert.notEqual(s.cycle_start, null, "cycle_start não é mais null (bug do #2923)");
+  assert.equal(
+    s.cohort_stats[COHORT_ASSINANTES_ATIVOS].received_this_cycle,
+    1,
+    "só a@x.com (enviado em junho) conta; b@x.com foi enviado em maio",
+  );
+  db.close();
 });

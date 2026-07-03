@@ -36,6 +36,7 @@
 import type { Env } from "./types.ts";
 export * from "./types.ts";
 export * from "./render-links.ts";
+export * from "./billing-cycle.ts";
 export * from "./sections-kv.ts";
 export * from "./brevo-api.ts";
 export * from "./sections-core.ts";
@@ -49,6 +50,7 @@ import {
   rateLimitResponse,
   BrevoRateLimitError,
   LASTGOOD_CAMPAIGNS_KEY,
+  fetchPlanCredits,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL } from "./types.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
@@ -215,7 +217,11 @@ export default {
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
         const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement);
+        // #2910: créditos do plano Brevo — denominador dinâmico da seção Volume.
+        // Fail-soft (nunca lança): cai pro KV se o fetch ao vivo falhar; null se
+        // nem isso — o render degrada pra "indisponível", nunca hardcoded 40k.
+        const planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",

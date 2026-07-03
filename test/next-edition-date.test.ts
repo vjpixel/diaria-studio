@@ -13,6 +13,7 @@ import {
   nextEditionDate,
   datePartsInTz,
   toAammdd,
+  zonedTimeToUtc,
   BRT_TIMEZONE,
 } from "../scripts/lib/next-edition-date.ts";
 
@@ -91,5 +92,29 @@ describe("toAammdd (#2068)", () => {
 
   it("virada de milênio funciona (YY é slice -2)", () => {
     assert.equal(toAammdd({ year: 2100, month: 1, day: 1 }), "000101");
+  });
+});
+
+// #2910: precisão de minuto (nextEditionDate/datePartsInTz só operam em dia)
+// — usada pra derivar a fronteira do ciclo de cobrança Brevo (dia 4, 15:45 BRT).
+describe("zonedTimeToUtc (#2910)", () => {
+  it("15:45 BRT (UTC-3, sem DST) vira 18:45 UTC", () => {
+    const d = zonedTimeToUtc(2026, 7, 4, 15, 45, 0, BRT_TIMEZONE);
+    assert.equal(d.toISOString(), "2026-07-04T18:45:00.000Z");
+  });
+
+  it("meia-noite BRT vira 03:00 UTC", () => {
+    const d = zonedTimeToUtc(2026, 6, 1, 0, 0, 0, BRT_TIMEZONE);
+    assert.equal(d.toISOString(), "2026-06-01T03:00:00.000Z");
+  });
+
+  it("virada de mês/ano: 31/dez 23:59:59 BRT vira 1/jan 02:59:59 UTC", () => {
+    const d = zonedTimeToUtc(2026, 12, 31, 23, 59, 59, BRT_TIMEZONE);
+    assert.equal(d.toISOString(), "2027-01-01T02:59:59.000Z");
+  });
+
+  it("UTC (offset 0) é identidade", () => {
+    const d = zonedTimeToUtc(2026, 7, 4, 15, 45, 0, "UTC");
+    assert.equal(d.toISOString(), "2026-07-04T15:45:00.000Z");
   });
 });

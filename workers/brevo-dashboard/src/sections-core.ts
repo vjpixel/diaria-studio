@@ -13,6 +13,7 @@ import {
   renderCohortsTabPanel,
   COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
+import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
 
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
@@ -22,6 +23,7 @@ export function renderDashboardHtml(
   contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
+  planCredits: number | null = null, // #2910: créditos/limite do plano Brevo (denominador dinâmico da seção Volume) — fetch ao vivo feito no call site (index.ts), nunca aqui (função continua pura/sync)
 ): string {
   const rows = campaigns
     .map((c) => {
@@ -127,9 +129,20 @@ export function renderDashboardHtml(
   });
 
   // #2086 Fase 2: seções adicionais
+  // #2910: "Volume enviado no ciclo" usa o ciclo de COBRANÇA Brevo (dia 4,
+  // 15:45 BRT — billing-cycle.ts), NÃO o `activeCycle` de naming de campanha
+  // (que segue servindo só o Resumo A/B/C logo abaixo — conceitos
+  // deliberadamente separados, ver billing-cycle.ts). Soma TODAS as
+  // campanhas Clarice (diária + mensal + ABC) com `sentDate` na janela —
+  // nunca fica congelado numa rampa antiga sem novo envio.
+  const billingWindow = billingCycleWindow();
+  const cumSentBilling = calcCumulativeSentInBillingWindow(campaigns, billingWindow);
+  const volumeSection = renderVolumeSection(cumSentBilling, billingWindow, planCredits);
+  // `activeCycle` segue servindo só o Resumo A/B/C abaixo (naming de campanha,
+  // ex: "2605") — `calcCumulativeSent`/`CLARICE_PLAN_TOTAL` (cycle-naming)
+  // pararam de alimentar a seção Volume (agora billing-window-based acima),
+  // mas seguem exportados/testados como utilitário independente.
   const activeCycle = detectActiveCycle(campaigns);
-  const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
-  const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
   // #2600: restaura Resumo A/B/C como seção principal (revertendo #2492 que havia substituído).
   // D1–D5 mantido como seção SEPARADA logo após.
   // Reset A/B/C (#2871): o filtro fica AQUI no call site — aggregateAbcSummary
@@ -532,11 +545,17 @@ export function escHtml(s: string): string {
 // ─── #2086 Fase 2: helpers de agregação ──────────────────────────────────────
 
 /**
- * Volume total do plano S1/ciclo 2605-06 conforme clarice-build-edition-sends.ts.
- * S1 = d01–d07 A/B/C = 5.600. Total S1+S2+S3 = 40.000.
- * Exportado pra teste unitário.
+ * Volume do bloco S1 (d01–d07 A/B/C) do ciclo 2605-06 conforme
+ * clarice-build-edition-sends.ts — usado só como referência histórica da
+ * rampa de migração (aggregateAbcSummary/A-B-C section). Exportado pra teste
+ * unitário.
+ *
+ * `CLARICE_PLAN_TOTAL` (40.000 hardcoded, era o denominador fixo da seção
+ * "Volume enviado no ciclo") foi REMOVIDO em #2910 — a seção agora usa o
+ * ciclo de COBRANÇA Brevo com denominador dinâmico (`planCredits`, ver
+ * `renderVolumeSection`/`billing-cycle.ts`), nunca mais um total fixo da
+ * migração de junho.
  */
-export const CLARICE_PLAN_TOTAL = 40_000;
 export const CLARICE_PLAN_S1 = 5_600;
 
 /**
@@ -728,6 +747,32 @@ export function calcCumulativeSent(
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || parsed.cycle !== cycle) continue;
+    const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
+    if (!picked) continue;
+    total += picked.stats.sent ?? 0;
+  }
+  return total;
+}
+
+/**
+ * #2910: volume enviado cumulativo dentro da JANELA do ciclo de COBRANÇA
+ * Brevo (`billingCycleWindow`) — soma "sent" de TODAS as campanhas Clarice
+ * News (diária + mensal + ABC, `parseClariceCampaignKey` não-null) cujo
+ * `sentDate` cai na janela. Filtra por DATA de envio, não por naming de
+ * ciclo — diferente de `calcCumulativeSent` (que soma por `cycle` de
+ * naming, ex: "2605", usado só pelo Resumo A/B/C). Sem isso, o envio de um
+ * mês sem novo naming de ciclo diário (ex: digest mensal/ABC) ficava fora
+ * da contagem e a seção Volume travava na última rampa. Exportado pra
+ * teste unitário.
+ */
+export function calcCumulativeSentInBillingWindow(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  window: BillingCycleWindow,
+): number {
+  let total = 0;
+  for (const c of campaigns) {
+    if (!parseClariceCampaignKey(c.name)) continue; // só campanhas Clarice News
+    if (!isInBillingWindow(c.sentDate, window)) continue;
     const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
     if (!picked) continue;
     total += picked.stats.sent ?? 0;
