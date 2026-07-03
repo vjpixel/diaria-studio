@@ -47,6 +47,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseDestaques, type Destaque } from "./extract-destaques.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 const TITULO_HEADER = "TÍTULO";
 const SUBTITULO_HEADER = "SUBTÍTULO";
@@ -200,17 +201,6 @@ export function extractTitlesFromMd(md: string): {
     d2: byN.get(2)?.title ?? null,
     d3: byN.get(3)?.title ?? null,
   };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function main(): void {

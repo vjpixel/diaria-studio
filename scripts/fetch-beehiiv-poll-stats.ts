@@ -42,6 +42,7 @@ import 'dotenv/config';
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 interface BeehiivPostContent {
   data?: {
@@ -207,17 +208,6 @@ async function fetchPollResponses(
     cursor = json.next_cursor;
   }
   return all;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 async function main(): Promise<void> {

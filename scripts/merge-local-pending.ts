@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const MD_PATH = resolve(ROOT, "data/past-editions.md");
@@ -40,18 +41,6 @@ interface ApprovedJson {
   pesquisa?: Array<{ url?: string }>;
   noticias?: Array<{ url?: string }>;
   tutorial?: Array<{ url?: string }>;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 export function aammddToIso(yymmdd: string): string {

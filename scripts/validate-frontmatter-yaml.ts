@@ -40,6 +40,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export const REQUIRED_IE_FIELDS = [
   "description",
@@ -212,17 +213,6 @@ export function validateFrontmatterYaml(mdContent: string): FrontmatterYamlResul
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));

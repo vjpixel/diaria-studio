@@ -26,6 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export interface Article {
   url: string;
@@ -340,17 +341,6 @@ export async function clusterCategorized(
     video: v.kept,
     clusters: [...l.clusters, ...r.clusters, ...u.clusters, ...v.clusters],
   };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 async function main(): Promise<void> {

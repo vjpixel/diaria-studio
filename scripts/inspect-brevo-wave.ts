@@ -11,20 +11,11 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withBrevo429Retry, throwBrevo429 } from "./lib/brevo-client.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_KEY = process.env.BREVO_CLARICE_API_KEY;
 if (!API_KEY) { console.error("BREVO_CLARICE_API_KEY missing"); process.exit(2); }
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1]; i++;
-    }
-  }
-  return out;
-}
 
 // #2275: fetchListContacts agora retenta em 429 via withBrevo429Retry.
 async function fetchListContacts(listId: number): Promise<string[]> {

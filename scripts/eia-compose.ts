@@ -46,6 +46,7 @@ import { CONFIG } from "./lib/config.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -833,17 +834,6 @@ async function downloadFile(url: string, outPath: string): Promise<void> {
   }
   const buf = Buffer.from(await res.arrayBuffer());
   writeFileSync(outPath, buf);
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 async function main(): Promise<void> {

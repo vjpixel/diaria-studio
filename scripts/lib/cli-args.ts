@@ -52,3 +52,26 @@ export function getArg(argv: string[], key: string): string {
 export function hasFlag(argv: string[], flag: string): boolean {
   return parseArgs(argv).flags.has(flag);
 }
+
+/**
+ * Variante "flat" — retorna Record<string, string> direto (sem separar
+ * flags/values/positional). Regra: `--key` seguido de QUALQUER próximo
+ * elemento (mesmo que comece com `--`) consome esse elemento como valor;
+ * `--key` no fim do array é ignorado (não vira flag booleana).
+ *
+ * #2834: era duplicada byte-a-byte (a menos de nome de variável local) em
+ * 21 scripts — todos scripts que só usam `--key value`, nunca flags
+ * booleanas standalone. NÃO usar em scripts que precisam de flags
+ * booleanas (`--force` sem valor) — usar `parseArgs`/`hasFlag` para esses.
+ */
+export function parseArgsSimple(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--") && i + 1 < argv.length) {
+      out[a.slice(2)] = argv[i + 1];
+      i++;
+    }
+  }
+  return out;
+}

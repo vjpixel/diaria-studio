@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export interface StageCost {
   stage: string;
@@ -291,17 +292,6 @@ ${topExpensive.length === 0 ? "_Nenhuma edição._" : topExpensive
 _Nota: o cost.md atual registra contagens de chamada por modelo, não tokens nem $._
 _Estimativa monetária requer incluir token counts em cost.md (follow-up)._
 `;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function main(): void {
