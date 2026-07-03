@@ -446,6 +446,39 @@ test("recomputeDerived: aplica optin + pontos + elegibilidade nas linhas", () =>
   db.close();
 });
 
+test("recomputeDerived: purga PERMANENTEMENTE qualquer conta de teste do editor já presente no store (#2895)", () => {
+  const db = openClariceDb(":memory:");
+  // simula dado legado: uma test account escapou dos guards de ingestão
+  // (dado pré-fix, ou linha inserida manualmente) e já está no store.
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket) VALUES (?, ?, ?, ?)",
+  ).run("vjpixel+test2@gmail.com", 2, 2, "verified");
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count, mv_bucket) VALUES (?, ?, ?, ?)",
+  ).run("vjpixel+teste4@gmail.com", 0, 0, "verified");
+  // controle: interno real (INTERNAL_EMAILS, sem "+") NÃO é uma test account —
+  // deve sobreviver ao purge.
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count) VALUES (?, ?, ?)",
+  ).run("vjpixel@gmail.com", 1, 1);
+  db.prepare(
+    "INSERT INTO clarice_users (email, opens_count, sends_count) VALUES (?, ?, ?)",
+  ).run("leitora@x.com", 1, 1);
+
+  const n = recomputeDerived(db);
+
+  const remaining = (
+    db.prepare("SELECT email FROM clarice_users ORDER BY email").all() as Array<{
+      email: string;
+    }>
+  ).map((r) => r.email);
+  assert.deepEqual(remaining, ["leitora@x.com", "vjpixel@gmail.com"]);
+  // `n` (linhas recomputadas) reflete só o que sobrou APÓS o purge.
+  assert.equal(n, 2);
+
+  db.close();
+});
+
 test("recomputeDerived: mv_bucket=unknown vira send_eligible=0 + ineligible_reason=mv_unknown (#2735)", () => {
   const db = openClariceDb(":memory:");
 

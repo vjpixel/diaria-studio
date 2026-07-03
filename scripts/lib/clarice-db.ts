@@ -33,6 +33,7 @@ import {
   COHORT_EX_ASSINANTES,
   cohortFromTier,
   isKnownCohortSlug,
+  isTestAccount,
 } from "./cohorts.ts";
 import { canonicalizeGmail, GMAIL_DOMAINS } from "./canonicalize-gmail.ts";
 
@@ -292,6 +293,17 @@ export function computePriorityPoints(i: PriorityInput): number {
 export { INTERNAL_EMAILS } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
+// Test accounts (#2895) — exclusão PERMANENTE (não confundir com
+// INTERNAL_EMAILS acima, que mantém no store). `isTestAccount`/
+// `TEST_ACCOUNT_PATTERNS` moram em `cohorts.ts` (dependency-free) pelo mesmo
+// motivo de `INTERNAL_EMAILS`: `clarice-segment.ts` precisa do mesmo
+// predicado pro guard em `segmentFromStore` sem importar `node:sqlite`.
+// Re-exportado aqui pra quem já importa deste módulo.
+// ---------------------------------------------------------------------------
+
+export { isTestAccount, TEST_ACCOUNT_PATTERNS } from "./cohorts.ts";
+
+// ---------------------------------------------------------------------------
 // send_eligible / ineligible_reason — corte de supressão e entregabilidade
 //
 // Ordem de prioridade (primeira condição que bate vira a razão). Soft bounce é
@@ -494,8 +506,28 @@ export function computeCohort(
  * automaticamente na 1ª passagem, idempotente na 2ª). `tier` INTEGER não é
  * escrito aqui nem em nenhum ingest novo (fica intacto — legado read-only
  * desde a fase C).
+ *
+ * #2895 — PRIMEIRO passo (antes de recomputar qualquer coisa): purga
+ * PERMANENTE de qualquer linha `isTestAccount` que tenha escapado dos guards
+ * de ingestão (`ingestStripe`/`ingestMv`/`makeBrevoUpsert`) e chegado ao
+ * store por qualquer outra via (dado legado pré-fix, import manual, etc.).
+ * Rodar aqui — chamado ao fim de TODO build/sync — garante que o próximo
+ * rebuild não apenas pare de RE-adicionar test accounts, mas efetivamente
+ * REMOVA os que já estavam lá (o incidente original: DELETE manual não era
+ * permanente porque o rebuild seguinte os trazia de volta).
  */
 export function recomputeDerived(db: DatabaseSync): number {
+  const allEmails = (
+    db.prepare("SELECT email FROM clarice_users").all() as Array<{
+      email: string;
+    }>
+  ).map((r) => r.email);
+  const testEmails = allEmails.filter((e) => isTestAccount(e));
+  if (testEmails.length > 0) {
+    const del = db.prepare("DELETE FROM clarice_users WHERE email = ?");
+    for (const email of testEmails) del.run(email);
+  }
+
   const optin = new Set<string>(
     (db.prepare("SELECT email FROM priority_optin").all() as Array<{
       email: string;
@@ -618,6 +650,9 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
   );
   return (c: BrevoColumns) => {
     if (!c.email) return; // sem email → ignora (evita colisão na key "")
+    // #2895: conta de teste do editor (vjpixel+test*@gmail.com) — nunca
+    // insere/mantém no store, mesmo vindo do Brevo (clarice-sync-brevo.ts).
+    if (isTestAccount(c.email)) return;
     ensure.run(c.email);
     update.run(
       c.email_blacklisted,

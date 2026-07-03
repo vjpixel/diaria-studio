@@ -213,3 +213,15 @@ test("makeBrevoUpsert: contato 404/vazio ({}) não cria linha lixo", () => {
   assert.equal(n, 0);
   db.close();
 });
+
+test("makeBrevoUpsert: conta de teste do editor (vjpixel+test*@gmail.com) NUNCA entra no store, mesmo vinda do Brevo (#2895)", () => {
+  const db = openClariceDb(":memory:");
+  const upsert = makeBrevoUpsert(db);
+  upsert(parseBrevoContact({ email: "vjpixel+test2@gmail.com", statistics: {} }));
+  upsert(parseBrevoContact({ email: "leitora@x.com", statistics: {} })); // controle: normal entra
+  const rows = db
+    .prepare("SELECT email FROM clarice_users")
+    .all() as Array<{ email: string }>;
+  assert.deepEqual(rows.map((r) => r.email), ["leitora@x.com"]);
+  db.close();
+});

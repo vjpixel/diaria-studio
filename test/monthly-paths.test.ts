@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, rmSync, mkdtempSync, mkdirSync, readdirSync, renameSync } from "node:fs";
-import { sep, join } from "node:path";
+import { sep, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   isValidMonthlyCycle,
@@ -25,8 +25,31 @@ import {
   requireMonthlyCycleArg,
   MONTHLY_BASE,
 } from "../scripts/lib/mensal/monthly-paths.ts";
+import { DEFAULT_ROOT } from "../scripts/lib/mensal/monthly-image-upload.ts";
 
 const norm = (p: string): string => p.split(sep).join("/");
+
+// #2747 regressão: monthly-paths.ts e monthly-image-upload.ts desceram de
+// scripts/lib/ pra scripts/lib/mensal/ (1 nível a mais), mas o cálculo de
+// REPO_ROOT continuou com `../..` (2 níveis) → apontava pra scripts/ em vez da
+// raiz, quebrando TODO o pipeline mensal (procurava scripts/data/monthly/...).
+describe("REPO_ROOT das libs mensais aponta pra raiz do repo (#2747 regressão)", () => {
+  it("MONTHLY_BASE = <raiz>/data/monthly, nunca scripts/data/monthly", () => {
+    assert.ok(norm(MONTHLY_BASE).endsWith("/data/monthly"), `MONTHLY_BASE=${MONTHLY_BASE}`);
+    assert.ok(!norm(MONTHLY_BASE).includes("/scripts/data/"), `dentro de scripts/: ${MONTHLY_BASE}`);
+    // 2 níveis acima de data/monthly = raiz do repo (tem package.json).
+    // Com o bug `../..`, seria scripts/data/monthly → scripts/package.json (inexistente).
+    assert.ok(
+      existsSync(resolve(MONTHLY_BASE, "..", "..", "package.json")),
+      "MONTHLY_BASE/../../package.json deve existir (prova a raiz certa)",
+    );
+  });
+
+  it("DEFAULT_ROOT (monthly-image-upload) é a raiz do repo, não scripts/", () => {
+    assert.ok(existsSync(resolve(DEFAULT_ROOT, "package.json")), `sem package.json: ${DEFAULT_ROOT}`);
+    assert.ok(!norm(DEFAULT_ROOT).endsWith("/scripts"), `DEFAULT_ROOT não pode ser scripts/: ${DEFAULT_ROOT}`);
+  });
+});
 
 describe("isValidMonthlyCycle (#1962)", () => {
   it("aceita ciclos válidos {conteúdo}-{envio}", () => {

@@ -18,6 +18,7 @@ import { COLORS, FONTS } from "../shared/design-tokens.ts"; // #1936
 export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
+import { applyBrandWordmark } from "../newsletter-render-html.ts"; // wordmark diar.ia.br (mesmo da diária)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import {
   DIARIA_FACEBOOK_PAGE_URL,
@@ -59,10 +60,14 @@ export function stripBackslashEscapes(s: string): string {
 function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
-  return applyWordJoiner(
-    escHtml(s)
-      .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
+  // applyBrandWordmark após word-joiner (mesma ordem da diária, #2532/#2533):
+  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal).
+  return applyBrandWordmark(
+    applyWordJoiner(
+      escHtml(s)
+        .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
+    ),
   );
 }
 

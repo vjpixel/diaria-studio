@@ -62,6 +62,45 @@ export const INTERNAL_EMAILS = [
   "ti@clarice.ai",
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Test accounts (#2895) — plus-addressing do editor (`vjpixel+test*@gmail.com`)
+// usado pra QA manual/curadoria. Achado 260703: 5 contas assim (test2/3/4/5 +
+// teste4) entraram no store como contatos NORMAIS (elegíveis, priority_points>0)
+// e chegaram a cair no segmento do teste ABC mensal 2606-07. Diferente de
+// `INTERNAL_EMAILS` acima (#2809 — MANTÉM no store, só exclui de agregações):
+// aqui é remoção TOTAL da base — não são audiência real e nunca devem receber
+// envio. O DELETE manual feito no incidente não é permanente (o próximo
+// rebuild re-adiciona a partir de qualquer fonte — Brevo sync / CSV), daí o
+// predicado reusável em TODO ponto de ingestão + guard de defesa em
+// profundidade no segment.
+//
+// Lista de padrões (não só um literal fixo) — `TEST_ACCOUNT_PATTERNS` deixa
+// espaço pra outros formatos de teste do editor aparecerem no futuro sem
+// precisar reabrir este módulo pra trocar uma regex isolada; hoje só o padrão
+// pedido na issue (#2895).
+//
+// Definido aqui (não em `clarice-db.ts`, que usa `node:sqlite`) pelo mesmo
+// motivo do `INTERNAL_EMAILS` acima: `clarice-segment.ts` é dependency-free/
+// Workers-safe e precisa do mesmo predicado pro guard em `segmentFromStore`
+// sem criar um ciclo de import. `clarice-db.ts` re-exporta pra manter os
+// imports existentes intocados.
+// ---------------------------------------------------------------------------
+
+/** Padrões (regex, case-insensitive) que identificam contas de teste do editor. */
+export const TEST_ACCOUNT_PATTERNS: readonly RegExp[] = [/^vjpixel\+test/i];
+
+/**
+ * `email` é uma conta de teste do editor (Gmail plus-addressing,
+ * `vjpixel+test*@gmail.com`)? Case-insensitive; casa `vjpixel+test2@...` e
+ * `vjpixel+teste4@...` (o prefixo `vjpixel+test` é comum aos dois), mas NÃO
+ * `vjpixel@gmail.com` (sem `+`) — esse é o interno real (`INTERNAL_EMAILS`),
+ * não uma conta de teste, e deve continuar no store normalmente.
+ */
+export function isTestAccount(email: string): boolean {
+  const normalized = email.trim().toLowerCase();
+  return TEST_ACCOUNT_PATTERNS.some((re) => re.test(normalized));
+}
+
 /**
  * tier numérico (T01–T10) → slug de cohort nomeado.
  *

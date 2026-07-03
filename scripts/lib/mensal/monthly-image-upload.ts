@@ -13,7 +13,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "../cloudflare-kv-upload.ts";
 
-const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// scripts/lib/mensal/ → raiz são 3 níveis (mensal → lib → scripts). #2747 desceu
+// este arquivo um nível e o `.., ..` original passou a apontar pra scripts/.
+export const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 /**
  * Pure (#1908): key da imagem É IA? mensal no KV. Convenção

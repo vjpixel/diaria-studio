@@ -70,6 +70,18 @@ test("segmentFromStore: send_eligible=0 vai pra excluded com a razão", () => {
   ]);
 });
 
+test("segmentFromStore: conta de teste do editor (vjpixel+test*@gmail.com) é cortada pra excluded MESMO se send_eligible=1 (#2895, defesa em profundidade)", () => {
+  const s = segmentFromStore([
+    row({ email: "vjpixel+test2@gmail.com", send_eligible: 1, priority_points: 999 }),
+    row({ email: "leitora@x.com", send_eligible: 1 }),
+  ]);
+  assert.equal(s.reSend.length, 0);
+  assert.deepEqual(s.firstSend.map((r) => r.email), ["leitora@x.com"]);
+  assert.deepEqual(s.excluded, [
+    { email: "vjpixel+test2@gmail.com", reason: "test_account" },
+  ]);
+});
+
 test("segmentFromStore: re-envio ordenado por priority_points DESC (email desempata)", () => {
   const s = segmentFromStore([
     row({ email: "c@x.com", sends_count: 3, priority_points: 20 }),
