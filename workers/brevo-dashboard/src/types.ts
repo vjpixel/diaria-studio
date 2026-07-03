@@ -193,7 +193,9 @@ export interface CohortStatsRow {
   sends_sum: number;
   opened: number;
   clicked: number;
-  unsub_bounce: number;
+  /** #2880: separados a pedido do editor (antes: par unsub_bounce). */
+  unsub: number;
+  hard_bounce: number;
   mv_verified: number;
   /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
    * pra degradar em KV antigo sem o campo — render trata ausência como 0. */

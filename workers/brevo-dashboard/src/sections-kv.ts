@@ -573,16 +573,22 @@ export function renderContactsSummarySection(
     title: string,
     map: Record<string, number> | undefined,
   ): string => {
-    const rows = Object.entries(map ?? {})
-      .sort((a, b) => b[1] - a[1])
+    const entries = Object.entries(map ?? {}).sort((a, b) => b[1] - a[1]);
+    const rows = entries
       .map(
         ([k, v]) =>
           `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
       )
       .join("\n");
+    // #2880 E: linha Total (soma das contagens). Só quando há ≥1 linha — tabela
+    // vazia não ganha um "Total 0" sem sentido.
+    const total = entries.reduce((a, [, v]) => a + v, 0);
+    const totalRow = entries.length
+      ? `\n<tr class="total-row"><td>Total</td><td style="text-align:right">${n(total)}</td></tr>`
+      : "";
     return `<div class="table-wrap"><table>
       <thead><tr><th>${escHtml(title)}</th><th style="text-align:right">contatos</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}${totalRow}</tbody></table></div>`;
   };
 
   const ppMap: Record<string, number> = {
@@ -628,9 +634,16 @@ export function renderContactsSummarySection(
     const rows = sorted.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
+    // #2880 E: linha Total — soma cada coluna sobre todas as faixas (= a base
+    // inteira menos internos, universo do histograma).
+    const sumMap = (m: Record<string, number> | undefined): number =>
+      Object.values(m ?? {}).reduce((a, b) => a + b, 0);
+    const totContatos = sorted.reduce((a, [, v]) => a + v, 0);
+    const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}</tr>`;
     return `<div class="table-wrap"><table>
       <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}
+${totalRow}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
   // #2880: fallback pré-#2731 (sem priority_points_histogram) degrada pras
@@ -728,11 +741,16 @@ export function renderCohortsTabPanel(
     eligible: number;
     received: number;
     sendsSum: number;
+    // contagens brutas (pro Total agregar taxas corretamente, #2880 E)
+    opened: number;
+    clicked: number;
+    unsub: number;
+    hardBounce: number;
+    mvVerified: number; // #2880 D: exibido como número ABSOLUTO
     openRate: number | null;
     clickRate: number | null;
-    unsubBounceRate: number | null;
-    mvVerifiedRate: number | null;
-    ppAvg: number | null;
+    unsubRate: number | null;
+    bounceRate: number | null;
   };
 
   const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
@@ -747,17 +765,20 @@ export function renderCohortsTabPanel(
       eligible: c.eligible,
       received: c.received,
       sendsSum: c.sends_sum,
+      opened: c.opened ?? 0,
+      clicked: c.clicked ?? 0,
+      // #2880 G: unsub e bounce separados. `?? unsub_bounce ?? 0`: degrada em KV
+      // antigo (pré-split) mostrando o par somado na coluna Unsub, 0 em Bounce.
+      unsub: c.unsub ?? (c as { unsub_bounce?: number }).unsub_bounce ?? 0,
+      hardBounce: c.hard_bounce ?? 0,
+      mvVerified: c.mv_verified,
       openRate: c.received > 0 ? (c.opened / c.received) * 100 : null,
       clickRate: c.received > 0 ? (c.clicked / c.received) * 100 : null,
-      unsubBounceRate: c.received > 0 ? (c.unsub_bounce / c.received) * 100 : null,
-      mvVerifiedRate: c.contacts > 0 ? (c.mv_verified / c.contacts) * 100 : null,
-      // typeof-guard (review #2872): KV antigo pode ter priority_points_sum
-      // null (SUM SQL de tudo-NULL, pré-COALESCE) — null/received = 0 em JS e
-      // renderia "0.0" como se medido; null → "—".
-      ppAvg:
-        c.received > 0 && typeof c.priority_points_sum === "number"
-          ? c.priority_points_sum / c.received
+      unsubRate:
+        c.received > 0
+          ? ((c.unsub ?? (c as { unsub_bounce?: number }).unsub_bounce ?? 0) / c.received) * 100
           : null,
+      bounceRate: c.received > 0 ? ((c.hard_bounce ?? 0) / c.received) * 100 : null,
     }));
 
   // Média simples da coluna (só sobre linhas com denominador > 0 — null não
@@ -769,8 +790,8 @@ export function renderCohortsTabPanel(
   };
   const avgOpen = colAvg(rows.map((r) => r.openRate));
   const avgClick = colAvg(rows.map((r) => r.clickRate));
-  const avgUnsubBounce = colAvg(rows.map((r) => r.unsubBounceRate));
-  const avgMv = colAvg(rows.map((r) => r.mvVerifiedRate));
+  const avgUnsub = colAvg(rows.map((r) => r.unsubRate));
+  const avgBounce = colAvg(rows.map((r) => r.bounceRate));
 
   const cellAttr = (v: number | null, avg: number | null): string =>
     v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP
@@ -779,6 +800,8 @@ export function renderCohortsTabPanel(
 
   const tableRows = rows
     .map((r) => {
+      // #2880 D: MV verified é número absoluto (não % → sem destaque de desvio,
+      // que não faz sentido entre cohorts de tamanhos muito diferentes).
       return `<tr>
       <td>${escHtml(cohortLabel(r.cohort === "null" ? null : r.cohort))}</td>
       <td>${n(r.contacts)}</td>
@@ -788,17 +811,49 @@ export function renderCohortsTabPanel(
       <td>${n(r.sendsSum)}</td>
       <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
       <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
-      <td${cellAttr(r.unsubBounceRate, avgUnsubBounce)}>${pctOrDash(r.unsubBounceRate)}</td>
-      <td${cellAttr(r.mvVerifiedRate, avgMv)}>${pctOrDash(r.mvVerifiedRate)}</td>
-      <td>${numOrDash(r.ppAvg)}</td>
+      <td${cellAttr(r.unsubRate, avgUnsub)}>${pctOrDash(r.unsubRate)}</td>
+      <td${cellAttr(r.bounceRate, avgBounce)}>${pctOrDash(r.bounceRate)}</td>
+      <td>${n(r.mvVerified)}</td>
     </tr>`;
     })
     .join("\n");
 
+  // #2880 E: linha Total. Contagens somadas; taxas AGREGADAS (Σnum/Σrecebeu,
+  // não média de taxas) — a taxa real da base inteira. Sem destaque de desvio.
+  const tot = rows.reduce(
+    (a, r) => ({
+      contacts: a.contacts + r.contacts,
+      brevo: a.brevo + r.brevo,
+      eligible: a.eligible + r.eligible,
+      received: a.received + r.received,
+      sendsSum: a.sendsSum + r.sendsSum,
+      opened: a.opened + r.opened,
+      clicked: a.clicked + r.clicked,
+      unsub: a.unsub + r.unsub,
+      hardBounce: a.hardBounce + r.hardBounce,
+      mvVerified: a.mvVerified + r.mvVerified,
+    }),
+    { contacts: 0, brevo: 0, eligible: 0, received: 0, sendsSum: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0, mvVerified: 0 },
+  );
+  const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
+  const totalRow = `<tr class="total-row">
+      <td>Total</td>
+      <td>${n(tot.contacts)}</td>
+      <td>${n(tot.brevo)}</td>
+      <td>${n(tot.eligible)}</td>
+      <td>${n(tot.received)}</td>
+      <td>${n(tot.sendsSum)}</td>
+      <td>${pctOrDash(totRate(tot.opened))}</td>
+      <td>${pctOrDash(totRate(tot.clicked))}</td>
+      <td>${pctOrDash(totRate(tot.unsub))}</td>
+      <td>${pctOrDash(totRate(tot.hardBounce))}</td>
+      <td>${n(tot.mvVerified)}</td>
+    </tr>`;
+
   return `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub+Bounce são sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é sobre o total de contatos do cohort. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna.</p>
+  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é o <strong>número</strong> de contatos do cohort verificados. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células de taxa em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna. A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas.</p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -811,12 +866,13 @@ export function renderCohortsTabPanel(
         <th title="Soma de envios (eventos) do cohort">Envios (Σ)</th>
         <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
         <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
-        <th title="% de quem recebeu que descadastrou ou deu bounce">Unsub+Bounce</th>
-        <th title="% do cohort verificado no MillionVerifier (mv_bucket=verified)">MV verified</th>
-        <th title="priority_points médio de quem recebeu — engajamento composto">Pts médio</th>
+        <th title="% de quem recebeu que descadastrou">Unsub</th>
+        <th title="% de quem recebeu que deu hard bounce">Bounce</th>
+        <th title="Nº de contatos do cohort verificados no MillionVerifier (mv_bucket=verified)">MV verified</th>
       </tr>
     </thead>
-    <tbody>${tableRows}</tbody>
+    <tbody>${tableRows}
+${totalRow}</tbody>
   </table>
   </div>
 </section>`;

@@ -221,6 +221,8 @@ export function renderDashboardHtml(
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
+  /* #2880: linha Total das tabelas do store — destacada, borda superior. */
+  tr.total-row td { font-weight: 700; border-top: 2px solid var(--rule); }
   td .rate-inline { font-weight: normal; color: var(--ink); }
   td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
   .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 24px; text-align: center; }

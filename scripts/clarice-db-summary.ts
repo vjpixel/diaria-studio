@@ -106,8 +106,11 @@ export interface CohortStatsRow {
   opened: number;
   /** sends_count>0 AND clicks_count>0 — clicou ≥1, dentre quem recebeu. */
   clicked: number;
-  /** sends_count>0 AND (unsubscribed=1 OR hard_bounced=1) — saiu, dentre quem recebeu. */
-  unsub_bounce: number;
+  /** #2880: sends_count>0 AND unsubscribed=1 — descadastrou, dentre quem recebeu.
+   * (separado de bounce a pedido do editor — antes era o par unsub_bounce.) */
+  unsub: number;
+  /** #2880: sends_count>0 AND hard_bounced=1 — deu hard bounce, dentre quem recebeu. */
+  hard_bounce: number;
   /** mv_bucket='verified' — sobre o TOTAL de contatos do cohort (não só quem recebeu). */
   mv_verified: number;
   /** #2880: brevo_list_ids IS NOT NULL — quantos do cohort estão na Brevo (sobre o
@@ -317,7 +320,8 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       SUM(COALESCE(sends_count,0)) AS sends_sum,
       SUM(CASE WHEN sends_count>0 AND opens_count>0 THEN 1 ELSE 0 END) AS opened,
       SUM(CASE WHEN sends_count>0 AND clicks_count>0 THEN 1 ELSE 0 END) AS clicked,
-      SUM(CASE WHEN sends_count>0 AND (unsubscribed=1 OR hard_bounced=1) THEN 1 ELSE 0 END) AS unsub_bounce,
+      SUM(CASE WHEN sends_count>0 AND unsubscribed=1 THEN 1 ELSE 0 END) AS unsub,
+      SUM(CASE WHEN sends_count>0 AND hard_bounced=1 THEN 1 ELSE 0 END) AS hard_bounce,
       ${MV_VERIFIED_CASE} AS mv_verified,
       ${BREVO_SYNCED_CASE} AS brevo,
       SUM(CASE WHEN sends_count>0 THEN COALESCE(priority_points,0) ELSE 0 END) AS pp_sum
@@ -334,7 +338,8 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
     sends_sum: number;
     opened: number;
     clicked: number;
-    unsub_bounce: number;
+    unsub: number;
+    hard_bounce: number;
     mv_verified: number;
     brevo: number;
     pp_sum: number;
@@ -348,7 +353,8 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       sends_sum: r.sends_sum,
       opened: r.opened,
       clicked: r.clicked,
-      unsub_bounce: r.unsub_bounce,
+      unsub: r.unsub,
+      hard_bounce: r.hard_bounce,
       mv_verified: r.mv_verified,
       brevo: r.brevo,
       priority_points_sum: r.pp_sum,
