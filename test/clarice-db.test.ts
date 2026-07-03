@@ -10,8 +10,108 @@ import {
   computeCohort,
   recomputeDerived,
   openClariceDb,
+  findContactByEmail,
   SOFT_BOUNCE_LIMIT,
 } from "../scripts/lib/clarice-db.ts";
+
+// ---------------------------------------------------------------------------
+// findContactByEmail (#2863) — helper canônico de lookup; ausência de match
+// exato NUNCA vira "não está na base" sem antes tentar normalização Gmail.
+// ---------------------------------------------------------------------------
+
+describe("findContactByEmail", () => {
+  it("match exato (lowercase/trim já embutido no lookup) → matchType exact", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run(
+      "filosofo.daniel@gmail.com",
+      1,
+    );
+    const r = findContactByEmail(db, "filosofo.daniel@gmail.com");
+    assert.equal(r.matchType, "exact");
+    assert.equal(r.row?.email, "filosofo.daniel@gmail.com");
+    assert.deepEqual(r.candidates, []);
+    db.close();
+  });
+
+  it("réplica do incidente 260702: filosofodaniel@ (sem pontos) casa via gmail-normalized com filosofo.daniel@ (canônico no store)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run(
+      "filosofo.daniel@gmail.com",
+      1, // assinante ativo T01 — o caso real do incidente
+    );
+    const r = findContactByEmail(db, "filosofodaniel@gmail.com");
+    assert.equal(r.matchType, "gmail-normalized");
+    assert.equal(r.row?.email, "filosofo.daniel@gmail.com");
+    assert.equal(r.candidates.length, 1);
+    assert.equal(r.candidates[0].email, "filosofo.daniel@gmail.com");
+    db.close();
+  });
+
+  it("+sufixo é ignorado no match Gmail (mesma caixa)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "filosofo.daniel@gmail.com",
+    );
+    const r = findContactByEmail(db, "filosofo.daniel+x@gmail.com");
+    assert.equal(r.matchType, "gmail-normalized");
+    assert.equal(r.row?.email, "filosofo.daniel@gmail.com");
+    db.close();
+  });
+
+  it("domínio NÃO-Gmail com pontos → NÃO normaliza (pontos são significativos fora do Gmail)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "filosofo.daniel@empresa.com.br",
+    );
+    const r = findContactByEmail(db, "filosofodaniel@empresa.com.br");
+    assert.equal(r.matchType, null);
+    assert.deepEqual(r.candidates, []);
+    assert.equal(r.row, null);
+    db.close();
+  });
+
+  it("miss real (nenhum candidato em nenhuma forma) → null com candidates vazio", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "outrapessoa@gmail.com",
+    );
+    const r = findContactByEmail(db, "ninguem.aqui@gmail.com");
+    assert.equal(r.matchType, null);
+    assert.equal(r.row, null);
+    assert.deepEqual(r.candidates, []);
+    db.close();
+  });
+
+  it("2+ linhas colidem na forma canônica → ambíguo (matchType null, candidates com 2+)", () => {
+    const db = openClariceDb(":memory:");
+    // duas formas distintas do MESMO local-part "abc" já presentes no store —
+    // buscar uma 3ª variante não deve escolher uma arbitrariamente.
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "a.bc@gmail.com",
+    );
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "ab.c@gmail.com",
+    );
+    const r = findContactByEmail(db, "a.b.c@gmail.com");
+    assert.equal(r.matchType, null);
+    assert.equal(r.row, null);
+    assert.equal(r.candidates.length, 2);
+    const emails = r.candidates.map((c) => c.email).sort();
+    assert.deepEqual(emails, ["a.bc@gmail.com", "ab.c@gmail.com"]);
+    db.close();
+  });
+
+  it("googlemail.com é tratado como a mesma caixa do gmail.com", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "filosofo.daniel@googlemail.com",
+    );
+    const r = findContactByEmail(db, "filosofodaniel@gmail.com");
+    assert.equal(r.matchType, "gmail-normalized");
+    assert.equal(r.row?.email, "filosofo.daniel@googlemail.com");
+    db.close();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // computePriorityPoints (#2647)

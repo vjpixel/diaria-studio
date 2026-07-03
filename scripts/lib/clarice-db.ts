@@ -34,6 +34,7 @@ import {
   cohortFromTier,
   isKnownCohortSlug,
 } from "./cohorts.ts";
+import { canonicalizeGmail, GMAIL_DOMAINS } from "./canonicalize-gmail.ts";
 
 // import.meta.dirname pode vir undefined em alguns loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd evita throw no load do módulo. Scripts do
@@ -161,6 +162,94 @@ function migrateSchema(db: DatabaseSync): void {
   if (!cols.includes("cohort")) {
     db.exec("ALTER TABLE clarice_users ADD COLUMN cohort TEXT;");
   }
+}
+
+// ---------------------------------------------------------------------------
+// findContactByEmail — helper canônico de lookup (#2863)
+//
+// Incidente de processo (260702): um diagnóstico fez lookup por MATCH EXATO no
+// store e concluiu que 4 contatos "não eram clientes Stripe" — errado, os 4
+// estavam no Stripe com a variante COM pontos do Gmail (`filosofo.daniel@` vs
+// a resposta recebida `filosofodaniel@`), um deles assinante ativo T01. A
+// conclusão falsa foi relayada ao editor como fato e só caiu quando ele
+// contestou. Classe do erro: tratar AUSÊNCIA de match exato como PROVA de
+// ausência — extensão do princípio #573 (validar antes de relayar) para
+// negative claims.
+//
+// NORMA DE PROCESSO (vale pra qualquer chamador, não só este helper):
+// ausência no store só é afirmável após (a) este lookup normalizado E (b)
+// grep dos CSVs crus em `data/clarice-subscribers/` — ver
+// `docs/clarice-unified-db.md`. Um miss aqui (matchType null) NUNCA deve virar
+// "não está na base" sem esse segundo passo barato.
+//
+// Ordem de tentativa:
+//   1. exato (lowercase/trim) — mesma normalização usada em todo o resto do
+//      módulo (`clarice-optin.ts`, `recomputeDerived`).
+//   2. normalização Gmail (`canonicalizeGmail`, #1969) — SÓ pra domínios da
+//      família Gmail (gmail.com/googlemail.com; ver `GMAIL_DOMAINS`). Fora do
+//      Gmail, pontos são significativos — não normaliza (`+sufixo` também não
+//      é descartado fora do Gmail, mesma regra do #1969).
+//
+// `matchType`:
+//   - "exact" — `row` é a linha encontrada por igualdade direta.
+//   - "gmail-normalized" — `row` é a ÚNICA linha do domínio Gmail cujo
+//     endereço canonicaliza pro mesmo valor do email buscado; `candidates`
+//     contém essa mesma linha (conveniência pro chamador).
+//   - null — ambíguo (`candidates.length > 1`, 2+ linhas colidem na forma
+//     canônica — ex: `a.bc@gmail.com` e `ab.c@gmail.com` buscando
+//     `a.b.c@gmail.com`) OU miss real (`candidates` vazio). Chamadores NUNCA
+//     devem imprimir "fora da base" nesse caso sem antes reportar que o
+//     lookup normalizado também não achou nada (e, idealmente, sugerir o grep
+//     dos CSVs crus).
+// ---------------------------------------------------------------------------
+
+export interface ContactMatch {
+  row: Record<string, unknown> | null;
+  matchType: "exact" | "gmail-normalized" | null;
+  candidates: Array<{ email: string }>;
+}
+
+export function findContactByEmail(
+  db: DatabaseSync,
+  email: string,
+): ContactMatch {
+  const normalized = email.trim().toLowerCase();
+
+  const exact = db
+    .prepare("SELECT * FROM clarice_users WHERE email = ?")
+    .get(normalized) as Record<string, unknown> | undefined;
+  if (exact) {
+    return { row: exact, matchType: "exact", candidates: [] };
+  }
+
+  const at = normalized.lastIndexOf("@");
+  const domain = at === -1 ? "" : normalized.slice(at + 1);
+  if (!GMAIL_DOMAINS.has(domain)) {
+    // domínio não-Gmail: pontos (e +sufixo) podem ser significativos — não
+    // normaliza, não faz scan de candidatos.
+    return { row: null, matchType: null, candidates: [] };
+  }
+
+  const canonical = canonicalizeGmail(normalized);
+  const sameDomainEmails = db
+    .prepare(
+      "SELECT email FROM clarice_users WHERE email LIKE '%@gmail.com' OR email LIKE '%@googlemail.com'",
+    )
+    .all() as Array<{ email: string }>;
+  const candidates = sameDomainEmails.filter(
+    (r) => canonicalizeGmail(r.email) === canonical,
+  );
+
+  if (candidates.length === 1) {
+    const row = db
+      .prepare("SELECT * FROM clarice_users WHERE email = ?")
+      .get(candidates[0].email) as Record<string, unknown>;
+    return { row, matchType: "gmail-normalized", candidates };
+  }
+  if (candidates.length > 1) {
+    return { row: null, matchType: null, candidates };
+  }
+  return { row: null, matchType: null, candidates: [] };
 }
 
 // ---------------------------------------------------------------------------
