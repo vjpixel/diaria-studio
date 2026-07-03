@@ -18,15 +18,27 @@
  *
  * Uso:
  *   npx tsx scripts/select-eia-edition.ts --month 2605 [--threshold 5] \
- *     [--base https://poll.diaria.workers.dev]
+ *     [--base https://poll.diaria.workers.dev] [--cycle 2605-06] \
+ *     [--out-json data/monthly/2605-06/_internal/03-eia-selection.json]
  *
- * stdout = a edição AAMMDD escolhida (uma linha, pra capturar na skill).
+ * stdout = a edição AAMMDD escolhida (uma linha, pra capturar na skill) —
+ *   contrato inalterado desde #1912, back-compat com `EAI_EDITION=$(...)`.
  * stderr = tabela de candidatos + decisão (auditoria no gate).
+ * --out-json (#2869), se passado, grava o `EiaSelectionResult` completo
+ *   (selection/pct_correct/reason/fetch_errors) — consumido por
+ *   `eia-compose.ts` pra rastreabilidade em `01-eia-meta.json` e pela skill
+ *   pra montar o item de aviso no gate/resumo do stage.
  *
  * Fallback (sempre imprime ALGO em stdout, exit 0 — É IA? mensal é opcional):
  * se nenhuma edição do mês tiver poll elegível (gabarito + ≥ threshold votos),
- * imprime o último dia do mês (comportamento legado) e loga warn.
+ * imprime o último dia do mês (comportamento legado) e — #2869, nunca calado —
+ * loga warn em stderr E em `data/run-log.jsonl` (via `logEvent`), além de
+ * gravar `selection: "fallback_last"` no `--out-json` se fornecido.
  */
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { logEvent } from "./lib/run-log.ts";
 
 const DEFAULT_BASE = "https://poll.diaria.workers.dev";
 // Mínimo de votos pra um poll ser sinal e não ruído. Alinhado ao threshold de
@@ -113,6 +125,109 @@ export function selectEiaEdition(
   });
 }
 
+/**
+ * Resultado estruturado da seleção — #2869 (traceability + no-silent-fallback).
+ *
+ * `selection: "criterion"` = escolha pelo critério (mais próximo de 50%, piso
+ * de votos respeitado). `selection: "fallback_last"` = NENHUMA edição do mês
+ * teve poll elegível (sem gabarito, ou nenhuma acima do piso de votos) — o
+ * pipeline caiu no último dia do mês, e ISSO PRECISA ser sinalizado ao editor
+ * (nunca escolher errado calado, #2869). `reason` é sempre uma frase legível
+ * pronta pra virar warning/log/item de gate; nunca deixar o caller adivinhar
+ * o motivo a partir só do edition escolhido.
+ */
+export interface EiaSelectionResult {
+  edition: string;
+  selection: "criterion" | "fallback_last";
+  pct_correct: number | null;
+  total_votes: number | null;
+  threshold: number;
+  reason: string;
+  /** Edições cujo fetch de /stats falhou (rede/5xx/timeout) — sinal parcial
+   *  mesmo quando `selection: "criterion"` teve sucesso (#1913 review). */
+  fetch_errors: string[];
+}
+
+/**
+ * Pure: dado o conjunto de stats do mês, decide a edição — pelo critério ou
+ * fallback — e monta o resultado estruturado completo (nunca só a string do
+ * AAMMDD). Substitui o padrão anterior onde `main()` escolhia e só LOGAVA o
+ * porquê em stderr (fácil de perder num terminal de pipeline) — agora o
+ * motivo é um dado que o caller pode persistir/gatear/logar (#2869).
+ */
+export function resolveEiaSelection(
+  stats: EditionPollStat[],
+  yymm: string,
+  threshold: number = DEFAULT_THRESHOLD,
+  fetchErrors: string[] = [],
+): EiaSelectionResult {
+  const chosen = selectEiaEdition(stats, threshold);
+  if (chosen) {
+    return {
+      edition: chosen.edition,
+      selection: "criterion",
+      pct_correct: chosen.correct_pct,
+      total_votes: chosen.total,
+      threshold,
+      reason:
+        `Escolhida ${chosen.edition} — ${chosen.correct_pct}% acertaram ` +
+        `(${chosen.total} votos, ≥${threshold} piso, mais próxima de 50% no mês ${yymm}).`,
+      fetch_errors: fetchErrors,
+    };
+  }
+  const fallback = lastDayOfMonth(yymm);
+  return {
+    edition: fallback,
+    selection: "fallback_last",
+    pct_correct: null,
+    total_votes: null,
+    threshold,
+    reason:
+      `Nenhuma edição do mês ${yymm} teve poll elegível (gabarito definido + ` +
+      `≥${threshold} votos) — fallback ao último dia (${fallback}). Sem sinal ` +
+      `confiável de qual edição foi a mais dividida; revisar manualmente se ` +
+      `quiser trocar o É IA? do recap.`,
+    fetch_errors: fetchErrors,
+  };
+}
+
+/**
+ * Emite o sinal de fallback (#2869) — nunca silencioso: stderr (visível no
+ * terminal do pipeline) + `data/run-log.jsonl` via `logEvent` (persistido,
+ * auditável fora da sessão que rodou, lido por `/diaria-log`). No-op quando
+ * `result.selection === "criterion"` (nada a sinalizar).
+ *
+ * Extraído de `main()` pra ser testável sem precisar stubar fetch/rede
+ * (#633) — regression test cobre que o warn REALMENTE é persistido, não só
+ * comentado no código.
+ *
+ * `rootDir` é passado adiante pra `logEvent` (default cwd; tests injetam
+ * tmpdir pra não sujar `data/run-log.jsonl` de produção).
+ */
+export function signalEiaFallback(
+  result: EiaSelectionResult,
+  yymm: string,
+  cycleLabel?: string,
+  rootDir?: string,
+): void {
+  if (result.selection === "criterion") {
+    console.error(`\n✓ ${result.reason}`);
+    return;
+  }
+  console.error(`\n⚠ ${result.reason}`);
+  logEvent(
+    {
+      edition: cycleLabel ?? yymm,
+      stage: 3,
+      agent: "select-eia-edition",
+      level: "warn",
+      message: `É IA? mensal (${yymm}): fallback ao último dia — ${result.reason}`,
+      details: result,
+    },
+    rootDir,
+  );
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 async function fetchStat(
@@ -194,21 +309,20 @@ async function main() {
     );
   }
 
-  const chosen = selectEiaEdition(stats, threshold);
-  if (chosen) {
-    console.error(
-      `\n✓ Escolhida ${chosen.edition} — ${chosen.correct_pct}% acertaram ` +
-        `(${chosen.total} votos, mais próximo de 50%).`,
-    );
-    process.stdout.write(chosen.edition);
-  } else {
-    const fallback = lastDayOfMonth(yymm);
-    console.error(
-      `\n⚠ Nenhuma edição com poll elegível (gabarito + ≥${threshold} votos). ` +
-        `Fallback ao último dia: ${fallback}.`,
-    );
-    process.stdout.write(fallback);
+  const fetchErrors = failed.map((s) => s.edition);
+  const result = resolveEiaSelection(stats, yymm, threshold, fetchErrors);
+
+  // #2869: sem fallback silencioso — stderr + data/run-log.jsonl (no-op se
+  // selection === "criterion").
+  signalEiaFallback(result, yymm, get("--cycle"));
+
+  const outJson = get("--out-json");
+  if (outJson) {
+    mkdirSync(dirname(resolve(outJson)), { recursive: true });
+    writeFileSync(resolve(outJson), JSON.stringify(result, null, 2) + "\n");
   }
+
+  process.stdout.write(result.edition);
 }
 
 // CLI guard (#cli-guard): só roda main() quando invocado direto, não em import.

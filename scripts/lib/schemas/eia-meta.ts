@@ -39,6 +39,17 @@ export const EiaMetaSchema = z.object({
   real_image_file: z.string(),
   ai_side: z.enum(["A", "B"]),
   wikimedia: WikimediaInfoSchema,
+  // #2869: rastreabilidade de COMO a edição foi escolhida no É IA? mensal
+  // (`/diaria-mensal`, Etapa 3) — ausente na composição diária (Stage 3 da
+  // diária compõe pra a própria edição, sem seleção entre candidatas).
+  // "criterion" = mais próxima de 50% de acerto entre as elegíveis do mês;
+  // "fallback_last" = nenhuma edição do mês teve poll elegível, caiu no
+  // último dia (sinalizado ao editor, nunca calado — ver select-eia-edition.ts);
+  // "manual" = editor escolheu a edição manualmente no gate.
+  selection: z.enum(["criterion", "fallback_last", "manual"]).optional(),
+  // % de acerto do poll da edição escolhida — null quando `selection` não é
+  // "criterion" (fallback/manual não têm necessariamente um poll elegível).
+  pct_correct: z.number().nullable().optional(),
 }).passthrough();
 
 export type EiaMeta = z.infer<typeof EiaMetaSchema>;

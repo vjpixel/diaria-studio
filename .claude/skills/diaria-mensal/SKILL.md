@@ -257,15 +257,22 @@ done
 Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
 Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (+ crops 1x1).
 
-**É IA? mensal (#1912):** seleciona a edição diária do mês cujo poll teve a
-taxa de acerto **mais próxima de 50%** (o É IA? que mais dividiu os leitores —
-melhor pro recap mensal). Fallback automático ao último dia se nenhum poll for
-elegível (gabarito + ≥5 votos). A tabela de candidatos vai pro stderr (auditoria).
+**É IA? mensal (#1912, rastreabilidade + no-silent-fallback #2869):** seleciona
+a edição diária do mês cujo poll teve a taxa de acerto **mais próxima de 50%**
+(o É IA? que mais dividiu os leitores — melhor pro recap mensal). Fallback
+automático ao último dia se nenhum poll for elegível (gabarito + ≥5 votos) —
+mas esse fallback **nunca é silencioso**: `select-eia-edition.ts` grava o
+motivo em `--out-json` E em `data/run-log.jsonl` (warn), e o gate abaixo
+mostra o aviso pro editor. A tabela de candidatos vai pro stderr (auditoria).
 ```bash
-EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4})
-npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/
+SEL_JSON="data/monthly/$CYCLE/_internal/03-eia-selection.json"
+EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4} --cycle $CYCLE --out-json $SEL_JSON)
+SEL_SELECTION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')).selection)")
+SEL_PCT=$(node -e "const j=JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')); console.log(j.pct_correct === null ? 'null' : j.pct_correct)")
+npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/ \
+  --selection $SEL_SELECTION --pct-correct $SEL_PCT
 ```
-Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
+Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Gate Etapa 3 abaixo.
 
 ### 3c. Preview Cloudflare (#1914)
 
@@ -283,6 +290,15 @@ não bloqueia. Requer `ADMIN_SECRET` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKE
 
 Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
+**Aviso de fallback (#2869):** ler `$SEL_JSON` (`_internal/03-eia-selection.json`).
+Se `selection == "criterion"`, incluir uma linha de confirmação com o `pct_correct`.
+Se `selection == "fallback_last"` (ou o arquivo estiver ausente por falha do
+script), incluir um item de **aviso explícito** com o `reason` do JSON — o
+editor precisa saber que a escolha foi por fallback, não pelo critério, e
+pode responder `trocar-eia AAMMDD` pra apontar manualmente outra edição do
+mês (nesse caso, regravar `_internal/01-eia-meta.json` com `selection: "manual"`
+antes de seguir).
+
 Apresentar:
 ```
 📸 D1: data/monthly/$CYCLE/04-d1-2x1.jpg
@@ -290,7 +306,14 @@ Apresentar:
 🤔 É IA? B: data/monthly/$CYCLE/01-eia-B.jpg
 🌐 Preview: https://draft.diaria.workers.dev/m{YYMM}-{MM}
 
-Aprovar? sim / regenerar-d1 / regenerar-eia
+[se selection == "criterion"]
+✓ É IA? do recap: edição {EAI_EDITION} — {pct_correct}% acertaram (critério: mais dividida do mês).
+
+[se selection == "fallback_last"]
+⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback, não pelo critério de mais dividida. Motivo: {reason}
+   Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
+
+Aprovar? sim / regenerar-d1 / regenerar-eia / trocar-eia AAMMDD
 ```
 
 Este gate é uma checagem rápida das imagens em si — a revisão CONSOLIDADA (draft completo + lint + fact-check) acontece na Etapa 4 a seguir, que roda o preview de novo (fresco, refletindo qualquer regeneração feita aqui).

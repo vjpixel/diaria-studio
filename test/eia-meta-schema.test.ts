@@ -123,3 +123,41 @@ describe("EiaMetaSchema — campos required preservados", () => {
     assert.throws(() => EiaMetaSchema.parse(input));
   });
 });
+
+describe("EiaMetaSchema — selection/pct_correct (#2869)", () => {
+  const BASE = {
+    edition: "260630",
+    composed_at: "2026-07-01T00:00:00.000Z",
+    ai_image_file: "01-eia-A.jpg",
+    real_image_file: "01-eia-B.jpg",
+    ai_side: "A" as const,
+    wikimedia: { title: "t", image_url: "u" },
+  };
+
+  it("aceita ausência total de selection/pct_correct (composição diária, back-compat)", () => {
+    const r = EiaMetaSchema.parse(BASE);
+    assert.equal(r.selection, undefined);
+    assert.equal(r.pct_correct, undefined);
+  });
+
+  it("aceita selection: criterion + pct_correct numérico (mensal, critério aplicado)", () => {
+    const r = EiaMetaSchema.parse({ ...BASE, selection: "criterion", pct_correct: 50 });
+    assert.equal(r.selection, "criterion");
+    assert.equal(r.pct_correct, 50);
+  });
+
+  it("aceita selection: fallback_last + pct_correct null (#2869 — sem critério aplicável)", () => {
+    const r = EiaMetaSchema.parse({ ...BASE, selection: "fallback_last", pct_correct: null });
+    assert.equal(r.selection, "fallback_last");
+    assert.equal(r.pct_correct, null);
+  });
+
+  it("aceita selection: manual (editor escolheu no gate)", () => {
+    const r = EiaMetaSchema.parse({ ...BASE, selection: "manual", pct_correct: null });
+    assert.equal(r.selection, "manual");
+  });
+
+  it("rejeita selection fora do enum", () => {
+    assert.throws(() => EiaMetaSchema.parse({ ...BASE, selection: "guess" }));
+  });
+});
