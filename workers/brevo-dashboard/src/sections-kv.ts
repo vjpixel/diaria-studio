@@ -561,14 +561,9 @@ export function renderContactsSummarySection(
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
   const genBRT = escHtml(fmtTimeBRT(s.generated_at));
 
-  // tabelinha {rótulo → contagem}, ordenada por contagem desc.
-  // #2812 item 2: `relabel` (3º parâmetro opcional) foi removido — era morto
-  // desde o #2805 (o único caller com relabel, a tabela "Por tier", foi
-  // removido nesse PR). Verificado de novo agora (pós-#2817): a tabela "Por
-  // safra" nova NÃO usa kvTable — tem seu próprio render (cohortSection, com
-  // ordenação cronológica em vez de por-contagem) — então o parâmetro segue
-  // sem nenhum caller real. `tierLabel`/`cohortLabel` continuam vivos, usados
-  // diretamente por `tierBreakdownRows`/`cohortSection`, fora de kvTable.
+  // tabelinha {rótulo → contagem}, ordenada por contagem desc. #2880 E: com
+  // linha "Total" ao fim (só quando há ≥1 linha). Usada por "Inelegíveis por
+  // razão" e "MillionVerifier (bucket)".
   const kvTable = (
     title: string,
     map: Record<string, number> | undefined,
@@ -728,8 +723,6 @@ export function renderCohortsTabPanel(
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
   // NaN-safe (review #2872): payload KV parcial/antigo pode ter numerador
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
-  // NB: isto NÃO substitui o typeof-guard do ppAvg — lá o valor ruim é `null`
-  // (JSON), e null/received = 0 (finito) em JS: passaria por aqui como "0.0".
   const numOrDash = (v: number | null, suffix = ""): string =>
     v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`;
   const pctOrDash = (v: number | null): string => numOrDash(v, "%");

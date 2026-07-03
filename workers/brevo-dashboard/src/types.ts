@@ -200,7 +200,9 @@ export interface CohortStatsRow {
   /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
    * pra degradar em KV antigo sem o campo — render trata ausência como 0. */
   brevo?: number;
-  /** null só em KV antigo (pré-COALESCE do #2874) — o render trata; ver ppAvg. */
+  /** #2880: numerador do antigo "Pts médio" (coluna removida). Sem leitor no
+   * render hoje — mantido no payload; limpeza rastreada em issue de fast-follow.
+   * null só em KV antigo (pré-COALESCE do #2874). */
   priority_points_sum: number | null;
 }
 

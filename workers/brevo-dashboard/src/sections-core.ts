@@ -440,7 +440,7 @@ ${contactsSummarySection}
 ${cohortsTabSection}
   </div><!-- /panel-contatos -->
 
-${couponUsage ? `  <!-- Aba 6: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
+${couponUsage ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
 ${couponTabHtml}
   </div><!-- /panel-cupons -->` : ''}
