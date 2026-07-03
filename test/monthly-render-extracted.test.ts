@@ -178,4 +178,12 @@ describe("brand wordmark no render mensal (#2913)", () => {
     assert.match(html, /href="http:\/\/diar\.ia\.br"/); // href intacto, sem <span> teal
     assert.doesNotMatch(html, /href="[^"]*<span/);
   });
+
+  it("NÃO estiliza 'diaria.*' (sem ponto em diar.ia) — domínios comuns do corpo mensal", () => {
+    // A regex exige o ponto literal diar\.ia; "diaria" não tem → impossível casar.
+    // Estes domínios aparecem MUITO no corpo mensal e não podem virar wordmark.
+    for (const s of ["diaria.beehiiv.com", "cursos.diaria.workers.dev", "livros.diaria.workers.dev"]) {
+      assert.doesNotMatch(renderInline(`veja ${s} agora`), /<span style="color:#00A0A0">/);
+    }
+  });
 });
