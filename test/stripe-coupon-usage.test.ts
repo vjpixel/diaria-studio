@@ -24,6 +24,7 @@ import {
   paymentsInWindow,
   redemptionWho,
   couponIdFrom,
+  invoiceDiscounts,
   StripeApiError,
   COMMISSION_RATE,
   type PromoCodeRaw,
@@ -32,6 +33,7 @@ import {
   type CustomerRaw,
   type ChargeRaw,
   type RedemptionRow,
+  type InvoiceRaw,
 } from "../scripts/stripe-coupon-usage.ts";
 
 // ---------------------------------------------------------------------------
@@ -775,6 +777,251 @@ describe("comissão (#2743)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2879 — cupom `duration: "once"` some do relatório quando a pessoa PAGA.
+// Stripe remove o discount de `sub.discounts` assim que a 1ª fatura é paga;
+// a invoice preserva o discount aplicado — é a fonte DURÁVEL usada aqui.
+// ---------------------------------------------------------------------------
+
+describe("aggregateCouponUsage — invoices, redemption durável (#2879)", () => {
+  const couponOnce: CouponRaw = {
+    id: "cpnONCE2879", object: "coupon", amount_off: null, percent_off: 50, currency: null,
+    duration: "once", duration_in_months: null, name: "NEWS50 once TEST", times_redeemed: 2,
+    valid: true, max_redemptions: null,
+  };
+  const promosOnce: PromoCodeRaw[] = [
+    {
+      id: "promo_once", object: "promotion_code", active: true, code: "NEWS50", created: 1779210106,
+      promotion: { coupon: "cpnONCE2879", type: "coupon" }, max_redemptions: null, times_redeemed: 2,
+      restrictions: { first_time_transaction: false, minimum_amount: null },
+    },
+  ];
+
+  // Pré-pagamento: discount ainda ativo em sub.discounts (caminho já existente).
+  const subPrePayment: SubscriptionRaw = {
+    id: "sub_PRE", object: "subscription", customer: "cus_PRE", status: "trialing",
+    created: 1782383062, start_date: 1782383062,
+    items: { data: [{ price: { unit_amount: 44900, currency: "brl", recurring: { interval: "year" } } }] },
+    discounts: [{
+      id: "di_PRE", object: "discount", customer: "cus_PRE", promotion_code: "promo_once",
+      source: { coupon: "cpnONCE2879", type: "coupon" }, start: 1782400000, end: null, subscription: "sub_PRE",
+    }],
+  };
+
+  // Pós-pagamento: Stripe já CONSUMIU o discount `once` — sub.discounts vazio.
+  // Isto é exatamente o bug do #2879: sem a invoice, esta linha desapareceria.
+  const subPostPayment: SubscriptionRaw = {
+    id: "sub_POST", object: "subscription", customer: "cus_POST", status: "active",
+    created: 1782400000, start_date: 1782400000,
+    items: { data: [{ price: { unit_amount: 44900, currency: "brl", recurring: { interval: "year" } } }] },
+    discounts: [],
+  };
+
+  const invoicePostPayment: InvoiceRaw = {
+    id: "in_POST", object: "invoice", customer: "cus_POST", subscription: "sub_POST",
+    created: 1782500000, status: "paid",
+    discount: { id: "di_POST", object: "discount", coupon: { id: "cpnONCE2879", object: "coupon" }, start: 1782450000 },
+  };
+
+  const customersOnce: CustomerRaw[] = [
+    { id: "cus_PRE", email: "pre@example.com" },
+    { id: "cus_POST", email: "post@example.com" },
+  ];
+
+  // cus_POST pagou — é exatamente esse pagamento que hoje some do relatório.
+  const charges: ChargeRaw[] = [
+    { id: "ch_POST", object: "charge", customer: "cus_POST", amount: 44900, amount_refunded: 0,
+      created: 1782450000 + 10, status: "succeeded", paid: true },
+  ];
+
+  const report = aggregateCouponUsage({
+    codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment, subPostPayment],
+    customers: customersOnce, charges, invoices: [invoicePostPayment],
+  });
+
+  it("AMBAS as assinaturas aparecem no relatório (pré e pós-pagamento)", () => {
+    const subs = report["NEWS50"].redemptions.map((r) => r.subscription).sort();
+    assert.deepEqual(subs, ["sub_POST", "sub_PRE"]);
+  });
+
+  it("rowCount == timesRedeemed (reconciliado, era o mismatch que denunciava o bug)", () => {
+    assert.equal(report["NEWS50"].rowCount, report["NEWS50"].timesRedeemed);
+    assert.equal(report["NEWS50"].rowCount, 2);
+  });
+
+  it("sub_POST reflete o pagamento real via invoice (o que hoje some do relatório)", () => {
+    const row = report["NEWS50"].redemptions.find((r) => r.subscription === "sub_POST");
+    assert.ok(row, "a linha pós-pagamento não pode ter sumido");
+    assert.equal(row!.paid_cents, 44900);
+    assert.equal(row!.commission_cents, Math.round(44900 * 0.4));
+    assert.equal(row!.customer_email, "post@example.com");
+  });
+
+  it("sem invoices (input omitido) — sub_POST NÃO aparece: isola o bug do fix", () => {
+    const withoutInvoices = aggregateCouponUsage({
+      codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment, subPostPayment],
+      customers: customersOnce, charges,
+    });
+    const found = withoutInvoices["NEWS50"].redemptions.some((r) => r.subscription === "sub_POST");
+    assert.ok(!found, "sem a invoice, o bug do #2879 se manifesta — prova que é o fix quem resolve");
+  });
+
+  it("não duplica quando a invoice também referencia uma assinatura com discount ainda ao vivo", () => {
+    const invoiceForPre: InvoiceRaw = {
+      id: "in_PRE", object: "invoice", customer: "cus_PRE", subscription: "sub_PRE",
+      created: 1782410000, status: "paid",
+      discount: { id: "di_PRE_inv", object: "discount", coupon: { id: "cpnONCE2879", object: "coupon" }, start: 1782400000 },
+    };
+    const r = aggregateCouponUsage({
+      codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment, subPostPayment],
+      customers: customersOnce, charges, invoices: [invoicePostPayment, invoiceForPre],
+    });
+    const count = r["NEWS50"].redemptions.filter((x) => x.subscription === "sub_PRE").length;
+    assert.equal(count, 1, "dedupe: discount ao vivo já cobre sub_PRE, a invoice não duplica a linha");
+  });
+
+  it("invoice sem subscription vinculada é ignorada (não quebra)", () => {
+    const orphanInvoice: InvoiceRaw = {
+      id: "in_ORPHAN", object: "invoice", customer: "cus_POST", subscription: null,
+      created: 1782500000, status: "paid",
+      discount: { id: "di_ORPHAN", object: "discount", coupon: { id: "cpnONCE2879", object: "coupon" } },
+    };
+    const r = aggregateCouponUsage({
+      codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment],
+      customers: customersOnce, charges: [], invoices: [orphanInvoice],
+    });
+    assert.equal(r["NEWS50"].rowCount, 1, "só sub_PRE (via discount ao vivo); invoice órfã é ignorada, não quebra");
+  });
+
+  it("invoice apontando pra assinatura ausente do fetch é ignorada (não quebra)", () => {
+    const invoiceUnknownSub: InvoiceRaw = {
+      id: "in_UNKNOWN", object: "invoice", customer: "cus_POST", subscription: "sub_NAO_EXISTE",
+      created: 1782500000, status: "paid",
+      discount: { id: "di_UNKNOWN", object: "discount", coupon: { id: "cpnONCE2879", object: "coupon" } },
+    };
+    const r = aggregateCouponUsage({
+      codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment],
+      customers: customersOnce, charges: [], invoices: [invoiceUnknownSub],
+    });
+    assert.equal(r["NEWS50"].rowCount, 1, "assinatura da invoice não está no fetch — degrada sem quebrar");
+  });
+});
+
+describe("invoiceDiscounts (#2879)", () => {
+  it("extrai coupon id + start de invoice.discount (legado, singular)", () => {
+    const inv: InvoiceRaw = {
+      id: "in_1", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: { id: "di_1", object: "discount", coupon: { id: "cpn_1", object: "coupon" }, start: 100 },
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_1", start: 100 }]);
+  });
+
+  it("extrai de invoice.discounts (array, API mais recente)", () => {
+    const inv: InvoiceRaw = {
+      id: "in_2", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discounts: [{ id: "di_2", object: "discount", coupon: { id: "cpn_2", object: "coupon" }, start: 200 }],
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_2", start: 200 }]);
+  });
+
+  it("extrai de total_discount_amounts[].discount quando expandido", () => {
+    const inv: InvoiceRaw = {
+      id: "in_3", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      total_discount_amounts: [
+        { amount: 100, discount: { id: "di_3", object: "discount", coupon: { id: "cpn_3", object: "coupon" }, start: 300 } },
+      ],
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_3", start: 300 }]);
+  });
+
+  it("ignora discount vindo como string (id não-expandido) sem quebrar", () => {
+    const inv: InvoiceRaw = {
+      id: "in_4", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: "di_unexpanded",
+    };
+    assert.deepEqual(invoiceDiscounts(inv), []);
+  });
+
+  it("dedup: mesmo coupon id em discount + discounts[] não duplica", () => {
+    const inv: InvoiceRaw = {
+      id: "in_5", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: { id: "di_5a", object: "discount", coupon: { id: "cpn_5", object: "coupon" }, start: 500 },
+      discounts: [{ id: "di_5b", object: "discount", coupon: { id: "cpn_5", object: "coupon" }, start: 500 }],
+    };
+    assert.equal(invoiceDiscounts(inv).length, 1);
+  });
+
+  it("sem nenhum discount presente → []", () => {
+    const inv: InvoiceRaw = {
+      id: "in_6", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+    };
+    assert.deepEqual(invoiceDiscounts(inv), []);
+  });
+});
+
+describe("fetchCouponUsage — recupera redemption via invoice quando sub.discounts está vazio (#2879)", () => {
+  const mkRes = (status: number, body: unknown): Response =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  const mockFetch = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/promotion_codes?code=NEWS50")) {
+      return mkRes(200, {
+        data: [{ id: "promo_50", object: "promotion_code", active: true, code: "NEWS50", created: 1779210106,
+          coupon: { id: "cpnOnceLive", object: "coupon" }, max_redemptions: null, times_redeemed: 1,
+          restrictions: { first_time_transaction: false, minimum_amount: null } }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/promotion_codes?code=NEWS25")) return mkRes(200, { data: [], has_more: false });
+    if (u.includes("/coupons/cpnOnceLive")) {
+      return mkRes(200, { id: "cpnOnceLive", object: "coupon", amount_off: null, percent_off: 50, currency: null,
+        duration: "once", duration_in_months: null, name: "NEWS50", times_redeemed: 1, valid: true, max_redemptions: null });
+    }
+    if (u.includes("/subscriptions")) {
+      // sub.discounts VAZIO — o discount `once` já foi consumido pelo pagamento.
+      return mkRes(200, {
+        data: [{ id: "sub_paid", object: "subscription", customer: "cus_paid", status: "active",
+          created: 1782383062, start_date: 1782383062, trial_end: null,
+          items: { data: [{ price: { unit_amount: 44900, currency: "brl", recurring: { interval: "year" } } }] },
+          discounts: [] }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/invoices")) {
+      return mkRes(200, {
+        data: [{ id: "in_paid", object: "invoice", customer: "cus_paid", subscription: "sub_paid",
+          created: 1782400000, status: "paid",
+          discount: { id: "di_paid", object: "discount", coupon: { id: "cpnOnceLive", object: "coupon" }, start: 1782390000 } }],
+        has_more: false,
+      });
+    }
+    if (u.includes("/customers/")) return mkRes(200, { id: "cus_paid", email: "paid@example.com" });
+    if (u.includes("/charges")) {
+      return mkRes(200, {
+        data: [{ id: "ch_paid", object: "charge", customer: "cus_paid", amount: 44900, amount_refunded: 0,
+          created: 1782390000 + 10, status: "succeeded", paid: true }],
+        has_more: false,
+      });
+    }
+    return mkRes(404, { error: { code: "unexpected" } });
+  }) as unknown as typeof fetch;
+
+  it("a assinatura sem discount ao vivo aparece via invoice; customer/charges são buscados", async () => {
+    const report = await fetchCouponUsage("rk_test_dummy", mockFetch);
+    assert.equal(report["NEWS50"].rowCount, 1, "sub_paid recuperada via invoice (#2879)");
+    const row = report["NEWS50"].redemptions[0];
+    assert.equal(row.customer_email, "paid@example.com", "customers/{id} foi buscado — matchedCustomerIds foi estendido via invoice");
+    assert.equal(row.paid_cents, 44900, "charges/{customer} foi buscado e o pagamento contabilizado");
+    assert.equal(report["NEWS50"].rowCount, report["NEWS50"].timesRedeemed, "reconciliado (#2879)");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // csvField — quoting RFC 4180 (#2719 finding #2)
 // ---------------------------------------------------------------------------
 
@@ -1018,6 +1265,8 @@ describe("fetchCouponUsage — tolera coupon 404 (#2750)", () => {
     }
     if (u.includes("/customers/")) return mkRes(200, { id: "cus_1", email: "c1@example.com" });
     if (u.includes("/charges")) return mkRes(200, { data: [], has_more: false });
+    // #2879: sem invoice extra além do que já vem via discount ao vivo.
+    if (u.includes("/invoices")) return mkRes(200, { data: [], has_more: false });
     return mkRes(404, { error: { code: "unexpected" } });
   }) as unknown as typeof fetch;
 
@@ -1087,6 +1336,8 @@ describe("fetchCouponUsage — coupon deletado MAS ainda usado por assinatura at
       });
     }
     if (u.includes("/customers/")) return mkRes(200, { id: "cus_paying", email: "paying@example.com" });
+    // #2879: sem invoice extra além do que já vem via discount ao vivo.
+    if (u.includes("/invoices")) return mkRes(200, { data: [], has_more: false });
     if (u.includes("/charges")) {
       return mkRes(200, {
         data: [{ id: "ch_1", object: "charge", customer: "cus_paying", amount: 9990, amount_refunded: 0,

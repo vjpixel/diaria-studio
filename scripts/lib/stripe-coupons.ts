@@ -84,6 +84,71 @@ export interface DiscountRaw {
   subscription: string;
 }
 
+/**
+ * #2879: shape do Discount embutido em Invoice — vem inline (não como id) tanto
+ * em `invoice.discount` (legado, singular) quanto em cada item de
+ * `invoice.discounts` (array, cobre múltiplos descontos) e em
+ * `total_discount_amounts[].discount` (quando expandido via
+ * `expand[]=data.total_discount_amounts.discount`). Mesmo shape do `DiscountRaw`
+ * de subscription — inclui `start`, que usamos como âncora da janela de
+ * comissão quando a assinatura já não carrega mais o discount ao vivo.
+ */
+export interface InvoiceDiscountRaw {
+  id?: string;
+  object?: string;
+  coupon?: CouponRef;
+  start?: number;
+}
+
+/**
+ * #2879: fatura Stripe. Ao contrário de `sub.discounts` (estado AO VIVO, que a
+ * Stripe esvazia assim que um cupom `duration: once` é consumido pelo 1º
+ * pagamento), a fatura preserva o discount aplicado mesmo depois dele sair da
+ * assinatura — é a fonte DURÁVEL usada por `fetchCouponUsage` pra enumerar
+ * resgates sem depender do estado efêmero da assinatura.
+ */
+export interface InvoiceRaw {
+  id: string;
+  object: "invoice";
+  customer: string | null;
+  subscription: string | null;
+  created: number;
+  status: string;
+  /** API legada: 1 desconto por invoice, campo singular. */
+  discount?: InvoiceDiscountRaw | string | null;
+  /** API mais recente: suporta múltiplos descontos por invoice. */
+  discounts?: Array<InvoiceDiscountRaw | string> | null;
+  total_discount_amounts?: Array<{
+    amount: number;
+    discount: InvoiceDiscountRaw | string;
+  }> | null;
+}
+
+/**
+ * #2879: extrai todos os coupon ids (deduplicados) presentes numa invoice, com
+ * o `start` do discount quando disponível (usado como âncora da janela de
+ * comissão). Tolera `discount`/entradas de `total_discount_amounts` vindas como
+ * string (id não-expandido) — nesse caso não há como resolver o coupon sem
+ * outra chamada, então a entrada é ignorada (não quebra, só não contribui).
+ */
+export function invoiceDiscounts(
+  inv: InvoiceRaw,
+): Array<{ couponId: string; start?: number }> {
+  const out: Array<{ couponId: string; start?: number }> = [];
+  const seen = new Set<string>();
+  const push = (d: InvoiceDiscountRaw | string | null | undefined) => {
+    if (d == null || typeof d === "string") return; // id não-expandido — não resolvível aqui
+    const couponId = couponIdFrom(d.coupon);
+    if (!couponId || seen.has(couponId)) return;
+    seen.add(couponId);
+    out.push({ couponId, start: d.start });
+  };
+  push(inv.discount);
+  for (const d of inv.discounts ?? []) push(d);
+  for (const t of inv.total_discount_amounts ?? []) push(t.discount);
+  return out;
+}
+
 export interface SubscriptionRaw {
   id: string;
   object: "subscription";
@@ -317,6 +382,83 @@ export function firstPaymentInfo(
 
 export type CouponUsageReport = Record<string, CouponCodeReport>;
 
+/**
+ * #2879: monta a `RedemptionRow` de uma assinatura+cupom — usada tanto pelo
+ * caminho AO VIVO (discount ainda em `sub.discounts`) quanto pelo caminho
+ * DURÁVEL (discount só sobrevive na invoice). `windowAnchor` já vem resolvido
+ * pelo caller (discount.start ao vivo, ou start/created da invoice, ou
+ * `sub.created` como último fallback) — mantém esta função agnóstica à origem.
+ */
+function buildRedemptionRow(params: {
+  sub: SubscriptionRaw;
+  code: string;
+  couponId: string;
+  coupon: CouponRaw;
+  windowAnchor: number;
+  charges: ChargeRaw[];
+  customerEmail: string;
+}): RedemptionRow {
+  const { sub, code, couponId, coupon, windowAnchor, charges, customerEmail } = params;
+
+  const firstItem = sub.items.data[0];
+  const planAmount = firstItem?.price.unit_amount ?? 0;
+  const currency = firstItem?.price.currency ?? "unknown";
+  const interval = firstItem?.price.recurring?.interval ?? "unknown";
+
+  let discountValueCents = 0;
+  if (coupon.amount_off != null) {
+    discountValueCents = coupon.amount_off;
+  } else if (coupon.percent_off != null) {
+    if (coupon.duration === "once" || coupon.duration === "forever") {
+      discountValueCents = Math.round((planAmount * coupon.percent_off) / 100);
+    } else if (coupon.duration === "repeating" && coupon.duration_in_months != null) {
+      discountValueCents = Math.round(
+        (planAmount * coupon.percent_off * coupon.duration_in_months) / 100,
+      );
+    }
+  }
+
+  // #2743: realizado (net de refunds) do cliente na janela de 12m desde o
+  // resgate + comissão de 40%. Atribuição por cliente (granularidade "por
+  // e-mail" que o editor pediu — conta TODOS os pagamentos da pessoa na
+  // janela, não só os da assinatura do cupom).
+  const windowEnd = commissionWindowEnd(windowAnchor);
+  // #2758: lista completa de pagamentos calculada UMA vez — paidCents e o
+  // 1º pagamento (#2749) são derivados dela (mesmos filtros, sem reescanear
+  // `charges` 3× separadamente).
+  const payments = paymentsInWindow(charges, sub.customer, windowAnchor, windowEnd);
+  const paidCents = payments.reduce((sum, p) => sum + p.amount_cents, 0);
+  // #2749: previsão do 1º pagamento (fim do trial, fallback start_date).
+  // Clamp em windowAnchor: a previsão nunca é anterior ao resgate (evita
+  // mostrar data passada com "*" quando o cupom foi aplicado a uma assinatura
+  // já existente, ou quando trial_end vem 0/ausente).
+  const forecastEpoch = Math.max(sub.trial_end ?? sub.start_date, windowAnchor);
+  const firstPayment = payments.length > 0
+    ? { epoch: payments[0].epoch, isForecast: false }
+    : { epoch: forecastEpoch, isForecast: true };
+
+  return {
+    coupon_code: code,
+    coupon_id: couponId,
+    percent_off: coupon.percent_off,
+    duration: coupon.duration,
+    customer: sub.customer,
+    customer_email: customerEmail,
+    subscription: sub.id,
+    status: sub.status,
+    created: sub.created,
+    plan_amount_cents: planAmount,
+    currency,
+    interval,
+    discount_value_cents: discountValueCents,
+    paid_cents: paidCents,
+    commission_cents: commissionCents(paidCents),
+    first_payment_epoch: firstPayment.epoch,
+    first_payment_is_forecast: firstPayment.isForecast,
+    payments,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Pure aggregation — no I/O, fully testable with fixtures
 // ---------------------------------------------------------------------------
@@ -327,8 +469,16 @@ export function aggregateCouponUsage(input: {
   subscriptions: SubscriptionRaw[];
   customers: CustomerRaw[];
   charges?: ChargeRaw[]; // #2743: cobranças p/ computar o realizado + comissão
+  // #2879: invoices — fonte DURÁVEL de resgate. Um cupom `duration: "once"` é
+  // removido de `sub.discounts` assim que a 1ª fatura é paga; a invoice
+  // preserva o discount aplicado mesmo depois disso. Opcional — backward
+  // compat com callers/testes que só passam subscriptions.
+  invoices?: InvoiceRaw[];
 }): CouponUsageReport {
-  const { codes, coupons, subscriptions, customers, charges = [] } = input;
+  const { codes, coupons, subscriptions, customers, charges = [], invoices = [] } = input;
+
+  const subscriptionById = new Map<string, SubscriptionRaw>();
+  for (const s of subscriptions) subscriptionById.set(s.id, s);
 
   const couponById = new Map<string, CouponRaw>();
   for (const c of coupons) couponById.set(c.id, c);
@@ -389,70 +539,68 @@ export function aggregateCouponUsage(input: {
       const coupon = couponById.get(discCouponId);
       if (!coupon) continue;
 
-      const firstItem = sub.items.data[0];
-      const planAmount = firstItem?.price.unit_amount ?? 0;
-      const currency = firstItem?.price.currency ?? "unknown";
-      const interval = firstItem?.price.recurring?.interval ?? "unknown";
-
-      let discountValueCents = 0;
-      if (coupon.amount_off != null) {
-        discountValueCents = coupon.amount_off;
-      } else if (coupon.percent_off != null) {
-        if (coupon.duration === "once" || coupon.duration === "forever") {
-          discountValueCents = Math.round((planAmount * coupon.percent_off) / 100);
-        } else if (
-          coupon.duration === "repeating" &&
-          coupon.duration_in_months != null
-        ) {
-          discountValueCents = Math.round(
-            (planAmount * coupon.percent_off * coupon.duration_in_months) / 100,
-          );
-        }
-      }
-
-      // #2743: realizado (net de refunds) do cliente na janela de 12m desde o
-      // resgate + comissão de 40%. Atribuição por cliente (granularidade "por
-      // e-mail" que o editor pediu — conta TODOS os pagamentos da pessoa na
-      // janela, não só os da assinatura do cupom). Janela ancorada em
-      // `discount.start` (quando o cupom foi de fato aplicado/resgatado), com
-      // fallback pra `sub.created` — mais fiel a "desde o resgate" quando o
-      // cupom é aplicado a uma assinatura já existente (start > created).
+      // #2743: janela ancorada em `discount.start` (quando o cupom foi de fato
+      // aplicado/resgatado), com fallback pra `sub.created` — mais fiel a
+      // "desde o resgate" quando o cupom é aplicado a uma assinatura já
+      // existente (start > created).
       const windowAnchor = discount.start ?? sub.created;
-      const windowEnd = commissionWindowEnd(windowAnchor);
-      // #2758: lista completa de pagamentos calculada UMA vez — paidCents e o
-      // 1º pagamento (#2749) são derivados dela (mesmos filtros, sem reescanear
-      // `charges` 3× separadamente).
-      const payments = paymentsInWindow(charges, sub.customer, windowAnchor, windowEnd);
-      const paidCents = payments.reduce((sum, p) => sum + p.amount_cents, 0);
-      // #2749: previsão do 1º pagamento (fim do trial, fallback start_date).
-      // Clamp em windowAnchor: a previsão nunca é anterior ao resgate (evita
-      // mostrar data passada com "*" quando o cupom foi aplicado a uma assinatura
-      // já existente, ou quando trial_end vem 0/ausente).
-      const forecastEpoch = Math.max(sub.trial_end ?? sub.start_date, windowAnchor);
-      const firstPayment = payments.length > 0
-        ? { epoch: payments[0].epoch, isForecast: false }
-        : { epoch: forecastEpoch, isForecast: true };
 
-      report[code].redemptions.push({
-        coupon_code: code,
-        coupon_id: discCouponId,
-        percent_off: coupon.percent_off,
-        duration: coupon.duration,
-        customer: sub.customer,
-        customer_email: emailById.get(sub.customer) ?? "",
-        subscription: sub.id,
-        status: sub.status,
-        created: sub.created,
-        plan_amount_cents: planAmount,
-        currency,
-        interval,
-        discount_value_cents: discountValueCents,
-        paid_cents: paidCents,
-        commission_cents: commissionCents(paidCents),
-        first_payment_epoch: firstPayment.epoch,
-        first_payment_is_forecast: firstPayment.isForecast,
-        payments,
-      });
+      report[code].redemptions.push(
+        buildRedemptionRow({
+          sub,
+          code,
+          couponId: discCouponId,
+          coupon,
+          windowAnchor,
+          charges,
+          customerEmail: emailById.get(sub.customer) ?? "",
+        }),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // #2879 — enumeração DURÁVEL via invoices. Um cupom `duration: "once"` é
+  // consumido (removido de `sub.discounts`) assim que a 1ª fatura é paga —
+  // exatamente o pagamento que este relatório existe pra medir. A invoice
+  // preserva o discount aplicado mesmo depois dele sair da assinatura, então
+  // usamos isso pra reconstruir a linha que o loop acima não vê mais.
+  // `seen` já contém toda `${subscription}:${code}` capturada ao vivo acima —
+  // aqui só preenchemos o que falta (subscription cujo discount já foi
+  // consumido), nunca duplicando.
+  // ---------------------------------------------------------------------
+  for (const inv of invoices) {
+    if (!inv.subscription) continue; // invoice sem assinatura vinculada — nada a atribuir plano/intervalo
+    const sub = subscriptionById.get(inv.subscription);
+    if (!sub) continue; // assinatura fora do fetch (ex.: deletada) — degrada sem quebrar
+
+    for (const { couponId, start } of invoiceDiscounts(inv)) {
+      const code = couponIdToCode.get(couponId);
+      if (!code) continue;
+
+      const dedupeKey = `${sub.id}:${code}`;
+      if (seen.has(dedupeKey)) continue; // já capturado via discount ao vivo
+      seen.add(dedupeKey);
+
+      const coupon = couponById.get(couponId);
+      if (!coupon) continue;
+
+      // Sem discount ao vivo, `start` só existe se a invoice tinha o Discount
+      // expandido; na ausência, `sub.created` é o melhor fallback disponível
+      // (mesmo fallback usado no caminho ao vivo).
+      const windowAnchor = start ?? sub.created;
+
+      report[code].redemptions.push(
+        buildRedemptionRow({
+          sub,
+          code,
+          couponId,
+          coupon,
+          windowAnchor,
+          charges,
+          customerEmail: emailById.get(sub.customer) ?? "",
+        }),
+      );
     }
   }
 
@@ -601,6 +749,20 @@ export async function fetchCouponUsage(
     fetchImpl,
   );
 
+  const subscriptionById = new Map<string, SubscriptionRaw>();
+  for (const s of subscriptions) subscriptionById.set(s.id, s);
+
+  // #2879: fonte DURÁVEL de resgate — a invoice preserva o discount aplicado
+  // mesmo depois dele sair de `sub.discounts` (cupom `duration: "once"`
+  // consumido pela 1ª fatura paga). Expandimos os 3 formatos possíveis do
+  // Discount na invoice (legado singular, array, e o item de
+  // total_discount_amounts) pra não depender de qual deles a conta usa.
+  const invoices = await stripeListAll<InvoiceRaw>(
+    "/invoices?expand[]=data.discount&expand[]=data.discounts&expand[]=data.total_discount_amounts.discount",
+    apiKey,
+    fetchImpl,
+  );
+
   // `couponIds` já é o Set completo (inclui os 404'd — de propósito: uma
   // assinatura ainda pode referenciar um coupon deletado e precisa ser
   // encontrada/rastreada; ver o placeholder acima).
@@ -609,6 +771,20 @@ export async function fetchCouponUsage(
     for (const d of sub.discounts ?? []) {
       const discId = couponIdFrom(d.source) ?? couponIdFrom(d.coupon);
       if (discId && couponIds.has(discId)) {
+        matchedCustomerIds.add(sub.customer);
+        break;
+      }
+    }
+  }
+  // #2879: sem isso, a pessoa que JÁ PAGOU (discount consumido, sub.discounts
+  // vazio) nunca entraria em `matchedCustomerIds` e não teríamos o /customers
+  // nem os /charges dela — a própria linha que o fix existe pra recuperar.
+  for (const inv of invoices) {
+    if (!inv.subscription) continue;
+    const sub = subscriptionById.get(inv.subscription);
+    if (!sub) continue;
+    for (const { couponId } of invoiceDiscounts(inv)) {
+      if (couponIds.has(couponId)) {
         matchedCustomerIds.add(sub.customer);
         break;
       }
@@ -629,7 +805,7 @@ export async function fetchCouponUsage(
     charges.push(...custCharges);
   }
 
-  const report = aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges });
+  const report = aggregateCouponUsage({ codes, coupons, subscriptions, customers, charges, invoices });
   // #2766: carimba o momento de montagem do report — aqui, não em
   // aggregateCouponUsage (pura/sem I/O). Mesmo valor em todos os códigos.
   const stamp = generatedAt ?? new Date().toISOString();

@@ -47,6 +47,9 @@ export {
   StripeApiError,
   // #2758: lista completa de pagamentos (não só o 1º)
   paymentsInWindow,
+  // #2879: enumeração durável via invoices (cupom `once` some de sub.discounts
+  // assim que a 1ª fatura é paga)
+  invoiceDiscounts,
   type PaymentEntry,
   type CouponRef,
   type PromoCodeRaw,
@@ -58,6 +61,8 @@ export {
   type RedemptionRow,
   type CouponCodeReport,
   type CouponUsageReport,
+  type InvoiceRaw,
+  type InvoiceDiscountRaw,
 } from "./lib/stripe-coupons.ts";
 
 import { TARGET_CODES, fetchCouponUsage } from "./lib/stripe-coupons.ts";
