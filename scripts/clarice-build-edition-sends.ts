@@ -48,6 +48,16 @@
  * Outputs (em data/clarice-subscribers/{ciclo}/sends/):
  *   d01-10jun.csv … dNN-*.csv   (colunas: email,NOME,TIER,IS_SEED)
  *   sends-summary.json
+ *
+ * Guard anti-duplo-envio POR CICLO (#2883): o cursor posicional do item 3 é
+ * robusto a invocações PARCIAIS do MESMO snapshot da fila, mas não a drift do
+ * store ENTRE invocações (sync do Brevo, novos contatos) — a fila reordena e
+ * o offset passa a apontar pra gente diferente. Antes de fatiar, a fila é
+ * filtrada pra excluir quem já foi escrito num CSV de wave ANTERIOR deste
+ * ciclo (dedup por CONTEÚDO do próprio output, não por posição — ver
+ * `collectPriorCycleEmails`/`excludeAlreadySentEmails`). Garante que a UNIÃO
+ * das waves de um ciclo é disjunta por email, independente de quando/quantas
+ * vezes o store mudou entre invocações.
  */
 
 import { readdirSync, unlinkSync, existsSync, readFileSync } from "node:fs";
@@ -233,6 +243,81 @@ export function mergeSummaryAcrossBlocks(
 }
 
 // ---------------------------------------------------------------------------
+// Guard anti-duplo-envio POR CICLO (#2883) — dedup por CONTEÚDO, não posição
+// ---------------------------------------------------------------------------
+//
+// `buildSends` fatia a fila CONSECUTIVAMENTE usando o plano inteiro como
+// cursor posicional (ver docstring acima). Isso é robusto a invocações
+// PARCIAIS (`--blocks`) do MESMO snapshot da fila, mas NÃO a invocações
+// separadas no tempo: o build re-lê o store fresco a cada chamada, e se o
+// store mudar entre a wave 1 e a wave 2 (sync do Brevo bump `sends_count`/
+// `priority_points`, ou novos contatos importados), a fila reordena e o
+// cursor posicional passa a apontar pra contatos DIFERENTES — overlap
+// (duplo-envio) ou pulo silencioso.
+//
+// Fix: antes de fatiar, remover da fila qualquer contato cujo email já foi
+// escrito num CSV de uma invocação ANTERIOR deste MESMO ciclo — dedup por
+// CONTEÚDO do próprio output do ciclo, não por posição/offset. Mais robusto
+// que checar `last_sent_at >= cycle_start` no store: os CSVs já existem no
+// instante do build da wave seguinte, independente de o Brevo ter
+// sincronizado o envio de volta (sends_count/last_sent_at podem levar
+// horas/dias — a checagem por CSV não depende disso). `last_sent_at` fica
+// como complemento OPCIONAL não implementado aqui (pegaria envios feitos
+// fora do build, ex: reenvio manual) — não é o mecanismo primário.
+
+/**
+ * Nomes de arquivo (`d{NN}-{date}.csv`) que esta invocação vai (re)escrever —
+ * derivado puramente do `plan` + `blocks` em escopo, sem depender da fila (não
+ * precisa ter rodado `buildSends` ainda). Usado por `collectPriorCycleEmails`
+ * pra não tratar o próprio output desta invocação como "wave anterior" (senão
+ * reconstruir o MESMO bloco se auto-excluiria da fila).
+ */
+export function scopedSendFileNames(plan: SendPlanEntry[], blocks: number[]): Set<string> {
+  return new Set(
+    plan
+      .filter((p) => blocks.includes(p.block))
+      .map((p) => `d${String(p.n).padStart(2, "0")}-${p.date}.csv`),
+  );
+}
+
+/**
+ * Coleta os emails já escritos nos CSVs (`d{NN}-*.csv`) de invocações
+ * ANTERIORES deste ciclo, ignorando os arquivos em `scopeFiles` (serão
+ * regenerados NESTA invocação). Retorna vazio se `sendsDir` ainda não existe
+ * (1ª invocação do ciclo — nada com que deduplicar). Emails normalizados
+ * (trim + lowercase) pra comparação robusta a variação de caixa.
+ *
+ * Pura o suficiente pra testar com um `sendsDir` de tmpdir (não depende do
+ * store/db) — exportada pra testabilidade (#633, #2883).
+ */
+export function collectPriorCycleEmails(sendsDir: string, scopeFiles: Set<string>): Set<string> {
+  const emails = new Set<string>();
+  if (!existsSync(sendsDir)) return emails;
+  for (const f of readdirSync(sendsDir)) {
+    if (!/^d\d{2}-.*\.csv$/.test(f) || scopeFiles.has(f)) continue;
+    const parsed = Papa.parse<Row>(readFileSync(resolve(sendsDir, f), "utf8"), {
+      header: true,
+      skipEmptyLines: true,
+    });
+    for (const row of parsed.data) {
+      if (row.email) emails.add(row.email.trim().toLowerCase());
+    }
+  }
+  return emails;
+}
+
+/**
+ * Filtra `queue` removendo linhas cujo email já foi designado numa wave
+ * ANTERIOR do mesmo ciclo (`priorEmails`, ver `collectPriorCycleEmails`).
+ * Preserva a ordem relativa dos remanescentes (a rampa/estratificação
+ * downstream depende de `queue` já vir ordenada por prioridade). Pura.
+ */
+export function excludeAlreadySentEmails(queue: StoreRow[], priorEmails: Set<string>): StoreRow[] {
+  if (priorEmails.size === 0) return queue;
+  return queue.filter((r) => !priorEmails.has(r.email.trim().toLowerCase()));
+}
+
+// ---------------------------------------------------------------------------
 // Guard de coerência de --cohort entre invocações do mesmo ciclo (#2851)
 // ---------------------------------------------------------------------------
 
@@ -390,7 +475,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     `Fila de prioridade: ${queue.length} elegíveis (re-envio=${seg.reSend.length} 1º-envio=${seg.firstSend.length} excluídos=${seg.excluded.length})`,
   );
 
-  const built = buildSends(queue, plan, nameByEmail);
+  // #2883: guard anti-duplo-envio POR CICLO — exclui da fila quem já foi
+  // designado numa wave anterior deste ciclo (dedup por CONTEÚDO dos CSVs já
+  // escritos, não pelo cursor posicional — robusto a drift do store entre
+  // invocações). scopeFiles = arquivos que ESTA invocação vai (re)escrever,
+  // pra não tratar o próprio output desta invocação como "wave anterior".
+  const scopeFiles = scopedSendFileNames(plan, blocks);
+  const sendsDirForDedup = resolve(cycleDir, "sends");
+  const priorEmails = collectPriorCycleEmails(sendsDirForDedup, scopeFiles);
+  if (priorEmails.size > 0) {
+    console.error(
+      `🔒 dedup por ciclo (#2883): ${priorEmails.size} email(s) já enviados em wave(s) anterior(es) deste ciclo — excluídos da fila.`,
+    );
+  }
+  const dedupedQueue = excludeAlreadySentEmails(queue, priorEmails);
+
+  const built = buildSends(dedupedQueue, plan, nameByEmail);
 
   const sendsDir = ensureDir(resolve(cycleDir, "sends"));
   const summary: { cycle: string; total: number; sends: SendsSummaryEntry[] } = {
