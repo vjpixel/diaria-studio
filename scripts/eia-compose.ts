@@ -19,7 +19,13 @@
  *   6. Escrever 01-eia.md (template) + _internal/01-eia-meta.json
  *
  * Uso:
- *   npx tsx scripts/eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force]
+ *   npx tsx scripts/eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force] \
+ *     [--selection criterion|fallback_last|manual] [--pct-correct <number|null>]
+ *
+ * `--selection`/`--pct-correct` (#2869) são só pro caller mensal — gravados em
+ * `_internal/01-eia-meta.json` pra rastreabilidade de COMO a edição do É IA?
+ * do recap foi escolhida (ver scripts/select-eia-edition.ts). Omitidos na
+ * composição diária (Stage 3 da diária não seleciona entre candidatas).
  *
  * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[] }
  * Exit code != 0 em qualquer falha bloqueante (Wikimedia API down, sem POTD elegível, Gemini down).
@@ -96,6 +102,11 @@ interface EiaMeta {
     license_url: string | null;
     image_date_used: string;
   };
+  // #2869: rastreabilidade de COMO `edition` foi escolhida — só presente
+  // quando o caller (mensal) passa `--selection`/`--pct-correct`. Ausente na
+  // composição diária (não há seleção entre candidatas, só a própria edição).
+  selection?: "criterion" | "fallback_last" | "manual";
+  pct_correct?: number | null;
 }
 
 export interface EiaSides {
@@ -850,6 +861,39 @@ async function main(): Promise<void> {
   const internalDir = resolve(outDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
 
+  // #2869: rastreabilidade opcional de COMO `edition` foi escolhida — só o
+  // caller mensal (`/diaria-mensal` Etapa 3, via select-eia-edition.ts) passa
+  // isso. A composição diária nunca passa --selection (não há seleção entre
+  // candidatas), então os campos ficam ausentes no meta como antes (#2869
+  // self-review: back-compat preservado, schema trata como .optional()).
+  const selectionArg = args["selection"];
+  const validSelections = ["criterion", "fallback_last", "manual"] as const;
+  if (
+    selectionArg !== undefined &&
+    !(validSelections as readonly string[]).includes(selectionArg)
+  ) {
+    console.error(
+      `ERRO: --selection deve ser um de ${validSelections.join("|")} (recebi "${selectionArg}")`,
+    );
+    process.exit(1);
+  }
+  const selection = selectionArg as (typeof validSelections)[number] | undefined;
+  let pctCorrect: number | null | undefined;
+  if (args["pct-correct"] !== undefined) {
+    if (args["pct-correct"] === "null") {
+      pctCorrect = null;
+    } else {
+      const n = Number(args["pct-correct"]);
+      if (!Number.isFinite(n)) {
+        console.error(
+          `ERRO: --pct-correct deve ser numérico ou "null" (recebi "${args["pct-correct"]}")`,
+        );
+        process.exit(1);
+      }
+      pctCorrect = n;
+    }
+  }
+
   // Resume-aware (#192): skip se Stage 4 já completo. Re-run faria novo
   // coin flip e quebraria consistência com o que foi aprovado no gate.
   if (!force && isStage4Complete(outDir)) {
@@ -1016,6 +1060,11 @@ async function main(): Promise<void> {
       license_url: image.license?.url ?? null,
       image_date_used: imageDate,
     },
+    // #2869: só grava quando o caller informou (mensal) — omitir os campos
+    // por completo na composição diária, em vez de escrever undefined/null
+    // ruidoso, mantém 01-eia-meta.json idêntico ao formato pré-#2869.
+    ...(selection !== undefined ? { selection } : {}),
+    ...(pctCorrect !== undefined ? { pct_correct: pctCorrect } : {}),
   };
   const metaPath = resolve(internalDir, "01-eia-meta.json");
   writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n");
