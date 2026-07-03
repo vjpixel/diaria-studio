@@ -218,18 +218,18 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
 
   test("renderDashboardHtml: 1 teste mensal → 1 seção datada", () => {
     const html = renderDashboardHtml([...allCampaigns, ...mensalSexta]);
-    assert.match(html, /id="abc-summary-monthly-2026-07-03"/);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-03"/);
     assert.match(html, /Resumo A\/B\/C — Mensal \(2606-07 · 03\/07\/2026\)/);
     assert.match(html, /Célula B/);
   });
 
   test("renderDashboardHtml: 2 testes do mesmo ciclo (datas diferentes) → 2 seções separadas, recente primeiro", () => {
     const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
-    assert.match(html, /id="abc-summary-monthly-2026-07-03"/);
-    assert.match(html, /id="abc-summary-monthly-2026-07-05"/);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-03"/);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-05"/);
     // 05/07 renderiza ANTES de 03/07 (mais recente primeiro)
     assert.ok(
-      html.indexOf('id="abc-summary-monthly-2026-07-05"') < html.indexOf('id="abc-summary-monthly-2026-07-03"'),
+      html.indexOf('id="abc-summary-monthly-2606-07-2026-07-05"') < html.indexOf('id="abc-summary-monthly-2606-07-2026-07-03"'),
       "domingo (05/07) vem antes de sexta (03/07)",
     );
   });
@@ -237,6 +237,19 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
   test("sem teste ABC mensal → nenhuma seção mensal", () => {
     const html = renderDashboardHtml(allCampaigns);
     assert.doesNotMatch(html, /abc-summary-monthly/);
+  });
+
+  test("campo-misto na mesma data: irmão só com sentDate (sem scheduledAt) cai no MESMO grupo (review #2905)", () => {
+    // A/B com scheduledAt; C SEM scheduledAt (só sentDate), MESMA data BRT →
+    // não deve dividir o teste em 2 grupos.
+    const mixed = [
+      mAbc(75, "A", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1482, uniqueViews: 702 }),
+      mAbc(76, "B", "2026-07-03T06:00:00.000-03:00", { sent: 1489, delivered: 1484, uniqueViews: 719 }),
+      { ...makeCampaign(77, "Clarice News 2606-07 — C: subject C", "2026-07-03T06:05:00.000-03:00", { sent: 1487, delivered: 1484, uniqueViews: 691 }), scheduledAt: null },
+    ];
+    const groups = groupMonthlyAbcTests(mixed);
+    assert.equal(groups.length, 1, "1 só grupo mesmo com campo misto na mesma data");
+    assert.equal(groups[0].campaigns.length, 3);
   });
 });
 

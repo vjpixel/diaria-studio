@@ -152,7 +152,9 @@ export function renderDashboardHtml(
     .map((g) =>
       renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
         title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
-        id: `abc-summary-monthly-${g.dateKey}`,
+        // id inclui ciclo+data (a chave real do grupo) — só a data poderia
+        // colidir se 2 ciclos testassem no mesmo dia (review #2905).
+        id: `abc-summary-monthly-${g.cycle}-${g.dateKey}`,
       }),
     )
     .join("\n");
@@ -758,6 +760,11 @@ export function groupMonthlyAbcTests(
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || !parsed.monthly || parsed.cell === null) continue;
+    // Data do envio: scheduledAt (intenção) com fallback sentDate. As 3
+    // campanhas de um teste são disparadas JUNTAS no mesmo horário (Clarice
+    // News sai ~06:00 BRT, nunca perto da meia-noite), então mesmo que uma
+    // caia no fallback sentDate elas compartilham a mesma data BRT — não há
+    // split do teste pela fronteira de dia (review #2905).
     const when = c.scheduledAt ?? c.sentDate;
     if (!when) continue;
     const ms = Date.parse(when);
