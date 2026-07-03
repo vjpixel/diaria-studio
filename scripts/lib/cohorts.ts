@@ -252,28 +252,31 @@ const BARE_SAFRA_RE = /^(\d{4})-(\d{2})$/;
 
 /**
  * Slug de cohort → rótulo pt-BR pro dashboard (ex: 'assinantes-ativos' →
- * 'Assinantes ativos', 'leads-2026-06' → 'Leads jun/2026'). `null` → 'sem
- * cohort'. Forma desconhecida/corrompida devolve a chave crua — nunca lança
- * (render do dashboard não pode quebrar por um valor malformado no KV).
+ * 'Assinantes ativos', 'leads-2026-06' → 'jun/2026'). `null` → 'sem cohort'.
+ * Forma desconhecida/corrompida devolve a chave crua — nunca lança (render do
+ * dashboard não pode quebrar por um valor malformado no KV).
+ *
+ * #2880: o prefixo "Leads " foi removido dos rótulos de lead (pedido do editor
+ * — o contexto da tabela já deixa claro que são leads); caudão vira "Caudão".
  */
 export function cohortDisplayLabel(cohort: string | null | undefined): string {
   if (cohort == null) return "sem cohort";
   if (cohort === COHORT_ASSINANTES_ATIVOS) return "Assinantes ativos";
   if (cohort === COHORT_EX_ASSINANTES) return "Ex-assinantes";
-  if (cohort === COHORT_LEADS_CAUDAO) return "Leads (caudão)";
+  if (cohort === COHORT_LEADS_CAUDAO) return "Caudão";
 
   const monthly = cohort.match(MONTHLY_SAFRA_RE) ?? cohort.match(BARE_SAFRA_RE);
   if (monthly) {
     const month = Number(monthly[2]);
     const mon = PT_MONTHS_ABBR[month - 1];
-    if (mon) return `Leads ${mon}/${monthly[1]}`;
+    if (mon) return `${mon}/${monthly[1]}`;
   }
 
   const semester = cohort.match(SEMESTER_RE);
-  if (semester) return `Leads ${semester[1]}-H${semester[2]}`;
+  if (semester) return `${semester[1]}-H${semester[2]}`;
 
   const range = cohort.match(RANGE_RE);
-  if (range) return `Leads ${range[2]}-${range[3]}/${range[1]}`;
+  if (range) return `${range[2]}-${range[3]}/${range[1]}`;
 
   return cohort;
 }

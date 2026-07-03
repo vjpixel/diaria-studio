@@ -125,25 +125,25 @@ describe("cohortSendRank", () => {
 // ---------------------------------------------------------------------------
 
 describe("cohortDisplayLabel", () => {
-  it("assinantes-ativos / ex-assinantes / leads-caudao têm rótulo fixo", () => {
+  it("assinantes-ativos / ex-assinantes / leads-caudao têm rótulo fixo (#2880: sem 'Leads')", () => {
     assert.equal(cohortDisplayLabel(COHORT_ASSINANTES_ATIVOS), "Assinantes ativos");
     assert.equal(cohortDisplayLabel(COHORT_EX_ASSINANTES), "Ex-assinantes");
-    assert.equal(cohortDisplayLabel(COHORT_LEADS_CAUDAO), "Leads (caudão)");
+    assert.equal(cohortDisplayLabel(COHORT_LEADS_CAUDAO), "Caudão");
   });
 
-  it("safra mensal 'leads-YYYY-MM' vira 'Leads {mês-abrev}/{ano}'", () => {
-    assert.equal(cohortDisplayLabel("leads-2026-06"), "Leads jun/2026");
-    assert.equal(cohortDisplayLabel("leads-2026-01"), "Leads jan/2026");
-    assert.equal(cohortDisplayLabel("leads-2026-12"), "Leads dez/2026");
+  it("safra mensal 'leads-YYYY-MM' vira '{mês-abrev}/{ano}' (#2880: sem prefixo 'Leads')", () => {
+    assert.equal(cohortDisplayLabel("leads-2026-06"), "jun/2026");
+    assert.equal(cohortDisplayLabel("leads-2026-01"), "jan/2026");
+    assert.equal(cohortDisplayLabel("leads-2026-12"), "dez/2026");
   });
 
-  it("semestre legado 'leads-YYYYhN' vira 'Leads YYYY-HN'", () => {
-    assert.equal(cohortDisplayLabel("leads-2025h2"), "Leads 2025-H2");
-    assert.equal(cohortDisplayLabel("leads-2023h1"), "Leads 2023-H1");
+  it("semestre legado 'leads-YYYYhN' vira 'YYYY-HN' (#2880: sem 'Leads')", () => {
+    assert.equal(cohortDisplayLabel("leads-2025h2"), "2025-H2");
+    assert.equal(cohortDisplayLabel("leads-2023h1"), "2023-H1");
   });
 
-  it("range legado 'leads-YYYY-mon-mon' vira 'Leads mon-mon/YYYY'", () => {
-    assert.equal(cohortDisplayLabel("leads-2026-jan-abr"), "Leads jan-abr/2026");
+  it("range legado 'leads-YYYY-mon-mon' vira 'mon-mon/YYYY' (#2880: sem 'Leads')", () => {
+    assert.equal(cohortDisplayLabel("leads-2026-jan-abr"), "jan-abr/2026");
   });
 
   it("null/undefined vira 'sem cohort'", () => {
@@ -157,7 +157,7 @@ describe("cohortDisplayLabel", () => {
   });
 
   it("aceita defensivamente a safra crua legada 'YYYY-MM' (sem prefixo leads-)", () => {
-    assert.equal(cohortDisplayLabel("2026-06"), "Leads jun/2026");
+    assert.equal(cohortDisplayLabel("2026-06"), "jun/2026");
   });
 
   it("todos os 10 cohorts derivados de tier têm rótulo pt-BR (nunca passthrough acidental)", () => {

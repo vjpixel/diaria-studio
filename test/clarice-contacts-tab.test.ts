@@ -6,15 +6,15 @@ import {
   type ContactsSummary,
 } from "../workers/brevo-dashboard/src/index.ts";
 
-// #2857 fase C (cutover): `by_tier`/`by_tier_verified` foram removidos do tipo
-// `ContactsSummary` e o fallback de render que os consumia (KV cacheado
-// pré-fase-B) foi removido de sections-kv.ts — sucessor único é
-// `by_cohort_first_send`/`by_cohort_first_send_verified`.
+// #2880: as tabelas "Por safra (cohort)" e as sub-linhas "1º envio — cohort"
+// foram removidas de renderContactsSummarySection — o eixo cohort vive só na
+// tabela Cohorts (renderCohortsTabPanel, agora dentro da aba Contatos, ver
+// test/clarice-cohorts-tab.test.ts). Os campos `by_cohort`/`by_cohort_first_send*`
+// não existem mais no tipo `ContactsSummary`.
 const sample: ContactsSummary = {
   generated_at: "2026-06-29T12:00:00Z",
   total: 427528,
   brevo: { synced_rows: 29600, has_signal: true },
-  by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269, null: 131 },
   eligibility: { eligible: 422961, ineligible: 4567, by_reason: { mv_rejected: 4452, dispute: 115 } },
   priority_points: { lt0: 1, eq0: 427520, p1_40: 5, p41_80: 1, gt80: 0, optin: 3 },
   mv: { verified: 81425, none: 340731, rejected: 4452, unknown: 920 },
@@ -64,27 +64,6 @@ test("renderContactsSummarySection: sem priority_points_histogram (KV pré-#2731
   assert.doesNotMatch(html, /valor exato/, "não deve mostrar o cabeçalho do histograma novo sem o campo");
 });
 
-test("renderContactsSummarySection: fallback pré-#2731 anexa o breakdown de 1º envio (cohort) à faixa 'zero' (#2812 item 6)", () => {
-  // `sample` tem by_cohort_first_send mas NÃO tem priority_points_histogram —
-  // antes do #2812 item 6, o fallback não mostrava breakdown NENHUM. Agora o
-  // fallback também anexa as sub-linhas "1º envio".
-  const html = renderContactsSummarySection(sample);
-  assert.match(html, /zero \(sem histórico\)/, "faixa 'zero' presente");
-  assert.match(html, /1º envio — Assinantes ativos/, "breakdown (assinantes-ativos) anexado no fallback");
-  assert.match(html, /1º envio — Ex-assinantes/, "breakdown (ex-assinantes) anexado no fallback");
-  assert.match(html, /1º envio — sem cohort/, "cohort nulo rotulado 'sem cohort'");
-  const idxZero = html.indexOf("zero (sem histórico)");
-  const idxCohort = html.indexOf("1º envio — Assinantes ativos");
-  assert.ok(idxZero !== -1 && idxCohort !== -1 && idxZero < idxCohort, "breakdown vem DEPOIS da linha zero");
-});
-
-test("renderContactsSummarySection: fallback sem by_cohort_first_send no payload → sem breakdown, não lança (#2812 item 6)", () => {
-  const noBreakdown = { ...sample, by_cohort_first_send: undefined };
-  assert.doesNotThrow(() => renderContactsSummarySection(noBreakdown));
-  const html = renderContactsSummarySection(noBreakdown);
-  assert.doesNotMatch(html, /1º envio —/, "sem by_cohort_first_send → sem sub-linhas de breakdown");
-});
-
 test("renderContactsSummarySection: com priority_points_histogram → valores exatos, ordenados DESC (#2731)", () => {
   const withHistogram: ContactsSummary = {
     ...sample,
@@ -106,28 +85,18 @@ test("renderContactsSummarySection: com priority_points_histogram → valores ex
   assert.ok(idxNeg3 < idxNull, "'sem pontuação' (null) vai por último, depois do menor valor numérico");
 });
 
-test("renderContactsSummarySection: tabela 'Por tier' não existe (removida em #2805, sucessor é cohort desde #2857 fase C) — breakdown vai pra linha 0 do histograma", () => {
-  // #2805: a antiga tabela "Por tier (1º envio)" (firstSend = send_eligible=1
-  // + sends_count=0, #2732) vira breakdown inline na linha 0 do histograma.
-  // O universo NÃO é idêntico à linha (#2807 review: optin nunca-enviado tem
-  // 40 pts; re-envio decaído pode ter 0 exato) — daí o rótulo explícito
-  // "1º envio" no span.
+test("renderContactsSummarySection: tabela 'Por tier'/'Por safra' não existe — histograma de priority_points é PURO (#2880)", () => {
+  // #2805/#2817 tinham breakdown de cohort embutido na linha 0; #2880 removeu
+  // esse embutido de vez — o histograma mostra só valor/contatos(/verified/Brevo),
+  // sem sub-linhas de cohort.
   const withHistogram: ContactsSummary = {
     ...sample,
     priority_points_histogram: { "0": 427520, "15": 40, null: 12 },
   };
   const html = renderContactsSummarySection(withHistogram);
   assert.doesNotMatch(html, /Por tier \(1º envio\)/, "tabela separada não existe (nem por tier, nem por cohort)");
-  // 3ª iteração (260702): o breakdown vira SUB-LINHAS reais — 1 <tr> por
-  // cohort, contagem na coluna "contatos", rótulo "1º envio" (universo
-  // próprio, #2807 review). A regex cobre presença + valores + ordem
-  // (cohortSendRank ASC, "sem cohort" por último) + posição logo após a linha 0.
-  assert.match(
-    html,
-    /<td>0<\/td><td[^>]*>427[.,]?520<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — Ex-assinantes<\/td><td[^>]*>7[.,]?269<\/td><\/tr>\s*<tr><td[^>]*>· 1º envio — sem cohort<\/td><td[^>]*>131<\/td><\/tr>/,
-  );
-  // as sub-linhas aparecem exatamente 1x (só depois da linha 0, sem vazar)
-  assert.equal(html.split("1º envio — Assinantes ativos").length - 1, 1);
+  assert.doesNotMatch(html, /· 1º envio —/, "sem sub-linhas de cohort na linha 0");
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><\/tr>/, "linha 0 sem nada anexado depois");
 });
 
 test("renderContactsSummarySection: coluna 'verified' quando o KV traz os campos novos (260702)", () => {
@@ -135,7 +104,6 @@ test("renderContactsSummarySection: coluna 'verified' quando o KV traz os campos
     ...sample,
     priority_points_histogram: { "0": 427520, "15": 40 },
     priority_points_histogram_verified: { "0": 81000, "15": 7 },
-    by_cohort_first_send_verified: { "assinantes-ativos": 900, "ex-assinantes": 6100 },
   };
   const html = renderContactsSummarySection(withVerified);
   assert.match(html, /<th style="text-align:right">verified<\/th>/, "header da coluna presente");
@@ -143,9 +111,6 @@ test("renderContactsSummarySection: coluna 'verified' quando o KV traz os campos
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td>/);
   // linha 15
   assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>7<\/td>/);
-  // sub-linha de cohort com verified próprio; cohort sem entrada no verified → 0
-  assert.match(html, /· 1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/);
-  assert.match(html, /· 1º envio — sem cohort<\/td><td[^>]*>131<\/td><td[^>]*>0<\/td>/);
 });
 
 test("renderContactsSummarySection: KV antigo (sem campos verified) → tabela de 2 colunas, sem header verified", () => {
@@ -155,44 +120,8 @@ test("renderContactsSummarySection: KV antigo (sem campos verified) → tabela d
   };
   const html = renderContactsSummarySection(withHistogram);
   // (não usar />verified</ solto — a tabela do MillionVerifier tem a chave
-  // "verified" como linha legítima; o que não pode existir é o HEADER da coluna.
-  // O shape da linha sem coluna extra já é coberto pela regex do teste "3ª
-  // iteração" acima — sem assert duplicado aqui, review #2815.)
+  // "verified" como linha legítima; o que não pode existir é o HEADER da coluna.)
   assert.doesNotMatch(html, /<th[^>]*>verified<\/th>/, "coluna não aparece sem o dado");
-});
-
-test("renderContactsSummarySection: cohort não-reconhecido no breakdown → vai pro fim (junto de 'sem cohort'), nunca lança (#2807 review, migrado pra cohort na fase C)", () => {
-  // Antes (#2807): o guard protegia contra Number("corrompida")=NaN quebrando
-  // o comparator do breakdown por TIER. Desde #2857 fase C, o breakdown é por
-  // COHORT — cohortSendRank não faz parsing numérico, então uma chave
-  // desconhecida ("corrompida") já cai naturalmente no branch RANK_UNKNOWN
-  // (mesmo destino de `null`), sem guard especial precisar existir. Este teste
-  // documenta que o comportamento equivalente se mantém: nunca lança, chaves
-  // reconhecidas primeiro (ASC por cohortSendRank), desconhecidas por último.
-  const corrupt: ContactsSummary = {
-    ...sample,
-    by_cohort_first_send: { "ex-assinantes": 5, corrompida: 9, "assinantes-ativos": 3, null: 7 } as Record<string, number>,
-    priority_points_histogram: { "0": 24 },
-  };
-  assert.doesNotThrow(() => renderContactsSummarySection(corrupt));
-  const html = renderContactsSummarySection(corrupt);
-  const idxAssinantes = html.indexOf("— Assinantes ativos<");
-  const idxEx = html.indexOf("— Ex-assinantes<");
-  const idxBad = html.indexOf("— corrompida<");
-  const idxSem = html.indexOf("— sem cohort<");
-  assert.ok(idxAssinantes !== -1 && idxEx !== -1 && idxBad !== -1 && idxSem !== -1, "todas as chaves renderizadas");
-  assert.ok(idxAssinantes < idxEx, "cohorts reconhecidos primeiro, na ordem de envio (assinante-ativo antes de ex-assinante)");
-  assert.ok(idxEx < idxBad && idxEx < idxSem, "chave não-reconhecida e null vão pro fim");
-});
-
-test("renderContactsSummarySection: linha 0 sem by_cohort_first_send no payload → renderiza sem breakdown, não lança (#2805)", () => {
-  const noBreakdown = {
-    ...sample,
-    by_cohort_first_send: undefined,
-    priority_points_histogram: { "0": 10 },
-  } as unknown as ContactsSummary;
-  assert.doesNotThrow(() => renderContactsSummarySection(noBreakdown));
-  assert.match(renderContactsSummarySection(noBreakdown), />0<\/td>/);
 });
 
 test("renderContactsSummarySection: ordem das tabelas — priority_points → Inelegíveis → MV (#2806)", () => {
@@ -232,90 +161,20 @@ test("renderDashboardHtml: sem summary → aba presente mas com stub", () => {
 });
 
 // ---------------------------------------------------------------------------
-// #2817 — "Por safra (cohort)"
+// #2880 — unificação: "Por safra" e as sub-linhas "1º envio" saíram do
+// dashboard; o eixo cohort vive só na tabela Cohorts (aba Contatos)
 // ---------------------------------------------------------------------------
 
-test("renderContactsSummarySection: sem by_cohort (KV pré-#2817) → tabela 'Por safra' NÃO aparece, não lança", () => {
-  // `sample` não tem by_cohort — confirma o degrade gracioso do campo opcional.
-  assert.doesNotThrow(() => renderContactsSummarySection(sample));
+test("renderContactsSummarySection: 'Por safra' e sub-linhas '1º envio —' NÃO aparecem mais; nota aponta pra Cohorts (#2880)", () => {
   const html = renderContactsSummarySection(sample);
-  assert.doesNotMatch(html, /Por safra \(cohort\)/);
-});
-
-test("renderContactsSummarySection: com by_cohort → tabela 'Por safra' com rótulo pt-BR, ordem cronológica", () => {
-  // #2857 fase A: a coluna cohort guarda o slug ('leads-YYYY-MM'), não mais a
-  // safra crua — cohortLabel (via cohortDisplayLabel) traduz pro rótulo novo.
-  const withCohort: ContactsSummary = {
-    ...sample,
-    by_cohort: { "leads-2026-06": 500, "leads-2026-05": 1200, null: 300 },
-  };
-  const html = renderContactsSummarySection(withCohort);
-  assert.match(html, /Por safra \(cohort\)/);
-  assert.match(html, />Leads mai\/2026</, "rótulo pt-BR traduzido");
-  assert.match(html, />Leads jun\/2026</);
-  assert.match(html, /sem cohort/);
-  // ordem cronológica (maio antes de junho), null por último — a ordenação em
-  // sections-kv.ts é lexicográfica sobre a CHAVE crua ('leads-2026-05' <
-  // 'leads-2026-06'), que continua batendo com a ordem cronológica pros slugs
-  // de safra mensal (mesmo prefixo 'leads-YYYY-').
-  const idxMaio = html.indexOf(">Leads mai/2026<");
-  const idxJunho = html.indexOf(">Leads jun/2026<");
-  const idxSemCohort = html.indexOf("sem cohort");
-  assert.ok(idxMaio < idxJunho, "maio (leads-2026-05) antes de junho (leads-2026-06)");
-  assert.ok(idxJunho < idxSemCohort, "sem cohort (null) vai por último");
-});
-
-// ---------------------------------------------------------------------------
-// #2857 fase B/C — by_cohort_first_send (sucessor único do antigo by_tier;
-// desde a fase C não há mais fallback pra by_tier — campo nem existe no tipo)
-// ---------------------------------------------------------------------------
-
-test("renderContactsSummarySection: sub-linhas de 1º envio usam rótulo de cohort (Assinantes ativos/Ex-assinantes/sem cohort)", () => {
-  const withCohortFirstSend: ContactsSummary = {
-    ...sample,
-    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269, null: 131 },
-    priority_points_histogram: { "0": 427520, "15": 40, null: 12 },
-  };
-  const html = renderContactsSummarySection(withCohortFirstSend);
-  assert.match(html, /1º envio — Assinantes ativos/, "sub-linha com rótulo de cohort");
-  assert.match(html, /1º envio — Ex-assinantes/);
-  assert.match(html, /1º envio — sem cohort/, "cohort null rotulado 'sem cohort' (via cohortLabel)");
-  // ordem: cohortSendRank ASC (assinantes-ativos < ex-assinantes < null/desconhecido)
-  const idxAssinantes = html.indexOf("1º envio — Assinantes ativos");
-  const idxEx = html.indexOf("1º envio — Ex-assinantes");
-  const idxSem = html.indexOf("1º envio — sem cohort");
-  assert.ok(idxAssinantes < idxEx && idxEx < idxSem, "ordem cohortSendRank ASC, null por último");
-});
-
-test("renderContactsSummarySection: payload com verified (by_cohort_first_send_verified) → coluna extra nas sub-linhas de cohort", () => {
-  const withVerified: ContactsSummary = {
-    ...sample,
-    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
-    by_cohort_first_send_verified: { "assinantes-ativos": 900 },
-    priority_points_histogram: { "0": 427520, "15": 40 },
-    priority_points_histogram_verified: { "0": 81000, "15": 7 },
-  };
-  const html = renderContactsSummarySection(withVerified);
-  assert.match(html, /<th style="text-align:right">verified<\/th>/);
-  assert.match(html, /1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/);
-  assert.match(html, /1º envio — Ex-assinantes<\/td><td[^>]*>7[.,]?269<\/td><td[^>]*>0<\/td>/, "cohort sem entrada no verified → 0");
-});
-
-test("renderContactsSummarySection: fallback pré-#2731 com by_cohort_first_send (payload novo + KV pré-#2731) anexa breakdown de cohort à faixa 'zero'", () => {
-  // `sample` não tem priority_points_histogram — dispara o fallback antigo
-  // (renderPriorityPointsFallback), que também precisa saber renderizar cohort.
-  const fallbackWithCohort: ContactsSummary = {
-    ...sample,
-    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
-  };
-  const html = renderContactsSummarySection(fallbackWithCohort);
-  assert.match(html, /zero \(sem histórico\)/);
-  assert.match(html, /1º envio — Assinantes ativos/);
+  assert.doesNotMatch(html, /Por safra \(cohort\)/, "tabela 'Por safra' removida");
+  assert.doesNotMatch(html, /· 1º envio —/, "sub-linhas de 1º envio removidas");
+  assert.match(html, /está na tabela <strong>Cohorts<\/strong>/, "nota aponta pra tabela Cohorts");
 });
 
 // ---------------------------------------------------------------------------
 // #2865 — coluna "Brevo" (brevo_list_ids IS NOT NULL) no histograma de
-// priority_points e no breakdown de 1º envio por cohort
+// priority_points
 // ---------------------------------------------------------------------------
 
 test("renderContactsSummarySection: coluna 'Brevo' aparece quando priority_points_histogram_brevo está presente (#2865)", () => {
@@ -328,27 +187,6 @@ test("renderContactsSummarySection: coluna 'Brevo' aparece quando priority_point
   assert.match(html, /<th style="text-align:right">Brevo<\/th>/, "header da coluna Brevo presente");
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>29[.,]?000<\/td>/, "linha 0 com valor Brevo");
   assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>12<\/td>/, "linha 15 com valor Brevo");
-});
-
-test("renderContactsSummarySection: sub-linhas de 1º envio ganham coluna Brevo quando by_cohort_first_send_brevo presente (#2865)", () => {
-  const withBrevo: ContactsSummary = {
-    ...sample,
-    by_cohort_first_send: { "assinantes-ativos": 1167, "ex-assinantes": 7269 },
-    by_cohort_first_send_brevo: { "assinantes-ativos": 900 },
-    priority_points_histogram: { "0": 427520, "15": 40 },
-    priority_points_histogram_brevo: { "0": 29000 },
-  };
-  const html = renderContactsSummarySection(withBrevo);
-  assert.match(
-    html,
-    /1º envio — Assinantes ativos<\/td><td[^>]*>1[.,]?167<\/td><td[^>]*>900<\/td>/,
-    "sub-linha com valor Brevo",
-  );
-  assert.match(
-    html,
-    /1º envio — Ex-assinantes<\/td><td[^>]*>7[.,]?269<\/td><td[^>]*>0<\/td>/,
-    "cohort sem entrada no mapa Brevo → 0",
-  );
 });
 
 test("renderContactsSummarySection: KV antigo (sem priority_points_histogram_brevo) → sem header/coluna Brevo (retrocompat, #2865)", () => {
@@ -371,19 +209,91 @@ test("renderContactsSummarySection: colunas verified e Brevo coexistem (mesma li
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td><td[^>]*>29[.,]?000<\/td>/);
 });
 
-test("renderContactsSummarySection: by_cohort com verified → coluna extra; sem verified → 2 colunas só", () => {
-  const withVerified: ContactsSummary = {
-    ...sample,
-    by_cohort: { "leads-2026-06": 500 },
-    by_cohort_verified: { "leads-2026-06": 120 },
-  };
-  const htmlWithVerified = renderContactsSummarySection(withVerified);
-  assert.match(htmlWithVerified, />Leads jun\/2026<\/td><td[^>]*>500<\/td><td[^>]*>120<\/td>/);
+// ---------------------------------------------------------------------------
+// #2880 — coluna "elegíveis" (send_eligible=1) no histograma de priority_points
+// ---------------------------------------------------------------------------
 
-  const withoutVerified: ContactsSummary = {
+test("renderContactsSummarySection: coluna 'elegíveis' aparece quando priority_points_histogram_eligible está presente (#2880)", () => {
+  const withEligible: ContactsSummary = {
     ...sample,
-    by_cohort: { "leads-2026-06": 500 },
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_eligible: { "0": 422000, "15": 38 },
   };
-  const htmlNoVerified = renderContactsSummarySection(withoutVerified);
-  assert.match(htmlNoVerified, />Leads jun\/2026<\/td><td[^>]*>500<\/td><\/tr>/, "sem 3ª coluna quando by_cohort_verified ausente");
+  const html = renderContactsSummarySection(withEligible);
+  assert.match(html, /<th style="text-align:right">elegíveis<\/th>/, "header da coluna elegíveis presente");
+  // ordem: contatos | elegíveis → linha 0 com contatos e elegíveis lado a lado
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>422[.,]?000<\/td>/, "linha 0 com valor elegíveis");
+  assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>38<\/td>/, "linha 15 com valor elegíveis");
+});
+
+test("renderContactsSummarySection: KV antigo (sem priority_points_histogram_eligible) → sem header/coluna elegíveis (retrocompat, #2880)", () => {
+  const noEligible: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+  };
+  const html = renderContactsSummarySection(noEligible);
+  assert.doesNotMatch(html, /<th[^>]*>elegíveis<\/th>/, "coluna elegíveis não aparece sem o dado");
+});
+
+// ---------------------------------------------------------------------------
+// #2880 E — linha "Total" nas kvTable (ex: Inelegíveis por razão) e no
+// histograma de priority_points
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: kvTable (Inelegíveis por razão) ganha linha Total somando as contagens (#2880 E)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    eligibility: { eligible: 100, ineligible: 15, by_reason: { mv_rejected: 10, dispute: 5 } },
+  });
+  assert.match(html, /<tr class="total-row"><td>Total<\/td><td[^>]*>15<\/td><\/tr>/, "linha Total soma mv_rejected+dispute = 15");
+});
+
+test("renderContactsSummarySection: kvTable com map vazio NÃO ganha linha Total (sem 'Total 0' sem sentido)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    eligibility: { eligible: 100, ineligible: 0, by_reason: {} },
+  });
+  assert.doesNotMatch(html, /<tr class="total-row"><td>Total<\/td><td[^>]*>0<\/td><\/tr>/);
+});
+
+test("renderContactsSummarySection: histograma de priority_points ganha linha Total somando contatos/elegíveis/verified/Brevo (#2880 E)", () => {
+  const withAll: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 400, "15": 40, null: 10 },
+    priority_points_histogram_eligible: { "0": 380, "15": 38 },
+    priority_points_histogram_verified: { "0": 90, "15": 7 },
+    priority_points_histogram_brevo: { "0": 29, "15": 3 },
+  };
+  const html = renderContactsSummarySection(withAll);
+  assert.match(html, /<tr class="total-row">/, "linha Total presente no histograma");
+  const totalRowMatch = html.match(/<tr class="total-row"><td>Total<\/td>([\s\S]*?)<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total do histograma capturável");
+  const cells = totalRowMatch![1];
+  assert.match(cells, />450</, "contatos somados (400+40+10)");
+  assert.match(cells, />418</, "elegíveis somados (380+38)");
+  assert.match(cells, />97</, "verified somado (90+7)");
+  assert.match(cells, />32</, "Brevo somado (29+3)");
+});
+
+test("renderContactsSummarySection: ordem das colunas — contatos | elegíveis | verified | Brevo (#2880)", () => {
+  const all: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+    priority_points_histogram_eligible: { "0": 422000 },
+    priority_points_histogram_verified: { "0": 81000 },
+    priority_points_histogram_brevo: { "0": 29000 },
+  };
+  const html = renderContactsSummarySection(all);
+  // 5 células na mesma linha, na ordem exata contatos → elegíveis → verified → Brevo
+  assert.match(
+    html,
+    /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>422[.,]?000<\/td><td[^>]*>81[.,]?000<\/td><td[^>]*>29[.,]?000<\/td>/,
+    "5 células na ordem contatos|elegíveis|verified|Brevo",
+  );
+  // headers na mesma ordem
+  const idxContatos = html.indexOf(">contatos<");
+  const idxElegiveis = html.indexOf(">elegíveis<");
+  const idxVerified = html.indexOf(">verified<");
+  const idxBrevo = html.indexOf(">Brevo<");
+  assert.ok(idxContatos < idxElegiveis && idxElegiveis < idxVerified && idxVerified < idxBrevo, "headers na ordem correta");
 });

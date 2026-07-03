@@ -561,76 +561,31 @@ export function renderContactsSummarySection(
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
   const genBRT = escHtml(fmtTimeBRT(s.generated_at));
 
-  // tabelinha {rótulo → contagem}, ordenada por contagem desc.
-  // #2812 item 2: `relabel` (3º parâmetro opcional) foi removido — era morto
-  // desde o #2805 (o único caller com relabel, a tabela "Por tier", foi
-  // removido nesse PR). Verificado de novo agora (pós-#2817): a tabela "Por
-  // safra" nova NÃO usa kvTable — tem seu próprio render (cohortSection, com
-  // ordenação cronológica em vez de por-contagem) — então o parâmetro segue
-  // sem nenhum caller real. `tierLabel`/`cohortLabel` continuam vivos, usados
-  // diretamente por `tierBreakdownRows`/`cohortSection`, fora de kvTable.
+  // tabelinha {rótulo → contagem}, ordenada por contagem desc. #2880 E: com
+  // linha "Total" ao fim (só quando há ≥1 linha). Usada por "Inelegíveis por
+  // razão" e "MillionVerifier (bucket)".
   const kvTable = (
     title: string,
     map: Record<string, number> | undefined,
   ): string => {
-    const rows = Object.entries(map ?? {})
-      .sort((a, b) => b[1] - a[1])
+    const entries = Object.entries(map ?? {}).sort((a, b) => b[1] - a[1]);
+    const rows = entries
       .map(
         ([k, v]) =>
           `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
       )
       .join("\n");
+    // #2880 E: linha Total (soma das contagens). Só quando há ≥1 linha — tabela
+    // vazia não ganha um "Total 0" sem sentido.
+    const total = entries.reduce((a, [, v]) => a + v, 0);
+    const totalRow = entries.length
+      ? `\n<tr class="total-row"><td>Total</td><td style="text-align:right">${n(total)}</td></tr>`
+      : "";
     return `<div class="table-wrap"><table>
       <thead><tr><th>${escHtml(title)}</th><th style="text-align:right">contatos</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}${totalRow}</tbody></table></div>`;
   };
 
-  // #2805 → 3ª iteração (pedido do editor, 260702): o breakdown de 1º envio são
-  // SUB-LINHAS reais da tabela — 1 <tr> por cohort, com a contagem na coluna
-  // "contatos" — em vez de lista <br> espremida na célula da linha 0.
-  // ATENÇÃO (#2807 review): o universo do by_cohort_first_send (firstSend:
-  // send_eligible=1 + sends_count=0, #2732) NÃO é idêntico à linha 0 do
-  // histograma — optin nunca-enviado tem +40 pts (fica na linha 40) e
-  // re-envio decaído/inelegível nunca-enviado pode ter 0 exato (conta na
-  // linha 0 mas está fora do firstSend). Por isso cada sub-linha carrega o
-  // rótulo "1º envio": descreve o universo próprio dele, não uma partição da
-  // linha 0.
-  // Ordem: cohortSendRank ASC (fila real de 1º envio, assinante-ativo
-  // primeiro — mesma regra de prioridade de envio que `segmentFromStore`
-  // usa), "sem cohort" por último. Rótulo pt-BR via `cohortLabel` (mesma
-  // função da tabela "Por safra", `cohortSection` abaixo).
-  // `byCohortFirstSendVerified === undefined` ⇒ tabela SEM a coluna verified
-  // (o caller passa o campo só quando a coluna global está ativa — review
-  // #2815: os dois campos verified sempre nascem juntos no summary; payload
-  // parcial mostra 0, trade-off aceito e documentado). A mesma ressalva de
-  // universos vale pra coluna verified: o verified da linha 0 é do bucket
-  // inteiro (sem internos), o das sub-linhas é do firstSend — as somas não
-  // conciliam por design.
-  //
-  // #2857 fase C (cutover): o fallback pro payload legado `by_tier`
-  // (pré-fase-B) foi REMOVIDO — clarice-db-summary.ts nunca mais emite esse
-  // campo, e qualquer KV vivo em produção já é pós-fase-B/B.1 (refresh
-  // periódico). Sem nenhum dos dois campos (payload cru pré-#2731 sem
-  // priority_points_histogram) → sem breakdown, ver renderPriorityPointsFallback.
-  // #2865: 3º parâmetro opcional `byCohortFirstSendBrevo` — mesma semântica
-  // esparsa da coluna verified (ausente = 0), coluna extra só quando o KV traz
-  // o campo (payload antigo degrada sem a coluna, mesmo gate do verified).
-  const firstSendBreakdownRows = (
-    byCohortFirstSend: Record<string, number> | undefined,
-    byCohortFirstSendVerified: Record<string, number> | undefined,
-    byCohortFirstSendBrevo: Record<string, number> | undefined,
-  ): string => {
-    const entries = Object.entries(byCohortFirstSend ?? {});
-    if (entries.length === 0) return "";
-    const withVerifiedCol = byCohortFirstSendVerified !== undefined;
-    const withBrevoCol = byCohortFirstSendBrevo !== undefined;
-    const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
-    return entries
-      .sort(([a], [b]) => rank(a) - rank(b))
-      .map(([k, v]) =>
-        `\n<tr><td style="opacity:0.65;padding-left:18px">· 1º envio — ${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right;opacity:0.65">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendVerified?.[k] ?? 0)}</td>` : ""}${withBrevoCol ? `<td style="text-align:right;opacity:0.65">${n(byCohortFirstSendBrevo?.[k] ?? 0)}</td>` : ""}</tr>`)
-      .join("");
-  };
   const ppMap: Record<string, number> = {
     "negativo (<0)": pp.lt0,
     "zero (sem histórico)": pp.eq0,
@@ -654,6 +609,12 @@ export function renderContactsSummarySection(
       return isNaN(num) ? -Infinity : num;
     };
     const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
+    // #2880: coluna "elegíveis" (send_eligible=1) ENTRE contatos e verified —
+    // o histograma cobre a base inteira (menos internos), incluindo inelegíveis;
+    // esta coluna isola, por faixa de pontos, o subconjunto de fato enviável.
+    // Mesmo gate opcional das demais (KV antigo sem o campo → sem a coluna).
+    const eHist = s.priority_points_histogram_eligible;
+    const withEligible = eHist !== undefined;
     // 260702: coluna "verified" (mv_bucket='verified') — só quando o KV já
     // traz o campo novo; payload antigo renderiza a tabela de 2 colunas.
     const vHist = s.priority_points_histogram_verified;
@@ -661,93 +622,53 @@ export function renderContactsSummarySection(
     // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo gate opcional.
     const bHist = s.priority_points_histogram_brevo;
     const withBrevo = bHist !== undefined;
-    // #2805: logo após a linha 0 entram as sub-linhas do breakdown de 1º envio
-    // (rotuladas "1º envio" — universo firstSend, que se CONCENTRA na linha 0
-    // mas não coincide com ela; ver comentário do firstSendBreakdownRows).
+    // #2880: as sub-linhas "1º envio — cohort" (que ficavam sob a linha 0)
+    // foram removidas — o eixo cohort agora vive só na tabela Cohorts, logo
+    // abaixo. O histograma fica PURO (distribuição por valor de pontuação).
+    // Ordem das colunas: contatos | elegíveis | verified | Brevo.
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>${
-        k === "0"
-          ? firstSendBreakdownRows(
-              s.by_cohort_first_send,
-              withVerified ? (s.by_cohort_first_send_verified ?? {}) : undefined,
-              withBrevo ? (s.by_cohort_first_send_brevo ?? {}) : undefined,
-            )
-          : ""
-      }`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
+    // #2880 E: linha Total — soma cada coluna sobre todas as faixas (= a base
+    // inteira menos internos, universo do histograma).
+    const sumMap = (m: Record<string, number> | undefined): number =>
+      Object.values(m ?? {}).reduce((a, b) => a + b, 0);
+    const totContatos = sorted.reduce((a, [, v]) => a + v, 0);
+    const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}</tr>`;
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
+      <tbody>${rows}
+${totalRow}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
-  // mostrava NENHUM breakdown — a tabela "Por tier"/cohort só existe hoje
-  // dentro de renderPriorityPointsHistogram (linha 0 do histograma novo).
-  // Paridade mínima com o caminho novo: anexa o MESMO firstSendBreakdownRows
-  // à faixa "zero (sem histórico)" — onde o universo firstSend se CONCENTRA
-  // (mesma ressalva de universos do comentário acima). Sem coluna "verified"
-  // aqui: o payload que dispara este fallback é sempre o mais antigo dos dois
-  // formatos (pré-#2731), então nunca teria priority_points_histogram_verified/
-  // by_cohort_first_send_verified também.
-  const renderPriorityPointsFallback = (
-    map: Record<string, number>,
-    byCohortFirstSend: Record<string, number> | undefined,
-  ): string => {
+  // #2880: fallback pré-#2731 (sem priority_points_histogram) degrada pras
+  // faixas antigas — sem sub-linhas de cohort (removidas; ver tabela Cohorts).
+  const renderPriorityPointsFallback = (map: Record<string, number>): string => {
     const rows = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
-      .map(([k, v]) => {
-        const row = `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`;
-        return k === "zero (sem histórico)"
-          ? row + firstSendBreakdownRows(byCohortFirstSend, undefined, undefined)
-          : row;
-      })
+      .map(([k, v]) => `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`)
       .join("\n");
     return `<div class="table-wrap"><table>
       <thead><tr><th>priority_points (re-envio, por faixa — aguardando refresh #2731)</th><th style="text-align:right">contatos</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
-  // KV pré-#2731 não tem o histograma — degrada pras faixas antigas (com o
-  // breakdown de 1º envio anexado à faixa "zero", #2812 item 6).
+  // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
-    : renderPriorityPointsFallback(ppMap, s.by_cohort_first_send);
+    : renderPriorityPointsFallback(ppMap);
   const brevoBadge = brevo.has_signal
     ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
 
-  // #2817: "Por safra (cohort)" — mesmo padrão visual do kvTable, com a coluna
-  // "verified" (como as demais tabelas com par total+verified). Campo OPCIONAL
-  // (KV antigo sem by_cohort) → tabela inteira omitida, não renderizada vazia.
-  // Ordenação CRONOLÓGICA (não por contagem, ao contrário do kvTable padrão) —
-  // "safra" é uma dimensão de tempo, então maio→junho→julho faz mais sentido
-  // que ordenar por volume; "sem safra" (null) sempre por último. A forma
-  // canônica 'YYYY-MM' ordena lexicograficamente = cronologicamente.
-  const cohortSection = s.by_cohort
-    ? (() => {
-        const byCohortVerified = s.by_cohort_verified;
-        const withVerifiedCol = byCohortVerified !== undefined;
-        const rows = Object.entries(s.by_cohort!)
-          .sort(([a], [b]) => {
-            if (a === "null") return 1;
-            if (b === "null") return -1;
-            return a < b ? -1 : a > b ? 1 : 0;
-          })
-          .map(
-            ([k, v]) =>
-              `<tr><td>${escHtml(cohortLabel(k === "null" ? null : k))}</td><td style="text-align:right">${n(v)}</td>${withVerifiedCol ? `<td style="text-align:right">${n(byCohortVerified?.[k] ?? 0)}</td>` : ""}</tr>`,
-          )
-          .join("\n");
-        return `<div class="table-wrap"><table>
-      <thead><tr><th>Por safra (cohort)</th><th style="text-align:right">contatos</th>${withVerifiedCol ? '<th style="text-align:right">verified</th>' : ""}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-      })()
-    : "";
-
+  // #2880: a tabela "Por safra (cohort)" foi REMOVIDA — o eixo cohort vive
+  // agora só na tabela Cohorts (renderCohortsTabPanel), consolidada nesta mesma
+  // aba logo abaixo. O histograma abaixo é o eixo PONTUAÇÃO (re-envio), puro.
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
-  ${cohortSection}
   ${priorityPointsSection}
+  <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort.</p>
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
@@ -802,8 +723,6 @@ export function renderCohortsTabPanel(
   const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
   // NaN-safe (review #2872): payload KV parcial/antigo pode ter numerador
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
-  // NB: isto NÃO substitui o typeof-guard do ppAvg — lá o valor ruim é `null`
-  // (JSON), e null/received = 0 (finito) em JS: passaria por aqui como "0.0".
   const numOrDash = (v: number | null, suffix = ""): string =>
     v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`;
   const pctOrDash = (v: number | null): string => numOrDash(v, "%");
@@ -811,14 +730,20 @@ export function renderCohortsTabPanel(
   type Row = {
     cohort: string;
     contacts: number;
+    brevo: number;
     eligible: number;
     received: number;
     sendsSum: number;
+    // contagens brutas (pro Total agregar taxas corretamente, #2880 E)
+    opened: number;
+    clicked: number;
+    unsub: number;
+    hardBounce: number;
+    mvVerified: number; // #2880 D: exibido como número ABSOLUTO
     openRate: number | null;
     clickRate: number | null;
-    unsubBounceRate: number | null;
-    mvVerifiedRate: number | null;
-    ppAvg: number | null;
+    unsubRate: number | null;
+    bounceRate: number | null;
   };
 
   const rank = (k: string): number => cohortSendRank(k === "null" ? null : k);
@@ -827,20 +752,26 @@ export function renderCohortsTabPanel(
     .map(([k, c]) => ({
       cohort: k,
       contacts: c.contacts,
+      // #2880: absorve a coluna Brevo das tabelas removidas. `?? 0`: KV antigo
+      // (pré-#2880) tem cohort_stats sem o campo brevo por linha.
+      brevo: c.brevo ?? 0,
       eligible: c.eligible,
       received: c.received,
       sendsSum: c.sends_sum,
+      opened: c.opened ?? 0,
+      clicked: c.clicked ?? 0,
+      // #2880 G: unsub e bounce separados. `?? unsub_bounce ?? 0`: degrada em KV
+      // antigo (pré-split) mostrando o par somado na coluna Unsub, 0 em Bounce.
+      unsub: c.unsub ?? (c as { unsub_bounce?: number }).unsub_bounce ?? 0,
+      hardBounce: c.hard_bounce ?? 0,
+      mvVerified: c.mv_verified,
       openRate: c.received > 0 ? (c.opened / c.received) * 100 : null,
       clickRate: c.received > 0 ? (c.clicked / c.received) * 100 : null,
-      unsubBounceRate: c.received > 0 ? (c.unsub_bounce / c.received) * 100 : null,
-      mvVerifiedRate: c.contacts > 0 ? (c.mv_verified / c.contacts) * 100 : null,
-      // typeof-guard (review #2872): KV antigo pode ter priority_points_sum
-      // null (SUM SQL de tudo-NULL, pré-COALESCE) — null/received = 0 em JS e
-      // renderia "0.0" como se medido; null → "—".
-      ppAvg:
-        c.received > 0 && typeof c.priority_points_sum === "number"
-          ? c.priority_points_sum / c.received
+      unsubRate:
+        c.received > 0
+          ? ((c.unsub ?? (c as { unsub_bounce?: number }).unsub_bounce ?? 0) / c.received) * 100
           : null,
+      bounceRate: c.received > 0 ? ((c.hard_bounce ?? 0) / c.received) * 100 : null,
     }));
 
   // Média simples da coluna (só sobre linhas com denominador > 0 — null não
@@ -852,8 +783,8 @@ export function renderCohortsTabPanel(
   };
   const avgOpen = colAvg(rows.map((r) => r.openRate));
   const avgClick = colAvg(rows.map((r) => r.clickRate));
-  const avgUnsubBounce = colAvg(rows.map((r) => r.unsubBounceRate));
-  const avgMv = colAvg(rows.map((r) => r.mvVerifiedRate));
+  const avgUnsub = colAvg(rows.map((r) => r.unsubRate));
+  const avgBounce = colAvg(rows.map((r) => r.bounceRate));
 
   const cellAttr = (v: number | null, avg: number | null): string =>
     v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP
@@ -862,42 +793,79 @@ export function renderCohortsTabPanel(
 
   const tableRows = rows
     .map((r) => {
+      // #2880 D: MV verified é número absoluto (não % → sem destaque de desvio,
+      // que não faz sentido entre cohorts de tamanhos muito diferentes).
       return `<tr>
       <td>${escHtml(cohortLabel(r.cohort === "null" ? null : r.cohort))}</td>
       <td>${n(r.contacts)}</td>
+      <td>${n(r.brevo)}</td>
       <td>${n(r.eligible)}</td>
       <td>${n(r.received)}</td>
       <td>${n(r.sendsSum)}</td>
       <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
       <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
-      <td${cellAttr(r.unsubBounceRate, avgUnsubBounce)}>${pctOrDash(r.unsubBounceRate)}</td>
-      <td${cellAttr(r.mvVerifiedRate, avgMv)}>${pctOrDash(r.mvVerifiedRate)}</td>
-      <td>${numOrDash(r.ppAvg)}</td>
+      <td${cellAttr(r.unsubRate, avgUnsub)}>${pctOrDash(r.unsubRate)}</td>
+      <td${cellAttr(r.bounceRate, avgBounce)}>${pctOrDash(r.bounceRate)}</td>
+      <td>${n(r.mvVerified)}</td>
     </tr>`;
     })
     .join("\n");
 
+  // #2880 E: linha Total. Contagens somadas; taxas AGREGADAS (Σnum/Σrecebeu,
+  // não média de taxas) — a taxa real da base inteira. Sem destaque de desvio.
+  const tot = rows.reduce(
+    (a, r) => ({
+      contacts: a.contacts + r.contacts,
+      brevo: a.brevo + r.brevo,
+      eligible: a.eligible + r.eligible,
+      received: a.received + r.received,
+      sendsSum: a.sendsSum + r.sendsSum,
+      opened: a.opened + r.opened,
+      clicked: a.clicked + r.clicked,
+      unsub: a.unsub + r.unsub,
+      hardBounce: a.hardBounce + r.hardBounce,
+      mvVerified: a.mvVerified + r.mvVerified,
+    }),
+    { contacts: 0, brevo: 0, eligible: 0, received: 0, sendsSum: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0, mvVerified: 0 },
+  );
+  const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
+  const totalRow = `<tr class="total-row">
+      <td>Total</td>
+      <td>${n(tot.contacts)}</td>
+      <td>${n(tot.brevo)}</td>
+      <td>${n(tot.eligible)}</td>
+      <td>${n(tot.received)}</td>
+      <td>${n(tot.sendsSum)}</td>
+      <td>${pctOrDash(totRate(tot.opened))}</td>
+      <td>${pctOrDash(totRate(tot.clicked))}</td>
+      <td>${pctOrDash(totRate(tot.unsub))}</td>
+      <td>${pctOrDash(totRate(tot.hardBounce))}</td>
+      <td>${n(tot.mvVerified)}</td>
+    </tr>`;
+
   return `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub+Bounce são sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é sobre o total de contatos do cohort. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna.</p>
+  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é o <strong>número</strong> de contatos do cohort verificados. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células de taxa em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna. A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th title="Cohort (taxonomia #2857)">Cohort</th>
         <th title="Total de contatos no cohort (exclui internos)">Contatos</th>
+        <th title="Contatos do cohort sincronizados na Brevo (brevo_list_ids preenchido)">Na Brevo</th>
         <th title="Contatos elegíveis para envio (send_eligible=1)">Elegíveis</th>
         <th title="Contatos que já receberam ao menos 1 envio (sends_count>0)">Recebeu ≥1</th>
         <th title="Soma de envios (eventos) do cohort">Envios (Σ)</th>
         <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
         <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
-        <th title="% de quem recebeu que descadastrou ou deu bounce">Unsub+Bounce</th>
-        <th title="% do cohort verificado no MillionVerifier (mv_bucket=verified)">MV verified</th>
-        <th title="priority_points médio de quem recebeu — engajamento composto">Pts médio</th>
+        <th title="% de quem recebeu que descadastrou">Unsub</th>
+        <th title="% de quem recebeu que deu hard bounce">Bounce</th>
+        <th title="Nº de contatos do cohort verificados no MillionVerifier (mv_bucket=verified)">MV verified</th>
       </tr>
     </thead>
-    <tbody>${tableRows}</tbody>
+    <tbody>${tableRows}
+${totalRow}</tbody>
   </table>
   </div>
 </section>`;

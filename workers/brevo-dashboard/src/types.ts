@@ -146,13 +146,6 @@ export interface ContactsSummary {
   generated_at: string;
   total: number;
   brevo: { synced_rows: number; has_signal: boolean };
-  // #2857 fase C (cutover): `by_tier`/`by_tier_verified` foram REMOVIDOS deste
-  // tipo — o fallback de render pra KV cacheado pré-fase-B (`by_tier`) foi
-  // removido em sections-kv.ts nesta mesma fase (dead-weight: qualquer KV
-  // vivo já é pós-fase-B/B.1, refresh periódico). Sucessor único:
-  // `by_cohort_first_send`/`by_cohort_first_send_verified`, abaixo.
-  by_cohort_first_send?: Record<string, number>;
-  by_cohort_first_send_verified?: Record<string, number>;
   eligibility: {
     eligible: number;
     ineligible: number;
@@ -171,15 +164,16 @@ export interface ContactsSummary {
   // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
   // cohort firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
   priority_points_histogram_verified?: Record<string, number>;
-  // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo par opcional,
-  // mesmo degrade gracioso (KV antigo sem o campo → sem a coluna).
+  // #2880: coluna "elegíveis" (send_eligible=1) do histograma — par opcional,
+  // degrade gracioso (KV antigo sem o campo → sem a coluna). Isola, por faixa de
+  // pontos, o subconjunto de fato enviável (o histograma inteiro inclui inelegíveis).
+  priority_points_histogram_eligible?: Record<string, number>;
+  // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) do histograma — par
+  // opcional, degrade gracioso (KV antigo sem o campo → sem a coluna).
+  // #2880: `by_cohort`/`by_cohort_first_send*` REMOVIDOS — a tabela "Por safra"
+  // e as sub-linhas "1º envio" saíram do dashboard, consolidadas em cohort_stats.
   priority_points_histogram_brevo?: Record<string, number>;
-  by_cohort_first_send_brevo?: Record<string, number>;
-  // #2817: agregado por safra mensal (opcionais — KV antigo não tem os campos;
-  // render degrada omitindo a tabela "Por safra (cohort)" inteira).
-  by_cohort?: Record<string, number>;
-  by_cohort_verified?: Record<string, number>;
-  // #2864: comparativo de envio/engajamento por cohort (aba "Cohorts").
+  // #2864: comparativo de envio/engajamento por cohort.
   // Opcional — KV antigo sem o campo faz a aba renderizar o stub "dados ainda
   // não gerados" (mesmo padrão de degrade gracioso das demais seções KV).
   cohort_stats?: Record<string, CohortStatsRow>;
@@ -199,9 +193,16 @@ export interface CohortStatsRow {
   sends_sum: number;
   opened: number;
   clicked: number;
-  unsub_bounce: number;
+  /** #2880: separados a pedido do editor (antes: par unsub_bounce). */
+  unsub: number;
+  hard_bounce: number;
   mv_verified: number;
-  /** null só em KV antigo (pré-COALESCE do #2874) — o render trata; ver ppAvg. */
+  /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
+   * pra degradar em KV antigo sem o campo — render trata ausência como 0. */
+  brevo?: number;
+  /** #2880: numerador do antigo "Pts médio" (coluna removida). Sem leitor no
+   * render hoje — mantido no payload; limpeza rastreada em issue de fast-follow.
+   * null só em KV antigo (pré-COALESCE do #2874). */
   priority_points_sum: number | null;
 }
 
