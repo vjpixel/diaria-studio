@@ -485,6 +485,73 @@ export function computeCohort(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// CSV membership backfill (#2873) — linhas nuas (stripe_ids NULL) que
+// re-entraram no store por caminho secundário (mv-exports, sends CSVs, sync
+// Brevo) DEPOIS de terem sido excluídas da ingestão Stripe pela auditoria de
+// qualidade de email (role/test/estudante — `isLowQualityEmail`,
+// merge-clarice-subscribers.ts). Essas linhas nunca passam por `ingestStripe`
+// (não estão em `kept` nem em `disputed`), então ficam sem `stripe_ids`/
+// `created`/`cohort` mesmo que o email exista de fato nos CSVs Stripe do root
+// — só não passou no filtro de qualidade.
+//
+// `CsvBackfillIndex` é um índice email→created construído pelo CALLER
+// (clarice-build-db.ts, a partir de `buildUniverse().merged` — o Map com
+// TODOS os registros Stripe do root, kept E excluded, antes de qualquer
+// filtro) e passado a `recomputeDerived`. `recomputeDerived` em si não lê CSV
+// nenhum — mantém a função pura/testável com SQLite in-memory.
+//
+// Decisão de produto embutida (#2873): o cohort do CSV é derivado só via
+// `created` (computeCohort com tier=null, cai sempre no ramo `deriveLeadCohort`
+// ou NULL) — NUNCA promove a linha a `assinantes-ativos`/`ex-assinantes`
+// mesmo que o registro Stripe mostre status pagante. Um email excluído pela
+// auditoria (role/test/estudante) não é uma pessoa assinante de verdade — só
+// uma caixa que existe no export Stripe (ex: `financeiro@empresa.com` que
+// pagou a fatura da empresa). Tratar essa caixa como lead datado (ou deixar
+// sem cohort) evita inflar o cohort de maior prioridade de envio com contas
+// que a própria auditoria já julgou de baixa qualidade de entrega.
+// ---------------------------------------------------------------------------
+
+export interface CsvContactInfo {
+  /** `created` (ISO) do registro Stripe mesclado, ou `null` se ausente/inválido. */
+  created: string | null;
+}
+
+/** Índice email normalizado (lowercase/trim) → dados do CSV Stripe mesclado. */
+export type CsvBackfillIndex = Map<string, CsvContactInfo>;
+
+/**
+ * Resolve `email` contra `index` — match exato primeiro, e (#2863) match
+ * Gmail-normalizado (mesma regra de `findContactByEmail`, reaplicada aqui
+ * porque o índice é um `Map` em memória, não uma tabela SQL) quando o
+ * domínio é da família Gmail e exatamente 1 chave do índice canonicaliza pro
+ * mesmo valor. Ambíguo (2+ candidatos) ou miss real → `null` (nunca adivinha).
+ */
+export function lookupCsvBackfill(
+  index: CsvBackfillIndex,
+  email: string,
+): CsvContactInfo | null {
+  const normalized = email.trim().toLowerCase();
+
+  const exact = index.get(normalized);
+  if (exact) return exact;
+
+  const at = normalized.lastIndexOf("@");
+  const domain = at === -1 ? "" : normalized.slice(at + 1);
+  if (!GMAIL_DOMAINS.has(domain)) return null;
+
+  const canonical = canonicalizeGmail(normalized);
+  const candidates: string[] = [];
+  for (const key of index.keys()) {
+    const kAt = key.lastIndexOf("@");
+    const kDomain = kAt === -1 ? "" : key.slice(kAt + 1);
+    if (!GMAIL_DOMAINS.has(kDomain)) continue;
+    if (canonicalizeGmail(key) === canonical) candidates.push(key);
+  }
+  if (candidates.length === 1) return index.get(candidates[0]) ?? null;
+  return null;
+}
+
 /**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
  * `send_eligible`, `ineligible_reason`, `cohort` — #2817, taxonomia
@@ -507,6 +574,18 @@ export function computeCohort(
  * escrito aqui nem em nenhum ingest novo (fica intacto — legado read-only
  * desde a fase C).
  *
+ * `csvIndex` (#2873, opcional): quando uma linha continua com `cohort` NULL
+ * após o backfill normal via `computeCohort(tier, created)` acima E não tem
+ * `stripe_ids` (nunca passou por `ingestStripe` — nem `kept` nem `disputed`),
+ * tenta resolver o email contra `csvIndex` (membership nos CSVs Stripe do
+ * root, construído pelo caller a partir de `buildUniverse().merged` — inclui
+ * linhas excluídas pela auditoria de qualidade de email). Achou → deriva
+ * cohort do `created` do CSV via `computeCohort(null, created)` (mesmo
+ * comportamento do backfill legado, só que o `created` vem do CSV em vez do
+ * store). Omitido (chamadores que não passam `csvIndex`, ex: testes
+ * unitários com SQLite in-memory sem CSV nenhum) → comportamento idêntico ao
+ * de antes, sem tentativa de backfill.
+ *
  * #2895 — PRIMEIRO passo (antes de recomputar qualquer coisa): purga
  * PERMANENTE de qualquer linha `isTestAccount` que tenha escapado dos guards
  * de ingestão (`ingestStripe`/`ingestMv`/`makeBrevoUpsert`) e chegado ao
@@ -516,7 +595,10 @@ export function computeCohort(
  * REMOVA os que já estavam lá (o incidente original: DELETE manual não era
  * permanente porque o rebuild seguinte os trazia de volta).
  */
-export function recomputeDerived(db: DatabaseSync): number {
+export function recomputeDerived(
+  db: DatabaseSync,
+  csvIndex?: CsvBackfillIndex,
+): number {
   const allEmails = (
     db.prepare("SELECT email FROM clarice_users").all() as Array<{
       email: string;
@@ -537,7 +619,7 @@ export function recomputeDerived(db: DatabaseSync): number {
   const rows = db
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
-              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort, stripe_ids
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -554,6 +636,7 @@ export function recomputeDerived(db: DatabaseSync): number {
     created: string | null;
     tier: number | null;
     cohort: string | null;
+    stripe_ids: string | null;
   }>;
 
   const update = db.prepare(
@@ -580,10 +663,22 @@ export function recomputeDerived(db: DatabaseSync): number {
       // legado tier+created) só quando ausente/não-reconhecido. Precisa ser
       // computado ANTES de classifyEligibility — #2888 usa o cohort pra
       // isentar assinantes-ativos da exigência de mv_unverified.
-      const cohort =
+      let cohort =
         r.cohort != null && isKnownCohortSlug(r.cohort)
           ? r.cohort
           : computeCohort(r.tier, r.created);
+      // #2873: ainda sem cohort E nunca tocada por ingestStripe (stripe_ids
+      // NULL — nem kept nem disputed) → tenta membership nos CSVs Stripe do
+      // root via o índice que o caller construiu (buildUniverse().merged).
+      // Gated nas DUAS condições pra nunca sobrescrever um cohort já derivado
+      // (preserve-then-backfill, #2857) nem gastar o lookup em linhas que
+      // ingestStripe já classificou (stripe_ids presente, mesmo `[]`).
+      if (cohort == null && r.stripe_ids == null && csvIndex) {
+        const csvMatch = lookupCsvBackfill(csvIndex, r.email);
+        if (csvMatch) {
+          cohort = computeCohort(null, csvMatch.created);
+        }
+      }
       const elig = classifyEligibility({
         email_blacklisted: !!r.email_blacklisted,
         unsubscribed: !!r.unsubscribed,

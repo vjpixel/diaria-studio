@@ -11,7 +11,9 @@ import {
   recomputeDerived,
   openClariceDb,
   findContactByEmail,
+  lookupCsvBackfill,
   SOFT_BOUNCE_LIMIT,
+  type CsvBackfillIndex,
 } from "../scripts/lib/clarice-db.ts";
 
 // ---------------------------------------------------------------------------
@@ -109,6 +111,179 @@ describe("findContactByEmail", () => {
     const r = findContactByEmail(db, "filosofodaniel@gmail.com");
     assert.equal(r.matchType, "gmail-normalized");
     assert.equal(r.row?.email, "filosofo.daniel@googlemail.com");
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lookupCsvBackfill (#2873) — mesma regra de matching de findContactByEmail
+// (exato + gmail-normalizado), aplicada a um Map em memória (o índice
+// email→created construído pelo caller a partir de buildUniverse().merged).
+// ---------------------------------------------------------------------------
+
+describe("lookupCsvBackfill", () => {
+  it("match exato", () => {
+    const idx: CsvBackfillIndex = new Map([
+      ["contato@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+    const r = lookupCsvBackfill(idx, "contato@empresa.com");
+    assert.deepEqual(r, { created: "2026-06-10T00:00:00.000Z" });
+  });
+
+  it("gmail-normalizado (#2863) — variante sem pontos casa com a forma canônica do índice", () => {
+    const idx: CsvBackfillIndex = new Map([
+      ["filosofo.daniel@gmail.com", { created: "2025-01-01T00:00:00.000Z" }],
+    ]);
+    const r = lookupCsvBackfill(idx, "filosofodaniel@gmail.com");
+    assert.deepEqual(r, { created: "2025-01-01T00:00:00.000Z" });
+  });
+
+  it("domínio não-Gmail com pontos → não normaliza, miss real", () => {
+    const idx: CsvBackfillIndex = new Map([
+      ["filosofo.daniel@empresa.com.br", { created: "2025-01-01T00:00:00.000Z" }],
+    ]);
+    const r = lookupCsvBackfill(idx, "filosofodaniel@empresa.com.br");
+    assert.equal(r, null);
+  });
+
+  it("miss real (email ausente do índice) → null", () => {
+    const idx: CsvBackfillIndex = new Map([
+      ["outrapessoa@gmail.com", { created: null }],
+    ]);
+    assert.equal(lookupCsvBackfill(idx, "ninguem.aqui@gmail.com"), null);
+  });
+
+  it("ambíguo (2+ chaves colidem na forma canônica) → null, nunca adivinha", () => {
+    const idx: CsvBackfillIndex = new Map([
+      ["a.bc@gmail.com", { created: "2026-01-01T00:00:00.000Z" }],
+      ["ab.c@gmail.com", { created: "2026-02-01T00:00:00.000Z" }],
+    ]);
+    assert.equal(lookupCsvBackfill(idx, "a.b.c@gmail.com"), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recomputeDerived + csvIndex (#2873) — backfill de cohort via membership nos
+// CSVs Stripe do root, pra linhas nuas (stripe_ids NULL) re-entradas por
+// caminho secundário (mv-exports/sends/Brevo) depois de excluídas da
+// ingestão Stripe pela auditoria de qualidade de email.
+// ---------------------------------------------------------------------------
+
+describe("recomputeDerived: backfill via csvIndex (#2873)", () => {
+  it("stripe_ids NULL + cohort NULL + email presente no csvIndex → backfill via computeCohort(null, created)", () => {
+    const db = openClariceDb(":memory:");
+    // linha nua típica de ingestMv (INSERT OR IGNORE só com email) — sem
+    // stripe_ids, sem created, sem cohort.
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "contato@empresa.com",
+    );
+    const csvIndex: CsvBackfillIndex = new Map([
+      ["contato@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+
+    recomputeDerived(db, csvIndex);
+
+    const row = db
+      .prepare("SELECT cohort FROM clarice_users WHERE email = ?")
+      .get("contato@empresa.com") as { cohort: string | null };
+    assert.equal(row.cohort, "leads-2026-06");
+    db.close();
+  });
+
+  it("email NÃO presente no csvIndex → cohort permanece NULL (sem invenção)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "so-brevo@gmail.com",
+    );
+    const csvIndex: CsvBackfillIndex = new Map([
+      ["outro@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+
+    recomputeDerived(db, csvIndex);
+
+    const row = db
+      .prepare("SELECT cohort FROM clarice_users WHERE email = ?")
+      .get("so-brevo@gmail.com") as { cohort: string | null };
+    assert.equal(row.cohort, null);
+    db.close();
+  });
+
+  it("stripe_ids PRESENTE (mesmo `[]`, tocada por ingestStripe) → backfill NUNCA roda, mesmo com csvIndex batendo", () => {
+    const db = openClariceDb(":memory:");
+    // Simula um disputado (ingestStripe grava stripe_ids='[]' e cohort=NULL
+    // de propósito, ver clarice-build-db.ts:ingestStripe) — não deve ser
+    // reclassificado pelo backfill de CSV, mesmo se o email aparecer no índice.
+    db.prepare(
+      "INSERT INTO clarice_users (email, stripe_ids, cohort) VALUES (?, ?, ?)",
+    ).run("disputado@empresa.com", "[]", null);
+    const csvIndex: CsvBackfillIndex = new Map([
+      ["disputado@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+
+    recomputeDerived(db, csvIndex);
+
+    const row = db
+      .prepare("SELECT cohort FROM clarice_users WHERE email = ?")
+      .get("disputado@empresa.com") as { cohort: string | null };
+    assert.equal(
+      row.cohort,
+      null,
+      "stripe_ids presente → linha já foi julgada por ingestStripe, backfill de CSV não se aplica",
+    );
+    db.close();
+  });
+
+  it("cohort JÁ reconhecido não é sobrescrito pelo backfill de CSV (preserve-then-backfill, #2857)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare(
+      "INSERT INTO clarice_users (email, cohort) VALUES (?, ?)",
+    ).run("ja-classificado@empresa.com", "assinantes-ativos");
+    const csvIndex: CsvBackfillIndex = new Map([
+      ["ja-classificado@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+
+    recomputeDerived(db, csvIndex);
+
+    const row = db
+      .prepare("SELECT cohort FROM clarice_users WHERE email = ?")
+      .get("ja-classificado@empresa.com") as { cohort: string | null };
+    assert.equal(row.cohort, "assinantes-ativos", "cohort reconhecido é preservado, ignora csvIndex");
+    db.close();
+  });
+
+  it("csvIndex omitido (chamador legado) → comportamento idêntico a antes, sem tentativa de backfill", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "sem-indice@empresa.com",
+    );
+    recomputeDerived(db); // sem 2º argumento
+    const row = db
+      .prepare("SELECT cohort FROM clarice_users WHERE email = ?")
+      .get("sem-indice@empresa.com") as { cohort: string | null };
+    assert.equal(row.cohort, null);
+    db.close();
+  });
+
+  it("idempotente: rodar 2x com o mesmo csvIndex não gera drift", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run(
+      "contato2@empresa.com",
+    );
+    const csvIndex: CsvBackfillIndex = new Map([
+      ["contato2@empresa.com", { created: "2026-06-10T00:00:00.000Z" }],
+    ]);
+
+    recomputeDerived(db, csvIndex);
+    const after1 = (
+      db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get("contato2@empresa.com") as any
+    ).cohort;
+    recomputeDerived(db, csvIndex);
+    const after2 = (
+      db.prepare("SELECT cohort FROM clarice_users WHERE email = ?").get("contato2@empresa.com") as any
+    ).cohort;
+
+    assert.equal(after1, "leads-2026-06");
+    assert.equal(after2, "leads-2026-06", "2ª rodada é no-op — sem drift");
     db.close();
   });
 });
