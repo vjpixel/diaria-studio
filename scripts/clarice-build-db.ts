@@ -36,6 +36,7 @@ import {
   recomputeDerived,
   isTestAccount,
   DEFAULT_DB_PATH,
+  type CsvBackfillIndex,
 } from "./lib/clarice-db.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -64,8 +65,18 @@ function ingestStripe(
   excluded_audit_only: number;
   test_accounts_excluded: number;
   skipped_files: string[];
+  /**
+   * Índice email→created (#2873) construído a partir de `merged` — o Map de
+   * `buildUniverse` com TODOS os registros Stripe do root, kept E excluded
+   * (auditoria de qualidade de email não remove a linha desse Map, só do
+   * `kept`/`disputed`). Consumido por `recomputeDerived` pra backfillar
+   * `cohort` de linhas nuas (stripe_ids NULL) re-entradas por caminho
+   * secundário (mv-exports, sends, Brevo) cujo email de fato existe nos CSVs
+   * Stripe mas foi excluído da ingestão pela auditoria.
+   */
+  csvIndex: CsvBackfillIndex;
 } {
-  const { kept: allKept, excluded, skippedFiles } = buildUniverse(dataDir, now);
+  const { kept: allKept, excluded, merged, skippedFiles } = buildUniverse(dataDir, now);
   // #2895: conta de teste do editor (vjpixel+test*@gmail.com) — exclusão
   // PERMANENTE na ingestão, nunca inserida/mantida no store (mesmo vindo do
   // universo Stripe completo). Filtrado ANTES do upsert — diferente de
@@ -138,6 +149,17 @@ function ingestStripe(
     );
   }
   db.exec("COMMIT");
+
+  // #2873: índice email→created pra backfill de cohort de linhas nuas — ver
+  // doc no tipo de retorno acima. Chave normalizada (lowercase/trim), mesma
+  // convenção de `findContactByEmail`/`lookupCsvBackfill`. `merged` já traz
+  // TODOS os registros (kept + excluded), então cobre o caso central do bug:
+  // um email excluído pela auditoria (role/test) mas presente no CSV Stripe.
+  const csvIndex: CsvBackfillIndex = new Map();
+  for (const [email, m] of merged) {
+    csvIndex.set(email, { created: isoOrNull(m.created) });
+  }
+
   // `excluded_audit_only` exclui os disputados (que ENTRAM no store como
   // inelegíveis) → conta só os realmente ausentes (invalid/low-quality/not_clrc_pt),
   // sem double-count com `disputed` (#2649 review).
@@ -147,6 +169,7 @@ function ingestStripe(
     excluded_audit_only: excluded.length - disputed.length - testAccountsInDisputed,
     test_accounts_excluded: testAccountsInKept + testAccountsInDisputed,
     skipped_files: skippedFiles,
+    csvIndex,
   };
 }
 
@@ -321,7 +344,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   }
 
   console.error(`⚙️  recomputando priority_points + send_eligible…`);
-  const derived = recomputeDerived(db);
+  const derived = recomputeDerived(db, stripe.csvIndex);
 
   const total = (
     db.prepare("SELECT COUNT(*) AS n FROM clarice_users").get() as { n: number }
@@ -349,7 +372,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         send_eligible_authoritative: brevoSynced,
         brevo_synced: brevoSynced,
         priority_optin: optin,
-        stripe,
+        // csvIndex é um Map interno (não serializa útil via JSON.stringify) —
+        // exclui do resumo impresso, só passa adiante pro recomputeDerived acima.
+        stripe: { ...stripe, csvIndex: undefined },
         mv,
         derived_recomputed: derived,
       },
