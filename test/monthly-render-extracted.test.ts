@@ -157,3 +157,25 @@ describe("normalizeKnownUrl — links de curadoria migrados (#2261)", () => {
     assert.doesNotMatch(html, /beehiiv\.com\/cursos/);
   });
 });
+
+// #2913: o render mensal passou a aplicar o wordmark da marca (applyBrandWordmark)
+// no texto — "diar.ia.br" vira o wordmark com pontos teal, igual à diária.
+describe("brand wordmark no render mensal (#2913)", () => {
+  it("estiliza 'diar.ia.br' como wordmark (pontos teal #00A0A0)", () => {
+    const html = renderInline("em parceria com a diar.ia.br: curadoria");
+    assert.match(
+      html,
+      /<strong>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/strong>/,
+    );
+  });
+
+  it("estiliza 'diar.ia' (sem .br) também", () => {
+    assert.match(renderInline("acesse diar.ia hoje"), /<strong>diar<span style="color:#00A0A0">\./);
+  });
+
+  it("NÃO toca a URL dentro de um link (wordmark só em texto fora de link)", () => {
+    const html = renderInline("[aqui](http://diar.ia.br)");
+    assert.match(html, /href="http:\/\/diar\.ia\.br"/); // href intacto, sem <span> teal
+    assert.doesNotMatch(html, /href="[^"]*<span/);
+  });
+});
