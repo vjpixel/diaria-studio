@@ -11,10 +11,19 @@ import {
   deriveCohort,
   cohortLabel,
   resolveCohortArg,
+  isInternalEmail,
+  isEngajados,
+  segmentEngajados,
+  isReativacao,
+  segmentReativacao,
+  isRampWarm,
+  segmentRampWarm,
+  isNamedGroupKey,
+  NAMED_GROUPS,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
-import { cohortFromTier } from "../scripts/lib/cohorts.ts";
+import { cohortFromTier, INTERNAL_EMAILS } from "../scripts/lib/cohorts.ts";
 
 // Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
 // clarice-segment.ts até a fase B, removida no cutover; ver
@@ -563,4 +572,158 @@ test("#2857 fase B.1: quando created DIVERGE do rótulo estático do tier, o cre
   assert.notDeepEqual(cohortOrder, tierOracleOrder);
 
   db.close();
+});
+
+// ---------------------------------------------------------------------------
+// #2885 — grupos de envio NOMEADOS (engajados / reativacao / ramp-warm)
+// ---------------------------------------------------------------------------
+
+test("isInternalEmail: reconhece os 4 internos (#2809), case/trim-insensível; qualquer outro é falso", () => {
+  for (const e of INTERNAL_EMAILS) {
+    assert.equal(isInternalEmail(e), true, e);
+    assert.equal(isInternalEmail(e.toUpperCase()), true, `${e} (upper)`);
+    assert.equal(isInternalEmail(`  ${e}  `), true, `${e} (com espaço)`);
+  }
+  assert.equal(isInternalEmail("audiencia@x.com"), false);
+});
+
+test("isEngajados: send_eligible=1 AND sends_count>0 AND priority_points>0; exclui internos (#2809)", () => {
+  assert.equal(
+    isEngajados({ email: "a@x.com", send_eligible: 1, sends_count: 3, priority_points: 20 }),
+    true,
+  );
+  // entra/sai por CADA condição:
+  assert.equal(
+    isEngajados({ email: "a@x.com", send_eligible: 0, sends_count: 3, priority_points: 20 }),
+    false,
+    "send_eligible=0 → fora",
+  );
+  assert.equal(
+    isEngajados({ email: "a@x.com", send_eligible: 1, sends_count: 0, priority_points: 20 }),
+    false,
+    "sends_count=0 (nunca enviado) → fora, isso é firstSend/ramp-warm",
+  );
+  assert.equal(
+    isEngajados({ email: "a@x.com", send_eligible: 1, sends_count: 3, priority_points: 0 }),
+    false,
+    "priority_points<=0 → fora (decaído, não engajado)",
+  );
+  assert.equal(
+    isEngajados({ email: "VJPIXEL@GMAIL.COM", send_eligible: 1, sends_count: 3, priority_points: 20 }),
+    false,
+    "interno (#2809) → fora mesmo satisfazendo as outras 3 condições",
+  );
+});
+
+test("segmentEngajados: ordem priority_points DESC, email ASC desempata", () => {
+  const rows: StoreRow[] = [
+    row({ email: "c@x.com", sends_count: 3, priority_points: 20 }),
+    row({ email: "a@x.com", sends_count: 5, priority_points: 60 }),
+    row({ email: "b@x.com", sends_count: 2, priority_points: 20 }),
+    row({ email: "fresh@x.com", sends_count: 0, priority_points: 999 }), // firstSend, não engajados
+    row({ email: "decay@x.com", sends_count: 2, priority_points: -10 }), // decaído, não engajados
+    row({ email: "cut@x.com", sends_count: 2, priority_points: 50, send_eligible: 0 }), // inelegível
+    row({ email: "vjpixel@gmail.com", sends_count: 4, priority_points: 999 }), // interno
+  ];
+  assert.deepEqual(
+    segmentEngajados(rows).map((r) => r.email),
+    ["a@x.com", "b@x.com", "c@x.com"], // 60 > 20 > 20; empate b/c por email
+  );
+});
+
+test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; exclui internos (#2809)", () => {
+  assert.equal(
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 0 }),
+    true,
+  );
+  assert.equal(
+    isReativacao({ email: "a@x.com", send_eligible: 0, sends_count: 3, opens_count: 0 }),
+    false,
+    "send_eligible=0 → fora",
+  );
+  assert.equal(
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 0, opens_count: 0 }),
+    false,
+    "sends_count=0 (nunca enviado) → fora",
+  );
+  assert.equal(
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 1 }),
+    false,
+    "opens_count>0 (abriu ao menos 1×) → fora, isso não é reativação",
+  );
+  assert.equal(
+    isReativacao({ email: "pixel@memelab.com.br", send_eligible: 1, sends_count: 3, opens_count: 0 }),
+    false,
+    "interno (#2809) → fora",
+  );
+});
+
+test("segmentReativacao: ordem last_sent_at DESC (não-abridor mais recente primeiro); email ASC desempata; ausente vai pro fim", () => {
+  const rows: StoreRow[] = [
+    row({ email: "old@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-01-01T00:00:00Z" }),
+    row({ email: "new@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z" }),
+    row({ email: "mid@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-03-01T00:00:00Z" }),
+    row({ email: "sem-data@x.com", sends_count: 2, opens_count: 0, last_sent_at: null }),
+    row({ email: "b-tie@x.com", sends_count: 1, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z" }), // empata com new@
+    row({ email: "abridor@x.com", sends_count: 2, opens_count: 1, last_sent_at: "2026-12-01T00:00:00Z" }), // opens>0, fora
+  ];
+  assert.deepEqual(
+    segmentReativacao(rows).map((r) => r.email),
+    ["b-tie@x.com", "new@x.com", "mid@x.com", "old@x.com", "sem-data@x.com"],
+  );
+});
+
+test("isRampWarm: reusa isFirstSend (elegível + nunca enviado) restrito a mv_bucket='verified'; NÃO exclui internos", () => {
+  assert.equal(
+    isRampWarm({ send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
+    true,
+  );
+  assert.equal(
+    isRampWarm({ send_eligible: 1, sends_count: 0, mv_bucket: "unknown" }),
+    false,
+    "mv_bucket != verified → fora",
+  );
+  assert.equal(
+    isRampWarm({ send_eligible: 1, sends_count: 3, mv_bucket: "verified" }),
+    false,
+    "sends_count>0 (já enviado) → fora, isso é engajados/reativacao",
+  );
+  assert.equal(
+    isRampWarm({ send_eligible: 0, sends_count: 0, mv_bucket: "verified" }),
+    false,
+    "send_eligible=0 → fora",
+  );
+});
+
+test("segmentRampWarm: ordem cohortSendRank (morno→frio); NÃO exclui internos", () => {
+  const rows: StoreRow[] = [
+    row({ email: "lead@x.com", sends_count: 0, tier: 5, mv_bucket: "verified" }),
+    row({ email: "ativo@x.com", sends_count: 0, tier: 1, mv_bucket: "verified" }),
+    row({ email: "unverified@x.com", sends_count: 0, tier: 1, mv_bucket: "unknown" }), // fora
+    row({ email: "vjpixel@gmail.com", sends_count: 0, tier: 1, mv_bucket: "verified" }), // interno, mas ramp-warm não exclui
+  ];
+  assert.deepEqual(
+    segmentRampWarm(rows).map((r) => r.email),
+    ["ativo@x.com", "vjpixel@gmail.com", "lead@x.com"], // ativo/vjpixel empatam por cohort (T01) → email ASC
+  );
+});
+
+test("NAMED_GROUPS / isNamedGroupKey: os 3 grupos da #2885 estão registrados", () => {
+  assert.deepEqual(Object.keys(NAMED_GROUPS).sort(), ["engajados", "ramp-warm", "reativacao"]);
+  assert.equal(isNamedGroupKey("engajados"), true);
+  assert.equal(isNamedGroupKey("reativacao"), true);
+  assert.equal(isNamedGroupKey("ramp-warm"), true);
+  assert.equal(isNamedGroupKey("inventado"), false);
+});
+
+test("#2885 grupos nomeados: --budget-like corte pega o TOPO pós-ordenação (não uma fatia arbitrária)", () => {
+  const rows: StoreRow[] = [
+    row({ email: "c@x.com", sends_count: 3, priority_points: 20 }),
+    row({ email: "a@x.com", sends_count: 5, priority_points: 60 }),
+    row({ email: "b@x.com", sends_count: 2, priority_points: 40 }),
+  ];
+  const ordered = segmentEngajados(rows).map((r) => r.email);
+  assert.deepEqual(ordered, ["a@x.com", "b@x.com", "c@x.com"]);
+  // simula o corte de --budget=2 do CLI: sempre os 2 primeiros da ordem certa.
+  assert.deepEqual(ordered.slice(0, 2), ["a@x.com", "b@x.com"]);
 });

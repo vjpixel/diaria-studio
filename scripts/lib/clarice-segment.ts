@@ -34,6 +34,7 @@ import {
   cohortFromSafra,
   cohortSendRank,
   isKnownCohortSlug,
+  INTERNAL_EMAILS,
 } from "./cohorts.ts";
 
 export interface StoreRow {
@@ -58,6 +59,13 @@ export interface StoreRow {
   send_eligible: number; // 0 | 1
   ineligible_reason: string | null;
   sends_count: number;
+  // #2885: campos usados pelos grupos de envio NOMEADOS (`segmentEngajados`/
+  // `segmentReativacao`/`segmentRampWarm` abaixo) — opcionais pra não quebrar
+  // os fixtures existentes de `segmentFromStore`/`priorityQueue` (que não os
+  // usam). `loadStoreRows` já seleciona os 3 do store real.
+  opens_count?: number;
+  last_sent_at?: string | null;
+  mv_bucket?: string | null;
 }
 
 export interface Segmentation {
@@ -203,16 +211,160 @@ export function sliceIntoWaves<T>(ordered: T[], maxSize: number): T[][] {
   return out;
 }
 
-/** Lê as linhas relevantes pra segmentação do store SQLite. */
+/**
+ * Lê as linhas relevantes pra segmentação do store SQLite. Inclui
+ * `opens_count`/`last_sent_at`/`mv_bucket` (#2885) — usados pelos grupos de
+ * envio NOMEADOS (`segmentEngajados`/`segmentReativacao`/`segmentRampWarm`),
+ * não só pela rampa (`segmentFromStore`/`priorityQueue`, que ignoram esses 3
+ * campos extras sem quebrar).
+ */
 export function loadStoreRows(db: {
   prepare: (sql: string) => { all: () => unknown[] };
 }): StoreRow[] {
   return db
     .prepare(
-      `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count
+      `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
+              opens_count, last_sent_at, mv_bucket
          FROM clarice_users`,
     )
     .all() as StoreRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Grupos de envio NOMEADOS (#2885) — predicado + ordem sobre o store, cada um
+// re-derivado FRESCO a partir de `loadStoreRows` no momento do build (nunca um
+// CSV congelado). Complementam a rampa (`segmentFromStore`/`priorityQueue` —
+// o grupo "crescer alcance") com grupos por OBJETIVO: retenção (`engajados`),
+// re-ativação (`reativacao`), 1º-envio-seguro (`ramp-warm`). Cada grupo é uma
+// função pura `(rows: StoreRow[]) => StoreRow[]` já FILTRADA + ORDENADA —
+// `scripts/clarice-build-segment.ts` só corta pelo `--budget` e serializa.
+//
+// Desempate estável por email ASC em todos os grupos (mesmo padrão de
+// `segmentFromStore`) → output determinístico.
+// ---------------------------------------------------------------------------
+
+const INTERNAL_EMAILS_LOWER = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
+
+/** `email` pertence à lista de internos (#2809 — editor/parceiro Clarice)? */
+export function isInternalEmail(email: string): boolean {
+  return INTERNAL_EMAILS_LOWER.has(email.trim().toLowerCase());
+}
+
+/**
+ * `engajados` (retenção): elegível, com histórico de envio, e engajado
+ * (priority_points > 0 — mesmo eixo de `priorityQueue`). Exclui internos
+ * (#2809) — abrem por ofício, não é sinal de retenção real.
+ */
+export function isEngajados(
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "priority_points">,
+): boolean {
+  return (
+    isSendEligible(r) &&
+    (r.sends_count ?? 0) > 0 &&
+    (r.priority_points ?? 0) > 0 &&
+    !isInternalEmail(r.email)
+  );
+}
+
+/** Ordem de `engajados`: priority_points DESC, email ASC desempata. */
+export function segmentEngajados(rows: StoreRow[]): StoreRow[] {
+  return rows
+    .filter(isEngajados)
+    .slice()
+    .sort(
+      (a, b) =>
+        (b.priority_points ?? 0) - (a.priority_points ?? 0) || a.email.localeCompare(b.email),
+    );
+}
+
+/**
+ * `reativacao`: elegível, com histórico de envio, mas NUNCA abriu
+ * (opens_count = 0 — o não-abridor puro, distinto do "decaído" de
+ * `priorityQueue` que só olha priority_points ≤ 0, que também inclui quem
+ * abriu pouco). Exclui internos (#2809).
+ */
+export function isReativacao(
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count">,
+): boolean {
+  return (
+    isSendEligible(r) &&
+    (r.sends_count ?? 0) > 0 &&
+    (r.opens_count ?? 0) === 0 &&
+    !isInternalEmail(r.email)
+  );
+}
+
+/**
+ * Ordem de `reativacao`: last_sent_at DESC (não-abridores mais RECENTES
+ * primeiro — reativar quem sumiu há pouco tempo é mais provável que reativar
+ * quem nunca abriu em anos). `last_sent_at` ausente/inválido vai pro fim
+ * (-Infinity — nunca "fura" a fila de propósito, mesmo padrão fail-safe dos
+ * demais ranks deste módulo). Email ASC desempata.
+ */
+export function segmentReativacao(rows: StoreRow[]): StoreRow[] {
+  const ms = (v: string | null | undefined): number => {
+    if (!v) return -Infinity;
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? -Infinity : t;
+  };
+  return rows
+    .filter(isReativacao)
+    .slice()
+    .sort((a, b) => {
+      const ta = ms(a.last_sent_at);
+      const tb = ms(b.last_sent_at);
+      if (ta !== tb) return tb - ta;
+      return a.email.localeCompare(b.email);
+    });
+}
+
+/**
+ * `ramp-warm` (1º envio seguro): reusa `isFirstSend` (elegível + nunca
+ * enviado) restrito a `mv_bucket='verified'` — só quem já passou pelo
+ * MillionVerifier com resultado limpo (não confunde com `catch_all`/ausente).
+ * NÃO exclui internos (não pedido pela #2885 — ao contrário de
+ * `engajados`/`reativacao`, este grupo é sobre segurança de 1º contato, não
+ * sobre métrica de retenção/reativação).
+ */
+export function isRampWarm(
+  r: Pick<StoreRow, "send_eligible" | "sends_count" | "mv_bucket">,
+): boolean {
+  return isFirstSend(r) && r.mv_bucket === "verified";
+}
+
+/** Ordem de `ramp-warm`: cohortSendRank (morno→frio, mesmo eixo do 1º envio da rampa). */
+export function segmentRampWarm(rows: StoreRow[]): StoreRow[] {
+  return rows
+    .filter(isRampWarm)
+    .slice()
+    .sort((a, b) => {
+      const ra = cohortSendRank(a.cohort);
+      const rb = cohortSendRank(b.cohort);
+      if (ra !== rb) return ra < rb ? -1 : 1;
+      return a.email.localeCompare(b.email);
+    });
+}
+
+/** Registro dos grupos nomeados — fonte única pro CLI (`clarice-build-segment.ts`)
+ *  validar `--group` e despachar pro predicado certo. */
+export type NamedGroupKey = "engajados" | "reativacao" | "ramp-warm";
+
+export interface NamedGroupDef {
+  key: NamedGroupKey;
+  /** Rótulo curto (vira `desc` no manifest, mesma convenção de `describeWave`). */
+  label: string;
+  segment: (rows: StoreRow[]) => StoreRow[];
+}
+
+export const NAMED_GROUPS: Record<NamedGroupKey, NamedGroupDef> = {
+  engajados: { key: "engajados", label: "Engajados (retenção)", segment: segmentEngajados },
+  reativacao: { key: "reativacao", label: "Reativação", segment: segmentReativacao },
+  "ramp-warm": { key: "ramp-warm", label: "Ramp warm (1º envio seguro)", segment: segmentRampWarm },
+};
+
+/** `key` é um grupo nomeado reconhecido? (type guard pro CLI validar `--group`). */
+export function isNamedGroupKey(key: string): key is NamedGroupKey {
+  return Object.prototype.hasOwnProperty.call(NAMED_GROUPS, key);
 }
 
 // ---------------------------------------------------------------------------

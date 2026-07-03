@@ -38,6 +38,30 @@ export const COHORT_ASSINANTES_ATIVOS = "assinantes-ativos";
 export const COHORT_EX_ASSINANTES = "ex-assinantes";
 export const COHORT_LEADS_CAUDAO = "leads-caudao";
 
+// ---------------------------------------------------------------------------
+// Emails internos (#2809) — editor + parceiro Clarice. Abrem/testam envios
+// por ofício; o engajamento deles não é sinal de audiência. Movido pra cá
+// (fonte única, #2885) porque tanto `clarice-db.ts` (agregações de exibição)
+// quanto `clarice-segment.ts` (predicados de grupo nomeado — `engajados`/
+// `reativacao` excluem internos, ver `segmentFromStore`) precisam do mesmo
+// literal, e `clarice-segment.ts` é dependency-free/Workers-safe (não pode
+// importar de `clarice-db.ts`, que usa `node:sqlite` — e `clarice-db.ts` já
+// importa DESTE arquivo, então o inverso criaria um ciclo). `clarice-db.ts`
+// re-exporta este símbolo (`export { INTERNAL_EMAILS } from "./cohorts.ts"`)
+// pra manter os imports existentes (`clarice-db-summary.ts`) intocados.
+// ---------------------------------------------------------------------------
+
+export const INTERNAL_EMAILS = [
+  "vjpixel@gmail.com",
+  "pixel@memelab.com.br",
+  "felipe@clarice.ai",
+  // #2880: endereço da equipe Clarice (sem registro Stripe → aparecia como a
+  // única linha "sem cohort"). Mesmo tratamento dos demais internos: excluído
+  // das agregações de exibição (priority_points, cohort_stats), mas segue no
+  // store e na fila de envio.
+  "ti@clarice.ai",
+] as const;
+
 /**
  * tier numérico (T01–T10) → slug de cohort nomeado.
  *
