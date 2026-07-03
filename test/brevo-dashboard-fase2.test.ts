@@ -28,6 +28,7 @@ import {
   ABC_RESET_AT,
   calcCumulativeSent,
   detectActiveCycle,
+  groupMonthlyAbcTests,
   renderAbcSection,
   renderVolumeSection,
   renderDashboardHtml,
@@ -114,22 +115,22 @@ const allCampaigns = [...cycle2605Campaigns, ...t1Campaigns];
 describe("parseClariceCampaignKey", () => {
   test("parseia d01-A corretamente", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d01-A (qua)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 1, cell: "A" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 1, cell: "A", monthly: false });
   });
 
   test("parseia d02-C corretamente", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d02-C (qui)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 2, cell: "C" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 2, cell: "C", monthly: false });
   });
 
   test("parseia d07-B — último dia S1", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d07-B (ter)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 7, cell: "B" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 7, cell: "B", monthly: false });
   });
 
   test("parseia d08-A — dia S2 (dayNum > 7, fora do S1)", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d08-A (qua)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: "A" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: "A", monthly: false });
   });
 
   test("retorna null para campanha T1", () => {
@@ -140,18 +141,114 @@ describe("parseClariceCampaignKey", () => {
   test("parseia nome SEM sufixo de dia-da-semana (sufixo opcional #2124)", () => {
     // Nome sem espaço+sufixo após [ABC] — antes do fix: retornava null silenciosamente
     const r = parseClariceCampaignKey("Clarice News 2605 d03-B");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 3, cell: "B" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 3, cell: "B", monthly: false });
   });
 
   test("parseia nome com célula em minúscula (flag /i + toUpperCase #2124)", () => {
     // Flag /i aceita lowercase, mas o cast precisava de normalização
     const r = parseClariceCampaignKey("Clarice News 2605 d04-a (sex)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 4, cell: "A" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 4, cell: "A", monthly: false });
   });
 
   test("parseia nome com célula lowercase sem sufixo (#2124)", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d05-c");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 5, cell: "C" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 5, cell: "C", monthly: false });
+  });
+});
+
+// ─── #2889: teste ABC MENSAL ──────────────────────────────────────────────────
+
+describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => {
+  // scheduledAt explícito: groupMonthlyAbcTests agrupa por (ciclo + DATA), e
+  // makeCampaign fixa scheduledAt no base — sobrescrevo pra datar o teste.
+  const mAbc = (id: number, cell: string, when: string, gs: Record<string, number>) => ({
+    ...makeCampaign(id, `Clarice News 2606-07 — ${cell}: subject ${cell}`, when, gs),
+    scheduledAt: when,
+  });
+  // Teste 1 (engajado): 3 campanhas em 03/07.
+  const mensalSexta = [
+    mAbc(75, "A", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1482, uniqueViews: 702 }),
+    mAbc(76, "B", "2026-07-03T06:00:00.000-03:00", { sent: 1489, delivered: 1484, uniqueViews: 719 }),
+    mAbc(77, "C", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1484, uniqueViews: 691 }),
+  ];
+  // Teste 2 (cold): MESMO ciclo/naming, mas 05/07 — público diferente.
+  const mensalDomingo = [
+    mAbc(175, "A", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1790, uniqueViews: 400 }),
+    mAbc(176, "B", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1791, uniqueViews: 430 }),
+    mAbc(177, "C", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1790, uniqueViews: 410 }),
+  ];
+
+  test("parseClariceCampaignKey reconhece o naming mensal (monthly:true, cell, sem dayNum)", () => {
+    assert.deepEqual(parseClariceCampaignKey("Clarice News 2606-07 — A: Notícias do mês"), {
+      cycle: "2606-07", dayNum: 0, cell: "A", monthly: true,
+    });
+    assert.deepEqual(parseClariceCampaignKey("Clarice News 2606-07 — C: outro subject"), {
+      cycle: "2606-07", dayNum: 0, cell: "C", monthly: true,
+    });
+  });
+
+  test("detectActiveCycle IGNORA o mensal (só ciclos diários)", () => {
+    const mix = [...allCampaigns, ...mensalSexta];
+    assert.equal(detectActiveCycle(mix), "2605");
+  });
+
+  test("groupMonthlyAbcTests separa testes do MESMO ciclo por DATA de envio", () => {
+    const groups = groupMonthlyAbcTests([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    assert.equal(groups.length, 2, "2 testes: 03/07 e 05/07");
+    // mais recente primeiro
+    assert.equal(groups[0].dateKey, "2026-07-05");
+    assert.equal(groups[0].dateLabel, "05/07/2026");
+    assert.equal(groups[0].campaigns.length, 3);
+    assert.equal(groups[1].dateKey, "2026-07-03");
+    assert.equal(groups[1].cycle, "2606-07");
+    assert.equal(groupMonthlyAbcTests(allCampaigns).length, 0, "sem mensal → vazio");
+  });
+
+  test("aggregateAbcSummary agrega as 3 campanhas mensais (pula o corte de dia S1)", () => {
+    const rows = aggregateAbcSummary(mensalSexta, "2606-07");
+    const a = rows.find((r) => r.cell === "A")!;
+    const b = rows.find((r) => r.cell === "B")!;
+    const c = rows.find((r) => r.cell === "C")!;
+    assert.equal(a.campaignCount, 1);
+    assert.equal(b.campaignCount, 1);
+    assert.equal(c.campaignCount, 1);
+    assert.ok(b.openRate > a.openRate && a.openRate > c.openRate);
+  });
+
+  test("renderDashboardHtml: 1 teste mensal → 1 seção datada", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta]);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-03"/);
+    assert.match(html, /Resumo A\/B\/C — Mensal \(2606-07 · 03\/07\/2026\)/);
+    assert.match(html, /Célula B/);
+  });
+
+  test("renderDashboardHtml: 2 testes do mesmo ciclo (datas diferentes) → 2 seções separadas, recente primeiro", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-03"/);
+    assert.match(html, /id="abc-summary-monthly-2606-07-2026-07-05"/);
+    // 05/07 renderiza ANTES de 03/07 (mais recente primeiro)
+    assert.ok(
+      html.indexOf('id="abc-summary-monthly-2606-07-2026-07-05"') < html.indexOf('id="abc-summary-monthly-2606-07-2026-07-03"'),
+      "domingo (05/07) vem antes de sexta (03/07)",
+    );
+  });
+
+  test("sem teste ABC mensal → nenhuma seção mensal", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.doesNotMatch(html, /abc-summary-monthly/);
+  });
+
+  test("campo-misto na mesma data: irmão só com sentDate (sem scheduledAt) cai no MESMO grupo (review #2905)", () => {
+    // A/B com scheduledAt; C SEM scheduledAt (só sentDate), MESMA data BRT →
+    // não deve dividir o teste em 2 grupos.
+    const mixed = [
+      mAbc(75, "A", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1482, uniqueViews: 702 }),
+      mAbc(76, "B", "2026-07-03T06:00:00.000-03:00", { sent: 1489, delivered: 1484, uniqueViews: 719 }),
+      { ...makeCampaign(77, "Clarice News 2606-07 — C: subject C", "2026-07-03T06:05:00.000-03:00", { sent: 1487, delivered: 1484, uniqueViews: 691 }), scheduledAt: null },
+    ];
+    const groups = groupMonthlyAbcTests(mixed);
+    assert.equal(groups.length, 1, "1 só grupo mesmo com campo misto na mesma data");
+    assert.equal(groups[0].campaigns.length, 3);
   });
 });
 
@@ -548,17 +645,17 @@ describe("renderAbcSection", () => {
 describe("#2360 parseClariceCampaignKey — sufixo opcional", () => {
   test("campanha sem sufixo de célula retorna cell: null", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d08 (qua)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null, monthly: false });
   });
 
   test("campanha sem sufixo e sem parênteses retorna cell: null", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d08");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 8, cell: null, monthly: false });
   });
 
   test("campanha com sufixo de célula ainda retorna cell correto", () => {
     const r = parseClariceCampaignKey("Clarice News 2605 d01-A (qua)");
-    assert.deepEqual(r, { cycle: "2605", dayNum: 1, cell: "A" });
+    assert.deepEqual(r, { cycle: "2605", dayNum: 1, cell: "A", monthly: false });
   });
 
   test("calcCumulativeSent soma campanha sem sufixo de célula (#2360)", () => {

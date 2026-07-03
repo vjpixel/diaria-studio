@@ -144,6 +144,21 @@ export function renderDashboardHtml(
   const abcResetNote =
     abcRowsAll.some((r) => r.campaignCount > 0) && abcRows.every((r) => r.campaignCount === 0);
   const abcSection = activeCycle ? renderAbcSection(abcRows, abcResetNote) : "";
+  // #2889: Resumo A/B/C dos testes MENSAIS — UMA seção por (ciclo + dia de
+  // envio), separadas do diário e entre si (dois testes do mesmo ciclo com o
+  // mesmo naming, ex: engajado sexta + cold domingo, viram seções distintas
+  // pela data). Sem reset placeholder (o #2871 é do diário); sem teste mensal
+  // → nada. Mais recente primeiro.
+  const monthlyAbcSection = groupMonthlyAbcTests(campaigns)
+    .map((g) =>
+      renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
+        title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
+        // id inclui ciclo+data (a chave real do grupo) — só a data poderia
+        // colidir se 2 ciclos testassem no mesmo dia (review #2905).
+        id: `abc-summary-monthly-${g.cycle}-${g.dateKey}`,
+      }),
+    )
+    .join("\n");
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
   // e testadas (reuso futuro), só não são mais chamadas aqui.
@@ -426,6 +441,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${weekdaySection}
 ${abcSection}
+${monthlyAbcSection}
 ${cohortsSection}
 ${eiaEngagementSection}
   </div><!-- /panel-engajamento -->
@@ -531,11 +547,23 @@ export function parseClariceCampaignKey(campaignName: string): {
   cycle: string;
   dayNum: number;
   cell: "A" | "B" | "C" | null;
+  monthly: boolean;
 } | null {
   const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})(?:-([ABC]))?(?=\s|$)/i);
-  if (!m) return null;
-  const cell = m[3] ? (m[3].toUpperCase() as "A" | "B" | "C") : null;
-  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell };
+  if (m) {
+    const cell = m[3] ? (m[3].toUpperCase() as "A" | "B" | "C") : null;
+    return { cycle: m[1], dayNum: parseInt(m[2], 10), cell, monthly: false };
+  }
+  // #2889: naming do digest MENSAL — "Clarice News AAMM-MM — X: subject" (ciclo
+  // conteúdo-envio, célula A/B/C, sem dayNum). O teste ABC mensal é 1 campanha
+  // por célula (não S1/dias), então não tem dNN. `monthly: true` faz
+  // aggregateAbcSummary pular o corte de dia e detectActiveCycle ignorar (o
+  // diário e o mensal são testes distintos, cada um com seu Resumo A/B/C).
+  const mm = campaignName.match(/Clarice News (\d{4}-\d{2})\s*[—–-]\s*([ABC])\b/i);
+  if (mm) {
+    return { cycle: mm[1], dayNum: 0, cell: mm[2].toUpperCase() as "A" | "B" | "C", monthly: true };
+  }
+  return null;
 }
 
 /**
@@ -627,8 +655,8 @@ export function aggregateAbcSummary(
     if (!parsed || parsed.cycle !== cycle) continue;
     // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
     if (parsed.cell === null) continue;
-    // S1 = d01–d07
-    if (parsed.dayNum > 7) continue;
+    // S1 = d01–d07 (só no diário; o mensal é 1 campanha por célula, sem dias — #2889).
+    if (!parsed.monthly && parsed.dayNum > 7) continue;
 
     // #2254: escolha de fonte centralizada. #2252: fallback p/ campaignStats
     // quando globalStats 429/zerado — sem ele a seção A/B/C INTEIRA sumia.
@@ -704,10 +732,53 @@ export function detectActiveCycle(
   let latest: string | null = null;
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
-    if (!parsed) continue;
+    if (!parsed || parsed.monthly) continue; // #2889: só ciclos DIÁRIOS
     if (!latest || parsed.cycle > latest) latest = parsed.cycle;
   }
   return latest;
+}
+
+/**
+ * #2889: agrupa as campanhas de teste ABC MENSAL em TESTES distintos, por
+ * (ciclo + DATA de envio BRT). Dois testes do MESMO ciclo com o MESMO naming
+ * (ex: engajado na sexta + cold no domingo — mesmos 3 subjects) são separados
+ * pela data de envio, pra nunca misturar públicos diferentes numa comparação
+ * única. Cada grupo vira uma seção A/B/C própria; ordenados do mais recente
+ * pro mais antigo. Exportado pra teste unitário.
+ */
+export function groupMonthlyAbcTests(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): Array<{
+  cycle: string;
+  dateKey: string; // YYYY-MM-DD (BRT) — chave de ordenação
+  dateLabel: string; // DD/MM/YYYY
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
+}> {
+  const groups = new Map<
+    string,
+    { cycle: string; dateKey: string; campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }> }
+  >();
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name);
+    if (!parsed || !parsed.monthly || parsed.cell === null) continue;
+    // Data do envio: scheduledAt (intenção) com fallback sentDate. As 3
+    // campanhas de um teste são disparadas JUNTAS no mesmo horário (Clarice
+    // News sai ~06:00 BRT, nunca perto da meia-noite), então mesmo que uma
+    // caia no fallback sentDate elas compartilham a mesma data BRT — não há
+    // split do teste pela fronteira de dia (review #2905).
+    const when = c.scheduledAt ?? c.sentDate;
+    if (!when) continue;
+    const ms = Date.parse(when);
+    if (!Number.isFinite(ms)) continue;
+    // data no fuso BRT (en-CA → YYYY-MM-DD)
+    const dateKey = new Date(ms).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const key = `${parsed.cycle}|${dateKey}`;
+    if (!groups.has(key)) groups.set(key, { cycle: parsed.cycle, dateKey, campaigns: [] });
+    groups.get(key)!.campaigns.push(c);
+  }
+  return [...groups.values()]
+    .map((g) => ({ ...g, dateLabel: g.dateKey.split("-").reverse().join("/") }))
+    .sort((a, b) => (a.dateKey < b.dateKey ? 1 : a.dateKey > b.dateKey ? -1 : 0));
 }
 
 // ─── #2134: tabela de open rate por dia da semana ────────────────────────────
@@ -984,7 +1055,14 @@ export function renderWeekdaySection(
  * Renderiza a seção de resumo A/B/C da S1.
  * Exportado pra teste unitário.
  */
-export function renderAbcSection(abcRows: CellSummary[], resetNote = false): string {
+export function renderAbcSection(
+  abcRows: CellSummary[],
+  resetNote = false,
+  opts: { title?: string; id?: string } = {},
+): string {
+  // #2889: título/id parametrizáveis pra reusar no Resumo A/B/C MENSAL (default = diário S1).
+  const secTitle = opts.title ?? "Resumo A/B/C — S1 (d01–d07)";
+  const secId = opts.id ?? "abc-summary";
   if (abcRows.every((r) => r.campaignCount === 0)) {
     // Sem resetNote (ciclo sem A/B/C planejado, ex: S2/S3 puro): oculta, como
     // sempre. Com resetNote (#2871 — o corte do reset removeu células reais):
@@ -994,7 +1072,7 @@ export function renderAbcSection(abcRows: CellSummary[], resetNote = false): str
       timeZone: "America/Sao_Paulo",
     });
     return `
-<section class="phase2-section" id="abc-summary">
+<section class="phase2-section" id="${secId}">
   <h2 class="section-title">Resumo A/B/C — aguardando novo teste</h2>
   <p class="section-note">Zerado a pedido do editor (#2871): resultados do teste do ciclo 2605 estão documentados — <strong>variante B venceu</strong> (consolidada em d06). Campanhas de teste agendadas a partir de <strong>${resetDate}</strong> repopulam esta tabela automaticamente.</p>
 </section>`;
@@ -1054,8 +1132,8 @@ export function renderAbcSection(abcRows: CellSummary[], resetNote = false): str
     : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
 
   return `
-<section class="phase2-section" id="abc-summary">
-  <h2 class="section-title">Resumo A/B/C — S1 (d01–d07)</h2>
+<section class="phase2-section" id="${secId}">
+  <h2 class="section-title">${secTitle}</h2>
   <p class="section-note">${statusNote}</p>
   <p class="section-note"><small>Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo) — base do vencedor. Entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os dias da célula têm esse dado.</small></p>
   <div class="table-wrap">
