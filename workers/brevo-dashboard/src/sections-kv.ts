@@ -841,7 +841,7 @@ export function renderCohortsTabPanel(
       <td>${n(r.eligible)}</td>
       <td>${n(r.received)}</td>
       <td>${cycleCell(r.receivedThisCycle)}</td>
-      <td>${cycleCell(r.eligible - r.receivedThisCycle)}</td>
+      <td>${cycleCell(Math.max(0, r.eligible - r.receivedThisCycle))}</td>
       <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
       <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
       <td${cellAttr(r.unsubRate, avgUnsub)}>${pctOrDash(r.unsubRate)}</td>
@@ -878,7 +878,7 @@ export function renderCohortsTabPanel(
       <td>${n(tot.eligible)}</td>
       <td>${n(tot.received)}</td>
       <td>${cycleCell(tot.receivedThisCycle)}</td>
-      <td>${cycleCell(tot.eligible - tot.receivedThisCycle)}</td>
+      <td>${cycleCell(Math.max(0, tot.eligible - tot.receivedThisCycle))}</td>
       <td>${pctOrDash(totRate(tot.opened))}</td>
       <td>${pctOrDash(totRate(tot.clicked))}</td>
       <td>${pctOrDash(totRate(tot.unsub))}</td>

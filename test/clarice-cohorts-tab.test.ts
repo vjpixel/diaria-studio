@@ -246,6 +246,19 @@ test("renderCohortsTabPanel: linha Total — 'Falta enviar' = Σelegíveis − �
   assert.match(totalRowHtml, />170</, "Falta enviar total = Σelegíveis(240) − Σrecebeu_ciclo(70)");
 });
 
+test("renderCohortsTabPanel: 'Falta enviar' nunca negativo — recebeu>elegíveis → 0 (clamp, review PR)", () => {
+  // eligible 40, received_this_cycle 45: 5 contatos descadastraram/bounce APÓS
+  // receberem no ciclo → send_eligible caiu p/ 0 mas last_sent_at ≥ cycle_start.
+  // Falta = max(0, 40−45) = 0, jamais "−5" (por cohort E na linha Total).
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 40, received: 50, received_this_cycle: 45, opened: 30, clicked: 10, unsub: 5, brevo: 60 }),
+  };
+  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
+  assert.doesNotMatch(html, />[-−]\d/, "nenhum número negativo renderizado (Falta enviar clampado em 0)");
+  const totalRowHtml = html.match(/<tr class="total-row">([\s\S]*?)<\/tr>/)![1];
+  assert.doesNotMatch(totalRowHtml, />[-−]\d/, "linha Total também sem negativo");
+});
+
 test("renderCohortsTabPanel: received_this_cycle ausente (KV pré-#2909) com ciclo → degrada pra 0, não lança (#2909)", () => {
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
