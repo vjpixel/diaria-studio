@@ -15,7 +15,10 @@ import {
   countSubmissionsFromArchive,
   deriveResearchDateISO,
   rewriteCoverageLine,
+  rewriteCoverageLineAsCaptureFailed,
+  renderCaptureFailedLine,
   readSubmissionsCountFromMarker,
+  readCaptureFailedFromMarker,
   readCapturedNewsletterCount,
   parsePoolArticles,
 } from "../scripts/sync-coverage-line.ts";
@@ -824,5 +827,206 @@ describe("countSubmissionsFromArchive (#1414)", () => {
     const { root } = makeArchiveFixture("2026-05-19", content);
     assert.equal(countSubmissionsFromArchive("data/editions/260520", root), 2);
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2878: coverage line "0 submissões" quando 0b-bis falha por auth — a
+// distinção entre "0 real" e "captura falhou" tem que sobreviver a partir
+// do marker até o texto renderizado no 02-reviewed.md.
+// ---------------------------------------------------------------------------
+
+describe("readCaptureFailedFromMarker (#2878)", () => {
+  function makeFixtureEdition(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-capture-failed-marker-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("retorna failed:true + error quando marker sinaliza capture_failed (top-level)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ capture_failed: true, capture_error: "invalid_client" }),
+    );
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "invalid_client" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna failed:true + error quando o marker usa o shape details (atual)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: { editor_blocks: 0, newsletter_blocks: 0, capture_failed: true, capture_error: "invalid_client" },
+      }),
+    );
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "invalid_client" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("caso 260703: marker legítimo com 0 (sem capture_failed) → failed:false", () => {
+    // (a) marker legítimo com 0 → NÃO deve reportar capture_failed.
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        total_editor_urls: 0,
+        total_newsletter_urls: 0,
+        total_pool_size: 261,
+        editor_blocks: 0,
+        newsletter_blocks: 0,
+        captured_newsletter_count: 0,
+        newsletter_source: "inbox-md",
+      }),
+    );
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: false });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna failed:false quando marker ausente", () => {
+    const dir = makeFixtureEdition();
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: false });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna failed:false quando marker é JSON inválido", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(join(dir, "_internal", ".marker-inject-inbox-urls.json"), "not-json-{{{");
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: false });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("usa 'motivo desconhecido' quando capture_failed:true mas capture_error ausente", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ capture_failed: true }),
+    );
+    assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "motivo desconhecido" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("renderCaptureFailedLine / rewriteCoverageLineAsCaptureFailed (#2878)", () => {
+  it("renderCaptureFailedLine embute o motivo e não menciona '0 submissões'", () => {
+    const line = renderCaptureFailedLine("invalid_client");
+    assert.match(line, /contagem de submissões indisponível/);
+    assert.match(line, /captura de newsletters falhou: invalid_client/);
+    assert.match(line, /recompute após reautenticar/);
+    assert.doesNotMatch(line, /0 submissões/);
+  });
+
+  it("(a) substitui a linha de cobertura normal pelo aviso quando a captura falhou", () => {
+    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const r = rewriteCoverageLineAsCaptureFailed(md, "invalid_client");
+    assert.ok(r.changed);
+    assert.doesNotMatch(r.md, /enviei \d+ submissões/);
+    assert.match(r.md, /contagem de submissões indisponível \(captura de newsletters falhou: invalid_client\)/);
+  });
+
+  it("é idempotente — reaplica sem mudar quando o aviso já está presente", () => {
+    const md = `⚠️ contagem de submissões indisponível (captura de newsletters falhou: invalid_client) — recompute após reautenticar.
+
+Resto.`;
+    const r = rewriteCoverageLineAsCaptureFailed(md, "invalid_client");
+    assert.equal(r.changed, false);
+  });
+
+  it("changed:false quando nem a linha normal nem o aviso estão presentes", () => {
+    const md = "Texto qualquer sem linha de cobertura.";
+    const r = rewriteCoverageLineAsCaptureFailed(md, "invalid_client");
+    assert.equal(r.changed, false);
+    assert.equal(r.md, md);
+  });
+});
+
+describe("rewriteCoverageLine — recuperação do aviso capture_failed (#2878)", () => {
+  it("substitui o aviso pela linha de cobertura real quando a captura se recupera", () => {
+    // Rerun anterior deixou o aviso; captura foi corrigida (reautenticado) e
+    // agora X/Y/Z são de novo confiáveis — a linha real deve voltar.
+    const md = `⚠️ contagem de submissões indisponível (captura de newsletters falhou: invalid_client) — recompute após reautenticar.
+
+Resto.`;
+    const r = rewriteCoverageLine(md, 13, 125, 12);
+    assert.ok(r.changed);
+    assert.match(r.md, /enviei 13 submissões e a Diar\.ia encontrou outros 125 artigos/);
+    assert.doesNotMatch(r.md, /contagem de submissões indisponível/);
+  });
+});
+
+describe("regressão #2878 — coverage line não confunde '0 real' com 'captura falhou'", () => {
+  function makeFixtureEdition(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-2878-regression-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("(a) marker com capture_failed → coverage line NÃO diz '0 submissões'", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        total_editor_urls: 0,
+        total_newsletter_urls: 0,
+        total_pool_size: 261,
+        editor_blocks: 0,
+        newsletter_blocks: 0,
+        captured_newsletter_count: 0,
+        newsletter_source: "inbox-md",
+        capture_failed: true,
+        capture_error: "invalid_client",
+      }),
+    );
+    const capture = readCaptureFailedFromMarker(dir);
+    assert.equal(capture.failed, true);
+
+    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const { md, changed } = capture.failed
+      ? rewriteCoverageLineAsCaptureFailed(originalMd, capture.error ?? "motivo desconhecido")
+      : rewriteCoverageLine(originalMd, 0, 0, 0);
+
+    assert.ok(changed);
+    assert.doesNotMatch(md, /enviei 0 submissões/);
+    assert.match(md, /contagem de submissões indisponível \(captura de newsletters falhou: invalid_client\)/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("(b) marker legítimo com 0 → mantém '0 submissões'", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        total_editor_urls: 0,
+        total_newsletter_urls: 0,
+        total_pool_size: 130,
+        editor_blocks: 0,
+        newsletter_blocks: 0,
+        captured_newsletter_count: 0,
+        newsletter_source: "inbox-md",
+        // sem capture_failed — 0b-bis rodou ok, editor genuinamente não enviou nada.
+      }),
+    );
+    const capture = readCaptureFailedFromMarker(dir);
+    assert.equal(capture.failed, false);
+
+    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const x = readSubmissionsCountFromMarker(dir) ?? 0;
+    const { md, changed } = capture.failed
+      ? rewriteCoverageLineAsCaptureFailed(originalMd, capture.error ?? "motivo desconhecido")
+      : rewriteCoverageLine(originalMd, x, 130, 34);
+
+    assert.equal(x, 0);
+    assert.ok(changed);
+    assert.match(md, /enviei 0 submissões e a Diar\.ia/);
+    assert.doesNotMatch(md, /contagem de submissões indisponível/);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

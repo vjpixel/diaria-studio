@@ -650,3 +650,80 @@ describe("--captured-articles integration (#1520)", () => {
       "newsletter URL from inbox.md extracted in legacy mode");
   });
 });
+
+describe("marker capture_failed propagation (#2878)", () => {
+  beforeEach(() => {
+    mkdirSync(TMP_DIR, { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
+
+  function writeSimpleInbox(path: string): void {
+    writeFileSync(path, `# Inbox Editorial — Diar.ia
+
+<!-- entries abaixo -->
+## 2026-07-03T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+- **subject:** Some article
+- **urls:**
+  - https://example.com/some-article
+`, "utf8");
+  }
+
+  // Marker só é gravado quando a estrutura de path bate {AAMMDD}/_internal/{out}.
+  function editionInternalDir(): string {
+    const editionDir = resolve(TMP_DIR, "260703");
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    return internalDir;
+  }
+
+  it("propaga capture_failed + capture_error do sentinel pro marker quando 0b-bis falhou", () => {
+    const internalDir = editionInternalDir();
+    const inboxPath = resolve(TMP_DIR, "inbox.md");
+    const outPath = resolve(internalDir, "tmp-articles-raw.json");
+
+    writeSimpleInbox(inboxPath);
+    // Sentinel deixado por fetch-newsletter-threads.ts ao falhar (#2878).
+    writeFileSync(
+      resolve(internalDir, ".capture-newsletter-failed.json"),
+      JSON.stringify({
+        failed: true,
+        error: "invalid_client: The OAuth client was not found.",
+        at: "2026-07-03T06:00:00.000Z",
+      }),
+    );
+
+    execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8" },
+    );
+
+    const marker = JSON.parse(
+      readFileSync(resolve(internalDir, ".marker-inject-inbox-urls.json"), "utf8"),
+    );
+    assert.equal(marker.details.capture_failed, true);
+    assert.match(marker.details.capture_error, /invalid_client/);
+  });
+
+  it("NÃO grava capture_failed quando o sentinel de falha está ausente (0b-bis rodou ok)", () => {
+    const internalDir = editionInternalDir();
+    const inboxPath = resolve(TMP_DIR, "inbox.md");
+    const outPath = resolve(internalDir, "tmp-articles-raw.json");
+
+    writeSimpleInbox(inboxPath);
+    // Sem sentinel — 0b-bis não falhou (ou não rodou, mas nesse caso não há
+    // sinal de falha, só ausência — comportamento correto é não inventar erro).
+
+    execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8" },
+    );
+
+    const marker = JSON.parse(
+      readFileSync(resolve(internalDir, ".marker-inject-inbox-urls.json"), "utf8"),
+    );
+    assert.equal(marker.details.capture_failed, undefined);
+  });
+});

@@ -36,6 +36,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import type { GmailMessagePart } from "./lib/schemas/gmail.ts";
+import { writeCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
@@ -324,96 +325,112 @@ async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1);
   }
 
-  // Build Gmail search query: "from:(sender1 OR sender2) newer_than:Nd"
-  const senderClause =
-    args.senders.length === 1
-      ? `from:${args.senders[0]}`
-      : `from:(${args.senders.join(" OR ")})`;
+  // #2878: everything from here on can fail on OAuth/network (searchThreadIds
+  // is the first Gmail REST call — `invalid_client` surfaces here). A fatal
+  // error must leave a trace (sentinel) before rethrowing, so downstream
+  // (inject-inbox-urls.ts → sync-coverage-line.ts / Stage 4 gate) can tell
+  // "0b-bis falhou" apart from "editor genuinely sent 0 newsletters" instead
+  // of silently asserting "0 submissões" (caso real: 260703, invalid_client).
+  try {
+    // Build Gmail search query: "from:(sender1 OR sender2) newer_than:Nd"
+    const senderClause =
+      args.senders.length === 1
+        ? `from:${args.senders[0]}`
+        : `from:(${args.senders.join(" OR ")})`;
 
-  // Gmail accepts newer_than:Nd (days) — convert hours to days, ceiling
-  const days = Math.ceil(args.sinceHours / 24);
-  const query = `${senderClause} newer_than:${days}d`;
+    // Gmail accepts newer_than:Nd (days) — convert hours to days, ceiling
+    const days = Math.ceil(args.sinceHours / 24);
+    const query = `${senderClause} newer_than:${days}d`;
 
-  const threadIds = await searchThreadIds(query, 20);
+    const threadIds = await searchThreadIds(query, 20);
 
-  if (threadIds.length === 0) {
-    const summary: FetchSummary = { threads_found: 0, threads_written: 0, skipped_no_body: 0 };
-    // No threads found: write an empty array ONLY if no prior output exists, so a
-    // re-run with a narrower window doesn't wipe a previous run's captures.
-    if (!args.dryRun && args.outPath) {
-      const absOut = resolve(process.cwd(), args.outPath);
-      if (!existsSync(absOut)) {
-        mkdirSync(dirname(absOut), { recursive: true });
-        const tmp = absOut + ".tmp";
-        writeFileSync(tmp, JSON.stringify([], null, 2) + "\n", "utf8");
-        renameSync(tmp, absOut);
+    if (threadIds.length === 0) {
+      const summary: FetchSummary = { threads_found: 0, threads_written: 0, skipped_no_body: 0 };
+      // No threads found: write an empty array ONLY if no prior output exists, so a
+      // re-run with a narrower window doesn't wipe a previous run's captures.
+      if (!args.dryRun && args.outPath) {
+        const absOut = resolve(process.cwd(), args.outPath);
+        if (!existsSync(absOut)) {
+          mkdirSync(dirname(absOut), { recursive: true });
+          const tmp = absOut + ".tmp";
+          writeFileSync(tmp, JSON.stringify([], null, 2) + "\n", "utf8");
+          renameSync(tmp, absOut);
+        }
       }
+      console.log(JSON.stringify(summary, null, 2));
+      return;
     }
-    console.log(JSON.stringify(summary, null, 2));
-    return;
-  }
 
-  // Fetch threads sequentially (no parallelism needed — max 20 threads, each
-  // is small once we discard HTML; parallelism adds complexity for little gain)
-  const captured: CapturedThread[] = [];
-  let skippedNoBody = 0;
+    // Fetch threads sequentially (no parallelism needed — max 20 threads, each
+    // is small once we discard HTML; parallelism adds complexity for little gain)
+    const captured: CapturedThread[] = [];
+    let skippedNoBody = 0;
 
-  for (const id of threadIds) {
-    try {
-      const thread = await fetchThread(id, args.bodyLimit);
-      if (thread) {
-        captured.push(thread);
-      } else {
+    for (const id of threadIds) {
+      try {
+        const thread = await fetchThread(id, args.bodyLimit);
+        if (thread) {
+          captured.push(thread);
+        } else {
+          skippedNoBody++;
+        }
+      } catch (err) {
+        // Non-fatal: log and continue
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[fetch-newsletter-threads] WARN thread ${id}: ${msg.slice(0, 200)}`);
         skippedNoBody++;
       }
-    } catch (err) {
-      // Non-fatal: log and continue
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[fetch-newsletter-threads] WARN thread ${id}: ${msg.slice(0, 200)}`);
-      skippedNoBody++;
     }
-  }
 
-  const summary: FetchSummary = {
-    threads_found: threadIds.length,
-    threads_written: captured.length,
-    skipped_no_body: skippedNoBody,
-  };
+    const summary: FetchSummary = {
+      threads_found: threadIds.length,
+      threads_written: captured.length,
+      skipped_no_body: skippedNoBody,
+    };
 
-  if (args.dryRun) {
-    console.log("[dry-run] Would write:");
-    if (captured.length > 0) {
-      const first = captured[0];
-      console.log(`  thread_id: ${first.thread_id}`);
-      console.log(`  sender: ${first.sender}`);
-      console.log(`  subject: ${first.subject}`);
-      console.log(`  body (first 200 chars): ${first.body.slice(0, 200)}`);
+    if (args.dryRun) {
+      console.log("[dry-run] Would write:");
+      if (captured.length > 0) {
+        const first = captured[0];
+        console.log(`  thread_id: ${first.thread_id}`);
+        console.log(`  sender: ${first.sender}`);
+        console.log(`  subject: ${first.subject}`);
+        console.log(`  body (first 200 chars): ${first.body.slice(0, 200)}`);
+      }
+      console.log(JSON.stringify(summary, null, 2));
+      return;
     }
+
+    const absOut = resolve(process.cwd(), args.outPath);
+    mkdirSync(dirname(absOut), { recursive: true });
+
+    // Merge with existing output (crash-resume safety): a re-run that advances the
+    // search window must not drop threads captured in a prior partial run.
+    let existing: CapturedThread[] = [];
+    if (existsSync(absOut)) {
+      try {
+        const parsed = JSON.parse(readFileSync(absOut, "utf8"));
+        if (Array.isArray(parsed)) existing = parsed as CapturedThread[];
+      } catch {
+        /* corrupt file — overwrite */
+      }
+    }
+    const merged = mergeCaptured(existing, captured);
+
+    const tmp = absOut + ".tmp";
+    writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    renameSync(tmp, absOut);
+
     console.log(JSON.stringify(summary, null, 2));
-    return;
-  }
-
-  const absOut = resolve(process.cwd(), args.outPath);
-  mkdirSync(dirname(absOut), { recursive: true });
-
-  // Merge with existing output (crash-resume safety): a re-run that advances the
-  // search window must not drop threads captured in a prior partial run.
-  let existing: CapturedThread[] = [];
-  if (existsSync(absOut)) {
-    try {
-      const parsed = JSON.parse(readFileSync(absOut, "utf8"));
-      if (Array.isArray(parsed)) existing = parsed as CapturedThread[];
-    } catch {
-      /* corrupt file — overwrite */
+  } catch (err) {
+    // #2878: fatal (OAuth/network) — write the failure sentinel BEFORE
+    // rethrowing so the caller (main().catch below) still exits 1 as before,
+    // but downstream steps can now see WHY threads_found is unknown/0.
+    if (args.outPath) {
+      writeCaptureFailedSentinel(args.outPath, err);
     }
+    throw err;
   }
-  const merged = mergeCaptured(existing, captured);
-
-  const tmp = absOut + ".tmp";
-  writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n", "utf8");
-  renameSync(tmp, absOut);
-
-  console.log(JSON.stringify(summary, null, 2));
 }
 
 // ---------------------------------------------------------------------------

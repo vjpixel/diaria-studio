@@ -154,11 +154,15 @@ export function readSubmissionsCountFromMarker(editionDir: string): number | nul
       newsletter_blocks?: number;
       newsletter_source?: string;
       captured_newsletter_count?: number;
+      capture_failed?: boolean;
+      capture_error?: string;
       details?: {
         editor_blocks?: number;
         newsletter_blocks?: number;
         newsletter_source?: string;
         captured_newsletter_count?: number;
+        capture_failed?: boolean;
+        capture_error?: string;
       };
     };
     // #1476: marker pode ter campos no top-level (legado) ou em details (atual)
@@ -181,6 +185,37 @@ export function readSubmissionsCountFromMarker(editionDir: string): number | nul
     return data.editor_blocks + newsletterCount;
   } catch {
     return null;
+  }
+}
+
+/**
+ * #2878: lê `capture_failed`/`capture_error` do mesmo marker que
+ * `readSubmissionsCountFromMarker`. Quando `fetch-newsletter-threads.ts`
+ * (0b-bis) sai != 0 por auth/rede, `inject-inbox-urls.ts` propaga o sinal
+ * pro marker em vez de deixar `captured_newsletter_count: 0` indistinguível
+ * de "editor genuinamente não enviou newsletter nenhuma".
+ *
+ * Retorna `{ failed: false }` quando o marker está ausente, corrompido, ou
+ * não sinaliza falha — nunca inventa `failed: true` por ausência de dado.
+ */
+export function readCaptureFailedFromMarker(
+  editionDir: string,
+): { failed: boolean; error?: string } {
+  const markerPath = join(editionDir, "_internal", ".marker-inject-inbox-urls.json");
+  if (!existsSync(markerPath)) return { failed: false };
+  try {
+    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      capture_failed?: boolean;
+      capture_error?: string;
+      details?: { capture_failed?: boolean; capture_error?: string };
+    };
+    const data = raw.details ?? raw;
+    if (data.capture_failed === true) {
+      return { failed: true, error: data.capture_error ?? "motivo desconhecido" };
+    }
+    return { failed: false };
+  } catch {
+    return { failed: false };
   }
 }
 
@@ -274,10 +309,30 @@ const COVERAGE_LINE_RE =
   /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões,?\s+e a Diar\.ia encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/m;
 
 /**
+ * #2878: linha de aviso que substitui a linha de cobertura quando
+ * `capture_failed` está setado no marker — nunca afirma "0 submissões"
+ * quando a causa real é `fetch-newsletter-threads.ts` (0b-bis) tendo saído
+ * por erro (auth/rede), não o editor genuinamente não tendo enviado nada.
+ */
+const CAPTURE_FAILED_LINE_RE =
+  /^⚠️ contagem de submissões indisponível \(captura de newsletters falhou: [^)]*\) — recompute após reautenticar\.[ \t]*$/m;
+
+/** Renderiza a linha de aviso pro caso `capture_failed` (#2878). */
+export function renderCaptureFailedLine(reason: string): string {
+  return `⚠️ contagem de submissões indisponível (captura de newsletters falhou: ${reason}) — recompute após reautenticar.`;
+}
+
+/**
  * Pure: substitui a linha de cobertura no MD. Se ausente, retorna `{ md, changed: false }`.
  *
  * Normaliza pra forma canônica (sem vírgula extra após "submissões") quando
  * encontra variantes — ou seja, reverte adições não-padrão de pontuação.
+ *
+ * #2878: também reconhece a linha de aviso `CAPTURE_FAILED_LINE_RE` como
+ * posição válida pra substituir — cobre o caso de recuperação: um rerun
+ * anterior deixou o aviso (captura falhou) e agora a captura foi corrigida
+ * (marker não sinaliza mais `capture_failed`), então a linha real de
+ * cobertura volta a substituir o aviso.
  */
 export function rewriteCoverageLine(
   md: string,
@@ -286,9 +341,37 @@ export function rewriteCoverageLine(
   z: number,
 ): { md: string; changed: boolean } {
   const newLine = `Para esta edição, eu (o editor) enviei ${x} submissões e a Diar.ia encontrou outros ${y} artigos. Selecionamos os ${z} mais relevantes para as pessoas que assinam a newsletter.`;
-  if (!COVERAGE_LINE_RE.test(md)) return { md, changed: false };
-  const updated = md.replace(COVERAGE_LINE_RE, newLine);
-  return { md: updated, changed: updated !== md };
+  if (COVERAGE_LINE_RE.test(md)) {
+    const updated = md.replace(COVERAGE_LINE_RE, newLine);
+    return { md: updated, changed: updated !== md };
+  }
+  if (CAPTURE_FAILED_LINE_RE.test(md)) {
+    const updated = md.replace(CAPTURE_FAILED_LINE_RE, newLine);
+    return { md: updated, changed: updated !== md };
+  }
+  return { md, changed: false };
+}
+
+/**
+ * #2878: substitui a linha de cobertura (ou o próprio aviso, se já presente
+ * — idempotente) pela linha de aviso `capture_failed`. Usada por `main()`
+ * quando o marker sinaliza que a captura de newsletters falhou — X seria
+ * subcontado ("0 submissões") sem isso.
+ */
+export function rewriteCoverageLineAsCaptureFailed(
+  md: string,
+  reason: string,
+): { md: string; changed: boolean } {
+  const newLine = renderCaptureFailedLine(reason);
+  if (CAPTURE_FAILED_LINE_RE.test(md)) {
+    const updated = md.replace(CAPTURE_FAILED_LINE_RE, newLine);
+    return { md: updated, changed: updated !== md };
+  }
+  if (COVERAGE_LINE_RE.test(md)) {
+    const updated = md.replace(COVERAGE_LINE_RE, newLine);
+    return { md: updated, changed: updated !== md };
+  }
+  return { md, changed: false };
 }
 
 // Flags that have no value (boolean) — recognized as `--name` standalone.
@@ -369,22 +452,47 @@ function main(): void {
   const { x, y } = countEditorVsAuto(pool, forwardedEmails, inboxLinks);
   const z = countSelectedItems(md);
 
-  const { md: updatedMd, changed } = rewriteCoverageLine(md, x, y, z);
-  if (!COVERAGE_LINE_RE.test(md)) {
+  // #2878: se `fetch-newsletter-threads.ts` (0b-bis) falhou por auth/rede, X
+  // é subcontado (0b-bis contribui pra X via newsletter_blocks/captured_newsletter_count).
+  // Não afirmar "X submissões" quando a base do cálculo está comprometida —
+  // trocar a linha inteira por um aviso gate-blocking em vez de publicar um
+  // número que parece real mas não é.
+  const captureFailure = readCaptureFailedFromMarker(root);
+  const { md: updatedMd, changed } = captureFailure.failed
+    ? rewriteCoverageLineAsCaptureFailed(md, captureFailure.error ?? "motivo desconhecido")
+    : rewriteCoverageLine(md, x, y, z);
+
+  if (!COVERAGE_LINE_RE.test(md) && !CAPTURE_FAILED_LINE_RE.test(md)) {
     console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...'");
     process.exit(1);
   }
   const isCheckMode = args["check"] !== undefined;
   if (changed && !isCheckMode) writeFileSync(mdPath, updatedMd, "utf8");
 
-  console.log(JSON.stringify({ x, y, z, changed, mdPath, source }, null, 2));
+  console.log(
+    JSON.stringify(
+      { x, y, z, changed, mdPath, source, capture_failed: captureFailure.failed, capture_error: captureFailure.error },
+      null,
+      2,
+    ),
+  );
   // #1578: --check exit 1 se intro line precisa de fix (não muta o arquivo).
   // Útil pra invariant check em stage 4 que só valida.
-  if (isCheckMode && changed) {
-    console.error(
-      `[check] intro line precisa de fix: X=${x} Y=${y} Z=${z}. ` +
-      `Rodar sem --check pra persistir.`,
-    );
+  // #2878: capture_failed sempre reporta como "precisa de fix" em --check,
+  // mesmo se a linha já é o aviso (idempotente) — o problema de fundo
+  // (reautenticar) continua sem resolver até o marker parar de sinalizar falha.
+  if (isCheckMode && (changed || captureFailure.failed)) {
+    if (captureFailure.failed) {
+      console.error(
+        `[check] captura de newsletters falhou (${captureFailure.error}) — contagem de ` +
+        `submissões indisponível. Reautenticar e re-rodar 0b-bis + inject-inbox-urls antes de publicar.`,
+      );
+    } else {
+      console.error(
+        `[check] intro line precisa de fix: X=${x} Y=${y} Z=${z}. ` +
+        `Rodar sem --check pra persistir.`,
+      );
+    }
     process.exit(1);
   }
   process.exit(0);
