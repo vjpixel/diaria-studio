@@ -7,8 +7,31 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
-import { DS, pct, fmtTimeBRT } from "./render-links.ts";
+import { DS, pct, fmtTimeBRT, cellClass } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, CLARICE_PLAN_TOTAL, ENVIOS_TOOLTIP } from "./sections-core.ts";
+
+// #2875: formatter pt-BR de contagem inteira — estava duplicado em
+// renderContactsSummarySection e renderCohortsTabPanel (mesmo corpo, 2
+// definições locais). `v` é sempre um number definido nos call sites (não
+// `number | null`); o `?? 0` antigo era defesa morta (item #2875-8).
+function fmtCount(v: number): string {
+  return v.toLocaleString("pt-BR");
+}
+
+// #2875: formatters NaN-safe extraídos pra módulo (estavam definidos só
+// dentro de renderCohortsTabPanel, e reinventados inline em
+// renderEiaEngagementSection) — payload KV parcial/antigo pode ter numerador
+// ausente/não-finito; sem o guard, vaza "NaN%"/"undefined" no render.
+function numOrDash(v: number | null, suffix = ""): string {
+  return v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`;
+}
+function pctOrDash(v: number | null): string {
+  return numOrDash(v, "%");
+}
+// Mesmo guard, sem decimais — pra contagens/totais (não taxas).
+function countOrDash(v: number | null): string {
+  return v == null || !Number.isFinite(v) ? "—" : fmtCount(v);
+}
 
 export interface DaySummary {
   /** Número do dia (1–5, correspondente a d01–d05 da S1) */
@@ -558,7 +581,7 @@ export function renderContactsSummarySection(
   const pp = s.priority_points ?? { lt0: 0, eq0: 0, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 };
   const eng = s.engagement ?? { with_opens: 0, with_clicks: 0 };
 
-  const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
+  const n = fmtCount; // #2875: dedup — ver fmtCount module-level
   const genBRT = escHtml(fmtTimeBRT(s.generated_at));
 
   // tabelinha {rótulo → contagem}, ordenada por contagem desc. #2880 E: com
@@ -720,12 +743,10 @@ export function renderCohortsTabPanel(
     return stub("Nenhum cohort no store (sumário gerado com base vazia).");
   }
 
-  const n = (v: number): string => (v ?? 0).toLocaleString("pt-BR");
+  const n = fmtCount; // #2875: dedup — ver fmtCount module-level
   // NaN-safe (review #2872): payload KV parcial/antigo pode ter numerador
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
-  const numOrDash = (v: number | null, suffix = ""): string =>
-    v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`;
-  const pctOrDash = (v: number | null): string => numOrDash(v, "%");
+  // numOrDash/pctOrDash: extraídos pra módulo (#2875) — ver acima.
 
   type Row = {
     cohort: string;
@@ -786,10 +807,10 @@ export function renderCohortsTabPanel(
   const avgUnsub = colAvg(rows.map((r) => r.unsubRate));
   const avgBounce = colAvg(rows.map((r) => r.bounceRate));
 
+  // #2875: reusa cellClass (render-links.ts) em vez de reinventar a montagem
+  // do atributo class="..." — mesmo helper usado nas demais tabelas do dashboard.
   const cellAttr = (v: number | null, avg: number | null): string =>
-    v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP
-      ? ' class="alert"'
-      : "";
+    cellClass(v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP && "alert");
 
   const tableRows = rows
     .map((r) => {
@@ -925,72 +946,6 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
 </section>`;
 }
 
-/** 1 linha agregada por mês-calendário (AAMM) pra tabela de Engajamento — É IA?. */
-export interface EiaEngagementMonthRow {
-  /** AAMM (ex: "2604") — chave de ordenação, não exibida diretamente. */
-  month: string;
-  /** Rótulo legível (ex: "Abr/2026"). */
-  label: string;
-  /** Soma de votos de TODAS as edições do mês (inclui as sem correct_choice configurado). */
-  total_votes: number;
-  /** % de acerto agregado exato (Σ correct_count / Σ total_votes), só sobre
-   *  edições com pct_correct != null. null se nenhuma edição do mês qualifica. */
-  pct_correct: number | null;
-}
-
-/**
- * Agrupa `editions` (1 linha por edição AAMMDD) em 1 linha por mês-calendário
- * (#2773). Mês extraído direto do AAMMDD (`edition.slice(0,4)`) — não precisa
- * de fuso/timestamp (diferente do agrupamento de campanhas por sentDate), já
- * que a edição em si não carrega hora.
- *
- * Agregação do "% acerto": exata via Σ correct_count / Σ total_votes — NÃO
- * média de pct_correct (que já vem arredondado na origem, acumularia erro).
- * Edições com `pct_correct === null` (abaixo do threshold do poll worker, ou
- * resposta correta não configurada) são excluídas do numerador E denominador
- * dessa razão — mas seus votos ainda contam pro total_votes do mês (métrica
- * de volume, independente de haver gabarito).
- *
- * Exportado pra teste unitário.
- */
-export function aggregateEiaEngagementByMonth(editions: EiaEngagementEdition[]): EiaEngagementMonthRow[] {
-  const MONTH_NAMES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  type Acc = { totalVotes: number; correctCountSum: number; votesWithCorrect: number };
-  const acc = new Map<string, Acc>();
-
-  for (const e of editions) {
-    // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez
-    // de produzir um bucket/label "NaN" na tabela. AAMMDD só, 6 dígitos.
-    if (!/^\d{6}$/.test(e.edition)) continue;
-    const month = e.edition.slice(0, 4); // AAMM
-    if (!acc.has(month)) acc.set(month, { totalVotes: 0, correctCountSum: 0, votesWithCorrect: 0 });
-    const a = acc.get(month)!;
-    a.totalVotes += e.total_votes;
-    // Guard: KV pré-#2773 não tem correct_count (campo novo) — se pct_correct
-    // existe mas correct_count não é um number válido, trata como "sem gabarito
-    // confiável" (exclui do numerador/denominador) em vez de somar `undefined`
-    // e produzir NaN% silencioso na tabela até o próximo --push atualizar o KV.
-    if (e.pct_correct != null && typeof e.correct_count === "number" && Number.isFinite(e.correct_count)) {
-      a.correctCountSum += e.correct_count;
-      a.votesWithCorrect += e.total_votes;
-    }
-  }
-
-  return Array.from(acc.entries())
-    .sort(([a], [b]) => b.localeCompare(a)) // mais recente primeiro
-    .map(([month, d]) => {
-      const yy = month.slice(0, 2);
-      const mm = parseInt(month.slice(2, 4), 10);
-      const label = `${MONTH_NAMES[mm - 1] ?? mm}/20${yy}`;
-      return {
-        month,
-        label,
-        total_votes: d.totalVotes,
-        pct_correct: d.votesWithCorrect > 0 ? (d.correctCountSum / d.votesWithCorrect) * 100 : null,
-      };
-    });
-}
-
 // #2860: teto de linhas exibidas na tabela por edição — a lista pode crescer
 // indefinidamente (1 edição/dia), então cap explícito com nota, em vez de
 // paginação nova (decisão simples que a issue delegou pro PR).
@@ -1021,9 +976,8 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
 
   const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
 
-  // Guard: edition malformado (KV corrompido/escrita parcial) — mesmo filtro
-  // do agregador mensal (aggregateEiaEngagementByMonth), pra nunca renderizar
-  // uma linha "NaN"/vazia.
+  // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez
+  // de produzir um bucket/label "NaN" na tabela. AAMMDD só, 6 dígitos.
   const validEditions = eiaEngagement.editions.filter((e) => /^\d{6}$/.test(e.edition));
   // Mais recente primeiro — AAMMDD ordena lexicograficamente = cronologicamente.
   const sorted = [...validEditions].sort((a, b) => b.edition.localeCompare(a.edition));
@@ -1036,9 +990,10 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   const tableRows = shown.map((e) => {
     // Degrade por campo (review #2872): entrada de KV parcial sem total_votes
     // não pode derrubar o render inteiro (TypeError → 502) — vira "—", mesmo
-    // espírito do caminho mensal substituído no #2860.
-    const total = Number.isFinite(e.total_votes) ? e.total_votes.toLocaleString("pt-BR") : "—";
-    const pctFmt = Number.isFinite(e.pct_correct as number) ? `${(e.pct_correct as number).toFixed(1)}%` : "—";
+    // espírito do caminho mensal substituído no #2860. countOrDash/pctOrDash
+    // (#2875): mesmos formatters NaN-safe usados em renderCohortsTabPanel.
+    const total = countOrDash(e.total_votes);
+    const pctFmt = pctOrDash(e.pct_correct);
     return `<tr>
       <td><strong>${escHtml(e.edition)}</strong></td>
       <td>${total}</td>

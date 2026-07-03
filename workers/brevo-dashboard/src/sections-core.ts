@@ -11,6 +11,7 @@ import {
   renderEiaEngagementSection,
   renderCouponTabPanel,
   renderCohortsTabPanel,
+  COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
 
 export function renderDashboardHtml(
@@ -450,7 +451,7 @@ ${couponTabHtml}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
-Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%).</p>
+Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
 (function () {

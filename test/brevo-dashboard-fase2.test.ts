@@ -53,7 +53,6 @@ import {
   MV_STATUS_KV_KEY,
   renderEiaEngagementSection,
   EIA_ENGAGEMENT_KV_KEY,
-  aggregateEiaEngagementByMonth,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -2534,7 +2533,7 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     assert.doesNotMatch(html, /mostrando as/i);
   });
 
-  test("pct_correct null → '—' (não 'null' nem 'NaN%'); votos ainda contam pro total do mês", () => {
+  test("pct_correct null → '—' (não 'null' nem 'NaN%'); total_votes da edição segue exibido", () => {
     const data: EiaEngagementSummary = {
       editions: [
         { edition: "260418", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null, correct_count: 0 },
@@ -2543,7 +2542,7 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     };
     const html = renderEiaEngagementSection(data);
     assert.match(html, />—</, "deve mostrar travessão quando pct_correct é null");
-    assert.match(html, />3</, "total_votes ainda soma no mês mesmo sem gabarito");
+    assert.match(html, />3</, "total_votes da edição aparece mesmo sem gabarito");
     assert.doesNotMatch(html, /null/i);
     assert.doesNotMatch(html, /NaN/);
   });
@@ -2565,75 +2564,5 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     const html = renderDashboardHtml([], [], null, null, null, null, eiaEngagement);
     const panel = html.match(/id="panel-engajamento"[\s\S]*?(?=id="panel-links")/)?.[0] ?? "";
     assert.match(panel, /id="eia-engagement"/, "seção eia-engagement deve estar dentro do panel Engajamento");
-  });
-});
-
-describe("aggregateEiaEngagementByMonth (#2773)", () => {
-  test("agrega múltiplas edições do mesmo mês numa linha só (soma exata via correct_count)", () => {
-    const rows = aggregateEiaEngagementByMonth([
-      { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
-      { edition: "260418", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 63.8, correct_choice: "A", correct_count: 30 },
-    ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].month, "2604");
-    assert.equal(rows[0].label, "Abr/2026");
-    assert.equal(rows[0].total_votes, 77);
-    assert.ok(Math.abs((rows[0].pct_correct ?? 0) - (50 / 77) * 100) < 0.01);
-  });
-
-  test("edições sem gabarito (pct_correct null) excluídas do numerador/denominador, mas contam pro total de votos", () => {
-    const rows = aggregateEiaEngagementByMonth([
-      { edition: "260401", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A", correct_count: 6 },
-      { edition: "260402", total_votes: 5, voted_a: 3, voted_b: 2, pct_correct: null, correct_choice: null, correct_count: 0 },
-    ]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].total_votes, 15); // 10 + 5, inclui a sem-gabarito
-    assert.equal(rows[0].pct_correct, 60); // só a 260401 conta: 6/10 = 60%
-  });
-
-  test("mês inteiro sem nenhuma edição com gabarito → pct_correct null (não 0)", () => {
-    const rows = aggregateEiaEngagementByMonth([
-      { edition: "260401", total_votes: 3, voted_a: 2, voted_b: 1, pct_correct: null, correct_choice: null, correct_count: 0 },
-    ]);
-    assert.equal(rows[0].pct_correct, null);
-  });
-
-  test("meses ordenados desc (mais recente primeiro)", () => {
-    const rows = aggregateEiaEngagementByMonth([
-      { edition: "260401", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
-      { edition: "260601", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
-      { edition: "260501", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A", correct_count: 1 },
-    ]);
-    assert.deepEqual(rows.map((r) => r.month), ["2606", "2605", "2604"]);
-  });
-
-  test("KV pré-#2773 sem correct_count (dado real já em produção) → NÃO produz NaN, trata como sem gabarito", () => {
-    // Simula exatamente o shape do KV eia:engagement gravado ANTES desta PR
-    // (achado do code-review: produção já tem ~15 edições nesse shape antigo).
-    // correct_count é opcional (mesmo padrão de priority_points_histogram, #2731)
-    // justamente pra esse literal, sem o campo, ser um EiaEngagementEdition válido.
-    const staleEdition: EiaEngagementEdition = {
-      edition: "260415",
-      total_votes: 30,
-      voted_a: 20,
-      voted_b: 10,
-      pct_correct: 66.7,
-      correct_choice: "A",
-    };
-    const rows = aggregateEiaEngagementByMonth([staleEdition]);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].total_votes, 30, "votos ainda contam mesmo sem correct_count");
-    assert.equal(rows[0].pct_correct, null, "sem correct_count confiável → null, nunca NaN");
-    assert.ok(!Number.isNaN(rows[0].pct_correct as any));
-  });
-
-  test("edition malformado (KV corrompido) não produz label/mês 'NaN' — entrada é ignorada", () => {
-    const rows = aggregateEiaEngagementByMonth([
-      { edition: "", total_votes: 5, voted_a: 3, voted_b: 2, pct_correct: 60, correct_choice: "A", correct_count: 3 },
-      { edition: "26", total_votes: 2, voted_a: 1, voted_b: 1, pct_correct: 50, correct_choice: "A", correct_count: 1 },
-      { edition: "260415", total_votes: 30, voted_a: 20, voted_b: 10, pct_correct: 66.7, correct_choice: "A", correct_count: 20 },
-    ]);
-    assert.equal(rows.length, 1, "só a edição bem-formada (260415) vira linha");
-    assert.ok(!rows.some((r) => r.label.includes("NaN")), "nenhum label deve conter 'NaN'");
   });
 });

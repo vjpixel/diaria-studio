@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
@@ -234,10 +234,129 @@ export async function getCouponUsage(
 export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 
 /**
+ * #2875 item 1: normaliza UMA linha de `cohort_stats` lida do KV. Payload
+ * antigo/parcial pode ter os campos opcionais (`brevo`/`opened`/`clicked`/
+ * `unsub`/`hard_bounce`) ausentes, ou (pré-#2880) o par legado `unsub_bounce`
+ * no lugar de `unsub` — cada um degrada pra 0 (mesmo default que os renders
+ * aplicavam localmente campo-a-campo). `contacts`/`eligible`/`received`/
+ * `sends_sum`/`mv_verified` também ganham o guard: sem ele, um KV corrompido
+ * faltando um desses (contrato do script os declara sempre presentes, mas o
+ * Worker não pode CONFIAR cegamente num payload externo) produzia `undefined`
+ * e o render de contagem (`toLocaleString`) lançava — TypeError → 502.
+ */
+function normalizeCohortStatsRow(raw: unknown): CohortStatsRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<CohortStatsRow> & { unsub_bounce?: number };
+  const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    contacts: numOr0(r.contacts),
+    eligible: numOr0(r.eligible),
+    received: numOr0(r.received),
+    sends_sum: numOr0(r.sends_sum),
+    opened: numOr0(r.opened),
+    clicked: numOr0(r.clicked),
+    // #2880: degrada pro par legado unsub_bounce (pré-split) quando `unsub`
+    // ausente — mesmo fallback que renderCohortsTabPanel aplicava inline.
+    unsub: typeof r.unsub === "number" && Number.isFinite(r.unsub) ? r.unsub : numOr0(r.unsub_bounce),
+    hard_bounce: numOr0(r.hard_bounce),
+    mv_verified: numOr0(r.mv_verified),
+    brevo: numOr0(r.brevo),
+  };
+}
+
+/**
+ * #2875 item 1: normaliza o payload de `ContactsSummary` lido do KV NO
+ * BOUNDARY (choke point único) — antes, `renderContactsSummarySection` e
+ * `renderCohortsTabPanel` defendiam campo-a-campo contra payload KV parcial/
+ * antigo, cada uma com sua própria cópia dos defaults. Retorna `null` quando
+ * o payload não é minimamente válido (não é objeto, ou `total` não é um
+ * number) — MESMO critério que `renderContactsSummarySection` usava antes
+ * (`!s || typeof s.total !== "number"`), preservando o stub "dados ainda não
+ * gerados" pro mesmo conjunto de payloads.
+ *
+ * Os guards locais nos renders permanecem (defesa em profundidade — também
+ * são exercitados diretamente por testes unitários que chamam os renders sem
+ * passar por este normalizador); a remoção deles é follow-up opcional, não
+ * bloqueante (ver PR #2875).
+ */
+export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<ContactsSummary> & Record<string, unknown>;
+  if (typeof s.total !== "number") return null;
+
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object";
+  const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+  const rawBrevo = isObj(s.brevo) ? s.brevo : {};
+  const rawElig = isObj(s.eligibility) ? s.eligibility : {};
+  const rawPp = isObj(s.priority_points) ? s.priority_points : {};
+  const rawEng = isObj(s.engagement) ? s.engagement : {};
+
+  let cohort_stats: Record<string, CohortStatsRow> | undefined;
+  if (isObj(s.cohort_stats)) {
+    cohort_stats = {};
+    for (const [key, row] of Object.entries(s.cohort_stats)) {
+      const normalized = normalizeCohortStatsRow(row);
+      if (normalized) cohort_stats[key] = normalized;
+    }
+  }
+
+  // priority_points_histogram* são opcionais por SCHEMA EVOLUTION (KV antigo
+  // genuinamente não tem o campo — feature-gate, não corrupção) — passthrough
+  // se vier um objeto, chave OMITIDA caso contrário (nunca `undefined`
+  // explícito: preserva comparação estrutural exata com payloads que nunca
+  // tiveram o campo). Não confundir com os defaults acima (que cobrem
+  // corrupção de um payload que DEVERIA ter o campo).
+  const histKeys = [
+    "priority_points_histogram",
+    "priority_points_histogram_verified",
+    "priority_points_histogram_eligible",
+    "priority_points_histogram_brevo",
+  ] as const;
+  const histFields: Partial<Record<(typeof histKeys)[number], Record<string, number>>> = {};
+  for (const key of histKeys) {
+    if (isObj(s[key])) histFields[key] = s[key] as Record<string, number>;
+  }
+
+  return {
+    generated_at: typeof s.generated_at === "string" ? s.generated_at : "",
+    total: s.total,
+    brevo: {
+      synced_rows: numOr0(rawBrevo.synced_rows),
+      has_signal: typeof rawBrevo.has_signal === "boolean" ? rawBrevo.has_signal : false,
+    },
+    eligibility: {
+      eligible: numOr0(rawElig.eligible),
+      ineligible: numOr0(rawElig.ineligible),
+      by_reason: isObj(rawElig.by_reason) ? (rawElig.by_reason as Record<string, number>) : {},
+    },
+    priority_points: {
+      lt0: numOr0(rawPp.lt0),
+      eq0: numOr0(rawPp.eq0),
+      p1_40: numOr0(rawPp.p1_40),
+      p41_80: numOr0(rawPp.p41_80),
+      gt80: numOr0(rawPp.gt80),
+      optin: numOr0(rawPp.optin),
+    },
+    ...histFields,
+    ...(cohort_stats ? { cohort_stats } : {}),
+    mv: isObj(s.mv) ? (s.mv as Record<string, number>) : {},
+    engagement: {
+      with_opens: numOr0(rawEng.with_opens),
+      with_clicks: numOr0(rawEng.with_clicks),
+    },
+  };
+}
+
+/**
  * #2733: lê as seções KV-independentes do dashboard (coortes, status MV, sumário
  * de contatos, cupons). Extraída para ser usada tanto no render saudável quanto
  * no fallback de rate-limit do Brevo — assim as abas de Cupons/Contatos, que vêm
  * do KV e não do Brevo, nunca congelam junto com a seção de campanhas.
+ *
+ * #2875 item 1: `contactsSummary` passa por `normalizeContactsSummary` aqui —
+ * o ÚNICO choke point de leitura do KV — em vez de cada render defender
+ * campo-a-campo contra payload parcial/antigo.
  *
  * Exported for unit tests (#2733).
  */
@@ -256,13 +375,14 @@ export async function readKvTabs(
   // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 4
   // seções sempre leem o KV direto, sem noção de fresh/kv-only.
   const kv = env.STATS_CACHE;
-  const [cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement] = await Promise.all([
+  const [cohorts, mvStatus, rawContactsSummary, couponUsage, eiaEngagement] = await Promise.all([
     kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
     kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
-    kv ? (kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) as Promise<ContactsSummary | null>) : Promise.resolve(null),
+    kv ? kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     getCouponUsage(env, mode),
     kv ? (kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) as Promise<EiaEngagementSummary | null>) : Promise.resolve(null),
   ]);
+  const contactsSummary = normalizeContactsSummary(rawContactsSummary);
   return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
 }
 

@@ -200,10 +200,6 @@ export interface CohortStatsRow {
   /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
    * pra degradar em KV antigo sem o campo — render trata ausência como 0. */
   brevo?: number;
-  /** #2880: numerador do antigo "Pts médio" (coluna removida). Sem leitor no
-   * render hoje — mantido no payload; limpeza rastreada em issue de fast-follow.
-   * null só em KV antigo (pré-COALESCE do #2874). */
-  priority_points_sum: number | null;
 }
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por
@@ -221,12 +217,13 @@ export interface EiaEngagementEdition {
   voted_b: number;
   pct_correct: number | null;
   correct_choice: string | null;
-  /** Contagem bruta de acertos — permite agregação mensal exata (#2773) via
-   *  Σ correct_count / Σ total_votes, em vez de aproximar por pct_correct
-   *  (já arredondado na origem). Opcional (mesmo padrão de
-   *  priority_points_histogram, #2731): KV escrito antes deste campo existir
-   *  não o tem — aggregateEiaEngagementByMonth trata ausência como "sem
-   *  gabarito confiável" (exclui do numerador/denominador), nunca NaN. */
+  /** Contagem bruta de acertos (#2773) — Σ correct_count / Σ total_votes seria
+   *  exato para agregação mensal, vs. aproximar por pct_correct (já arredondado
+   *  na origem). Opcional (mesmo padrão de priority_points_histogram, #2731):
+   *  KV escrito antes deste campo existir não o tem. (A agregação mensal que
+   *  consumia este campo, aggregateEiaEngagementByMonth, foi revertida em favor
+   *  de 1 linha por edição no #2860 e removida como dead code no #2875 — campo
+   *  mantido no payload, sem consumidor atual.) */
   correct_count?: number;
 }
 

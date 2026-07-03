@@ -231,35 +231,42 @@ test("computeStoreSummary: KV/payload sem contatos na Brevo → chave AUSENTE (s
   db.close();
 });
 
+test("computeStoreSummary: histograma agrega total/verified/brevo/eligible juntos NUM SÓ SCAN (#2875 — groupCountsMulti generalizado a N colunas)", () => {
+  // Prova a generalização de groupCountsWithVerifiedAndBrevo (2 colunas fixas
+  // nv/nb + o extra nl tackado depois) pra groupCountsMulti (N colunas
+  // parametrizadas): as 3 colunas condicionais devem agregar corretamente
+  // JUNTAS, na mesma linha/bucket, num único scan — não só isoladamente
+  // (os testes de #2880/#2865 acima já cobrem cada coluna em separado).
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // Bucket 0 pts: a = verified + brevo + elegível (as 3 condições juntas);
+  // b = nenhuma das 3 (mesmo bucket 0, testa que não vaza pra outras linhas).
+  ins(
+    "INSERT INTO clarice_users (email, tier, mv_bucket, brevo_list_ids) VALUES ('a@x.com',1,'verified','[1]')",
+  );
+  ins("INSERT INTO clarice_users (email, tier, unsubscribed) VALUES ('b@x.com',1,1)"); // inelegível → fora de `eligible`
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+  assert.equal(s.priority_points_histogram["0"], 2, "a,b — total do bucket 0 correto (COUNT não quebrou)");
+  assert.equal(s.priority_points_histogram_verified["0"], 1, "só a — verified");
+  assert.equal(s.priority_points_histogram_brevo["0"], 1, "só a — brevo");
+  assert.equal(s.priority_points_histogram_eligible["0"], 1, "só a — elegível (b descadastrou)");
+
+  db.close();
+});
+
 // ---------------------------------------------------------------------------
 // #2864 — cohort_stats: comparativo de envio/engajamento por cohort
 // ---------------------------------------------------------------------------
 
-test("computeStoreSummary: cohort_stats — priority_points NULL em quem recebeu não anula o pp_sum do cohort (COALESCE; review #2872)", () => {
-  const db = openClariceDb(":memory:");
-  // Linha que recebeu envio mas com priority_points NULL direto (sem
-  // recomputeDerived — simula linha legada/parcial). Pré-fix: SUM(CASE WHEN
-  // sends>0 THEN priority_points ...) = NULL → payload violava o tipo number
-  // e o Worker renderizava "0.0" fake.
-  db.prepare(
-    "INSERT INTO clarice_users (email, tier, cohort, sends_count, priority_points) VALUES ('nullpp@x.com',1,'assinantes-ativos',2,NULL)",
-  ).run();
-  const s = computeStoreSummary(db);
-  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
-  assert.equal(typeof row.priority_points_sum, "number", "SUM com COALESCE nunca é null");
-  assert.equal(row.priority_points_sum, 0);
-  db.close();
-});
-
-test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envios/abriu/clicou/saiu/mv/pontos por cohort (#2864)", () => {
+test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envios/abriu/clicou/saiu/mv por cohort (#2864)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
   // assinantes-ativos (tier 1):
   //   a: elegível, recebeu 3, abriu (opens=2), clicou (clicks=1), verified.
-  //   priority_points é RECOMPUTADO por recomputeDerived (o literal inserido
-  //   abaixo é ignorado) — fórmula: 20*opens - 10*notOpened = 20*2-10*1 = 30
-  //   (notOpened = max(0, sends-opens) = 3-2 = 1).
   ins(`INSERT INTO clarice_users
         (email, tier, sends_count, opens_count, clicks_count, mv_bucket)
         VALUES ('a@x.com',1,3,2,1,'verified')`);
@@ -267,7 +274,6 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   ins("INSERT INTO clarice_users (email, tier) VALUES ('b@x.com',1)");
   // ex-assinantes (tier 2):
   //   c: recebeu 2, não abriu, unsub → inelegível E "saiu" (unsub).
-  //   priority_points recomputado: notOpened=2, 0 - 10*2 = -20.
   ins("INSERT INTO clarice_users (email, tier, sends_count, unsubscribed) VALUES ('c@x.com',2,2,1)");
   //   d: recebeu 1, não abriu, hard bounce → inelegível E "saiu" (hard_bounce,
   //   #2880 — distinto de c/unsub, prova que unsub e hard_bounce NÃO se
@@ -287,7 +293,6 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].unsub, 0);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].hard_bounce, 0);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].mv_verified, 1, "a verified");
-  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].priority_points_sum, 30, "só a conta (recebeu); b tem sends=0");
 
   assert.equal(cs[COHORT_EX_ASSINANTES].contacts, 2, "c,d");
   assert.equal(cs[COHORT_EX_ASSINANTES].eligible, 0, "c e d inelegíveis (unsub / hard bounce)");
@@ -295,7 +300,6 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   assert.equal(cs[COHORT_EX_ASSINANTES].opened, 0);
   assert.equal(cs[COHORT_EX_ASSINANTES].unsub, 1, "só c descadastrou (#2880: separado de hard_bounce)");
   assert.equal(cs[COHORT_EX_ASSINANTES].hard_bounce, 1, "só d deu hard bounce (#2880: separado de unsub)");
-  assert.equal(cs[COHORT_EX_ASSINANTES].priority_points_sum, -30, "c: -20 (notOpened=2); d: -10 (notOpened=1)");
 
   db.close();
 });
@@ -338,5 +342,23 @@ test("computeStoreSummary: cohort_stats[cohort].brevo — contagem de brevo_list
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].brevo, 1, "só a@x.com — b sem brevo_list_ids, interno excluído");
   assert.equal(cs[COHORT_EX_ASSINANTES].brevo, 1, "c@x.com");
 
+  db.close();
+});
+
+test("computeStoreSummary: cohort_stats NÃO tem mais priority_points_sum (#2884 — dado morto, sem leitor no render desde #2880)", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, cohort, sends_count) VALUES ('a@x.com',1,'assinantes-ativos',1)",
+  ).run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
+  assert.ok(row, "cohort presente");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(row, "priority_points_sum"),
+    false,
+    "priority_points_sum removido do payload (#2884)",
+  );
   db.close();
 });

@@ -116,9 +116,6 @@ export interface CohortStatsRow {
   /** #2880: brevo_list_ids IS NOT NULL — quantos do cohort estão na Brevo (sobre o
    * TOTAL de contatos do cohort). Absorve a coluna Brevo das tabelas removidas. */
   brevo: number;
-  /** SUM(priority_points) restrito a quem recebeu (sends_count>0) — numerador da média.
-   * null só em payload de KV antigo (pré-COALESCE do #2874); escrita nova nunca emite null. */
-  priority_points_sum: number | null;
 }
 
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {
@@ -146,38 +143,37 @@ const BREVO_SYNCED_CASE = "SUM(CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 
 const SEND_ELIGIBLE_CASE = "SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END)";
 
 /**
- * #2865: par total+verified+brevo num ÚNICO scan (review #2815) — a query deve
- * projetar `k`, `n` (COUNT), `nv` (MV_VERIFIED_CASE) e `nb` (BREVO_SYNCED_CASE).
- * #2880: + `nl` (SEND_ELIGIBLE_CASE) → 4º mapa `eligible` (subconjunto enviável
- * por bucket). Cada mapa preserva a semântica esparsa (bucket sem
- * verificado/Brevo/elegível = chave AUSENTE, nunca 0 explícito) — o render trata
- * ausente como 0. Único consumidor restante é o histograma de priority_points
- * (a variante de 2 mapas `groupCountsWithVerified` e os pares by_cohort saíram
- * junto com as tabelas "Por safra"/"1º envio"). A generalização ampla do helper
- * fica no #2875.
+ * #2865/#2880: N pares total+condicionais num ÚNICO scan (review #2815) —
+ * generalizado no #2875 (a variante fixa de 2/3 mapas, `groupCountsWithVerified`/
+ * `groupCountsWithVerifiedAndBrevo`, e os pares by_cohort saíram junto com as
+ * tabelas "Por safra"/"1º envio", #2880). `extraCols` é a lista de nomes de
+ * coluna condicional que o SQL do caller projeta ALÉM de `k`/`n` (COUNT) —
+ * cada um um `SUM(CASE WHEN ... THEN 1 ELSE 0 END)` com esse MESMO alias.
+ * Cada mapa extra preserva a semântica esparsa (bucket sem essa condição =
+ * chave AUSENTE, nunca 0 explícito) — o render trata ausente como 0.
  */
-function groupCountsWithVerifiedAndBrevo(
+function groupCountsMulti<K extends string>(
   db: DatabaseSync,
   sql: string,
+  extraCols: readonly K[],
   params: string[] = [],
-): {
-  total: Record<string, number>;
-  verified: Record<string, number>;
-  brevo: Record<string, number>;
-  eligible: Record<string, number>;
-} {
+): { total: Record<string, number> } & Record<K, Record<string, number>> {
   const total: Record<string, number> = {};
-  const verified: Record<string, number> = {};
-  const brevo: Record<string, number> = {};
-  const eligible: Record<string, number> = {};
-  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number; nv: number; nb: number; nl: number }>) {
+  // Indexado via Record<string, ...> (não K) só internamente — writes num tipo
+  // genérico indexado por K não são permitidos pelo compilador (TS2862); o
+  // retorno da função permanece tipado por K normalmente.
+  const extras: Record<string, Record<string, number>> = Object.fromEntries(
+    extraCols.map((col) => [col, {}]),
+  );
+  const rows = db.prepare(sql).all(...params) as Array<{ k: unknown; n: number } & Record<K, number>>;
+  for (const r of rows) {
     const key = r.k == null ? "null" : String(r.k);
     total[key] = r.n;
-    if (r.nv > 0) verified[key] = r.nv;
-    if (r.nb > 0) brevo[key] = r.nb;
-    if (r.nl > 0) eligible[key] = r.nl;
+    for (const col of extraCols) {
+      if (r[col] > 0) extras[col][key] = r[col];
+    }
   }
-  return { total, verified, brevo, eligible };
+  return { total, ...extras } as { total: Record<string, number> } & Record<K, Record<string, number>>;
 }
 
 // #2809: fragmento SQL + params pra excluir os emails internos das agregações
@@ -197,10 +193,11 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   // tripla (total+verified+brevo), mesmo scan único, 1 agregado condicional a
   // mais. #2880: os pares by_cohort/by_cohort_first_send foram removidos (as
   // tabelas "Por safra" e "1º envio" saíram do dashboard).
-  const ppHistPair = groupCountsWithVerifiedAndBrevo(
+  const ppHistPair = groupCountsMulti(
     db,
-    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv, ${BREVO_SYNCED_CASE} nb, ${SEND_ELIGIBLE_CASE} nl FROM clarice_users
+    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} verified, ${BREVO_SYNCED_CASE} brevo, ${SEND_ELIGIBLE_CASE} eligible FROM clarice_users
       WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
+    ["verified", "brevo", "eligible"] as const,
     INTERNAL_PARAMS,
   );
   return {
@@ -304,11 +301,12 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
  * #2864: agrega por cohort num scan único (mesmo padrão de
  * `groupCountsWithVerified` acima) as métricas comparativas da aba "Cohorts":
  * contatos, elegíveis, quem já recebeu ≥1 envio, soma de envios, quem abriu/
- * clicou/saiu dentre os que receberam, quem está MV-verificado (sobre o total
- * do cohort) e a soma de priority_points de quem recebeu (pro cálculo da
- * média no render). Exclui INTERNAL_EMAILS (#2809) — mesmo racional do bloco
+ * clicou/saiu dentre os que receberam e quem está MV-verificado (sobre o
+ * total do cohort). Exclui INTERNAL_EMAILS (#2809) — mesmo racional do bloco
  * priority_points: engajamento de ofício não é sinal de comportamento de
  * audiência e distorceria a comparação entre cohorts.
+ * (#2884: a soma de priority_points por cohort — antigo numerador do "Pts
+ * médio" — foi removida junto com a coluna; sem leitor no render.)
  */
 function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
   const sql = `
@@ -323,8 +321,7 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       SUM(CASE WHEN sends_count>0 AND unsubscribed=1 THEN 1 ELSE 0 END) AS unsub,
       SUM(CASE WHEN sends_count>0 AND hard_bounced=1 THEN 1 ELSE 0 END) AS hard_bounce,
       ${MV_VERIFIED_CASE} AS mv_verified,
-      ${BREVO_SYNCED_CASE} AS brevo,
-      SUM(CASE WHEN sends_count>0 THEN COALESCE(priority_points,0) ELSE 0 END) AS pp_sum
+      ${BREVO_SYNCED_CASE} AS brevo
     FROM clarice_users
     WHERE ${NOT_INTERNAL_SQL}
     GROUP BY cohort
@@ -342,7 +339,6 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
     hard_bounce: number;
     mv_verified: number;
     brevo: number;
-    pp_sum: number;
   }>;
   for (const r of rows) {
     const key = r.k == null ? "null" : String(r.k);
@@ -357,7 +353,6 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       hard_bounce: r.hard_bounce,
       mv_verified: r.mv_verified,
       brevo: r.brevo,
-      priority_points_sum: r.pp_sum,
     };
   }
   return out;

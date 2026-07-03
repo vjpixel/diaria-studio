@@ -28,12 +28,12 @@ test("renderCohortsTabPanel: payload parcial (numerador ausente) → '—', sem 
   const partial = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50, sends_sum: 150,
-      clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80, priority_points_sum: 500,
+      clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80
       // `opened` AUSENTE (KV antigo/parcial) → openRate = NaN sem o guard
     } as unknown as CohortStatsRow,
     "ex-assinantes": {
       contacts: 200, eligible: 180, received: 100, sends_sum: 300,
-      opened: 60, clicked: 20, unsub: 2, hard_bounce: 0, mv_verified: 150, priority_points_sum: 900,
+      opened: 60, clicked: 20, unsub: 2, hard_bounce: 0, mv_verified: 150
     },
   };
   const html = renderCohortsTabPanel(partial);
@@ -45,8 +45,7 @@ test("renderCohortsTabPanel: renderiza contatos/elegíveis/recebeu/envios e taxa
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 1200, eligible: 1190, received: 1000, sends_sum: 3000,
-      opened: 800, clicked: 200, unsub: 8, hard_bounce: 2, mv_verified: 1150,
-      priority_points_sum: 40000,
+      opened: 800, clicked: 200, unsub: 8, hard_bounce: 2, mv_verified: 1150
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -68,8 +67,7 @@ test("renderCohortsTabPanel: coluna 'Na Brevo' aparece no header e a célula ref
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 1200, eligible: 1190, received: 1000, sends_sum: 3000,
-      opened: 800, clicked: 200, unsub: 10, hard_bounce: 0, mv_verified: 1150, brevo: 900,
-      priority_points_sum: 40000,
+      opened: 800, clicked: 200, unsub: 10, hard_bounce: 0, mv_verified: 1150, brevo: 900
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -81,8 +79,7 @@ test("renderCohortsTabPanel: cohort_stats[x].brevo ausente (KV pré-#2880) → c
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50, sends_sum: 150,
-      opened: 40, clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80,
-      priority_points_sum: 500,
+      opened: 40, clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80
       // `brevo` AUSENTE — KV cacheado antes do #2880
     } as unknown as CohortStatsRow,
   };
@@ -96,8 +93,7 @@ test("renderCohortsTabPanel: cohort sem ninguém 'recebeu' (received=0) mostra '
   const stats: Record<string, CohortStatsRow> = {
     "leads-2026-06": {
       contacts: 500, eligible: 480, received: 0, sends_sum: 0,
-      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0,
-      priority_points_sum: 0,
+      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -113,8 +109,7 @@ test("renderCohortsTabPanel: cohort 'null' (sem cohort atribuído) rotulado 'sem
   const stats: Record<string, CohortStatsRow> = {
     null: {
       contacts: 10, eligible: 10, received: 0, sends_sum: 0,
-      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0,
-      priority_points_sum: 0,
+      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -123,10 +118,10 @@ test("renderCohortsTabPanel: cohort 'null' (sem cohort atribuído) rotulado 'sem
 
 test("renderCohortsTabPanel: ordena por cohortSendRank (assinantes-ativos < ex-assinantes < leads < caudão < null)", () => {
   const stats: Record<string, CohortStatsRow> = {
-    "leads-caudao": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    "ex-assinantes": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    "assinantes-ativos": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    null: { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
+    "leads-caudao": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0 },
+    "ex-assinantes": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0 },
+    "assinantes-ativos": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0 },
+    null: { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0 },
   };
   const html = renderCohortsTabPanel(stats);
   const idxAtivos = html.indexOf("Assinantes ativos");
@@ -145,11 +140,11 @@ test("renderCohortsTabPanel: célula com desvio >20pp da média da coluna ganha 
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 90, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 90, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
     "ex-assinantes": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 10, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 10, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -161,11 +156,11 @@ test("renderCohortsTabPanel: cohorts próximos da média (desvio <=20pp) NÃO ga
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 55, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 55, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
     "ex-assinantes": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 45, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 45, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -183,7 +178,7 @@ test("renderCohortsTabPanel: header tem colunas Unsub e Bounce separadas, não m
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 10, eligible: 10, received: 10, sends_sum: 10,
-      opened: 5, clicked: 2, unsub: 1, hard_bounce: 1, mv_verified: 3, priority_points_sum: 0,
+      opened: 5, clicked: 2, unsub: 1, hard_bounce: 1, mv_verified: 3
     },
   };
   const withRows = renderCohortsTabPanel(stats);
@@ -198,13 +193,11 @@ test("renderCohortsTabPanel: linha Total soma contagens e agrega taxas (Σnum/Σ
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50, sends_sum: 150,
-      opened: 30, clicked: 10, unsub: 2, hard_bounce: 1, mv_verified: 40, brevo: 80,
-      priority_points_sum: 1000,
+      opened: 30, clicked: 10, unsub: 2, hard_bounce: 1, mv_verified: 40, brevo: 80
     },
     "ex-assinantes": {
       contacts: 200, eligible: 150, received: 100, sends_sum: 300,
-      opened: 60, clicked: 15, unsub: 5, hard_bounce: 2, mv_verified: 80, brevo: 150,
-      priority_points_sum: 2000,
+      opened: 60, clicked: 15, unsub: 5, hard_bounce: 2, mv_verified: 80, brevo: 150
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -254,8 +247,7 @@ test("renderDashboardHtml: contactsSummary.cohort_stats popula a tabela Cohorts 
     cohort_stats: {
       "assinantes-ativos": {
         contacts: 100, eligible: 90, received: 80, sends_sum: 200,
-        opened: 40, clicked: 5, unsub: 2, hard_bounce: 0, mv_verified: 70, brevo: 60,
-        priority_points_sum: 800,
+        opened: 40, clicked: 5, unsub: 2, hard_bounce: 0, mv_verified: 70, brevo: 60
       },
     },
   };
@@ -263,4 +255,13 @@ test("renderDashboardHtml: contactsSummary.cohort_stats popula a tabela Cohorts 
   const panel = html.match(/id="panel-contatos"[\s\S]*?(?=<\/div><!-- \/panel-contatos -->)/)?.[0] ?? "";
   assert.match(panel, /Assinantes ativos/);
   assert.doesNotMatch(panel, /Dados ainda não gerados/);
+});
+
+test("renderDashboardHtml: legenda do footer avisa que vermelho na aba Cohorts NÃO é circuit breaker (#2875 item 6)", () => {
+  const html = renderDashboardHtml([], [], null, null, null);
+  assert.match(html, /class="footer"/);
+  const footer = html.match(/<p class="footer">[\s\S]*?<\/p>/)?.[0] ?? "";
+  assert.match(footer, /circuit breaker/, "legenda global de circuit breaker segue presente");
+  assert.match(footer, /Cohorts/, "footer referencia a exceção da tabela Cohorts");
+  assert.match(footer, new RegExp(`${COHORT_DEVIATION_THRESHOLD_PP}pp`), "footer cita o threshold real de desvio da tabela Cohorts");
 });
