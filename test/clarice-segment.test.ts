@@ -339,10 +339,10 @@ test("deriveCohort: aceita data-only (sem horário) — 'created' vem como ISO d
 // cohorts.ts, ver test/cohorts.test.ts pra cobertura de cohortDisplayLabel
 // nos demais slugs — assinantes-ativos, leads-2025h2, leads-caudao...).
 
-test("cohortLabel: traduz slug de safra 'leads-YYYY-MM' de 2026 pro mês/ano em pt-BR", () => {
-  assert.equal(cohortLabel("leads-2026-05"), "Leads mai/2026");
-  assert.equal(cohortLabel("leads-2026-06"), "Leads jun/2026");
-  assert.equal(cohortLabel("leads-2026-07"), "Leads jul/2026");
+test("cohortLabel: traduz slug de safra 'leads-YYYY-MM' de 2026 pro mês/ano em pt-BR (#2880: sem prefixo 'Leads')", () => {
+  assert.equal(cohortLabel("leads-2026-05"), "mai/2026");
+  assert.equal(cohortLabel("leads-2026-06"), "jun/2026");
+  assert.equal(cohortLabel("leads-2026-07"), "jul/2026");
 });
 
 test("cohortLabel: null vira 'sem cohort'", () => {

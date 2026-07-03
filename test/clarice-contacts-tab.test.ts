@@ -235,6 +235,46 @@ test("renderContactsSummarySection: KV antigo (sem priority_points_histogram_eli
   assert.doesNotMatch(html, /<th[^>]*>elegíveis<\/th>/, "coluna elegíveis não aparece sem o dado");
 });
 
+// ---------------------------------------------------------------------------
+// #2880 E — linha "Total" nas kvTable (ex: Inelegíveis por razão) e no
+// histograma de priority_points
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: kvTable (Inelegíveis por razão) ganha linha Total somando as contagens (#2880 E)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    eligibility: { eligible: 100, ineligible: 15, by_reason: { mv_rejected: 10, dispute: 5 } },
+  });
+  assert.match(html, /<tr class="total-row"><td>Total<\/td><td[^>]*>15<\/td><\/tr>/, "linha Total soma mv_rejected+dispute = 15");
+});
+
+test("renderContactsSummarySection: kvTable com map vazio NÃO ganha linha Total (sem 'Total 0' sem sentido)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    eligibility: { eligible: 100, ineligible: 0, by_reason: {} },
+  });
+  assert.doesNotMatch(html, /<tr class="total-row"><td>Total<\/td><td[^>]*>0<\/td><\/tr>/);
+});
+
+test("renderContactsSummarySection: histograma de priority_points ganha linha Total somando contatos/elegíveis/verified/Brevo (#2880 E)", () => {
+  const withAll: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 400, "15": 40, null: 10 },
+    priority_points_histogram_eligible: { "0": 380, "15": 38 },
+    priority_points_histogram_verified: { "0": 90, "15": 7 },
+    priority_points_histogram_brevo: { "0": 29, "15": 3 },
+  };
+  const html = renderContactsSummarySection(withAll);
+  assert.match(html, /<tr class="total-row">/, "linha Total presente no histograma");
+  const totalRowMatch = html.match(/<tr class="total-row"><td>Total<\/td>([\s\S]*?)<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total do histograma capturável");
+  const cells = totalRowMatch![1];
+  assert.match(cells, />450</, "contatos somados (400+40+10)");
+  assert.match(cells, />418</, "elegíveis somados (380+38)");
+  assert.match(cells, />97</, "verified somado (90+7)");
+  assert.match(cells, />32</, "Brevo somado (29+3)");
+});
+
 test("renderContactsSummarySection: ordem das colunas — contatos | elegíveis | verified | Brevo (#2880)", () => {
   const all: ContactsSummary = {
     ...sample,

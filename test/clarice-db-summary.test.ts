@@ -266,9 +266,13 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   //   b: elegível, NUNCA recebeu (sends=0) — fora do universo "recebeu", mas conta em contacts/eligible
   ins("INSERT INTO clarice_users (email, tier) VALUES ('b@x.com',1)");
   // ex-assinantes (tier 2):
-  //   c: recebeu 2, não abriu, unsub → inelegível E "saiu" (unsub_bounce).
+  //   c: recebeu 2, não abriu, unsub → inelegível E "saiu" (unsub).
   //   priority_points recomputado: notOpened=2, 0 - 10*2 = -20.
   ins("INSERT INTO clarice_users (email, tier, sends_count, unsubscribed) VALUES ('c@x.com',2,2,1)");
+  //   d: recebeu 1, não abriu, hard bounce → inelegível E "saiu" (hard_bounce,
+  //   #2880 — distinto de c/unsub, prova que unsub e hard_bounce NÃO se
+  //   confundem no mesmo cohort).
+  ins("INSERT INTO clarice_users (email, tier, sends_count, hard_bounced) VALUES ('d@x.com',2,1,1)");
   recomputeDerived(db);
 
   const s = computeStoreSummary(db);
@@ -280,16 +284,18 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].sends_sum, 3);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].opened, 1, "a abriu");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].clicked, 1, "a clicou");
-  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].unsub_bounce, 0);
+  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].unsub, 0);
+  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].hard_bounce, 0);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].mv_verified, 1, "a verified");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].priority_points_sum, 30, "só a conta (recebeu); b tem sends=0");
 
-  assert.equal(cs[COHORT_EX_ASSINANTES].contacts, 1);
-  assert.equal(cs[COHORT_EX_ASSINANTES].eligible, 0, "c inelegível (unsub)");
-  assert.equal(cs[COHORT_EX_ASSINANTES].received, 1, "c recebeu 2 envios antes de sair");
+  assert.equal(cs[COHORT_EX_ASSINANTES].contacts, 2, "c,d");
+  assert.equal(cs[COHORT_EX_ASSINANTES].eligible, 0, "c e d inelegíveis (unsub / hard bounce)");
+  assert.equal(cs[COHORT_EX_ASSINANTES].received, 2, "c e d recebem antes de sair");
   assert.equal(cs[COHORT_EX_ASSINANTES].opened, 0);
-  assert.equal(cs[COHORT_EX_ASSINANTES].unsub_bounce, 1, "c descadastrou");
-  assert.equal(cs[COHORT_EX_ASSINANTES].priority_points_sum, -20);
+  assert.equal(cs[COHORT_EX_ASSINANTES].unsub, 1, "só c descadastrou (#2880: separado de hard_bounce)");
+  assert.equal(cs[COHORT_EX_ASSINANTES].hard_bounce, 1, "só d deu hard bounce (#2880: separado de unsub)");
+  assert.equal(cs[COHORT_EX_ASSINANTES].priority_points_sum, -30, "c: -20 (notOpened=2); d: -10 (notOpened=1)");
 
   db.close();
 });

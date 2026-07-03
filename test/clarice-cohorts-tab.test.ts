@@ -28,12 +28,12 @@ test("renderCohortsTabPanel: payload parcial (numerador ausente) → '—', sem 
   const partial = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50, sends_sum: 150,
-      clicked: 10, unsub_bounce: 1, mv_verified: 80, priority_points_sum: 500,
+      clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80, priority_points_sum: 500,
       // `opened` AUSENTE (KV antigo/parcial) → openRate = NaN sem o guard
     } as unknown as CohortStatsRow,
     "ex-assinantes": {
       contacts: 200, eligible: 180, received: 100, sends_sum: 300,
-      opened: 60, clicked: 20, unsub_bounce: 2, mv_verified: 150, priority_points_sum: 900,
+      opened: 60, clicked: 20, unsub: 2, hard_bounce: 0, mv_verified: 150, priority_points_sum: 900,
     },
   };
   const html = renderCohortsTabPanel(partial);
@@ -41,26 +41,12 @@ test("renderCohortsTabPanel: payload parcial (numerador ausente) → '—', sem 
   assert.match(html, /60\.0%/, "linha completa segue calculada (60/100 abriu)");
 });
 
-test("renderCohortsTabPanel: priority_points_sum null (SQL SUM de tudo-NULL pré-COALESCE) → '—', não 0.0 fake (review #2872)", () => {
-  const stats = {
-    "leads-2026-06": {
-      contacts: 10, eligible: 10, received: 5, sends_sum: 5,
-      opened: 2, clicked: 1, unsub_bounce: 0, mv_verified: 8,
-      priority_points_sum: null as unknown as number,
-    },
-  };
-  const html = renderCohortsTabPanel(stats);
-  assert.doesNotMatch(html, /NaN/);
-  assert.match(html, /<td>—<\/td>/, "Pts médio vira '—' (null/received seria 0.0 fake em JS)");
-  assert.doesNotMatch(html, /<td>0\.0<\/td>/);
-});
-
 test("renderCohortsTabPanel: renderiza contatos/elegíveis/recebeu/envios e taxas calculadas", () => {
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 1200, eligible: 1190, received: 1000, sends_sum: 3000,
-      opened: 800, clicked: 200, unsub_bounce: 10, mv_verified: 1150,
-      priority_points_sum: 40000, // média = 40000/1000 = 40.0
+      opened: 800, clicked: 200, unsub: 8, hard_bounce: 2, mv_verified: 1150,
+      priority_points_sum: 40000,
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -71,17 +57,18 @@ test("renderCohortsTabPanel: renderiza contatos/elegíveis/recebeu/envios e taxa
   assert.match(html, />3[.,]?000</, "soma de envios");
   assert.match(html, />80\.0%</, "abertura 800/1000");
   assert.match(html, />20\.0%</, "clique 200/1000");
-  assert.match(html, />1\.0%</, "unsub+bounce 10/1000");
-  // mv verified é sobre TOTAL de contatos (1150/1200 = 95.8%), não sobre received.
-  assert.match(html, />95\.8%</, "mv verified sobre o total de contatos");
-  assert.match(html, />40\.0</, "priority_points médio de quem recebeu");
+  assert.match(html, />0\.8%</, "unsub 8/1000 (#2880: coluna separada de bounce)");
+  assert.match(html, />0\.2%</, "bounce 2/1000 (#2880: coluna separada de unsub)");
+  // #2880 D: mv verified virou número ABSOLUTO (não mais % sobre contacts).
+  assert.match(html, />1[.,]?150</, "mv verified como número absoluto");
+  assert.doesNotMatch(html, /Pts médio/, "#2880 F: coluna Pts médio removida");
 });
 
 test("renderCohortsTabPanel: coluna 'Na Brevo' aparece no header e a célula reflete cohort_stats[x].brevo (#2880)", () => {
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 1200, eligible: 1190, received: 1000, sends_sum: 3000,
-      opened: 800, clicked: 200, unsub_bounce: 10, mv_verified: 1150, brevo: 900,
+      opened: 800, clicked: 200, unsub: 10, hard_bounce: 0, mv_verified: 1150, brevo: 900,
       priority_points_sum: 40000,
     },
   };
@@ -94,7 +81,7 @@ test("renderCohortsTabPanel: cohort_stats[x].brevo ausente (KV pré-#2880) → c
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50, sends_sum: 150,
-      opened: 40, clicked: 10, unsub_bounce: 1, mv_verified: 80,
+      opened: 40, clicked: 10, unsub: 1, hard_bounce: 0, mv_verified: 80,
       priority_points_sum: 500,
       // `brevo` AUSENTE — KV cacheado antes do #2880
     } as unknown as CohortStatsRow,
@@ -109,24 +96,24 @@ test("renderCohortsTabPanel: cohort sem ninguém 'recebeu' (received=0) mostra '
   const stats: Record<string, CohortStatsRow> = {
     "leads-2026-06": {
       contacts: 500, eligible: 480, received: 0, sends_sum: 0,
-      opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0,
+      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0,
       priority_points_sum: 0,
     },
   };
   const html = renderCohortsTabPanel(stats);
   assert.doesNotMatch(html, /NaN/);
   assert.doesNotMatch(html, /Infinity/);
-  // Abertura/Clique/Unsub+Bounce/Pts médio → "—"; MV verified calcula sobre
-  // contacts (denominador > 0), então tem valor real (0.0%).
+  // Abertura/Clique/Unsub/Bounce → "—"; MV verified é número absoluto (#2880 D),
+  // então tem valor real (0) mesmo sem denominador de taxa.
   const dashCount = (html.match(/>—</g) ?? []).length;
-  assert.ok(dashCount >= 4, `esperado ao menos 4 travessões (abertura/clique/unsub-bounce/pts médio), achou ${dashCount}`);
+  assert.ok(dashCount >= 4, `esperado ao menos 4 travessões (abertura/clique/unsub/bounce), achou ${dashCount}`);
 });
 
 test("renderCohortsTabPanel: cohort 'null' (sem cohort atribuído) rotulado 'sem cohort'", () => {
   const stats: Record<string, CohortStatsRow> = {
     null: {
       contacts: 10, eligible: 10, received: 0, sends_sum: 0,
-      opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0,
+      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0,
       priority_points_sum: 0,
     },
   };
@@ -136,15 +123,16 @@ test("renderCohortsTabPanel: cohort 'null' (sem cohort atribuído) rotulado 'sem
 
 test("renderCohortsTabPanel: ordena por cohortSendRank (assinantes-ativos < ex-assinantes < leads < caudão < null)", () => {
   const stats: Record<string, CohortStatsRow> = {
-    "leads-caudao": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    "ex-assinantes": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    "assinantes-ativos": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
-    null: { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
+    "leads-caudao": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
+    "ex-assinantes": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
+    "assinantes-ativos": { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
+    null: { contacts: 1, eligible: 1, received: 0, sends_sum: 0, opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0 },
   };
   const html = renderCohortsTabPanel(stats);
   const idxAtivos = html.indexOf("Assinantes ativos");
   const idxEx = html.indexOf("Ex-assinantes");
-  const idxCaudao = html.indexOf("caudão");
+  // #2880 C: rótulo de leads-caudao virou "Caudão" (sem prefixo "Leads ").
+  const idxCaudao = html.indexOf("Caudão");
   const idxNull = html.indexOf("sem cohort");
   assert.ok(idxAtivos < idxEx, "assinantes-ativos antes de ex-assinantes");
   assert.ok(idxEx < idxCaudao, "ex-assinantes antes de leads-caudao");
@@ -157,11 +145,11 @@ test("renderCohortsTabPanel: célula com desvio >20pp da média da coluna ganha 
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 90, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 90, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
     },
     "ex-assinantes": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 10, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 10, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -173,11 +161,11 @@ test("renderCohortsTabPanel: cohorts próximos da média (desvio <=20pp) NÃO ga
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 55, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 55, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
     },
     "ex-assinantes": {
       contacts: 100, eligible: 100, received: 100, sends_sum: 100,
-      opened: 45, clicked: 0, unsub_bounce: 0, mv_verified: 0, priority_points_sum: 0,
+      opened: 45, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 0, priority_points_sum: 0,
     },
   };
   const html = renderCohortsTabPanel(stats);
@@ -187,6 +175,59 @@ test("renderCohortsTabPanel: cohorts próximos da média (desvio <=20pp) NÃO ga
 
 test("COHORT_DEVIATION_THRESHOLD_PP é 20", () => {
   assert.equal(COHORT_DEVIATION_THRESHOLD_PP, 20);
+});
+
+test("renderCohortsTabPanel: header tem colunas Unsub e Bounce separadas, não mais 'Unsub+Bounce', e não tem mais 'Pts médio' (#2880)", () => {
+  const html = renderCohortsTabPanel({});
+  // {} ainda renderiza o stub sem thead — validar contra um payload com 1 linha.
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": {
+      contacts: 10, eligible: 10, received: 10, sends_sum: 10,
+      opened: 5, clicked: 2, unsub: 1, hard_bounce: 1, mv_verified: 3, priority_points_sum: 0,
+    },
+  };
+  const withRows = renderCohortsTabPanel(stats);
+  assert.match(withRows, /<th[^>]*>Unsub<\/th>/, "coluna Unsub isolada no header");
+  assert.match(withRows, /<th[^>]*>Bounce<\/th>/, "coluna Bounce isolada no header");
+  assert.doesNotMatch(withRows, /Unsub\+Bounce/, "header antigo combinado não existe mais");
+  assert.doesNotMatch(withRows, /Pts médio/, "coluna Pts médio removida");
+  assert.doesNotMatch(html, /Pts médio/);
+});
+
+test("renderCohortsTabPanel: linha Total soma contagens e agrega taxas (Σnum/Σrecebeu), não é média das linhas (#2880 E)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": {
+      contacts: 100, eligible: 90, received: 50, sends_sum: 150,
+      opened: 30, clicked: 10, unsub: 2, hard_bounce: 1, mv_verified: 40, brevo: 80,
+      priority_points_sum: 1000,
+    },
+    "ex-assinantes": {
+      contacts: 200, eligible: 150, received: 100, sends_sum: 300,
+      opened: 60, clicked: 15, unsub: 5, hard_bounce: 2, mv_verified: 80, brevo: 150,
+      priority_points_sum: 2000,
+    },
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, /<tr class="total-row">/, "linha Total presente");
+  const totalRowMatch = html.match(/<tr class="total-row">([\s\S]*?)<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total tem conteúdo capturável");
+  const totalRowHtml = totalRowMatch![1];
+  assert.match(totalRowHtml, />Total</, "rótulo Total");
+  assert.match(totalRowHtml, />300</, "contatos somados (100+200)");
+  assert.match(totalRowHtml, />230</, "brevo somado (80+150)");
+  assert.match(totalRowHtml, />240</, "elegíveis somados (90+150)");
+  assert.match(totalRowHtml, />150</, "recebeu somado (50+100)");
+  assert.match(totalRowHtml, />450</, "envios somados (150+300)");
+  // Taxas agregadas sobre received total (150): abertura 90/150=60.0%,
+  // clique 25/150=16.7%, unsub 7/150=4.7%, bounce 3/150=2.0% — NÃO a média
+  // simples das duas linhas (que daria outro número).
+  assert.match(totalRowHtml, />60\.0%</, "abertura agregada Σ90/Σ150");
+  assert.match(totalRowHtml, />16\.7%</, "clique agregado Σ25/Σ150");
+  assert.match(totalRowHtml, />4\.7%</, "unsub agregado Σ7/Σ150");
+  assert.match(totalRowHtml, />2\.0%</, "bounce agregado Σ3/Σ150");
+  assert.match(totalRowHtml, />120</, "mv verified somado (40+80)");
+  // linha Total não ganha destaque de desvio (sem class="alert" nas células de taxa).
+  assert.doesNotMatch(totalRowHtml, /class="alert"/);
 });
 
 test("renderDashboardHtml: NÃO inclui mais a aba Cohorts (radio/label/panel eliminados, #2880) — tabela vive dentro de Contatos", () => {
@@ -213,7 +254,7 @@ test("renderDashboardHtml: contactsSummary.cohort_stats popula a tabela Cohorts 
     cohort_stats: {
       "assinantes-ativos": {
         contacts: 100, eligible: 90, received: 80, sends_sum: 200,
-        opened: 40, clicked: 5, unsub_bounce: 2, mv_verified: 70, brevo: 60,
+        opened: 40, clicked: 5, unsub: 2, hard_bounce: 0, mv_verified: 70, brevo: 60,
         priority_points_sum: 800,
       },
     },
