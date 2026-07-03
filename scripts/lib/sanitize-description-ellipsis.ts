@@ -29,7 +29,10 @@
  */
 
 /** Trailing ellipsis: 2+ ASCII dots or the unicode ellipsis char (…), with optional trailing whitespace. */
-const TRAILING_ELLIPSIS_RE = /(?:\.{2,}|…)\s*$/u;
+// Exportado (não mais private) pra ser a fonte única — o lint de gate
+// `no-trailing-ellipsis` importa esta MESMA regex em vez de redefinir
+// (self-review #2881 achado: era byte-idêntica em 2 arquivos).
+export const TRAILING_ELLIPSIS_RE = /(?:\.{2,}|…)\s*$/u;
 
 /** Sentence-ending punctuation followed by whitespace (not decimal points / abbreviations glued to the next word). */
 const SENTENCE_END_RE = /[.!?](?=\s)/g;

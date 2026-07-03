@@ -27,6 +27,9 @@
 
 import { sectionHeaderRegex } from "../section-naming.ts";
 import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
+// Fonte única da regex de reticência final (#2881 self-review) — evita drift
+// entre o sanitizador do enrich e este backstop de gate.
+import { TRAILING_ELLIPSIS_RE } from "../sanitize-description-ellipsis.ts";
 
 // Seções cujos itens têm descrição (mesmo escopo de checkSecondaryItemsHaveSummary).
 const TARGET_SECTION_RE = sectionHeaderRegex(
@@ -44,11 +47,6 @@ const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
 // Grupo 1 = título, grupo 2 = descrição.
 const INLINE_LINK_WITH_TEXT_RE =
   /^\s*\*{0,2}\s*\[([^\]]+)\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+(\S.*)$/;
-
-// Reticências no FIM do texto: 2+ pontos ASCII ou reticências unicode (…),
-// tolera espaço em branco à direita. Mesma convenção de #2664/#2672
-// (`\.{2,}` = reticências, não ponto final residual).
-const TRAILING_ELLIPSIS_RE = /(?:\.{2,}|…)\s*$/u;
 
 export interface NoTrailingEllipsisError {
   section: string;
