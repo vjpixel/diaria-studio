@@ -469,6 +469,12 @@ async function main(): Promise<void> {
       // `_internal`. Propagar pro marker — sem isso, `captured_newsletter_count: 0`
       // fica indistinguível de "editor genuinamente não enviou newsletter
       // nenhuma" pro resto da pipeline (sync-coverage-line, Stage 4 gate).
+      // INVARIANTE DE ACOPLAMENTO (#2878 self-review MEDIUM): o sinal só chega
+      // aqui porque o `--out` de 0b-bis (captured-newsletters.json) e o `--out`
+      // deste passo (tmp-articles-raw.json) resolvem para o MESMO `_internal/`
+      // da edição. Ambos são amarrados a `data/editions/{AAMMDD}/_internal/` no
+      // orchestrator (Stage 0/1). Se algum dos dois mudar de subdir, o sentinel
+      // some silenciosamente e o bug volta — manter os dois `--out` colocados.
       const captureFailure = readCaptureFailedSentinel(internalDir);
       writeMarker(editionDir, "inject-inbox-urls", {
         injected: newInjected.length,

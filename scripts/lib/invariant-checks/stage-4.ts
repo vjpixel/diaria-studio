@@ -851,7 +851,11 @@ function checkTitleTrailingPeriodInvariant(editionDir: string): InvariantViolati
  */
 function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolation[] {
   const marker = readMarker(editionDir, "inject-inbox-urls");
-  const details = marker?.details as
+  // #2878 self-review LOW: accept both the nested `details` shape (how
+  // `writeMarker` stores it in prod) and a top-level shape, matching
+  // `readCaptureFailedFromMarker` (sync-coverage-line, padrão #1476) — the two
+  // readers must not diverge on which marker shape they honour.
+  const details = (marker?.details ?? marker) as
     | { capture_failed?: boolean; capture_error?: string }
     | undefined;
   if (!details?.capture_failed) return [];

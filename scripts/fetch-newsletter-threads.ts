@@ -36,7 +36,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import type { GmailMessagePart } from "./lib/schemas/gmail.ts";
-import { writeCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
+import {
+  clearCaptureFailedSentinel,
+  writeCaptureFailedSentinel,
+} from "./lib/newsletter-capture-failure.ts";
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
@@ -357,6 +360,9 @@ async function main(argv: string[] = process.argv): Promise<void> {
           renameSync(tmp, absOut);
         }
       }
+      // #2878: search succeeded (0 real). Clear any stale failure sentinel from a
+      // prior failed run so a recovered re-run stops signalling capture_failed.
+      if (!args.dryRun && args.outPath) clearCaptureFailedSentinel(args.outPath);
       console.log(JSON.stringify(summary, null, 2));
       return;
     }
@@ -421,6 +427,9 @@ async function main(argv: string[] = process.argv): Promise<void> {
     writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n", "utf8");
     renameSync(tmp, absOut);
 
+    // #2878: capture succeeded — clear any stale failure sentinel from a prior
+    // failed run (recovery scenario), else downstream keeps signalling failure.
+    clearCaptureFailedSentinel(args.outPath);
     console.log(JSON.stringify(summary, null, 2));
   } catch (err) {
     // #2878: fatal (OAuth/network) — write the failure sentinel BEFORE

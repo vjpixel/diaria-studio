@@ -30,7 +30,7 @@
  * `--out` — tipicamente `data/editions/{AAMMDD}/_internal/`.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export interface CaptureFailureSentinel {
@@ -67,6 +67,24 @@ export function writeCaptureFailedSentinel(outPath: string, err: unknown): void 
     );
   } catch {
     /* best-effort — nunca mascarar o erro original */
+  }
+}
+
+/**
+ * Limpa o sentinel de falha ao lado de `outPath` (#2878 — self-review HIGH).
+ * Chamado no caminho de SUCESSO de `fetch-newsletter-threads.ts`: sem isso, o
+ * cenário de recuperação (falha 1ª run → grava sentinel → editor reautentica →
+ * re-run com sucesso) deixaria o sentinel stale, e o `inject-inbox-urls`
+ * seguinte re-marcaria `capture_failed: true` mesmo com a captura já corrigida
+ * — mantendo a coverage line como aviso e o gate de Stage 4 bloqueando pra
+ * sempre. Best-effort: falha ao remover nunca deve quebrar o caminho de sucesso.
+ */
+export function clearCaptureFailedSentinel(outPath: string): void {
+  try {
+    const internalDir = dirname(resolve(process.cwd(), outPath));
+    rmSync(captureFailedSentinelPath(internalDir), { force: true });
+  } catch {
+    /* best-effort — nunca quebrar o caminho de sucesso */
   }
 }
 

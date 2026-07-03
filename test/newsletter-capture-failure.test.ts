@@ -14,6 +14,7 @@ import {
   captureFailedSentinelPath,
   writeCaptureFailedSentinel,
   readCaptureFailedSentinel,
+  clearCaptureFailedSentinel,
 } from "../scripts/lib/newsletter-capture-failure.ts";
 
 function withTmpInternalDir(test: (internalDir: string) => void): void {
@@ -108,5 +109,32 @@ describe("writeCaptureFailedSentinel / readCaptureFailedSentinel round-trip", ()
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("clearCaptureFailedSentinel (#2878 self-review HIGH — cenário de recuperação)", () => {
+  it("remove o sentinel stale no caminho de sucesso pós-reautenticação", () => {
+    withTmpInternalDir((internalDir) => {
+      const outPath = join(internalDir, "captured-newsletters.json");
+      // 1ª run falha por auth → grava sentinel.
+      writeCaptureFailedSentinel(outPath, new Error("invalid_client"));
+      assert.ok(existsSync(captureFailedSentinelPath(internalDir)));
+      // editor reautentica; re-run tem sucesso → deve limpar o sentinel.
+      clearCaptureFailedSentinel(outPath);
+      assert.equal(existsSync(captureFailedSentinelPath(internalDir)), false);
+      // e o leitor downstream não sinaliza mais capture_failed.
+      assert.equal(readCaptureFailedSentinel(internalDir), null);
+    });
+  });
+
+  it("é no-op idempotente quando não há sentinel (sucesso sem falha prévia)", () => {
+    withTmpInternalDir((internalDir) => {
+      const outPath = join(internalDir, "captured-newsletters.json");
+      assert.equal(existsSync(captureFailedSentinelPath(internalDir)), false);
+      // Não deve lançar quando o arquivo não existe (force: true).
+      clearCaptureFailedSentinel(outPath);
+      clearCaptureFailedSentinel(outPath);
+      assert.equal(existsSync(captureFailedSentinelPath(internalDir)), false);
+    });
   });
 });
