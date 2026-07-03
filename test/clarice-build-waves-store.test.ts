@@ -181,11 +181,14 @@ test("main: --cohort filtra o store pra uma safra ANTES de segmentar", () => {
   const db = openClariceDb(dbPath);
   // #2857 fase B.1: pagante (tier 1/2) nunca vira lead — usar contatos SEM
   // tier (leads reais) pra exercitar o filtro `--cohort` por safra mensal.
+  // #2888: leads precisam de mv_bucket='verified' pra seguirem elegíveis
+  // (nunca-verificado agora corta) — este teste é sobre o filtro --cohort,
+  // não sobre elegibilidade.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, created) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created, mv_bucket) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z','verified')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created, mv_bucket) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z','verified')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -210,10 +213,10 @@ test("main: sem --cohort roda sobre a base inteira (sem regressão, cohort ausen
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
   db.prepare(
-    "INSERT INTO clarice_users (email, name, created) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created, mv_bucket) VALUES ('mai@x.com','Mai','2026-05-10T00:00:00Z','verified')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created, mv_bucket) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z','verified')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -236,7 +239,7 @@ test("main: --cohort com forma canônica 'YYYY-MM' funciona igual ao rótulo pt-
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
   db.prepare(
-    "INSERT INTO clarice_users (email, name, created) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, created, mv_bucket) VALUES ('jun@x.com','Jun','2026-06-10T00:00:00Z','verified')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -257,11 +260,14 @@ test("main: --cohort aceita slug canônico direto (#2857 fase C — alias de tie
   const dir = mkdtempSync(resolve(tmpdir(), "bws-cohort-slug-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
+  // #2888: ex-assinantes (tier 2) NÃO é isento do corte mv_unverified (só
+  // assinantes-ativos é) — precisa de mv_bucket='verified' pra seguir elegível.
+  // ativo@ (tier 1) é isento, mas marcamos verified também por consistência.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('ativo@x.com','Ativo','active',1,'2025-01-01T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, status, tier, created, mv_bucket) VALUES ('ativo@x.com','Ativo','active',1,'2025-01-01T00:00:00Z','verified')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('ex@x.com','Ex',NULL,2,'2025-01-01T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, status, tier, created, mv_bucket) VALUES ('ex@x.com','Ex',NULL,2,'2025-01-01T00:00:00Z','verified')",
   ).run();
   recomputeDerived(db);
   db.close();

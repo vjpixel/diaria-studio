@@ -95,6 +95,7 @@ const CLEAN = {
   dispute_losses: 0,
   soft_bounce_count: 0,
   priority_points: 0,
+  cohort: null,
 };
 
 test("eligibility: tudo limpo → elegível, sem razão", () => {
@@ -148,16 +149,61 @@ test("eligibility: mv_bucket verified (mv_result=ok) continua elegível (#2735, 
   assert.equal(r.ineligible_reason, null);
 });
 
-test("eligibility: mv_bucket null (nunca submetido ao MV) → elegível pra todos os tiers (#2804, reverte #2656)", () => {
+test("eligibility: mv_bucket null (nunca submetido ao MV) → inelegível mv_unverified (#2888, reverte #2804)", () => {
   const r = classifyEligibility({ ...CLEAN, mv_bucket: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: mv_bucket undefined (nunca submetido ao MV) → inelegível mv_unverified (#2888)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: undefined });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility: mv_bucket '' (string vazia) → inelegível mv_unverified (#2888 self-review achado 1 — falha p/ lado seguro)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "" as unknown as null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+// #2888 — reverte #2804: mv_bucket NULL agora inelegível, exceto 2 exceções
+// ---------------------------------------------------------------------------
+
+test("eligibility #2888: mv_bucket null + cohort assinantes-ativos → ELEGÍVEL (isento, pagamento Stripe já valida — #1297)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null, cohort: "assinantes-ativos" });
   assert.equal(r.send_eligible, true);
   assert.equal(r.ineligible_reason, null);
 });
 
-test("eligibility: mv_bucket undefined (nunca submetido ao MV) → elegível pra todos os tiers (#2804)", () => {
-  const r = classifyEligibility({ ...CLEAN, mv_bucket: undefined });
+test("eligibility #2888: mv_bucket null + cohort ex-assinantes (não isento) → inelegível mv_unverified", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null, cohort: "ex-assinantes" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility #2888: mv_bucket null + priority_points > 0 → ELEGÍVEL (override #2876 estendido — mv_unverified é a irmã ausente)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null, priority_points: 20 });
   assert.equal(r.send_eligible, true);
   assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #2888: mv_bucket null + priority_points <= 0 + não-assinante → SEGUE mv_unverified (sem override)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null, priority_points: 0, cohort: null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
+test("eligibility #2888: mv_bucket verified continua elegível independente de cohort/points (sem regressão)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "verified", cohort: null, priority_points: 0 });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #2888: unsubscribed + mv_bucket null + cohort assinantes-ativos → SEGUE unsubscribed (consentimento não é sobreposto pela isenção)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: null, cohort: "assinantes-ativos", unsubscribed: true });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "unsubscribed");
 });
 
 test("eligibility: dispute_losses > 0 → dispute", () => {
@@ -372,19 +418,27 @@ test("recomputeDerived #2876: mv_bucket=rejected + abertura real (opens>0) → s
   db.close();
 });
 
-test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-trip SQL real (#2804, reverte #2656)", () => {
+test("recomputeDerived #2888: mv_bucket NULL volta a cortar (exceto assinantes-ativos/engajado) via round-trip SQL real (reverte #2804)", () => {
   const db = openClariceDb(":memory:");
 
-  // tier 3, nunca verificado (mv_bucket NULL) → elegível (era mv_unverified antes de #2804)
+  // tier 3 (lead), nunca verificado, sem engajamento → INELEGÍVEL mv_unverified
+  // (cohort computado via fallback tier+created = "leads-2026-jan-abr", não isento)
   db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 3)").run("nv@x.com");
   // tier 3, verificado → elegível (sem regressão)
   db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 3, 'verified')").run("v@x.com");
-  // tier 1 (T1), nunca verificado → elegível (já era antes, isenção agora universal)
+  // tier 1 (assinante ativo), nunca verificado → ELEGÍVEL (isento — cohort
+  // computado = assinantes-ativos, pagamento Stripe já valida, #1297)
   db.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, 1)").run("t1@x.com");
-  // sem tier (NULL), nunca verificado → elegível também (era mv_unverified antes de #2804)
+  // sem tier (NULL), nunca verificado, sem engajamento → INELEGÍVEL mv_unverified
+  // (cohort computado = null, não isento)
   db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("semtier@x.com");
+  // tier 3 (lead), nunca verificado, MAS engajado (2 abertos de 2 → 40 pontos)
+  // → ELEGÍVEL (override #2876 estendido — mv_unverified é a irmã ausente)
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, opens_count, sends_count) VALUES (?, 3, ?, ?)",
+  ).run("engajado-nv@x.com", 2, 2);
   // tier 1, mv_bucket='rejected' de vida anterior como lead → continua mv_rejected,
-  // não isento (ordem de prioridade intacta — checado ANTES de qualquer isenção de tier)
+  // não isento (ordem de prioridade intacta — checado ANTES do corte mv_unverified)
   db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 1, 'rejected')").run("t1rej@x.com");
   // tier 3, mv_bucket='unknown' → continua mv_unknown, sem regressão (#2735)
   db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 3, 'unknown')").run("unk@x.com");
@@ -395,8 +449,8 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
     db.prepare("SELECT send_eligible, ineligible_reason FROM clarice_users WHERE email = ?").get(email) as any;
 
   const nv = get("nv@x.com");
-  assert.equal(nv.send_eligible, 1);
-  assert.equal(nv.ineligible_reason, null);
+  assert.equal(nv.send_eligible, 0);
+  assert.equal(nv.ineligible_reason, "mv_unverified");
 
   const v = get("v@x.com");
   assert.equal(v.send_eligible, 1);
@@ -407,8 +461,12 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
   assert.equal(t1.ineligible_reason, null);
 
   const semtier = get("semtier@x.com");
-  assert.equal(semtier.send_eligible, 1);
-  assert.equal(semtier.ineligible_reason, null);
+  assert.equal(semtier.send_eligible, 0);
+  assert.equal(semtier.ineligible_reason, "mv_unverified");
+
+  const engajadoNv = get("engajado-nv@x.com");
+  assert.equal(engajadoNv.send_eligible, 1);
+  assert.equal(engajadoNv.ineligible_reason, null);
 
   const t1rej = get("t1rej@x.com");
   assert.equal(t1rej.send_eligible, 0);
@@ -417,6 +475,12 @@ test("recomputeDerived: mv_bucket NULL não corta mais nenhum tier via round-tri
   const unk = get("unk@x.com");
   assert.equal(unk.send_eligible, 0);
   assert.equal(unk.ineligible_reason, "mv_unknown");
+
+  // soma de inelegíveis bate com o esperado: nv, semtier, t1rej, unk = 4 de 7
+  const total = db
+    .prepare("SELECT COUNT(*) n FROM clarice_users WHERE send_eligible = 0")
+    .get() as { n: number };
+  assert.equal(total.n, 4);
 
   db.close();
 });

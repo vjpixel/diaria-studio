@@ -482,18 +482,21 @@ test("#2857 fase B equivalência (a): byte-idêntica QUANDO created é consisten
     9: "2023-03-15T00:00:00Z", // H1 2023
     10: null,                  // fallback (fóssil sem data)
   };
+  // #2888: mv_bucket='verified' em todos — este teste é sobre ORDEM de fila
+  // (cohort vs tier), não elegibilidade; sem MV, os leads (tier != 1) cairiam
+  // como mv_unverified e sumiriam do firstSend, esvaziando a comparação.
   for (let t = 1; t <= 10; t++) {
     const created = createdByTier[t];
     if (created) {
-      ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, ?)", `t${String(t).padStart(2, "0")}b@x.com`, t, created);
-      ins("INSERT INTO clarice_users (email, tier, created) VALUES (?, ?, ?)", `t${String(t).padStart(2, "0")}a@x.com`, t, created);
+      ins("INSERT INTO clarice_users (email, tier, created, mv_bucket) VALUES (?, ?, ?, 'verified')", `t${String(t).padStart(2, "0")}b@x.com`, t, created);
+      ins("INSERT INTO clarice_users (email, tier, created, mv_bucket) VALUES (?, ?, ?, 'verified')", `t${String(t).padStart(2, "0")}a@x.com`, t, created);
     } else {
-      ins("INSERT INTO clarice_users (email, tier) VALUES (?, ?)", `t${String(t).padStart(2, "0")}b@x.com`, t);
-      ins("INSERT INTO clarice_users (email, tier) VALUES (?, ?)", `t${String(t).padStart(2, "0")}a@x.com`, t);
+      ins("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, ?, 'verified')", `t${String(t).padStart(2, "0")}b@x.com`, t);
+      ins("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, ?, 'verified')", `t${String(t).padStart(2, "0")}a@x.com`, t);
     }
   }
-  ins("INSERT INTO clarice_users (email) VALUES ('nullb@x.com')");
-  ins("INSERT INTO clarice_users (email) VALUES ('nulla@x.com')");
+  ins("INSERT INTO clarice_users (email, mv_bucket) VALUES ('nullb@x.com', 'verified')");
+  ins("INSERT INTO clarice_users (email, mv_bucket) VALUES ('nulla@x.com', 'verified')");
   recomputeDerived(db);
 
   const rows = loadStoreRows(db);
@@ -528,9 +531,11 @@ test("#2857 fase B.1: quando created DIVERGE do rótulo estático do tier, o cre
   // atribuiria a qualquer lead de jan-jun/2026, via tierOf em
   // merge-clarice-subscribers.ts) — sob a ordenação ANTIGA (tier), eles
   // empatam e desempatam só por email ASC, cegos à recência real.
-  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('a-janabr@x.com', 3, '2026-03-01T00:00:00Z')"); // pré-epoch → semestre REAL do created
-  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('b-mai@x.com', 3, '2026-05-10T00:00:00Z')");     // safra maio
-  ins("INSERT INTO clarice_users (email, tier, created) VALUES ('c-jun@x.com', 3, '2026-06-10T00:00:00Z')");     // safra junho
+  // #2888: mv_bucket='verified' — teste de ORDEM (recência do cohort), não de
+  // elegibilidade; sem MV os 3 leads sumiriam do firstSend (mv_unverified).
+  ins("INSERT INTO clarice_users (email, tier, created, mv_bucket) VALUES ('a-janabr@x.com', 3, '2026-03-01T00:00:00Z', 'verified')"); // pré-epoch → semestre REAL do created
+  ins("INSERT INTO clarice_users (email, tier, created, mv_bucket) VALUES ('b-mai@x.com', 3, '2026-05-10T00:00:00Z', 'verified')");     // safra maio
+  ins("INSERT INTO clarice_users (email, tier, created, mv_bucket) VALUES ('c-jun@x.com', 3, '2026-06-10T00:00:00Z', 'verified')");     // safra junho
   recomputeDerived(db);
 
   const rows = loadStoreRows(db);
