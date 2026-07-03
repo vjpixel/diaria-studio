@@ -130,11 +130,12 @@ test("renderContactsSummarySection: ordem das tabelas — priority_points → In
     priority_points_histogram: { "0": 427520 },
   };
   const html = renderContactsSummarySection(withHistogram);
-  const idxPp = html.indexOf("priority_points (valor exato)");
+  // #2906: cabeçalho relabelado priority_points → "Score" (só apresentação).
+  const idxPp = html.indexOf("Score (valor exato)");
   const idxInelig = html.indexOf("Inelegíveis por razão");
   const idxMv = html.indexOf("MillionVerifier (bucket)");
   assert.ok(idxPp !== -1 && idxInelig !== -1 && idxMv !== -1, "as 3 tabelas presentes");
-  assert.ok(idxPp < idxInelig, "Inelegíveis vem DEPOIS de priority_points (#2806)");
+  assert.ok(idxPp < idxInelig, "Inelegíveis vem DEPOIS do Score (#2806)");
   assert.ok(idxInelig < idxMv, "MillionVerifier permanece por último");
 });
 
@@ -296,4 +297,58 @@ test("renderContactsSummarySection: ordem das colunas — contatos | elegíveis 
   const idxVerified = html.indexOf(">verified<");
   const idxBrevo = html.indexOf(">Brevo<");
   assert.ok(idxContatos < idxElegiveis && idxElegiveis < idxVerified && idxVerified < idxBrevo, "headers na ordem correta");
+});
+
+// ---------------------------------------------------------------------------
+// #2906 — relabel priority_points → "Score" (só apresentação; identificador
+// interno intocado)
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: cabeçalho do histograma mostra 'Score', não 'priority_points' (relabel #2906)", () => {
+  const withHistogram: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520, "40": 3 },
+  };
+  const html = renderContactsSummarySection(withHistogram);
+  assert.match(html, /<th[^>]*>Score \(valor exato\)<\/th>/, "header relabelado pra Score");
+  assert.doesNotMatch(html, /<th[^>]*>priority_points \(valor exato\)<\/th>/, "cabeçalho antigo não existe mais");
+});
+
+test("renderContactsSummarySection: fallback (KV pré-#2731) também mostra 'Score', não 'priority_points' (#2906)", () => {
+  // `sample` não tem priority_points_histogram → cai na tabela por faixa.
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /<th[^>]*>Score \(re-envio, por faixa[^<]*<\/th>/, "header do fallback relabelado");
+  assert.doesNotMatch(html, /<th[^>]*>priority_points \(re-envio/, "cabeçalho antigo do fallback não existe mais");
+});
+
+test("renderContactsSummarySection: nota deixa claro que 'Score' = priority_points (engajamento), não o score legado (#2906)", () => {
+  const html = renderContactsSummarySection({ ...sample, priority_points_histogram: { "0": 427520 } });
+  assert.match(html, /"Score"[^<]*<code>priority_points<\/code>/, "nota mapeia Score → priority_points (identificador interno)");
+  assert.match(html, /legado/, "nota avisa sobre o 'score' legado desacreditado");
+});
+
+test("renderContactsSummarySection: identificador interno priority_points intocado — o render lê s.priority_points (faixas) (#2906)", () => {
+  // Prova estrutural: um summary com o campo `priority_points` (chave interna
+  // preservada) renderiza as faixas — se a chave tivesse sido renomeada, o
+  // render não acharia p41_80 e a faixa "41–80" (=1) sumiria.
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /41–80/, "faixa lida de s.priority_points.p41_80 (identificador interno vivo)");
+});
+
+// ---------------------------------------------------------------------------
+// #2908 — Inelegíveis por razão + MillionVerifier (bucket) lado a lado
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: 'Inelegíveis por razão' e 'MillionVerifier (bucket)' num container .side-by-side (#2908)", () => {
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /<div class="side-by-side">/, "container flex presente");
+  const sbsMatch = html.match(/<div class="side-by-side">([\s\S]*?)<\/div>\s*<p class="section-note">Engajamento Brevo/);
+  assert.ok(sbsMatch, "container .side-by-side capturável (fecha antes da nota de Engajamento)");
+  const inner = sbsMatch![1];
+  assert.match(inner, /Inelegíveis por razão/, "tabela Inelegíveis dentro do container");
+  assert.match(inner, /MillionVerifier \(bucket\)/, "tabela MillionVerifier dentro do container");
+  assert.ok(
+    inner.indexOf("Inelegíveis por razão") < inner.indexOf("MillionVerifier (bucket)"),
+    "Inelegíveis antes de MV dentro do container",
+  );
 });

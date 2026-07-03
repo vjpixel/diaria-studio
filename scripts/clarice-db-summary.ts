@@ -20,10 +20,14 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
+import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
+import { loadSendPlan } from "./lib/send-plan.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -32,6 +36,12 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 export interface StoreSummary {
   total: number;
+  // #2909: início do ciclo de envio CORRENTE — menor `scheduledAt` do
+  // `send-plan.json` do ciclo mais recente em data/clarice-subscribers/ (ver
+  // deriveCycleStart). `null` quando não há ciclo com plano legível (render
+  // mostra "—" nas colunas "recebeu neste ciclo"/"falta enviar"). Insumo pra
+  // classificar `last_sent_at >= cycle_start` por cohort em cohort_stats.
+  cycle_start: string | null;
   brevo: { synced_rows: number; has_signal: boolean };
   eligibility: {
     eligible: number;
@@ -100,8 +110,11 @@ export interface CohortStatsRow {
   eligible: number;
   /** sends_count>0 — "já recebeu ao menos 1 envio". */
   received: number;
-  /** SUM(sends_count) — total de eventos de envio do cohort. */
-  sends_sum: number;
+  /** #2909: last_sent_at >= cycle_start — recebeu no CICLO corrente (não "ever").
+   * 0 quando não há cycle_start (o render suprime pra "—" via cycle_start
+   * top-level). Opcional (`?`): payload KV pré-#2909 não tem o campo — render
+   * degrada pra 0. Insumo de "falta enviar" = eligible − received_this_cycle. */
+  received_this_cycle?: number;
   /** sends_count>0 AND opens_count>0 — abriu ≥1, dentre quem recebeu. */
   opened: number;
   /** sends_count>0 AND clicks_count>0 — clicou ≥1, dentre quem recebeu. */
@@ -111,11 +124,13 @@ export interface CohortStatsRow {
   unsub: number;
   /** #2880: sends_count>0 AND hard_bounced=1 — deu hard bounce, dentre quem recebeu. */
   hard_bounce: number;
-  /** mv_bucket='verified' — sobre o TOTAL de contatos do cohort (não só quem recebeu). */
-  mv_verified: number;
   /** #2880: brevo_list_ids IS NOT NULL — quantos do cohort estão na Brevo (sobre o
    * TOTAL de contatos do cohort). Absorve a coluna Brevo das tabelas removidas. */
   brevo: number;
+  // #2909: `sends_sum` (SUM de eventos de envio de todo-o-sempre) e `mv_verified`
+  // (contagem MV do cohort) REMOVIDOS — não serviam ao objetivo de planejar o
+  // envio do mês. `mv_verified` já estava embutido em `eligible` pós-#2888; a
+  // visão do ciclo é `received_this_cycle`/"falta enviar".
 }
 
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {
@@ -183,8 +198,18 @@ function groupCountsMulti<K extends string>(
 const NOT_INTERNAL_SQL = `LOWER(email) NOT IN (${INTERNAL_EMAILS.map(() => "?").join(",")})`;
 const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 
-/** Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS. */
-export function computeStoreSummary(db: DatabaseSync): StoreSummary {
+/**
+ * Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS.
+ *
+ * #2909: `cycleStart` (ISO 8601 do início do ciclo corrente) é INJETADO — em
+ * produção vem de `deriveCycleStart()` (lê o send-plan do ciclo mais recente);
+ * nos testes é passado direto (o helper depende de data/ no OneDrive, ausente
+ * em :memory:/CI). `null` (default) = sem ciclo → colunas de ciclo mostram "—".
+ */
+export function computeStoreSummary(
+  db: DatabaseSync,
+  cycleStart: string | null = null,
+): StoreSummary {
   // Pares total+verified em SCAN ÚNICO por universo (review #2815 — antes eram
   // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
   // #2857 fase B: GROUP BY cohort (não mais tier) — mesmo predicado firstSend,
@@ -202,6 +227,7 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   );
   return {
     total: count(db, "SELECT COUNT(*) n FROM clarice_users"),
+    cycle_start: cycleStart,
     brevo: {
       synced_rows: count(
         db,
@@ -285,7 +311,7 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // #2865: coluna Brevo do histograma de priority_points — mesmo universo
     // (sem internos, #2809) do histograma total/verified acima.
     priority_points_histogram_brevo: ppHistPair.brevo,
-    cohort_stats: computeCohortStats(db),
+    cohort_stats: computeCohortStats(db, cycleStart),
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
@@ -300,44 +326,49 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
 /**
  * #2864: agrega por cohort num scan único (mesmo padrão de
  * `groupCountsWithVerified` acima) as métricas comparativas da aba "Cohorts":
- * contatos, elegíveis, quem já recebeu ≥1 envio, soma de envios, quem abriu/
- * clicou/saiu dentre os que receberam e quem está MV-verificado (sobre o
- * total do cohort). Exclui INTERNAL_EMAILS (#2809) — mesmo racional do bloco
- * priority_points: engajamento de ofício não é sinal de comportamento de
- * audiência e distorceria a comparação entre cohorts.
- * (#2884: a soma de priority_points por cohort — antigo numerador do "Pts
- * médio" — foi removida junto com a coluna; sem leitor no render.)
+ * contatos, elegíveis, quem já recebeu ≥1 envio, quem abriu/clicou/saiu dentre
+ * os que receberam, quem está na Brevo, e — #2909 — quem recebeu NO CICLO
+ * corrente (`last_sent_at >= cycleStart`). Exclui INTERNAL_EMAILS (#2809) —
+ * mesmo racional do bloco priority_points: engajamento de ofício não é sinal de
+ * comportamento de audiência e distorceria a comparação entre cohorts.
+ *
+ * #2909: `cycleStart` (ISO 8601 ou null) é BOUND no `?` do SELECT (antes dos
+ * INTERNAL_PARAMS do WHERE — ordem posicional do SQLite). `null` → o predicado
+ * `last_sent_at >= NULL` vira NULL → CASE ELSE → received_this_cycle=0 pra todos
+ * (o render suprime pra "—" via cycle_start top-level). `sends_sum`/`mv_verified`
+ * foram removidos (#2909 — não serviam ao planejamento do envio do mês).
  */
-function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
+function computeCohortStats(
+  db: DatabaseSync,
+  cycleStart: string | null,
+): Record<string, CohortStatsRow> {
   const sql = `
     SELECT
       cohort AS k,
       COUNT(*) AS contacts,
       SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END) AS eligible,
       SUM(CASE WHEN sends_count>0 THEN 1 ELSE 0 END) AS received,
-      SUM(COALESCE(sends_count,0)) AS sends_sum,
+      SUM(CASE WHEN last_sent_at IS NOT NULL AND last_sent_at >= ? THEN 1 ELSE 0 END) AS received_this_cycle,
       SUM(CASE WHEN sends_count>0 AND opens_count>0 THEN 1 ELSE 0 END) AS opened,
       SUM(CASE WHEN sends_count>0 AND clicks_count>0 THEN 1 ELSE 0 END) AS clicked,
       SUM(CASE WHEN sends_count>0 AND unsubscribed=1 THEN 1 ELSE 0 END) AS unsub,
       SUM(CASE WHEN sends_count>0 AND hard_bounced=1 THEN 1 ELSE 0 END) AS hard_bounce,
-      ${MV_VERIFIED_CASE} AS mv_verified,
       ${BREVO_SYNCED_CASE} AS brevo
     FROM clarice_users
     WHERE ${NOT_INTERNAL_SQL}
     GROUP BY cohort
   `;
   const out: Record<string, CohortStatsRow> = {};
-  const rows = db.prepare(sql).all(...INTERNAL_PARAMS) as Array<{
+  const rows = db.prepare(sql).all(cycleStart, ...INTERNAL_PARAMS) as Array<{
     k: unknown;
     contacts: number;
     eligible: number;
     received: number;
-    sends_sum: number;
+    received_this_cycle: number;
     opened: number;
     clicked: number;
     unsub: number;
     hard_bounce: number;
-    mv_verified: number;
     brevo: number;
   }>;
   for (const r of rows) {
@@ -346,16 +377,56 @@ function computeCohortStats(db: DatabaseSync): Record<string, CohortStatsRow> {
       contacts: r.contacts,
       eligible: r.eligible,
       received: r.received,
-      sends_sum: r.sends_sum,
+      received_this_cycle: r.received_this_cycle,
       opened: r.opened,
       clicked: r.clicked,
       unsub: r.unsub,
       hard_bounce: r.hard_bounce,
-      mv_verified: r.mv_verified,
       brevo: r.brevo,
     };
   }
   return out;
+}
+
+/**
+ * #2909: início do ciclo de envio corrente = menor `scheduledAt` do
+ * `send-plan.json` do ciclo MAIS RECENTE em `data/clarice-subscribers/`.
+ * Retorna `null` (render mostra "—") quando não há ciclo com plano legível —
+ * base ausente, nenhum ciclo, nenhum send-plan.json, ou plano corrompido.
+ *
+ * Escaneia os subdirs `{YYMM}-{MM}` (isValidCycle) em ordem DESC — o rótulo do
+ * ciclo é cronológico por construção (`2605-06` < `2612-01`, `2512-01` <
+ * `2601-02`), então `.sort().reverse()` dá o mais recente primeiro — e devolve
+ * o cycle_start do 1º cujo send-plan.json carrega. Injetável (`base`) pra teste;
+ * produção usa CLARICE_BASE (junction → OneDrive). Fail-soft: nunca lança.
+ */
+export function deriveCycleStart(base: string = CLARICE_BASE): string | null {
+  if (!existsSync(base)) return null;
+  let cycles: string[];
+  try {
+    cycles = readdirSync(base, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && isValidCycle(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+  } catch {
+    return null;
+  }
+  for (const cycle of cycles) {
+    try {
+      // resolve contra `base` (não clariceCycleDir, que fixaria em CLARICE_BASE
+      // e furaria a injeção de `base` em teste).
+      const plan = loadSendPlan(resolve(base, cycle));
+      const earliest = plan.reduce<string | null>(
+        (min, e) => (min === null || e.scheduledAt < min ? e.scheduledAt : min),
+        null,
+      );
+      if (earliest) return earliest;
+    } catch {
+      // plano ausente/corrompido neste ciclo — tenta o próximo mais antigo.
+    }
+  }
+  return null;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -364,7 +435,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
-  const summary = computeStoreSummary(db);
+  // #2909: início do ciclo corrente pra "recebeu neste ciclo"/"falta enviar".
+  const cycleStart = deriveCycleStart();
+  console.error(
+    `[clarice-db-summary] cycle_start = ${cycleStart ?? "(nenhum ciclo com send-plan legível — colunas de ciclo exibem —)"}`,
+  );
+  const summary = computeStoreSummary(db, cycleStart);
   db.close();
 
   const payload = { generated_at: new Date().toISOString(), ...summary };

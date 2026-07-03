@@ -145,6 +145,12 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 export interface ContactsSummary {
   generated_at: string;
   total: number;
+  // #2909: início do ciclo de envio corrente (menor scheduledAt do send-plan do
+  // ciclo mais recente), ou null se não há ciclo com plano legível. A tabela
+  // Cohorts usa isto pra decidir se exibe "recebeu neste ciclo"/"falta enviar"
+  // (número) ou "—" (sem ciclo). Opcional (`?`): KV pré-#2909 não tem o campo —
+  // ausente é tratado como "sem ciclo" (mesmo que null).
+  cycle_start?: string | null;
   brevo: { synced_rows: number; has_signal: boolean };
   eligibility: {
     eligible: number;
@@ -190,16 +196,21 @@ export interface CohortStatsRow {
   contacts: number;
   eligible: number;
   received: number;
-  sends_sum: number;
+  /** #2909: last_sent_at >= cycle_start — recebeu no CICLO corrente. Opcional
+   * (`?`): KV pré-#2909 não tem o campo — render degrada pra 0 (e só o usa
+   * quando `ContactsSummary.cycle_start` está presente). */
+  received_this_cycle?: number;
   opened: number;
   clicked: number;
   /** #2880: separados a pedido do editor (antes: par unsub_bounce). */
   unsub: number;
   hard_bounce: number;
-  mv_verified: number;
   /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
    * pra degradar em KV antigo sem o campo — render trata ausência como 0. */
   brevo?: number;
+  // #2909: `sends_sum`/`mv_verified` REMOVIDOS (colunas "Envios (Σ)"/"MV verified"
+  // saíram da tabela Cohorts — ver renderCohortsTabPanel). KV antigo ainda os
+  // carrega; o normalizador (brevo-api.ts) simplesmente os ignora.
 }
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por

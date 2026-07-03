@@ -659,7 +659,7 @@ export function renderContactsSummarySection(
     const totContatos = sorted.reduce((a, [, v]) => a + v, 0);
     const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}</tr>`;
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
+      <thead><tr><th title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
       <tbody>${rows}
 ${totalRow}</tbody></table></div>`;
   };
@@ -672,7 +672,7 @@ ${totalRow}</tbody></table></div>`;
       .map(([k, v]) => `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`)
       .join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (re-envio, por faixa — aguardando refresh #2731)</th><th style="text-align:right">contatos</th></tr></thead>
+      <thead><tr><th title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh #2731)</th><th style="text-align:right">contatos</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
@@ -691,9 +691,11 @@ ${totalRow}</tbody></table></div>`;
   <h2 class="section-title">Banco de contatos (store)</h2>
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
   ${priorityPointsSection}
-  <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort.</p>
+  <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
+  <div class="side-by-side">
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv)}
+  </div>
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
 </section>`;
 }
@@ -726,6 +728,9 @@ export const COHORT_DEVIATION_THRESHOLD_PP = 20;
 
 export function renderCohortsTabPanel(
   cohortStats: Record<string, CohortStatsRow> | undefined,
+  // #2909: início do ciclo corrente (ISO). Presente → colunas "Recebeu neste
+  // ciclo"/"Falta enviar" exibem números; null/undefined → "—" (sem ciclo).
+  cycleStart: string | null = null,
 ): string {
   // #2660 (review #2872): payload AUSENTE (KV antigo, script nunca rodou) ≠
   // payload VAZIO (script rodou, store sem cohorts) — mensagens distintas.
@@ -748,19 +753,23 @@ export function renderCohortsTabPanel(
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
   // numOrDash/pctOrDash: extraídos pra módulo (#2875) — ver acima.
 
+  // #2909: sem cycleStart não há ciclo definido → as colunas "recebeu neste
+  // ciclo"/"falta enviar" viram "—" (nulas, não 0). "" também conta como sem ciclo.
+  const hasCycle = !!cycleStart;
+  const cycleDash = "—";
+
   type Row = {
     cohort: string;
     contacts: number;
     brevo: number;
     eligible: number;
     received: number;
-    sendsSum: number;
+    receivedThisCycle: number; // #2909: last_sent_at >= cycle_start
     // contagens brutas (pro Total agregar taxas corretamente, #2880 E)
     opened: number;
     clicked: number;
     unsub: number;
     hardBounce: number;
-    mvVerified: number; // #2880 D: exibido como número ABSOLUTO
     openRate: number | null;
     clickRate: number | null;
     unsubRate: number | null;
@@ -778,14 +787,14 @@ export function renderCohortsTabPanel(
       brevo: c.brevo ?? 0,
       eligible: c.eligible,
       received: c.received,
-      sendsSum: c.sends_sum,
+      // #2909: `?? 0` degrada KV pré-#2909; só é EXIBIDO quando hasCycle.
+      receivedThisCycle: c.received_this_cycle ?? 0,
       opened: c.opened ?? 0,
       clicked: c.clicked ?? 0,
       // #2880 G: unsub e bounce separados. `?? unsub_bounce ?? 0`: degrada em KV
       // antigo (pré-split) mostrando o par somado na coluna Unsub, 0 em Bounce.
       unsub: c.unsub ?? (c as { unsub_bounce?: number }).unsub_bounce ?? 0,
       hardBounce: c.hard_bounce ?? 0,
-      mvVerified: c.mv_verified,
       openRate: c.received > 0 ? (c.opened / c.received) * 100 : null,
       clickRate: c.received > 0 ? (c.clicked / c.received) * 100 : null,
       unsubRate:
@@ -794,6 +803,14 @@ export function renderCohortsTabPanel(
           : null,
       bounceRate: c.received > 0 ? ((c.hard_bounce ?? 0) / c.received) * 100 : null,
     }));
+
+  // #2908: cohort NUNCA-ENVIADO = `received === 0` (nenhum contato com
+  // sends_count>0). Vão pra uma 2ª tabela recolhível (<details>) abaixo das
+  // ATIVAS (received>0) — os ~9 cohorts pré-2025 (tudo 0/—) não competem com as
+  // que têm engajamento real. Ordenação por cohortSendRank preservada em ambas
+  // (rows já vem ordenado; filter mantém a ordem).
+  const activeRows = rows.filter((r) => r.received > 0);
+  const neverSentRows = rows.filter((r) => r.received === 0);
 
   // Média simples da coluna (só sobre linhas com denominador > 0 — null não
   // entra; NaN de payload parcial também não, review #2872).
@@ -812,83 +829,113 @@ export function renderCohortsTabPanel(
   const cellAttr = (v: number | null, avg: number | null): string =>
     cellClass(v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP && "alert");
 
-  const tableRows = rows
-    .map((r) => {
-      // #2880 D: MV verified é número absoluto (não % → sem destaque de desvio,
-      // que não faz sentido entre cohorts de tamanhos muito diferentes).
-      return `<tr>
+  // #2909: célula "recebeu neste ciclo"/"falta enviar" — número quando há ciclo,
+  // "—" quando não (null-safe). "falta enviar" = elegíveis − recebeu no ciclo.
+  const cycleCell = (value: number): string =>
+    hasCycle ? n(value) : cycleDash;
+
+  const renderCohortRow = (r: Row): string => `<tr>
       <td>${escHtml(cohortLabel(r.cohort === "null" ? null : r.cohort))}</td>
       <td>${n(r.contacts)}</td>
       <td>${n(r.brevo)}</td>
       <td>${n(r.eligible)}</td>
       <td>${n(r.received)}</td>
-      <td>${n(r.sendsSum)}</td>
+      <td>${cycleCell(r.receivedThisCycle)}</td>
+      <td>${cycleCell(Math.max(0, r.eligible - r.receivedThisCycle))}</td>
       <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
       <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
       <td${cellAttr(r.unsubRate, avgUnsub)}>${pctOrDash(r.unsubRate)}</td>
       <td${cellAttr(r.bounceRate, avgBounce)}>${pctOrDash(r.bounceRate)}</td>
-      <td>${n(r.mvVerified)}</td>
     </tr>`;
-    })
-    .join("\n");
 
-  // #2880 E: linha Total. Contagens somadas; taxas AGREGADAS (Σnum/Σrecebeu,
-  // não média de taxas) — a taxa real da base inteira. Sem destaque de desvio.
-  const tot = rows.reduce(
+  const activeTableRows = activeRows.map(renderCohortRow).join("\n");
+
+  // #2880 E: linha Total (só sobre as ATIVAS, #2908). Contagens somadas; taxas
+  // AGREGADAS (Σnum/Σrecebeu, não média de taxas) — a taxa real da base ativa.
+  // "Falta enviar" total = Σelegíveis − Σrecebeu_ciclo. Sem destaque de desvio.
+  const tot = activeRows.reduce(
     (a, r) => ({
       contacts: a.contacts + r.contacts,
       brevo: a.brevo + r.brevo,
       eligible: a.eligible + r.eligible,
       received: a.received + r.received,
-      sendsSum: a.sendsSum + r.sendsSum,
+      receivedThisCycle: a.receivedThisCycle + r.receivedThisCycle,
       opened: a.opened + r.opened,
       clicked: a.clicked + r.clicked,
       unsub: a.unsub + r.unsub,
       hardBounce: a.hardBounce + r.hardBounce,
-      mvVerified: a.mvVerified + r.mvVerified,
     }),
-    { contacts: 0, brevo: 0, eligible: 0, received: 0, sendsSum: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0, mvVerified: 0 },
+    { contacts: 0, brevo: 0, eligible: 0, received: 0, receivedThisCycle: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0 },
   );
   const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
-  const totalRow = `<tr class="total-row">
+  // Total só quando há ≥1 cohort ativo (senão a tabela principal fica vazia — as
+  // linhas foram todas pro <details> de nunca-enviados).
+  const totalRow = activeRows.length
+    ? `<tr class="total-row">
       <td>Total</td>
       <td>${n(tot.contacts)}</td>
       <td>${n(tot.brevo)}</td>
       <td>${n(tot.eligible)}</td>
       <td>${n(tot.received)}</td>
-      <td>${n(tot.sendsSum)}</td>
+      <td>${cycleCell(tot.receivedThisCycle)}</td>
+      <td>${cycleCell(Math.max(0, tot.eligible - tot.receivedThisCycle))}</td>
       <td>${pctOrDash(totRate(tot.opened))}</td>
       <td>${pctOrDash(totRate(tot.clicked))}</td>
       <td>${pctOrDash(totRate(tot.unsub))}</td>
       <td>${pctOrDash(totRate(tot.hardBounce))}</td>
-      <td>${n(tot.mvVerified)}</td>
-    </tr>`;
+    </tr>`
+    : "";
 
-  return `
-<section class="phase2-section" id="cohorts-tab">
-  <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>; MV verified é o <strong>número</strong> de contatos do cohort verificados. Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células de taxa em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna. A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas.</p>
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
+  // #2908: header compartilhado entre a tabela ativa e o <details> de
+  // nunca-enviados (mesmas colunas). 11 colunas (#2909: −Envios(Σ)/−MV verified,
+  // +Recebeu neste ciclo/+Falta enviar).
+  const headerRow = `<tr>
         <th title="Cohort (taxonomia #2857)">Cohort</th>
         <th title="Total de contatos no cohort (exclui internos)">Contatos</th>
         <th title="Contatos do cohort sincronizados na Brevo (brevo_list_ids preenchido)">Na Brevo</th>
         <th title="Contatos elegíveis para envio (send_eligible=1)">Elegíveis</th>
         <th title="Contatos que já receberam ao menos 1 envio (sends_count>0)">Recebeu ≥1</th>
-        <th title="Soma de envios (eventos) do cohort">Envios (Σ)</th>
+        <th title="Contatos do cohort que receberam no ciclo atual (last_sent_at ≥ início do ciclo)">Recebeu neste ciclo</th>
+        <th title="Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo, mínimo 0)">Falta enviar</th>
         <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
         <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
         <th title="% de quem recebeu que descadastrou">Unsub</th>
         <th title="% de quem recebeu que deu hard bounce">Bounce</th>
-        <th title="Nº de contatos do cohort verificados no MillionVerifier (mv_bucket=verified)">MV verified</th>
-      </tr>
+      </tr>`;
+
+  // #2908: nunca-enviados (received=0) num <details> recolhível abaixo das
+  // ativas — HTML válido (o <details> envolve uma TABELA inteira, não <tr>
+  // soltos). Mesma ordenação (cohortSendRank) e mesmas colunas; sem linha Total.
+  const neverSentBlock = neverSentRows.length
+    ? `
+  <details class="never-sent">
+    <summary>Cohorts sem envio (${neverSentRows.length}) — nunca receberam</summary>
+    <div class="table-wrap">
+    <table>
+      <thead>${headerRow}</thead>
+      <tbody>${neverSentRows.map(renderCohortRow).join("\n")}</tbody>
+    </table>
+    </div>
+  </details>`
+    : "";
+
+  const cycleNote = hasCycle
+    ? `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> refletem o ciclo de envio corrente (last_sent_at ≥ início do ciclo, derivado do send-plan); "Falta enviar" = Elegíveis − Recebeu neste ciclo (mínimo 0 — recebeu pode passar de elegíveis quando há descadastro/bounce pós-envio).`
+    : `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> exibem "—" — nenhum ciclo de envio com send-plan legível.`;
+
+  return `
+<section class="phase2-section" id="cohorts-tab">
+  <h2 class="section-title">Cohorts</h2>
+  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células de taxa em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna. A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas. Cohorts que nunca receberam envio ficam recolhidos abaixo (#2908).</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      ${headerRow}
     </thead>
-    <tbody>${tableRows}
+    <tbody>${activeTableRows}
 ${totalRow}</tbody>
   </table>
-  </div>
+  </div>${neverSentBlock}
 </section>`;
 }
 

@@ -60,6 +60,15 @@ Emails inválidos/disposable/test/role ficam só no audit CSV.
 
   Aditivo, não corte duro: um optin que ignora 4 emails decai pra 0 (40 − 10×4).
 
+  > **Rótulo "Score" no dashboard (#2906).** O `clarice-dashboard` **exibe**
+  > `priority_points` sob o rótulo humano **"Score"** (cabeçalhos/tooltips da aba
+  > Contatos). É só apresentação: o identificador interno segue `priority_points`
+  > (coluna SQLite, tipos TS, chaves KV, funções) — nenhum rename de schema.
+  > "Score" aqui = **engajamento** (`priority_points`), **não** o "score" legado
+  > (aquele que a análise concluiu que não prediz abertura — dia-da-semana é o
+  > lever), que já saiu do código. Cuidado ao ler git history/docs antigos: o
+  > termo "score" passou a significar duas coisas ao longo do tempo.
+
 ## Elegibilidade
 
 `send_eligible` é `false` se qualquer condição bater; `ineligible_reason` guarda a

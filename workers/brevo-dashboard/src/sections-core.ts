@@ -197,7 +197,12 @@ export function renderDashboardHtml(
   // #2864: aba Cohorts — comparativo de envio/engajamento por cohort. Deriva
   // de contactsSummary (mesmo payload KV de Contatos, campo cohort_stats
   // opcional) — sem parâmetro novo na assinatura desta função.
-  const cohortsTabSection = renderCohortsTabPanel(contactsSummary?.cohort_stats);
+  // #2909: passa cycle_start (top-level do summary) pra tabela decidir entre
+  // exibir "recebeu neste ciclo"/"falta enviar" (número) ou "—" (sem ciclo).
+  const cohortsTabSection = renderCohortsTabPanel(
+    contactsSummary?.cohort_stats,
+    contactsSummary?.cycle_start ?? null,
+  );
   // #2738: engajamento do poll "É IA?" por edição (pré-computado via KV).
   const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
@@ -227,6 +232,15 @@ export function renderDashboardHtml(
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
   .sub { color: var(--ink); opacity: 0.6; font-size: 0.9rem; margin: 0 0 24px 0; }
   .table-wrap { overflow-x: auto; }
+  /* #2908: duas tabelas estreitas (Inelegíveis por razão + MillionVerifier bucket)
+     lado a lado num flex — economiza a metade direita da tela. Quebra pra
+     empilhado em telas estreitas (flex-wrap). min-width:0 deixa o filho encolher
+     (senão o conteúdo trava a largura e o wrap não dispara). */
+  .side-by-side { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .side-by-side > * { flex: 1 1 240px; min-width: 0; }
+  /* #2908: <details> dos cohorts nunca-enviados — recolhido abaixo das ativas. */
+  details.never-sent { margin-top: 12px; }
+  details.never-sent > summary { cursor: pointer; font-size: 0.85rem; color: var(--ink); opacity: 0.75; padding: 6px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
