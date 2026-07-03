@@ -28,7 +28,7 @@ import {
   ABC_RESET_AT,
   calcCumulativeSent,
   detectActiveCycle,
-  detectActiveMonthlyCycle,
+  groupMonthlyAbcTests,
   renderAbcSection,
   renderVolumeSection,
   renderDashboardHtml,
@@ -160,11 +160,23 @@ describe("parseClariceCampaignKey", () => {
 // ─── #2889: teste ABC MENSAL ──────────────────────────────────────────────────
 
 describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => {
-  // 3 campanhas do digest mensal (1 por célula, sem dNN), com stats reais.
-  const mensal = [
-    makeCampaign(75, "Clarice News 2606-07 — A: Brasil, Anthropic e a corrida", "2026-07-03T06:00:00Z", { sent: 1487, delivered: 1482, uniqueViews: 702 }),
-    makeCampaign(76, "Clarice News 2606-07 — B: O mês em que o modelo virou agente", "2026-07-03T06:00:00Z", { sent: 1489, delivered: 1484, uniqueViews: 719 }),
-    makeCampaign(77, "Clarice News 2606-07 — C: Soberania, segurança e agentes", "2026-07-03T06:00:00Z", { sent: 1487, delivered: 1484, uniqueViews: 691 }),
+  // scheduledAt explícito: groupMonthlyAbcTests agrupa por (ciclo + DATA), e
+  // makeCampaign fixa scheduledAt no base — sobrescrevo pra datar o teste.
+  const mAbc = (id: number, cell: string, when: string, gs: Record<string, number>) => ({
+    ...makeCampaign(id, `Clarice News 2606-07 — ${cell}: subject ${cell}`, when, gs),
+    scheduledAt: when,
+  });
+  // Teste 1 (engajado): 3 campanhas em 03/07.
+  const mensalSexta = [
+    mAbc(75, "A", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1482, uniqueViews: 702 }),
+    mAbc(76, "B", "2026-07-03T06:00:00.000-03:00", { sent: 1489, delivered: 1484, uniqueViews: 719 }),
+    mAbc(77, "C", "2026-07-03T06:00:00.000-03:00", { sent: 1487, delivered: 1484, uniqueViews: 691 }),
+  ];
+  // Teste 2 (cold): MESMO ciclo/naming, mas 05/07 — público diferente.
+  const mensalDomingo = [
+    mAbc(175, "A", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1790, uniqueViews: 400 }),
+    mAbc(176, "B", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1791, uniqueViews: 430 }),
+    mAbc(177, "C", "2026-07-05T06:00:00.000-03:00", { sent: 1800, delivered: 1790, uniqueViews: 410 }),
   ];
 
   test("parseClariceCampaignKey reconhece o naming mensal (monthly:true, cell, sem dayNum)", () => {
@@ -177,40 +189,54 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
   });
 
   test("detectActiveCycle IGNORA o mensal (só ciclos diários)", () => {
-    // mistura diário (2605) + mensal (2606-07): o mensal seria lexicograficamente
-    // "maior", mas detectActiveCycle deve devolver o diário.
-    const mix = [...allCampaigns, ...mensal];
+    const mix = [...allCampaigns, ...mensalSexta];
     assert.equal(detectActiveCycle(mix), "2605");
   });
 
-  test("detectActiveMonthlyCycle devolve o ciclo mensal (independente do diário)", () => {
-    const mix = [...allCampaigns, ...mensal];
-    assert.equal(detectActiveMonthlyCycle(mix), "2606-07");
-    assert.equal(detectActiveMonthlyCycle(allCampaigns), null); // sem mensal
+  test("groupMonthlyAbcTests separa testes do MESMO ciclo por DATA de envio", () => {
+    const groups = groupMonthlyAbcTests([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    assert.equal(groups.length, 2, "2 testes: 03/07 e 05/07");
+    // mais recente primeiro
+    assert.equal(groups[0].dateKey, "2026-07-05");
+    assert.equal(groups[0].dateLabel, "05/07/2026");
+    assert.equal(groups[0].campaigns.length, 3);
+    assert.equal(groups[1].dateKey, "2026-07-03");
+    assert.equal(groups[1].cycle, "2606-07");
+    assert.equal(groupMonthlyAbcTests(allCampaigns).length, 0, "sem mensal → vazio");
   });
 
   test("aggregateAbcSummary agrega as 3 campanhas mensais (pula o corte de dia S1)", () => {
-    const rows = aggregateAbcSummary(mensal, "2606-07");
+    const rows = aggregateAbcSummary(mensalSexta, "2606-07");
     const a = rows.find((r) => r.cell === "A")!;
     const b = rows.find((r) => r.cell === "B")!;
     const c = rows.find((r) => r.cell === "C")!;
     assert.equal(a.campaignCount, 1);
     assert.equal(b.campaignCount, 1);
     assert.equal(c.campaignCount, 1);
-    // B tem a maior taxa de abertura (719/1484 > 702/1482 > 691/1484).
     assert.ok(b.openRate > a.openRate && a.openRate > c.openRate);
   });
 
-  test("renderDashboardHtml inclui a seção 'Resumo A/B/C — Mensal' quando há teste ABC mensal", () => {
-    const html = renderDashboardHtml([...allCampaigns, ...mensal]);
-    assert.match(html, /id="abc-summary-monthly"/);
-    assert.match(html, /Resumo A\/B\/C — Mensal \(2606-07\)/);
-    assert.match(html, /Célula B/); // as células do mensal aparecem
+  test("renderDashboardHtml: 1 teste mensal → 1 seção datada", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta]);
+    assert.match(html, /id="abc-summary-monthly-2026-07-03"/);
+    assert.match(html, /Resumo A\/B\/C — Mensal \(2606-07 · 03\/07\/2026\)/);
+    assert.match(html, /Célula B/);
   });
 
-  test("sem teste ABC mensal → seção mensal não renderiza", () => {
+  test("renderDashboardHtml: 2 testes do mesmo ciclo (datas diferentes) → 2 seções separadas, recente primeiro", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    assert.match(html, /id="abc-summary-monthly-2026-07-03"/);
+    assert.match(html, /id="abc-summary-monthly-2026-07-05"/);
+    // 05/07 renderiza ANTES de 03/07 (mais recente primeiro)
+    assert.ok(
+      html.indexOf('id="abc-summary-monthly-2026-07-05"') < html.indexOf('id="abc-summary-monthly-2026-07-03"'),
+      "domingo (05/07) vem antes de sexta (03/07)",
+    );
+  });
+
+  test("sem teste ABC mensal → nenhuma seção mensal", () => {
     const html = renderDashboardHtml(allCampaigns);
-    assert.doesNotMatch(html, /id="abc-summary-monthly"/);
+    assert.doesNotMatch(html, /abc-summary-monthly/);
   });
 });
 

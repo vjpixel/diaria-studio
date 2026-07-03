@@ -143,16 +143,19 @@ export function renderDashboardHtml(
   const abcResetNote =
     abcRowsAll.some((r) => r.campaignCount > 0) && abcRows.every((r) => r.campaignCount === 0);
   const abcSection = activeCycle ? renderAbcSection(abcRows, abcResetNote) : "";
-  // #2889: Resumo A/B/C do teste MENSAL — seção própria, ciclo detectado
-  // independente do diário (não compete pelo activeCycle). Sem reset placeholder
-  // (o reset #2871 é do diário); sem teste ABC mensal → renderiza nada.
-  const monthlyCycle = detectActiveMonthlyCycle(campaigns);
-  const monthlyAbcSection = monthlyCycle
-    ? renderAbcSection(aggregateAbcSummary(campaigns, monthlyCycle), false, {
-        title: `Resumo A/B/C — Mensal (${monthlyCycle})`,
-        id: "abc-summary-monthly",
-      })
-    : "";
+  // #2889: Resumo A/B/C dos testes MENSAIS — UMA seção por (ciclo + dia de
+  // envio), separadas do diário e entre si (dois testes do mesmo ciclo com o
+  // mesmo naming, ex: engajado sexta + cold domingo, viram seções distintas
+  // pela data). Sem reset placeholder (o #2871 é do diário); sem teste mensal
+  // → nada. Mais recente primeiro.
+  const monthlyAbcSection = groupMonthlyAbcTests(campaigns)
+    .map((g) =>
+      renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
+        title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
+        id: `abc-summary-monthly-${g.dateKey}`,
+      }),
+    )
+    .join("\n");
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
   // e testadas (reuso futuro), só não são mais chamadas aqui.
@@ -553,7 +556,7 @@ export function parseClariceCampaignKey(campaignName: string): {
   // por célula (não S1/dias), então não tem dNN. `monthly: true` faz
   // aggregateAbcSummary pular o corte de dia e detectActiveCycle ignorar (o
   // diário e o mensal são testes distintos, cada um com seu Resumo A/B/C).
-  const mm = campaignName.match(/Clarice News (\d{4}-\d{2}) — ([ABC])\b/i);
+  const mm = campaignName.match(/Clarice News (\d{4}-\d{2})\s*[—–-]\s*([ABC])\b/i);
   if (mm) {
     return { cycle: mm[1], dayNum: 0, cell: mm[2].toUpperCase() as "A" | "B" | "C", monthly: true };
   }
@@ -733,21 +736,41 @@ export function detectActiveCycle(
 }
 
 /**
- * #2889: ciclo do teste ABC MENSAL mais recente (naming `AAMM-MM`, com célula
- * A/B/C). Independente de `detectActiveCycle` (diário) — os dois Resumos A/B/C
- * coexistem sem competir pelo mesmo slot. null se não há teste ABC mensal.
- * Exportado pra teste unitário.
+ * #2889: agrupa as campanhas de teste ABC MENSAL em TESTES distintos, por
+ * (ciclo + DATA de envio BRT). Dois testes do MESMO ciclo com o MESMO naming
+ * (ex: engajado na sexta + cold no domingo — mesmos 3 subjects) são separados
+ * pela data de envio, pra nunca misturar públicos diferentes numa comparação
+ * única. Cada grupo vira uma seção A/B/C própria; ordenados do mais recente
+ * pro mais antigo. Exportado pra teste unitário.
  */
-export function detectActiveMonthlyCycle(
+export function groupMonthlyAbcTests(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
-): string | null {
-  let latest: string | null = null;
+): Array<{
+  cycle: string;
+  dateKey: string; // YYYY-MM-DD (BRT) — chave de ordenação
+  dateLabel: string; // DD/MM/YYYY
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
+}> {
+  const groups = new Map<
+    string,
+    { cycle: string; dateKey: string; campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }> }
+  >();
   for (const c of campaigns) {
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || !parsed.monthly || parsed.cell === null) continue;
-    if (!latest || parsed.cycle > latest) latest = parsed.cycle;
+    const when = c.scheduledAt ?? c.sentDate;
+    if (!when) continue;
+    const ms = Date.parse(when);
+    if (!Number.isFinite(ms)) continue;
+    // data no fuso BRT (en-CA → YYYY-MM-DD)
+    const dateKey = new Date(ms).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const key = `${parsed.cycle}|${dateKey}`;
+    if (!groups.has(key)) groups.set(key, { cycle: parsed.cycle, dateKey, campaigns: [] });
+    groups.get(key)!.campaigns.push(c);
   }
-  return latest;
+  return [...groups.values()]
+    .map((g) => ({ ...g, dateLabel: g.dateKey.split("-").reverse().join("/") }))
+    .sort((a, b) => (a.dateKey < b.dateKey ? 1 : a.dateKey > b.dateKey ? -1 : 0));
 }
 
 // ─── #2134: tabela de open rate por dia da semana ────────────────────────────
