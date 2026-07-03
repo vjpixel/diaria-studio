@@ -26,6 +26,7 @@ import {
   renderDashboardHtml,
   buildStaleResponse,
   buildRateLimitFallback,
+  normalizeContactsSummary,
   COUPONS_KV_KEY,
   COHORTS_KV_KEY,
   MV_STATUS_KV_KEY,
@@ -118,6 +119,29 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     assert.equal(mvStatus, null);
     assert.equal(contactsSummary, null);
     assert.equal(eiaEngagement, null, "#2738: também deve degradar pra null sem quebrar");
+  });
+
+  it("readKvTabs normaliza contactsSummary NO BOUNDARY antes de devolver (#2875 item 1)", async () => {
+    // Payload malformado: cohort_stats com linha sem `contacts`/`opened` (KV
+    // parcial/antigo), subobjetos `brevo`/`priority_points` ausentes.
+    const malformed = {
+      total: 50,
+      cohort_stats: {
+        "assinantes-ativos": { received: 10, unsub_bounce: 3 }, // legado + campos ausentes
+      },
+    };
+    const kv = makeKv({ [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(malformed) });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { contactsSummary } = await readKvTabs(env as any, "cached");
+    assert.notEqual(contactsSummary, null, "total válido → não degrada pra null");
+    assert.equal(contactsSummary?.total, 50);
+    assert.deepEqual(contactsSummary?.brevo, { synced_rows: 0, has_signal: false }, "subobjeto ausente → default");
+    const row = contactsSummary?.cohort_stats?.["assinantes-ativos"];
+    assert.ok(row, "linha do cohort presente e normalizada");
+    assert.equal(row?.received, 10, "campo presente preservado");
+    assert.equal(row?.contacts, 0, "campo ausente → 0, não undefined (não pode lançar no render)");
+    assert.equal(row?.unsub, 3, "legado unsub_bounce vira unsub quando unsub ausente");
   });
 
   it("render com campanhas STALE vazias + cupons frescos → aba de Cupons presente", () => {
@@ -232,5 +256,87 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     assert.ok(resp.status === 200 || resp.status === 503, "degrada graciosamente (200 stale ou 503)");
     const body = await resp.text();
     assert.ok(body.includes("tablabel-cupons") || resp.status === 503, "cupons ainda frescos no 200");
+  });
+});
+
+describe("normalizeContactsSummary (#2875 item 1 — validação única no boundary do KV)", () => {
+  it("raw não-objeto (null/string/number) → null", () => {
+    assert.equal(normalizeContactsSummary(null), null);
+    assert.equal(normalizeContactsSummary(undefined), null);
+    assert.equal(normalizeContactsSummary("garbage"), null);
+    assert.equal(normalizeContactsSummary(42), null);
+  });
+
+  it("total ausente/não-number → null (mesmo critério que os renders usavam antes)", () => {
+    assert.equal(normalizeContactsSummary({}), null);
+    assert.equal(normalizeContactsSummary({ total: "100" }), null);
+  });
+
+  it("total=0 (store legitimamente vazio) NÃO é tratado como ausência de dado", () => {
+    const s = normalizeContactsSummary({ total: 0 });
+    assert.notEqual(s, null);
+    assert.equal(s?.total, 0);
+  });
+
+  it("payload bem-formado passa por praticamente inalterado", () => {
+    const s = normalizeContactsSummary(syntheticContacts);
+    assert.deepEqual(s, syntheticContacts);
+  });
+
+  it("subobjetos ausentes (brevo/eligibility/priority_points/engagement) → defaults, sem lançar", () => {
+    const s = normalizeContactsSummary({ total: 10 });
+    assert.deepEqual(s?.brevo, { synced_rows: 0, has_signal: false });
+    assert.deepEqual(s?.eligibility, { eligible: 0, ineligible: 0, by_reason: {} });
+    assert.deepEqual(s?.priority_points, { lt0: 0, eq0: 0, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 });
+    assert.deepEqual(s?.engagement, { with_opens: 0, with_clicks: 0 });
+    assert.deepEqual(s?.mv, {});
+  });
+
+  it("histogramas opcionais ausentes → chave OMITIDA (não `undefined` explícito) — schema evolution, não corrupção", () => {
+    const s = normalizeContactsSummary({ total: 10 });
+    assert.ok(s);
+    assert.equal(Object.prototype.hasOwnProperty.call(s, "priority_points_histogram"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(s, "cohort_stats"), false);
+  });
+
+  it("histogramas opcionais presentes → passthrough", () => {
+    const s = normalizeContactsSummary({
+      total: 10,
+      priority_points_histogram: { "40": 3 },
+      priority_points_histogram_verified: { "40": 1 },
+    });
+    assert.deepEqual(s?.priority_points_histogram, { "40": 3 });
+    assert.deepEqual(s?.priority_points_histogram_verified, { "40": 1 });
+    assert.equal(Object.prototype.hasOwnProperty.call(s, "priority_points_histogram_brevo"), false);
+  });
+
+  it("cohort_stats com linha corrompida (não-objeto) → linha descartada, resto do payload sobrevive", () => {
+    const s = normalizeContactsSummary({
+      total: 10,
+      cohort_stats: {
+        "assinantes-ativos": { contacts: 5, received: 3, opened: 1, clicked: 0, unsub: 0, hard_bounce: 0, mv_verified: 1, brevo: 2, eligible: 5, sends_sum: 3 },
+        corrompido: "não é um objeto",
+      },
+    });
+    assert.ok(s?.cohort_stats?.["assinantes-ativos"]);
+    assert.equal(s?.cohort_stats?.["assinantes-ativos"]?.contacts, 5);
+    assert.equal(s?.cohort_stats?.["corrompido"], undefined, "linha corrompida descartada, não propagada");
+  });
+
+  it("cohort_stats: unsub presente tem PRIORIDADE sobre o legado unsub_bounce", () => {
+    const s = normalizeContactsSummary({
+      total: 10,
+      cohort_stats: {
+        x: { unsub: 5, unsub_bounce: 99 },
+      },
+    });
+    assert.equal(s?.cohort_stats?.x?.unsub, 5, "unsub explícito vence o par legado");
+  });
+
+  it("generated_at ausente/malformado → string vazia, nunca undefined/throw", () => {
+    const s1 = normalizeContactsSummary({ total: 10 });
+    assert.equal(s1?.generated_at, "");
+    const s2 = normalizeContactsSummary({ total: 10, generated_at: 12345 });
+    assert.equal(s2?.generated_at, "");
   });
 });
