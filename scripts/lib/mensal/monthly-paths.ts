@@ -36,7 +36,10 @@ import { fileURLToPath } from "node:url";
 import { getArg, parseArgs } from "../cli-args.ts";
 import { isValidCycle } from "../clarice-paths.ts";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+// scripts/lib/mensal/ → raiz do repo são 3 níveis acima (mensal → lib → scripts).
+// (#2747 desceu este arquivo de scripts/lib/ pra scripts/lib/mensal/ e o `../..`
+// original — correto na origem — passou a apontar pra scripts/; corrigido aqui.)
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /** Raiz dos digests mensais (`data/monthly/`). */
 export const MONTHLY_BASE = resolve(REPO_ROOT, "data/monthly");
