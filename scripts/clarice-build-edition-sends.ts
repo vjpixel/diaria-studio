@@ -481,8 +481,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // invocações). scopeFiles = arquivos que ESTA invocação vai (re)escrever,
   // pra não tratar o próprio output desta invocação como "wave anterior".
   const scopeFiles = scopedSendFileNames(plan, blocks);
-  const sendsDirForDedup = resolve(cycleDir, "sends");
-  const priorEmails = collectPriorCycleEmails(sendsDirForDedup, scopeFiles);
+  // ensureDir aqui (antes do dedup) é seguro: collectPriorCycleEmails trata um
+  // sendsDir recém-criado/vazio como "sem waves anteriores".
+  const sendsDir = ensureDir(resolve(cycleDir, "sends"));
+  const priorEmails = collectPriorCycleEmails(sendsDir, scopeFiles);
   if (priorEmails.size > 0) {
     console.error(
       `🔒 dedup por ciclo (#2883): ${priorEmails.size} email(s) já enviados em wave(s) anterior(es) deste ciclo — excluídos da fila.`,
@@ -491,8 +493,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dedupedQueue = excludeAlreadySentEmails(queue, priorEmails);
 
   const built = buildSends(dedupedQueue, plan, nameByEmail);
-
-  const sendsDir = ensureDir(resolve(cycleDir, "sends"));
   const summary: { cycle: string; total: number; sends: SendsSummaryEntry[] } = {
     cycle,
     total: 0,
