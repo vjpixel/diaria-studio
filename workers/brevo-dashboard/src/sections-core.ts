@@ -279,7 +279,6 @@ export function renderDashboardHtml(
   #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:checked ~ .tab-bar label[for="tab-links"],
   #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"],
-  #tab-cohorts:checked ~ .tab-bar label[for="tab-cohorts"],
   #tab-cupons:checked ~ .tab-bar label[for="tab-cupons"] {
     background: var(--paper); border-color: var(--rule); opacity: 1;
     color: var(--brand); border-bottom-color: var(--paper);
@@ -289,7 +288,6 @@ export function renderDashboardHtml(
   #tab-engajamento:focus-visible ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
   #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"],
-  #tab-cohorts:focus-visible ~ .tab-bar label[for="tab-cohorts"],
   #tab-cupons:focus-visible ~ .tab-bar label[for="tab-cupons"] {
     outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
   }
@@ -298,7 +296,6 @@ export function renderDashboardHtml(
   #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
   #tab-links:checked ~ .tab-panels #panel-links,
   #tab-contatos:checked ~ .tab-panels #panel-contatos,
-  #tab-cohorts:checked ~ .tab-panels #panel-cohorts,
   #tab-cupons:checked ~ .tab-panels #panel-cupons { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
@@ -317,7 +314,6 @@ export function renderDashboardHtml(
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
-<input type="radio" class="tab-radios" name="dash-tab" id="tab-cohorts">
 ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
@@ -326,7 +322,6 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / CTR</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
-  <label class="tab-label" id="tablabel-cohorts" for="tab-cohorts" role="tab" aria-controls="panel-cohorts">Cohorts</label>
   ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
@@ -440,12 +435,8 @@ ${aggregatedLinksSection}
   <!-- Aba 4: Contatos — sumário do store único (#2653) -->
   <div class="tab-panel" id="panel-contatos" role="tabpanel" aria-labelledby="tablabel-contatos">
 ${contactsSummarySection}
-  </div><!-- /panel-contatos -->
-
-  <!-- Aba 5: Cohorts — comparativo de envio/engajamento por cohort (#2864) -->
-  <div class="tab-panel" id="panel-cohorts" role="tabpanel" aria-labelledby="tablabel-cohorts">
 ${cohortsTabSection}
-  </div><!-- /panel-cohorts -->
+  </div><!-- /panel-contatos -->
 
 ${couponUsage ? `  <!-- Aba 6: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
