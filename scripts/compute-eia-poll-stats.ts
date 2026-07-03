@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export interface PollResponse {
   choice: string;
@@ -126,17 +127,6 @@ export function computeStats(opts: {
     correct_choice: opts.correctChoice,
     below_threshold: belowThreshold,
   };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function writeOutput(outPath: string, stats: PollStats): void {

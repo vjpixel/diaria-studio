@@ -34,6 +34,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 import { readEiaAnswer } from "./lib/eia-answer.ts"; // #927
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -604,17 +605,6 @@ export function injectMissingSectionSeparators(
   }
 
   return { text: out.join("\n"), injected };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 /**

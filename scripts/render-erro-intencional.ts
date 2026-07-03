@@ -37,17 +37,7 @@ import {
 } from "./lib/intentional-errors.ts";
 import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // #2398: parser canônico (CRLF-safe, #2304)
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export const SECTION_HEADER = "**ERRO INTENCIONAL**";
 

@@ -25,6 +25,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parseArgsSimple as parseArgs } from "./cli-args.ts";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
 
@@ -132,18 +133,6 @@ export function findEditionsInProgress(
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));

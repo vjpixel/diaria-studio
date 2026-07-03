@@ -35,6 +35,7 @@ import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -731,18 +732,6 @@ export function finalizeStage1(
 // ---------------------------------------------------------------------------
 // CLI (debug)
 // ---------------------------------------------------------------------------
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
 
 function logWarn(edition: string | null, message: string, details: unknown): void {
   const args = [

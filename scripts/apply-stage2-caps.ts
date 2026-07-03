@@ -25,23 +25,13 @@ import {
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
 import { formatCoverageLine } from "./lib/inbox-stats.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 interface CoverageLike {
   editor_submitted?: number;
   diaria_discovered?: number;
   selected?: number;
   line?: string;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function main(): void {

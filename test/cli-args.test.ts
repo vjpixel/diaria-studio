@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, getArg, hasFlag } from "../scripts/lib/cli-args.ts";
+import { parseArgs, getArg, hasFlag, parseArgsSimple } from "../scripts/lib/cli-args.ts";
 
 describe("parseArgs — pares key-value", () => {
   it("extrai um par --key value", () => {
@@ -112,5 +112,29 @@ describe("hasFlag — atalho booleano", () => {
   it("não confunde valor de par key-value como flag", () => {
     // --mode push: "push" não é flag, é valor de --mode
     assert.equal(hasFlag(["--mode", "push"], "push"), false);
+  });
+});
+
+describe("parseArgsSimple — variante flat (#2834: consolida 21 duplicatas byte-a-byte)", () => {
+  it("extrai pares --key value num Record plano", () => {
+    const out = parseArgsSimple(["--edition", "260418", "--file", "01-categorized.md"]);
+    assert.equal(out["edition"], "260418");
+    assert.equal(out["file"], "01-categorized.md");
+  });
+
+  it("--key no fim do array (sem valor seguinte) é ignorado, não vira flag", () => {
+    const out = parseArgsSimple(["--force"]);
+    assert.equal(out["force"], undefined);
+  });
+
+  it("--key seguido de outro --key consome o segundo como valor literal (sem semântica de flag booleana)", () => {
+    // Diferente de parseArgs: aqui não há distinção flags/values — o próximo
+    // elemento é sempre consumido como valor, mesmo que comece com "--".
+    const out = parseArgsSimple(["--mode", "--force"]);
+    assert.equal(out["mode"], "--force");
+  });
+
+  it("retorna Record vazio para argv vazio", () => {
+    assert.deepEqual(parseArgsSimple([]), {});
   });
 });

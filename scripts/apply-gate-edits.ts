@@ -38,6 +38,7 @@ import {
   computeDiariaDiscovered,
 } from "./lib/inbox-stats.ts"; // #592, #609, #1864
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
 // inbox-drain.ts e drive-sync.ts.
@@ -55,18 +56,6 @@ interface CoverageStats {
 }
 
 type BucketName = "destaques" | "lancamento" | "radar" | "use_melhor" | "video";
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
 
 /**
  * Extrai URLs na ordem física de cada seção do MD. Retorna um mapa

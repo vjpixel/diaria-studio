@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 interface PublicImage {
   file_id: string;
@@ -132,17 +133,6 @@ export function substituteImagePlaceholders(
   });
 
   return { html: result, substitutions, unresolved: [...new Set(unresolved)] };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function main(): void {

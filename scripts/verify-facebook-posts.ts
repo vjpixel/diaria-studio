@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 // #650 Tier C: PostEntry/SocialPublished agora vêm de scripts/lib/social-published-store.ts
 // Re-exports mantidos pra compat com callers (#650 backward compat).
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 export type { PostEntry, SocialPublished };
 
 /**
@@ -223,17 +224,6 @@ export async function verifyPublished(
   }
 
   return { updated: { ...published, posts: updatedPosts }, changes };
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 async function main(): Promise<void> {

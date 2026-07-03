@@ -17,6 +17,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export function findLastEditionWithFb(
   editionsDir: string,
@@ -39,17 +40,6 @@ export function findLastEditionWithFb(
     }
   }
   return null;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function main(): void {
