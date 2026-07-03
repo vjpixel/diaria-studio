@@ -42,6 +42,7 @@ import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 import { writeMarker } from "./lib/pipeline-state.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 
 // ---------------------------------------------------------------------------
 // Tracker decoders (#719)
@@ -463,6 +464,18 @@ async function main(): Promise<void> {
     const editionDir = dirname(internalDir); // .../{AAMMDD}/
     // Só grava marker se a estrutura bate (não em uso ad-hoc fora de edição).
     if (basename(internalDir) === "_internal" && /^\d{6}$/.test(basename(editionDir))) {
+      // #2878: se `fetch-newsletter-threads.ts` (0b-bis) falhou por auth/rede,
+      // ele deixou o sentinel `.capture-newsletter-failed.json` neste mesmo
+      // `_internal`. Propagar pro marker — sem isso, `captured_newsletter_count: 0`
+      // fica indistinguível de "editor genuinamente não enviou newsletter
+      // nenhuma" pro resto da pipeline (sync-coverage-line, Stage 4 gate).
+      // INVARIANTE DE ACOPLAMENTO (#2878 self-review MEDIUM): o sinal só chega
+      // aqui porque o `--out` de 0b-bis (captured-newsletters.json) e o `--out`
+      // deste passo (tmp-articles-raw.json) resolvem para o MESMO `_internal/`
+      // da edição. Ambos são amarrados a `data/editions/{AAMMDD}/_internal/` no
+      // orchestrator (Stage 0/1). Se algum dos dois mudar de subdir, o sentinel
+      // some silenciosamente e o bug volta — manter os dois `--out` colocados.
+      const captureFailure = readCaptureFailedSentinel(internalDir);
       writeMarker(editionDir, "inject-inbox-urls", {
         injected: newInjected.length,
         total_editor_urls: injectedFromEditor.length,
@@ -478,6 +491,10 @@ async function main(): Promise<void> {
         // When newsletter_source is "captured-articles", newsletter_blocks is 0
         // (no inbox parsing) — this field carries the real count.
         captured_newsletter_count: capturedNewsletterCount,
+        ...(captureFailure && {
+          capture_failed: true,
+          capture_error: captureFailure.error,
+        }),
       });
     }
   } catch (e) {

@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
@@ -833,6 +834,46 @@ function checkTitleTrailingPeriodInvariant(editionDir: string): InvariantViolati
   }));
 }
 
+/**
+ * #2878: quando `scripts/fetch-newsletter-threads.ts` (Stage 0 passo 0b-bis)
+ * falha por auth/rede, `inject-inbox-urls.ts` grava `capture_failed: true`
+ * (+ `capture_error`) em `.marker-inject-inbox-urls.json` em vez de deixar
+ * `captured_newsletter_count: 0` indistinguível de "editor genuinamente não
+ * enviou newsletter nenhuma". `sync-coverage-line.ts` (Stage 2) já troca a
+ * linha "Para esta edição..." por um aviso quando vê esse sinal — este check
+ * é a segunda barreira, gate-blocking, pra garantir que a edição não segue
+ * pro publish com a contagem de submissões subrepresentada e sem que o
+ * editor tenha visto o aviso (ex: editor editou 02-reviewed.md no Drive e
+ * apagou a linha de aviso sem perceber o que ela significava).
+ *
+ * Caso real: 260703, 2º dia seguido com `invalid_client` — coverage line
+ * saiu "0 submissões" quando a captura simplesmente falhou.
+ */
+function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolation[] {
+  const marker = readMarker(editionDir, "inject-inbox-urls");
+  // #2878 self-review LOW: accept both the nested `details` shape (how
+  // `writeMarker` stores it in prod) and a top-level shape, matching
+  // `readCaptureFailedFromMarker` (sync-coverage-line, padrão #1476) — the two
+  // readers must not diverge on which marker shape they honour.
+  const details = (marker?.details ?? marker) as
+    | { capture_failed?: boolean; capture_error?: string }
+    | undefined;
+  if (!details?.capture_failed) return [];
+  return [
+    {
+      rule: "capture-failed-submission-count",
+      message:
+        `Captura de newsletters (Stage 0 passo 0b-bis) falhou: ${details.capture_error ?? "motivo desconhecido"}. ` +
+        `A contagem de submissões da coverage line não é confiável (pode estar subcontada). ` +
+        `Reautenticar (ver data/.credentials.json / scripts/oauth-setup.ts) e re-rodar 0b-bis → ` +
+        `inject-inbox-urls (Stage 1) → sync-coverage-line (Stage 2) antes de publicar.`,
+      source_issue: "#2878",
+      severity: "error",
+      file: resolve(editionDir, "02-reviewed.md"),
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -904,6 +945,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkTitleTrailingPeriodInvariant,
   },
+  {
+    id: "capture-failed-submission-count",
+    description: "captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878)",
+    source_issue: "#2878",
+    stage: 4,
+    run: checkCaptureFailedSubmissionCount,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -925,4 +973,5 @@ export {
   checkTruncatedSecondaryItemSummary,
   checkTitlePublisherSuffixInvariant,
   checkTitleTrailingPeriodInvariant,
+  checkCaptureFailedSubmissionCount,
 };
