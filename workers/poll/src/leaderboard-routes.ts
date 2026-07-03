@@ -7,6 +7,8 @@ import {
   parseMonthSlug,
   MONTH_NAMES_PT,
   BRAND_INFO,
+  leaderboardHref,
+  formatEditionDate,
 } from "./lib";
 import { htmlEscape } from "./lib";
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -685,4 +687,199 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
   // (`score-by-month:*`) — `score:*` global continua mantido pra all-time
   // potencial mas não é mais lido pelo leaderboard.
   return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand);
+}
+
+// ── /leaderboard/{YYYY}/arquivo — arquivo retroativo (#2867) ────────────────
+//
+// Decisão de produto (issue #2867, comentário do editor 260703): assinantes
+// que entraram no meio do ano podem votar retroativamente nas edições de
+// {YYYY} já publicadas. O voto PONTUA no ranking anual (`/leaderboard/{YYYY}`)
+// — não é só arquivo estático. Mecânica: página lista as edições do ano
+// (data + link), o assinante digita o e-mail, vota, e o voto é registrado com
+// dedup por email+edição reusando o Durable Object `VoteDedup` existente (via
+// o próprio handler `/vote` — ver #2867 em vote.ts, que agora aceita edições
+// fora da janela recente de `valid_editions` quando `correct:{edition}` já
+// está definido). Anti-gaming: (a) a página de voto NÃO revela a resposta
+// correta antes do voto — só depois de votar, via a página de resultado
+// normal do `/vote`; (b) 1 voto por edição, via o dedup DO existente;
+// (c) escopo restrito às edições do ano pedido na URL (só listamos/aceitamos
+// edições que já têm gabarito fechado — sem geração de links por-assinante
+// em massa).
+
+/**
+ * Pure (#2867): extrai as edições AAMMDD de um ano a partir dos nomes das
+ * chaves KV `correct:{edition}` (gabarito definido = edição realmente
+ * publicada com poll fechado — ver `close-poll.ts`). Filtra pelo ano exato
+ * (2 dígitos AA do AAMMDD) e ordena DESC (mais recente primeiro). Chaves com
+ * formato diferente de AAMMDD (ex: ciclo mensal Clarice `2605-06`) são
+ * ignoradas — só interessam edições diárias aqui.
+ */
+export function extractEditionsForYear(correctKeyNames: string[], year: string): string[] {
+  const yy = year.slice(2);
+  const set = new Set<string>();
+  for (const k of correctKeyNames) {
+    const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
+    if (!/^\d{6}$/.test(edition)) continue;
+    if (edition.slice(0, 2) !== yy) continue;
+    set.add(edition);
+  }
+  return [...set].sort().reverse();
+}
+
+/** Pure (#2867): href do arquivo — lista do ano (sem `edition`) ou voto de 1
+ * edição (com `edition`), preservando `?brand=` só pra não-default. */
+export function archiveHref(brand: Brand, year: string, edition?: string): string {
+  const base = edition ? `/leaderboard/${year}/arquivo/${edition}` : `/leaderboard/${year}/arquivo`;
+  return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
+/** Pure render (#2867): lista de edições do ano com link pra página de voto
+ * individual de cada uma. NÃO revela gabarito nenhum — só data + link. */
+export function renderArchiveListHtml(
+  editions: string[],
+  year: string,
+  brand: Brand = "diaria",
+): Response {
+  const info = BRAND_INFO[brand];
+  const rows = editions
+    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
+    .join("\n");
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arquivo ${htmlEscape(year)} — É IA? | ${info.name}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
+<style>
+  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  ul { list-style: none; padding: 0; margin-top: 20px; }
+  li { padding: 12px 8px; border-bottom: 1px solid #ebe5d0; font-size: 1.02rem; }
+  a { color: #171411; text-decoration: underline; }
+  .kicker { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+</style>
+</head>
+<body>
+<p class="kicker">É IA? — arquivo</p>
+<h1>Arquivo de ${htmlEscape(year)}</h1>
+<p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
+<ul>${rows || "<li>Nenhuma edição disponível ainda.</li>"}</ul>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+/**
+ * Pure render (#2867): página de voto de 1 edição do arquivo. Mostra as duas
+ * imagens A/B SEM rótulo nenhum (anti-gaming — não revela qual é a IA antes
+ * do voto; o resultado só aparece na página padrão de `/vote` após votar).
+ * O form submete via GET pro `/vote` já existente — SEM `sig` (merge-tag
+ * mode, o mesmo caminho sem-HMAC que `handleVote` já suporta pra emails não
+ * substituídos por template — aqui o e-mail vem digitado pelo leitor).
+ */
+export function renderArchiveVoteHtml(
+  edition: string,
+  year: string,
+  brand: Brand = "diaria",
+): Response {
+  const info = BRAND_INFO[brand];
+  const brandHidden = brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`;
+  const imgA = `/img/img-${edition}-01-eia-A.jpg`;
+  const imgB = `/img/img-${edition}-01-eia-B.jpg`;
+  const dateLabel = htmlEscape(formatEditionDate(edition));
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>É IA? — ${dateLabel} | ${info.name}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
+<style>
+  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
+  p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
+  .email-row { margin: 20px 0; }
+  .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #ebe5d0; border-radius: 4px; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
+  .choice { flex: 1 1 240px; max-width: 260px; }
+  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: #00A0A0; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  a { color: #171411; text-decoration: underline; }
+  @media (max-width: 600px) {
+    .choice { flex-basis: 100%; max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<h1>Qual imagem foi gerada por IA?</h1>
+<p class="sub">Edição de ${dateLabel} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
+<form action="/vote" method="GET">
+  <input type="hidden" name="edition" value="${htmlEscape(edition)}">
+  ${brandHidden}
+  <div class="email-row">
+    <input type="email" name="email" placeholder="seu@email.com" required class="email-input">
+  </div>
+  <div class="choices">
+    <div class="choice"><img src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <div class="choice"><img src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
+  </div>
+</form>
+<p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+/** Handler `GET /leaderboard/{YYYY}/arquivo` — lista as edições do ano com
+ * gabarito fechado (ver `extractEditionsForYear`). */
+export async function handleLeaderboardArchive(
+  yearStr: string,
+  env: Env,
+  brand: Brand = "diaria",
+): Promise<Response> {
+  const year = parseInt(yearStr, 10);
+  if (!/^\d{4}$/.test(yearStr) || year < 2000 || year > 2099) {
+    return new Response(votePageHtml("Ano inválido. Use formato YYYY (ex: 2026).", false, null, null, null, brand), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+  const yy = yearStr.slice(2);
+  const keys: string[] = [];
+  for await (const k of listAllKeys(env, `correct:${yy}`)) keys.push(k);
+  const editions = extractEditionsForYear(keys, yearStr);
+  return renderArchiveListHtml(editions, yearStr, brand);
+}
+
+/** Handler `GET /leaderboard/{YYYY}/arquivo/{AAMMDD}` — página de voto de 1
+ * edição arquivada. 404 se a edição não pertence ao ano da URL, ou se ainda
+ * não tem gabarito fechado (nunca foi publicada / poll não fechado). */
+export async function handleArchiveVotePage(
+  yearStr: string,
+  edition: string,
+  env: Env,
+  brand: Brand = "diaria",
+): Promise<Response> {
+  if (!/^\d{4}$/.test(yearStr) || !/^\d{6}$/.test(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
+    return new Response(votePageHtml("Link inválido.", false, null, null, null, brand), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+  const correctRaw = await env.POLL.get(`correct:${edition}`);
+  if (!correctRaw) {
+    return new Response(
+      votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
+      { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },
+    );
+  }
+  return renderArchiveVoteHtml(edition, yearStr, brand);
 }
