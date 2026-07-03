@@ -77,6 +77,34 @@ test("renderCohortsTabPanel: renderiza contatos/elegíveis/recebeu/envios e taxa
   assert.match(html, />40\.0</, "priority_points médio de quem recebeu");
 });
 
+test("renderCohortsTabPanel: coluna 'Na Brevo' aparece no header e a célula reflete cohort_stats[x].brevo (#2880)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": {
+      contacts: 1200, eligible: 1190, received: 1000, sends_sum: 3000,
+      opened: 800, clicked: 200, unsub_bounce: 10, mv_verified: 1150, brevo: 900,
+      priority_points_sum: 40000,
+    },
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, /<th[^>]*>Na Brevo<\/th>/, "header da coluna presente");
+  assert.match(html, />900</, "célula reflete brevo");
+});
+
+test("renderCohortsTabPanel: cohort_stats[x].brevo ausente (KV pré-#2880) → célula mostra 0, não lança", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": {
+      contacts: 100, eligible: 90, received: 50, sends_sum: 150,
+      opened: 40, clicked: 10, unsub_bounce: 1, mv_verified: 80,
+      priority_points_sum: 500,
+      // `brevo` AUSENTE — KV cacheado antes do #2880
+    } as unknown as CohortStatsRow,
+  };
+  assert.doesNotThrow(() => renderCohortsTabPanel(stats));
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, /<th[^>]*>Na Brevo<\/th>/);
+  assert.match(html, />0</, "brevo ausente degrada pra 0");
+});
+
 test("renderCohortsTabPanel: cohort sem ninguém 'recebeu' (received=0) mostra '—' nas taxas de engajamento, não NaN/Infinity", () => {
   const stats: Record<string, CohortStatsRow> = {
     "leads-2026-06": {
@@ -161,15 +189,19 @@ test("COHORT_DEVIATION_THRESHOLD_PP é 20", () => {
   assert.equal(COHORT_DEVIATION_THRESHOLD_PP, 20);
 });
 
-test("renderDashboardHtml: inclui a aba Cohorts (radio + label + panel), CSS torna o painel visível quando selecionado", () => {
+test("renderDashboardHtml: NÃO inclui mais a aba Cohorts (radio/label/panel eliminados, #2880) — tabela vive dentro de Contatos", () => {
   const html = renderDashboardHtml([], [], null, null, null);
-  assert.match(html, /id="tab-cohorts"/);
-  assert.match(html, /id="panel-cohorts"/);
-  assert.match(html, />Cohorts</);
-  assert.match(html, /#tab-cohorts:checked ~ \.tab-panels #panel-cohorts/);
+  assert.doesNotMatch(html, /id="tab-cohorts"/, "radio da aba Cohorts eliminado");
+  assert.doesNotMatch(html, /id="panel-cohorts"/, "panel Cohorts eliminado");
+  assert.doesNotMatch(html, /for="tab-cohorts"/, "label da aba Cohorts eliminada");
+  assert.doesNotMatch(html, /aria-controls="panel-cohorts"/, "tab-bar não referencia mais panel-cohorts");
+  // a tabela Cohorts (stub gracioso quando cohort_stats ausente) segue existindo,
+  // só que agora dentro do panel-contatos.
+  assert.match(html, /id="panel-contatos"/);
+  assert.match(html, /id="cohorts-tab"/, "renderCohortsTabPanel ainda é chamado, dentro da aba Contatos");
 });
 
-test("renderDashboardHtml: contactsSummary.cohort_stats popula a aba Cohorts sem novo parâmetro posicional", () => {
+test("renderDashboardHtml: contactsSummary.cohort_stats popula a tabela Cohorts dentro da aba Contatos (#2880)", () => {
   const contactsSummary: ContactsSummary = {
     generated_at: "2026-07-02T12:00:00Z",
     total: 100,
@@ -181,13 +213,13 @@ test("renderDashboardHtml: contactsSummary.cohort_stats popula a aba Cohorts sem
     cohort_stats: {
       "assinantes-ativos": {
         contacts: 100, eligible: 90, received: 80, sends_sum: 200,
-        opened: 40, clicked: 5, unsub_bounce: 2, mv_verified: 70,
+        opened: 40, clicked: 5, unsub_bounce: 2, mv_verified: 70, brevo: 60,
         priority_points_sum: 800,
       },
     },
   };
   const html = renderDashboardHtml([], [], null, null, contactsSummary);
-  const panel = html.match(/id="panel-cohorts"[\s\S]*?(?=<\/div><!-- \/panel-cohorts -->)/)?.[0] ?? "";
+  const panel = html.match(/id="panel-contatos"[\s\S]*?(?=<\/div><!-- \/panel-contatos -->)/)?.[0] ?? "";
   assert.match(panel, /Assinantes ativos/);
   assert.doesNotMatch(panel, /Dados ainda não gerados/);
 });

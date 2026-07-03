@@ -24,16 +24,6 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   const s = computeStoreSummary(db);
 
   assert.equal(s.total, 5);
-  // #2732: by_cohort_first_send (#2857 fase B, sucessor de by_tier) espelha o
-  // universo `firstSend` de segmentFromStore — send_eligible=1 E sends_count=0.
-  // tier 1 → cohort assinantes-ativos: a,e (2, ambos elegíveis e nunca
-  // enviados); tier 2 → cohort ex-assinantes: b(sends=3, já enviado)+c(sends=2
-  // mas unsub → inelegível) EXCLUÍDOS; null → d (dispute → inelegível, mesmo
-  // com sends_count=0) também EXCLUÍDO — nunca-enviado NÃO basta, precisa ser
-  // elegível (senão nunca vai pra fila real de 1º envio).
-  assert.equal(s.by_cohort_first_send[COHORT_ASSINANTES_ATIVOS], 2);
-  assert.equal(s.by_cohort_first_send[COHORT_EX_ASSINANTES], undefined);
-  assert.equal(s.by_cohort_first_send["null"], undefined);
   // elegibilidade: c (unsub) e d (dispute) cortados → 3 elegíveis, 2 inelegíveis
   assert.equal(s.eligibility.eligible, 3);
   assert.equal(s.eligibility.ineligible, 2);
@@ -64,10 +54,6 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(vHist["60"], 1, "b: verified com 60 pontos");
   assert.equal(vHist["40"], undefined, "e: optin sem MV → ausente");
   assert.equal(vHist["-20"], undefined, "c: sem MV → ausente");
-  // by_cohort_first_send_verified: universo firstSend ∩ verified — só a
-  // (tier 1 → cohort assinantes-ativos, nunca enviado, verified). e é
-  // firstSend mas sem MV; b é verified mas reSend.
-  assert.deepEqual(s.by_cohort_first_send_verified, { [COHORT_ASSINANTES_ATIVOS]: 1 });
   // mv: verified (a,b)=2; none (c,d,e)=3
   assert.equal(s.mv["verified"], 2);
   assert.equal(s.mv["none"], 3);
@@ -75,28 +61,6 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   assert.equal(s.engagement.with_opens, 1);
   assert.equal(s.engagement.with_clicks, 1);
 
-  db.close();
-});
-
-test("computeStoreSummary: by_cohort_first_send exclui nunca-enviado MAS inelegível (dispute/unsub) — só firstSend real (#2732, #2857 fase B)", () => {
-  // Regressão: a 1ª versão do fix filtrava by_tier só por sends_count=0, sem
-  // checar send_eligible. Um contato nunca-enviado mas permanentemente
-  // bloqueado (disputa, mv_rejected, unsub antes do 1º envio) tem
-  // sends_count=0 e passaria no filtro antigo — mas segmentFromStore roteia
-  // esse contato pra `excluded`, nunca `firstSend`. by_cohort_first_send tinha
-  // que acompanhar isso ou infla a contagem "1º envio" com gente que nunca vai
-  // ser enviada.
-  const db = openClariceDb(":memory:");
-  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
-
-  // elegível, nunca enviado, tier 3 (cohort leads-2026-jan-abr), mv verified — DEVE contar
-  ins("INSERT INTO clarice_users (email, status, tier, mv_bucket) VALUES ('ok@x.com','active',3,'verified')");
-  // disputado, nunca enviado (sends_count implícito 0), tier 3 — NÃO deve contar
-  ins("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('disputa@x.com',3,10)");
-  recomputeDerived(db);
-
-  const s = computeStoreSummary(db);
-  assert.equal(s.by_cohort_first_send["leads-2026-jan-abr"], 1); // só ok@x.com
   db.close();
 });
 
@@ -163,40 +127,11 @@ test("computeStoreSummary: filtro de internos é case-insensitive (#2809)", () =
 });
 
 // ---------------------------------------------------------------------------
-// by_cohort (#2817) — agregado total+verified por safra mensal
-// ---------------------------------------------------------------------------
-
-test("computeStoreSummary: by_cohort agrega total+verified por safra (universo = store inteiro, não só firstSend)", () => {
-  const db = openClariceDb(":memory:");
-  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
-
-  // maio: 2 contatos, 1 verified
-  ins("INSERT INTO clarice_users (email, created, mv_bucket) VALUES ('a@x.com','2026-05-01T00:00:00Z','verified')");
-  ins("INSERT INTO clarice_users (email, created) VALUES ('b@x.com','2026-05-15T00:00:00Z')");
-  // junho: 1 contato, verified, JÁ ENVIADO (sends_count>0 → fora do firstSend/by_tier,
-  // mas DEVE contar no by_cohort — universo é o store inteiro, não firstSend)
-  ins("INSERT INTO clarice_users (email, created, mv_bucket, sends_count) VALUES ('c@x.com','2026-06-01T00:00:00Z','verified',3)");
-  // sem safra (created ausente)
-  ins("INSERT INTO clarice_users (email) VALUES ('d@x.com')");
-  recomputeDerived(db);
-
-  const s = computeStoreSummary(db);
-
-  // #2857 fase A: cohort agora guarda o slug ('leads-YYYY-MM'), não a safra crua.
-  assert.deepEqual(s.by_cohort, { "leads-2026-05": 2, "leads-2026-06": 1, null: 1 });
-  assert.deepEqual(s.by_cohort_verified, { "leads-2026-05": 1, "leads-2026-06": 1 }); // b sem MV → ausente (0)
-  // invariante: a soma do by_cohort particiona o total
-  assert.equal(Object.values(s.by_cohort).reduce((acc, v) => acc + v, 0), s.total);
-
-  db.close();
-});
-
-// ---------------------------------------------------------------------------
 // #2865 — coluna "Brevo" (brevo_list_ids IS NOT NULL) no histograma de
-// priority_points e no breakdown de 1º envio por cohort
+// priority_points
 // ---------------------------------------------------------------------------
 
-test("computeStoreSummary: priority_points_histogram_brevo e by_cohort_first_send_brevo — contatos com brevo_list_ids (#2865)", () => {
+test("computeStoreSummary: priority_points_histogram_brevo — contatos com brevo_list_ids (#2865)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
@@ -217,11 +152,6 @@ test("computeStoreSummary: priority_points_histogram_brevo e by_cohort_first_sen
   assert.equal(s.priority_points_histogram["0"], 2, "a,b");
   assert.equal(s.priority_points_histogram["60"], 1, "c");
 
-  // breakdown de 1º envio (firstSend: send_eligible=1 AND sends_count<=0) —
-  // só a,b (c já foi enviado, sends_count=3 → fora do firstSend).
-  assert.equal(s.by_cohort_first_send[COHORT_ASSINANTES_ATIVOS], 2, "a,b");
-  assert.equal(s.by_cohort_first_send_brevo[COHORT_ASSINANTES_ATIVOS], 1, "só a@x.com tem brevo_list_ids");
-
   db.close();
 });
 
@@ -232,7 +162,6 @@ test("computeStoreSummary: KV/payload sem contatos na Brevo → chave AUSENTE (s
 
   const s = computeStoreSummary(db);
   assert.equal(s.priority_points_histogram_brevo["0"], undefined, "nenhum contato na Brevo → chave ausente");
-  assert.equal(s.by_cohort_first_send_brevo[COHORT_ASSINANTES_ATIVOS], undefined);
 
   db.close();
 });
@@ -319,18 +248,24 @@ test("computeStoreSummary: cohort_stats — sem cohort vira chave 'null'; e-mail
   db.close();
 });
 
-test("computeStoreSummary: by_cohort — leads pré-epoch usam o semestre REAL do created; só created ausente vira 'null' (#2857 fase B.1)", () => {
-  // #2857 fase B.1: created presente mas ANTERIOR ao epoch da safra (2026-05)
-  // não vira mais 'null' — deriva o semestre real via `deriveLeadCohort`
-  // (rótulo verdadeiro por construção, ver test/clarice-db.test.ts
-  // `computeCohort`). Só `created` genuinamente ausente cai em 'null'.
+test("computeStoreSummary: cohort_stats[cohort].brevo — contagem de brevo_list_ids IS NOT NULL por cohort (#2880)", () => {
   const db = openClariceDb(":memory:");
-  db.prepare("INSERT INTO clarice_users (email, created) VALUES ('velho@x.com','2025-11-01T00:00:00Z')").run();
-  db.prepare("INSERT INTO clarice_users (email) VALUES ('sem@x.com')").run();
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // assinantes-ativos: a NA Brevo, b SEM brevo_list_ids
+  ins("INSERT INTO clarice_users (email, tier, brevo_list_ids) VALUES ('a@x.com',1,'[1]')");
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('b@x.com',1)");
+  // ex-assinantes: c NA Brevo
+  ins("INSERT INTO clarice_users (email, tier, brevo_list_ids) VALUES ('c@x.com',2,'[2]')");
+  // interno NA Brevo — deve ficar de fora (mesma exclusão de internos do cohort_stats)
+  ins("INSERT INTO clarice_users (email, tier, brevo_list_ids) VALUES ('vjpixel@gmail.com',1,'[1]')");
   recomputeDerived(db);
 
   const s = computeStoreSummary(db);
-  assert.equal(s.by_cohort["leads-2025h2"], 1, "created 2025-11 (pré-epoch) deriva o semestre real (não mais 'null')");
-  assert.equal(s.by_cohort["null"], 1, "só sem@x.com (created ausente) cai em 'null'");
+  const cs = s.cohort_stats;
+
+  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].brevo, 1, "só a@x.com — b sem brevo_list_ids, interno excluído");
+  assert.equal(cs[COHORT_EX_ASSINANTES].brevo, 1, "c@x.com");
+
   db.close();
 });

@@ -1949,20 +1949,22 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     listSize: 500,
   };
 
-  test("HTML contém 5 inputs radio para as abas (tab state)", () => {
+  test("HTML contém 4 inputs radio para as abas (tab state)", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
-    // Cada aba precisa de 1 radio input (#2653: + aba Contatos; #2864: + aba Cohorts)
+    // Cada aba precisa de 1 radio input (#2653: + aba Contatos; #2880: aba Cohorts
+    // eliminada — a tabela Cohorts foi consolidada dentro da aba Contatos).
     const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
-    assert.equal(radioMatches.length, 5, "deve ter exatamente 5 radio inputs para as 5 abas");
+    assert.equal(radioMatches.length, 4, "deve ter exatamente 4 radio inputs para as 4 abas");
   });
 
-  test("HTML contém 5 labels de aba com textos corretos", () => {
+  test("HTML contém 4 labels de aba com textos corretos", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ CTR/, "deve ter label 'Links / CTR'");
     assert.match(html, />Contatos</, "deve ter label 'Contatos' (#2653)");
-    assert.match(html, />Cohorts</, "deve ter label 'Cohorts' (#2864)");
+    // #2880: aba Cohorts eliminada — não deve mais existir label/radio pra ela.
+    assert.doesNotMatch(html, /for="tab-cohorts"/, "não deve ter mais label 'Cohorts' como aba própria");
   });
 
   test("1ª aba tem checked por default (#2542: default = Visão geral)", () => {
