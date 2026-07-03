@@ -58,3 +58,27 @@ test("ingestMv: pula MV ilegível sem abortar a transação (skipped)", () => {
   assert.equal(n, 1);
   db.close();
 });
+
+// #2895: conta de teste do editor (vjpixel+test*@gmail.com) na FONTE (CSV MV
+// de um ciclo) NÃO deve entrar no store — exclusão permanente na ingestão.
+test("ingestMv: conta de teste do editor no CSV-fonte NÃO entra no store (#2895)", () => {
+  const dir = tmp("cu-mv-test-");
+  const cyc = resolve(dir, "2605-06");
+  mkdirSync(cyc);
+  writeFileSync(
+    resolve(cyc, "mv-export-t02-verified.csv"),
+    "email,MV_RESULT,MV_QUALITY,MV_CODE\n" +
+      "vjpixel+test2@gmail.com,ok,good,1\n" +
+      "leitora@gmail.com,ok,good,1\n",
+  );
+
+  const db = openClariceDb(":memory:");
+  const r = ingestMv(db, dir);
+  assert.equal(r.rows, 1, "só o email normal é contado como ingerido");
+
+  const emails = (
+    db.prepare("SELECT email FROM clarice_users").all() as Array<{ email: string }>
+  ).map((row) => row.email);
+  assert.deepEqual(emails, ["leitora@gmail.com"]);
+  db.close();
+});

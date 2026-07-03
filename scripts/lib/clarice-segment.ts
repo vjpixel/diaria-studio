@@ -35,6 +35,7 @@ import {
   cohortSendRank,
   isKnownCohortSlug,
   INTERNAL_EMAILS,
+  isTestAccount,
 } from "./cohorts.ts";
 
 export interface StoreRow {
@@ -146,6 +147,15 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
   const excluded: Array<{ email: string; reason: string }> = [];
 
   for (const r of rows) {
+    // #2895: defesa em profundidade — mesmo que uma conta de teste do editor
+    // (vjpixel+test*@gmail.com) escape os guards de ingestão (ingestStripe/
+    // ingestMv/makeBrevoUpsert em clarice-build-db.ts/clarice-db.ts) e chegue
+    // até aqui, corta da fila de envio ANTES de checar elegibilidade —
+    // checado primeiro pra nunca aparecer em firstSend/reSend por engano.
+    if (isTestAccount(r.email)) {
+      excluded.push({ email: r.email, reason: "test_account" });
+      continue;
+    }
     // Fail-safe: send_eligible falsy (0 OU null de uma linha nunca recomputada)
     // → CORTE. Na dúvida NÃO enviar é a direção segura pro pipeline de envio.
     if (!isSendEligible(r)) {

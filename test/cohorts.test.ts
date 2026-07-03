@@ -10,6 +10,7 @@ import {
   cohortSendRank,
   cohortDisplayLabel,
   isKnownCohortSlug,
+  isTestAccount,
 } from "../scripts/lib/cohorts.ts";
 
 // Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
@@ -191,5 +192,38 @@ describe("isKnownCohortSlug", () => {
     assert.equal(isKnownCohortSlug("cohort-que-nao-existe"), false);
     assert.equal(isKnownCohortSlug("2026-06"), false, "safra crua pré-#2857 não é o slug canônico");
     assert.equal(isKnownCohortSlug(""), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isTestAccount (#2895) — exclusão PERMANENTE de contas de teste do editor
+// (plus-addressing `vjpixel+test*@gmail.com`), distinta de INTERNAL_EMAILS
+// (que MANTÉM no store, só exclui de agregações).
+// ---------------------------------------------------------------------------
+
+describe("isTestAccount", () => {
+  it("casa vjpixel+test2@gmail.com (achado real do incidente 260703)", () => {
+    assert.equal(isTestAccount("vjpixel+test2@gmail.com"), true);
+  });
+
+  it("casa vjpixel+teste4@gmail.com (variante 'teste', não só 'test')", () => {
+    assert.equal(isTestAccount("vjpixel+teste4@gmail.com"), true);
+  });
+
+  it("casa test3/test5 (demais achados do incidente) e é case-insensitive", () => {
+    assert.equal(isTestAccount("vjpixel+test3@gmail.com"), true);
+    assert.equal(isTestAccount("vjpixel+test5@gmail.com"), true);
+    assert.equal(isTestAccount("VJPixel+Test99@Gmail.com"), true);
+    assert.equal(isTestAccount("  vjpixel+test2@gmail.com  "), true, "trim");
+  });
+
+  it("NÃO casa vjpixel@gmail.com — é o interno REAL (INTERNAL_EMAILS), não uma conta de teste", () => {
+    assert.equal(isTestAccount("vjpixel@gmail.com"), false);
+  });
+
+  it("NÃO casa email normal nem outro plus-suffix do mesmo dono", () => {
+    assert.equal(isTestAccount("leitor@example.com"), false);
+    assert.equal(isTestAccount("vjpixel+newsletter@gmail.com"), false);
+    assert.equal(isTestAccount("naotem+test@gmail.com"), false, "prefixo local diferente de vjpixel");
   });
 });
