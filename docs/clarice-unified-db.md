@@ -67,26 +67,30 @@ primeira pela ordem:
 
 `unsubscribed` (ou `emailBlacklisted`) → `hard_bounce` → `complaint` →
 `mv_rejected` → `mv_unknown` → `dispute` → `soft_bounce` (só após **3** soft
-bounces; transitório).
+bounces; transitório) → `mv_unverified` (por último — "ainda não processado",
+mais fraco que dispute/soft_bounce).
 
 > **Override de engajamento (#2876, editor 260702).** `priority_points > 0`
 > (opt-in explícito OU abertura real) **sobrepõe** os vereditos do MV
-> (`mv_rejected`/`mv_unknown`) — a abertura é prova empírica de entregabilidade,
-> mais forte que a heurística estática do MV (falso-positivo em catch-all/
-> greylist). Vale **só** pros vereditos do MV: consentimento e entrega real
-> (`unsubscribed`/blacklist/`hard_bounce`/`complaint`/`dispute`/`soft_bounce`,
-> checados **antes**) cortam sempre, engajamento não anula. Opt-in num e-mail
-> inválido é auto-corretivo: o 1º envio quica e o `hard_bounce` corta depois.
+> (`mv_rejected`/`mv_unknown`/`mv_unverified`) — a abertura é prova empírica de
+> entregabilidade, mais forte que a heurística estática do MV (falso-positivo
+> em catch-all/greylist). Vale **só** pros vereditos do MV: consentimento e
+> entrega real (`unsubscribed`/blacklist/`hard_bounce`/`complaint`/`dispute`/
+> `soft_bounce`, checados **antes**) cortam sempre, engajamento não anula.
+> Opt-in num e-mail inválido é auto-corretivo: o 1º envio quica e o
+> `hard_bounce` corta depois.
 
-> ⚠️ **Histórico — `mv_unverified` (#2656, REVERTIDO em #2804).** Entre #2656 e
-> #2804, tier != 1 (incl. sem-tier) exigia `mv_bucket === "verified"` pra ser
-> elegível — contato nunca submetido ao MV (`mv_bucket` NULL) virava inelegível
-> com razão `mv_unverified`; tier 1 era isento dessa exigência específica.
-> Decisão do editor em 260702 (#2804): **"elegível pra todos"** — contato
-> nunca-verificado volta a ser elegível em qualquer tier. A verificação MV
-> (#1297) segue recomendada antes de enviar pra tiers ≥ T02, mas deixou de ser
-> bloqueante no store — `mv_rejected` e `mv_unknown` (ambos tier-agnósticos,
-> checados acima) continuam cortando normalmente.
+> ⚠️ **`mv_unverified` (#2656 → REVERTIDO em #2804 → RE-INTRODUZIDO em #2888,
+> mesmo dia).** Entre #2656 e #2804, `mv_bucket` NULL (nunca submetido ao MV)
+> virava inelegível com razão `mv_unverified`; tier 1 era isento. #2804 removeu
+> esse corte ("elegível pra todos"). **#2888 reverte #2804** — o editor decidiu
+> que enviar sem verificação prévia é risco de bounce demais — com 2 exceções:
+> (1) cohort `assinantes-ativos` (pagante Stripe, validado implicitamente pelo
+> pagamento — mesma isenção do #2656, expressa via `cohort` em vez de
+> `tier === 1` desde que #2857 fase C tornou cohort o modelo); (2)
+> `priority_points > 0` (mesmo override de engajamento do #2876 acima —
+> `mv_unverified` é a irmã ausente do `mv_rejected`/`mv_unknown`). `mv_rejected`
+> e `mv_unknown` continuam cortando normalmente (checados acima).
 
 > ⚠️ **`send_eligible` só é autoritativo após `clarice-sync-brevo.ts` rodar.**
 > Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam

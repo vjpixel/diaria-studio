@@ -221,15 +221,20 @@ export const INTERNAL_EMAILS = [
 // mv_unknown (#2735): mv_bucket="unknown" (MV inconclusivo — reverify/error)
 // vira inelegível, mas é transitório (uma re-verificação pode reabilitar).
 //
-// mv_unverified (#2656 cutover, REVERTIDO em #2804): entre #2656 e #2804,
-// tier != 1 exigia mv_bucket==="verified" — contato nunca submetido ao MV
-// (mv_bucket NULL) virava inelegível com razão "mv_unverified". Decisão do
-// editor em 260702 (briefing overnight, comentário na issue #2804): "elegível
-// pra todos" — contato nunca-verificado (mv_bucket NULL, qualquer tier) volta
-// a ser ELEGÍVEL. A verificação MV (#1297) segue recomendada antes de enviar
-// pra tiers ≥ T02, mas deixou de ser bloqueante no store. `mv_rejected` e
-// `mv_unknown` continuam cortando normalmente (checados acima, tier-
-// agnóstico) — só o corte específico de "nunca verificado" foi removido.
+// mv_unverified (#2656 cutover → REVERTIDO em #2804 → RE-INTRODUZIDO em
+// #2888, mesmo dia): entre #2656 e #2804, mv_bucket NULL (nunca submetido ao
+// MV) virava inelegível com razão "mv_unverified". #2804 removeu esse corte
+// ("elegível pra todos"). #2888 reverte #2804 — o editor decidiu que não é
+// seguro enviar sem verificação prévia (risco de bounce) — com 2 EXCEÇÕES:
+//   1. cohort `assinantes-ativos` (pagante Stripe, #1297): validado
+//      implicitamente pelo pagamento, isento da exigência de MV (mesma
+//      isenção do corte original #2656, agora expressa via cohort em vez de
+//      tier===1 — #2857 fase C tornou cohort o modelo).
+//   2. priority_points > 0 (engajamento real — abertura ou opt-in, #2876):
+//      mesmo override que já cobre mv_rejected/mv_unknown; mv_unverified é a
+//      irmã ausente, agora coerente com a mesma estrutura.
+// `mv_rejected` e `mv_unknown` continuam cortando normalmente (checados
+// acima, mesma ordem de prioridade).
 // ---------------------------------------------------------------------------
 
 export const SOFT_BOUNCE_LIMIT = 3;
@@ -240,6 +245,7 @@ export type IneligibleReason =
   | "complaint"
   | "mv_rejected"
   | "mv_unknown"
+  | "mv_unverified"
   | "dispute"
   | "soft_bounce";
 
@@ -267,6 +273,14 @@ export interface EligibilityInput {
    * hard_bounce/complaint/dispute/soft_bounce) — checados ANTES e cortam sempre.
    */
   priority_points: number;
+  /**
+   * cohort do contato (#2857 fase C — modelo canônico). Usado SÓ pra isentar
+   * `assinantes-ativos` (pagante Stripe) da exigência de `mv_unverified`
+   * (#2888) — mesma isenção do corte original #2656, que checava
+   * `tier === 1`. `tier` virou coluna legada read-only na fase C; cohort é a
+   * fonte de verdade atual pra essa distinção.
+   */
+  cohort: string | null | undefined;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -297,6 +311,17 @@ export function classifyEligibility(i: EligibilityInput): {
     return { send_eligible: false, ineligible_reason: "dispute" };
   if (i.soft_bounce_count >= SOFT_BOUNCE_LIMIT)
     return { send_eligible: false, ineligible_reason: "soft_bounce" };
+  // #2888 (re-introduz o corte #2656, revertido em #2804): contato nunca
+  // submetido ao MV (mv_bucket NULL) é inelegível. Checado POR ÚLTIMO — é
+  // "ainda não processado" (transitório: vira elegível assim que a
+  // verificação rodar), não uma supressão ativa, então dispute/soft_bounce
+  // (sinais de entrega/comportamento reais, mais explícitos) devem aparecer
+  // no relatório quando ambos batem — mesma precedência do #2656 original.
+  // Isento: cohort `assinantes-ativos` (pagamento Stripe já valida, #1297) e
+  // `priority_points > 0` (mesmo override de engajamento do #2876, que já
+  // sobrepõe mv_rejected/mv_unknown acima).
+  if (i.mv_bucket == null && i.cohort !== COHORT_ASSINANTES_ATIVOS && !engaged)
+    return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }
 
@@ -428,6 +453,15 @@ export function recomputeDerived(db: DatabaseSync): number {
         opens_count: r.opens_count ?? 0,
         sends_count: r.sends_count ?? 0,
       });
+      // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
+      // ingestStripe a partir do merge); backfill via computeCohort (fallback
+      // legado tier+created) só quando ausente/não-reconhecido. Precisa ser
+      // computado ANTES de classifyEligibility — #2888 usa o cohort pra
+      // isentar assinantes-ativos da exigência de mv_unverified.
+      const cohort =
+        r.cohort != null && isKnownCohortSlug(r.cohort)
+          ? r.cohort
+          : computeCohort(r.tier, r.created);
       const elig = classifyEligibility({
         email_blacklisted: !!r.email_blacklisted,
         unsubscribed: !!r.unsubscribed,
@@ -437,14 +471,8 @@ export function recomputeDerived(db: DatabaseSync): number {
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
         priority_points: points, // #2876 — engajamento>0 sobrepõe veredito MV
+        cohort, // #2888 — assinantes-ativos isento de mv_unverified
       });
-      // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
-      // ingestStripe a partir do merge); backfill via computeCohort (fallback
-      // legado tier+created) só quando ausente/não-reconhecido.
-      const cohort =
-        r.cohort != null && isKnownCohortSlug(r.cohort)
-          ? r.cohort
-          : computeCohort(r.tier, r.created);
       update.run(
         isOptin ? 1 : 0,
         points,

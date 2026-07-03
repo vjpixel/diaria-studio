@@ -87,13 +87,12 @@ function emptyDiv(): DivergenceBlock {
 }
 
 /** Razões que o pipeline ATUAL real já filtra a montante (além de blacklist).
- *  mv_unverified (histórico, #2656 → revertido em #2804): o store não atribui
- *  mais essa razão (contato nunca-verificado voltou a ser elegível em
- *  qualquer tier), mas o literal fica aqui pra não quebrar a comparação sobre
- *  um DB antigo/não-rebuildado que ainda carregue a razão de antes do
- *  reversal — nesse caso o pipeline atual (que só trabalha a partir de
- *  `*-verified.csv`, curados via verify-emails-mv.ts) também já filtrava esse
- *  cohort a montante, então não deve contar como "newly_suppressed" novo. */
+ *  mv_unverified (#2656 → revertido em #2804 → RE-INTRODUZIDO em #2888): o
+ *  store volta a atribuir essa razão pra contato nunca submetido ao MV (exceto
+ *  assinantes-ativos/engajado). O pipeline atual (que só trabalha a partir de
+ *  `*-verified.csv`, curados via verify-emails-mv.ts) já filtrava esse cohort
+ *  a montante independentemente do corte do store — não deve contar como
+ *  "newly_suppressed" novo na comparação. */
 const PIPELINE_FILTERED_REASONS = new Set(["mv_rejected", "dispute", "mv_unverified"]);
 
 export function computeWavesDryrun(
