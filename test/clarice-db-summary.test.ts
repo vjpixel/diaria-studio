@@ -1,8 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
 import { computeStoreSummary, deriveCycleStart } from "../scripts/clarice-db-summary.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES } from "../scripts/lib/cohorts.ts";
@@ -432,49 +429,23 @@ test("computeStoreSummary: cycleStart=null → received_this_cycle=0 pra todos (
   db.close();
 });
 
-test("deriveCycleStart: base inexistente → null (fail-soft, #2909)", () => {
-  const missing = resolve(tmpdir(), `diaria-cycle-missing-${Date.now()}`);
-  assert.equal(deriveCycleStart(missing), null);
+// #2923: deriveCycleStart passou a ser o 1º dia do mês CALENDÁRIO corrente (UTC Z),
+// não mais o scan de send-plan (que o fluxo manual/waves não gera → cycle_start=null
+// e a coluna "Recebeu neste ciclo" em branco). Decisão do editor 260703: mês calendário.
+test("deriveCycleStart: 1º dia do mês corrente em UTC Z (#2923)", () => {
+  assert.equal(deriveCycleStart(new Date("2026-07-15T12:34:56Z")), "2026-07-01T00:00:00.000Z");
+  assert.equal(deriveCycleStart(new Date("2026-01-31T23:59:59Z")), "2026-01-01T00:00:00.000Z");
+  assert.equal(deriveCycleStart(new Date("2026-12-01T00:00:00Z")), "2026-12-01T00:00:00.000Z");
 });
 
-test("deriveCycleStart: escolhe o ciclo MAIS RECENTE e devolve a menor scheduledAt do send-plan (#2909)", () => {
-  const base = resolve(tmpdir(), `diaria-cycle-base-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  try {
-    // Ciclo antigo 2605-06 e mais recente 2606-07; um dir não-ciclo pra provar o filtro.
-    const mkPlan = (cycle: string, firstIso: string, secondIso: string) => {
-      const dir = resolve(base, cycle);
-      mkdirSync(dir, { recursive: true });
-      const plan = [
-        { n: 2, date: "11jun", day: "qui", block: 1, volume: 100, scheduledAt: secondIso },
-        { n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: firstIso },
-      ];
-      writeFileSync(resolve(dir, "send-plan.json"), JSON.stringify(plan));
-    };
-    mkPlan("2605-06", "2026-06-10T09:00:00Z", "2026-06-11T09:00:00Z");
-    mkPlan("2606-07", "2026-07-10T09:00:00Z", "2026-07-11T09:00:00Z");
-    // ruído: subdiretório que não é ciclo válido — deve ser ignorado.
-    mkdirSync(resolve(base, "cohorts"), { recursive: true });
-
-    // Ciclo mais recente = 2606-07; menor scheduledAt = a 1ª data (mesmo fora de ordem no arquivo).
-    assert.equal(deriveCycleStart(base), "2026-07-10T09:00:00Z");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
+test("deriveCycleStart: default (agora) → sempre um mês-1º, NUNCA null (coluna sempre popula) (#2923)", () => {
+  assert.match(deriveCycleStart(), /^\d{4}-\d{2}-01T00:00:00\.000Z$/);
 });
 
-test("deriveCycleStart: ciclo mais recente sem send-plan legível → cai pro anterior (#2909)", () => {
-  const base = resolve(tmpdir(), `diaria-cycle-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  try {
-    // 2606-07 existe mas sem send-plan.json; 2605-06 tem plano → deriva do 2605-06.
-    mkdirSync(resolve(base, "2606-07"), { recursive: true });
-    const olderDir = resolve(base, "2605-06");
-    mkdirSync(olderDir, { recursive: true });
-    writeFileSync(
-      resolve(olderDir, "send-plan.json"),
-      JSON.stringify([{ n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: "2026-06-10T09:00:00Z" }]),
-    );
-    assert.equal(deriveCycleStart(base), "2026-06-10T09:00:00Z");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
+test("deriveCycleStart: envio real (~06:00 BRT = 09:00 UTC do dia 1) conta no ciclo (#2923)", () => {
+  const cs = deriveCycleStart(new Date("2026-07-03T09:00:00Z"));
+  assert.equal(cs, "2026-07-01T00:00:00.000Z");
+  // last_sent_at >= cycle_start via string-compare (ambos ISO Z) — como o SQL faz.
+  assert.ok("2026-07-03T09:02:12.548Z" >= cs);
+  assert.ok(!("2026-06-30T09:00:00.000Z" >= cs)); // envio do mês passado NÃO conta
 });

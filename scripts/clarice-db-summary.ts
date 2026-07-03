@@ -20,14 +20,11 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
 import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
-import { loadSendPlan } from "./lib/send-plan.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -400,33 +397,15 @@ function computeCohortStats(
  * o cycle_start do 1º cujo send-plan.json carrega. Injetável (`base`) pra teste;
  * produção usa CLARICE_BASE (junction → OneDrive). Fail-soft: nunca lança.
  */
-export function deriveCycleStart(base: string = CLARICE_BASE): string | null {
-  if (!existsSync(base)) return null;
-  let cycles: string[];
-  try {
-    cycles = readdirSync(base, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && isValidCycle(e.name))
-      .map((e) => e.name)
-      .sort()
-      .reverse();
-  } catch {
-    return null;
-  }
-  for (const cycle of cycles) {
-    try {
-      // resolve contra `base` (não clariceCycleDir, que fixaria em CLARICE_BASE
-      // e furaria a injeção de `base` em teste).
-      const plan = loadSendPlan(resolve(base, cycle));
-      const earliest = plan.reduce<string | null>(
-        (min, e) => (min === null || e.scheduledAt < min ? e.scheduledAt : min),
-        null,
-      );
-      if (earliest) return earliest;
-    } catch {
-      // plano ausente/corrompido neste ciclo — tenta o próximo mais antigo.
-    }
-  }
-  return null;
+export function deriveCycleStart(now: Date = new Date()): string {
+  // #2923: cycle_start = 1º dia do mês CALENDÁRIO corrente, 00:00 UTC (formato Z —
+  // comparável com last_sent_at, que é ISO Z). "Recebeu neste ciclo" =
+  // last_sent_at >= cycle_start (quem recebeu o envio DESTE mês). Decisão do editor
+  // (260703): mês calendário, não send-plan — o fluxo manual/waves não gera
+  // send-plan.json, então a derivação anterior devolvia null e a coluna ficava em
+  // branco. `now` injetável pra teste. UTC-mês = BRT-mês pra envios reais (~06:00
+  // BRT / 09:00 UTC, longe da meia-noite de ambos os fusos).
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
