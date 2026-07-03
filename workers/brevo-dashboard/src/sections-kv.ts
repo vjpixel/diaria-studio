@@ -608,6 +608,12 @@ export function renderContactsSummarySection(
       return isNaN(num) ? -Infinity : num;
     };
     const sorted = Object.entries(hist).sort(([a], [b]) => rank(b) - rank(a));
+    // #2880: coluna "elegíveis" (send_eligible=1) ENTRE contatos e verified —
+    // o histograma cobre a base inteira (menos internos), incluindo inelegíveis;
+    // esta coluna isola, por faixa de pontos, o subconjunto de fato enviável.
+    // Mesmo gate opcional das demais (KV antigo sem o campo → sem a coluna).
+    const eHist = s.priority_points_histogram_eligible;
+    const withEligible = eHist !== undefined;
     // 260702: coluna "verified" (mv_bucket='verified') — só quando o KV já
     // traz o campo novo; payload antigo renderiza a tabela de 2 colunas.
     const vHist = s.priority_points_histogram_verified;
@@ -618,11 +624,12 @@ export function renderContactsSummarySection(
     // #2880: as sub-linhas "1º envio — cohort" (que ficavam sob a linha 0)
     // foram removidas — o eixo cohort agora vive só na tabela Cohorts, logo
     // abaixo. O histograma fica PURO (distribuição por valor de pontuação).
+    // Ordem das colunas: contatos | elegíveis | verified | Brevo.
     const rows = sorted.map(([k, v]) =>
-      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
+      `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
+      <thead><tr><th>priority_points (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não

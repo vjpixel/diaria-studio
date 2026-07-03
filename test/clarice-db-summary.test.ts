@@ -126,6 +126,71 @@ test("computeStoreSummary: filtro de internos é case-insensitive (#2809)", () =
   db.close();
 });
 
+test("computeStoreSummary: ti@clarice.ai é interno — excluído de priority_points e cohort_stats, mas segue no total/mv (#2880)", () => {
+  // #2880: ti@clarice.ai (equipe Clarice, sem registro Stripe) entrou em
+  // INTERNAL_EMAILS — mesmo tratamento de exibição dos demais internos.
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // ti@ engajado (4 opens de 4 → +80) — não pode aparecer no histograma nem no cohort_stats
+  ins("INSERT INTO clarice_users (email, tier, opens_count, clicks_count, sends_count, mv_bucket) VALUES ('ti@clarice.ai',1,4,2,4,'verified')");
+  // assinante real: 3 opens de 3 → +60
+  ins("INSERT INTO clarice_users (email, tier, opens_count, sends_count) VALUES ('real@x.com',1,3,3)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  // total conta os dois (ti@ segue no store); só a exibição exclui
+  assert.equal(s.total, 2);
+  assert.equal(s.priority_points.internal_excluded, 1, "ti@clarice.ai contado como interno");
+  assert.equal(s.priority_points_histogram["80"], undefined, "ti@ +80 fora do histograma");
+  assert.equal(s.priority_points_histogram["60"], 1, "só o assinante real");
+  // cohort_stats: ti@ era o único cohort assinantes-ativos com +80; excluído →
+  // só o real permanece no cohort. Um único contact (real).
+  assert.equal(s.cohort_stats["assinantes-ativos"].contacts, 1, "ti@ excluído do cohort_stats");
+  // mv NÃO filtra internos — ti@ verified conta
+  assert.equal(s.mv["verified"], 1, "ti@ verified segue no mv");
+
+  db.close();
+});
+
+// ---------------------------------------------------------------------------
+// #2880 — coluna "elegíveis" (send_eligible=1) no histograma de priority_points
+// ---------------------------------------------------------------------------
+
+test("computeStoreSummary: priority_points_histogram_eligible — subconjunto enviável por faixa (#2880)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // a: tier 1, elegível, 0 pts
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)");
+  // b: tier 1, INELEGÍVEL (unsub) — mesma faixa que a (0 pts após recompute?).
+  //    unsub sem sends → priority_points 0. Conta no histograma total mas NÃO no eligible.
+  ins("INSERT INTO clarice_users (email, tier, unsubscribed) VALUES ('b@x.com',1,1)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  // linha 0: a (elegível) + b (inelegível) → contatos=2, elegíveis=1
+  assert.equal(s.priority_points_histogram["0"], 2, "a,b ambos na faixa 0");
+  assert.equal(s.priority_points_histogram_eligible["0"], 1, "só a é send_eligible=1");
+
+  db.close();
+});
+
+test("computeStoreSummary: histograma_eligible — faixa sem nenhum elegível → chave AUSENTE (semântica esparsa, #2880)", () => {
+  const db = openClariceDb(":memory:");
+  // único contato é inelegível (dispute) → faixa 0 tem contato mas 0 elegíveis
+  db.prepare("INSERT INTO clarice_users (email, tier, dispute_losses) VALUES ('a@x.com',1,10)").run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+  assert.equal(s.priority_points_histogram["0"], 1, "1 contato na faixa 0");
+  assert.equal(s.priority_points_histogram_eligible["0"], undefined, "nenhum elegível → chave ausente, não 0");
+
+  db.close();
+});
+
 // ---------------------------------------------------------------------------
 // #2865 — coluna "Brevo" (brevo_list_ids IS NOT NULL) no histograma de
 // priority_points

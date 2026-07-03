@@ -198,6 +198,11 @@ export const INTERNAL_EMAILS = [
   "vjpixel@gmail.com",
   "pixel@memelab.com.br",
   "felipe@clarice.ai",
+  // #2880: endereço da equipe Clarice (sem registro Stripe → aparecia como a
+  // única linha "sem cohort"). Mesmo tratamento dos demais internos: excluído
+  // das agregações de exibição (priority_points, cohort_stats), mas segue no
+  // store e na fila de envio.
+  "ti@clarice.ai",
 ] as const;
 
 // ---------------------------------------------------------------------------

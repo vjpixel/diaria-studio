@@ -208,3 +208,52 @@ test("renderContactsSummarySection: colunas verified e Brevo coexistem (mesma li
   const html = renderContactsSummarySection(both);
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td><td[^>]*>29[.,]?000<\/td>/);
 });
+
+// ---------------------------------------------------------------------------
+// #2880 — coluna "elegíveis" (send_eligible=1) no histograma de priority_points
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: coluna 'elegíveis' aparece quando priority_points_histogram_eligible está presente (#2880)", () => {
+  const withEligible: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520, "15": 40 },
+    priority_points_histogram_eligible: { "0": 422000, "15": 38 },
+  };
+  const html = renderContactsSummarySection(withEligible);
+  assert.match(html, /<th style="text-align:right">elegíveis<\/th>/, "header da coluna elegíveis presente");
+  // ordem: contatos | elegíveis → linha 0 com contatos e elegíveis lado a lado
+  assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>422[.,]?000<\/td>/, "linha 0 com valor elegíveis");
+  assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>38<\/td>/, "linha 15 com valor elegíveis");
+});
+
+test("renderContactsSummarySection: KV antigo (sem priority_points_histogram_eligible) → sem header/coluna elegíveis (retrocompat, #2880)", () => {
+  const noEligible: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+  };
+  const html = renderContactsSummarySection(noEligible);
+  assert.doesNotMatch(html, /<th[^>]*>elegíveis<\/th>/, "coluna elegíveis não aparece sem o dado");
+});
+
+test("renderContactsSummarySection: ordem das colunas — contatos | elegíveis | verified | Brevo (#2880)", () => {
+  const all: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520 },
+    priority_points_histogram_eligible: { "0": 422000 },
+    priority_points_histogram_verified: { "0": 81000 },
+    priority_points_histogram_brevo: { "0": 29000 },
+  };
+  const html = renderContactsSummarySection(all);
+  // 5 células na mesma linha, na ordem exata contatos → elegíveis → verified → Brevo
+  assert.match(
+    html,
+    /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>422[.,]?000<\/td><td[^>]*>81[.,]?000<\/td><td[^>]*>29[.,]?000<\/td>/,
+    "5 células na ordem contatos|elegíveis|verified|Brevo",
+  );
+  // headers na mesma ordem
+  const idxContatos = html.indexOf(">contatos<");
+  const idxElegiveis = html.indexOf(">elegíveis<");
+  const idxVerified = html.indexOf(">verified<");
+  const idxBrevo = html.indexOf(">Brevo<");
+  assert.ok(idxContatos < idxElegiveis && idxElegiveis < idxVerified && idxVerified < idxBrevo, "headers na ordem correta");
+});

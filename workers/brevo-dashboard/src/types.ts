@@ -164,6 +164,10 @@ export interface ContactsSummary {
   // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
   // cohort firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
   priority_points_histogram_verified?: Record<string, number>;
+  // #2880: coluna "elegíveis" (send_eligible=1) do histograma — par opcional,
+  // degrade gracioso (KV antigo sem o campo → sem a coluna). Isola, por faixa de
+  // pontos, o subconjunto de fato enviável (o histograma inteiro inclui inelegíveis).
+  priority_points_histogram_eligible?: Record<string, number>;
   // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) do histograma — par
   // opcional, degrade gracioso (KV antigo sem o campo → sem a coluna).
   // #2880: `by_cohort`/`by_cohort_first_send*` REMOVIDOS — a tabela "Por safra"

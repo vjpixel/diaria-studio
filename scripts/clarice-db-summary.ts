@@ -62,6 +62,12 @@ export interface StoreSummary {
   // por valor exato de priority_points, quantos têm mv_bucket='verified'.
   // Mesma exclusão de internos do histograma (#2809).
   priority_points_histogram_verified: Record<string, number>;
+  // #2880: coluna "elegíveis" do histograma — por valor exato de priority_points,
+  // quantos têm `send_eligible=1`. O histograma inteiro cobre a base (menos
+  // internos, #2809) incluindo INELEGÍVEIS; esta coluna isola o subconjunto de
+  // fato enviável. Mesma semântica esparsa/opcional das colunas verified/Brevo
+  // (bucket sem elegível = chave AUSENTE, render trata como 0).
+  priority_points_histogram_eligible: Record<string, number>;
   // #2865: coluna "Brevo" do histograma — por valor exato de priority_points,
   // quantos têm `brevo_list_ids IS NOT NULL` (mesmo predicado de
   // `brevo.synced_rows`). Padrão esparso/opcional como a coluna "verified"
@@ -134,30 +140,41 @@ const MV_VERIFIED_CASE = "SUM(CASE WHEN mv_bucket='verified' THEN 1 ELSE 0 END)"
 // acima (brevo_list_ids IS NOT NULL = contato já visto/sincronizado numa lista).
 const BREVO_SYNCED_CASE = "SUM(CASE WHEN brevo_list_ids IS NOT NULL THEN 1 ELSE 0 END)";
 
+const SEND_ELIGIBLE_CASE = "SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END)";
+
 /**
  * #2865: par total+verified+brevo num ÚNICO scan (review #2815) — a query deve
  * projetar `k`, `n` (COUNT), `nv` (MV_VERIFIED_CASE) e `nb` (BREVO_SYNCED_CASE).
- * Cada mapa preserva a semântica esparsa (bucket sem verificado/Brevo = chave
- * AUSENTE, nunca 0 explícito) — o render trata ausente como 0. #2880: o único
- * consumidor restante é o histograma de priority_points (a variante de 2 mapas
- * `groupCountsWithVerified` e os pares by_cohort saíram junto com as tabelas
- * "Por safra"/"1º envio").
+ * #2880: + `nl` (SEND_ELIGIBLE_CASE) → 4º mapa `eligible` (subconjunto enviável
+ * por bucket). Cada mapa preserva a semântica esparsa (bucket sem
+ * verificado/Brevo/elegível = chave AUSENTE, nunca 0 explícito) — o render trata
+ * ausente como 0. Único consumidor restante é o histograma de priority_points
+ * (a variante de 2 mapas `groupCountsWithVerified` e os pares by_cohort saíram
+ * junto com as tabelas "Por safra"/"1º envio"). A generalização ampla do helper
+ * fica no #2875.
  */
 function groupCountsWithVerifiedAndBrevo(
   db: DatabaseSync,
   sql: string,
   params: string[] = [],
-): { total: Record<string, number>; verified: Record<string, number>; brevo: Record<string, number> } {
+): {
+  total: Record<string, number>;
+  verified: Record<string, number>;
+  brevo: Record<string, number>;
+  eligible: Record<string, number>;
+} {
   const total: Record<string, number> = {};
   const verified: Record<string, number> = {};
   const brevo: Record<string, number> = {};
-  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number; nv: number; nb: number }>) {
+  const eligible: Record<string, number> = {};
+  for (const r of db.prepare(sql).all(...params) as Array<{ k: unknown; n: number; nv: number; nb: number; nl: number }>) {
     const key = r.k == null ? "null" : String(r.k);
     total[key] = r.n;
     if (r.nv > 0) verified[key] = r.nv;
     if (r.nb > 0) brevo[key] = r.nb;
+    if (r.nl > 0) eligible[key] = r.nl;
   }
-  return { total, verified, brevo };
+  return { total, verified, brevo, eligible };
 }
 
 // #2809: fragmento SQL + params pra excluir os emails internos das agregações
@@ -179,7 +196,7 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   // tabelas "Por safra" e "1º envio" saíram do dashboard).
   const ppHistPair = groupCountsWithVerifiedAndBrevo(
     db,
-    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv, ${BREVO_SYNCED_CASE} nb FROM clarice_users
+    `SELECT priority_points AS k, COUNT(*) n, ${MV_VERIFIED_CASE} nv, ${BREVO_SYNCED_CASE} nb, ${SEND_ELIGIBLE_CASE} nl FROM clarice_users
       WHERE ${NOT_INTERNAL_SQL} GROUP BY priority_points`,
     INTERNAL_PARAMS,
   );
@@ -262,6 +279,9 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     // Coluna "verified" (260702): mesmo universo do histograma (sem internos,
     // #2809), restrito a mv_bucket='verified'. Chave ausente = 0 verificados.
     priority_points_histogram_verified: ppHistPair.verified,
+    // #2880: coluna "elegíveis" — mesmo universo (sem internos, #2809),
+    // restrito a send_eligible=1. Chave ausente = 0 elegíveis nesse bucket.
+    priority_points_histogram_eligible: ppHistPair.eligible,
     // #2865: coluna Brevo do histograma de priority_points — mesmo universo
     // (sem internos, #2809) do histograma total/verified acima.
     priority_points_histogram_brevo: ppHistPair.brevo,
