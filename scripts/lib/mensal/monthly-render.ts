@@ -814,10 +814,10 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   // ver nota de escopo em newsletter-styles.ts). #2645: agora também emite o dark
   // theme (canvas), com o INK do DS explícito (o módulo não importa design-tokens).
   const styleBlock = buildMensalStyleBlock(SHELL, INK);
-  // #2645: shell de marca — capa/header co-brand Clarice × Diar.ia + footer com
-  // ícones sociais (o Brevo, ao contrário do Beehiiv, não fornece isso automaticamente).
-  const header = renderCobrandHeader();
-  const footer = renderSocialFooter();
+  // Header co-brand + footer social do shell #2645 REMOVIDOS a pedido do editor
+  // (260703): a APRESENTAÇÃO já faz o co-brand textual no topo, e o footer social
+  // era redundante. renderCobrandHeader/renderSocialFooter seguem exportadas pra
+  // reuso futuro (ex: quando houver logo). Ver issue de remoção.
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -835,9 +835,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
             <td style="padding:36px 32px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.62;">
-              ${header}
               ${body}
-              ${footer}
             </td>
           </tr>
         </table>
@@ -867,7 +865,12 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 //      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
 const FIXED_LABEL_RE_NO_BOLD =
   /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
-const VARIABLE_TAIL_LABEL_RE_NO_BOLD = /^(DESTAQUE \d+\b|CLARICE —|É ?IA\?)/;
+// "É IA?" não-bold só é label quando é a linha INTEIRA ("É IA?") ou seguido de
+// travessão ("É IA? — DESTAQUE DO MÊS") — NUNCA prosa que começa com a pergunta
+// ("É IA? do mês: duas versões..."), que senão vira 2ª seção e renderiza o card
+// duas vezes (incidente 2606-07). DESTAQUE/CLARICE seguem como prefixo (têm
+// parte variável estruturada, não colidem com prosa).
+const VARIABLE_TAIL_LABEL_RE_NO_BOLD = /^(DESTAQUE \d+\b|CLARICE —|É ?IA\?(?:\s*[—–-]|\s*$))/;
 
 /**
  * Detecta se uma linha é um label de seção (formatado como `**LABEL**` ou

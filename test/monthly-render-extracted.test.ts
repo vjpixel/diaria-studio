@@ -92,12 +92,13 @@ describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () 
     assert.ok(html.includes("threads.net/@diar.ia.br"), "URL do Threads ausente/incorreta");
   });
 
-  it("wrapEmail integra header co-brand + footer social no documento final", () => {
-    const { html } = d2eDirect("**ASSUNTO**\nTeste #2645\n", null, "2605");
-    assert.ok(html.includes("Clarice"), "header co-brand ausente no wrapEmail");
-    assert.ok(html.includes("Facebook") && html.includes("LinkedIn"), "footer social ausente no wrapEmail");
-    // Header vem ANTES do footer no documento (ordem visual capa → corpo → rodapé).
-    assert.ok(html.indexOf("Clarice &times; Diar.ia") < html.lastIndexOf("Siga a Clarice"), "header deve preceder o footer");
+  it("wrapEmail NÃO inclui header co-brand nem footer social (removidos a pedido do editor 260703)", () => {
+    const { html } = d2eDirect("**ASSUNTO**\nTeste\n**INTRO**\nCorpo do mês.\n", null, "2605");
+    // masthead co-brand ("Clarice × Diar.ia") removido do topo
+    assert.ok(!html.includes("Clarice &times; Diar.ia"), "header co-brand não deve aparecer");
+    // footer social ("Siga a Clarice" + pills) removido do rodapé
+    assert.ok(!html.includes("Siga a Clarice"), "heading do footer social não deve aparecer");
+    assert.doesNotMatch(html, /Facebook|Instagram|Threads/, "pills sociais do footer não devem aparecer");
   });
 
   it("wrapEmail declara suporte a dark theme (@media prefers-color-scheme + metas color-scheme)", () => {
@@ -185,5 +186,34 @@ describe("brand wordmark no render mensal (#2913)", () => {
     for (const s of ["diaria.beehiiv.com", "cursos.diaria.workers.dev", "livros.diaria.workers.dev"]) {
       assert.doesNotMatch(renderInline(`veja ${s} agora`), /<span style="color:#00A0A0">/);
     }
+  });
+});
+
+// Regressão 2606-07: o corpo da seção É IA? começava com a pergunta ("É IA? do
+// mês: duas versões…"), e o detector não-bold tratava isso como um 2º marcador
+// de seção → renderEia rodava 2× (card duplicado).
+describe("É IA? não duplica quando o corpo começa com a pergunta (regressão 2606-07)", () => {
+  const draftEia = [
+    "**ASSUNTO**", "T", "",
+    "**É IA? — DESTAQUE DO MÊS**", "",
+    "É IA? do mês: duas versões da mesma paisagem — uma é foto, a outra é IA.", "",
+  ].join("\n");
+
+  const firstLineStartsEia = (c: string): boolean =>
+    c.split("\n")[0].trim().replace(/^\*+|\*+$/g, "").startsWith("É IA?");
+
+  it("splitByLabels: prosa começando com 'É IA?' NÃO abre um 2º chunk de seção", () => {
+    assert.equal(sblDirect(draftEia).filter(firstLineStartsEia).length, 1);
+  });
+
+  it("draftToEmail: o card É IA? renderiza UMA vez (não duas)", () => {
+    const { html } = d2eDirect(draftEia, null, "2606", "urlA", "urlB");
+    assert.equal((html.match(/Clique na imagem que foi gerada por IA/g) || []).length, 1);
+  });
+
+  it("a forma-seção 'É IA?' (exata, não-bold) segue detectada como label", () => {
+    // INTRO seguido de 'É IA?' exato → 2 chunks (INTRO + É IA): fix não quebrou a forma curta.
+    const chunks = sblDirect("**INTRO**\ntexto do mês\n\nÉ IA?\ncorpo do card");
+    assert.equal(chunks.filter(firstLineStartsEia).length, 1);
   });
 });
