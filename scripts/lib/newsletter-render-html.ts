@@ -1059,8 +1059,18 @@ const BRAND_WORDMARK_HTML =
 // `user@diar.ia.br`. Fim de frase (`Diar.ia.` / `diar.ia.br.`) continua casando.
 const BRAND_WORDMARK_RE =
   /(?<![/\w.@])(?:diar\.ia\.br(?![/\w@])|diar\.ia(?!\.br)(?![/\w@]))/gi;
-export function applyBrandWordmark(s: string): string {
-  return s.replace(BRAND_WORDMARK_RE, BRAND_WORDMARK_HTML);
+/**
+ * @param linkHref (opcional) — quando presente, envolve o wordmark num link pra
+ *   esse destino (mantendo o estilo do wordmark: negrito + pontos teal, sem
+ *   sublinhar). Usado pela MENSAL (#template-branding 260703): toda ocorrência
+ *   de `diar.ia.br` vira link pra `diaria.beehiiv.com`. Sem o param, comportamento
+ *   inalterado (texto puro) — a DIÁRIA segue sem link (já vive no Beehiiv).
+ */
+export function applyBrandWordmark(s: string, linkHref?: string): string {
+  const html = linkHref
+    ? `<a href="${linkHref}" style="color:inherit;text-decoration:none">${BRAND_WORDMARK_HTML}</a>`
+    : BRAND_WORDMARK_HTML;
+  return s.replace(BRAND_WORDMARK_RE, html);
 }
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.
