@@ -120,6 +120,20 @@ A lógica de priorização (pontos + elegibilidade) vive em `scripts/lib/clarice
 `test/clarice-db.test.ts`. O parsing de contato Brevo vive em
 `scripts/lib/brevo-stats.ts` (`parseBrevoContact`), testado em `test/brevo-stats.test.ts`.
 
+### Lookup por email — norma de processo (#2863)
+
+`findContactByEmail(db, email)` (`scripts/lib/clarice-db.ts`) é o helper CANÔNICO
+pra procurar um contato: tenta match exato (lowercase/trim) e, se não achar,
+tenta normalização Gmail (`canonicalizeGmail`, #1969 — local-part sem pontos,
+ignora `+sufixo`, só pra domínios `gmail.com`/`googlemail.com`; fora do Gmail
+pontos são significativos e não normaliza). **Ausência no store só é afirmável
+depois de (a) este lookup normalizado E (b) grep dos CSVs crus em
+`data/clarice-subscribers/`** — o segundo passo é barato e foi o que resolveu o
+incidente de 260702 (4 contatos etiquetados errado como "não é cliente Stripe"
+porque o lookup usou só match exato). Extensão do princípio #573 (validar
+antes de relayar) pra negative claims. `scripts/clarice-optin.ts add` já usa
+este helper pra resolver a variante recebida pro canônico do store (#2861).
+
 ### Sync do Brevo — operação
 
 ⚠️ **Pesado + rate-limited.** A base toda são dezenas de milhares de contatos =

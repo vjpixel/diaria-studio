@@ -21,7 +21,9 @@
  * significativos fora do Gmail — não mexer).
  */
 
-const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+// Exportado (#2863): findContactByEmail (clarice-db.ts) reusa este set pra
+// decidir SE faz o scan de normalização Gmail — nunca reimplementar a lista.
+export const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 const EMAIL_TOKEN_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
 /**

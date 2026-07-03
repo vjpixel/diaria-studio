@@ -21,11 +21,72 @@
  * store; emails ainda não ingeridos passam a contar no próximo build.
  */
 
-import { openClariceDb, recomputeDerived, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import type { DatabaseSync } from "node:sqlite";
+import {
+  openClariceDb,
+  recomputeDerived,
+  findContactByEmail,
+  DEFAULT_DB_PATH,
+} from "./lib/clarice-db.ts";
 import { getArg, parseArgs } from "./lib/cli-args.ts";
 
 function normalizeEmail(e: string): string {
   return e.trim().toLowerCase();
+}
+
+/**
+ * Resolve o email informado no `add` contra o store ANTES de gravar (#2861).
+ *
+ * Incidente real (260702): 13 opt-ins prioritários, 4 responderam da variante
+ * SEM pontos do Gmail (`filosofodaniel@gmail.com`) mas o Stripe/store tem a
+ * forma COM pontos (`filosofo.daniel@gmail.com`) — o Gmail trata como a mesma
+ * caixa, o join exato do `recomputeDerived` não. O boost +40 ficou órfão na
+ * tabela `priority_optin` (um deles era assinante ativo T01).
+ *
+ * A normalização fica SÓ aqui (ponto de entrada do optin) — as chaves do
+ * store permanecem o email REAL do Stripe (necessário pro match com Brevo);
+ * `findContactByEmail` (#2863) nunca reescreve o store, só informa a
+ * resolução pro chamador decidir o que gravar:
+ *   - match único (exato OU gmail-normalized) → grava o email CANÔNICO do
+ *     store (o que já está lá), com notice mostrando a resolução;
+ *   - ambíguo (2+ candidatos) OU sem match nenhum → grava o email INFORMADO
+ *     literalmente, com warning (nunca inventa uma resolução incerta).
+ */
+export function resolveOptinEmail(
+  db: DatabaseSync,
+  input: string,
+): { email: string; notice?: string; warning?: string } {
+  const match = findContactByEmail(db, input);
+
+  if (match.matchType === "exact") {
+    return { email: input };
+  }
+
+  if (match.matchType === "gmail-normalized" && match.row) {
+    const canonical = String(match.row.email);
+    return {
+      email: canonical,
+      notice: `↳ ${input} → resolvido para ${canonical} (match Gmail normalizado, #2861)`,
+    };
+  }
+
+  if (match.candidates.length > 1) {
+    const list = match.candidates.map((c) => c.email).join(", ");
+    return {
+      email: input,
+      warning:
+        `⚠️  ${input}: match AMBÍGUO no store (${match.candidates.length} candidatos — ${list}) — ` +
+        `gravando o email informado literalmente, sem resolver.`,
+    };
+  }
+
+  return {
+    email: input,
+    warning:
+      `⚠️  ${input}: não encontrado no store (nem por normalização Gmail) — ` +
+      `gravando o email informado literalmente. Antes de assumir que não é ` +
+      `cliente, confira também os CSVs crus em data/clarice-subscribers/ (#2863).`,
+  };
 }
 
 export function main(argv: string[] = process.argv.slice(2)): void {
@@ -73,8 +134,14 @@ export function main(argv: string[] = process.argv.slice(2)): void {
        ON CONFLICT(email) DO NOTHING`,
     );
     let added = 0;
-    for (const email of emails) {
-      const r = stmt.run(email, addedAt);
+    for (const inputEmail of emails) {
+      // #2861/#2863: resolve pro email canônico do store (normalização Gmail)
+      // ANTES de gravar — nunca deixa uma variante sem-pontos ficar órfã na
+      // tabela priority_optin enquanto o store guarda a forma com pontos.
+      const resolved = resolveOptinEmail(db, inputEmail);
+      if (resolved.notice) console.error(resolved.notice);
+      if (resolved.warning) console.error(resolved.warning);
+      const r = stmt.run(resolved.email, addedAt);
       if (r.changes > 0) added++;
     }
     const recomputed = recomputeDerived(db);
