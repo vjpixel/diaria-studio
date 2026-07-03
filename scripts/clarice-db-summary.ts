@@ -24,7 +24,6 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
-import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -199,9 +198,9 @@ const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
  * Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS.
  *
  * #2909: `cycleStart` (ISO 8601 do início do ciclo corrente) é INJETADO — em
- * produção vem de `deriveCycleStart()` (lê o send-plan do ciclo mais recente);
- * nos testes é passado direto (o helper depende de data/ no OneDrive, ausente
- * em :memory:/CI). `null` (default) = sem ciclo → colunas de ciclo mostram "—".
+ * produção vem de `deriveCycleStart()` (1º dia do mês calendário corrente, #2923);
+ * nos testes é passado direto. `null` (default) = sem ciclo → colunas de ciclo
+ * mostram "—" (defensivo; em produção deriveCycleStart nunca devolve null).
  */
 export function computeStoreSummary(
   db: DatabaseSync,
@@ -386,25 +385,16 @@ function computeCohortStats(
 }
 
 /**
- * #2909: início do ciclo de envio corrente = menor `scheduledAt` do
- * `send-plan.json` do ciclo MAIS RECENTE em `data/clarice-subscribers/`.
- * Retorna `null` (render mostra "—") quando não há ciclo com plano legível —
- * base ausente, nenhum ciclo, nenhum send-plan.json, ou plano corrompido.
- *
- * Escaneia os subdirs `{YYMM}-{MM}` (isValidCycle) em ordem DESC — o rótulo do
- * ciclo é cronológico por construção (`2605-06` < `2612-01`, `2512-01` <
- * `2601-02`), então `.sort().reverse()` dá o mais recente primeiro — e devolve
- * o cycle_start do 1º cujo send-plan.json carrega. Injetável (`base`) pra teste;
- * produção usa CLARICE_BASE (junction → OneDrive). Fail-soft: nunca lança.
+ * #2923: início do ciclo = 1º dia do mês CALENDÁRIO corrente, 00:00 UTC (formato
+ * `Z`, comparável com `last_sent_at`, que é sempre ISO `Z`). "Recebeu neste ciclo"
+ * = `last_sent_at >= cycle_start` = quem recebeu o envio DESTE mês. Sempre devolve
+ * um valor (nunca null) → a coluna sempre popula. Decisão do editor (260703): mês
+ * calendário, não send-plan — o fluxo manual/waves não gera `send-plan.json`, então
+ * a derivação anterior (#2909, scan de plano) devolvia null e a coluna ficava em
+ * branco. `now` injetável pra teste. UTC-mês = BRT-mês pra envios reais (~06:00 BRT
+ * / 09:00 UTC, longe da meia-noite de ambos os fusos).
  */
 export function deriveCycleStart(now: Date = new Date()): string {
-  // #2923: cycle_start = 1º dia do mês CALENDÁRIO corrente, 00:00 UTC (formato Z —
-  // comparável com last_sent_at, que é ISO Z). "Recebeu neste ciclo" =
-  // last_sent_at >= cycle_start (quem recebeu o envio DESTE mês). Decisão do editor
-  // (260703): mês calendário, não send-plan — o fluxo manual/waves não gera
-  // send-plan.json, então a derivação anterior devolvia null e a coluna ficava em
-  // branco. `now` injetável pra teste. UTC-mês = BRT-mês pra envios reais (~06:00
-  // BRT / 09:00 UTC, longe da meia-noite de ambos os fusos).
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
@@ -414,11 +404,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
-  // #2909: início do ciclo corrente pra "recebeu neste ciclo"/"falta enviar".
+  // #2923: início do ciclo = 1º do mês calendário, pra "recebeu neste ciclo"/"falta enviar".
   const cycleStart = deriveCycleStart();
-  console.error(
-    `[clarice-db-summary] cycle_start = ${cycleStart ?? "(nenhum ciclo com send-plan legível — colunas de ciclo exibem —)"}`,
-  );
+  console.error(`[clarice-db-summary] cycle_start = ${cycleStart}`);
   const summary = computeStoreSummary(db, cycleStart);
   db.close();
 
