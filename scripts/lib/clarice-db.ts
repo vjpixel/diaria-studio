@@ -192,18 +192,15 @@ export function computePriorityPoints(i: PriorityInput): number {
 // agregações de priority_points do sumário (exibição/dashboard) — mas seguem
 // no store e na fila de envio normalmente (decisão do editor 260702: "é para
 // continuar enviando"). Fonte única — não espalhar os literais.
+//
+// #2885: movido pra `cohorts.ts` (dependency-free/Workers-safe, sem
+// `node:sqlite`) — `clarice-segment.ts` também precisa deste literal (grupos
+// nomeados `engajados`/`reativacao` excluem internos) e não pode importar
+// deste módulo (ciclo: este módulo já importa de `clarice-segment.ts`).
+// Re-exportado aqui pra não quebrar os imports existentes (`clarice-db-summary.ts`).
 // ---------------------------------------------------------------------------
 
-export const INTERNAL_EMAILS = [
-  "vjpixel@gmail.com",
-  "pixel@memelab.com.br",
-  "felipe@clarice.ai",
-  // #2880: endereço da equipe Clarice (sem registro Stripe → aparecia como a
-  // única linha "sem cohort"). Mesmo tratamento dos demais internos: excluído
-  // das agregações de exibição (priority_points, cohort_stats), mas segue no
-  // store e na fila de envio.
-  "ti@clarice.ai",
-] as const;
+export { INTERNAL_EMAILS } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // send_eligible / ineligible_reason — corte de supressão e entregabilidade

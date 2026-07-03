@@ -73,6 +73,17 @@ export function clariceWavesDir(cycle: string): string {
   return resolve(clariceCycleDir(cycle), "waves");
 }
 
+/**
+ * Diretório de grupos de envio NOMEADOS do ciclo (`…/{conteúdo}-{envio}/segments`,
+ * #2885 — `scripts/clarice-build-segment.ts`). Irmão de `waves/`: a rampa
+ * (crescer alcance) mora em `waves/`, os grupos por objetivo (retenção,
+ * re-ativação, 1º-envio-seguro) moram aqui — não se misturam nem colidem em
+ * nome de arquivo.
+ */
+export function clariceSegmentsDir(cycle: string): string {
+  return resolve(clariceCycleDir(cycle), "segments");
+}
+
 /** Caminho de um arquivo de input-base (root, não por-ciclo): stripe, excluded, tiers. */
 export function clariceBaseFile(name: string): string {
   return resolve(CLARICE_BASE, name);
