@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Clarice-Sync" no Task Scheduler — sync
     incremental diário do store Clarice às 03:40.

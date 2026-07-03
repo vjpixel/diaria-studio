@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Wrapper do sync incremental diário do store Clarice (para o Task Scheduler).
 
