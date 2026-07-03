@@ -20,14 +20,11 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
-import { CLARICE_BASE, isValidCycle } from "./lib/clarice-paths.ts";
-import { loadSendPlan } from "./lib/send-plan.ts";
+import { datePartsInTz, zonedTimeToUtc, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
 // Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
 // reusar evita drift se o namespace for rotacionado.
 import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
@@ -36,11 +33,13 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 export interface StoreSummary {
   total: number;
-  // #2909: início do ciclo de envio CORRENTE — menor `scheduledAt` do
-  // `send-plan.json` do ciclo mais recente em data/clarice-subscribers/ (ver
-  // deriveCycleStart). `null` quando não há ciclo com plano legível (render
-  // mostra "—" nas colunas "recebeu neste ciclo"/"falta enviar"). Insumo pra
-  // classificar `last_sent_at >= cycle_start` por cohort em cohort_stats.
+  // #2923 (substitui a fonte do #2909): início do ciclo de envio CORRENTE —
+  // 1º dia do mês corrente, 00:00 BRT (ver deriveCycleStart). Continua
+  // tipado `string | null` (o parâmetro `cycleStart` de computeStoreSummary
+  // aceita injeção `null` em teste/degradação, aí "recebeu neste ciclo"/
+  // "falta enviar" mostram "—") mas em produção deriveCycleStart() sempre
+  // retorna um valor. Insumo pra classificar `last_sent_at >= cycle_start`
+  // por cohort em cohort_stats.
   cycle_start: string | null;
   brevo: { synced_rows: number; has_signal: boolean };
   eligibility: {
@@ -389,44 +388,33 @@ function computeCohortStats(
 }
 
 /**
- * #2909: início do ciclo de envio corrente = menor `scheduledAt` do
- * `send-plan.json` do ciclo MAIS RECENTE em `data/clarice-subscribers/`.
- * Retorna `null` (render mostra "—") quando não há ciclo com plano legível —
- * base ausente, nenhum ciclo, nenhum send-plan.json, ou plano corrompido.
+ * #2923 (substitui a fonte do #2909): início do ciclo de envio corrente = 1º
+ * dia do MÊS CORRENTE, 00:00 em BRT (America/Sao_Paulo).
  *
- * Escaneia os subdirs `{YYMM}-{MM}` (isValidCycle) em ordem DESC — o rótulo do
- * ciclo é cronológico por construção (`2605-06` < `2612-01`, `2512-01` <
- * `2601-02`), então `.sort().reverse()` dá o mais recente primeiro — e devolve
- * o cycle_start do 1º cujo send-plan.json carrega. Injetável (`base`) pra teste;
- * produção usa CLARICE_BASE (junction → OneDrive). Fail-soft: nunca lança.
+ * A fonte antiga (menor `scheduledAt` do `send-plan.json` do ciclo mais
+ * recente em `data/clarice-subscribers/`) nunca é gravada pelo pipeline
+ * real — nem a rampa diária (que grava `sends/dNN-DDmon.csv`, sem plano
+ * consolidado), nem o digest mensal/ABC (enviado manualmente via Brevo, sem
+ * arquivo nenhum) — então `cycle_start` ficava sempre `null` e "Recebeu
+ * neste ciclo" sempre "—" (#2923).
+ *
+ * "Ciclo" aqui = mês corrente — casa com o objetivo do editor de não repetir
+ * envio no mesmo mês (recomendação registrada no #2923). Fuso BRT (não UTC)
+ * porque a operação/audiência é brasileira: um envio às 23h de BRT do
+ * último dia do mês não pode contar como "mês seguinte" só porque já virou
+ * o dia em UTC.
+ *
+ * É um conceito DIFERENTE do ciclo de COBRANÇA Brevo (dia 4, 15:45 BRT —
+ * ver `workers/brevo-dashboard/src/billing-cycle.ts`, #2910) — os dois NÃO
+ * se alinham por design (confirmado pelo editor 260703); não reconciliar.
+ *
+ * Pura (sem I/O) — sempre retorna um valor válido (nunca `null`: "início do
+ * mês corrente" está sempre definido). `now` injetável pra teste; produção
+ * usa a hora atual.
  */
-export function deriveCycleStart(base: string = CLARICE_BASE): string | null {
-  if (!existsSync(base)) return null;
-  let cycles: string[];
-  try {
-    cycles = readdirSync(base, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && isValidCycle(e.name))
-      .map((e) => e.name)
-      .sort()
-      .reverse();
-  } catch {
-    return null;
-  }
-  for (const cycle of cycles) {
-    try {
-      // resolve contra `base` (não clariceCycleDir, que fixaria em CLARICE_BASE
-      // e furaria a injeção de `base` em teste).
-      const plan = loadSendPlan(resolve(base, cycle));
-      const earliest = plan.reduce<string | null>(
-        (min, e) => (min === null || e.scheduledAt < min ? e.scheduledAt : min),
-        null,
-      );
-      if (earliest) return earliest;
-    } catch {
-      // plano ausente/corrompido neste ciclo — tenta o próximo mais antigo.
-    }
-  }
-  return null;
+export function deriveCycleStart(now: Date = new Date()): string {
+  const { year, month } = datePartsInTz(now, BRT_TIMEZONE);
+  return zonedTimeToUtc(year, month, 1, 0, 0, 0, BRT_TIMEZONE).toISOString();
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -435,11 +423,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
-  // #2909: início do ciclo corrente pra "recebeu neste ciclo"/"falta enviar".
+  // #2923: início do ciclo corrente (1º dia do mês, BRT) pra "recebeu neste
+  // ciclo"/"falta enviar". Sempre definido (pura, sem I/O) — não depende mais
+  // de send-plan.json (#2909, nunca gravado pelo pipeline real).
   const cycleStart = deriveCycleStart();
-  console.error(
-    `[clarice-db-summary] cycle_start = ${cycleStart ?? "(nenhum ciclo com send-plan legível — colunas de ciclo exibem —)"}`,
-  );
+  console.error(`[clarice-db-summary] cycle_start = ${cycleStart}`);
   const summary = computeStoreSummary(db, cycleStart);
   db.close();
 

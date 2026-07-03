@@ -73,3 +73,58 @@ export function toAammdd(parts: DateParts): string {
   const dd = String(parts.day).padStart(2, "0");
   return `${yy}${mm}${dd}`;
 }
+
+/**
+ * Offset (em minutos) do fuso `timeZone` no instante `date` — negativo a
+ * oeste de UTC (ex: BRT = -180). Lê os dígitos locais do instante via Intl e
+ * compara contra o próprio instante — não assume offset fixo (robusto a
+ * mudanças futuras de DST em qualquer fuso). Extraído pra uso por
+ * `zonedTimeToUtc` (#2910: fronteira do ciclo de cobrança Brevo, precisão de
+ * minuto — `datePartsInTz`/`nextEditionDate` só operam em dia).
+ */
+function offsetMinutesInTz(date: Date, timeZone: string): number {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = fmt.formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+  // Alguns runtimes formatam meia-noite como hour="24" mesmo com hour12:false — normaliza.
+  const hour = get("hour") % 24;
+  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"));
+  return Math.round((asUtc - date.getTime()) / 60_000);
+}
+
+/**
+ * Converte um instante "wall-clock" (ano/mês/dia/hora/min/seg, 1-based month)
+ * no fuso `timeZone` para o `Date` UTC correspondente. Generaliza
+ * `nextEditionDate`/`datePartsInTz` (que só operam em granularidade de dia)
+ * pra consumidores que precisam de precisão de minuto — ex: fronteira do
+ * ciclo de cobrança Brevo (dia 4, 15:45 BRT, #2910) ou início do mês
+ * corrente em BRT (#2923).
+ *
+ * Duas passadas: 1ª aproximação trata os dígitos como se já fossem UTC pra
+ * descobrir o offset real do fuso perto desse instante; a 2ª aplica o offset.
+ * Suficiente pra fusos sem "double DST transition" no mesmo dia (BRT é fixo
+ * desde 2019; mesmo com DST futuro, a imprecisão fica no pior caso limitada
+ * à janela de transição, não usada aqui).
+ */
+export function zonedTimeToUtc(
+  year: number,
+  month: number, // 1-based
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  timeZone: string,
+): Date {
+  const approxMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const offsetMin = offsetMinutesInTz(new Date(approxMs), timeZone);
+  return new Date(approxMs - offsetMin * 60_000);
+}

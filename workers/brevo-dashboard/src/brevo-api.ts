@@ -227,6 +227,80 @@ export async function getCouponUsage(
   }
 }
 
+// #2910: chave KV do último valor bom conhecido de créditos do plano Brevo
+// (`GET /v3/account`) — cache 24h (muda raríssimo, só em troca de plano) +
+// fallback pro fetch ao vivo falhar/rate-limit. Mesmo padrão de
+// LASTGOOD_CAMPAIGNS_KEY (#2733) / getCouponUsage (#2718).
+export const PLAN_CREDITS_KV_KEY = "brevo:plan-credits";
+const PLAN_CREDITS_TTL_SECS = 24 * 60 * 60;
+
+interface BrevoAccountPlan {
+  type?: string;
+  credits?: number;
+  creditsType?: string;
+}
+interface BrevoAccountResponse {
+  plan?: BrevoAccountPlan[];
+}
+
+/**
+ * #2910: extrai o limite/crédito de envio do plano Brevo corrente da
+ * resposta de `GET /v3/account`. Prioriza a entrada `creditsType ===
+ * "sendLimit"` (planos de assinatura mensal, como o da Clarice — a API
+ * Brevo documenta esse campo em `GetAccount`); cai pro primeiro item com
+ * `credits` numérico se não achar (planos pay-as-you-go só têm `credits`
+ * genérico). `null` quando o array vem vazio/ausente (shape inesperado) — o
+ * caller trata como "indisponível", NUNCA cai pra um total hardcoded
+ * (era o bug do #2910: 40.000 fixo da migração de junho). Pura — exportada
+ * pra teste unitário sem precisar mockar `fetch`.
+ */
+export function extractPlanCredits(account: BrevoAccountResponse | null | undefined): number | null {
+  const plans = account?.plan;
+  if (!Array.isArray(plans) || plans.length === 0) return null;
+  const sendLimit = plans.find((p) => p.creditsType === "sendLimit" && typeof p.credits === "number");
+  if (sendLimit) return sendLimit.credits as number;
+  const first = plans.find((p) => typeof p.credits === "number");
+  return typeof first?.credits === "number" ? first.credits : null;
+}
+
+/**
+ * #2910: créditos/limite de envio do plano Brevo — denominador DINÂMICO da
+ * seção "Volume enviado no ciclo" (nunca hardcoded 40k). Fetch ao vivo
+ * (`GET /v3/account`, cacheado 24h no KV) com fallback pro último valor bom
+ * conhecido em erro/rate-limit — mesmo padrão de `getCouponUsage`/
+ * `LASTGOOD_CAMPAIGNS_KEY`. `mode="kv-only"` pula o fetch ao vivo (caminho
+ * de fallback de 429 do Brevo, que já evita chamadas extra). `null` quando
+ * não há fetch bem-sucedido NEM cache KV — o render degrada pra "créditos
+ * indisponíveis", nunca inventa um número.
+ */
+export async function fetchPlanCredits(
+  env: Pick<Env, "BREVO_API_KEY" | "STATS_CACHE">,
+  mode: CouponUsageMode = "cached",
+): Promise<number | null> {
+  const kv = env.STATS_CACHE;
+  if (mode !== "kv-only") {
+    try {
+      const account = await brevoFetch<BrevoAccountResponse>("/account", env as Env);
+      const credits = extractPlanCredits(account);
+      if (credits !== null) {
+        if (kv) {
+          await kv
+            .put(PLAN_CREDITS_KV_KEY, JSON.stringify({ credits, fetchedAt: new Date().toISOString() }), {
+              expirationTtl: PLAN_CREDITS_TTL_SECS,
+            })
+            .catch(() => { /* KV write nunca bloqueia o render */ });
+        }
+        return credits;
+      }
+    } catch (e) {
+      console.error("[#2910] fetchPlanCredits: fetch ao vivo falhou, caindo pro KV:", e instanceof Error ? e.message : e);
+    }
+  }
+  if (!kv) return null;
+  const cached = (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as { credits?: number } | null;
+  return typeof cached?.credits === "number" ? cached.credits : null;
+}
+
 // #2733: chave KV com as campanhas Brevo cruas do último render saudável
 // (`{ campaigns, scheduled }`). Serve de fallback quando o Brevo entra em
 // rate-limit: o dashboard re-renderiza com essas campanhas stale + as abas de
@@ -427,6 +501,10 @@ export async function buildRateLimitFallback(
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
     .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
   const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
+  // #2910: "kv-only" — mesmo racional do #2779 (readKvTabs acima): caminho de
+  // erro de 429 do Brevo nunca faz chamada externa a mais; só lê o KV
+  // (último crédito bom conhecido) ou degrada pra "indisponível".
+  const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -444,6 +522,7 @@ export async function buildRateLimitFallback(
       contactsSummary,
       couponUsage,
       eiaEngagement,
+      planCredits,
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).

@@ -39,8 +39,14 @@ import {
   deriveLinksSectionTitle,
   aggregateByMonth,
   renderMonthlyTotalsSection,
-  CLARICE_PLAN_TOTAL,
   CLARICE_PLAN_S1,
+  calcCumulativeSentInBillingWindow,
+  billingCycleWindow,
+  isInBillingWindow,
+  formatBillingWindowLabel,
+  BILLING_CYCLE_DAY,
+  BILLING_CYCLE_HOUR,
+  BILLING_CYCLE_MINUTE,
   weekdayKeyBRT,
   aggregateByWeekday,
   renderWeekdaySection,
@@ -458,35 +464,25 @@ describe("calcCumulativeSent", () => {
     assert.equal(total, 200, "deve somar sent do campaignStats quando globalStats ausente");
   });
 
-  test("CLARICE_PLAN_TOTAL é 40000", () => {
-    assert.equal(CLARICE_PLAN_TOTAL, 40_000);
-  });
-
   test("CLARICE_PLAN_S1 é 5600", () => {
     assert.equal(CLARICE_PLAN_S1, 5_600);
   });
 
-  // #2125 / #2775: drift test — CLARICE_PLAN_TOTAL e CLARICE_PLAN_S1 não devem
-  // driftar do plano de envio do ciclo 2605-06. Pré-#2775 comparava contra o
-  // array `SENDS` hardcoded em clarice-build-edition-sends.ts; o cutover (#2775)
-  // moveu o plano pra input externo por-ciclo (`{ciclo}/send-plan.json`, em
-  // `data/` — não versionado). `scripts/send-plan.example.json` é o exemplo
-  // documentado E, não por acaso, o plano REAL do ciclo 2605-06 (mesmos números
-  // que geraram CLARICE_PLAN_TOTAL/CLARICE_PLAN_S1) — segue git-tracked, então
-  // continua servindo de guard de drift determinístico em CI.
+  // #2125 / #2775: drift test — CLARICE_PLAN_S1 não deve driftar do plano de
+  // envio do ciclo 2605-06. Pré-#2775 comparava contra o array `SENDS`
+  // hardcoded em clarice-build-edition-sends.ts; o cutover (#2775) moveu o
+  // plano pra input externo por-ciclo (`{ciclo}/send-plan.json`, em `data/` —
+  // não versionado). `scripts/send-plan.example.json` é o exemplo documentado
+  // E, não por acaso, o plano REAL do ciclo 2605-06 (mesmos números que
+  // geraram CLARICE_PLAN_S1) — segue git-tracked, então continua servindo de
+  // guard de drift determinístico em CI.
+  //
+  // #2910: `CLARICE_PLAN_TOTAL` (40.000 hardcoded) e seus 2 testes de drift
+  // foram REMOVIDOS — a seção Volume não usa mais um total fixo da migração
+  // (agora denominador dinâmico via `planCredits`, ver renderVolumeSection).
   const examplePlan = validateSendPlan(
     JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "send-plan.example.json"), "utf8")),
   );
-
-  test("CLARICE_PLAN_TOTAL não drifta do volume total de send-plan.example.json (#2125/#2775)", () => {
-    const totalFromPlan = examplePlan.reduce((acc, s) => acc + s.volume, 0);
-    assert.equal(
-      CLARICE_PLAN_TOTAL,
-      totalFromPlan,
-      `CLARICE_PLAN_TOTAL (${CLARICE_PLAN_TOTAL}) driftou do total de scripts/send-plan.example.json (${totalFromPlan}) — ` +
-      "atualize a constante em workers/brevo-dashboard/src/index.ts",
-    );
-  });
 
   test("CLARICE_PLAN_S1 não drifta do total do bloco 1 de send-plan.example.json (#2125/#2775)", () => {
     const s1FromPlan = examplePlan.filter((s) => s.block === 1).reduce((acc, s) => acc + s.volume, 0);
@@ -1347,23 +1343,143 @@ describe("aggregateByWeekday (#2134)", () => {
 
 // ─── renderWeekdaySection (#2134) ─────────────────────────────────────────────
 
-describe("renderVolumeSection", () => {
-  test("vazio nunca — sempre renderiza com barra e plano", () => {
-    const html = renderVolumeSection(900);
+describe("renderVolumeSection (#2910 — ciclo de cobrança + denominador dinâmico)", () => {
+  const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z")); // dentro do ciclo 04/jun→04/jul
+
+  test("com planCredits: mostra percentual + barra + créditos do plano (nunca 40k fixo)", () => {
+    const html = renderVolumeSection(900, window, 2000);
     assert.match(html, /900/, "deve mostrar 900 enviados");
-    assert.match(html, /40.000/, "deve mostrar meta 40.000");
+    assert.match(html, /2\.000/, "deve mostrar o denominador DINÂMICO (2000), não 40.000");
+    assert.doesNotMatch(html, /40\.000/, "NUNCA deve cair pro total fixo de 40k (bug do #2910)");
+    assert.match(html, /45[,.]0%/, "900\/2000 = 45.0%");
     assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
     assert.match(html, /Volume enviado no ciclo/);
+  });
+
+  test("planCredits null: mostra número absoluto, sem percentual, sem inventar denominador", () => {
+    const html = renderVolumeSection(900, window, null);
+    assert.match(html, /900/);
+    assert.match(html, /indispon[íi]ve/i, "deve sinalizar que os créditos do plano estão indisponíveis");
+    assert.doesNotMatch(html, /40\.000/, "NUNCA cai pro total fixo de 40k mesmo sem planCredits");
+    assert.doesNotMatch(html, /%/, "sem denominador, não mostra percentual nenhum");
+  });
+
+  test("planCredits <= 0: mesmo tratamento de indisponível (nunca divide por zero/negativo)", () => {
+    const html = renderVolumeSection(900, window, 0);
+    assert.doesNotMatch(html, /Infinity|NaN/);
+  });
+
+  test("mostra a janela do ciclo de cobrança no rótulo (dia 4, 15:45 BRT) — não confundir com ciclo de conteúdo do #2909/#2923", () => {
+    const html = renderVolumeSection(900, window, 2000);
+    assert.match(html, /ciclo de cobran[çc]a brevo/i);
+    assert.match(html, /04\/06\/2026/, "início do ciclo (04/jun)");
+    assert.match(html, /04\/07\/2026/, "fim do ciclo (04/jul)");
+    assert.match(html, /15:45/, "horário do renovo");
   });
 
   // #2429: rótulo "Envios (eventos)" deixa claro que o número são eventos de envio,
   // não pessoas únicas (≠ universo de coortes).
   test("#2429 exibe rótulo 'envios (eventos)' com tooltip explicativo", () => {
-    const html = renderVolumeSection(10499);
+    const html = renderVolumeSection(10499, window, 40000);
     // Rótulo deve incluir "envios (eventos)" (case-insensitive para robustez)
     assert.match(html, /envios \(eventos\)/i, "deve rotular como 'envios (eventos)'");
     // Tooltip deve mencionar que inclui bounces e conta por evento
     assert.match(html, /title="[^"]*inclui bounces[^"]*"/, "tooltip deve mencionar bounces");
+  });
+});
+
+describe("billingCycleWindow (#2910 — ciclo de cobrança Brevo: dia 4, 15:45 BRT)", () => {
+  test("dia 3 do mês → ciclo é [04/mês-anterior, 04/mês-atual)", () => {
+    const w = billingCycleWindow(new Date("2026-07-03T18:00:00Z")); // 03/jul BRT
+    assert.equal(w.start.toISOString(), "2026-06-04T18:45:00.000Z");
+    assert.equal(w.end.toISOString(), "2026-07-04T18:45:00.000Z");
+  });
+
+  test("dia 4, 15:44 BRT (1min antes do renovo) → ainda no ciclo ANTERIOR", () => {
+    // 15:44 BRT = 18:44 UTC
+    const w = billingCycleWindow(new Date("2026-07-04T18:44:00Z"));
+    assert.equal(w.start.toISOString(), "2026-06-04T18:45:00.000Z", "início continua no mês anterior");
+    assert.equal(w.end.toISOString(), "2026-07-04T18:45:00.000Z");
+  });
+
+  test("dia 4, 15:46 BRT (1min depois do renovo) → já no ciclo NOVO", () => {
+    // 15:46 BRT = 18:46 UTC
+    const w = billingCycleWindow(new Date("2026-07-04T18:46:00Z"));
+    assert.equal(w.start.toISOString(), "2026-07-04T18:45:00.000Z", "início já é o boundary deste mês");
+    assert.equal(w.end.toISOString(), "2026-08-04T18:45:00.000Z");
+  });
+
+  test("dia 4, exatamente 15:45:00 BRT (boundary) → já no ciclo NOVO (inclusivo)", () => {
+    const w = billingCycleWindow(new Date("2026-07-04T18:45:00Z"));
+    assert.equal(w.start.toISOString(), "2026-07-04T18:45:00.000Z");
+  });
+
+  test("virada de ano: janeiro → ciclo cruza dezembro do ano anterior", () => {
+    const w = billingCycleWindow(new Date("2027-01-02T12:00:00Z"));
+    assert.equal(w.start.toISOString(), "2026-12-04T18:45:00.000Z");
+    assert.equal(w.end.toISOString(), "2027-01-04T18:45:00.000Z");
+  });
+
+  test("virada de ano: dezembro pós-renovo → ciclo vai até janeiro do ano seguinte", () => {
+    const w = billingCycleWindow(new Date("2026-12-10T12:00:00Z"));
+    assert.equal(w.start.toISOString(), "2026-12-04T18:45:00.000Z");
+    assert.equal(w.end.toISOString(), "2027-01-04T18:45:00.000Z");
+  });
+});
+
+describe("isInBillingWindow (#2910)", () => {
+  const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z"));
+
+  test("data dentro da janela → true", () => {
+    assert.equal(isInBillingWindow("2026-06-20T10:00:00Z", window), true);
+  });
+
+  test("data antes do início → false", () => {
+    assert.equal(isInBillingWindow("2026-06-01T00:00:00Z", window), false);
+  });
+
+  test("data igual ao início (boundary inclusivo) → true", () => {
+    assert.equal(isInBillingWindow(window.start.toISOString(), window), true);
+  });
+
+  test("data igual ao fim (boundary exclusivo) → false", () => {
+    assert.equal(isInBillingWindow(window.end.toISOString(), window), false);
+  });
+
+  test("null/undefined/inválida → false, nunca lança", () => {
+    assert.equal(isInBillingWindow(null, window), false);
+    assert.equal(isInBillingWindow(undefined, window), false);
+    assert.equal(isInBillingWindow("não é uma data", window), false);
+  });
+});
+
+describe("calcCumulativeSentInBillingWindow (#2910)", () => {
+  const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z")); // [04/jun 18:45Z, 04/jul 18:45Z)
+
+  test("soma TODAS as campanhas Clarice (diária + mensal + ABC) com sentDate na janela — não por naming de ciclo", () => {
+    const daily = makeCampaign(1, "Clarice News 2605 d08 (qua)", "2026-06-20T09:00:00Z", { sent: 100 });
+    const monthlyAbc = makeCampaign(2, "Clarice News 2606-07 — A: assunto teste", "2026-06-25T09:00:00Z", { sent: 300 });
+    const outOfCycleNaming = makeCampaign(3, "Clarice News 2601 d02-B (seg)", "2026-06-28T09:00:00Z", { sent: 50 });
+    const total = calcCumulativeSentInBillingWindow([daily, monthlyAbc, outOfCycleNaming], window);
+    assert.equal(total, 450, "soma as 3 campanhas Clarice pelo sentDate, independente do naming de ciclo/tipo");
+  });
+
+  test("exclui campanhas fora da janela (antes do início ou depois do fim)", () => {
+    const before = makeCampaign(1, "Clarice News 2605 d08 (qua)", "2026-06-01T00:00:00Z", { sent: 100 });
+    const after = makeCampaign(2, "Clarice News 2606-07 — A: assunto teste", "2026-07-10T09:00:00Z", { sent: 300 });
+    const inside = makeCampaign(3, "Clarice News 2605 d09 (qui)", "2026-06-20T09:00:00Z", { sent: 77 });
+    const total = calcCumulativeSentInBillingWindow([before, after, inside], window);
+    assert.equal(total, 77, "só a campanha dentro da janela conta");
+  });
+
+  test("exclui campanhas não-Clarice (parseClariceCampaignKey null)", () => {
+    const notClarice = makeCampaign(1, "Outra campanha qualquer", "2026-06-20T09:00:00Z", { sent: 999 });
+    const total = calcCumulativeSentInBillingWindow([notClarice], window);
+    assert.equal(total, 0);
+  });
+
+  test("sem campanhas na janela → 0 (nunca trava numa rampa antiga)", () => {
+    assert.equal(calcCumulativeSentInBillingWindow([], window), 0);
   });
 });
 
