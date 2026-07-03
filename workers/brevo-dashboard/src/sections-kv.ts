@@ -896,7 +896,7 @@ export function renderCohortsTabPanel(
         <th title="Contatos elegíveis para envio (send_eligible=1)">Elegíveis</th>
         <th title="Contatos que já receberam ao menos 1 envio (sends_count>0)">Recebeu ≥1</th>
         <th title="Contatos do cohort que receberam no ciclo atual (last_sent_at ≥ início do ciclo)">Recebeu neste ciclo</th>
-        <th title="Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo)">Falta enviar</th>
+        <th title="Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo, mínimo 0)">Falta enviar</th>
         <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
         <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
         <th title="% de quem recebeu que descadastrou">Unsub</th>
@@ -920,7 +920,7 @@ export function renderCohortsTabPanel(
     : "";
 
   const cycleNote = hasCycle
-    ? `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> refletem o ciclo de envio corrente (last_sent_at ≥ início do ciclo, derivado do send-plan); "Falta enviar" = Elegíveis − Recebeu neste ciclo.`
+    ? `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> refletem o ciclo de envio corrente (last_sent_at ≥ início do ciclo, derivado do send-plan); "Falta enviar" = Elegíveis − Recebeu neste ciclo (mínimo 0 — recebeu pode passar de elegíveis quando há descadastro/bounce pós-envio).`
     : `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> exibem "—" — nenhum ciclo de envio com send-plan legível.`;
 
   return `
