@@ -288,6 +288,19 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
 
   const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object";
   const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  // #2919: sanitiza os VALORES internos de um Record<string, number> lido do
+  // KV — `isObj` só garante que o campo É um objeto, não que cada valor
+  // dentro dele é um number finito. Um KV parcial/legado com
+  // `{"ok":120,"invalid":null}` passava `null` direto pro render, que faz
+  // `n.toLocaleString()` sem guard (`fmtCount`, sections-kv.ts, perdeu o
+  // `?? 0` no #2907 na premissa de que o boundary já garantia números
+  // definidos) → TypeError → 502 no dashboard inteiro. Aplicado a
+  // `by_reason`, `mv` e os 4 `priority_points_histogram*` abaixo.
+  const sanitizeNumRecord = (v: Record<string, unknown>): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const [k, val] of Object.entries(v)) out[k] = numOr0(val);
+    return out;
+  };
 
   const rawBrevo = isObj(s.brevo) ? s.brevo : {};
   const rawElig = isObj(s.eligibility) ? s.eligibility : {};
@@ -317,7 +330,7 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
   ] as const;
   const histFields: Partial<Record<(typeof histKeys)[number], Record<string, number>>> = {};
   for (const key of histKeys) {
-    if (isObj(s[key])) histFields[key] = s[key] as Record<string, number>;
+    if (isObj(s[key])) histFields[key] = sanitizeNumRecord(s[key] as Record<string, unknown>);
   }
 
   return {
@@ -334,7 +347,7 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
     eligibility: {
       eligible: numOr0(rawElig.eligible),
       ineligible: numOr0(rawElig.ineligible),
-      by_reason: isObj(rawElig.by_reason) ? (rawElig.by_reason as Record<string, number>) : {},
+      by_reason: isObj(rawElig.by_reason) ? sanitizeNumRecord(rawElig.by_reason) : {},
     },
     priority_points: {
       lt0: numOr0(rawPp.lt0),
@@ -346,7 +359,7 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
     },
     ...histFields,
     ...(cohort_stats ? { cohort_stats } : {}),
-    mv: isObj(s.mv) ? (s.mv as Record<string, number>) : {},
+    mv: isObj(s.mv) ? sanitizeNumRecord(s.mv) : {},
     engagement: {
       with_opens: numOr0(rawEng.with_opens),
       with_clicks: numOr0(rawEng.with_clicks),

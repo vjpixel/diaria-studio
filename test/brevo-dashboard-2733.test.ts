@@ -339,4 +339,32 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
     const s2 = normalizeContactsSummary({ total: 10, generated_at: 12345 });
     assert.equal(s2?.generated_at, "");
   });
+
+  // #2919: fmtCount perdeu o `?? 0` no #2907 na premissa de que este
+  // normalizador já garante todo número definido — mas antes do fix ele só
+  // validava que `by_reason`/`mv`/histogramas ERAM objetos, não que os
+  // VALORES internos eram numbers finitos. Um KV parcial/legado com um valor
+  // `null`/string/NaN interno passava direto e quebrava o render
+  // (`n.toLocaleString()` em `null` → TypeError → 502 no dashboard inteiro).
+  it("valores internos malformados (null/string/NaN) em mv/by_reason/histogramas → sanitizados pra 0, nunca propagados crus", () => {
+    const s = normalizeContactsSummary({
+      total: 10,
+      eligibility: { eligible: 5, ineligible: 5, by_reason: { paywall: null, spam: "3", bounced: 2, weird: NaN } },
+      mv: { ok: 120, invalid: null, catch_all: "5" },
+      priority_points_histogram: { "40": 3, "80": null },
+      priority_points_histogram_verified: { "40": undefined },
+      priority_points_histogram_eligible: { "40": Infinity },
+      priority_points_histogram_brevo: { "40": -Infinity },
+    });
+    assert.ok(s);
+    assert.deepEqual(s?.eligibility.by_reason, { paywall: 0, spam: 0, bounced: 2, weird: 0 });
+    assert.deepEqual(s?.mv, { ok: 120, invalid: 0, catch_all: 0 });
+    assert.deepEqual(s?.priority_points_histogram, { "40": 3, "80": 0 });
+    assert.deepEqual(s?.priority_points_histogram_verified, { "40": 0 });
+    assert.deepEqual(s?.priority_points_histogram_eligible, { "40": 0 });
+    assert.deepEqual(s?.priority_points_histogram_brevo, { "40": 0 });
+    // Todo valor sobrevivente é finito — nunca lança em `.toLocaleString()`.
+    for (const v of Object.values(s?.mv ?? {})) assert.equal(Number.isFinite(v), true);
+    for (const v of Object.values(s?.eligibility.by_reason ?? {})) assert.equal(Number.isFinite(v), true);
+  });
 });
