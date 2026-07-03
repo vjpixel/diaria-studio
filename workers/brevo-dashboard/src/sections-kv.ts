@@ -954,9 +954,9 @@ export const EIA_ENGAGEMENT_MAX_EDITIONS = 30;
 /**
  * #2860 (pedido do editor 260702): renderiza a tabela de engajamento do poll
  * "É IA?" — voltou a ser 1 linha por EDIÇÃO (AAMMDD, header "Edição"), mais
- * recente primeiro. Reverte a agregação mensal do #2773 (mantida disponível
- * via `aggregateEiaEngagementByMonth`, ainda exportada/testada — só não é
- * mais chamada aqui) — o dado por edição já está no payload KV
+ * recente primeiro. Reverte a agregação mensal do #2773 (que era feita por
+ * `aggregateEiaEngagementByMonth`, removida como dead code no #2875 por não
+ * ter mais consumidor) — o dado por edição já está no payload KV
  * (`eiaEngagement.editions`), então a mudança é só de render, sem pipeline
  * nova. Lista limitada às `EIA_ENGAGEMENT_MAX_EDITIONS` mais recentes, com
  * nota "mostrando as N mais recentes de M" quando o corte se aplica.
