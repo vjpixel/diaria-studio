@@ -238,11 +238,14 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  * antigo/parcial pode ter os campos opcionais (`brevo`/`opened`/`clicked`/
  * `unsub`/`hard_bounce`) ausentes, ou (pré-#2880) o par legado `unsub_bounce`
  * no lugar de `unsub` — cada um degrada pra 0 (mesmo default que os renders
- * aplicavam localmente campo-a-campo). `contacts`/`eligible`/`received`/
- * `sends_sum`/`mv_verified` também ganham o guard: sem ele, um KV corrompido
- * faltando um desses (contrato do script os declara sempre presentes, mas o
- * Worker não pode CONFIAR cegamente num payload externo) produzia `undefined`
- * e o render de contagem (`toLocaleString`) lançava — TypeError → 502.
+ * aplicavam localmente campo-a-campo). `contacts`/`eligible`/`received` também
+ * ganham o guard: sem ele, um KV corrompido faltando um desses (contrato do
+ * script os declara sempre presentes, mas o Worker não pode CONFIAR cegamente
+ * num payload externo) produzia `undefined` e o render de contagem
+ * (`toLocaleString`) lançava — TypeError → 502.
+ *
+ * #2909: `received_this_cycle` entra com o mesmo guard (degrada a 0 em KV
+ * pré-#2909); `sends_sum`/`mv_verified` saíram do payload (colunas removidas).
  */
 function normalizeCohortStatsRow(raw: unknown): CohortStatsRow | null {
   if (!raw || typeof raw !== "object") return null;
@@ -252,14 +255,13 @@ function normalizeCohortStatsRow(raw: unknown): CohortStatsRow | null {
     contacts: numOr0(r.contacts),
     eligible: numOr0(r.eligible),
     received: numOr0(r.received),
-    sends_sum: numOr0(r.sends_sum),
+    received_this_cycle: numOr0(r.received_this_cycle),
     opened: numOr0(r.opened),
     clicked: numOr0(r.clicked),
     // #2880: degrada pro par legado unsub_bounce (pré-split) quando `unsub`
     // ausente — mesmo fallback que renderCohortsTabPanel aplicava inline.
     unsub: typeof r.unsub === "number" && Number.isFinite(r.unsub) ? r.unsub : numOr0(r.unsub_bounce),
     hard_bounce: numOr0(r.hard_bounce),
-    mv_verified: numOr0(r.mv_verified),
     brevo: numOr0(r.brevo),
   };
 }
@@ -321,6 +323,10 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
   return {
     generated_at: typeof s.generated_at === "string" ? s.generated_at : "",
     total: s.total,
+    // #2909: cycle_start (string ISO) só é INCLUÍDO quando presente — OMITIDO
+    // quando ausente OU null explícito (schema evolution, igual aos histogramas
+    // opcionais). Render trata ausente/null como "sem ciclo" → colunas de ciclo "—".
+    ...(typeof s.cycle_start === "string" ? { cycle_start: s.cycle_start } : {}),
     brevo: {
       synced_rows: numOr0(rawBrevo.synced_rows),
       has_signal: typeof rawBrevo.has_signal === "boolean" ? rawBrevo.has_signal : false,

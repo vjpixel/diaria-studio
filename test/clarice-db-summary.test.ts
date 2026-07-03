@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeStoreSummary } from "../scripts/clarice-db-summary.ts";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { computeStoreSummary, deriveCycleStart } from "../scripts/clarice-db-summary.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES } from "../scripts/lib/cohorts.ts";
 
@@ -287,12 +290,21 @@ test("computeStoreSummary: cohort_stats agrega contatos/elegíveis/recebeu/envio
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].contacts, 2, "a,b");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].eligible, 2, "a,b ambos elegíveis (nunca enviado ≠ inelegível)");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].received, 1, "só a (sends_count>0)");
-  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].sends_sum, 3);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].opened, 1, "a abriu");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].clicked, 1, "a clicou");
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].unsub, 0);
   assert.equal(cs[COHORT_ASSINANTES_ATIVOS].hard_bounce, 0);
-  assert.equal(cs[COHORT_ASSINANTES_ATIVOS].mv_verified, 1, "a verified");
+  // #2909: sends_sum e mv_verified saíram do payload.
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(cs[COHORT_ASSINANTES_ATIVOS], "sends_sum"),
+    false,
+    "sends_sum removido do payload (#2909)",
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(cs[COHORT_ASSINANTES_ATIVOS], "mv_verified"),
+    false,
+    "mv_verified removido do payload (#2909)",
+  );
 
   assert.equal(cs[COHORT_EX_ASSINANTES].contacts, 2, "c,d");
   assert.equal(cs[COHORT_EX_ASSINANTES].eligible, 0, "c e d inelegíveis (unsub / hard bounce)");
@@ -361,4 +373,108 @@ test("computeStoreSummary: cohort_stats NÃO tem mais priority_points_sum (#2884
     "priority_points_sum removido do payload (#2884)",
   );
   db.close();
+});
+
+// ---------------------------------------------------------------------------
+// #2909 — cycle_start + received_this_cycle (planejar envio do mês sem repetir)
+// ---------------------------------------------------------------------------
+
+test("computeStoreSummary: cycle_start é propagado ao payload (injetável); default null", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)").run();
+  recomputeDerived(db);
+
+  assert.equal(computeStoreSummary(db).cycle_start, null, "default = null (sem ciclo)");
+  assert.equal(
+    computeStoreSummary(db, "2026-06-01T00:00:00Z").cycle_start,
+    "2026-06-01T00:00:00Z",
+    "cycleStart injetado propaga ao payload",
+  );
+  db.close();
+});
+
+test("computeStoreSummary: received_this_cycle conta last_sent_at >= cycle_start (boundary inclusivo) por cohort (#2909)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+  const cycleStart = "2026-06-01T00:00:00Z";
+
+  // assinantes-ativos (tier 1):
+  //   a: enviado DENTRO do ciclo (depois do início) → conta
+  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')");
+  //   d: enviado EXATAMENTE no início do ciclo → conta (>= é inclusivo)
+  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('d@x.com',1,1,'2026-06-01T00:00:00Z')");
+  //   b: enviado ANTES do ciclo → recebeu (sends>0) mas NÃO neste ciclo
+  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('b@x.com',1,1,'2026-05-31T23:59:59Z')");
+  //   c: nunca enviado (last_sent_at NULL) → não conta em nenhum
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('c@x.com',1)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, cycleStart);
+  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
+  assert.equal(row.contacts, 4, "a,b,c,d");
+  assert.equal(row.received, 3, "a,b,d têm sends_count>0");
+  assert.equal(row.received_this_cycle, 2, "só a e d (last_sent_at >= cycle_start; b é anterior, c null)");
+  // "falta enviar" = eligible − received_this_cycle é calculado no render; aqui
+  // só validamos os insumos (eligible dos 4 — todos elegíveis, nenhum saiu).
+  assert.equal(row.eligible, 4, "nenhum inelegível");
+
+  db.close();
+});
+
+test("computeStoreSummary: cycleStart=null → received_this_cycle=0 pra todos (last_sent_at >= NULL é NULL/0), sem quebrar (#2909)", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')").run();
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db, null);
+  assert.equal(s.cycle_start, null);
+  assert.equal(s.cohort_stats[COHORT_ASSINANTES_ATIVOS].received_this_cycle, 0, "sem ciclo → 0 (render mostra —)");
+  db.close();
+});
+
+test("deriveCycleStart: base inexistente → null (fail-soft, #2909)", () => {
+  const missing = resolve(tmpdir(), `diaria-cycle-missing-${Date.now()}`);
+  assert.equal(deriveCycleStart(missing), null);
+});
+
+test("deriveCycleStart: escolhe o ciclo MAIS RECENTE e devolve a menor scheduledAt do send-plan (#2909)", () => {
+  const base = resolve(tmpdir(), `diaria-cycle-base-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  try {
+    // Ciclo antigo 2605-06 e mais recente 2606-07; um dir não-ciclo pra provar o filtro.
+    const mkPlan = (cycle: string, firstIso: string, secondIso: string) => {
+      const dir = resolve(base, cycle);
+      mkdirSync(dir, { recursive: true });
+      const plan = [
+        { n: 2, date: "11jun", day: "qui", block: 1, volume: 100, scheduledAt: secondIso },
+        { n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: firstIso },
+      ];
+      writeFileSync(resolve(dir, "send-plan.json"), JSON.stringify(plan));
+    };
+    mkPlan("2605-06", "2026-06-10T09:00:00Z", "2026-06-11T09:00:00Z");
+    mkPlan("2606-07", "2026-07-10T09:00:00Z", "2026-07-11T09:00:00Z");
+    // ruído: subdiretório que não é ciclo válido — deve ser ignorado.
+    mkdirSync(resolve(base, "cohorts"), { recursive: true });
+
+    // Ciclo mais recente = 2606-07; menor scheduledAt = a 1ª data (mesmo fora de ordem no arquivo).
+    assert.equal(deriveCycleStart(base), "2026-07-10T09:00:00Z");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("deriveCycleStart: ciclo mais recente sem send-plan legível → cai pro anterior (#2909)", () => {
+  const base = resolve(tmpdir(), `diaria-cycle-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  try {
+    // 2606-07 existe mas sem send-plan.json; 2605-06 tem plano → deriva do 2605-06.
+    mkdirSync(resolve(base, "2606-07"), { recursive: true });
+    const olderDir = resolve(base, "2605-06");
+    mkdirSync(olderDir, { recursive: true });
+    writeFileSync(
+      resolve(olderDir, "send-plan.json"),
+      JSON.stringify([{ n: 1, date: "10jun", day: "qua", block: 1, volume: 100, scheduledAt: "2026-06-10T09:00:00Z" }]),
+    );
+    assert.equal(deriveCycleStart(base), "2026-06-10T09:00:00Z");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
