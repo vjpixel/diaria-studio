@@ -29,6 +29,7 @@ import { resolve } from "node:path";
 import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
+import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
 
 // ---------------------------------------------------------------------------
 // Types
@@ -208,7 +209,10 @@ export function mergeMetadata(
 
   const currentSummary = (article.summary ?? "").trim();
   if (meta.summary && !currentSummary) {
-    out.summary = meta.summary;
+    // #2881: sources often truncate their OWN meta-description with an
+    // ellipsis. That's not our truncation — sanitize before it leaks into
+    // the final email as if the sentence had been cut mid-way.
+    out.summary = sanitizeTrailingEllipsis(meta.summary);
     summaryUpdated = true;
   }
 

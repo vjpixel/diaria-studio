@@ -16,6 +16,7 @@ import {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
 } from "../lint-checks/title-normalization.ts";
+import { checkNoTrailingEllipsis } from "../lint-checks/no-trailing-ellipsis.ts";
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -835,6 +836,37 @@ function checkTitleTrailingPeriodInvariant(editionDir: string): InvariantViolati
 }
 
 /**
+ * #2881: backstop pra `sanitizeTrailingEllipsis` (roda em `enrich-inbox-
+ * articles.ts`, Stage 1). Diferente de `checkTruncatedSecondaryItemSummary`
+ * (#2596, que só flagra quando o texto ANTES da reticência parece ter
+ * "palavra pendente" e tem carve-outs para idiomas de suspense/fechamento
+ * intencional), este check é deliberadamente MAIS AMPLO: QUALQUER descrição
+ * de item secundário terminando em `…`/`...` é flagrada, sem exceção — a
+ * regra do #2881 é "nunca publicar descrição terminando em reticência".
+ * Ambos os checks podem disparar na mesma linha; isso é esperado (registros
+ * independentes, WARN-ONLY).
+ */
+function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkNoTrailingEllipsis(md);
+  if (result.ok) return [];
+  return result.errors.map((e) => ({
+    rule: "no-trailing-ellipsis",
+    message:
+      `Seção ${e.section} linha ${e.line}: descrição do item "${e.titleExcerpt}" termina em reticências ` +
+      `("...${e.descriptionExcerpt}"). Provável causa: a fonte truncou a própria meta-description com "…" ` +
+      `e ela vazou verbatim — não é truncamento nosso. Fix: reescrever a descrição em ` +
+      `02-reviewed.md antes de aprovar.`,
+    source_issue: "#2881",
+    severity: "warning",
+    file: path,
+    line: e.line,
+  }));
+}
+
+/**
  * #2878: quando `scripts/fetch-newsletter-threads.ts` (Stage 0 passo 0b-bis)
  * falha por auth/rede, `inject-inbox-urls.ts` grava `capture_failed: true`
  * (+ `capture_error`) em `.marker-inject-inbox-urls.json` em vez de deixar
@@ -946,6 +978,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkTitleTrailingPeriodInvariant,
   },
   {
+    id: "no-trailing-ellipsis",
+    description: "descrição de item secundário não termina em reticências herdadas da fonte (#2881)",
+    source_issue: "#2881",
+    stage: 4,
+    run: checkNoTrailingEllipsisInvariant,
+  },
+  {
     id: "capture-failed-submission-count",
     description: "captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878)",
     source_issue: "#2878",
@@ -973,5 +1012,6 @@ export {
   checkTruncatedSecondaryItemSummary,
   checkTitlePublisherSuffixInvariant,
   checkTitleTrailingPeriodInvariant,
+  checkNoTrailingEllipsisInvariant,
   checkCaptureFailedSubmissionCount,
 };
