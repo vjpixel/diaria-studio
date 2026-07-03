@@ -161,6 +161,12 @@ test("eligibility: mv_bucket undefined (nunca submetido ao MV) → inelegível m
   assert.equal(r.ineligible_reason, "mv_unverified");
 });
 
+test("eligibility: mv_bucket '' (string vazia) → inelegível mv_unverified (#2888 self-review achado 1 — falha p/ lado seguro)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "" as unknown as null });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unverified");
+});
+
 // #2888 — reverte #2804: mv_bucket NULL agora inelegível, exceto 2 exceções
 // ---------------------------------------------------------------------------
 

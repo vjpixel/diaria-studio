@@ -320,7 +320,11 @@ export function classifyEligibility(i: EligibilityInput): {
   // Isento: cohort `assinantes-ativos` (pagamento Stripe já valida, #1297) e
   // `priority_points > 0` (mesmo override de engajamento do #2876, que já
   // sobrepõe mv_rejected/mv_unknown acima).
-  if (i.mv_bucket == null && i.cohort !== COHORT_ASSINANTES_ATIVOS && !engaged)
+  // `!i.mv_bucket` (não `== null`) fecha também o caso de string vazia (#2888
+  // self-review achado 1): se o ingest algum dia gravar `mv_bucket=''`, a linha
+  // NÃO deve escapar como elegível silenciosamente — falha p/ o lado seguro
+  // (inelegível/mv_unverified), coerente com a intenção do corte.
+  if (!i.mv_bucket && i.cohort !== COHORT_ASSINANTES_ATIVOS && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }
