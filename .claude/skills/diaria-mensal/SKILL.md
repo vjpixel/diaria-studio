@@ -159,11 +159,23 @@ npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 1 --dir "data
 
 ## Etapa 2 — Escrita
 
+### 2a. Seleção do É IA? do recap (fonte autoritativa, resolvida cedo — #2904, follow-up de #2869)
+
+Resolver a edição-desafio do mês **antes** de disparar o `writer-monthly` — assim o texto do É IA? (passo 8 do agente) nasce já reconciliado com a mesma seleção autoritativa que a Etapa 3 usa pra compor a imagem, em vez de arriscar reescrever manualmente no gate:
+
+```bash
+SEL_JSON="data/monthly/$CYCLE/_internal/02-eia-selection.json"
+npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4} --cycle $CYCLE --out-json $SEL_JSON >/dev/null
+```
+
+Grava `$SEL_JSON` com o `EiaSelectionResult` completo (`edition`, `selection: "criterion"|"fallback_last"`, `pct_correct`, `total_votes`, `reason`, `fetch_errors` — schema de `scripts/select-eia-edition.ts`). Nunca bloqueia: `select-eia-edition.ts` sempre grava algo mesmo em fallback (#2869). A Etapa 3 reusa este mesmo arquivo (não recalcula) pra garantir que texto e imagem do É IA? apontem pra a MESMA edição.
+
 Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$CYCLE/prioritized.md`
 - `raw_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
 - `out_path = data/monthly/$CYCLE/draft.md`
 - `yymm = ${CYCLE:0:4}`
+- `eia_selection_path = data/monthly/$CYCLE/_internal/02-eia-selection.json` (#2904 — seleção autoritativa do É IA?, gerada no passo 2a acima; substitui a instrução stale de ler `poll_id` de `eia-used.json`)
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
@@ -257,16 +269,21 @@ done
 Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
 Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (+ crops 1x1).
 
-**É IA? mensal (#1912, rastreabilidade + no-silent-fallback #2869):** seleciona
-a edição diária do mês cujo poll teve a taxa de acerto **mais próxima de 50%**
-(o É IA? que mais dividiu os leitores — melhor pro recap mensal). Fallback
-automático ao último dia se nenhum poll for elegível (gabarito + ≥5 votos) —
-mas esse fallback **nunca é silencioso**: `select-eia-edition.ts` grava o
-motivo em `--out-json` E em `data/run-log.jsonl` (warn), e o gate abaixo
-mostra o aviso pro editor. A tabela de candidatos vai pro stderr (auditoria).
+**É IA? mensal (#1912, rastreabilidade + no-silent-fallback #2869, resolvido
+cedo na Etapa 2a — #2904):** a edição-desafio já foi selecionada no passo 2a
+(antes do `writer-monthly` escrever o draft) — reusar o mesmo
+`_internal/02-eia-selection.json` aqui garante que a imagem composta bata com
+o texto que o writer já escreveu, em vez de recalcular e arriscar divergir
+(ex: novos votos chegando entre a Etapa 2 e a Etapa 3). Só recalcular se o
+arquivo estiver ausente (ciclo iniciado antes de #2904, ou Etapa 3 rodada
+isolada via `--only 3` sem passar pela 2a). A tabela de candidatos, quando
+recalculado, vai pro stderr (auditoria).
 ```bash
-SEL_JSON="data/monthly/$CYCLE/_internal/03-eia-selection.json"
-EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4} --cycle $CYCLE --out-json $SEL_JSON)
+SEL_JSON="data/monthly/$CYCLE/_internal/02-eia-selection.json"
+if [ ! -f "$SEL_JSON" ]; then
+  npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4} --cycle $CYCLE --out-json $SEL_JSON >/dev/null
+fi
+EAI_EDITION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')).edition)")
 SEL_SELECTION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')).selection)")
 SEL_PCT=$(node -e "const j=JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')); console.log(j.pct_correct === null ? 'null' : j.pct_correct)")
 npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/ \
@@ -290,7 +307,7 @@ não bloqueia. Requer `ADMIN_SECRET` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKE
 
 Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
-**Aviso de fallback (#2869):** ler `$SEL_JSON` (`_internal/03-eia-selection.json`).
+**Aviso de fallback (#2869):** ler `$SEL_JSON` (`_internal/02-eia-selection.json`).
 Se `selection == "criterion"`, incluir uma linha de confirmação com o `pct_correct`.
 Se `selection == "fallback_last"` (ou o arquivo estiver ausente por falha do
 script), incluir um item de **aviso explícito** com o `reason` do JSON — o
