@@ -78,6 +78,31 @@ describe("sanitizeTrailingEllipsis (#2881)", () => {
       const out = sanitizeTrailingEllipsis(input);
       assert.equal(out, "A startup captou uma nova rodada de investimento");
     });
+
+    // #2918 bug 1: SENTENCE_END_RE casava o ÚLTIMO ponto de uma reticência
+    // ANTERIOR (`...`) como se fosse fim-de-frase real, cortando de volta
+    // pra essa fronteira falsa — o resultado ainda terminava em reticência,
+    // derrotando o propósito do sanitizador.
+    it("#2918: reticência ASCII no MEIO não é tratada como fronteira de corte — remove só a reticência final", () => {
+      const input =
+        "Ele fugiu rápido... só descobrimos que era tarde demais…";
+      const out = sanitizeTrailingEllipsis(input);
+      assert.ok(!out.endsWith("…"), "não deve terminar na reticência unicode");
+      assert.ok(!/\.{2,}$/.test(out), "não deve terminar na reticência ascii");
+      assert.equal(
+        out,
+        "Ele fugiu rápido... só descobrimos que era tarde demais",
+      );
+    });
+
+    // #2918 bug 1: abreviação seguida de espaço (`Dr. Silva`) era tratada
+    // como fim-de-frase real, colapsando a descrição inteira pro trecho
+    // "O Dr." — quase toda a frase era perdida.
+    it("#2918: abreviação 'Dr.' no meio não é tratada como fim de sentença", () => {
+      const input = "O Dr. Silva anunciou o caso agora…";
+      const out = sanitizeTrailingEllipsis(input);
+      assert.equal(out, "O Dr. Silva anunciou o caso agora");
+    });
   });
 
   describe("caso (b): descrição completa legítima", () => {

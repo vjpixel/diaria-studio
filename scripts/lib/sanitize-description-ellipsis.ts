@@ -34,14 +34,57 @@
 // (self-review #2881 achado: era byte-idêntica em 2 arquivos).
 export const TRAILING_ELLIPSIS_RE = /(?:\.{2,}|…)\s*$/u;
 
-/** Sentence-ending punctuation followed by whitespace (not decimal points / abbreviations glued to the next word). */
-const SENTENCE_END_RE = /[.!?](?=\s)/g;
+/**
+ * Sentence-ending punctuation followed by whitespace (not decimal points /
+ * abbreviations glued to the next word).
+ *
+ * `(?<!\.)` excludes the LAST dot of an ellipsis (`..`/`...`) from counting
+ * as a sentence end — without it, "rápido... só depois" matches on the 3rd
+ * dot (falsely treating the ellipsis itself as a real sentence boundary,
+ * #2918 bug 1). `!`/`?` have no such ambiguity (no repeated-punctuation
+ * ellipsis convention for them), so the lookbehind only needs to guard `.`.
+ */
+const SENTENCE_END_RE = /(?<!\.)[.!?](?=\s)/g;
+
+/**
+ * Common PT-BR title/honorific abbreviations that end in "." — must never
+ * be treated as a sentence boundary even though followed by whitespace
+ * (#2918 bug 1: "O Dr. Silva anunciou..." collapsed to "O Dr." because the
+ * abbreviation's period looked like a real sentence end).
+ */
+const ABBREVIATIONS = new Set([
+  "dr", "dra", "sr", "sra", "srta", "prof", "profa",
+  "eng", "av", "ltda", "cia", "jr", "sto", "sta",
+  "exmo", "exma", "gen", "cel", "cap", "adm", "etc", "vs",
+]);
+
+/** True if `textUpToAndIncludingDot` ends in "<word>." where <word> is a known abbreviation. */
+function endsWithAbbreviation(textUpToAndIncludingDot: string): boolean {
+  const match = textUpToAndIncludingDot.match(/(\p{L}+)\.$/u);
+  if (!match) return false;
+  return ABBREVIATIONS.has(match[1].toLowerCase());
+}
+
+/**
+ * True if `s` genuinely ends in sentence-final punctuation — i.e. NOT the
+ * tail of an ellipsis run (`..`) and NOT an abbreviation's period (#2918
+ * bug 1). Used by step (b) so a string like "...do Dr." is never mistaken
+ * for a complete sentence just because it ends in ".".
+ */
+function endsInRealSentencePunctuation(s: string): boolean {
+  if (/[!?]$/.test(s)) return true;
+  if (!s.endsWith(".") || s.endsWith("..")) return false;
+  return !endsWithAbbreviation(s);
+}
 
 function findLastSentenceEndIndex(text: string): number {
   let lastIndex = -1;
   const re = new RegExp(SENTENCE_END_RE.source, SENTENCE_END_RE.flags);
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
+    if (match[0] === "." && endsWithAbbreviation(text.slice(0, match.index + 1))) {
+      continue; // abbreviation, not a real sentence end — skip as boundary candidate
+    }
     lastIndex = match.index;
   }
   return lastIndex;
@@ -67,7 +110,7 @@ export function sanitizeTrailingEllipsis(text: string): string {
   if (!withoutEllipsis) return text; // nothing sensible left — bail out, keep original
 
   // (b) remaining text is already a complete sentence — just drop the ellipsis.
-  if (/[.!?]$/.test(withoutEllipsis)) {
+  if (endsInRealSentencePunctuation(withoutEllipsis)) {
     return withoutEllipsis;
   }
 
