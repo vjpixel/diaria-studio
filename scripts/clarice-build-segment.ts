@@ -25,8 +25,9 @@
  *                     é sobre segurança de 1º contato, não retenção/reativação).
  *
  * SEGURANÇA: só ESCREVE CSV+manifest LOCAIS — não envia nada. O envio segue
- * gated no import (`clarice-import-waves.ts`, dry-run por padrão) + schedule
- * (manual). `--dry-run` aqui só imprime o plano sem escrever.
+ * gated no import (`clarice-import-waves.ts --group {group}`, #2916 —
+ * dry-run por padrão) + schedule (manual). `--dry-run` aqui só imprime o
+ * plano sem escrever.
  *
  * Uso:
  *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2606-07 [--budget N] [--dry-run]
@@ -39,6 +40,14 @@
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
  *   {group}-manifest.json    ([{ key, file, desc, count }], mesmo shape de waves-manifest.json)
+ *
+ * #2916: `clarice-import-waves.ts` (que só lia `waves/waves-manifest.json` da
+ * rampa) foi generalizado com a flag `--group {group}` — quando informada, lê
+ * `segments/{group}-manifest.json` (este script) em vez de `waves/`. Sem essa
+ * flag no import, o output deste script fica órfão (ninguém consome) — SEMPRE
+ * passar `--group` no import de um grupo nomeado:
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2606-07 --group engajados --label "Retenção Jun/2026"            # dry-run
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2606-07 --group engajados --label "Retenção Jun/2026" --execute  # cria + importa
  *
  * Guard anti-duplo-envio POR CICLO (#2883): o mecanismo existente
  * (`collectPriorCycleEmails`/`excludeAlreadySentEmails` em

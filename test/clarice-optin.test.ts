@@ -75,6 +75,58 @@ test("#2861 resolveOptinEmail: domínio não-Gmail com pontos não normaliza →
 });
 
 // ---------------------------------------------------------------------------
+// Regressão #2920 (Bug 2) — conta de teste do editor NUNCA resolve o optin
+// pra conta REAL via normalização Gmail. Cenário citado na issue: `clarice-
+// optin add vjpixel+test2@gmail.com` gravaria o optin na conta REAL do
+// editor — inconsistente com a premissa do #2895 de que vjpixel+test* é uma
+// identidade distinta.
+// ---------------------------------------------------------------------------
+
+test("#2920 resolveOptinEmail: vjpixel+test2@gmail.com NÃO resolve pra vjpixel@gmail.com (conta real) — grava o literal, com warning", () => {
+  const db = openClariceDb(":memory:");
+  db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("vjpixel@gmail.com");
+  const r = resolveOptinEmail(db, "vjpixel+test2@gmail.com");
+  assert.equal(
+    r.email,
+    "vjpixel+test2@gmail.com",
+    "NUNCA deve gravar vjpixel@gmail.com (a conta REAL) — test account é identidade distinta (#2895)",
+  );
+  assert.ok(r.warning, "emite warning de miss (não notice de resolução)");
+  db.close();
+});
+
+test("#2920 main add: 'clarice-optin add vjpixel+test2@gmail.com' grava o priority_optin na conta de TESTE, nunca na conta real do editor", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "clarice-optin-test-2920-"));
+  const dbPath = resolve(dir, "store.db");
+
+  const seed = openClariceDb(dbPath);
+  seed.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run("vjpixel@gmail.com", 1);
+  seed.close();
+
+  main(["add", "vjpixel+test2@gmail.com", "--db", dbPath]);
+
+  const check = openClariceDb(dbPath);
+  const rows = check.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>;
+  assert.equal(rows.length, 1);
+  assert.equal(
+    rows[0].email,
+    "vjpixel+test2@gmail.com",
+    "priority_optin guarda a conta de TESTE literal, não a conta real (vjpixel@gmail.com) por normalização Gmail",
+  );
+
+  // A conta REAL do editor não deve ter recebido o boost +40 por acidente.
+  const realContact = check
+    .prepare("SELECT priority_points FROM clarice_users WHERE email = ?")
+    .get("vjpixel@gmail.com") as { priority_points: number } | undefined;
+  assert.equal(
+    realContact?.priority_points ?? 0,
+    0,
+    "conta real não deve ganhar +40 de um optin destinado à conta de teste",
+  );
+  check.close();
+});
+
+// ---------------------------------------------------------------------------
 // main("add", ...) end-to-end — confirma que a resolução realmente afeta o
 // que é gravado em priority_optin (não só a função pura isolada).
 // ---------------------------------------------------------------------------

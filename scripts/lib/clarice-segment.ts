@@ -263,7 +263,11 @@ export function isInternalEmail(email: string): boolean {
 /**
  * `engajados` (retenção): elegível, com histórico de envio, e engajado
  * (priority_points > 0 — mesmo eixo de `priorityQueue`). Exclui internos
- * (#2809) — abrem por ofício, não é sinal de retenção real.
+ * (#2809) — abrem por ofício, não é sinal de retenção real. Exclui contas de
+ * teste do editor (#2895/#2920) — mesmo guard de defesa em profundidade que
+ * `segmentFromStore` já aplica; sem ele, um `vjpixel+test*@gmail.com` ainda
+ * presente no store (até o próximo rebuild purgar, ver #2911) entraria aqui
+ * como assinante real caso satisfaça as demais condições.
  */
 export function isEngajados(
   r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "priority_points">,
@@ -272,7 +276,8 @@ export function isEngajados(
     isSendEligible(r) &&
     (r.sends_count ?? 0) > 0 &&
     (r.priority_points ?? 0) > 0 &&
-    !isInternalEmail(r.email)
+    !isInternalEmail(r.email) &&
+    !isTestAccount(r.email)
   );
 }
 
@@ -291,7 +296,8 @@ export function segmentEngajados(rows: StoreRow[]): StoreRow[] {
  * `reativacao`: elegível, com histórico de envio, mas NUNCA abriu
  * (opens_count = 0 — o não-abridor puro, distinto do "decaído" de
  * `priorityQueue` que só olha priority_points ≤ 0, que também inclui quem
- * abriu pouco). Exclui internos (#2809).
+ * abriu pouco). Exclui internos (#2809) e contas de teste do editor
+ * (#2895/#2920 — mesmo motivo de `isEngajados`).
  */
 export function isReativacao(
   r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count">,
@@ -300,7 +306,8 @@ export function isReativacao(
     isSendEligible(r) &&
     (r.sends_count ?? 0) > 0 &&
     (r.opens_count ?? 0) === 0 &&
-    !isInternalEmail(r.email)
+    !isInternalEmail(r.email) &&
+    !isTestAccount(r.email)
   );
 }
 
@@ -334,12 +341,16 @@ export function segmentReativacao(rows: StoreRow[]): StoreRow[] {
  * MillionVerifier com resultado limpo (não confunde com `catch_all`/ausente).
  * NÃO exclui internos (não pedido pela #2885 — ao contrário de
  * `engajados`/`reativacao`, este grupo é sobre segurança de 1º contato, não
- * sobre métrica de retenção/reativação).
+ * sobre métrica de retenção/reativação). MAS exclui contas de teste do editor
+ * (#2895/#2920) — diferente de internos (audiência real mantida no store por
+ * decisão do editor), `vjpixel+test*@gmail.com` nunca deveria ser destinatário
+ * de envio nenhum, gated ou não; mesmo guard de defesa em profundidade que
+ * `segmentFromStore`/`isEngajados`/`isReativacao` já aplicam.
  */
 export function isRampWarm(
-  r: Pick<StoreRow, "send_eligible" | "sends_count" | "mv_bucket">,
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket">,
 ): boolean {
-  return isFirstSend(r) && r.mv_bucket === "verified";
+  return isFirstSend(r) && r.mv_bucket === "verified" && !isTestAccount(r.email);
 }
 
 /** Ordem de `ramp-warm`: cohortSendRank (morno→frio, mesmo eixo do 1º envio da rampa). */

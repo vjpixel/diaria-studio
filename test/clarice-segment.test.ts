@@ -687,23 +687,85 @@ test("segmentReativacao: ordem last_sent_at DESC (não-abridor mais recente prim
 
 test("isRampWarm: reusa isFirstSend (elegível + nunca enviado) restrito a mv_bucket='verified'; NÃO exclui internos", () => {
   assert.equal(
-    isRampWarm({ send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
+    isRampWarm({ email: "a@x.com", send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
     true,
   );
   assert.equal(
-    isRampWarm({ send_eligible: 1, sends_count: 0, mv_bucket: "unknown" }),
+    isRampWarm({ email: "a@x.com", send_eligible: 1, sends_count: 0, mv_bucket: "unknown" }),
     false,
     "mv_bucket != verified → fora",
   );
   assert.equal(
-    isRampWarm({ send_eligible: 1, sends_count: 3, mv_bucket: "verified" }),
+    isRampWarm({ email: "a@x.com", send_eligible: 1, sends_count: 3, mv_bucket: "verified" }),
     false,
     "sends_count>0 (já enviado) → fora, isso é engajados/reativacao",
   );
   assert.equal(
-    isRampWarm({ send_eligible: 0, sends_count: 0, mv_bucket: "verified" }),
+    isRampWarm({ email: "a@x.com", send_eligible: 0, sends_count: 0, mv_bucket: "verified" }),
     false,
     "send_eligible=0 → fora",
+  );
+  assert.equal(
+    isRampWarm({ email: "vjpixel@gmail.com", send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
+    true,
+    "interno (#2809) → dentro, ramp-warm não exclui internos",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Regressão #2920 — named-groups (#2885) devem respeitar isTestAccount (#2895/#2911),
+// mesmo guard de defesa em profundidade que segmentFromStore já aplica.
+// ---------------------------------------------------------------------------
+
+test("#2920: isEngajados/isReativacao/isRampWarm excluem contas de teste do editor (vjpixel+test*@gmail.com), mesmo satisfazendo as demais condições", () => {
+  const testEmail = "vjpixel+test2@gmail.com";
+  assert.equal(
+    isEngajados({ email: testEmail, send_eligible: 1, sends_count: 3, priority_points: 999 }),
+    false,
+    "test account não deve vazar pra engajados mesmo com priority_points alto",
+  );
+  assert.equal(
+    isReativacao({ email: testEmail, send_eligible: 1, sends_count: 3, opens_count: 0 }),
+    false,
+    "test account não deve vazar pra reativacao",
+  );
+  assert.equal(
+    isRampWarm({ email: testEmail, send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
+    false,
+    "test account não deve vazar pra ramp-warm, mesmo este grupo não excluindo internos",
+  );
+});
+
+test("#2920: segmentEngajados/segmentReativacao/segmentRampWarm filtram contas de teste do editor no fluxo real (linha completa do store)", () => {
+  const testEngajadoRow = row({
+    email: "vjpixel+test3@gmail.com",
+    sends_count: 5,
+    priority_points: 999,
+    opens_count: 0,
+    last_sent_at: "2026-06-01T00:00:00Z",
+  });
+  const testRampWarmRow = row({
+    email: "vjpixel+test4@gmail.com",
+    sends_count: 0,
+    tier: 1,
+    mv_bucket: "verified",
+  });
+  const realRow = row({ email: "leitor@x.com", sends_count: 3, priority_points: 50 });
+
+  assert.deepEqual(
+    segmentEngajados([testEngajadoRow, realRow]).map((r) => r.email),
+    ["leitor@x.com"],
+    "engajados: só o contato real, test account fora mesmo com priority_points=999",
+  );
+  assert.deepEqual(
+    segmentReativacao([testEngajadoRow]).map((r) => r.email),
+    [],
+    "reativacao: test account nunca aparece (sends_count>0, opens_count=0 satisfariam o predicado)",
+  );
+  assert.deepEqual(
+    segmentRampWarm([testRampWarmRow]).map((r) => r.email),
+    [],
+    "ramp-warm: test account nunca aparece, mesmo elegível+verified+nunca-enviado",
   );
 });
 

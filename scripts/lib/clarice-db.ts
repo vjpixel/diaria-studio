@@ -223,6 +223,18 @@ export function findContactByEmail(
     return { row: exact, matchType: "exact", candidates: [] };
   }
 
+  // #2920: contas de teste do editor (`vjpixel+test*@gmail.com`, #2895) são
+  // uma identidade DISTINTA da conta real (`vjpixel@gmail.com`, mantida em
+  // INTERNAL_EMAILS) — sem exact match acima, a normalização Gmail abaixo
+  // canonicalizaria `vjpixel+test2@gmail.com` pra `vjpixel@gmail.com` e
+  // resolveria qualquer lookup (ex: `clarice-optin add`, via
+  // `resolveOptinEmail`) na conta REAL do editor, não na conta de teste.
+  // Corta ANTES do fallback de normalização — miss real, nunca "achou por
+  // normalização" pra um input de teste.
+  if (isTestAccount(normalized)) {
+    return { row: null, matchType: null, candidates: [] };
+  }
+
   const at = normalized.lastIndexOf("@");
   const domain = at === -1 ? "" : normalized.slice(at + 1);
   if (!GMAIL_DOMAINS.has(domain)) {
