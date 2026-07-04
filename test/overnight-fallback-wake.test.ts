@@ -17,6 +17,8 @@ import {
   shouldWakeCheck,
   computeElapsedMin,
   classifyResumeSignal,
+  classifyYieldText,
+  needsActiveRecheck,
 } from "../scripts/lib/overnight-fallback-wake.ts";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,88 @@ describe("classifyResumeSignal (#2896)", () => {
     assert.equal(
       classifyResumeSignal("previously stopped, now queued for delivery"),
       "queued",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyYieldText / needsActiveRecheck (#2945)
+// ---------------------------------------------------------------------------
+
+describe("classifyYieldText (#2945)", () => {
+  it('cenário real do incidente 260703: "waiting for the npm test background command" → true', () => {
+    assert.equal(
+      classifyYieldText("waiting for the npm test background command"),
+      true,
+    );
+  });
+
+  it('"I will monitor the CI run in the background" → true', () => {
+    assert.equal(
+      classifyYieldText("I will monitor the CI run in the background"),
+      true,
+    );
+  });
+
+  it('"still running, will check back later" → true', () => {
+    assert.equal(classifyYieldText("still running, will check back later"), true);
+  });
+
+  it('texto de conclusão normal ("PR #123 opened, self-review: 0 findings") → false', () => {
+    assert.equal(
+      classifyYieldText("PR #123 opened, self-review: 0 findings"),
+      false,
+    );
+  });
+
+  it("string vazia → false", () => {
+    assert.equal(classifyYieldText(""), false);
+  });
+
+  it("é case-insensitive: WAITING FOR the tests → true", () => {
+    assert.equal(classifyYieldText("WAITING FOR the tests to finish"), true);
+  });
+});
+
+describe("needsActiveRecheck (#2945)", () => {
+  it('yield_text com padrão de background → true (gatilho real do incidente 260703)', () => {
+    assert.equal(
+      needsActiveRecheck({
+        kind: "yield_text",
+        text: "waiting for the npm test background command",
+      }),
+      true,
+    );
+  });
+
+  it("yield_text sem padrão de background → false", () => {
+    assert.equal(
+      needsActiveRecheck({
+        kind: "yield_text",
+        text: "PR #123 opened, self-review: 0 findings",
+      }),
+      false,
+    );
+  });
+
+  it("resume_signal 'queued' → true (buraco do resume, #2945)", () => {
+    assert.equal(
+      needsActiveRecheck({ kind: "resume_signal", signal: "queued" }),
+      true,
+    );
+  });
+
+  it("resume_signal 'unknown' → true (mesma cautela de 'queued')", () => {
+    assert.equal(
+      needsActiveRecheck({ kind: "resume_signal", signal: "unknown" }),
+      true,
+    );
+  });
+
+  it("resume_signal 'resumed' → false (caminho event-driven confiável)", () => {
+    assert.equal(
+      needsActiveRecheck({ kind: "resume_signal", signal: "resumed" }),
+      false,
     );
   });
 });
