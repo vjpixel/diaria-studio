@@ -21,9 +21,13 @@
  * #2818 (self-review finding 1): o guardrail crítico acima só cobre o
  * subconjunto de labels que causa zero-imagem/zero-seção se perdido. Um
  * segundo check (`checkOptionalSectionIntegrity`) generaliza pros labels
- * OPCIONAIS (CLARICE —, LIVROS, PREVIEW, REMETENTE, APRESENTAÇÃO,
+ * OPCIONAIS (CLARICE —, LIVROS, PREVIEW, REMETENTE,
  * LABORATÓRIO CLARICE, OUTRAS NOTÍCIAS DO MÊS): se PRESENTES no draft,
  * exige que sejam reconhecidos como seção — sem exigir presença.
+ *
+ * #2913: APRESENTAÇÃO (preâmbulo Clarice × diar.ia.br) MIGROU de opcional pra
+ * REQUIRED_SECTION_CHECKS — era boilerplate fixo mas opcional aqui, e faltou
+ * de fato na edição real do ciclo 2606-07 sem que o lint acusasse nada.
  *
  * Uso:
  *   npx tsx scripts/lint-monthly-draft.ts --cycle YYMM-MM
@@ -64,6 +68,10 @@ export interface SectionIntegrityResult {
  * de estarem em negrito ou não — `splitByLabels` já tolera ambos, #2794). */
 export const REQUIRED_SECTION_CHECKS: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: "ASSUNTO", re: /^ASSUNTO\b/i },
+  // #2913: APRESENTAÇÃO (preâmbulo Clarice × diar.ia.br) é boilerplate fixo
+  // emitido todo mês pelo template/writer — faltou no ciclo 2606-07 justamente
+  // porque era opcional aqui (OPTIONAL_SECTION_CHECKS) e não bloqueava o lint.
+  { name: "APRESENTAÇÃO", re: /^APRESENTA[ÇC][ÃA]O\b/i },
   { name: "INTRO", re: /^INTRO$/i },
   { name: "DESTAQUE 1", re: /^DESTAQUE\s+1\b/i },
   { name: "DESTAQUE 2", re: /^DESTAQUE\s+2\b/i },
@@ -114,7 +122,6 @@ export function checkSectionIntegrity(draft: string): SectionIntegrityResult {
 export const OPTIONAL_SECTION_CHECKS: ReadonlyArray<{ name: string; presentRe: RegExp; re: RegExp }> = [
   { name: "REMETENTE", presentRe: /^\**REMETENTE\**\s*$/m, re: /^REMETENTE\b/i },
   { name: "PREVIEW", presentRe: /^\**PREVIEW\**\s*$/m, re: /^PREVIEW\b/i },
-  { name: "APRESENTAÇÃO", presentRe: /^\**APRESENTA[ÇC][ÃA]O\**\s*$/m, re: /^APRESENTA[ÇC][ÃA]O\b/i },
   { name: "LIVROS", presentRe: /^\**LIVROS\**\s*$/m, re: /^LIVROS\b/i },
   { name: "CLARICE —", presentRe: /^\**CLARICE\s+—/m, re: /^CLARICE\s+—/i },
   { name: "LABORATÓRIO CLARICE", presentRe: /^\**LABORAT[ÓO]RIO\s+CLARICE\**\s*$/m, re: /^LABORAT[ÓO]RIO\s+CLARICE\b/i },

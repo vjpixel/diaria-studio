@@ -16,7 +16,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 ## Formato dos labels de seção (#2794 — CRÍTICO)
 
-Todo label de seção — `ASSUNTO`, `PREVIEW`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `ENCERRAMENTO` — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
+Todo label de seção — `ASSUNTO`, `PREVIEW`, `APRESENTAÇÃO`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `ENCERRAMENTO` — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
 
 Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRASIL` (sem `**`) em vez de `**DESTAQUE 1 | BRASIL**`. Sem o negrito, o render não reconheceu NENHUM label — o draft inteiro colapsou num único parágrafo de fallback: zero imagens, zero "O fio condutor" destacado, zero seções Use Melhor/Radar/É IA?/Encerramento renderizadas como tal. Verificar visualmente antes de gravar `out_path`: toda linha de label deve começar E terminar com `**`.
 
@@ -32,6 +32,18 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 1. **Ler inputs.** Extrair de `prioritized_path`: 3 destaques (D1/D2/D3) com tema + URLs de suporte, a seção `## Use Melhor` (3 itens) e a seção `## Radar` (7 itens). Cada item de Use Melhor/Radar já vem com título + URL (e contagem de cliques entre parênteses, que NÃO entra no draft). Para cada URL, recuperar o objeto completo de `raw_path` (campos `body`, `why`, `title`, `url`, `edition`) para derivar a descrição; URLs ausentes no JSON (ex.: Use Melhor emprestado de outro mês): usar o título do `prioritized.md` e derivar a descrição do próprio título, registrando warning.
 
 2. **Cabeçalho: subject line (3 opções) + preview.** Labels `**ASSUNTO (3 OPÇÕES)**` e `**PREVIEW**` em negrito (#2794). Gerar 3 opções de assunto (cada ≤ 70 chars, PT-BR, mês por extenso), cada uma com ângulo distinto (tema central / ângulo alternativo / síntese do mês). Exemplos: `"Diar.ia | Abril 2026 — Brasil acelera regulação de IA"`. Gerar também 1 preview line ≤ 100 chars sintetizando o mês.
+
+2b. **Apresentação (#2913 — boilerplate FIXO, sempre presente, nunca parafrasear).** Label `**APRESENTAÇÃO**` em negrito (#2794), logo após `PREVIEW` e antes de `INTRO`. Emitir literalmente (mudou/faltou no ciclo 2606-07 por não estar no template — #2913 templatizou pra nunca mais recorrer):
+   ```
+   **APRESENTAÇÃO**
+
+   Esta é a newsletter mensal da [Clarice](https://clarice.ai/?via=diaria), em parceria com a diar.ia.br: uma curadoria para você entender, em poucos minutos, o que mudou no mundo da IA.
+
+   Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero". Se quiser receber notícias de IA todos os dias, se cadastre gratuitamente [aqui](https://diaria.beehiiv.com).
+
+   Você está recebendo esse e-mail porque se cadastrou na [Clarice](https://clarice.ai/?via=diaria). Caso não queira receber a newsletter, pode se [descadastrar aqui]({{ unsubscribe }}).
+   ```
+   Não alterar os links: `clarice.ai/?via=diaria` (2×), `aqui` → `https://diaria.beehiiv.com` (NUNCA `diar.ia.br` como href), descadastro → merge tag literal `{{ unsubscribe }}`. `diar.ia.br` na 1ª frase fica em **texto plano**, nunca vira `[diar.ia.br](...)` — o render já aplica o wordmark da marca e o link pro Beehiiv automaticamente; virar link markdown quebra o wordmark. Gramática: "na Clarice" (não "em Clarice").
 
 3. **Intro (2-3 frases).** Label `**INTRO**` em negrito (#2794). Abre cena — o que dominou o mês? Tom geral? Não cita os 3 destaques explicitamente. Sem endereçamento direto ao leitor ("Para profissionais de…").
 
@@ -75,6 +87,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
+   - `**APRESENTAÇÃO**` presente entre PREVIEW e INTRO, texto literal do boilerplate, com os 3 links corretos (#2913)
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
@@ -101,6 +114,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
   "checklist": {
     "three_subjects": true,
     "preview_under_100": true,
+    "apresentacao_present": true,
     "three_destaques": true,
     "use_melhor_ok": true,
     "radar_count_ok": true,

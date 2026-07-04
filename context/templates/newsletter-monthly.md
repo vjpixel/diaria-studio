@@ -14,6 +14,14 @@ Formato exato do digest mensal. Cada destaque é uma narrativa multi-artigo cobr
 
 [1 linha — síntese do mês em até 100 chars]
 
+**APRESENTAÇÃO**
+
+Esta é a newsletter mensal da [Clarice](https://clarice.ai/?via=diaria), em parceria com a diar.ia.br: uma curadoria para você entender, em poucos minutos, o que mudou no mundo da IA.
+
+Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero". Se quiser receber notícias de IA todos os dias, se cadastre gratuitamente [aqui](https://diaria.beehiiv.com).
+
+Você está recebendo esse e-mail porque se cadastrou na [Clarice](https://clarice.ai/?via=diaria). Caso não queira receber a newsletter, pode se [descadastrar aqui]({{ unsubscribe }}).
+
 **INTRO**
 
 [2-3 frases contextualizando o mês: o que dominou a pauta, qual o tom geral.
@@ -125,6 +133,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 
 ## Regras de preenchimento
 
+- **APRESENTAÇÃO (#2913): boilerplate fixo, NUNCA editorial.** Preâmbulo Clarice × diar.ia.br + CTA de prioridade + linha de descadastro — o texto é sempre o mesmo, mês a mês (só o merge tag `{{ unsubscribe }}` varia por envio). Emitir literalmente o texto do bloco acima, sem parafrasear. Links fixos: `[Clarice](https://clarice.ai/?via=diaria)` (2×), `[aqui](https://diaria.beehiiv.com)` (cadastro gratuito — NÃO `diar.ia.br` como href), `[descadastrar aqui]({{ unsubscribe }})`. `diar.ia.br` aparece em **texto plano** (não como link markdown) na primeira frase — o render aplica o wordmark da marca automaticamente (`applyBrandWordmark`) e, na mensal, já o linka pro Beehiiv por conta própria; virar link markdown quebra o wordmark. Gramática: "na Clarice" (não "em Clarice"). Faltou na edição 2606-07 (reinserida manualmente) — daí morar no template.
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
