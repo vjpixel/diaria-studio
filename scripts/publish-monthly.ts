@@ -54,6 +54,7 @@ import {
   uploadEiaImages as uploadEiaImagesDefault,
   uploadLivrosImage as uploadLivrosImageDefault,
 } from "./lib/mensal/monthly-image-upload.ts"; // #1914 #1916 #2802
+import { fetchMonthlyEiaPrevResultLine as fetchMonthlyEiaPrevResultLineDefault } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
 // main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
@@ -347,6 +348,9 @@ export { monthlyEiaImageKey } from "./lib/mensal/monthly-image-upload.ts";
  *                    real — evita rede real (GUARD DE PUBLICAÇÃO) e permite testar
  *                    a wiring do livrosImageUrl até o draftToEmail sem depender de
  *                    credenciais Cloudflare.
+ *                    `fetchEiaPrevResultLine` (#2948) segue o mesmo padrão —
+ *                    override opcional pra testar a wiring do "% acertaram"
+ *                    sem tocar o Worker poll real.
  */
 export async function main(
   monthlyDirOverride?: string,
@@ -354,6 +358,7 @@ export async function main(
     uploadEiaImages: typeof uploadEiaImagesDefault;
     uploadDestaqueImages: typeof uploadDestaqueImagesDefault;
     uploadLivrosImage: typeof uploadLivrosImageDefault;
+    fetchEiaPrevResultLine?: typeof fetchMonthlyEiaPrevResultLineDefault;
   } = {
     uploadEiaImages: uploadEiaImagesDefault,
     uploadDestaqueImages: uploadDestaqueImagesDefault,
@@ -527,8 +532,22 @@ export async function main(
   // #2018-fix: legenda via helper centralizado (evita duplicação com monthly-preview-cloudflare).
   const destaqueImageCaption = captionForGenerator(platformConfig.image_generator ?? "gemini");
 
+  // #2948: "% acertaram" do É IA? mensal do ciclo anterior (brand=clarice) —
+  // suporte de render era opt-in desde #2709, este é o fetch real. Fail-soft:
+  // sem ciclo anterior elegível (1ª edição, poll sem votos, abaixo do piso de
+  // confiança) → null, e a linha é OMITIDA no render (comportamento já opt-in).
+  let eiaPrevResultLine: string | null = null;
+  if (!dryRun) {
+    const fetchEiaPrevResultLineImpl = uploadDeps.fetchEiaPrevResultLine ?? fetchMonthlyEiaPrevResultLineDefault;
+    try {
+      eiaPrevResultLine = await fetchEiaPrevResultLineImpl(yymm);
+    } catch (e) {
+      process.stderr.write(`warn: fetch de "% acertaram" (edição anterior) falhou — ${(e as Error).message}\n`);
+    }
+  }
+
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption, livrosImageUrl);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption, livrosImageUrl, eiaPrevResultLine);
 
   if (!subject) {
     process.stderr.write(
