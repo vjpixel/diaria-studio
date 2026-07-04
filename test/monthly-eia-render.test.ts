@@ -121,6 +121,94 @@ describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
   });
 });
 
+// #2709: unificação do bloco É IA? mensal × diária (drift cosmético + linha
+// "% acertaram" opt-in). Diária: newsletter-render-html.ts renderEIA.
+describe("renderEia unificação com a diária (#2709)", () => {
+  const html = renderEia(
+    "É IA? — DESTAQUE DO MÊS\n[placeholder]",
+    "2605",
+    "https://x/A.jpg",
+    "https://x/B.jpg",
+    "Crédito.",
+  );
+
+  it("título: line-height 1.15 (era 1.2) e margin:0 (era 0 0 16px)", () => {
+    assert.match(
+      html,
+      /Clique na imagem que foi gerada por IA\.<\/p>/,
+    );
+    const titleMatch = html.match(/<p style="([^"]*)"[^>]*>Clique na imagem que foi gerada por IA\./);
+    assert.ok(titleMatch, "título deve existir");
+    assert.ok(titleMatch![1].includes("line-height:1.15;"), "line-height deve ser 1.15");
+    assert.ok(titleMatch![1].includes("margin:0;"), "margin deve ser 0 (sem bottom 16px)");
+  });
+
+  it("box: padding 24px 28px (era 24px 28px 20px)", () => {
+    assert.ok(html.includes('style="padding:24px 28px;"'), "padding do box deve ser 24px 28px, sem bottom 20px");
+    assert.ok(!html.includes("24px 28px 20px"), "não deve sobrar o padding antigo com bottom 20px");
+  });
+
+  it("crédito: margin-top 16px (era 12px)", () => {
+    const creditMatch = html.match(/<p style="([^"]*)">Crédito\./);
+    assert.ok(creditMatch, "crédito deve existir");
+    assert.ok(creditMatch![1].startsWith("margin:16px 0 0;"), "crédito deve ter margin-top 16px");
+  });
+
+  it("tabela de imagens: sem margin:0 0 4px (diária não tem)", () => {
+    assert.ok(!html.includes("margin:0 0 4px"), "tabela de imagens não deve ter margin bottom 4px");
+  });
+
+  it("merge-tag Brevo e brand=clarice preservados (platform-forced, não unificar)", () => {
+    assert.ok(html.includes("{{ contact.EMAIL }}"), "merge tag Brevo preservado");
+    assert.ok(html.includes("brand=clarice"), "brand=clarice preservado (#1905)");
+    assert.ok(!html.includes("{{email}}"), "não deve usar o merge tag Beehiiv da diária");
+  });
+
+  it('% acertaram: NÃO renderiza quando prevResultLine é omitido', () => {
+    assert.ok(!html.toLowerCase().includes("acertaram"));
+  });
+
+  it('% acertaram: renderiza quando prevResultLine é passado, no estilo da diária', () => {
+    const withPrev = renderEia(
+      "É IA? — DESTAQUE DO MÊS\n[placeholder]",
+      "2605",
+      "https://x/A.jpg",
+      "https://x/B.jpg",
+      "Crédito.",
+      "Resultado da última edição: 72% das pessoas acertaram.",
+    );
+    assert.ok(withPrev.includes("Resultado da última edição: 72% das pessoas acertaram."));
+    const prevMatch = withPrev.match(/<p style="([^"]*)">Resultado da última edição: 72% das pessoas acertaram\.<\/p>/);
+    assert.ok(prevMatch, "linha de prevResult deve existir com estilo dedicado");
+    assert.ok(prevMatch![1].includes("font-weight:bold;"));
+    assert.ok(prevMatch![1].includes("text-transform:uppercase;"));
+    assert.ok(prevMatch![1].includes(`color:#00A0A0;`), "cor teal");
+  });
+
+  it("draftToEmail repassa eiaPrevResultLine pro renderEia", () => {
+    const draft = [
+      "**\\[ASSUNTO\\]**",
+      "1. Assunto de teste",
+      "",
+      "**\\[É IA? — DESTAQUE DO MÊS\\]**",
+      "[placeholder]",
+    ].join("\n");
+    const { html: emailHtml } = draftToEmail(
+      draft,
+      "Assunto de teste",
+      "2605",
+      "https://x/A.jpg",
+      "https://x/B.jpg",
+      "Crédito.",
+      undefined,
+      undefined,
+      undefined,
+      "Resultado da última edição: 61% das pessoas acertaram.",
+    );
+    assert.ok(emailHtml.includes("Resultado da última edição: 61% das pessoas acertaram."));
+  });
+});
+
 // #2115: eiaEditionFromYymm agora emite o ciclo {YYMM}-{MM} em vez de AAMMDD
 describe("eiaEditionFromYymm (#2115)", () => {
   it("emite formato de ciclo YYMM-MM", () => {

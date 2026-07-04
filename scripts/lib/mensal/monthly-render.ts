@@ -626,6 +626,9 @@ export function parseEiaLegend(eiaMd: string): string {
  * foi gerada por IA.". Voto vai pro leaderboard `brand=clarice` (#1905).
  * `creditOverride` (#1914): legenda vinda do `01-eia.md` — quando presente,
  * substitui o corpo do chunk (que na mensal é só um placeholder `[...]`).
+ * `prevResultLine` (#2709): linha "Resultado da última edição: X% acertaram",
+ * espelhando a diária — opt-in (renderiza só quando o caller tiver o dado;
+ * ver nota no PR sobre a fonte ainda não estar plugada na mensal).
  */
 export function renderEia(
   chunk: string,
@@ -633,6 +636,7 @@ export function renderEia(
   imageUrlA?: string,
   imageUrlB?: string,
   creditOverride?: string,
+  prevResultLine?: string | null,
 ): string {
   const lines = chunk.split("\n");
   // #1914: prefere a legenda do 01-eia.md; cai pro corpo do chunk só se ela
@@ -659,21 +663,31 @@ export function renderEia(
     return inner;
   };
 
+  // #2709: mesmo padrão da diária (FONT_LABEL/FONT_SANS 12px bold uppercase
+  // teal) — renderiza só quando o caller passar o dado (ver nota acima).
+  const prevResultHtml = prevResultLine
+    ? `\n    <p style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${renderInline(prevResultLine)}</p>`
+    : "";
+
   return renderKicker("É IA?") + `
 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:0;">
-  <tr><td style="padding:24px 28px 20px;">
+  <tr><td style="padding:24px 28px;">
 
     <!-- Título -->
-    <p style="margin:0 0 16px;font-family:${FONT_SERIF};font-size:26px;line-height:1.2;color:${INK};">Clique na imagem que foi gerada por IA.</p>
+    <p style="margin:0;font-family:${FONT_SERIF};font-size:26px;line-height:1.15;color:${INK};">Clique na imagem que foi gerada por IA.</p>
 
     <!-- Imagens A / B empilhadas (A acima de B), como na diária (#2541) -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 4px;">
+    <!-- #2709: margin-top:22px compensa a remoção do margin do título acima (item 2) —
+         mesmo valor da diária (newsletter-render-html.ts renderEIA), que usa essa margem
+         na tabela de imagens (não no título) pra abrir espaço depois do título. -->
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:22px;">
       <tr><td>${imageCell("A", imageUrlA, voteUrlA)}</td></tr>
       <tr><td style="padding-top:16px;">${imageCell("B", imageUrlB, voteUrlB)}</td></tr>
     </table>
 
     <!-- Crédito -->
-    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">${renderInline(content)}</p>
+    <p style="margin:16px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">${renderInline(content)}</p>
+${prevResultHtml}
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
@@ -962,6 +976,7 @@ export function draftToEmail(
   destaqueImageUrls?: Record<number, string>, // #1916: {1: url, 2: url, 3: url}
   destaqueImageCaption?: string, // #2018: legenda parametrizada do gerador
   livrosImageUrl?: string, // #editor: imagem do box de curadoria de livros
+  eiaPrevResultLine?: string | null, // #2709: "Resultado da última edição: X% acertaram" — opt-in, ver renderEia
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -1078,7 +1093,7 @@ export function draftToEmail(
     // (#1915 review). Sem isso a seção cai no fallback e o placeholder `[...]`
     // aparece literal no email.
     if (label === "É IA?" || label.startsWith("É IA?")) {
-      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit));
+      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine));
       continue;
     }
 
