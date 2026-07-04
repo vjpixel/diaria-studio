@@ -327,6 +327,25 @@ describe("classifyWatchdogTaskHealth (#2944)", () => {
     );
   });
 
+  it("Last Result 267009 (SCHED_S_TASK_RUNNING) → healthy, NÃO last_run_failed (finding review 260704)", () => {
+    // Sentinela de sucesso/info: a task está rodando AGORA (0x41301). Um health-check
+    // que corre durante a execução de 10min do watchdog não deve reportar falha.
+    assert.equal(
+      classifyWatchdogTaskHealth({ enabled: true, lastResult: 267009, lastRunTime: "04-Jul-26 6:00:02 PM", neverRun: false }),
+      "healthy",
+    );
+    // 267011 (0x41303, "ainda não rodou") também não é falha.
+    assert.equal(
+      classifyWatchdogTaskHealth({ enabled: true, lastResult: 267011, lastRunTime: "N/D", neverRun: false }),
+      "healthy",
+    );
+    // 267014 (0x41306 TERMINATED) CONTINUA sendo falha (foi o valor do stall 260703).
+    assert.equal(
+      classifyWatchdogTaskHealth({ enabled: true, lastResult: 267014, lastRunTime: "04-Jul-26 6:00:02 PM", neverRun: false }),
+      "last_run_failed",
+    );
+  });
+
   it("nenhum campo reconhecido (locale não suportado) → unknown, NÃO disabled/stale (fail-soft, evita regressão #2814)", () => {
     assert.equal(
       classifyWatchdogTaskHealth(

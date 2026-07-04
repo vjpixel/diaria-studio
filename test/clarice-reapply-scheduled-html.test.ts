@@ -50,6 +50,28 @@ describe("fetchQueuedCampaigns (#2940 — parsing correto de body.campaigns)", (
     }
   });
 
+  it("inclui 'scheduled' e exclui 'sent' (finding review 260704: Brevo reporta queued OU scheduled)", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          campaigns: [
+            mockCampaign({ id: 81, status: "queued" }),
+            mockCampaign({ id: 82, status: "scheduled" }),
+            mockCampaign({ id: 83, status: "sent" }),
+          ],
+          count: 3,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await fetchQueuedCampaigns("fake-key");
+      assert.deepEqual(result.map((c) => c.id).sort(), [81, 82]); // queued + scheduled, NUNCA o sent 83
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it("lança erro claro se o corpo não tiver campaigns[] (bug do near-miss: ler r.campaigns em vez de r.body.campaigns)", async () => {
     const origFetch = globalThis.fetch;
     // Simula um shape onde 'campaigns' não está no lugar certo — deve falhar
@@ -113,6 +135,17 @@ describe("partitionByQueuedStatus (#2940 — NUNCA toca sent/in_process)", () =>
     const { toUpdate, skipped } = partitionByQueuedStatus(campaigns);
     assert.equal(toUpdate.length, 2);
     assert.equal(skipped.length, 0);
+  });
+
+  it("'scheduled' vai pra toUpdate (finding review 260704: pré-envio seguro, não pular)", () => {
+    const campaigns = [
+      mockCampaign({ id: 81, status: "queued" }),
+      mockCampaign({ id: 82, status: "scheduled" }),
+      mockCampaign({ id: 83, status: "sent" }),
+    ];
+    const { toUpdate, skipped } = partitionByQueuedStatus(campaigns);
+    assert.deepEqual(toUpdate.map((c) => c.id).sort(), [81, 82]);
+    assert.deepEqual(skipped.map((c) => c.id), [83]);
   });
 });
 
@@ -210,8 +243,8 @@ describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
         putCalled = true;
         return new Response(null, { status: 204 }); // 204 No Content — corpo DEVE ser null
       }
-      // GET /emailCampaigns?status=queued
-      if (String(url).includes("/emailCampaigns?status=queued")) {
+      // GET /emailCampaigns?limit=... (lista de descoberta — sem filtro de status, #review-260704)
+      if (String(url).includes("/emailCampaigns?limit")) {
         return new Response(
           JSON.stringify({ campaigns: [mockCampaign({ id: 81 }), mockCampaign({ id: 82, status: "sent" })] }),
           { status: 200, headers: { "content-type": "application/json" } },
