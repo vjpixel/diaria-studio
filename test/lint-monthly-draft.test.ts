@@ -53,6 +53,14 @@ function plainLabelDraft(): string {
     "",
     "O mês em que o Brasil acelerou e os agentes decolaram.",
     "",
+    "APRESENTAÇÃO",
+    "",
+    "Esta é a newsletter mensal da [Clarice](https://clarice.ai/?via=diaria), em parceria com a diar.ia.br: uma curadoria para você entender, em poucos minutos, o que mudou no mundo da IA.",
+    "",
+    "Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo \"quero\". Se quiser receber notícias de IA todos os dias, se cadastre gratuitamente [aqui](https://diaria.beehiiv.com).",
+    "",
+    "Você está recebendo esse e-mail porque se cadastrou na [Clarice](https://clarice.ai/?via=diaria). Caso não queira receber a newsletter, pode se [descadastrar aqui]({{ unsubscribe }}).",
+    "",
     "INTRO",
     "",
     "Junho foi marcado pela regulação brasileira de IA e pelo avanço de agentes autônomos.",
@@ -141,7 +149,7 @@ function plainLabelDraft(): string {
 /** Mesmo conteúdo, mas com os labels no formato ESPERADO (`**...**`). */
 function boldLabelDraft(): string {
   return plainLabelDraft().replace(
-    /^(ASSUNTO \(3 OPÇÕES\)|PREVIEW|INTRO|DESTAQUE \d+ \| \S.*|CLARICE — \S.*|É IA\? — \S.*|USE MELHOR DO MÊS|RADAR DO MÊS|ENCERRAMENTO)$/gm,
+    /^(ASSUNTO \(3 OPÇÕES\)|PREVIEW|APRESENTAÇÃO|INTRO|DESTAQUE \d+ \| \S.*|CLARICE — \S.*|É IA\? — \S.*|USE MELHOR DO MÊS|RADAR DO MÊS|ENCERRAMENTO)$/gm,
     "**$1**",
   );
 }
@@ -165,6 +173,10 @@ function draftWithClariceLivrosBold(): string {
   return [
     "**ASSUNTO**",
     "Diar.ia | Edição de teste",
+    "",
+    "**APRESENTAÇÃO**",
+    "",
+    "Esta é a newsletter mensal da Clarice, em parceria com a diar.ia.br.",
     "",
     "**INTRO**",
     "",
@@ -294,6 +306,29 @@ describe("checkSectionIntegrity (#2794)", () => {
     assert.ok(r.missing.includes("DESTAQUE 2"), `missing deveria incluir DESTAQUE 2: ${r.missing.join(", ")}`);
     assert.ok(!r.missing.includes("DESTAQUE 1"), "DESTAQUE 1 não deveria estar faltando");
     assert.ok(!r.missing.includes("DESTAQUE 3"), "DESTAQUE 3 não deveria estar faltando");
+  });
+
+  // #2913: regressão do ciclo 2606-07 — a APRESENTAÇÃO (preâmbulo Clarice ×
+  // diar.ia.br) faltou na edição real e passou batido porque não era um
+  // REQUIRED_SECTION_CHECKS (só OPTIONAL). Templatizada (context/templates/
+  // newsletter-monthly.md) e promovida a obrigatória aqui — este teste garante
+  // que o lint agora FALHA (nunca mais passa silencioso) se um draft nascer
+  // sem ela.
+  it("draft SEM APRESENTAÇÃO (regressão #2913, ciclo 2606-07): guardrail acusa a ausência", () => {
+    const withoutApresentacao = boldLabelDraft().replace(
+      /\*\*APRESENTAÇÃO\*\*\n\n[\s\S]*?\n\n(?=\*\*INTRO\*\*)/,
+      "",
+    );
+    // sanity: a remoção de fato tirou o label do draft
+    assert.doesNotMatch(withoutApresentacao, /APRESENTAÇÃO/);
+    const r = checkSectionIntegrity(withoutApresentacao);
+    assert.equal(r.ok, false);
+    assert.ok(r.missing.includes("APRESENTAÇÃO"), `missing deveria incluir APRESENTAÇÃO: ${r.missing.join(", ")}`);
+  });
+
+  it("draft COM APRESENTAÇÃO (formato esperado pós-#2913): reconhecida, não aparece em missing", () => {
+    const r = checkSectionIntegrity(boldLabelDraft());
+    assert.ok(!r.missing.includes("APRESENTAÇÃO"), `APRESENTAÇÃO não deveria estar em missing: ${r.missing.join(", ")}`);
   });
 });
 
