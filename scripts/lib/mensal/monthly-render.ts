@@ -106,11 +106,17 @@ export function normalizeKnownUrl(url: string): string {
  * #template-branding (260703): caixas "O fio condutor" começam com inicial
  * MAIÚSCULA. O writer às vezes emite o fecho em continuação minúscula ("em um
  * mês...", "a OpenAI..."); aqui a 1ª letra do parágrafo é capitalizada. Pula
- * marcadores markdown iniciais (`*`, `[`, aspas, espaço) e capitaliza a 1ª
- * letra Unicode — idempotente se já estiver maiúscula.
+ * marcadores markdown iniciais (`*`, `[`, aspas, parêntese, espaço) e capitaliza
+ * a 1ª letra Unicode — idempotente se já estiver maiúscula.
+ *
+ * #2951: o skip-set é EXPLÍCITO (`\s*_["'(`), nunca "todo não-letra". O regex
+ * antigo (`[^\p{L}]*`) consumia também dígitos/pontuação, então uma abertura
+ * numérica ("30% das empresas…") capitalizava a letra ERRADA no meio da palavra
+ * seguinte ("30% Das…"). Se a frase abre com número, o regex não casa e o texto
+ * volta intacto — o que é correto (não se capitaliza a palavra após o número).
  */
 export function capitalizeFirstLetter(text: string): string {
-  return text.replace(/^([^\p{L}]*)(\p{L})/u, (_m, pre, ch) => pre + ch.toLocaleUpperCase("pt-BR"));
+  return text.replace(/^([\s*_["'(]*)(\p{L})/u, (_m, pre, ch) => pre + ch.toLocaleUpperCase("pt-BR"));
 }
 
 /**

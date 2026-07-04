@@ -31,6 +31,14 @@ describe("capitalizeFirstLetter (#2937)", () => {
     assert.equal(capitalizeFirstLetter(""), "");
     assert.equal(capitalizeFirstLetter("123 !?"), "123 !?");
   });
+  it("abertura numérica NÃO capitaliza a palavra seguinte (#2951)", () => {
+    // Regressão: o regex antigo produzia "30% Das empresas…" (letra errada no meio).
+    assert.equal(
+      capitalizeFirstLetter("30% das empresas brasileiras adotaram IA em 2026."),
+      "30% das empresas brasileiras adotaram IA em 2026.",
+    );
+    assert.equal(capitalizeFirstLetter("1 em cada 3 startups já usa."), "1 em cada 3 startups já usa.");
+  });
 });
 
 describe("applyBrandWordmark linkHref (#2937)", () => {
