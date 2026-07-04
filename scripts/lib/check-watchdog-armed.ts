@@ -298,7 +298,20 @@ export type WatchdogTaskHealth = "healthy" | "disabled" | "last_run_failed" | "n
 export function classifyWatchdogTaskHealth(state: WatchdogTaskState): WatchdogTaskHealth {
   if (state.enabled === false) return "disabled";
   if (state.neverRun) return "never_run";
-  if (state.lastResult !== null && state.lastResult !== 0) return "last_run_failed";
+  // Finding do review consolidado (260704): 267009 (0x41301 SCHED_S_TASK_RUNNING,
+  // "rodando agora") e 267011 (0x41303, "ainda não rodou") são sentinelas de
+  // sucesso/info do Task Scheduler, NÃO falha. Sem excluí-los, um health-check que
+  // corre DURANTE a própria execução de ~10min do watchdog lê Last Result=267009 e
+  // reporta falso "armed_but_stale" (watchdog quebrado) numa task saudável. (267014
+  // = 0x41306 TERMINATED continua sendo falha real — foi o valor do stall de 260703.)
+  if (
+    state.lastResult !== null &&
+    state.lastResult !== 0 &&
+    state.lastResult !== 267009 &&
+    state.lastResult !== 267011
+  ) {
+    return "last_run_failed";
+  }
   if (state.enabled === null && state.lastResult === null && state.lastRunTime === null) {
     return "unknown";
   }

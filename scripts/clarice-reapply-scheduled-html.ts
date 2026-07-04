@@ -78,20 +78,33 @@ export interface BrevoCampaignDetail extends BrevoCampaignListItem {
  * HTTP mora em `.body`). Aqui o parsing correto é a única forma suportada —
  * falha alto (nunca retorna [] silenciosamente) se o shape mudar.
  */
+/** Estados pré-envio seguros (agendada-não-enviada) — a Brevo reporta como
+ *  "queued" OU "scheduled" dependendo da versão de API/timing (drift documentado
+ *  em clarice-schedule-sends.ts). Nunca "sent"/"in_process". */
+export function isSchedulableStatus(status: string | undefined): boolean {
+  return status === "queued" || status === "scheduled";
+}
+
 export async function fetchQueuedCampaigns(apiKey: string): Promise<BrevoCampaignListItem[]> {
-  const { status, body } = await brevoGet(apiKey, "/emailCampaigns?status=queued&limit=1000");
+  // Finding do review consolidado (260704): a Brevo pode reportar uma campanha
+  // agendada-não-enviada como `status:"queued"` OU `status:"scheduled"`. Mas
+  // `?status=scheduled` NÃO é filtro de query válido (a API retorna 400 — verificado
+  // no near-miss). Então buscamos SEM filtro de status e filtramos localmente por
+  // queued|scheduled — senão o tool falharia SILENCIOSO (0 campanhas) quando a Brevo
+  // reporta "scheduled", deixando o HTML stale no ar (o exato incidente que ele previne).
+  const { status, body } = await brevoGet(apiKey, "/emailCampaigns?limit=1000");
   if (status !== 200) {
-    throw new Error(`Brevo GET /emailCampaigns?status=queued falhou: HTTP ${status}`);
+    throw new Error(`Brevo GET /emailCampaigns falhou: HTTP ${status}`);
   }
   const campaigns = (body as { campaigns?: unknown } | undefined)?.campaigns;
   if (!Array.isArray(campaigns)) {
     throw new Error(
-      `/emailCampaigns?status=queued: shape inesperado — esperava body.campaigns[] ` +
+      `/emailCampaigns: shape inesperado — esperava body.campaigns[] ` +
       `(recebido: ${JSON.stringify(body).slice(0, 300)}). ` +
       `Bug do near-miss #2940 era ler r.campaigns em vez de r.body.campaigns.`,
     );
   }
-  return campaigns as BrevoCampaignListItem[];
+  return (campaigns as BrevoCampaignListItem[]).filter((c) => isSchedulableStatus(c.status));
 }
 
 /** Prefixo de nome esperado pras campanhas do ciclo (ver clarice-schedule-sends.ts). */
@@ -118,7 +131,7 @@ export function partitionByQueuedStatus(
   const toUpdate: BrevoCampaignListItem[] = [];
   const skipped: BrevoCampaignListItem[] = [];
   for (const c of campaigns) {
-    if (c.status === "queued") toUpdate.push(c);
+    if (isSchedulableStatus(c.status)) toUpdate.push(c); // queued OU scheduled — pré-envio seguro
     else skipped.push(c);
   }
   return { toUpdate, skipped };
@@ -229,8 +242,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       continue;
     }
     const fresh = freshBody as BrevoCampaignListItem;
-    if (fresh.status !== "queued") {
-      console.error(`⚠ #${c.id} não está mais queued (agora "${fresh.status}") — PUT abortado.`);
+    if (!isSchedulableStatus(fresh.status)) {
+      console.error(`⚠ #${c.id} não está mais queued/scheduled (agora "${fresh.status}") — PUT abortado.`);
       continue;
     }
 
