@@ -1,8 +1,19 @@
 /**
- * overnight-fallback-wake.ts (#2896)
+ * overnight-fallback-wake.ts (#2896, estendido pelo #2945)
  *
- * Incidente 260702-r2: o coordenador do overnight ficou ~8h parado. Causa
- * raiz dupla:
+ * #2945 (260703, ~10h de stall na MESMA rodada em que o #2896 foi
+ * mergeado): o fix do #2896 se mostrou insuficiente na prática — (a) o
+ * `ScheduleWakeup` pós-dispatch/resume era um passo que o coordenador
+ * "deveria lembrar" de chamar, e foi esquecido; (b) a instrução de rodar
+ * `npm test` em foreground no prompt do subagente é ignorada na prática
+ * (sonnet insiste em background+yield). `needsActiveRecheck` (abaixo) dá
+ * ao coordenador um classificador puro para os dois sinais que evidenciam
+ * "não confie numa notificação terminal aqui" — o `ScheduleWakeup` em si
+ * continua sendo **mecânico e incondicional** (HARD RULE na SKILL.md), não
+ * condicionado a este helper.
+ *
+ * Incidente 260702-r2 (#2896 original): o coordenador do overnight ficou ~8h
+ * parado. Causa raiz dupla:
  *
  *   1. O guard #2768 (elapsed-vs-dispatch, ver `.claude/skills/diaria-overnight/SKILL.md`
  *      § "Stall passivo — duas camadas") é **event-driven** — só roda quando
@@ -141,6 +152,82 @@ export function classifyResumeSignal(sendMessageResult: string): ResumeSignal {
   if (text.includes("queued")) return "queued";
   if (text.includes("resumed") || text.includes("stopped")) return "resumed";
   return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// needsActiveRecheck (#2945)
+// ---------------------------------------------------------------------------
+
+/**
+ * Padrões de texto de yield que indicam que o subagente está esperando algo
+ * em background em vez de retornar com o resultado (padrão do incidente
+ * 260703 — ver `needsActiveRecheck` abaixo). Case-insensitive.
+ */
+const YIELD_BACKGROUND_PATTERNS: RegExp[] = [
+  /\bbackground\b/i,
+  /\bwaiting for\b/i,
+  /\bmonitor(ing)?\b/i,
+  /\bstill running\b/i,
+];
+
+/**
+ * Classifica um texto de yield de subagente (a mensagem que ele retorna em
+ * vez de terminar de fato) quanto a conter um dos padrões conhecidos de
+ * "vou esperar isso em background" — ex: "waiting for the npm test
+ * background command", "I'll monitor the CI run". Puro, sem I/O.
+ */
+export function classifyYieldText(yieldText: string): boolean {
+  const text = yieldText ?? "";
+  return YIELD_BACKGROUND_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * Input discriminado de `needsActiveRecheck`: ou um texto de yield livre do
+ * subagente, ou um `ResumeSignal` já classificado (via `classifyResumeSignal`)
+ * do retorno de um `SendMessage` de resume.
+ */
+export type RecheckInput =
+  | { readonly kind: "yield_text"; readonly text: string }
+  | { readonly kind: "resume_signal"; readonly signal: ResumeSignal };
+
+/**
+ * Helper puro (#2945): dado um texto de yield do subagente OU um
+ * `ResumeSignal` já classificado, decide se o coordenador precisa de um
+ * **re-check ativo** — isto é, não pode confiar em receber uma notificação
+ * terminal e deve, ele mesmo, checar o estado da unidade (PR aberto? CI
+ * rodando? elapsed vs dispatch?) em vez de esperar passivamente.
+ *
+ * Motivação (causa raiz do stall de ~10h em 260703, follow-up do #2896):
+ * o #2896 já cobria "dispatch/resume agenda ScheduleWakeup", mas dependia
+ * do coordenador **lembrar** de chamar isso — um passo esquecível que foi
+ * de fato esquecido na mesma rodada em que foi introduzido (#2917). Este
+ * helper não substitui o ScheduleWakeup mecânico (que deve rodar SEMPRE,
+ * incondicionalmente, após todo dispatch/resume — ver HARD RULE na
+ * SKILL.md) — ele existe para o coordenador **classificar o motivo** e
+ * decidir se, além do wake agendado, o padrão observado (yield de
+ * background, ou resume queued/unknown) já é evidência suficiente de que
+ * uma notificação terminal pode nunca chegar.
+ *
+ * - `kind: "yield_text"` — `true` se o texto bater um dos padrões de
+ *   `classifyYieldText` (background/waiting for/monitor/still running).
+ *   Cobre o gatilho do incidente: "rodei `npm test` em background e vou
+ *   aguardar" — a instrução de foreground no prompt do subagente É
+ *   ignorada na prática (sonnet insiste em background+yield), então este
+ *   helper trata a ocorrência do padrão como estruturalmente relevante,
+ *   não como algo a re-instruir.
+ * - `kind: "resume_signal"` — `true` para `'queued'` (agent vivo mas sem
+ *   garantia de notificação terminal — exatamente o padrão do incidente:
+ *   subagente resumido via `SendMessage`, retornou "queued", completou o
+ *   trabalho e silenciou) **e** para `'unknown'` (texto inesperado — mesma
+ *   cautela de `'queued'`, nunca assumir que o coordenador será
+ *   notificado). `false` só para `'resumed'` (agent de fato retomado,
+ *   notificação de conclusão esperada pelo caminho event-driven normal).
+ */
+export function needsActiveRecheck(input: RecheckInput): boolean {
+  if (input.kind === "resume_signal") {
+    return input.signal === "queued" || input.signal === "unknown";
+  }
+  return classifyYieldText(input.text);
 }
 
 // ---------------------------------------------------------------------------

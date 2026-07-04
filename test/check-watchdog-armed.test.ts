@@ -25,6 +25,11 @@ import {
   buildWatchdogWarningMessage,
   queryWatchdogTaskExitCode,
   WATCHDOG_TASK_NAME,
+  parseWatchdogTaskState,
+  classifyWatchdogTaskHealth,
+  decideWatchdogArmedStatus,
+  buildWatchdogHealthWarningMessage,
+  queryWatchdogTaskVerboseOutput,
 } from "../scripts/lib/check-watchdog-armed.ts";
 
 // ---------------------------------------------------------------------------
@@ -211,5 +216,193 @@ describe("queryWatchdogTaskExitCode", () => {
       0,
       "caminho real (exit code) reconhece a task independente do locale do output",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseWatchdogTaskState / classifyWatchdogTaskHealth / decideWatchdogArmedStatus (#2944)
+// ---------------------------------------------------------------------------
+
+// Fixture real capturada na investigação do #2944 (260703-260704, máquina
+// ZENBOOK): task presente, enabled, último run bem-sucedido — o caso são.
+const FIXTURE_VERBOSE_HEALTHY = `
+Folder: \\
+HostName:                             ZENBOOK
+TaskName:                             \\Diaria-Overnight-Watchdog
+Next Run Time:                        04-Jul-26 6:00:00 PM
+Status:                               Ready
+Logon Mode:                           Interactive only
+Last Run Time:                        04-Jul-26 9:00:00 AM
+Last Result:                          0
+Author:                               N/A
+Task To Run:                          npx tsx "C:\\Users\\pixel\\Projects\\diaria-studio\\scripts\\overnight-watchdog.ts"
+Start In:                             C:\\Users\\pixel\\Projects\\diaria-studio
+Comment:                               Diar.ia: watchdog de stall overnight (#2688) - roda a cada 10 min entre 18:00-09:00.
+Scheduled Task State:                 Enabled
+Repeat: Every:                        0 Hour(s), 10 Minute(s)
+`;
+
+const FIXTURE_VERBOSE_DISABLED = FIXTURE_VERBOSE_HEALTHY.replace(
+  "Scheduled Task State:                 Enabled",
+  "Scheduled Task State:                 Disabled",
+);
+
+const FIXTURE_VERBOSE_LAST_RUN_FAILED = FIXTURE_VERBOSE_HEALTHY.replace(
+  "Last Result:                          0",
+  "Last Result:                          1",
+);
+
+const FIXTURE_VERBOSE_NEVER_RUN = FIXTURE_VERBOSE_HEALTHY.replace(
+  "Last Run Time:                        04-Jul-26 9:00:00 AM",
+  "Last Run Time:                        N/A",
+).replace("Last Result:                          0", "Last Result:                          N/A");
+
+describe("parseWatchdogTaskState (#2944)", () => {
+  it("fixture real saudável (investigação #2944): enabled=true, lastResult=0, neverRun=false", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_HEALTHY);
+    assert.equal(state.enabled, true);
+    assert.equal(state.lastResult, 0);
+    assert.equal(state.neverRun, false);
+    assert.equal(state.lastRunTime, "04-Jul-26 9:00:00 AM");
+  });
+
+  it("task desabilitada: enabled=false", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_DISABLED);
+    assert.equal(state.enabled, false);
+  });
+
+  it("última execução falhou: lastResult != 0", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_LAST_RUN_FAILED);
+    assert.equal(state.lastResult, 1);
+  });
+
+  it("nunca rodou: neverRun=true, lastResult=null (N/A não é numérico)", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_NEVER_RUN);
+    assert.equal(state.neverRun, true);
+    assert.equal(state.lastResult, null);
+  });
+
+  it("output vazio: todos os campos null/false (fail-soft, não lança)", () => {
+    const state = parseWatchdogTaskState("");
+    assert.deepEqual(state, {
+      enabled: null,
+      lastResult: null,
+      lastRunTime: null,
+      neverRun: false,
+    });
+  });
+
+  it("output malformado/locale não reconhecido: fail-soft para null (nunca finge saber)", () => {
+    const state = parseWatchdogTaskState("Estado da Tarefa Agendada: Habilitada\n");
+    assert.equal(state.enabled, null);
+  });
+});
+
+describe("classifyWatchdogTaskHealth (#2944)", () => {
+  it("fixture saudável → healthy", () => {
+    assert.equal(
+      classifyWatchdogTaskHealth(parseWatchdogTaskState(FIXTURE_VERBOSE_HEALTHY)),
+      "healthy",
+    );
+  });
+
+  it("desabilitada → disabled (mesmo com last result 0 de uma execução anterior)", () => {
+    assert.equal(
+      classifyWatchdogTaskHealth(parseWatchdogTaskState(FIXTURE_VERBOSE_DISABLED)),
+      "disabled",
+    );
+  });
+
+  it("último run falhou → last_run_failed", () => {
+    assert.equal(
+      classifyWatchdogTaskHealth(parseWatchdogTaskState(FIXTURE_VERBOSE_LAST_RUN_FAILED)),
+      "last_run_failed",
+    );
+  });
+
+  it("nunca rodou → never_run", () => {
+    assert.equal(
+      classifyWatchdogTaskHealth(parseWatchdogTaskState(FIXTURE_VERBOSE_NEVER_RUN)),
+      "never_run",
+    );
+  });
+
+  it("nenhum campo reconhecido (locale não suportado) → unknown, NÃO disabled/stale (fail-soft, evita regressão #2814)", () => {
+    assert.equal(
+      classifyWatchdogTaskHealth(
+        parseWatchdogTaskState("Estado da Tarefa Agendada: Habilitada\n"),
+      ),
+      "unknown",
+    );
+  });
+});
+
+describe("decideWatchdogArmedStatus (#2944)", () => {
+  it("task ausente → not_armed independente da saúde", () => {
+    assert.equal(decideWatchdogArmedStatus(false, "healthy"), "not_armed");
+    assert.equal(decideWatchdogArmedStatus(false, "disabled"), "not_armed");
+  });
+
+  it("task presente + healthy → armed", () => {
+    assert.equal(decideWatchdogArmedStatus(true, "healthy"), "armed");
+  });
+
+  it("task presente + unknown (fail-soft) → armed, nunca rebaixa por falta de dado", () => {
+    assert.equal(decideWatchdogArmedStatus(true, "unknown"), "armed");
+  });
+
+  it("task presente + disabled → armed_but_disabled (o caso central do #2944: falsa confiança)", () => {
+    assert.equal(decideWatchdogArmedStatus(true, "disabled"), "armed_but_disabled");
+  });
+
+  it("task presente + last_run_failed → armed_but_stale", () => {
+    assert.equal(decideWatchdogArmedStatus(true, "last_run_failed"), "armed_but_stale");
+  });
+
+  it("task presente + never_run → armed_but_never_run", () => {
+    assert.equal(decideWatchdogArmedStatus(true, "never_run"), "armed_but_never_run");
+  });
+});
+
+describe("buildWatchdogHealthWarningMessage (#2944)", () => {
+  it("armed_but_disabled menciona DESABILITADA e o comando de reativação", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_DISABLED);
+    const msg = buildWatchdogHealthWarningMessage("armed_but_disabled", state);
+    assert.match(msg, /DESABILITADA/);
+    assert.match(msg, /\/enable/);
+    assert.match(msg, new RegExp(WATCHDOG_TASK_NAME));
+  });
+
+  it("armed_but_stale menciona a falha da última execução", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_LAST_RUN_FAILED);
+    const msg = buildWatchdogHealthWarningMessage("armed_but_stale", state);
+    assert.match(msg, /FALHOU/);
+    assert.match(msg, /Last Result: 1/);
+  });
+
+  it("armed_but_never_run menciona N/A e o trigger/agendamento", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_NEVER_RUN);
+    const msg = buildWatchdogHealthWarningMessage("armed_but_never_run", state);
+    assert.match(msg, /NUNCA rodou/);
+  });
+
+  it("fallback (status 'armed'/'not_armed') delega para buildWatchdogWarningMessage", () => {
+    const state = parseWatchdogTaskState(FIXTURE_VERBOSE_HEALTHY);
+    const msg = buildWatchdogHealthWarningMessage("not_armed", state);
+    assert.equal(msg, buildWatchdogWarningMessage());
+  });
+});
+
+describe("queryWatchdogTaskVerboseOutput (#2944)", () => {
+  it("retorna o stdout quando o exec mockado não lança", () => {
+    const mockExec = (() => FIXTURE_VERBOSE_HEALTHY) as unknown as typeof import("node:child_process").execFileSync;
+    assert.equal(queryWatchdogTaskVerboseOutput(mockExec), FIXTURE_VERBOSE_HEALTHY);
+  });
+
+  it("retorna null quando o exec mockado lança (task ausente ou schtasks indisponível)", () => {
+    const mockExec = (() => {
+      throw new Error("comando falhou");
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    assert.equal(queryWatchdogTaskVerboseOutput(mockExec), null);
   });
 });
