@@ -36,6 +36,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
 import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage } from "./lib/mensal/monthly-image-upload.ts";
+import { fetchMonthlyEiaPrevResultLine } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
 import { uploadHtml } from "./upload-html-public.ts";
 import {
   parseMonthlyCycleArg,
@@ -174,8 +175,20 @@ async function main(): Promise<void> {
     : "gemini";
   const destaqueImageCaption = captionForGenerator(imageGenerator);
 
+  // #2948: "% acertaram" do É IA? mensal do ciclo anterior (brand=clarice) —
+  // mesmo fetch usado por publish-monthly.ts, mantém preview e email real em
+  // paridade. Fail-soft: sem ciclo anterior elegível → null, linha omitida.
+  let eiaPrevResultLine: string | null = null;
+  if (!dryRun) {
+    try {
+      eiaPrevResultLine = await fetchMonthlyEiaPrevResultLine(yymm);
+    } catch (e) {
+      console.error(`warn: fetch de "% acertaram" (edição anterior) falhou — ${(e as Error).message}`);
+    }
+  }
+
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl);
+  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl, eiaPrevResultLine);
 
   // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
   const internalDir = resolve(monthlyDir, "_internal");

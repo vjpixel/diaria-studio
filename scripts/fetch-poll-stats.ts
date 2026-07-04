@@ -6,6 +6,7 @@
  *
  * Uso:
  *   npx tsx scripts/fetch-poll-stats.ts --edition 260502 --out data/editions/260502/_internal/04-eia-poll-stats.json
+ *   npx tsx scripts/fetch-poll-stats.ts --edition 2605-06 --brand clarice --out ...  (#2948: mensal)
  *
  * Output JSON (compatível com eia-compose.ts — consumer real):
  *   { edition, total_responses, correct_responses, pct_correct,
@@ -14,6 +15,11 @@
  * Substitui o fluxo antigo (fetch-beehiiv-poll-stats.ts → poll-responses.json
  * → compute-eia-poll-stats.ts → 04-eia-poll-stats.json). Worker já agrega via
  * counter no /vote — não precisa middle step.
+ *
+ * `--brand clarice` (#2948): busca o leaderboard da Clarice News (mensal) em
+ * vez da Diar.ia (diária, default). Mesma convenção de `close-poll.ts` — brand
+ * ausente/"diaria" não anexa `&brand=` na query (compat com o Worker, que já
+ * default-a pra "diaria" via `parseBrandParam`).
  *
  * Variáveis de ambiente:
  *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
@@ -26,20 +32,45 @@ import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 const MIN_RESPONSES = 5;
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const idx = (f: string) => args.indexOf(f);
-  const get = (f: string) => idx(f) !== -1 ? args[idx(f) + 1] : undefined;
+export type PollBrand = "diaria" | "clarice";
 
-  const edition = get("--edition");
-  const outPath = get("--out");
+export interface PollStatsOutput {
+  edition: string;
+  total_responses: number;
+  correct_responses: number;
+  pct_correct: number | null;
+  correct_choice: string | null;
+  below_threshold: boolean;
+  skipped?: string;
+  source: string;
+  fetched_at: string;
+}
 
-  if (!edition) {
-    console.error("Uso: fetch-poll-stats.ts --edition AAMMDD [--out <path>]");
-    process.exit(1);
-  }
+export interface FetchPollStatsOptions {
+  brand?: PollBrand;
+  workerUrl?: string;
+}
 
-  const url = `${POLL_WORKER_URL}/stats?edition=${edition}`;
+/**
+ * Busca as stats de `/stats?edition=...` do Worker poll (com `&brand=...`
+ * quando não-default) e monta o output no shape consumido por
+ * `eia-compose.ts`/`buildPrevResultLine`. Extraído do CLI (#2948) para ser
+ * reusável pelo pipeline mensal (`monthly-render.ts` →
+ * `fetchMonthlyEiaPrevResultLine`) sem invocar um subprocesso.
+ *
+ * Nunca lança — falha de rede vira `total_responses: 0` (o mesmo
+ * fail-soft que o CLI sempre teve), o caller decide o que fazer com stats
+ * vazias (tipicamente: omitir a linha "Resultado da última edição").
+ */
+export async function fetchPollStats(
+  edition: string,
+  opts: FetchPollStatsOptions = {},
+): Promise<PollStatsOutput> {
+  const brand = opts.brand && opts.brand !== "diaria" ? opts.brand : undefined;
+  const workerUrl = opts.workerUrl ?? POLL_WORKER_URL;
+  const brandQ = brand ? `&brand=${brand}` : "";
+  const url = `${workerUrl}/stats?edition=${edition}${brandQ}`;
+
   let data: {
     total?: number;
     correct_pct?: number | null;
@@ -50,9 +81,11 @@ async function main(): Promise<void> {
   try {
     const res = await dohFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    data = await res.json() as typeof data;
+    data = (await res.json()) as typeof data;
   } catch (err) {
-    console.warn(`[fetch-poll-stats] Falha ao buscar stats da edição ${edition}: ${(err as Error).message}`);
+    console.warn(
+      `[fetch-poll-stats] Falha ao buscar stats da edição ${edition}${brand ? ` (brand=${brand})` : ""}: ${(err as Error).message}`,
+    );
     data = {};
   }
 
@@ -62,7 +95,7 @@ async function main(): Promise<void> {
   // pct_correct (não correct_pct), below_threshold (boolean).
   const pctCorrect = belowThreshold ? null : (data.correct_pct ?? null);
 
-  const output = {
+  return {
     edition,
     total_responses: total,
     correct_responses: data.correct_count ?? 0,
@@ -73,16 +106,41 @@ async function main(): Promise<void> {
     source: "poll-worker",
     fetched_at: new Date().toISOString(),
   };
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const idx = (f: string) => args.indexOf(f);
+  const get = (f: string) => idx(f) !== -1 ? args[idx(f) + 1] : undefined;
+
+  const edition = get("--edition");
+  const outPath = get("--out");
+  const brand = get("--brand") === "clarice" ? "clarice" : undefined;
+
+  if (!edition) {
+    console.error("Uso: fetch-poll-stats.ts --edition AAMMDD [--brand clarice] [--out <path>]");
+    process.exit(1);
+  }
+
+  const output = await fetchPollStats(edition, { brand });
 
   const result = JSON.stringify(output, null, 2);
 
   if (outPath) {
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, result, "utf8");
-    console.log(`[fetch-poll-stats] Gravado em ${outPath} (total=${total}, pct_correct=${pctCorrect})`);
+    console.log(`[fetch-poll-stats] Gravado em ${outPath} (total=${output.total_responses}, pct_correct=${output.pct_correct})`);
   } else {
     process.stdout.write(result + "\n");
   }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+// CLI guard (#cli-guard): só roda main() quando invocado direto, não em import
+// (senão testes que importam `fetchPollStats` disparariam o CLI real).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}

@@ -436,3 +436,94 @@ describe("publish-monthly main(): box de Livros com imagem (#2802)", () => {
       "sem upload bem-sucedido, htmlContent não deve referenciar a imagem de livros");
   });
 });
+
+// #2948: follow-up de #2709 — o suporte de render (opt-in) da linha
+// "Resultado da última edição: X% acertaram" no bloco É IA? mensal já
+// existia, mas nenhum caller buscava o dado real. Este describe cobre a
+// WIRING: main() → fetchEiaPrevResultLine (injetável, #2948 espelha o
+// padrão de uploadDeps do #2802) → draftToEmail → htmlContent.
+const DRAFT_WITH_EIA = `**\\[ASSUNTO\\]**
+
+1. Assunto de teste
+
+**\\[É IA? — DESTAQUE DO MÊS\\]**
+
+[placeholder a ser ignorado]
+`;
+
+describe("publish-monthly main(): % acertaram do É IA? anterior (#2948)", () => {
+  it("dado presente (fetchEiaPrevResultLine mockado) → linha aparece no htmlContent", async () => {
+    writeFileSync(join(tmpDir, "draft.md"), DRAFT_WITH_EIA);
+
+    const brevoMock = mockAgent.get("https://api.brevo.com");
+    brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+      id: 9, name: "T1-W1", totalSubscribers: 50,
+    }, { headers: { "content-type": "application/json" } });
+
+    let capturedBody = "";
+    brevoMock.intercept({
+      path: "/v3/emailCampaigns",
+      method: "POST",
+      body: (body: string) => {
+        capturedBody = body;
+        return true;
+      },
+    }).reply(201, { id: 300 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+
+    await main(tmpDir, {
+      uploadEiaImages,
+      uploadDestaqueImages,
+      uploadLivrosImage: async () => undefined,
+      // Mock: simula o fetch real (poll.diaria.workers.dev/stats?brand=clarice)
+      // já tendo achado um ciclo anterior elegível — sem tocar rede real.
+      fetchEiaPrevResultLine: async () => "Resultado da última edição: 83% das pessoas acertaram.",
+    });
+
+    assert.ok(capturedBody, "POST /emailCampaigns deve ter sido chamado");
+    const parsed = JSON.parse(capturedBody) as { htmlContent: string };
+    assert.match(
+      parsed.htmlContent,
+      /Resultado da última edição: 83% das pessoas acertaram\./,
+      "htmlContent deve conter a linha de % acertaram vinda do fetch mockado",
+    );
+  });
+
+  it("sem dado (deps default — fetch real bloqueado pelo MockAgent, sem interceptor pro poll worker) → degrade sem a linha", async () => {
+    writeFileSync(join(tmpDir, "draft.md"), DRAFT_WITH_EIA);
+
+    const brevoMock = mockAgent.get("https://api.brevo.com");
+    brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+      id: 9, name: "T1-W1", totalSubscribers: 50,
+    }, { headers: { "content-type": "application/json" } });
+
+    let capturedBody = "";
+    brevoMock.intercept({
+      path: "/v3/emailCampaigns",
+      method: "POST",
+      body: (body: string) => {
+        capturedBody = body;
+        return true;
+      },
+    }).reply(201, { id: 301 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+
+    // Deps default (reais): fetchEiaPrevResultLine não é sobrescrito → tenta o
+    // fetch real do Worker poll. mockAgent.disableNetConnect() (setado no
+    // before() do topo do arquivo) bloqueia por não haver interceptor
+    // registrado pra poll.diaria.workers.dev — fetchPollStats nunca lança
+    // (fail-soft), então o card renderiza normalmente, só sem a linha.
+    await main(tmpDir);
+
+    assert.ok(capturedBody, "POST /emailCampaigns deve ter sido chamado mesmo sem stats");
+    const parsed = JSON.parse(capturedBody) as { htmlContent: string };
+    assert.match(parsed.htmlContent, /Clique na imagem que foi gerada por IA\./, "card do É IA? ainda renderiza");
+    assert.doesNotMatch(
+      parsed.htmlContent,
+      /acertaram/i,
+      "sem dado real (fetch bloqueado), htmlContent não deve mencionar % acertaram",
+    );
+  });
+});
