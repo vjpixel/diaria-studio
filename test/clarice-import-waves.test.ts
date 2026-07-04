@@ -13,6 +13,7 @@ import {
   loadWaveDefs,
   type WaveDef,
 } from "../scripts/clarice-import-waves.ts";
+import { buildSegmentArtifact, type SegmentRow } from "../scripts/clarice-build-segment.ts";
 
 describe("loadWaveDefs (#2656/#2844)", () => {
   it("sem manifest → erro claro (rode clarice-build-waves-store)", () => {
@@ -128,6 +129,87 @@ describe("buildPlan — manifest-driven: obrigatória ausente explode", () => {
     const dir = tmpWaves(SAMPLE, SAMPLE.filter((w) => w.key !== "W3").map((w) => w.file));
     try {
       assert.throws(() => buildPlan("L", "2605-06", dir), /wave faltando/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2916 — e2e: output de clarice-build-segment.ts (segments/{group}-manifest.json)
+// é de fato LIDO por clarice-import-waves.ts via --group (não fica órfão).
+// ---------------------------------------------------------------------------
+
+describe("buildPlan --group (#2916 — grupos nomeados de #2885 deixam de ser órfãos)", () => {
+  function row(p: Partial<SegmentRow> & { email: string }): SegmentRow {
+    return {
+      name: "Fulano Sobrenome",
+      tier: null,
+      cohort: null,
+      priority_points: 0,
+      send_eligible: 1,
+      ineligible_reason: null,
+      sends_count: 0,
+      opens_count: 0,
+      last_sent_at: null,
+      mv_bucket: null,
+      ...p,
+    };
+  }
+
+  it("e2e: clarice-build-segment escreve o manifest+CSV do grupo, clarice-import-waves --group lê o MESMO manifest e resolve os contatos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "segments-e2e-"));
+    try {
+      // --- 1. build-segment (real, mesma função que o CLI usa) ---
+      const rows: SegmentRow[] = [
+        row({ email: "a@x.com", sends_count: 3, priority_points: 60, name: "Ana Costa" }),
+        row({ email: "b@x.com", sends_count: 2, priority_points: 20, name: "Beatriz Silva" }),
+        row({ email: "fresh@x.com", sends_count: 0, priority_points: 999 }), // não é engajados
+      ];
+      const { csv, manifestEntry } = buildSegmentArtifact(rows, "engajados", 0);
+      writeFileSync(join(dir, manifestEntry.file), csv, "utf8");
+      writeFileSync(join(dir, "engajados-manifest.json"), JSON.stringify([manifestEntry], null, 2), "utf8");
+
+      // --- 2. import-waves --group engajados (dir injetado = segments/ do build acima) ---
+      const plans = buildPlan("Retenção Jun/2026", "2606-07", dir, "engajados");
+
+      assert.equal(plans.length, 1, "o import LÊ o manifest escrito pelo build-segment — antes (#2916) ninguém lia segments/");
+      assert.equal(plans[0].wave.key, "engajados");
+      assert.equal(plans[0].wave.file, "engajados.csv");
+      assert.equal(plans[0].count, 2, "resolve os 2 contatos reais do grupo (a@x.com, b@x.com — fresh@x.com fora)");
+      assert.equal(plans[0].listName, "Clarice Retenção Jun/2026 engajados — Engajados (retenção)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --group (default): continua lendo waves-manifest.json — comportamento pré-#2916 intocado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "waves-default-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([{ key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" }]),
+      );
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,Ana\n");
+      const plans = buildPlan("Jun/2026", "2606-07", dir); // group omitido
+      assert.equal(plans.length, 1);
+      assert.equal(plans[0].wave.key, "W1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--group com manifest ausente → erro claro apontando pro comando build-segment (não 'órfão silencioso')", () => {
+    const dir = mkdtempSync(join(tmpdir(), "segments-missing-"));
+    try {
+      assert.throws(
+        () => buildPlan("L", "2606-07", dir, "engajados"),
+        /engajados-manifest\.json ausente/,
+      );
+      assert.throws(
+        () => buildPlan("L", "2606-07", dir, "engajados"),
+        /clarice-build-segment/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

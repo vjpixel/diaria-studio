@@ -265,6 +265,21 @@ describe("mergeSummaryAcrossBlocks", () => {
     const merged = mergeSummaryAcrossBlocks(fresh, [], [1, 2]); // bloco 3 nunca foi processado antes
     assert.equal(merged[0].actual, 42, "sem prévio pra n=5, usa o fresco mesmo fora de --blocks");
   });
+
+  it("#2915: freshSends contém SÓ os blocos em escopo (novo comportamento do builder, que passa a buildSends só o plano escopado) — blocos fora de escopo vêm inteiramente do prévio", () => {
+    const fresh = [summaryEntry({ n: 2, block: 2, actual: 50 })]; // builder não recomputa mais o bloco 1
+    const prev = [
+      summaryEntry({ n: 1, block: 1, actual: 100, listId: 4201 }),
+      summaryEntry({ n: 2, block: 2, actual: 999, listId: 4202 }),
+    ];
+    const merged = mergeSummaryAcrossBlocks(fresh, prev, [2]);
+    assert.equal(merged.length, 2, "resultado cobre os 2 blocos do ciclo, mesmo fresh só tendo 1");
+    const d1 = merged.find((s) => s.n === 1)!;
+    const d2 = merged.find((s) => s.n === 2)!;
+    assert.equal(d1.actual, 100, "bloco 1 (não recomputado nesta invocação) vem inteiramente do prévio");
+    assert.equal(d1.listId, 4201);
+    assert.equal(d2.actual, 50, "bloco 2 (em escopo) usa o fresco");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -476,5 +491,98 @@ describe("regressão #2883 — build da wave N nunca reinclui quem já saiu em 1
     const intersection = [...wave2Emails].filter((e) => wave1Emails.has(e));
     assert.deepEqual(intersection, [], "união das waves do ciclo deve ser disjunta por email, mesmo com drift");
     assert.equal(wave2Emails.size, 6, "wave 2 ainda entrega o volume completo (3+3), só que de gente NOVA");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão #2915 — dedup (#2883) + cursor posicional de blocos NÃO devem se
+// compor pra pular quem tem prioridade mais alta. O teste de #2883 acima só
+// assere não-overlap+volume (passa mesmo entregando os destinatários ERRADOS
+// — exatamente o achado do #2915). Este teste assere as IDENTIDADES exatas.
+// ---------------------------------------------------------------------------
+
+describe("regressão #2915 — buildSends recebe só o plano EM ESCOPO (não o plano inteiro): a wave seguinte pega o TOPO da fila deduplicada, não pula quem tem prioridade mais alta", () => {
+  it("SEM o fix (buildSends com o plano INTEIRO): o topo da fila deduplicada é queimado no bloco fora de escopo e nunca é enviado", () => {
+    const p = plan([
+      { n: 1, block: 1, volume: 3 },
+      { n: 2, block: 2, volume: 3 },
+      { n: 3, block: 3, volume: 3 },
+      { n: 4, block: 4, volume: 3 },
+    ]);
+    const universe = queueOf(20); // u0..u19
+
+    // Wave 1 (blocos 1-2): consome u0-u5 (mesmo setup do teste #2883 acima).
+    const built1 = buildSends(universe, p, new Map());
+    const wave1Emails = new Set(
+      built1.filter((d) => [1, 2].includes(d.block)).flatMap((d) => d.rows.map((r) => r.email)),
+    );
+
+    // Drift: u6-u11 são promovidos ao topo da fila (novos re-envios engajados).
+    const drifted = [...universe.slice(6, 12), ...universe.slice(0, 6), ...universe.slice(12)];
+    const dedupedQueue2 = excludeAlreadySentEmails(drifted, wave1Emails);
+    // BUG (#2915): passa o PLANO INTEIRO (não só blocos 3-4) — blocos 1-2
+    // "fora de escopo" ainda consomem o topo da fila deduplicada antes dos
+    // blocos 3-4 chegarem à vez.
+    const built2Bug = buildSends(dedupedQueue2, p, new Map());
+    const wave2EmailsBug = new Set(
+      built2Bug.filter((d) => [3, 4].includes(d.block)).flatMap((d) => d.rows.map((r) => r.email)),
+    );
+
+    // u6-u11 (topo real da fila deduplicada, maior prioridade remanescente)
+    // NÃO aparecem na wave 2 — foram queimados nos blocos 1-2 descartados.
+    const promoted = ["u6@x.com", "u7@x.com", "u8@x.com", "u9@x.com", "u10@x.com", "u11@x.com"];
+    const promotedSentBug = promoted.filter((e) => wave2EmailsBug.has(e));
+    assert.equal(
+      promotedSentBug.length,
+      0,
+      "demonstra o bug: SEM o fix, ninguém do topo promovido (u6-u11) é enviado na wave 2",
+    );
+  });
+
+  it("COM o fix (buildSends recebe só o plano em escopo): wave 2 envia exatamente pro topo da fila deduplicada (u6-u11 promovidos)", () => {
+    const p = plan([
+      { n: 1, block: 1, volume: 3 },
+      { n: 2, block: 2, volume: 3 },
+      { n: 3, block: 3, volume: 3 },
+      { n: 4, block: 4, volume: 3 },
+    ]);
+    const universe = queueOf(20);
+    const dir = mkdtempSync(resolve(tmpdir(), "ces-2915-fix-"));
+    const sendsDir = resolve(dir, "sends");
+
+    // --- wave 1 (blocos 1-2), mesma sequência de passos que main() pós-fix ---
+    const blocks1 = [1, 2];
+    const scopeFiles1 = scopedSendFileNames(p, blocks1);
+    const prior1 = collectPriorCycleEmails(sendsDir, scopeFiles1);
+    const dedupedQueue1 = excludeAlreadySentEmails(universe, prior1);
+    const scopedPlan1 = p.filter((e) => blocks1.includes(e.block)); // #2915: plano ESCOPADO
+    const built1 = buildSends(dedupedQueue1, scopedPlan1, new Map());
+    for (const day of built1) {
+      writeSendCsv(sendsDir, `d${String(day.n).padStart(2, "0")}-${day.date}.csv`, day.rows.map((r) => r.email));
+    }
+    const wave1Emails = new Set(built1.flatMap((d) => d.rows.map((r) => r.email)));
+    assert.deepEqual([...wave1Emails].sort(), ["u0@x.com", "u1@x.com", "u2@x.com", "u3@x.com", "u4@x.com", "u5@x.com"]);
+
+    // --- drift: u6-u11 promovidos ao topo (novos re-envios engajados) ---
+    const drifted = [...universe.slice(6, 12), ...universe.slice(0, 6), ...universe.slice(12)];
+
+    // --- wave 2 (blocos 3-4), plano ESCOPADO ---
+    const blocks2 = [3, 4];
+    const scopeFiles2 = scopedSendFileNames(p, blocks2);
+    const prior2 = collectPriorCycleEmails(sendsDir, scopeFiles2);
+    assert.deepEqual([...prior2].sort(), [...wave1Emails].sort());
+    const dedupedQueue2 = excludeAlreadySentEmails(drifted, prior2);
+    const scopedPlan2 = p.filter((e) => blocks2.includes(e.block)); // #2915: plano ESCOPADO
+    const built2 = buildSends(dedupedQueue2, scopedPlan2, new Map());
+    const wave2Emails = new Set(built2.flatMap((d) => d.rows.map((r) => r.email)));
+
+    // FIX: a wave 2 envia exatamente pro topo da fila deduplicada — u6-u11
+    // (os promovidos, maior prioridade remanescente), não u12-u17.
+    assert.deepEqual(
+      [...wave2Emails].sort(),
+      ["u10@x.com", "u11@x.com", "u6@x.com", "u7@x.com", "u8@x.com", "u9@x.com"],
+      "wave 2 prioriza quem tem prioridade mais alta remanescente (u6-u11 promovidos), não pula pra u12-u17",
+    );
+    assert.deepEqual([...wave2Emails].filter((e) => wave1Emails.has(e)), [], "ainda disjunta da wave 1");
   });
 });

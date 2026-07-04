@@ -113,6 +113,39 @@ describe("findContactByEmail", () => {
     assert.equal(r.row?.email, "filosofo.daniel@googlemail.com");
     db.close();
   });
+
+  // -------------------------------------------------------------------------
+  // Regressão #2920 — conta de teste do editor NÃO deve normalizar (Gmail)
+  // pra conta real: vjpixel+test*@gmail.com é identidade DISTINTA (#2895).
+  // -------------------------------------------------------------------------
+
+  it("#2920: conta de teste (vjpixel+test2@) NÃO normaliza via Gmail pra vjpixel@ (conta real) — miss, não gmail-normalized", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("vjpixel@gmail.com");
+    const r = findContactByEmail(db, "vjpixel+test2@gmail.com");
+    assert.equal(r.matchType, null, "sem exact match, NUNCA deve cair no fallback de normalização pra um input de teste");
+    assert.equal(r.row, null);
+    assert.deepEqual(r.candidates, [], "não escaneia candidatos Gmail pra um input de teste");
+    db.close();
+  });
+
+  it("#2920: conta de teste com match EXATO no store continua resolvendo exact (não é bloqueada por completo, só a normalização)", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("vjpixel+test2@gmail.com");
+    const r = findContactByEmail(db, "vjpixel+test2@gmail.com");
+    assert.equal(r.matchType, "exact");
+    assert.equal(r.row?.email, "vjpixel+test2@gmail.com");
+    db.close();
+  });
+
+  it("#2920: variante case/espaço de conta de teste (VJPixel+Test3@Gmail.com) também não normaliza pra conta real", () => {
+    const db = openClariceDb(":memory:");
+    db.prepare("INSERT INTO clarice_users (email) VALUES (?)").run("vjpixel@gmail.com");
+    const r = findContactByEmail(db, "  VJPixel+Test3@Gmail.com  ");
+    assert.equal(r.matchType, null);
+    assert.equal(r.row, null);
+    db.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

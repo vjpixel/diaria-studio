@@ -14,14 +14,29 @@
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
  *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio (casa com clarice-build-waves-store --cycle)
  *   [--folder-id N]              folder Brevo onde criar as listas (default 1)
+ *   [--group NOME]               #2916 — importa um GRUPO NOMEADO (#2885,
+ *                                 `clarice-build-segment.ts --group NOME`) em vez
+ *                                 da rampa: lê `{ciclo}/segments/{NOME}-manifest.json`
+ *                                 (via `clariceSegmentsDir`) no lugar de
+ *                                 `{ciclo}/waves/waves-manifest.json`. Sem a flag,
+ *                                 comportamento inalterado (rampa via waves/).
+ *
+ * Uso (grupo nomeado):
+ *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2605-06 --budget 500
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --group engajados --label "Retenção Jun/2026"            # dry-run
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --group engajados --label "Retenção Jun/2026" --execute  # cria + importa
  *
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (só usado em --execute)
  *
- * Inputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
- *   waves-manifest.json (gerado por clarice-build-waves-store.ts) + os
- *   w*-store.csv correspondentes — único caminho suportado (#2656 cutover; o
- *   fallback pro cohort legado T1/T2 foi removido em #2844/260702).
+ * Inputs:
+ *   sem --group (rampa, em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
+ *     waves-manifest.json (gerado por clarice-build-waves-store.ts) + os
+ *     w*-store.csv correspondentes — único caminho suportado (#2656 cutover;
+ *     o fallback pro cohort legado T1/T2 foi removido em #2844/260702).
+ *   com --group NOME (grupo nomeado, em .../{conteúdo}-{envio}/segments/):
+ *     {NOME}-manifest.json + {NOME}.csv (gerados por clarice-build-segment.ts,
+ *     #2885/#2916 — mesmo shape do manifest da rampa: key/file/desc).
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -29,7 +44,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
-import { clariceWavesDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
+import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 
 loadProjectEnv();
 
@@ -54,23 +69,31 @@ export interface WaveDef {
  * ÚNICA fonte de verdade (#2844/260702: fallback pro cohort legado T1/T2
  * removido junto com clarice-build-waves.ts). Sem manifest, erro claro em vez
  * de silenciosamente montar um plano com CSVs que não existem mais.
+ *
+ * #2916: generalizado pra também ler o manifest de um GRUPO NOMEADO (#2885,
+ * `clarice-build-segment.ts`) — `manifestFileName` default preserva o
+ * comportamento da rampa (`waves-manifest.json`); `buildPlan` passa
+ * `{group}-manifest.json` quando `--group` é usado. Mesmo shape (array de
+ * `{key, file, desc, ...}` — campos extras como `count` são ignorados aqui).
  */
-export function loadWaveDefs(wavesDir: string): WaveDef[] {
-  const manifestPath = resolve(wavesDir, "waves-manifest.json");
+export function loadWaveDefs(dir: string, manifestFileName = "waves-manifest.json"): WaveDef[] {
+  const manifestPath = resolve(dir, manifestFileName);
   if (!existsSync(manifestPath)) {
     throw new Error(
-      `waves-manifest.json ausente em ${wavesDir} — gere com ` +
-        `'clarice-build-waves-store.ts --cycle ...'.`,
+      `${manifestFileName} ausente em ${dir} — gere com ` +
+        (manifestFileName === "waves-manifest.json"
+          ? `'clarice-build-waves-store.ts --cycle ...'.`
+          : `'clarice-build-segment.ts --cycle ... --group ...'.`),
     );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
   } catch (e) {
-    throw new Error(`waves-manifest.json inválido (${manifestPath}): ${(e as Error).message}`);
+    throw new Error(`${manifestFileName} inválido (${manifestPath}): ${(e as Error).message}`);
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`waves-manifest.json deve ser um array de waves (${manifestPath}).`);
+    throw new Error(`${manifestFileName} deve ser um array de waves (${manifestPath}).`);
   }
   return parsed.map((e, i) => {
     const entry = e as Record<string, unknown>;
@@ -81,7 +104,7 @@ export function loadWaveDefs(wavesDir: string): WaveDef[] {
       typeof entry.desc !== "string"
     ) {
       throw new Error(
-        `waves-manifest.json: entrada ${i} inválida (precisa key/file/desc string): ${JSON.stringify(e)}`,
+        `${manifestFileName}: entrada ${i} inválida (precisa key/file/desc string): ${JSON.stringify(e)}`,
       );
     }
     return { key: entry.key, file: entry.file, desc: entry.desc };
@@ -151,6 +174,8 @@ interface Args {
   label: string;
   folderId: number;
   cycle: string;
+  /** #2916 — grupo nomeado (#2885) a importar; null = rampa (waves/), default. */
+  group: string | null;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -171,6 +196,7 @@ export function parseArgs(argv: string[]): Args {
     label: get("--label") ?? "edição atual",
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
     cycle,
+    group: get("--group") ?? null,
   };
 }
 
@@ -186,11 +212,25 @@ interface Plan {
   columns: string[];
 }
 
-// `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
-export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
+/**
+ * `dir` é injetável pra teste (default = dir do ciclo — waves/ sem `group`,
+ * segments/ com `group`, #2916). #provenance
+ *
+ * @param group #2916 — grupo nomeado (#2885); quando informado, lê
+ *              `{group}-manifest.json` do dir de segments em vez de
+ *              `waves-manifest.json` do dir de waves.
+ */
+export function buildPlan(
+  label: string,
+  cycle: string,
+  dir?: string,
+  group: string | null = null,
+): Plan[] {
+  const resolvedDir = dir ?? (group ? clariceSegmentsDir(cycle) : clariceWavesDir(cycle));
+  const manifestFileName = group ? `${group}-manifest.json` : "waves-manifest.json";
   const plans: Plan[] = [];
-  for (const wave of loadWaveDefs(wavesDir)) { // #2656/#2844: manifest é a única fonte
-    const path = resolve(wavesDir, wave.file);
+  for (const wave of loadWaveDefs(resolvedDir, manifestFileName)) { // #2656/#2844/#2916: manifest é a única fonte
+    const path = resolve(resolvedDir, wave.file);
     if (!existsSync(path)) {
       // Opcional ausente → pula com aviso (defensivo — o manifest store-driven
       // nunca marca entradas opcionais hoje). Obrigatória ausente → erro (build
@@ -200,7 +240,9 @@ export function buildPlan(label: string, cycle: string, wavesDir: string = clari
         continue;
       }
       throw new Error(
-        `wave faltando: ${path} — rode 'clarice-build-waves-store.ts --cycle ${cycle}' antes.`,
+        group
+          ? `arquivo do grupo faltando: ${path} — rode 'clarice-build-segment.ts --cycle ${cycle} --group ${group}' antes.`
+          : `wave faltando: ${path} — rode 'clarice-build-waves-store.ts --cycle ${cycle}' antes.`,
       );
     }
     const raw = readFileSync(path, "utf-8");
@@ -217,10 +259,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error("--cycle {conteúdo}-{envio} é obrigatório (ex: --cycle 2605-06).");
     process.exit(1);
   }
-  const plans = buildPlan(args.label, args.cycle);
+  const plans = buildPlan(args.label, args.cycle, undefined, args.group);
 
   // --- Plano (sempre imprime) ---
-  console.error(`\n📋 Plano de import — folder ${args.folderId} — modo ${args.execute ? "EXECUTE 🔴" : "DRY-RUN"}`);
+  console.error(
+    `\n📋 Plano de import ${args.group ? `— grupo '${args.group}' (#2885/#2916)` : "— rampa (waves/)"} — folder ${args.folderId} — modo ${args.execute ? "EXECUTE 🔴" : "DRY-RUN"}`,
+  );
   let total = 0;
   for (const p of plans) {
     console.error(`  ${p.wave.key}: "${p.listName}"  ←  ${p.wave.file}  (${p.count} contatos)`);

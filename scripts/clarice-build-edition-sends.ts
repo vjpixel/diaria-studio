@@ -175,10 +175,24 @@ export interface BuiltDay {
  * Fatia `queue` (já ordenada por prioridade) consecutivamente por bloco
  * (rampa) e estratifica dentro de cada bloco pelos dias do plano.
  *
- * `queue` deve conter PELO MENOS a soma de volumes do plano inteiro — cada
- * bloco consome o próximo trecho da fila em ordem, então blocos requisitados
- * fora de ordem ainda avançam o cursor corretamente (mesma fila, mesmo
- * offset acumulado) desde que `plan` seja o plano COMPLETO do ciclo.
+ * `queue` deve conter PELO MENOS a soma de volumes de `plan` — cada bloco
+ * consome o próximo trecho da fila em ordem, então blocos requisitados fora
+ * de ordem ainda avançam o cursor corretamente (mesma fila, mesmo offset
+ * acumulado) desde que `plan` inclua TODOS os blocos que devem compartilhar
+ * o mesmo cursor nesta chamada.
+ *
+ * #2915: desde o #2883, `queue` já vem DEDUPLICADA (exclui quem já foi
+ * escrito em waves anteriores do ciclo — ver `excludeAlreadySentEmails`) —
+ * ela não é mais o universo estável e completo que a docstring original
+ * assumia. Por isso o CALLER (main()) passa aqui só os blocos EM ESCOPO
+ * desta invocação (`plan.filter(p => blocks.includes(p.block))`), nunca o
+ * plano inteiro do ciclo: blocos já processados em invocações anteriores NÃO
+ * devem consumir nenhum item da fila deduplicada — os contatos já foram
+ * atribuídos (e removidos da fila) nessa invocação anterior. Se um bloco fora
+ * de escopo ainda fosse incluído aqui, seu "fatiar" consumiria do TOPO da
+ * fila deduplicada (os contatos remanescentes de MAIOR prioridade) só pra
+ * descartar o resultado — exatamente o bug que queimava o topo da fila e
+ * pulava quem deveria ser priorizado (#2915).
  *
  * @param nameByEmail primeiro nome por email (personalização; "" se ausente)
  */
@@ -191,7 +205,7 @@ export function buildSends(
   const totalNeeded = blocks.reduce((a, b) => a + b.total, 0);
   if (queue.length < totalNeeded) {
     throw new Error(
-      `fila de prioridade insuficiente: plano precisa de ${totalNeeded} contatos elegíveis, fila tem ${queue.length}.`,
+      `fila de prioridade insuficiente: blocos em escopo precisam de ${totalNeeded} contatos elegíveis, fila (após dedup) tem ${queue.length}.`,
     );
   }
 
@@ -220,10 +234,10 @@ function firstName(name: string | null | undefined): string {
 }
 
 /**
- * Merge cirúrgico (#495) entre a recomputação FRESCA (`freshSends`, sempre
- * cobre o plano inteiro) e o `sends-summary.json` pré-existente: dias cujo
- * bloco está FORA de `blocksInScope` nesta invocação preservam a entrada já
- * gravada anteriormente (com `listId` injetado por `clarice-import-sends`, se
+ * Merge cirúrgico (#495) entre a recomputação FRESCA (`freshSends`) e o
+ * `sends-summary.json` pré-existente: dias cujo bloco está FORA de
+ * `blocksInScope` nesta invocação preservam a entrada já gravada
+ * anteriormente (com `listId` injetado por `clarice-import-sends`, se
  * houver) — não sobrescrevem com números frescos de um CSV que não foi
  * re-escrito agora.
  *
@@ -231,7 +245,16 @@ function firstName(name: string | null | undefined): string {
  * store ter mudado) reescreveria a entrada do bloco-célula com uma composição
  * que não bate mais com o CSV real já importado/agendado (drift silencioso).
  *
- * Pura + exportada pra testabilidade (#633, #2775).
+ * #2915: desde que `buildSends` passou a receber só o plano EM ESCOPO (ver
+ * docstring de `buildSends`), `freshSends` também só cobre os blocos desta
+ * invocação — não é mais garantido que todo `n` do ciclo apareça em
+ * `freshSends`. Por isso o merge agora é uma UNIÃO por `n`: parte de
+ * `prevSends` como base (preserva blocos já processados que não foram
+ * recomputados agora) e sobrepõe `freshSends` — em escopo sempre vence
+ * (fresco), fora de escopo só vence se não houver entrada prévia (1ª vez que
+ * aquele bloco aparece, ex: fresh cobre um bloco novo além do pedido).
+ *
+ * Pura + exportada pra testabilidade (#633, #2775, #2915).
  */
 export function mergeSummaryAcrossBlocks(
   freshSends: SendsSummaryEntry[],
@@ -239,7 +262,13 @@ export function mergeSummaryAcrossBlocks(
   blocksInScope: number[],
 ): SendsSummaryEntry[] {
   const prevByN = new Map((prevSends ?? []).map((s) => [s.n, s]));
-  return freshSends.map((s) => (blocksInScope.includes(s.block) ? s : prevByN.get(s.n) ?? s));
+  const result = new Map<number, SendsSummaryEntry>(prevByN);
+  for (const s of freshSends) {
+    if (blocksInScope.includes(s.block) || !prevByN.has(s.n)) {
+      result.set(s.n, s);
+    }
+  }
+  return [...result.values()].sort((a, b) => a.n - b.n);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +521,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   const dedupedQueue = excludeAlreadySentEmails(queue, priorEmails);
 
-  const built = buildSends(dedupedQueue, plan, nameByEmail);
+  // #2915: só os blocos EM ESCOPO desta invocação entram no cursor de
+  // buildSends — a fila já deduplicada (acima) não deve ser consumida por
+  // blocos já processados em invocações anteriores (ver docstring de
+  // buildSends). scopedPlan preserva a ordem/composição de `plan` (planByBlock
+  // reordena por bloco ascendente internamente).
+  const scopedPlan = plan.filter((p) => blocks.includes(p.block));
+  const built = buildSends(dedupedQueue, scopedPlan, nameByEmail);
   const summary: { cycle: string; total: number; sends: SendsSummaryEntry[] } = {
     cycle,
     total: 0,
@@ -568,8 +603,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // #2851: cohort RESOLVIDO gravado top-level — guard de invocações futuras
     // (assertCohortConsistent) valida contra este campo.
     writeFileAtomic(summaryPath, JSON.stringify({ cycle, cohort, total: finalTotal, sends: finalSends }, null, 2));
+    console.error(`\nTotal (blocos ${blocks.join(",")} desta invocação): ${summary.total}  ·  Total (ciclo inteiro, sends-summary.json): ${finalTotal}`);
+  } else {
+    console.error(`\nTotal (blocos ${blocks.join(",")} desta invocação): ${summary.total}`);
   }
-  console.error(`\nTotal (plano inteiro): ${summary.total}`);
   console.error(dryRun ? "(dry-run: nada escrito)" : `Escrito em ${sendsDir} (blocos: ${blocks.join(",")})`);
 }
 
