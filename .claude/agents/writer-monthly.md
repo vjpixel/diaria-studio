@@ -13,6 +13,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
+- `eia_selection_path` (opcional): ex: `data/monthly/2604/_internal/02-eia-selection.json` — a seleção **autoritativa** da edição-desafio do É IA? mensal, já resolvida pelo orchestrator (`scripts/select-eia-edition.ts`) antes de te invocar (#2869/#2904). Contém `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason, fetch_errors }`. Esta é a ÚNICA fonte de seleção a consultar no passo 8 — nunca `eia-used.json`/`poll_id` (campo que nunca existe lá; instrução legada que causou o bug do ciclo 2606-07, #2869).
 
 ## Formato dos labels de seção (#2794 — CRÍTICO)
 
@@ -83,7 +84,14 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
 7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
-8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**ENCERRAMENTO**` — #2794). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Encerramento (não depois do Radar). Verificar se `eia-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda a este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457)
+8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**ENCERRAMENTO**` — #2794). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Encerramento (não depois do Radar).
+
+   **Seleção (#2869/#2904 — fonte autoritativa; NUNCA `eia-used.json`/`poll_id` — esse campo nunca existe lá, instrução legada que causou o bug do ciclo 2606-07):** ler `eia_selection_path` (se fornecido pelo orchestrator). É o `EiaSelectionResult` de `scripts/select-eia-edition.ts`, já resolvido ANTES desta invocação: `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason }`.
+   - **`eia_selection_path` ausente, OU `selection == "fallback_last"` sem `edition` utilizável:** emitir o placeholder — `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`.
+   - **`selection == "fallback_last"` com `edition` presente:** escrever o recap dessa edição SEM afirmar que foi "a mais dividida/ambígua" — nenhuma edição do mês teve poll elegível (`reason` explica o motivo: sem gabarito ou poucos votos). Frasear como recap do encerramento do mês, não como vencedora de um critério.
+   - **`selection == "criterion"`:** escrever 1-2 parágrafos citando a edição (`edition`, convertido pra data por extenso — ex: `260616` → "16 de junho"), o `pct_correct`% de acerto, e uma breve análise do que tornou aquela imagem difícil/interessante. Se `data/editions/{edition}/_internal/01-eia-meta.json` existir, usar os campos `wikimedia.title`/`wikimedia.credit` pra fundamentar a análise — nunca inventar detalhes da imagem que não estejam nesses campos.
+
+   Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda a este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457)
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
@@ -92,7 +100,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
-   - É IA? placeholder e encerramento presentes
+   - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 
