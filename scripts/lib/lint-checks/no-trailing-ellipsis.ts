@@ -26,7 +26,7 @@
  */
 
 import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
+import { INLINE_LINK_ONLY_RE, URL_WITH_BALANCED_PARENS_RE_PART } from "./section-item-format.ts";
 // Fonte única da regex de reticência final (#2881 self-review) — evita drift
 // entre o sanitizador do enrich e este backstop de gate.
 import { TRAILING_ELLIPSIS_RE } from "../sanitize-description-ellipsis.ts";
@@ -37,16 +37,27 @@ const TARGET_SECTION_RE = sectionHeaderRegex(
   { capture: "none", flags: "u" },
 );
 
-// Qualquer header de seção (inclusive VÍDEOS / É IA?) — encerra o scan da seção alvo.
+// Qualquer header de seção (inclusive VÍDEOS / É IA? / ERRO INTENCIONAL /
+// SORTEIO / PARA ENCERRAR) — encerra o scan da seção alvo. #2918 bug 2: antes
+// faltavam esses últimos 4 headers reais de toda edição (context/templates/
+// newsletter.md) — se um `---` fosse removido numa edição manual no Drive,
+// `currentSection` ficava "preso" em RADAR e a prosa de encerramento virava
+// falso-positivo com label errado.
 const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
+  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`,
   { capture: "none", flags: "u" },
 );
 
 // Formato canônico USE MELHOR: link + descrição na MESMA linha.
 // Grupo 1 = título, grupo 2 = descrição.
-const INLINE_LINK_WITH_TEXT_RE =
-  /^\s*\*{0,2}\s*\[([^\]]+)\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+(\S.*)$/;
+// #2918 bug 3: URL exclui só `)` do grupo — uma URL com parênteses balanceados
+// (ex: Wikipedia `..._(disambiguation)`) não casava e o item passava batido
+// sem checar a descrição. Reusa URL_WITH_BALANCED_PARENS_RE_PART (mesmo
+// pattern de INLINE_LINK_ONLY_RE / section-item-format.ts) pra tolerar 1
+// nível de parênteses balanceados no path.
+const INLINE_LINK_WITH_TEXT_RE = new RegExp(
+  String.raw`^\s*\*{0,2}\s*\[([^\]]+)\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(\S.*)$`,
+);
 
 export interface NoTrailingEllipsisError {
   section: string;

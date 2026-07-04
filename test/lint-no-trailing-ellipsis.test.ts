@@ -107,6 +107,49 @@ describe("checkNoTrailingEllipsis (#2881)", () => {
     assert.equal(result.ok, true);
   });
 
+  // #2918 bug 2: ANY_SECTION_HEADER_RE não listava É IA? / ERRO INTENCIONAL /
+  // SORTEIO / PARA ENCERRAR — se o `---` entre RADAR e um desses headers
+  // fosse removido numa edição manual no Drive, `currentSection` ficava
+  // "preso" em RADAR e a prosa de encerramento virava falso-positivo com
+  // label errado.
+  for (const header of ["É IA?", "ERRO INTENCIONAL", "SORTEIO", "PARA ENCERRAR"]) {
+    it(`#2918 bug 2: header '${header}' (sem '---' antes) encerra a seção RADAR corretamente`, () => {
+      const md = [
+        "RADAR",
+        "",
+        "[Item real do radar](https://example.com/radar)",
+        "Descrição completa e legítima.",
+        "",
+        header,
+        "",
+        "[Um link qualquer](https://example.com/outro)",
+        "Texto fora de escopo que termina em reticência…",
+      ].join("\n");
+      const result = checkNoTrailingEllipsis(md);
+      assert.equal(
+        result.ok,
+        true,
+        `esperava ok:true — '${header}' deve encerrar o scan de RADAR, não deixar 'preso'`,
+      );
+    });
+  }
+
+  // #2918 bug 3: INLINE_LINK_WITH_TEXT_RE excluía `)` do grupo de URL mas não
+  // `(` — uma URL com parênteses balanceados (ex: Wikipedia disambiguation)
+  // não casava o regex inteiro, o item não era reconhecido, e a reticência
+  // final passava despercebida.
+  it("#2918 bug 3: reconhece item inline cuja URL tem parênteses balanceados e flagra reticência final", () => {
+    const md = [
+      "RADAR",
+      "",
+      "**[Modelo de linguagem](https://en.wikipedia.org/wiki/GPT-4_(disambiguation))** Descrição que termina em reticência…",
+    ].join("\n");
+    const result = checkNoTrailingEllipsis(md);
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].section, "RADAR");
+  });
+
   it("ignora descrição em seção DESTAQUE (fora de escopo)", () => {
     const md = [
       "DESTAQUE 1 | INTELIGÊNCIA ARTIFICIAL",
