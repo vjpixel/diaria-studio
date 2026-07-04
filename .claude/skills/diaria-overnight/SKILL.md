@@ -2,6 +2,8 @@
 name: diaria-overnight
 description: Assume o turno no fim do dia (#2021) — varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge), com code-review consolidado pós-rodada (#2039). Ao final, deixa rascunho de relatório no Gmail + resumo no terminal. Uso — `/diaria-overnight [--dry-run]`.
 disable-model-invocation: true
+model: sonnet
+effort: xhigh
 ---
 
 # /diaria-overnight
@@ -11,6 +13,10 @@ O editor invoca esta skill ao encerrar o expediente. Você assume o turno: varre
 Escopo = **resolver issues de código/config/docs do repo**. Fora de escopo: executar a pipeline editorial (pesquisa, escrita, publicação de edição) — mudanças em código de publishers/Workers SÃO elegíveis, mas *disparar* publicação não.
 
 Esta skill só roda por invocação explícita do editor (`disable-model-invocation: true`) — o blast radius (merges autônomos em master) exige que a invocação seja o consentimento, mesmo padrão de `/diaria-remover-votos-pixel`.
+
+**Modelo/effort do coordenador (#2941).** O frontmatter fixa `model: sonnet` + `effort: xhigh` — o loop principal (coordenador) roda em Sonnet 5 com effort `xhigh` (nível suportado por Sonnet 5) sempre que esta skill é invocada, sem exigir `/model`/`/effort` manual antes. Racional: o coordenador é majoritariamente orquestração + decisão estruturada (triage elegível/bloqueado, gate de 2 condições, review consolidado) — os subagentes implementadores já rodam em `sonnet` explícito (#2019); rodar o coordenador em Opus por horas custaria mais sem ganho proporcional de qualidade nessas decisões.
+
+**Limitação documentada (confirmada contra a doc oficial do harness, `/en/skills#frontmatter-reference`):** o override de `model`/`effort` via frontmatter de skill vale **"pelo resto do turno atual"** — a sessão volta ao modelo/effort anteriores **"no seu próximo prompt"**. Não há mecanismo de hook (`UserPromptSubmit`/`PreToolUse`/etc.) que force troca de modelo/effort programaticamente; a única forma de trocar modelo é `/model` (manual) ou este campo de frontmatter (automático, mas escopado ao turno). Na prática, isso cobre bem o `/diaria-overnight`: a Fase 0 (briefing via `AskUserQuestion`) e toda a Fase 1 autônoma seguinte rodam dentro do mesmo turno iniciado pela invocação da skill — não exigem que o editor digite uma nova mensagem livre no meio do caminho. **Exceção real:** se o editor intervier por iniciativa própria digitando uma mensagem no terminal mid-rodada (já previsto como exceção na regra "zero perguntas pós-briefing" abaixo), isso conta como "próximo prompt" e a sessão volta ao modelo/effort anteriores a partir daquele ponto — não há como este arquivo evitar isso; se notar o modelo divergindo de Sonnet/`xhigh` após uma intervenção, é esperado, não um bug.
 
 ## Argumentos
 
