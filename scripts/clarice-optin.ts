@@ -35,7 +35,8 @@ function normalizeEmail(e: string): string {
 }
 
 /**
- * Resolve o email informado no `add` contra o store ANTES de gravar (#2861).
+ * Resolve o email informado (`add` OU `remove`, #2921 — aplicado nos dois
+ * desde então; originalmente só `add`, #2861) contra o store ANTES de gravar.
  *
  * Incidente real (260702): 13 opt-ins prioritários, 4 responderam da variante
  * SEM pontos do Gmail (`filosofodaniel@gmail.com`) mas o Stripe/store tem a
@@ -43,13 +44,21 @@ function normalizeEmail(e: string): string {
  * caixa, o join exato do `recomputeDerived` não. O boost +40 ficou órfão na
  * tabela `priority_optin` (um deles era assinante ativo T01).
  *
+ * #2921: o mesmo problema existia no `remove` — um `add` que resolveu pro
+ * canônico grava a forma COM pontos em `priority_optin`; um `remove` que NÃO
+ * resolvesse tentaria `DELETE ... WHERE email = '<variante sem pontos>'`,
+ * casaria 0 linhas, e o boost +40 ficaria ativo indevidamente (falha
+ * silenciosa — a CLI reporta "não estava" como se o email nunca tivesse sido
+ * adicionado). Aplicar a MESMA resolução no remove garante que a chave
+ * deletada seja a mesma que o add gravou.
+ *
  * A normalização fica SÓ aqui (ponto de entrada do optin) — as chaves do
  * store permanecem o email REAL do Stripe (necessário pro match com Brevo);
  * `findContactByEmail` (#2863) nunca reescreve o store, só informa a
- * resolução pro chamador decidir o que gravar:
- *   - match único (exato OU gmail-normalized) → grava o email CANÔNICO do
+ * resolução pro chamador decidir o que gravar/remover:
+ *   - match único (exato OU gmail-normalized) → usa o email CANÔNICO do
  *     store (o que já está lá), com notice mostrando a resolução;
- *   - ambíguo (2+ candidatos) OU sem match nenhum → grava o email INFORMADO
+ *   - ambíguo (2+ candidatos) OU sem match nenhum → usa o email INFORMADO
  *     literalmente, com warning (nunca inventa uma resolução incerta).
  */
 export function resolveOptinEmail(
@@ -152,8 +161,14 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   } else {
     const stmt = db.prepare("DELETE FROM priority_optin WHERE email = ?");
     let removed = 0;
-    for (const email of emails) {
-      const r = stmt.run(email);
+    for (const inputEmail of emails) {
+      // #2921: mesma resolução do add (#2861) — sem isso, remove de uma
+      // variante Gmail (ex: `user+tag@gmail.com` vs a forma canônica gravada
+      // pelo add) casa 0 linhas e o boost +40 permanece órfão em silêncio.
+      const resolved = resolveOptinEmail(db, inputEmail);
+      if (resolved.notice) console.error(resolved.notice);
+      if (resolved.warning) console.error(resolved.warning);
+      const r = stmt.run(resolved.email);
       if (r.changes > 0) removed++;
     }
     const recomputed = recomputeDerived(db);

@@ -189,3 +189,89 @@ test("#2861 main add: match AMBÍGUO → grava o literal informado (não escolhe
   assert.equal(rows[0].email, "a.b.c@gmail.com", "ambíguo → grava o literal, deixa as 2 linhas do store intocadas");
   check.close();
 });
+
+// ---------------------------------------------------------------------------
+// Regressão #2921 — `resolveOptinEmail` era aplicado só no `add`, não no
+// `remove`. Réplica do incidente descrito na issue: `add` de uma variante
+// Gmail resolve pro canônico do store e grava o canônico em `priority_optin`;
+// um `remove` da MESMA variante (digitada do mesmo jeito) precisa resolver
+// igual e deletar a linha canônica — não pode casar 0 linhas e deixar o
+// boost +40 ativo silenciosamente.
+// ---------------------------------------------------------------------------
+
+test("#2921 main remove: remove de variante Gmail resolve pro canônico e efetivamente apaga o priority_optin", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "clarice-optin-test-2921-"));
+  const dbPath = resolve(dir, "store.db");
+
+  const seed = openClariceDb(dbPath);
+  seed.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run(
+    "filosofo.daniel@gmail.com",
+    1,
+  );
+  seed.close();
+
+  // add da variante SEM pontos → resolve e grava o canônico COM pontos.
+  main(["add", "filosofodaniel@gmail.com", "--db", dbPath]);
+
+  let check = openClariceDb(dbPath);
+  let rows = check.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].email, "filosofo.daniel@gmail.com");
+  let contact = check
+    .prepare("SELECT priority_points FROM clarice_users WHERE email = ?")
+    .get("filosofo.daniel@gmail.com") as { priority_points: number };
+  assert.equal(contact.priority_points, 40, "boost aplicado após o add");
+  check.close();
+
+  // remove da MESMA variante SEM pontos (o editor digita do mesmo jeito) —
+  // antes do fix, isto rodava DELETE ... WHERE email = 'filosofodaniel@gmail.com'
+  // e casava 0 linhas (a linha real é 'filosofo.daniel@gmail.com'), deixando o
+  // boost +40 órfão e ativo.
+  main(["remove", "filosofodaniel@gmail.com", "--db", dbPath]);
+
+  check = openClariceDb(dbPath);
+  rows = check.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>;
+  assert.equal(rows.length, 0, "remove da variante deve apagar a linha canônica (não casar 0 linhas)");
+  contact = check
+    .prepare("SELECT priority_points FROM clarice_users WHERE email = ?")
+    .get("filosofo.daniel@gmail.com") as { priority_points: number };
+  assert.equal(contact.priority_points, 0, "boost +40 removido — recomputeDerived rodou após o delete real");
+  check.close();
+});
+
+test("#2921 main remove: email já-canônico (sem variante) continua removendo normalmente", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "clarice-optin-test-2921b-"));
+  const dbPath = resolve(dir, "store.db");
+
+  const seed = openClariceDb(dbPath);
+  seed.prepare("INSERT INTO clarice_users (email, tier) VALUES (?, ?)").run(
+    "assinante@empresa.com.br",
+    1,
+  );
+  seed.close();
+
+  main(["add", "assinante@empresa.com.br", "--db", dbPath]);
+  main(["remove", "assinante@empresa.com.br", "--db", dbPath]);
+
+  const check = openClariceDb(dbPath);
+  const rows = check.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>;
+  assert.equal(rows.length, 0, "match exato (sem normalização Gmail) continua removendo como antes");
+  check.close();
+});
+
+test("#2921 main remove: email sem match no store (nunca foi adicionado) remove literal sem erro", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "clarice-optin-test-2921c-"));
+  const dbPath = resolve(dir, "store.db");
+
+  const seed = openClariceDb(dbPath);
+  seed.close();
+
+  // Nunca houve add — remove deve resolver (miss → literal) e reportar
+  // "não estava" sem lançar exceção.
+  main(["remove", "ninguem@gmail.com", "--db", dbPath]);
+
+  const check = openClariceDb(dbPath);
+  const rows = check.prepare("SELECT email FROM priority_optin").all() as Array<{ email: string }>;
+  assert.equal(rows.length, 0);
+  check.close();
+});
