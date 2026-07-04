@@ -57,17 +57,26 @@ export function stripBackslashEscapes(s: string): string {
  * Laboratório Clarice (`*.json`), multiplicação (`palavras * 1.3 * margem`).
  * O flanco não-espaço preserva o caso real (`*Canis aureus*`) e ignora esses.
  */
+// #template-branding (260703): na MENSAL, toda ocorrência de `diar.ia.br` vira
+// link pra o cadastro no Beehiiv (a mensal sai pela Brevo pra base da Clarice —
+// o wordmark linkado converte esse público pro Diar.ia). A diária NÃO recebe o
+// link (já vive no Beehiiv) — por isso o destino entra como argumento aqui, não
+// no applyBrandWordmark compartilhado.
+const MENSAL_BRAND_LINK = "https://diaria.beehiiv.com";
+
 function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
   // applyBrandWordmark após word-joiner (mesma ordem da diária, #2532/#2533):
-  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal).
+  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal) E,
+  // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
   return applyBrandWordmark(
     applyWordJoiner(
       escHtml(s)
         .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
         .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
     ),
+    MENSAL_BRAND_LINK,
   );
 }
 
@@ -91,6 +100,17 @@ const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
 export function normalizeKnownUrl(url: string): string {
   for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
   return url;
+}
+
+/**
+ * #template-branding (260703): caixas "O fio condutor" começam com inicial
+ * MAIÚSCULA. O writer às vezes emite o fecho em continuação minúscula ("em um
+ * mês...", "a OpenAI..."); aqui a 1ª letra do parágrafo é capitalizada. Pula
+ * marcadores markdown iniciais (`*`, `[`, aspas, espaço) e capitaliza a 1ª
+ * letra Unicode — idempotente se já estiver maiúscula.
+ */
+export function capitalizeFirstLetter(text: string): string {
+  return text.replace(/^([^\p{L}]*)(\p{L})/u, (_m, pre, ch) => pre + ch.toLocaleUpperCase("pt-BR"));
 }
 
 /**
@@ -267,8 +287,10 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
   const label = tema ? renderKicker(tema) : "";
+  // #template-branding (260703): título do destaque SEM sublinhado — não é link.
+  // (O sublinhado teal fica só onde há link real: labels de link no corpo e no Radar.)
   const titleHtml = title
-    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONT_SERIF};line-height:1.2;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${renderInline(title)}</h2>`
+    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONT_SERIF};line-height:1.2;color:${INK};">${renderInline(title)}</h2>`
     : "";
   // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
   // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
@@ -278,7 +300,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   const boxFor = (text: string): string =>
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
     `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">O fio condutor</p>` +
-    `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
+    `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(capitalizeFirstLetter(text.replace(/\n/g, " ")))}</p></td></tr></table>`;
   let mainHtml = "";
   let conductorHtml = "";
   if (conductorText) {
