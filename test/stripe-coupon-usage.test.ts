@@ -904,6 +904,30 @@ describe("aggregateCouponUsage — invoices, redemption durável (#2879)", () =>
     });
     assert.equal(r["NEWS50"].rowCount, 1, "assinatura da invoice não está no fetch — degrada sem quebrar");
   });
+
+  // #2917: mesmo cenário pós-pagamento de sub_POST, mas o Discount da invoice
+  // vem no shape source-wrapped (sem `.coupon` top-level) — o shape que
+  // invoiceDiscounts() não resolvia antes do fix, fazendo a linha sumir do
+  // relatório de novo (regressão do próprio #2879).
+  it("sub_POST aparece mesmo quando o discount da invoice é source-wrapped (#2917)", () => {
+    const invoicePostPaymentSourceWrapped: InvoiceRaw = {
+      id: "in_POST_SRC", object: "invoice", customer: "cus_POST", subscription: "sub_POST",
+      created: 1782500000, status: "paid",
+      discount: {
+        id: "di_POST_SRC", object: "discount",
+        source: { coupon: "cpnONCE2879", type: "coupon" },
+        start: 1782450000,
+      },
+    };
+    const r = aggregateCouponUsage({
+      codes: promosOnce, coupons: [couponOnce], subscriptions: [subPrePayment, subPostPayment],
+      customers: customersOnce, charges, invoices: [invoicePostPaymentSourceWrapped],
+    });
+    const row = r["NEWS50"].redemptions.find((x) => x.subscription === "sub_POST");
+    assert.ok(row, "source-wrapped: a linha pós-pagamento não pode sumir");
+    assert.equal(row!.paid_cents, 44900);
+    assert.equal(row!.commission_cents, Math.round(44900 * 0.4));
+  });
 });
 
 describe("invoiceDiscounts (#2879)", () => {
@@ -955,6 +979,46 @@ describe("invoiceDiscounts (#2879)", () => {
       id: "in_6", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
     };
     assert.deepEqual(invoiceDiscounts(inv), []);
+  });
+
+  // #2917: shape source-wrapped (`{ source: { coupon }, start }`, sem `.coupon`
+  // top-level) — o mesmo shape que o caminho ao vivo (discount.source) já
+  // resolvia, mas invoiceDiscounts só olhava d.coupon e retornava [].
+  it("extrai coupon id de invoice.discount source-wrapped (sem .coupon top-level)", () => {
+    const inv: InvoiceRaw = {
+      id: "in_7", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: { id: "di_7", object: "discount", source: { coupon: "cpn_7", type: "coupon" }, start: 700 },
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_7", start: 700 }]);
+  });
+
+  it("extrai de invoice.discounts[] source-wrapped", () => {
+    const inv: InvoiceRaw = {
+      id: "in_8", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discounts: [{ id: "di_8", object: "discount", source: { coupon: "cpn_8", type: "coupon" }, start: 800 }],
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_8", start: 800 }]);
+  });
+
+  it("prefere source quando ambos source e coupon estão presentes (mesma prioridade do caminho ao vivo)", () => {
+    const inv: InvoiceRaw = {
+      id: "in_9", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: {
+        id: "di_9", object: "discount",
+        source: { coupon: "cpn_source", type: "coupon" },
+        coupon: { id: "cpn_coupon", object: "coupon" },
+        start: 900,
+      },
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_source", start: 900 }]);
+  });
+
+  it("continua resolvendo via .coupon quando source está ausente (não regride #2879)", () => {
+    const inv: InvoiceRaw = {
+      id: "in_10", object: "invoice", customer: "cus_1", subscription: "sub_1", created: 1, status: "paid",
+      discount: { id: "di_10", object: "discount", coupon: { id: "cpn_10", object: "coupon" }, start: 1000 },
+    };
+    assert.deepEqual(invoiceDiscounts(inv), [{ couponId: "cpn_10", start: 1000 }]);
   });
 });
 

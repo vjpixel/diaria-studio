@@ -96,6 +96,10 @@ export interface DiscountRaw {
 export interface InvoiceDiscountRaw {
   id?: string;
   object?: string;
+  /** API nova: coupon id em `source.coupon` — mesmo wrapper de `DiscountRaw.source`
+   *  (#2917). Sem este campo, um Discount de invoice entregue nesse shape
+   *  (`{ source: { coupon }, start }`, sem `.coupon` top-level) não resolvia. */
+  source?: CouponRef;
   coupon?: CouponRef;
   start?: number;
 }
@@ -138,7 +142,11 @@ export function invoiceDiscounts(
   const seen = new Set<string>();
   const push = (d: InvoiceDiscountRaw | string | null | undefined) => {
     if (d == null || typeof d === "string") return; // id não-expandido — não resolvível aqui
-    const couponId = couponIdFrom(d.coupon);
+    // #2917: tentar `source` antes de `coupon` — espelha o caminho ao vivo
+    // (aggregateCouponUsage L529/L772). Sem isso, um Discount de invoice no
+    // shape source-wrapped (`{ source: { coupon }, start }`, sem `.coupon`
+    // top-level) não resolvia e a redemption sumia do relatório.
+    const couponId = couponIdFrom(d.source) ?? couponIdFrom(d.coupon);
     if (!couponId || seen.has(couponId)) return;
     seen.add(couponId);
     out.push({ couponId, start: d.start });
