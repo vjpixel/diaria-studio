@@ -49,6 +49,10 @@ describe("applyBrandWordmark linkHref (#2937)", () => {
     assert.doesNotMatch(out, /<a href/);
     assert.match(out, /<strong>diar/);
   });
+  it("linkHref com '$' é inserido literal (replace via função, não $-interpretado)", () => {
+    const out = applyBrandWordmark("veja diar.ia.br", "https://x.com/?u=$1&v=$$");
+    assert.match(out, /href="https:\/\/x\.com\/\?u=\$1&v=\$\$"/);
+  });
 });
 
 describe("renderDestaque branding (#2937)", () => {

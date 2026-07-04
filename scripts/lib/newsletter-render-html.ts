@@ -1070,7 +1070,10 @@ export function applyBrandWordmark(s: string, linkHref?: string): string {
   const html = linkHref
     ? `<a href="${linkHref}" style="color:inherit;text-decoration:none">${BRAND_WORDMARK_HTML}</a>`
     : BRAND_WORDMARK_HTML;
-  return s.replace(BRAND_WORDMARK_RE, html);
+  // Replacement via função: `html` (que embute `linkHref` arbitrário) é inserido
+  // LITERAL — evita a interpretação de `$&`/`$1`/`$$` que o replace-string faz se
+  // a URL contiver `$` (agora que linkHref é parâmetro, não mais só a constante).
+  return s.replace(BRAND_WORDMARK_RE, () => html);
 }
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.
