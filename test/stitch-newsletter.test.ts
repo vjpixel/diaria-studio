@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout } from "../scripts/stitch-newsletter.ts";
-import { extractMidCallout } from "../scripts/render-newsletter-html.ts";
+import { extractBoxDivulgacao1, extractBoxDivulgacao2 } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
 describe("renderSection (#1463)", () => {
@@ -631,7 +631,123 @@ Foto descrição.
   });
 });
 
-describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
+describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-boxes-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" } }));
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  const base = (dir: string, internalDir: string, extra: Record<string, unknown> = {}) => ({
+    d1Path: join(internalDir, "02-d1-draft.md"),
+    d2Path: join(internalDir, "02-d2-draft.md"),
+    d3Path: join(internalDir, "02-d3-draft.md"),
+    approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+    editionDir: dir,
+    ...extra,
+  });
+
+  it("config default do platform.config.json (slot1=livros, slot2=null): injeta só slot1", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.ok(extractBoxDivulgacao1(out), "slot1 (livros) injetado por default");
+      assert.equal(extractBoxDivulgacao2(out), null, "slot2 vazio por default");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("config custom: slot1 também recebe snippet (Alexa+)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+      }));
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 injetado");
+      assert.match(slot1!, /Alexa\+/);
+      const slot2 = extractBoxDivulgacao2(out);
+      assert.ok(slot2, "slot2 injetado");
+      assert.match(slot2!, /curadoria de livros/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("snippet ausente/null num slot → esse slot fica vazio, sem erro (graceful)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null },
+      }));
+      assert.equal(extractBoxDivulgacao1(out), null);
+      assert.equal(extractBoxDivulgacao2(out), null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("idempotência: box 🛒 já presente na região do slot2 (D2/D3) não é duplo-injetado", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2\n\n🛒 Já colado [x](https://link.amazon/x)",
+      );
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: "livros-divulgacao.md" },
+      }));
+      assert.equal((out.match(/🛒/g) || []).length, 1, "só 1 marcador 🛒 (não dupla-injeta)");
+      assert.ok(!out.includes("curadoria de livros"), "livros não injetado por cima do box manual");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sponsor=false suprime AMBOS os slots", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        sponsor: false,
+        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+      }));
+      assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
+      assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("2 destaques (sem D3): slot2 nunca injeta (sem gap D2/D3)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-boxes-2d-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+      writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" }, highlights: [{}, {}] }));
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: null,
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+      });
+      assert.ok(extractBoxDivulgacao1(out), "slot1 (D1/D2) ainda existe em edição de 2 destaques");
+      assert.equal(extractBoxDivulgacao2(out), null, "slot2 nunca injeta sem gap D2/D3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
   function setupEdition() {
     const dir = mkdtempSync(join(tmpdir(), "stitch-clarice-"));
     const internalDir = join(dir, "_internal");
@@ -669,7 +785,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /livros\.diaria\.workers\.dev/);
   });
 
-  it("default (sponsor on, #2527): injeta o callout 📚 de livros entre D1 e D2 + extractMidCallout o acha", () => {
+  it("default (sponsor on, #2527): injeta o callout 📚 de livros entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
@@ -677,9 +793,9 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
       const calloutPos = out.indexOf("📚");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #2527: snippet de livros presente → midCallout 📚 no HTML final
-      const mid = extractMidCallout(out);
-      assert.ok(mid, "extractMidCallout acha o box");
+      // acceptance #2527: snippet de livros presente → boxDivulgacao1 📚 no HTML final
+      const mid = extractBoxDivulgacao1(out);
+      assert.ok(mid, "extractBoxDivulgacao1 acha o box");
       assert.match(mid!, /^📚 A Diar\.ia mantém uma curadoria/);
     } finally {
       cleanup();
@@ -691,7 +807,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     try {
       const out = stitchNewsletter(base(dir, internalDir, false));
       assert.ok(!out.includes("📚"), "sem callout quando sponsor=false");
-      assert.equal(extractMidCallout(out), null);
+      assert.equal(extractBoxDivulgacao1(out), null);
     } finally {
       cleanup();
     }
@@ -713,7 +829,7 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     }
   });
 
-  it("code-review: callout 📚/🎉 pré-existente também suprime injeção (não cria 2º midCallout)", () => {
+  it("code-review: callout 📚/🎉 pré-existente também suprime injeção (não cria 2º boxDivulgacao1)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       // um 📚 (livros) já na região do D1 → NÃO injetar 📣 (dois midCallouts orfanariam um)

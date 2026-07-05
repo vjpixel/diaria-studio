@@ -40,7 +40,7 @@ describe("checkCouponSurvival (#1982)", () => {
     assert.equal(r.status, "ok");
   });
 
-  it("conta múltiplas ocorrências — midCallout + PARA ENCERRAR (2 blocos)", () => {
+  it("conta múltiplas ocorrências — boxDivulgacao1 + PARA ENCERRAR (2 blocos)", () => {
     const pre = SPONSOR_BLOCK + "\n\n---\n\n" + SPONSOR_BLOCK; // cupons aparecem 2x
     // Clarice dropou 1 das 2 ocorrências de NEWS50 → post < pre
     const post = pre.replace(/NEWS50/, "NEWS-50");

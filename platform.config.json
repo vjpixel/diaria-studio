@@ -55,6 +55,10 @@
     "since_hours": 48,
     "min_primary_urls": 5
   },
+  "boxes_divulgacao": {
+    "slot1": "livros-divulgacao.md",
+    "slot2": null
+  },
   "drive_sync": true,
   "logging": {
     "path": "data/run-log.jsonl"

@@ -1,7 +1,7 @@
 /**
  * verify-clarice-coupons.ts (#1982)
  *
- * O bloco de divulgação CLARICE (midCallout daily `**📣 …**` #1938 + PARA
+ * O bloco de divulgação CLARICE (box de divulgação daily `**📣 …**` #1938 + PARA
  * ENCERRAR) passa por 2 passos LLM (humanizer + Clarice `correct_text`) antes do
  * render. Os cupons `NEWS25`/`NEWS50` e o link de afiliado
  * `clarice.ai/precos-planos?via=diaria` NÃO têm guard — `verify-clarice-url-
@@ -14,7 +14,7 @@
  * existia no pré (sem patrocínio), não há o que proteger → ok.
  *
  * **Baseline = `02-normalized.md`** (pré-humanizer, code-review #1982): o
- * midCallout é injetado pelo stitch ANTES de normalize→humanizer→Clarice, então
+ * box de divulgação é injetado pelo stitch ANTES de normalize→humanizer→Clarice, então
  * `02-normalized.md` é o 1º artefato estável pré-LLM e cobre os DOIS passos. Usar
  * `02-pre-clarice.md` (pós-humanizer) só pegaria mangling da Clarice.
  *

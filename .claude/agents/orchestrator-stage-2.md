@@ -108,7 +108,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
 ```
 
-**#1938/#2527:** o stitch auto-injeta o midCallout de divulgação entre D1 e D2 em **todo daily** (decisão editorial). **Default desde #2527: bloco 📚 de curadoria de livros** (`context/snippets/livros-divulgacao.md`, via `loadDailyCallout`); o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual). Idempotente (pula se D1/D2 já trazem um callout `**📣/📚/🎉 …**`). Kill-switch pontual: `--no-sponsor` (suprime o callout, seja livros ou Clarice).
+**#1938/#2527/#2978:** o stitch auto-injeta os boxes de divulgação nos slots 1 (D1/D2) e 2 (D2/D3) em **todo daily** (decisão editorial), config-driven via `boxes_divulgacao` de `platform.config.json`. **Default (chave ausente): bloco 📚 de curadoria de livros no slot 1** (`context/snippets/livros-divulgacao.md`, via `loadDailyCallout`), slot 2 vazio; o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual / configurar em qualquer slot). Idempotente por slot (pula se a região correspondente já traz um callout `**📣/📚/🎉 …**` ou `🛒 …`). Kill-switch pontual: `--no-sponsor` (suprime a injeção em AMBOS os slots).
 
 O script é determinístico, sem LLM. Ordem canonical:
 - Coverage line (do `01-approved-capped.json > coverage.line`)
@@ -302,7 +302,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Exit 0 = todas URLs em LANÇAMENTOS estáveis (warnings em outras seções são informativos, não bloqueiam). Exit 1 = Clarice mexeu em URL de lançamento — incluir o output no prompt do gate humano com diff `antes/depois` pra editor decidir: aceitar a versão pós-Clarice (pode quebrar #160) ou restaurar manualmente em `02-reviewed.md`. Não auto-restaurar — preserva agência editorial.
 
-- **Verificar sobrevivência dos cupons CLARICE (#1982).** Os cupons `NEWS25`/`NEWS50` + link de afiliado `?via=diaria` aparecem no bloco PARA ENCERRAR (sempre) e no midCallout `**📣 …**` Clarice **apenas quando esse for o callout ativo** (desde #2527 o default diário é o 📚 livros, sem cupons — o check sai exit 0 "sem patrocínio", esperado). Esses literais passam por humanizer + Clarice e não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
+- **Verificar sobrevivência dos cupons CLARICE (#1982).** Os cupons `NEWS25`/`NEWS50` + link de afiliado `?via=diaria` aparecem no bloco PARA ENCERRAR (sempre) e no box de divulgação `**📣 …**` Clarice **apenas quando esse for o callout ativo** (desde #2527 o default diário é o 📚 livros, sem cupons — o check sai exit 0 "sem patrocínio", esperado). Esses literais passam por humanizer + Clarice e não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
   ```bash
   npx tsx scripts/verify-clarice-coupons.ts \
     --pre data/editions/{AAMMDD}/_internal/02-normalized.md \

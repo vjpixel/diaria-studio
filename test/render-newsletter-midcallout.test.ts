@@ -11,11 +11,11 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  extractMidCallout,
-  stripMidCalloutFromD1,
+  extractBoxDivulgacao1,
+  stripBoxDivulgacao1,
   renderMidCallout,
-  readMidCalloutImage,
-  isMidCalloutLivros,
+  readBoxDivulgacao1Image,
+  isBoxDivulgacaoLivros,
   renderIntroCallout,
 } from "../scripts/render-newsletter-html.ts";
 import { parseDestaques } from "../scripts/extract-destaques.ts";
@@ -47,21 +47,21 @@ Algo importante.
 Corpo do destaque 2.
 `;
 
-describe("midCallout — box entre D1 e D2", () => {
-  it("extractMidCallout pega o box bold-wrapped 📚 entre D1 e D2", () => {
-    const c = extractMidCallout(MD);
+describe("boxDivulgacao1 — box entre D1 e D2", () => {
+  it("extractBoxDivulgacao1 pega o box bold-wrapped 📚 entre D1 e D2", () => {
+    const c = extractBoxDivulgacao1(MD);
     assert.ok(c, "deveria achar o box");
     assert.match(c!, /^📚 Nossa curadoria/);
     assert.match(c!, /\[Confira a nova página\]\(https:\/\/livros\.diaria\.workers\.dev\)/);
   });
 
-  it("extractMidCallout retorna null quando não há box", () => {
+  it("extractBoxDivulgacao1 retorna null quando não há box", () => {
     const semBox = MD.replace(/\*\*📚[^\n]*\n/, "");
-    assert.equal(extractMidCallout(semBox), null);
+    assert.equal(extractBoxDivulgacao1(semBox), null);
   });
 
-  it("extractMidCallout não casa títulos de destaque (começam com [)", () => {
-    const c = extractMidCallout(MD);
+  it("extractBoxDivulgacao1 não casa títulos de destaque (começam com [)", () => {
+    const c = extractBoxDivulgacao1(MD);
     assert.ok(!/Título D1/.test(c ?? ""), "não deve capturar o título do destaque");
   });
 
@@ -169,7 +169,7 @@ describe("midCallout — box entre D1 e D2", () => {
 
   // ── #1808: produtor (06-public-images.json) → consumidor (render) ──────
 
-  it("e2e: entry livros_promo no JSON → readMidCalloutImage → renderMidCallout emite <img> + botão", () => {
+  it("e2e: entry livros_promo no JSON → readBoxDivulgacao1Image → renderMidCallout emite <img> + botão", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
     try {
       // como o produtor (upload-images-public.ts --mode newsletter) grava:
@@ -179,8 +179,8 @@ describe("midCallout — box entre D1 e D2", () => {
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl, url: cfUrl } } }),
       );
       // #finding-6: agora o caller precisa passar o texto do callout explicitamente.
-      const url = readMidCalloutImage(dir, "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).");
-      assert.equal(url, cfUrl, "readMidCalloutImage deve ler a cloudflare_url do produtor");
+      const url = readBoxDivulgacao1Image(dir, "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).");
+      assert.equal(url, cfUrl, "readBoxDivulgacao1Image deve ler a cloudflare_url do produtor");
       const html = renderMidCallout(
         "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).",
         url,
@@ -193,12 +193,12 @@ describe("midCallout — box entre D1 e D2", () => {
     }
   });
 
-  it("e2e: sem entry livros_promo → readMidCalloutImage null → box só-texto (degradação graciosa)", () => {
+  it("e2e: sem entry livros_promo → readBoxDivulgacao1Image null → box só-texto (degradação graciosa)", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
     try {
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "x" } } }));
       // No livros_promo entry → null even for livros callout.
-      assert.equal(readMidCalloutImage(dir, "📚 Promo. [Ver](https://livros.diaria.workers.dev)."), null);
+      assert.equal(readBoxDivulgacao1Image(dir, "📚 Promo. [Ver](https://livros.diaria.workers.dev)."), null);
       const html = renderMidCallout("📚 Promo. [Ver](https://livros.diaria.workers.dev).", null);
       assert.ok(!html.includes("<img"), "sem produtor → box degrada pra só-texto");
     } finally {
@@ -231,8 +231,8 @@ Use a Clarice.ai para revisar, refinar e humanizar seus textos.
 const LIVROS_CALLOUT = `📚 Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diaria.workers.dev).`;
 
 describe("#2136 — discriminação livros vs CLARICE + setas", () => {
-  // (a) midCallout CLARICE → readMidCalloutImage retorna null (sem hero)
-  it("readMidCalloutImage: CLARICE callout (📣, link não-livros) → null, mesmo com livros_promo no cache", () => {
+  // (a) boxDivulgacao1 CLARICE → readBoxDivulgacao1Image retorna null (sem hero)
+  it("readBoxDivulgacao1Image: CLARICE callout (📣, link não-livros) → null, mesmo com livros_promo no cache", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-"));
     try {
       const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
@@ -240,15 +240,15 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
       );
-      const url = readMidCalloutImage(dir, CLARICE_CALLOUT);
+      const url = readBoxDivulgacao1Image(dir, CLARICE_CALLOUT);
       assert.equal(url, null, "box CLARICE NÃO deve receber a imagem livros_promo");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  // (b) midCallout livros → readMidCalloutImage retorna URL
-  it("readMidCalloutImage: livros callout (📚 + livros.diaria.workers.dev) → retorna URL da imagem", () => {
+  // (b) boxDivulgacao1 livros → readBoxDivulgacao1Image retorna URL
+  it("readBoxDivulgacao1Image: livros callout (📚 + livros.diaria.workers.dev) → retorna URL da imagem", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-livros-"));
     try {
       const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
@@ -256,26 +256,26 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
       );
-      const url = readMidCalloutImage(dir, LIVROS_CALLOUT);
+      const url = readBoxDivulgacao1Image(dir, LIVROS_CALLOUT);
       assert.equal(url, cfUrl, "box livros deve receber a imagem livros_promo");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  // isMidCalloutLivros: discriminação correta
-  it("isMidCalloutLivros: 📚 com link livros.diaria.workers.dev → true", () => {
-    assert.equal(isMidCalloutLivros(LIVROS_CALLOUT), true);
+  // isBoxDivulgacaoLivros: discriminação correta
+  it("isBoxDivulgacaoLivros: 📚 com link livros.diaria.workers.dev → true", () => {
+    assert.equal(isBoxDivulgacaoLivros(LIVROS_CALLOUT), true);
   });
 
-  it("isMidCalloutLivros: 📣 CLARICE (link clarice.ai) → false", () => {
-    assert.equal(isMidCalloutLivros(CLARICE_CALLOUT), false);
+  it("isBoxDivulgacaoLivros: 📣 CLARICE (link clarice.ai) → false", () => {
+    assert.equal(isBoxDivulgacaoLivros(CLARICE_CALLOUT), false);
   });
 
-  it("isMidCalloutLivros: null/undefined → false (sem crash)", () => {
-    assert.equal(isMidCalloutLivros(null), false);
-    assert.equal(isMidCalloutLivros(undefined), false);
-    assert.equal(isMidCalloutLivros(""), false);
+  it("isBoxDivulgacaoLivros: null/undefined → false (sem crash)", () => {
+    assert.equal(isBoxDivulgacaoLivros(null), false);
+    assert.equal(isBoxDivulgacaoLivros(undefined), false);
+    assert.equal(isBoxDivulgacaoLivros(""), false);
   });
 
   // (c) corpo CLARICE não termina com → orphan (renderMidCallout sem imagem)
@@ -303,7 +303,7 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
   });
 
   // Regressão completa: e2e CLARICE com livros_promo no cache → cai em renderIntroCallout com botão
-  it("e2e #2136: midCallout CLARICE + livros_promo presente → box SEM imagem hero", () => {
+  it("e2e #2136: boxDivulgacao1 CLARICE + livros_promo presente → box SEM imagem hero", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-e2e-"));
     try {
       const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
@@ -311,9 +311,9 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
       );
-      // Simula o fluxo real: readMidCalloutImage com texto da Clarice → null
-      const url = readMidCalloutImage(dir, CLARICE_CALLOUT);
-      assert.equal(url, null, "readMidCalloutImage deve retornar null para CLARICE");
+      // Simula o fluxo real: readBoxDivulgacao1Image com texto da Clarice → null
+      const url = readBoxDivulgacao1Image(dir, CLARICE_CALLOUT);
+      assert.equal(url, null, "readBoxDivulgacao1Image deve retornar null para CLARICE");
       const html = renderMidCallout(CLARICE_CALLOUT, url);
       assert.ok(!html.includes("<img"), "HTML não deve ter <img> de livros_promo");
       assert.ok(!html.includes(cfUrl), "URL da imagem livros_promo não deve aparecer");
@@ -368,8 +368,8 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
     assert.ok(html.includes("clarice.ai"), "link ainda presente no corpo");
   });
 
-  // #finding-6: readMidCalloutImage com undefined (sem texto) → null por segurança
-  it("readMidCalloutImage: undefined midCalloutText → null (sem crash, contrato seguro)", () => {
+  // #finding-6: readBoxDivulgacao1Image com undefined (sem texto) → null por segurança
+  it("readBoxDivulgacao1Image: undefined midCalloutText → null (sem crash, contrato seguro)", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-f6-"));
     try {
       const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
@@ -378,7 +378,7 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
       );
       // undefined (caller não passou texto) → null, nunca reaproveita imagem silenciosamente
-      assert.equal(readMidCalloutImage(dir, undefined), null, "undefined deve retornar null");
+      assert.equal(readBoxDivulgacao1Image(dir, undefined), null, "undefined deve retornar null");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -388,8 +388,8 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
 describe("#1972 — callout colado ANTES do --- do D1 não duplica (de-dup determinístico)", () => {
   // Caso real 260609: o box da Clarice (**📣 …**) foi colado na região do D1
   // ANTES do `---` de fechamento. parseDestaques (que fatia em ^---$) absorveu
-  // o bloco no why do D1 (corpo quebrado) E extractMidCallout o pegou (box teal)
-  // → render 2×. O fix: stripMidCalloutFromD1 remove o bloco antes do parse.
+  // o bloco no why do D1 (corpo quebrado) E extractBoxDivulgacao1 o pegou (box teal)
+  // → render 2×. O fix: stripBoxDivulgacao1 remove o bloco antes do parse.
   const MD_MISPLACED = `Para esta edição, selecionamos 15 itens.
 
 ---
@@ -423,34 +423,34 @@ Corpo do destaque 2.
     );
   });
 
-  it("stripMidCalloutFromD1 remove o bloco → callout NÃO vaza pro D1", () => {
-    const cleaned = stripMidCalloutFromD1(MD_MISPLACED);
+  it("stripBoxDivulgacao1 remove o bloco → callout NÃO vaza pro D1", () => {
+    const cleaned = stripBoxDivulgacao1(MD_MISPLACED);
     const d = parseDestaques(cleaned);
     assert.ok(!d[0].body.includes("Clarice.ai"), "callout fora do body do D1");
     assert.ok(!d[0].why.includes("Clarice.ai"), "callout fora do why do D1");
   });
 
-  it("extractMidCallout ainda acha o callout no texto original (render 1×)", () => {
-    const c = extractMidCallout(MD_MISPLACED);
-    assert.ok(c, "callout extraído como midCallout");
+  it("extractBoxDivulgacao1 ainda acha o callout no texto original (render 1×)", () => {
+    const c = extractBoxDivulgacao1(MD_MISPLACED);
+    assert.ok(c, "callout extraído como boxDivulgacao1");
     assert.match(c!, /^📣 Escreva melhor com a Clarice\.ai/);
   });
 
-  it("stripMidCalloutFromD1 é idempotente quando o callout já está isolado", () => {
+  it("stripBoxDivulgacao1 é idempotente quando o callout já está isolado", () => {
     // Posição correta: callout em sua própria seção entre dois `---`.
     const MD_OK = MD_MISPLACED.replace(
       /Algo importante sobre o D1\.\n\n(\*\*📣[^\n]*\*\*)\n/,
       "Algo importante sobre o D1.\n\n---\n\n$1\n",
     );
-    const cleaned = stripMidCalloutFromD1(MD_OK);
+    const cleaned = stripBoxDivulgacao1(MD_OK);
     const d = parseDestaques(cleaned);
     assert.ok(!d[0].why.includes("Clarice.ai"), "callout não está no D1 (já isolado)");
-    assert.match(extractMidCallout(MD_OK)!, /^📣 Escreva melhor/);
+    assert.match(extractBoxDivulgacao1(MD_OK)!, /^📣 Escreva melhor/);
   });
 
   it("idempotente quando não há callout nenhum (texto inalterado)", () => {
     const semCallout = MD_MISPLACED.replace(/\n\*\*📣[^\n]*\*\*\n/, "\n");
-    assert.equal(stripMidCalloutFromD1(semCallout), semCallout);
+    assert.equal(stripBoxDivulgacao1(semCallout), semCallout);
   });
 
   it("CRLF: strip não deixa seam órfão (\\r\\n intercalado) nem vaza pro D1", () => {
@@ -458,12 +458,12 @@ Corpo do destaque 2.
     // deixando o seam `\r\n\r\n\n\r\n` — newlines intercalados com `\r` que um
     // collapse `/\n{3,}/` não casaria. Regressão do collapse `(?:\r?\n){3,}`.
     const crlf = MD_MISPLACED.replace(/\n/g, "\r\n");
-    const cleaned = stripMidCalloutFromD1(crlf);
+    const cleaned = stripBoxDivulgacao1(crlf);
     assert.ok(!/(?:\r?\n){3,}/.test(cleaned), "sem run de 3+ newlines órfão após o strip");
     const d = parseDestaques(cleaned);
     assert.ok(!d[0].body.includes("Clarice.ai"), "callout fora do body do D1 (CRLF)");
     assert.ok(!d[0].why.includes("Clarice.ai"), "callout fora do why do D1 (CRLF)");
-    // extractMidCallout ainda acha no original CRLF (render 1×).
-    assert.match(extractMidCallout(crlf)!, /^📣 Escreva melhor/);
+    // extractBoxDivulgacao1 ainda acha no original CRLF (render 1×).
+    assert.match(extractBoxDivulgacao1(crlf)!, /^📣 Escreva melhor/);
   });
 });

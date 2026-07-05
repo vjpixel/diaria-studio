@@ -78,30 +78,36 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * Carrega um bloco de divulgação de `context/snippets/{file}` matchando o
- * `marker` informado (📣 Clarice, 📚 livros). Strip do comentário HTML de
- * header; retorna o bloco bold-wrapped trimado, ou `null` se o arquivo não
- * existir / não tiver o marcador (graceful — daily sai sem callout em vez de
- * quebrar).
+ * #2978: carrega um bloco de divulgação de `context/snippets/{file}`,
+ * format-agnóstico — aceita tanto o formato bold-line (`**📚/📣/🎉 …**`)
+ * quanto o formato carrinho (`🛒 …`, multi-parágrafo com CTA, sem bold-wrap).
+ * Strip do comentário HTML de header; retorna o bloco trimado, ou `null` se o
+ * arquivo não existir / não tiver nenhum dos dois formatos (graceful — a
+ * edição sai sem o box em vez de quebrar).
  */
-function loadCalloutSnippet(file: string, marker: string): string | null {
+function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
+  if (!file) return null;
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const p = join(root, "context", "snippets", file);
   if (!existsSync(p)) return null;
   const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
-  // Bloco bold-wrapped iniciado pelo marcador (mesmo que extractMidCallout casa).
-  const re = new RegExp(`\\*\\*\\s*${marker}[\\s\\S]+?\\*\\*`);
-  const m = raw.match(re);
+  if (!raw) return null;
+  // Formato carrinho (🛒): texto cru, sem bold-wrap — igual ao que
+  // BOX_DIVULGACAO_CART_RE (newsletter-parse.ts) espera no reviewed.md.
+  if (raw.startsWith("🛒")) return raw;
+  // Formato bold-line: bloco `**📚/📣/🎉 …**` (mesmo que extractBoxDivulgacao1/2 casa).
+  const m = raw.match(/\*\*\s*(?:📚|📣|🎉)[\s\S]+?\*\*/);
   return m ? m[0].trim() : null;
 }
 
 /**
- * #2527: carrega o midCallout DIÁRIO default — bloco de curadoria de LIVROS
- * (`**📚 …**`) de `context/snippets/livros-divulgacao.md`. Substituiu o bloco
- * 📣 Clarice como padrão (decisão editorial). Graceful: snippet ausente → null.
+ * #2527: carrega o box de divulgação DIÁRIO default (slot 1, D1/D2) — bloco de
+ * curadoria de LIVROS (`**📚 …**`) de `context/snippets/livros-divulgacao.md`.
+ * Substituiu o bloco 📣 Clarice como padrão (decisão editorial). Graceful:
+ * snippet ausente → null.
  */
 export function loadDailyCallout(): string | null {
-  return loadCalloutSnippet("livros-divulgacao.md", "📚");
+  return loadDivulgacaoSnippet("livros-divulgacao.md");
 }
 
 /**
@@ -109,7 +115,43 @@ export function loadDailyCallout(): string | null {
  * (mensal, ou troca pontual do callout diário). Não é mais o default diário (#2527).
  */
 export function loadClariceCallout(): string | null {
-  return loadCalloutSnippet("clarice-divulgacao.md", "📣");
+  return loadDivulgacaoSnippet("clarice-divulgacao.md");
+}
+
+/**
+ * #2978: shape da config `boxes_divulgacao` de `platform.config.json` — nome
+ * do snippet (`context/snippets/{file}`) por slot, ou `null` pra slot vazio.
+ */
+export interface BoxesDivulgacaoConfig {
+  slot1: string | null;
+  slot2: string | null;
+}
+
+/**
+ * #2978: lê `platform.config.json.boxes_divulgacao` — mapeia cada slot (1 =
+ * gap D1/D2, 2 = gap D2/D3) pro nome do snippet a injetar. Back-compat: se a
+ * chave `boxes_divulgacao` estiver AUSENTE do config inteiro, cai no
+ * comportamento legado pré-#2978 (livros no slot 1, nada no slot 2) — edições
+ * que nunca tocaram nesse config continuam funcionando sem mudança. Se a
+ * chave existe mas um slot individual está ausente, esse slot é `null` (sem
+ * cascata pro default legado — a presença da chave é um opt-in explícito pra
+ * configuração granular).
+ */
+export function loadBoxesDivulgacaoConfig(): BoxesDivulgacaoConfig {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const p = join(root, "platform.config.json");
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    if (raw.boxes_divulgacao && typeof raw.boxes_divulgacao === "object") {
+      return {
+        slot1: raw.boxes_divulgacao.slot1 ?? null,
+        slot2: raw.boxes_divulgacao.slot2 ?? null,
+      };
+    }
+  } catch {
+    // graceful — config ausente/corrompido cai no default legado abaixo
+  }
+  return { slot1: "livros-divulgacao.md", slot2: null };
 }
 
 /**
@@ -245,9 +287,14 @@ interface StitchInput {
   d3Path?: string | null;
   approvedCappedPath: string;
   editionDir: string;
-  /** #1938: injeta o midCallout de divulgação CLARICE entre D1 e D2. Default
-   * `true` (todo daily — decisão editorial). Kill-switch: `false` / `--no-sponsor`. */
+  /** #1938/#2978: injeta os boxes de divulgação configurados (`boxes_divulgacao`
+   * de `platform.config.json`) nos slots 1 (D1/D2) e 2 (D2/D3). Default `true`
+   * (todo daily — decisão editorial). Kill-switch: `false` / `--no-sponsor` —
+   * suprime a injeção em AMBOS os slots. */
   sponsor?: boolean;
+  /** Override de teste: pula a leitura de `platform.config.json` e usa esta
+   * config diretamente. Produção nunca passa este campo (sempre lê do disco). */
+  boxesDivulgacao?: BoxesDivulgacaoConfig;
 }
 
 export function stitchNewsletter(input: StitchInput): string {
@@ -305,19 +352,31 @@ export function stitchNewsletter(input: StitchInput): string {
   const radar = renderSection("📡", "RADAR", "RADAR", approved.radar ?? []);
   const videos = renderSection("📺", "VÍDEO", "VÍDEOS", approved.video ?? []);
 
-  // #1938/#2527: midCallout de divulgação entre D1 e D2, isolado entre dois
-  // `---` (posição que extractMidCallout procura; #1972 garante de-dup no render).
-  // Default = bloco 📚 de curadoria de livros (#2527; antes era o 📣 Clarice).
-  // Idempotente: pula se D1/D2 já trazem um callout (editor já colou à mão, ou
-  // re-run). Kill-switch: sponsor=false. Graceful: snippet ausente → sem callout.
+  // #1938/#2527/#2978: boxes de divulgação nos slots 1 (D1/D2) e 2 (D2/D3),
+  // isolados entre dois `---` (posição que extractBoxDivulgacao1/2 procura;
+  // #1972 garante de-dup no render). Config-driven via `boxes_divulgacao` de
+  // `platform.config.json` — default legado = livros (📚) no slot 1, nada no
+  // slot 2 (#2527: livros substituiu o 📣 Clarice como padrão do slot 1).
+  // Idempotente: pula um slot se a região correspondente já traz QUALQUER
+  // marcador de callout (📣/📚/🎉 bold-line OU 🛒 carrinho — editor já colou à
+  // mão, ou re-run). Kill-switch: sponsor=false suprime AMBOS os slots.
+  // Graceful: snippet ausente/config sem slot → sem box nesse slot.
   const wantSponsor = input.sponsor !== false;
-  // Code-review #1938: casa QUALQUER marcador de callout (📣/📚/🎉) — se um callout
-  // (livros/Clarice/sorteio) já estiver na região do D1, um 2º callout criaria
-  // dois midCallouts (extractMidCallout só renderiza o 1º, o outro orfana).
-  // Qualquer callout pré-existente suprime a injeção.
-  const calloutRe = /\*\*\s*(?:📣|📚|🎉)/;
-  const alreadyHasCallout = calloutRe.test(d1) || calloutRe.test(d2);
-  const dailyCallout = wantSponsor && !alreadyHasCallout ? loadDailyCallout() : null;
+  // Code-review #1938: casa QUALQUER marcador de callout — se um já estiver na
+  // região, um 2º criaria dois boxes no mesmo slot (extractBoxDivulgacao1/2 só
+  // acha o 1º, o outro orfana). #2978: estende o guard pro marcador 🛒 (carrinho)
+  // — antes só cobria bold-line, então um 🛒 manual não suprimia reinjeção.
+  const calloutRe = /\*\*\s*(?:📣|📚|🎉)|(?:^|\n)\s*🛒/u;
+  const boxesCfg = input.boxesDivulgacao ?? loadBoxesDivulgacaoConfig();
+  const slot1AlreadyPresent = calloutRe.test(d1) || calloutRe.test(d2);
+  const slot1Box = wantSponsor && !slot1AlreadyPresent
+    ? loadDivulgacaoSnippet(boxesCfg.slot1)
+    : null;
+  // Slot 2 só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
+  const slot2AlreadyPresent = d3 !== null && (calloutRe.test(d2) || calloutRe.test(d3));
+  const slot2Box = wantSponsor && d3 !== null && !slot2AlreadyPresent
+    ? loadDivulgacaoSnippet(boxesCfg.slot2)
+    : null;
 
   const parts: string[] = [
     coverageLine,
@@ -329,8 +388,8 @@ export function stitchNewsletter(input: StitchInput): string {
     "---",
     "",
   ];
-  if (dailyCallout) {
-    parts.push(dailyCallout, "", "---", "");
+  if (slot1Box) {
+    parts.push(slot1Box, "", "---", "");
   }
   parts.push(
     d2,
@@ -338,6 +397,9 @@ export function stitchNewsletter(input: StitchInput): string {
     "---",
     "",
   );
+  if (slot2Box) {
+    parts.push(slot2Box, "", "---", "");
+  }
   // #2343: D3 is optional. For 2-destaque editions, omit the D3 block entirely.
   if (d3 !== null) {
     parts.push(

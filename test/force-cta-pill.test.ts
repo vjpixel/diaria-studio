@@ -3,7 +3,7 @@
  *
  * renderIntroCallout(forceCtaPill): o botão pill do último parágrafo CTA-only
  * (bg paper, borda bege, border-radius:999px, centralizado) só era gerado para
- * callouts patrocinados (📣, `sponsored`). O productBox (🛒 — ex: box Alexa+)
+ * callouts patrocinados (📣, `sponsored`). O boxDivulgacao2 (🛒 — ex: box Alexa+)
  * reusa renderIntroCallout SEM o marcador 📣, então o CTA "Conhecer a Alexa+ e
  * ver as ofertas" renderizava como link inline, não botão. `forceCtaPill=true`
  * ativa o mesmo pill para callouts não-patrocinados, SEM adicionar o separador
@@ -59,10 +59,10 @@ describe("renderIntroCallout forceCtaPill (#2797)", () => {
     assert.match(html, /Equipe sua casa com a Alexa\+/);
   });
 
-  // #2797 boundary: a prateleira de afiliados (productBox 260629-style) cujo
+  // #2797 boundary: a prateleira de afiliados (boxDivulgacao2 260629-style) cujo
   // ÚLTIMO parágrafo é rotulado ("Fire TV: [link]") NÃO deve virar pill mesmo
   // com forceCtaPill=true — o rótulo torna o parágrafo não-CTA-only, então os
-  // links seguem inline (comportamento documentado do productBox). Guarda contra
+  // links seguem inline (comportamento documentado do boxDivulgacao2). Guarda contra
   // o forceCtaPill converter prateleiras rotuladas em botões.
   it("forceCtaPill NÃO vira pill quando o último parágrafo é rotulado (prateleira)", () => {
     const SHELF = `Equipe sua casa com a Alexa+. Veja os dispositivos:

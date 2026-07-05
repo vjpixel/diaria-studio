@@ -11,7 +11,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { renderIntroCallout } from "../scripts/render-newsletter-html.ts";
-import { isMidCalloutLivros } from "../scripts/lib/newsletter-parse.ts";
+import { isBoxDivulgacaoLivros } from "../scripts/lib/newsletter-parse.ts";
 
 const TWO_CTA = `📣 Explore as seções de Livros e Cursos da Diar.ia
 
@@ -56,22 +56,22 @@ describe("renderIntroCallout — múltiplos CTAs (260622)", () => {
   });
 });
 
-describe("isMidCalloutLivros — box combinado não dispara screenshot (260622)", () => {
+describe("isBoxDivulgacaoLivros — box combinado não dispara screenshot (260622)", () => {
   it("retorna false quando o box também linka Cursos (box de seções)", () => {
-    assert.equal(isMidCalloutLivros(TWO_CTA), false);
+    assert.equal(isBoxDivulgacaoLivros(TWO_CTA), false);
   });
 
   it("retorna true para box só de livros (promo da página de livros)", () => {
     const livrosOnly = `📚 Confira a seção de Livros
 
 → [Livros sobre IA](https://livros.diaria.workers.dev)`;
-    assert.equal(isMidCalloutLivros(livrosOnly), true);
+    assert.equal(isBoxDivulgacaoLivros(livrosOnly), true);
   });
 
   it("retorna false para box CLARICE (sem link de livros)", () => {
     const clarice = `📣 Escreva melhor com a Clarice
 
 → [Cupons](https://clarice.ai/precos-planos?via=diaria)`;
-    assert.equal(isMidCalloutLivros(clarice), false);
+    assert.equal(isBoxDivulgacaoLivros(clarice), false);
   });
 });

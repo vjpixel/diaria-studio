@@ -9,7 +9,7 @@
  * pelo corpo/why do destaque (render quebrado + duplicado — visto na 260609).
  *
  * O render já é robusto a isso (de-dup determinístico em
- * `stripMidCalloutFromD1`, Opção A), mas este lint sinaliza a fonte do problema
+ * `stripBoxDivulgacao1`/`stripBoxDivulgacao2`, Opção A), mas este lint sinaliza a fonte do problema
  * pro editor reposicionar o bloco — o callout deve ser sua PRÓPRIA seção,
  * isolada entre o `---` que fecha o D1 e o `---` que abre o D2:
  *
@@ -91,8 +91,8 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
  *
  * Este check erra (`ok: false`) quando encontra ≥2 linhas
  * `^\*\*\s*(🎉|📣)` na região de intro (antes do 1º `**DESTAQUE`) —
- * independente de midCallouts (📚/📣/🎉 entre destaques, cobertos por
- * `lintCalloutPlacement`/`locateMidCallout`, semântica diferente).
+ * independente dos boxes de divulgação (📚/📣/🎉/🛒 entre destaques, cobertos por
+ * `lintCalloutPlacement`/`locateBoxInGap`, semântica diferente).
  */
 export interface StackedIntroCalloutResult {
   ok: boolean;

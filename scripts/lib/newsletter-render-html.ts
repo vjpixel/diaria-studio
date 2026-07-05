@@ -65,7 +65,7 @@ const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
  * DECISÃO line-height: canônico é 1.62 (DS body). As duas ocorrências de 1.6
  * em renderCoverage e renderSectionItem eram drift silencioso — unificadas aqui.
  *
- * DECISÃO margin inconsistência multi vs single (midCallout):
+ * DECISÃO margin inconsistência multi vs single (box de divulgação):
  *   - single-parágrafo: `margin:0 0 12px` (espaço de 12px ABAIXO do texto,
  *     antes do botão CTA — intencional, cria respiro entre corpo e pill).
  *   - multi-parágrafo: corpo usa `margin:0` / `margin:12px 0 0` entre parágrafos
@@ -131,7 +131,7 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
 
 /**
  * Linha do separador "● DIVULGAÇÃO" (kicker com régua, #1940). Desde 260611
- * (pedido do editor, supersede a régua nua do #2069) TODO midCallout — 📣
+ * (pedido do editor, supersede a régua nua do #2069) TODO box de divulgação — 📣
  * patrocinado, 📚 promo interna, 🎉 CTA — recebe este kicker antes do box.
  */
 export function renderDivulgacaoSeparator(): string {
@@ -236,10 +236,10 @@ export function renderCoverage(text: string): string {
  * é emitido como `<p>` de corpo — evita `→` orphan e <p> vazio.
  *
  * #2797: `forceCtaPill` ativa o mesmo botão pill do último parágrafo CTA-only
- * em callouts NÃO-patrocinados. Usado pelo productBox (🛒) — que reusa este
+ * em callouts NÃO-patrocinados. Usado pelo box de divulgação em formato 🛒 — que reusa este
  * render sem o marcador 📣 (logo `sponsored=false`) mas quer o CTA como pill
  * centralizado (ex: box Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Sem 📣,
- * NÃO adiciona o separador "Divulgação" (o productBox já tem o seu).
+ * NÃO adiciona o separador "Divulgação" (o box de divulgação já tem o seu).
  */
 export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = "serif", forceCtaPill = false): string {
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
@@ -403,6 +403,23 @@ export function findMarkdownLinks(
     linkStart.lastIndex = j + 1;
   }
   return out;
+}
+
+/**
+ * #2978: dispatcher único pros 2 boxes de divulgação (slot 1 = gap D1/D2,
+ * slot 2 = gap D2/D3). O FORMATO é decidido pelo marcador do próprio box, não
+ * pelo slot: `🛒` → prateleira multi-parágrafo com CTA pill (reusa
+ * `renderIntroCallout` com `forceCtaPill=true`, marcador estrutural removido
+ * do HTML); `📚`/`📣`/`🎉` → bold-line (reusa `renderMidCallout`, que aceita
+ * imagem opcional pro slot 1). Ambos os slots chamam este dispatcher.
+ */
+export function renderBoxDivulgacao(box: string, imageUrl: string | null = null): string {
+  if (/^\s*🛒/u.test(box)) {
+    // `\r?\n?` cobre o 🛒 sozinho na própria linha (sem texto após), pra não
+    // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
+    return renderIntroCallout(box.replace(/^🛒[ \t]*\r?\n?/u, ""), "serif", true);
+  }
+  return renderMidCallout(box, imageUrl);
 }
 
 /**
@@ -858,7 +875,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // #1942 review #1: disclosure também cobre anúncio (📣) colocado no topo.
     if (isSponsoredCallout(content.introCallout)) parts.push(renderDivulgacaoSeparator());
     // #260701 review: title "body" SÓ para callout editorial (🎉); patrocinado (📣)
-    // mantém o serif 26px (consistente com mid/productBox). Sem o gate, um 📣 no
+    // mantém o serif 26px (consistente com os boxes de divulgação). Sem o gate, um 📣 no
     // intro regredia o título pra 16px e o fullBold-subheader disparava nele.
     parts.push(renderIntroCallout(
       content.introCallout,
@@ -875,29 +892,19 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
-    // Box callout (📚/📣/🎉) — promo interna ou patrocinado. Reusa o estilo teal
-    // do introCallout. #2665: posicionado após o destaque da lacuna em que foi
-    // encontrado (default 0 = D1/D2, legado).
-    if (content.midCallout && i === (content.midCalloutAfter ?? 0)) {
-      // 260611 (supersede #1940/#2069): TODO midCallout — patrocinado (📣) ou
-      // promo interna (📚/🎉) — recebe o kicker "● DIVULGAÇÃO" antes do box.
+    // #2978: box de divulgação slot 1 — SEMPRE na lacuna D1/D2 (após D1, i===0).
+    // O formato (bold-line 📚/📣/🎉 ou carrinho 🛒) é decidido por
+    // renderBoxDivulgacao, não pelo slot. TODO box de divulgação recebe o
+    // kicker "● DIVULGAÇÃO" antes (260611, supersede #1940/#2069).
+    if (content.boxDivulgacao1 && i === 0) {
       parts.push(renderDivulgacaoSeparator());
-      parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
+      parts.push(renderBoxDivulgacao(content.boxDivulgacao1, content.boxDivulgacao1Image ?? null));
     }
-    // Box de produtos (🛒) — prateleira de afiliados. Reusa renderIntroCallout
-    // com forceCtaPill=true (#2797): links em parágrafos rotulados/de corpo
-    // seguem inline (ex: "Fire TV: [Stick HD](…)"), mas um ÚLTIMO parágrafo que
-    // seja SÓ o link CTA (sem rótulo) vira botão pill centralizado (ex: box
-    // Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Difere do renderMidCallout,
-    // que sempre extrai só o 1º link como CTA. #2665: posicionado após o destaque da lacuna em que
-    // foi encontrado (default 1 = D2/D3, legado). O marcador 🛒 é estrutural
-    // (detecção) — removido do HTML pra não aparecer ao leitor, igual aos
-    // marcadores 📚/📣/🎉 que o renderMidCallout já remove.
-    if (content.productBox && i === (content.productBoxAfter ?? 1)) {
+    // #2978: box de divulgação slot 2 — SEMPRE na lacuna D2/D3 (após D2, i===1).
+    // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
+    if (content.boxDivulgacao2 && i === 1) {
       parts.push(renderDivulgacaoSeparator());
-      // `\r?\n?` cobre o 🛒 sozinho na própria linha (sem texto após), pra não
-      // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
-      parts.push(renderIntroCallout(content.productBox.replace(/^🛒[ \t]*\r?\n?/u, ""), "serif", true));
+      parts.push(renderBoxDivulgacao(content.boxDivulgacao2));
     }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
@@ -1095,7 +1102,7 @@ export function applyBrandWordmark(s: string, linkHref?: string): string {
  * (não nos labels de link, já tratados). Roda DEPOIS do esc/wordmark — `*` não é
  * escapado por esc(), então o par `**…**` sobrevive intacto. Non-greedy + sem
  * `*` interno evita casar pares aninhados/cruzados. Antes, um `**Não compre**`
- * num box (productBox/introCallout) vazava com asteriscos literais (260630).
+ * num box (box de divulgação/introCallout) vazava com asteriscos literais (260630).
  */
 function applyInlineBold(html: string): string {
   return html.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");

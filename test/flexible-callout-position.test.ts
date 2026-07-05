@@ -1,14 +1,14 @@
 /**
- * test/flexible-callout-position.test.ts (#2665)
+ * test/flexible-callout-position.test.ts (#2665, rescoped #2978)
  *
- * Posição flexível dos boxes entre destaques. Antes, o midCallout (📚/📣/🎉) só
- * era detectado entre D1/D2 e o productBox (🛒) só entre D2/D3 — a posição era
- * amarrada ao tipo. Pedido do editor na 260630: box de afiliados Alexa+ (🛒)
- * logo após o D1 (Alexa+) e a promo de livros (📚) depois, entre D2 e D3.
+ * Boxes de divulgação são um SLOT fixo por POSIÇÃO: boxDivulgacao1 = box na
+ * lacuna D1/D2 (gap 0), boxDivulgacao2 = box na lacuna D2/D3 (gap 1) —
+ * independente do FORMATO do conteúdo (bold-line 📚/📣/🎉 vs carrinho 🛒). O
+ * formato é decidido pelo próprio marcador no momento do render
+ * (`renderBoxDivulgacao`), não pelo slot. Pedido do editor na 260630: box de
+ * afiliados Alexa+ (🛒) logo após o D1 e a promo de livros (📚) depois, entre
+ * D2 e D3 — o inverso do layout legado (📚 em D1/D2, 🛒 em D2/D3).
  *
- * #2665: os dois finders varrem TODAS as lacunas entre destaques e gravam
- * `midCalloutAfter`/`productBoxAfter` (índice do destaque que precede a lacuna).
- * Back-compat: o layout legado (📚 em D1/D2, 🛒 em D2/D3) continua → after 0 / 1.
  * O render remove o marcador 🛒 do HTML (estrutural, não aparece ao leitor).
  */
 import { describe, it } from "node:test";
@@ -95,51 +95,47 @@ function withEdition(reviewed: string, fn: (dir: string) => void): void {
   }
 }
 
-describe("#2665 — posição flexível dos boxes entre destaques", () => {
-  it("🛒 entre D1/D2 e 📚 entre D2/D3 → productBoxAfter=0, midCalloutAfter=1", () => {
+describe("#2978 — box em cada slot detectado por POSIÇÃO, independente do formato", () => {
+  it("🛒 na lacuna D1/D2 → boxDivulgacao1; 📚 na lacuna D2/D3 → boxDivulgacao2 (formato invertido do legado)", () => {
     withEdition(buildReviewed(BOX_ALEXA, BOX_LIVROS), (dir) => {
       const c = extractContent(dir);
-      assert.ok(c.productBox, "deveria achar o box 🛒");
-      assert.match(c.productBox!, /Equipe sua casa com a Alexa/);
-      assert.equal(c.productBoxAfter, 0, "🛒 está na lacuna após o D1");
-      assert.ok(c.midCallout, "deveria achar o box 📚");
-      assert.match(c.midCallout!, /curadoria de livros/);
-      assert.equal(c.midCalloutAfter, 1, "📚 está na lacuna após o D2");
+      assert.ok(c.boxDivulgacao1, "slot 1 (D1/D2) deveria achar o box 🛒");
+      assert.match(c.boxDivulgacao1!, /Equipe sua casa com a Alexa/);
+      assert.ok(c.boxDivulgacao2, "slot 2 (D2/D3) deveria achar o box 📚");
+      assert.match(c.boxDivulgacao2!, /curadoria de livros/);
     });
   });
 
-  it("back-compat: 📚 entre D1/D2 e 🛒 entre D2/D3 → midCalloutAfter=0, productBoxAfter=1", () => {
+  it("layout legado: 📚 na lacuna D1/D2 → boxDivulgacao1; 🛒 na lacuna D2/D3 → boxDivulgacao2", () => {
     withEdition(buildReviewed(BOX_LIVROS, BOX_ALEXA), (dir) => {
       const c = extractContent(dir);
-      assert.equal(c.midCalloutAfter, 0, "📚 na lacuna após o D1 (legado)");
-      assert.equal(c.productBoxAfter, 1, "🛒 na lacuna após o D2 (legado)");
+      assert.match(c.boxDivulgacao1!, /curadoria de livros/, "slot 1 (D1/D2) = livros (legado)");
+      assert.match(c.boxDivulgacao2!, /Equipe sua casa com a Alexa/, "slot 2 (D2/D3) = Alexa (legado)");
     });
   });
 
-  it("render: ambos os boxes aparecem e o marcador 🛒 NÃO vaza pro HTML", () => {
+  it("render: ambos os boxes aparecem, na ORDEM posicional (slot 1 antes de slot 2), e o marcador 🛒 NÃO vaza pro HTML", () => {
     withEdition(buildReviewed(BOX_ALEXA, BOX_LIVROS), (dir) => {
       const html = renderHTML(extractContent(dir));
       assert.ok(html.includes("Equipe sua casa com a Alexa"), "box Alexa renderizado");
       assert.ok(html.includes("curadoria de livros"), "box livros renderizado");
       assert.ok(html.includes("link.amazon/B00RlxPou"), "links de afiliado preservados");
       assert.ok(!html.includes("🛒"), "marcador 🛒 removido do HTML");
-      // #2665: ordem importa — o box Alexa (productBoxAfter=0) vem ANTES do box
-      // livros (midCalloutAfter=1). Presença sozinha não pega regressão de posição.
       assert.ok(
         html.indexOf("Equipe sua casa") < html.indexOf("curadoria de livros"),
-        "box Alexa (após D1) deve vir antes do box livros (após D2)",
+        "box do slot 1 (Alexa, D1/D2) deve vir antes do box do slot 2 (livros, D2/D3)",
       );
     });
   });
 
-  it("back-compat renderiza: 📚 após D1, 🛒 após D2 (ordem legada)", () => {
+  it("layout legado renderiza na ordem legada: livros (slot 1) antes de Alexa (slot 2)", () => {
     withEdition(buildReviewed(BOX_LIVROS, BOX_ALEXA), (dir) => {
       const html = renderHTML(extractContent(dir));
       assert.ok(html.includes("curadoria de livros"), "box livros renderizado");
       assert.ok(html.includes("Equipe sua casa"), "box Alexa renderizado");
       assert.ok(
         html.indexOf("curadoria de livros") < html.indexOf("Equipe sua casa"),
-        "layout legado: livros (após D1) antes de Alexa (após D2)",
+        "layout legado: livros (slot 1) antes de Alexa (slot 2)",
       );
     });
   });
