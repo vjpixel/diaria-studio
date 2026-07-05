@@ -59,18 +59,28 @@ export const RED_CUT_FRACTION = 0.3;
 export interface HealthThresholds {
   /** Abertura: >= green é 🟢; >= yellow (e < green) é 🟡; abaixo de yellow é 🔴. Maior é melhor. */
   openRate: { green: number; yellow: number };
-  /** Bounce/spam/unsub: < green é 🟢; < yellow (e >= green) é 🟡; >= yellow é 🔴. Menor é melhor. */
+  /** Hard bounce / bounce total / spam / unsub: < green é 🟢; < yellow é 🟡; >= yellow é 🔴. Menor é melhor. */
+  hardBounceRate: { green: number; yellow: number };
   bounceRate: { green: number; yellow: number };
   spamRate: { green: number; yellow: number };
   unsubRate: { green: number; yellow: number };
 }
 
-/** Thresholds do requisito da issue #2974 (comentário do editor). */
+/**
+ * Thresholds ancorados nos CIRCUIT BREAKERS do doc "Parceria Editorial
+ * Clarice.ai × Diar.ia" (métricas de reavaliação definidas pelo editor).
+ * 🔴 = o breaker do doc (nível de PAUSA — o doc tem UM nível só); 🟡 = zona de
+ * alerta que adicionamos ("olhar com cuidado / segurar o crescimento" chegando
+ * perto do breaker). Hard bounce e bounce total SEPARADOS: o doc tem dois
+ * breakers (hard ≥2%, total hard+soft ≥5%) — juntar perderia o caso
+ * hard-alto/total-baixo.
+ */
 export const DEFAULT_HEALTH_THRESHOLDS: HealthThresholds = {
-  openRate: { green: 14, yellow: 11 }, // ≥14% / 11-14% / <11%
-  bounceRate: { green: 1.5, yellow: 2.5 }, // <1,5% / 1,5-2,5% / >2,5%
-  spamRate: { green: 0.05, yellow: 0.1 }, // <0,05% / 0,05-0,1% / >0,1%
-  unsubRate: { green: 0.4, yellow: 0.7 }, // <0,4% / 0,4-0,7% / >0,7%
+  openRate: { green: 17, yellow: 15 }, // 🔴 <15% (breaker do doc)
+  hardBounceRate: { green: 1.5, yellow: 2 }, // 🔴 ≥2% (breaker)
+  bounceRate: { green: 4, yellow: 5 }, // 🔴 ≥5% total hard+soft (breaker)
+  spamRate: { green: 0.05, yellow: 0.1 }, // 🔴 ≥0,1% (breaker)
+  unsubRate: { green: 2, yellow: 3 }, // 🔴 ≥3% (breaker)
 };
 
 /**
@@ -93,6 +103,7 @@ export function filterMatureCampaigns<T extends Pick<BrevoCampaign, "sentDate">>
 
 export interface HealthAggregate {
   openRate: number;
+  hardBounceRate: number;
   bounceRate: number;
   spamRate: number;
   unsubRate: number;
@@ -111,6 +122,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
   let delivered = 0;
   let sent = 0;
   let views = 0;
+  let hardBounces = 0;
   let bounces = 0;
   let spam = 0;
   let unsub = 0;
@@ -122,6 +134,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
     delivered += s.delivered ?? 0;
     sent += s.sent ?? 0;
     views += s.uniqueViews ?? 0;
+    hardBounces += s.hardBounces ?? 0;
     bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     spam += s.complaints ?? 0;
     unsub += s.unsubscriptions ?? 0;
@@ -129,6 +142,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
 
   return {
     openRate: delivered > 0 ? (views / delivered) * 100 : 0,
+    hardBounceRate: sent > 0 ? (hardBounces / sent) * 100 : 0,
     bounceRate: sent > 0 ? (bounces / sent) * 100 : 0,
     spamRate: sent > 0 ? (spam / sent) * 100 : 0,
     unsubRate: sent > 0 ? (unsub / sent) * 100 : 0,
@@ -150,36 +164,34 @@ function worseOf(a: Semaphore, b: Semaphore): Semaphore {
  * avaliada contra seus próprios thresholds (maior é melhor pra abertura; menor
  * é melhor pras demais).
  */
+/**
+ * Classifica UMA métrica contra seus limiares. `higher` = maior é melhor
+ * (abertura); `lower` = menor é melhor (bounce/spam/unsub). Exportada pro render
+ * colorir cada valor + mostrar o alvo por métrica (o editor vê QUAL métrica
+ * segura o semáforo).
+ */
+export function classifyMetric(
+  value: number,
+  t: { green: number; yellow: number },
+  dir: "higher" | "lower",
+): Semaphore {
+  if (dir === "higher") {
+    return value >= t.green ? "green" : value >= t.yellow ? "yellow" : "red";
+  }
+  return value < t.green ? "green" : value < t.yellow ? "yellow" : "red";
+}
+
 export function decideSemaphore(
   health: HealthAggregate,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): Semaphore {
-  const openSem: Semaphore =
-    health.openRate >= thresholds.openRate.green
-      ? "green"
-      : health.openRate >= thresholds.openRate.yellow
-        ? "yellow"
-        : "red";
-  const bounceSem: Semaphore =
-    health.bounceRate < thresholds.bounceRate.green
-      ? "green"
-      : health.bounceRate < thresholds.bounceRate.yellow
-        ? "yellow"
-        : "red";
-  const spamSem: Semaphore =
-    health.spamRate < thresholds.spamRate.green
-      ? "green"
-      : health.spamRate < thresholds.spamRate.yellow
-        ? "yellow"
-        : "red";
-  const unsubSem: Semaphore =
-    health.unsubRate < thresholds.unsubRate.green
-      ? "green"
-      : health.unsubRate < thresholds.unsubRate.yellow
-        ? "yellow"
-        : "red";
-
-  return [openSem, bounceSem, spamSem, unsubSem].reduce(worseOf);
+  return [
+    classifyMetric(health.openRate, thresholds.openRate, "higher"),
+    classifyMetric(health.hardBounceRate, thresholds.hardBounceRate, "lower"),
+    classifyMetric(health.bounceRate, thresholds.bounceRate, "lower"),
+    classifyMetric(health.spamRate, thresholds.spamRate, "lower"),
+    classifyMetric(health.unsubRate, thresholds.unsubRate, "lower"),
+  ].reduce(worseOf);
 }
 
 export interface WeekPlan {
@@ -321,12 +333,6 @@ ${waitRows}
     red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
   }[semaphore];
 
-  const includedRows = mature
-    .map((c) => {
-      const picked = pickStats(c);
-      return `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>${picked?.stats.sent ?? "—"}</td></tr>`;
-    })
-    .join("\n");
   const excludedRows = immature
     .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>ainda não maturou (&lt;48h)</td></tr>`)
     .join("\n");
@@ -349,28 +355,74 @@ ${waitRows}
   <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${plan.volumes.join(",")} [--write]</code></p>`
     : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
 
+  // Tabela de métricas: valor colorido pelo status + coluna de alvo (limiares) +
+  // status por métrica — o editor vê na hora QUAL métrica segura o semáforo.
+  const T = DEFAULT_HEALTH_THRESHOLDS;
+  const STATUS_COLOR: Record<Semaphore, string> = {
+    green: "#158a4a",
+    yellow: "#b07a00",
+    red: "#c0392b",
+  };
+  const metricDefs = [
+    { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const },
+    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const },
+    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const },
+    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const },
+    { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const },
+  ];
+  const metricRows = metricDefs
+    .map((m) => {
+      const s = classifyMetric(m.value, m.t, m.dir);
+      const target =
+        m.dir === "higher"
+          ? `≥${m.t.green}% 🟢 · ≥${m.t.yellow}% 🟡`
+          : `&lt;${m.t.green}% 🟢 · &lt;${m.t.yellow}% 🟡`;
+      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value)}</td><td style="opacity:0.7">${target}</td><td>${SEMAPHORE_EMOJI[s]}</td></tr>`;
+    })
+    .join("\n");
+
+  // Agregado POR DIA (o que importa — uma ocasião de envio = um dia; as células
+  // A/B/C do mesmo dia são um envio só). Cada dia agregado com aggregateHealth,
+  // ordenado do mais recente pro mais antigo.
+  const byDay = new Map<string, BrevoCampaign[]>();
+  for (const c of mature) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    const arr = byDay.get(day);
+    if (arr) arr.push(c);
+    else byDay.set(day, [c]);
+  }
+  const dayRows = [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([day, cs]) => {
+      const h = aggregateHealth(cs);
+      const oCol = STATUS_COLOR[classifyMetric(h.openRate, T.openRate, "higher")];
+      const uCol = STATUS_COLOR[classifyMetric(h.unsubRate, T.unsubRate, "lower")];
+      return `<tr><td>${day}</td><td>${h.delivered.toLocaleString("pt-BR")}</td><td style="color:${oCol}">${fmtPct(h.openRate)}</td><td>${fmtPct(h.bounceRate)}</td><td>${fmtPct(h.spamRate)}</td><td style="color:${uCol}">${fmtPct(h.unsubRate)}</td></tr>`;
+    })
+    .join("\n");
+
   return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
   <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
+  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Métrica (agregado — ${mature.length} envios maduros, sem diferenciar cold/quente)</th><th>Valor</th></tr></thead>
+    <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo (🟢 / 🟡)</th><th>Status</th></tr></thead>
     <tbody>
-      <tr><td>Abertura</td><td>${fmtPct(health.openRate)}</td></tr>
-      <tr><td>Bounce</td><td>${fmtPct(health.bounceRate)}</td></tr>
-      <tr><td>Spam</td><td>${fmtPct(health.spamRate)}</td></tr>
-      <tr><td>Unsub</td><td>${fmtPct(health.unsubRate)}</td></tr>
+${metricRows}
     </tbody>
   </table>
   </div>
   ${planSection}
-  <details>
-    <summary>Campanhas incluídas no agregado (${mature.length})</summary>
-    <div class="table-wrap"><table><thead><tr><th>Envio</th><th>Enviado</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
-    ${includedRows || '<tr><td colspan="3">Nenhuma.</td></tr>'}
-    </tbody></table></div>
-  </details>
+  <p class="section-note" style="font-weight:600;margin-top:8px">Por dia de envio (o que importa)</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Dia (BRT)</th><th title="${escHtml(ENVIOS_TOOLTIP)}">Entregues</th><th>Abertura</th><th>Bounce</th><th>Spam</th><th>Unsub</th></tr></thead>
+    <tbody>
+${dayRows || '<tr><td colspan="6">Nenhum.</td></tr>'}
+    </tbody>
+  </table></div>
   <details>
     <summary>Excluídas por imaturidade (&lt;48h) (${immature.length})</summary>
     <div class="table-wrap"><table><thead><tr><th>Envio</th><th>Enviado</th><th>Motivo</th></tr></thead><tbody>

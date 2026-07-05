@@ -13,6 +13,7 @@ import {
   filterMatureCampaigns,
   aggregateHealth,
   decideSemaphore,
+  classifyMetric,
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
   baseVolumeFromLastSendDay,
@@ -114,7 +115,15 @@ test("aggregateHealth — agregado ponderado por delivered/sent entre múltiplas
 
 test("aggregateHealth — vazio retorna zeros (sem divisão por zero)", () => {
   const health = aggregateHealth([]);
-  assert.deepEqual(health, { openRate: 0, bounceRate: 0, spamRate: 0, unsubRate: 0, delivered: 0, sent: 0 });
+  assert.deepEqual(health, {
+    openRate: 0,
+    hardBounceRate: 0,
+    bounceRate: 0,
+    spamRate: 0,
+    unsubRate: 0,
+    delivered: 0,
+    sent: 0,
+  });
 });
 
 test("aggregateHealth — pula campanhas sem stats reais (sent=0)", () => {
@@ -127,43 +136,60 @@ test("aggregateHealth — pula campanhas sem stats reais (sent=0)", () => {
   assert.equal(health.sent, 100);
 });
 
+// Defaults todos VERDE sob os limites do doc — cada teste isola 1 métrica.
 function mkHealth(overrides: Partial<HealthAggregate>): HealthAggregate {
-  return { openRate: 20, bounceRate: 0.5, spamRate: 0.01, unsubRate: 0.1, delivered: 1000, sent: 1000, ...overrides };
+  return {
+    openRate: 20,
+    hardBounceRate: 0.5,
+    bounceRate: 1,
+    spamRate: 0.01,
+    unsubRate: 0.5,
+    delivered: 1000,
+    sent: 1000,
+    ...overrides,
+  };
 }
 
-test("decideSemaphore — abertura: fronteiras 14%/11%", () => {
-  assert.equal(decideSemaphore(mkHealth({ openRate: 14 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 13.9 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 11 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 10.9 })), "red");
+// Limites = circuit breakers do doc "Parceria Clarice × Diar.ia" (🔴 = breaker):
+// abertura <15 · hard ≥2 · total ≥5 · spam ≥0,1 · unsub ≥3.
+test("decideSemaphore — abertura: 🔴 <15%, 🟡 15-17, 🟢 ≥17", () => {
+  assert.equal(decideSemaphore(mkHealth({ openRate: 17 })), "green");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 16.9 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 15 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 14.9 })), "red");
 });
 
-test("decideSemaphore — bounce: fronteiras 1,5%/2,5%", () => {
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 1.49 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 1.5 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 2.49 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 2.5 })), "red");
+test("decideSemaphore — hard bounce: 🔴 ≥2%, 🟡 1,5-2, 🟢 <1,5", () => {
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.49 })), "green");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.5 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.99 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 2 })), "red");
 });
 
-test("decideSemaphore — spam: fronteiras 0,05%/0,1%", () => {
+test("decideSemaphore — bounce total: 🔴 ≥5%, 🟡 4-5, 🟢 <4", () => {
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 3.99 })), "green");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4.99 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 5 })), "red");
+});
+
+test("decideSemaphore — spam: 🔴 ≥0,1%, 🟡 0,05-0,1, 🟢 <0,05", () => {
   assert.equal(decideSemaphore(mkHealth({ spamRate: 0.049 })), "green");
   assert.equal(decideSemaphore(mkHealth({ spamRate: 0.05 })), "yellow");
   assert.equal(decideSemaphore(mkHealth({ spamRate: 0.099 })), "yellow");
   assert.equal(decideSemaphore(mkHealth({ spamRate: 0.1 })), "red");
 });
 
-test("decideSemaphore — unsub: fronteiras 0,4%/0,7%", () => {
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 0.39 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 0.4 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 0.69 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 0.7 })), "red");
+test("decideSemaphore — unsub: 🔴 ≥3%, 🟡 2-3, 🟢 <2", () => {
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 1.99 })), "green");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2.99 })), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 3 })), "red");
 });
 
-test("decideSemaphore — pior métrica manda (1 vermelha entre 4 verdes → vermelho)", () => {
-  const health = mkHealth({ openRate: 30, bounceRate: 0.1, spamRate: 0.01, unsubRate: 0.1 });
-  assert.equal(decideSemaphore(health), "green");
-  const withOneRed = { ...health, spamRate: 0.2 };
-  assert.equal(decideSemaphore(withOneRed), "red");
+test("decideSemaphore — pior métrica manda (1 vermelha entre verdes → vermelho)", () => {
+  assert.equal(decideSemaphore(mkHealth({})), "green");
+  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.2 })), "red");
 });
 
 test("decideSemaphore — thresholds customizados são respeitados", () => {
@@ -214,6 +240,31 @@ test("render — envio maduro (>48h) → semáforo + plano aparecem (sem diferen
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.doesNotMatch(html, /aguardando maturar/i);
   assert.match(html, /Verde|Amarelo|Vermelho/);
+});
+
+test("classifyMetric — fronteiras (higher=abertura; lower=bounce/spam/unsub)", () => {
+  // higher: maior é melhor
+  assert.equal(classifyMetric(14, { green: 14, yellow: 11 }, "higher"), "green");
+  assert.equal(classifyMetric(13.9, { green: 14, yellow: 11 }, "higher"), "yellow");
+  assert.equal(classifyMetric(10.9, { green: 14, yellow: 11 }, "higher"), "red");
+  // lower: menor é melhor (ex unsub 0,4/0,7)
+  assert.equal(classifyMetric(0.39, { green: 0.4, yellow: 0.7 }, "lower"), "green");
+  assert.equal(classifyMetric(0.5, { green: 0.4, yellow: 0.7 }, "lower"), "yellow");
+  assert.equal(classifyMetric(2.1, { green: 0.4, yellow: 0.7 }, "lower"), "red"); // caso real: unsub engajado
+});
+
+test("render — mostra coluna de Alvo + colore o valor (verde/vermelho) por métrica", () => {
+  // abertura alta (verde) + unsub acima do breaker de 3% (vermelho)
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 270, unsubscriptions: 31 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.match(html, /Alvo/); // coluna de alvo presente
+  assert.match(html, /#158a4a/); // valor verde (abertura 27%)
+  assert.match(html, /#c0392b/); // valor vermelho (unsub 3,1% ≥ breaker 3%)
+  assert.match(html, /PIOR métrica/); // explica o critério do semáforo
 });
 
 test("saúde = últimos 10 MADUROS (amostra por contagem, não janela de tempo)", () => {
