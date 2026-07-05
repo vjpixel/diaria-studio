@@ -35,6 +35,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import {
   consolidateSignals,
   type DraftFile,
@@ -45,18 +46,12 @@ interface CliFlags {
 }
 
 function parseArgs(argv: string[]): CliFlags | { error: string } {
-  const flags: { drafts?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--drafts" && argv[i + 1]) {
-      flags.drafts = argv[i + 1];
-      i++;
-    }
-  }
-  if (!flags.drafts) {
+  const values = parseArgsSimple(argv);
+  const drafts = values["drafts"];
+  if (!drafts) {
     return { error: "Usage: consolidate-signals.ts --drafts <comma-separated-paths>" };
   }
-  const paths = flags.drafts
+  const paths = drafts
     .split(",")
     .map((p) => p.trim())
     .filter((p) => p.length > 0);

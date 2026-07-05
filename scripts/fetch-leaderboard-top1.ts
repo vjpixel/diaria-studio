@@ -35,6 +35,7 @@
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const WORKER_URL =
   process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -141,18 +142,11 @@ export function readPublishedDates(path: string): string[] {
 function parseArgs(
   argv: string[],
 ): { edition: string; out: string; pastEditions: string; brand: "diaria" | "clarice" } | null {
-  let edition = "";
-  let out = "";
-  let pastEditions = "data/past-editions-raw.json";
-  let brand: "diaria" | "clarice" = "diaria";
-  for (let i = 0; i < argv.length; i++) {
-    const flag = argv[i];
-    const value = argv[i + 1];
-    if (flag === "--edition" && value) { edition = value; i++; }
-    else if (flag === "--out" && value) { out = value; i++; }
-    else if (flag === "--past-editions" && value) { pastEditions = value; i++; }
-    else if (flag === "--brand" && value) { brand = value === "clarice" ? "clarice" : "diaria"; i++; }
-  }
+  const args = parseArgsSimple(argv);
+  const edition = args.edition ?? "";
+  const out = args.out ?? "";
+  const pastEditions = args["past-editions"] ?? "data/past-editions-raw.json";
+  const brand: "diaria" | "clarice" = args.brand === "clarice" ? "clarice" : "diaria";
   if (!edition || !out) return null;
   return { edition, out, pastEditions, brand };
 }

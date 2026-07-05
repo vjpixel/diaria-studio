@@ -30,6 +30,7 @@ import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
 import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
+import { parseArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -516,15 +517,8 @@ interface CliFlags {
   bodiesDir: string | null;
 }
 
-function parseArgs(argv: string[]): CliFlags {
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      flags[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
+function parseCliFlags(argv: string[]): CliFlags {
+  const { values: flags } = parseArgs(argv);
   if (!flags.in) {
     console.error(
       "Usage: enrich-inbox-articles.ts --in <articles.json> [--timeout-ms N] [--concurrency N] [--user-agent S] [--bodies-dir <path>]",
@@ -541,7 +535,7 @@ function parseArgs(argv: string[]): CliFlags {
 }
 
 async function main(): Promise<void> {
-  const cli = parseArgs(process.argv.slice(2));
+  const cli = parseCliFlags(process.argv.slice(2));
   const path = resolve(process.cwd(), cli.in);
   const raw = readFileSync(path, "utf8");
   const parsed = JSON.parse(raw);

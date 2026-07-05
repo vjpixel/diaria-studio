@@ -23,6 +23,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 interface Article {
   url?: string;
@@ -69,19 +70,10 @@ export function enrichPrimarySource(
   return { output: { ...input, radar: enriched }, flagged };
 }
 
-function parseArgs(argv: string[]) {
-  let inputPath = "";
-  let outputPath = "";
-  for (let i = 2; i < argv.length; i++) {
-    switch (argv[i]) {
-      case "--in":
-        inputPath = argv[++i];
-        break;
-      case "--out":
-        outputPath = argv[++i];
-        break;
-    }
-  }
+function parseCliArgs(argv: string[]) {
+  const args = parseArgsSimple(argv);
+  const inputPath = args.in ?? "";
+  const outputPath = args.out ?? "";
   if (!inputPath) {
     console.error(
       "Uso: enrich-primary-source.ts --in <categorized.json> [--out <out.json>]",
@@ -92,7 +84,7 @@ function parseArgs(argv: string[]) {
 }
 
 function main() {
-  const { inputPath, outputPath } = parseArgs(process.argv);
+  const { inputPath, outputPath } = parseCliArgs(process.argv.slice(2));
   const input: Categorized = JSON.parse(readFileSync(inputPath, "utf8"));
   const { output, flagged } = enrichPrimarySource(input);
   writeFileSync(outputPath, JSON.stringify(output, null, 2), "utf8");

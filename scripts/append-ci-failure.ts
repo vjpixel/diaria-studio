@@ -29,6 +29,7 @@
 import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CI_FAILURES_PATH = resolve(ROOT, "data", "ci-failures.jsonl");
@@ -39,17 +40,6 @@ interface CiFailure {
   run_url: string;
   failed_at: string;
   summary: string;
-}
-
-function parseArgs(argv: string[]): Partial<Record<string, string>> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
 }
 
 function loadRunUrls(path: string): Set<string> {
@@ -74,7 +64,7 @@ function loadRunUrls(path: string): Set<string> {
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2)).values;
   const { workflow, branch, "run-url": runUrl, summary, "failed-at": failedAt, out } = args;
 
   if (!workflow || !branch || !runUrl || !summary || !failedAt) {

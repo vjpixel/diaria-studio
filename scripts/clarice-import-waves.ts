@@ -45,6 +45,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 loadProjectEnv();
 
@@ -179,24 +180,19 @@ interface Args {
 }
 
 export function parseArgs(argv: string[]): Args {
-  const get = (f: string): string | undefined => {
-    const i = argv.indexOf(f);
-    if (i < 0) return undefined;
-    const v = argv[i + 1];
-    // Não engole a flag seguinte: `--label --execute` não pode virar label="--execute"
-    // (criaria listas "Clarice --execute …" em produção e ainda executaria).
-    return v && !v.startsWith("--") ? v : undefined;
-  };
-  const folder = parseInt(get("--folder-id") ?? "1", 10);
+  // Não engole a flag seguinte: `--label --execute` não pode virar label="--execute"
+  // (criaria listas "Clarice --execute …" em produção e ainda executaria).
+  const { values } = parseCliArgs(argv);
+  const folder = parseInt(values["folder-id"] ?? "1", 10);
   // #1961: lê as waves do ciclo em {conteúdo}-{envio}/waves/. OBRIGATÓRIO (sem
   // default): parseCycleArg devolve "" quando ausente/inválido; main aborta.
   const cycle = parseCycleArg(argv);
   return {
     execute: argv.includes("--execute"),
-    label: get("--label") ?? "edição atual",
+    label: values["label"] ?? "edição atual",
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
     cycle,
-    group: get("--group") ?? null,
+    group: values["group"] ?? null,
   };
 }
 

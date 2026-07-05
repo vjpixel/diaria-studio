@@ -34,6 +34,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPreviousEditionDate } from "./lib/edition-utils.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -225,18 +226,6 @@ export function filterCarryOver(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const cur = argv[i];
-    if (cur.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[cur.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 /**
  * Lê arquivo JSON com fallback gracioso (#867):
  *   - File missing → null (sem warn — caso esperado)
@@ -262,20 +251,20 @@ function writePoolAtomic(poolPath: string, pool: PoolArticle[]): void {
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDir = args["edition-dir"];
-  const poolPath = args["pool"];
-  const windowStart = args["window-start"];
-  const windowEnd = args["window-end"];
-  const scoreMin = args["score-min"] ? Number(args["score-min"]) : 60;
+  const { values } = parseArgs(process.argv.slice(2));
+  const editionDir = values["edition-dir"];
+  const poolPath = values["pool"];
+  const windowStart = values["window-start"];
+  const windowEnd = values["window-end"];
+  const scoreMin = values["score-min"] ? Number(values["score-min"]) : 60;
   // #1278: --include-editor-submitted bypassa scoreMin pra editor_submitted /
   // newsletter_extracted / source:inbox. Permite recuperar submissões do
   // editor que foram filtradas por score baixo na edição anterior.
   const includeEditorSubmitted = process.argv.includes(
     "--include-editor-submitted",
   );
-  const editionsDir = args["editions-dir"]
-    ? resolve(ROOT, args["editions-dir"])
+  const editionsDir = values["editions-dir"]
+    ? resolve(ROOT, values["editions-dir"])
     : resolve(ROOT, "data", "editions");
 
   if (!editionDir || !poolPath || !windowStart || !windowEnd) {

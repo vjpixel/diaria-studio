@@ -35,6 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchRss, type Article } from "./fetch-rss.ts";
 import { fetchSitemapEntries } from "./lib/fetch-sitemap.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -217,19 +218,8 @@ export async function runBatch(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2)).values;
   if (!args.sources || !args.out) {
     console.error(
       "Uso: fetch-rss-batch.ts --sources <sources.json> --out <results.json> [--days 3] [--timeout-per-feed 60000] [--concurrency N]",

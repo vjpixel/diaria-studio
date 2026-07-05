@@ -34,6 +34,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import { canonicalize, readPastEditionsMd, extractPastUrlsUnbounded } from "./dedup.ts";
 // #2834: CategorizedJson/Article locais consolidados no reader canônico
 // (ver comentário em lib/types/categorized-json.ts sobre por que não é o
@@ -108,15 +109,10 @@ export function dedupEvergreenBuckets(
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): { in: string; out: string; pastEditions: string } {
-  let inPath = "";
-  let outPath = "";
-  let pastEditions = "data/past-editions.md";
-
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--in") inPath = argv[++i];
-    else if (argv[i] === "--out") outPath = argv[++i];
-    else if (argv[i] === "--past-editions") pastEditions = argv[++i];
-  }
+  const values = parseArgsSimple(argv);
+  const inPath = values["in"] ?? "";
+  const outPath = values["out"] ?? "";
+  const pastEditions = values["past-editions"] ?? "data/past-editions.md";
 
   if (!inPath || !outPath) {
     throw new Error(

@@ -33,6 +33,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALL_INVARIANT_RULES, type InvariantRule } from "./lib/invariant-checks/index.ts";
 import { STATIC_RULES } from "./check-invariants.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -142,39 +143,20 @@ function renderMarkdown(groups: StageGroup[]): string {
   return lines.join("\n");
 }
 
-interface CliArgs {
-  outPath?: string;
-  checkPath?: string;
-}
-
-function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--out" && argv[i + 1]) {
-      out.outPath = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--check" && argv[i + 1]) {
-      out.checkPath = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 export function generateInvariantsMarkdown(): string {
   const groups = groupRules();
   return renderMarkdown(groups);
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const { values } = parseArgs(process.argv.slice(2));
   const md = generateInvariantsMarkdown();
-  if (args.checkPath) {
-    const expectedPath = resolve(ROOT, args.checkPath);
+  if (values.check) {
+    const expectedPath = resolve(ROOT, values.check);
     if (!existsSync(expectedPath)) {
       console.error(
         `--check: arquivo ${expectedPath} não existe. Rodar primeiro: ` +
-          `npx tsx scripts/list-invariants.ts --out ${args.checkPath}`,
+          `npx tsx scripts/list-invariants.ts --out ${values.check}`,
       );
       process.exit(1);
     }
@@ -182,15 +164,15 @@ function main(): void {
     if (existing.trim() !== md.trim()) {
       console.error(
         `--check: ${expectedPath} divergiu do registry. ` +
-          `Rodar: npx tsx scripts/list-invariants.ts --out ${args.checkPath}`,
+          `Rodar: npx tsx scripts/list-invariants.ts --out ${values.check}`,
       );
       process.exit(1);
     }
-    console.log(`[list-invariants] ${args.checkPath} bate com registry — ok.`);
+    console.log(`[list-invariants] ${values.check} bate com registry — ok.`);
     return;
   }
-  if (args.outPath) {
-    const absOut = resolve(ROOT, args.outPath);
+  if (values.out) {
+    const absOut = resolve(ROOT, values.out);
     mkdirSync(dirname(absOut), { recursive: true });
     writeFileSync(absOut, md, "utf8");
     console.log(`[list-invariants] gravado em ${absOut}`);

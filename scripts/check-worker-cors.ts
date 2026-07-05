@@ -24,6 +24,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -106,14 +107,8 @@ function resolveWorkerUrl(cliArg: string | null): string {
 }
 
 function parseArgs(argv: string[]): { workerUrl: string | null } {
-  let workerUrl: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--worker-url" && i + 1 < argv.length) {
-      workerUrl = argv[i + 1];
-      i++;
-    }
-  }
-  return { workerUrl };
+  const values = parseArgsSimple(argv);
+  return { workerUrl: values["worker-url"] ?? null };
 }
 
 async function main(): Promise<void> {

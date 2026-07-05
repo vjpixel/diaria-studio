@@ -37,6 +37,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
 import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
 
@@ -111,20 +112,15 @@ interface Args {
 }
 
 export function parseArgs(argv: string[]): Args {
-  const get = (f: string): string | undefined => {
-    const i = argv.indexOf(f);
-    if (i < 0) return undefined;
-    const v = argv[i + 1];
-    return v && !v.startsWith("--") ? v : undefined;
-  };
-  const folder = parseInt(get("--folder-id") ?? "1", 10);
-  const onlyRaw = get("--only");
+  const { values } = parseCliArgs(argv);
+  const folder = parseInt(values["folder-id"] ?? "1", 10);
+  const onlyRaw = values["only"];
   const only = onlyRaw
     ? onlyRaw.split(",").map((x) => parseInt(x.trim(), 10)).filter((x) => Number.isFinite(x))
     : null;
   return {
     execute: argv.includes("--execute"),
-    label: get("--label") ?? "Jun/2026",
+    label: values["label"] ?? "Jun/2026",
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
     cycle: parseCycleArg(argv),
     only: only && only.length ? only : null,

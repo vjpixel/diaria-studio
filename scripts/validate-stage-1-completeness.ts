@@ -34,6 +34,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs } from "./lib/cli-args.ts";
 
 interface ResearcherRun {
   source: string;
@@ -81,24 +82,10 @@ export function checkResearcherCompleteness(
   return { ok: true, stats: { total: runs.length, rss, researcher, discovery } };
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
-  return out;
-}
-
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  const editionDir = args["edition-dir"] as string | undefined;
-  const allowRssOnly = args["allow-rss-only"] === true;
+  const editionDir = args.values["edition-dir"];
+  const allowRssOnly = args.flags.has("allow-rss-only");
 
   if (!editionDir) {
     console.error(

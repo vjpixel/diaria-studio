@@ -33,6 +33,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync as fsWriteFile } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -42,17 +43,6 @@ interface BenchResult {
   avg: number;
   min: number;
   max: number;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
 }
 
 function timeExec(cmd: string, args: string[], cwd: string): number {
@@ -66,7 +56,7 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-const cliArgs = parseArgs(process.argv.slice(2));
+const cliArgs = parseArgsSimple(process.argv.slice(2));
 const fixtureEdition = cliArgs.fixture ?? "260422";
 const numRuns = parseInt(cliArgs.runs ?? "3", 10);
 

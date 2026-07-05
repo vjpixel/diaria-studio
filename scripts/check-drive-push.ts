@@ -32,25 +32,14 @@ export {
 } from "./lib/drive-cache.ts";
 
 import { readDriveCache, getPushCount } from "./lib/drive-cache.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const edition = args["edition"];
-  const filename = args["file"] ?? "01-categorized.md";
+  const { values } = parseArgs(process.argv.slice(2));
+  const edition = values["edition"];
+  const filename = values["file"] ?? "01-categorized.md";
 
   if (!edition) {
     console.error("Uso: check-drive-push.ts --edition AAMMDD [--file filename]");

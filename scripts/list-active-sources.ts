@@ -31,6 +31,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runMain } from "./lib/exit-handler.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 export interface Source {
   name: string;
@@ -107,30 +108,13 @@ export function parseSourcesMd(md: string): Source[] {
   return sources;
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    const next = argv[i + 1];
-    if (!next || next.startsWith("--")) {
-      out[key] = true;
-    } else {
-      out[key] = next;
-      i++;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const format = (args.format as string) ?? "json";
-  const rssOnly = args["rss-only"] === true;
-  const websearchOnly = args["websearch-only"] === true; // #1555 P0
-  const outPath = args.out as string | undefined;
-  const sourcesMdPath = (args.sources as string) ?? "context/sources.md";
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const format = values.format ?? "json";
+  const rssOnly = flags.has("rss-only");
+  const websearchOnly = flags.has("websearch-only"); // #1555 P0
+  const outPath = values.out;
+  const sourcesMdPath = values.sources ?? "context/sources.md";
 
   const md = readFileSync(resolve(process.cwd(), sourcesMdPath), "utf8");
   let sources = parseSourcesMd(md);

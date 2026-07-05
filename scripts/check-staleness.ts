@@ -42,6 +42,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { urlsMatch } from "./lib/url-utils.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import {
   extractDestaqueUrls,
   extractPromptUrl,
@@ -396,21 +397,13 @@ interface CliFlags {
 }
 
 function parseArgs(argv: string[]): CliFlags | { error: string } {
-  const flags: { editionDir?: string; stage?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--edition-dir" && argv[i + 1]) {
-      flags.editionDir = argv[i + 1];
-      i++;
-    } else if (a === "--stage" && argv[i + 1]) {
-      flags.stage = argv[i + 1];
-      i++;
-    }
-  }
-  if (!flags.editionDir || !flags.stage) {
+  const values = parseArgsSimple(argv);
+  const editionDir = values["edition-dir"];
+  const stage = values["stage"];
+  if (!editionDir || !stage) {
     return { error: "Usage: check-staleness.ts --edition-dir <path> --stage <N>" };
   }
-  return { editionDir: flags.editionDir, stage: flags.stage };
+  return { editionDir, stage };
 }
 
 function main(): void {

@@ -36,28 +36,12 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const INSTAGRAM_API_BASE = "https://graph.facebook.com"; // mesma base da Graph API
 const INSTAGRAM_API_VERSION = "v25.0";
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--skip-existing") {
-      args["skip-existing"] = true;
-    } else if (argv[i] === "--no-skip-existing") {
-      args["no-skip-existing"] = true;
-    } else if (argv[i] === "--test-mode") {
-      args["test-mode"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
 
 function loadPublished(path: string): SocialPublished {
   if (existsSync(path)) {
@@ -216,15 +200,15 @@ async function fetchPermalink(
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDirArg = args["edition-dir"] as string | undefined;
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const editionDirArg = values["edition-dir"];
   if (!editionDirArg) {
     console.error("ERRO: --edition-dir é obrigatório.");
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirArg);
-  const skipExisting = args["no-skip-existing"] !== true;
-  const isTest = !!args["test-mode"];
+  const skipExisting = !flags.has("no-skip-existing");
+  const isTest = flags.has("test-mode");
 
   // Carregar credenciais — env vars obrigatórias em runtime
   const igUserId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID || "";

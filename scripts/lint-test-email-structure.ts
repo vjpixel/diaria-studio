@@ -27,6 +27,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // #1836: fonte única do prefixo de emoji de seção (mandatório + opcional).
 import { SECTION_EMOJI, SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 export interface StructureIssue {
   // #1721: `section_item_count_mismatch` removido — era declarado mas NUNCA
@@ -247,32 +248,14 @@ export function compareStructure(
   return issues;
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[key] = next;
-        i++;
-      } else {
-        out[key] = true;
-      }
-    }
-  }
-  return out;
-}
-
 async function mainCli(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help || !args["email-file"] || !args["source-md"]) {
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  if (flags.has("help") || !values["email-file"] || !values["source-md"]) {
     console.error("Uso: lint-test-email-structure.ts --email-file <file> --source-md <file> [--out <json>]");
     return 2;
   }
-  const emailFile = String(args["email-file"]);
-  const sourceMd = String(args["source-md"]);
+  const emailFile = values["email-file"];
+  const sourceMd = values["source-md"];
   if (!existsSync(emailFile) || !existsSync(sourceMd)) {
     console.error(`Arquivo(s) faltando.`);
     return 2;
@@ -283,7 +266,7 @@ async function mainCli(): Promise<number> {
   const email = extractEmailStructure(emailContent);
   const issues = compareStructure(source, email);
   const result: StructureResult = { source, email, issues };
-  if (args.out) writeFileSync(String(args.out), JSON.stringify(result, null, 2), "utf8");
+  if (values.out) writeFileSync(values.out, JSON.stringify(result, null, 2), "utf8");
   console.log(JSON.stringify(result, null, 2));
   if (issues.length > 0) {
     console.error(`[lint-test-email-structure] ${issues.length} issue(s):`);

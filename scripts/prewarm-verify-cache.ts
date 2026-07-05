@@ -25,6 +25,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,16 +38,13 @@ interface RunRecord {
 }
 
 function parseArgs(argv: string[]): { editionDir: string; researcherResults?: string } {
-  const args: { editionDir?: string; researcherResults?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir") args.editionDir = argv[++i];
-    else if (argv[i] === "--researcher-results") args.researcherResults = argv[++i];
-  }
-  if (!args.editionDir) {
+  const raw = parseArgsSimple(argv);
+  const editionDir = raw["edition-dir"];
+  if (!editionDir) {
     console.error("Uso: prewarm-verify-cache.ts --edition-dir <path> [--researcher-results <path>]");
     process.exit(2);
   }
-  return args as { editionDir: string; researcherResults?: string };
+  return { editionDir, researcherResults: raw["researcher-results"] };
 }
 
 function extractUrls(data: unknown): string[] {
