@@ -34,6 +34,7 @@
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -78,19 +79,8 @@ const VALID_FIX_TYPES: ReadonlyArray<FixType> = [
 
 const VALID_SEVERITIES: ReadonlyArray<Severity> = ["P0", "P1", "P2", "P3"];
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2)).values;
   const required = ["edition", "stage", "fix-type", "component", "description"];
   const missing = required.filter((k) => !args[k]);
   if (missing.length > 0) {

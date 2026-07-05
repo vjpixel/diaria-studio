@@ -42,6 +42,7 @@ import { execFileSync } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -313,13 +314,13 @@ function parseArgs(argv: string[]): {
   dryRun: boolean;
   thresholdMin: number;
 } {
-  const dryRun = argv.includes("--dry-run");
+  const { flags, values } = parseCliArgs(argv);
+  const dryRun = flags.has("dry-run");
   let thresholdMin = parseInt(process.env.OVERNIGHT_WATCHDOG_STALL_MIN ?? "60", 10);
   if (isNaN(thresholdMin) || thresholdMin < 1) thresholdMin = 60;
 
-  const tIdx = argv.indexOf("--threshold");
-  if (tIdx !== -1 && argv[tIdx + 1]) {
-    const v = parseInt(argv[tIdx + 1], 10);
+  if (values.threshold) {
+    const v = parseInt(values.threshold, 10);
     if (!isNaN(v) && v > 0) thresholdMin = v;
   }
 
