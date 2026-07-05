@@ -40,6 +40,7 @@ export * from "./billing-cycle.ts";
 export * from "./sections-kv.ts";
 export * from "./brevo-api.ts";
 export * from "./sections-core.ts";
+export * from "./weekly-plan.ts";
 
 import {
   fetchRecentCampaigns,

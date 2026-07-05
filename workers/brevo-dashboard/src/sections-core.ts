@@ -14,6 +14,7 @@ import {
   COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
 import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
+import { renderWeeklyPlanTabPanel } from "./weekly-plan.ts";
 
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
@@ -223,6 +224,10 @@ export function renderDashboardHtml(
   const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
   const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage) : "";
+  // #2974: aba "Rampa" — plano de envio semanal (maturação >48h → agregado →
+  // semáforo → 3 volumes). Sem PII, sem parâmetro novo (usa `campaigns` já
+  // disponível nesta função).
+  const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, new Date());
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -327,6 +332,7 @@ export function renderDashboardHtml(
   #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:checked ~ .tab-bar label[for="tab-links"],
   #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"],
+  #tab-rampa:checked ~ .tab-bar label[for="tab-rampa"],
   #tab-cupons:checked ~ .tab-bar label[for="tab-cupons"] {
     background: var(--paper); border-color: var(--rule); opacity: 1;
     color: var(--brand); border-bottom-color: var(--paper);
@@ -336,6 +342,7 @@ export function renderDashboardHtml(
   #tab-engajamento:focus-visible ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
   #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"],
+  #tab-rampa:focus-visible ~ .tab-bar label[for="tab-rampa"],
   #tab-cupons:focus-visible ~ .tab-bar label[for="tab-cupons"] {
     outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
   }
@@ -344,6 +351,7 @@ export function renderDashboardHtml(
   #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
   #tab-links:checked ~ .tab-panels #panel-links,
   #tab-contatos:checked ~ .tab-panels #panel-contatos,
+  #tab-rampa:checked ~ .tab-panels #panel-rampa,
   #tab-cupons:checked ~ .tab-panels #panel-cupons { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
@@ -362,6 +370,7 @@ export function renderDashboardHtml(
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-rampa">
 ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
@@ -370,6 +379,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
+  <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Rampa</label>
   ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
@@ -486,6 +496,11 @@ ${aggregatedLinksSection}
 ${contactsSummarySection}
 ${cohortsTabSection}
   </div><!-- /panel-contatos -->
+
+  <!-- Aba Rampa: plano de envio semanal cold (#2974) -->
+  <div class="tab-panel" id="panel-rampa" role="tabpanel" aria-labelledby="tablabel-rampa">
+${weeklyPlanSection}
+  </div><!-- /panel-rampa -->
 
 ${couponUsage ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
