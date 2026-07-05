@@ -95,6 +95,33 @@ describe("fetchPlanCredits (#2910)", () => {
     }
   });
 
+  it("chama o endpoint /v3/account (regressão: sem o /v3 a Brevo dá 404 e o denominador some)", async () => {
+    const origFetch = globalThis.fetch;
+    let calledUrl = "";
+    globalThis.fetch = (async (url: string) => {
+      calledUrl = String(url);
+      return new Response(JSON.stringify({ plan: [{ credits: 34708, creditsType: "sendLimit" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const kv = makeKv();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 34708);
+      // brevoFetch NÃO prefixa /v3 — o path precisa incluí-lo. `/account` (sem /v3)
+      // retorna 404 e o plano cai pra "indisponível" (bug que fez #2910 nunca funcionar).
+      assert.equal(
+        calledUrl,
+        "https://api.brevo.com/v3/account",
+        "deve bater /v3/account, nunca /account",
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it("fetch ao vivo falha (rede/429/500) → cai pro último valor bom no KV", async () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response("erro", { status: 500 })) as unknown as typeof globalThis.fetch;
