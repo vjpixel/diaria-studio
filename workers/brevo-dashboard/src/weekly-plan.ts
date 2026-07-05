@@ -318,12 +318,6 @@ ${waitRows}
     red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
   }[semaphore];
 
-  const includedRows = mature
-    .map((c) => {
-      const picked = pickStats(c);
-      return `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>${picked?.stats.sent ?? "—"}</td></tr>`;
-    })
-    .join("\n");
   const excludedRows = immature
     .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>ainda não maturou (&lt;48h)</td></tr>`)
     .join("\n");
@@ -371,6 +365,27 @@ ${waitRows}
     })
     .join("\n");
 
+  // Agregado POR DIA (o que importa — uma ocasião de envio = um dia; as células
+  // A/B/C do mesmo dia são um envio só). Cada dia agregado com aggregateHealth,
+  // ordenado do mais recente pro mais antigo.
+  const byDay = new Map<string, BrevoCampaign[]>();
+  for (const c of mature) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    const arr = byDay.get(day);
+    if (arr) arr.push(c);
+    else byDay.set(day, [c]);
+  }
+  const dayRows = [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([day, cs]) => {
+      const h = aggregateHealth(cs);
+      const oCol = STATUS_COLOR[classifyMetric(h.openRate, T.openRate, "higher")];
+      const uCol = STATUS_COLOR[classifyMetric(h.unsubRate, T.unsubRate, "lower")];
+      return `<tr><td>${day}</td><td>${h.delivered.toLocaleString("pt-BR")}</td><td style="color:${oCol}">${fmtPct(h.openRate)}</td><td>${fmtPct(h.bounceRate)}</td><td>${fmtPct(h.spamRate)}</td><td style="color:${uCol}">${fmtPct(h.unsubRate)}</td></tr>`;
+    })
+    .join("\n");
+
   return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
@@ -385,12 +400,13 @@ ${metricRows}
   </table>
   </div>
   ${planSection}
-  <details>
-    <summary>Campanhas incluídas no agregado (${mature.length})</summary>
-    <div class="table-wrap"><table><thead><tr><th>Envio</th><th>Enviado</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
-    ${includedRows || '<tr><td colspan="3">Nenhuma.</td></tr>'}
-    </tbody></table></div>
-  </details>
+  <p class="section-note" style="font-weight:600;margin-top:8px">Por dia de envio (o que importa)</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Dia (BRT)</th><th title="${escHtml(ENVIOS_TOOLTIP)}">Entregues</th><th>Abertura</th><th>Bounce</th><th>Spam</th><th>Unsub</th></tr></thead>
+    <tbody>
+${dayRows || '<tr><td colspan="6">Nenhum.</td></tr>'}
+    </tbody>
+  </table></div>
   <details>
     <summary>Excluídas por imaturidade (&lt;48h) (${immature.length})</summary>
     <div class="table-wrap"><table><thead><tr><th>Envio</th><th>Enviado</th><th>Motivo</th></tr></thead><tbody>
