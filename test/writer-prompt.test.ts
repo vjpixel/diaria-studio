@@ -130,3 +130,24 @@ describe("writer-destaque.md safe-area invariant (#2657)", () => {
     );
   });
 });
+
+describe("caveat de nomes de produto/modelo — Gemini Nano ≠ Nano Banana (#2685)", () => {
+  // Ambos os writers (default × destaque) devem carregar o guard, senão vira gap
+  // silencioso em prod (padrão writer-agents-keep-in-sync).
+  for (const [nome, path] of [
+    ["writer.md", WRITER_MD],
+    ["writer-destaque.md", WRITER_DESTAQUE_MD],
+  ] as const) {
+    const content = readFileSync(path, "utf8");
+    it(`${nome} documenta o caveat de não-fundir produtos de nome parecido`, () => {
+      assert.match(content, /#2685/, `${nome} deve citar o #2685`);
+      assert.match(content, /Gemini Nano/, `${nome} deve nomear Gemini Nano`);
+      assert.match(content, /Nano Banana/, `${nome} deve nomear Nano Banana`);
+      assert.match(
+        content,
+        /on-device|no aparelho|offline|local/i,
+        `${nome} deve alertar contra alucinar processamento on-device/offline`,
+      );
+    });
+  }
+});

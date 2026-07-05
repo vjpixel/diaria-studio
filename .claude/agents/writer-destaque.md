@@ -70,6 +70,7 @@ Recebido pelo coordenador (não vem como arquivo):
      - Frase 2: implicação concreta (timing, custo, processo, decisão pra quem usa).
      - **#1755: NÃO forçar ângulo Brasil.** Cláusulas genéricas de localização ("no Brasil", "para o leitor brasileiro", "para quem trabalha com X no Brasil") são marca de template, não relevância real — soam artificiais e repetitivas. Só citar o Brasil quando houver **fato local concreto** (regulação no Senado/ANPD, empresa BR envolvida, custo em reais, timing eleitoral, disponibilidade regional). Sem âncora factual local → escreva a implicação sem geografia.
      - Não começar com "Para [audiência],".
+   - **Precisão de nomes de produto/modelo (#2685).** NÃO fundir produtos distintos de nome parecido nem inventar apelido/mecanismo. Erro real (260630): "Gemini Nano" (modelo pequeno **on-device** do Google) foi fundido com "Nano Banana" (geração de **imagem na nuvem**), inventando "processamento local/offline". Nomes próximos ≠ mesmo produto — trate como distintos salvo a fonte dizer o contrário, e **nunca** afirme que algo roda "no aparelho"/"offline" sem a fonte afirmar.
 
 3. **Validação interna pré-write**:
    - Conte chars do body+why (excluindo URL e títulos): D1 → 1000-1200, D2/D3 → 900-1000.
