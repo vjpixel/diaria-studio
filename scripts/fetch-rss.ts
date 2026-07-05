@@ -24,6 +24,7 @@ import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 // em lib/strip-html.ts como stripHtmlBasic (nome distinto do stripHtml
 // anchor-preserving de auto-forward-newsletters.ts/capture-newsletter-urls.ts).
 import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts"; // #2834
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -297,24 +298,6 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        args[key] = next;
-        i++;
-      } else {
-        args[key] = "true";
-      }
-    }
-  }
-  return args;
 }
 
 async function main() {

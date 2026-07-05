@@ -39,6 +39,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SECTIONS } from "./lib/section-naming.ts"; // #1836: fonte única dos patterns de nome de seção
+import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
 
 export interface HumanizerMetrics {
   /** Linhas terminadas em `  ` (2 espaços trailing → markdown `<br>`) */
@@ -184,19 +185,8 @@ export function compareHumanizerOutput(
   };
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgsStructured(process.argv.slice(2)).values;
   if (!args.pre || !args.post) {
     console.error(
       "Uso: lint-humanized-output.ts --pre <md> --post <md> [--max-trailing-loss N] [--max-bold-link-nesting-loss N]",

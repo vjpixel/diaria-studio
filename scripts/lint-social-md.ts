@@ -39,6 +39,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
 import {
   type LintError,
   extractPlatformSection,
@@ -114,19 +115,8 @@ export type { PersonalPostDeixisMatch, PersonalPostDeixisResult };
 export { lintPersonalPostNewsletterDeixis };
 export type { SectionCoverageResult };
 export { checkHumanizerSectionCoverage };
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgsStructured(process.argv.slice(2)).values;
   if (!args.md) {
     console.error(
       "Uso: lint-social-md.ts --md <path>\n" +

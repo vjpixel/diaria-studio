@@ -15,24 +15,7 @@
  */
 
 import { fetchSitemapEntries } from "./lib/fetch-sitemap.ts";
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        args[key] = next;
-        i++;
-      } else {
-        args[key] = "true";
-      }
-    }
-  }
-  return args;
-}
+import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts"; // #2834
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
