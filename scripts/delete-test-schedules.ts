@@ -33,6 +33,7 @@ import {
   appendSocialPosts,
   type PostEntry,
 } from "./lib/social-published-store.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -109,26 +110,18 @@ function parseArgs(argv: string[]): {
   dryRun: boolean;
   requireIsTest: boolean;
 } {
-  let editionDir: string | null = null;
+  const { flags, values } = parseCliArgs(argv);
+  const editionDir = values["edition-dir"] ?? null;
   let platform: "all" | "facebook" | "linkedin" = "all";
-  let dryRun = false;
+  if (values["platform"] !== undefined) {
+    const v = values["platform"];
+    if (v === "facebook" || v === "linkedin") platform = v;
+    else throw new Error(`--platform deve ser facebook ou linkedin (got '${v}')`);
+  }
+  const dryRun = flags.has("dry-run");
   // #1056 — safety: by default só deleta entries com is_test:true. Pra forçar
   // deletar tudo (perigoso), passar --no-require-is-test.
-  let requireIsTest = true;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[++i];
-    } else if (arg === "--platform" && i + 1 < argv.length) {
-      const v = argv[++i];
-      if (v === "facebook" || v === "linkedin") platform = v;
-      else throw new Error(`--platform deve ser facebook ou linkedin (got '${v}')`);
-    } else if (arg === "--dry-run") {
-      dryRun = true;
-    } else if (arg === "--no-require-is-test") {
-      requireIsTest = false;
-    }
-  }
+  const requireIsTest = !flags.has("no-require-is-test");
   return { editionDir, platform, dryRun, requireIsTest };
 }
 

@@ -35,6 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { fetchRss } from "./fetch-rss.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CSV = resolve(ROOT, "seed/sources.csv");
@@ -282,24 +283,17 @@ interface CliFlags {
   source?: string;
 }
 
-function parseArgs(argv: string[]): CliFlags {
+function parseFlags(argv: string[]): CliFlags {
+  const { flags: booleanFlags, values } = parseCliArgs(argv);
   const flags: CliFlags = { csvPath: DEFAULT_CSV, dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") flags.dryRun = true;
-    else if (a === "--csv" && argv[i + 1]) {
-      flags.csvPath = resolve(ROOT, argv[i + 1]);
-      i++;
-    } else if (a === "--source" && argv[i + 1]) {
-      flags.source = argv[i + 1];
-      i++;
-    }
-  }
+  if (booleanFlags.has("dry-run")) flags.dryRun = true;
+  if (values.csv) flags.csvPath = resolve(ROOT, values.csv);
+  if (values.source) flags.source = values.source;
   return flags;
 }
 
 async function main(): Promise<void> {
-  const flags = parseArgs(process.argv.slice(2));
+  const flags = parseFlags(process.argv.slice(2));
   const csv = readFileSync(flags.csvPath, "utf8");
   const parsed = Papa.parse<SourceRow>(csv, {
     header: true,

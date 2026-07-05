@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -263,19 +264,8 @@ export async function expandInboxAggregators(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgsSimple(process.argv.slice(2));
 
   const articlesPath = args["articles"];
   const verifyPath = args["verify"];
