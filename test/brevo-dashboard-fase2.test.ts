@@ -2188,7 +2188,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ Cliques/, "deve ter label 'Links / Cliques'");
     assert.match(html, />Contatos</, "deve ter label 'Contatos' (#2653)");
-    assert.match(html, />Rampa</, "deve ter label 'Rampa' (#2974)");
+    assert.match(html, />Agendamento</, "deve ter label 'Agendamento' (#2974, renomeado de 'Rampa')");
     // #2880: aba Cohorts eliminada — não deve mais existir label/radio pra ela.
     assert.doesNotMatch(html, /for="tab-cohorts"/, "não deve ter mais label 'Cohorts' como aba própria");
   });
