@@ -113,7 +113,7 @@ export function sliceIntoVolumes<T>(ordered: T[], volumes: number[]): T[][] {
   return out;
 }
 
-export function main(argv: string[] = process.argv.slice(2)): void {
+export function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const volumes = parseVolumesArg(getArg(argv, "volumes"));
   if (!volumes) {
     console.error("❌ --volumes N,N,N é obrigatório — 3 inteiros > 0, separados por vírgula. Ex: --volumes 7000,7500,8000");
@@ -123,7 +123,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const outDir = getArg(argv, "out-dir") || resolve(CLARICE_BASE, "weekly-plan", new Date().toISOString().slice(0, 10));
 
-  void run(volumes, { write, dbPath, outDir });
+  return run(volumes, { write, dbPath, outDir });
 }
 
 async function run(
@@ -162,14 +162,20 @@ async function run(
   }
 
   const db = openClariceDb(opts.dbPath);
-  const rows = db
-    .prepare(
-      `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-              opens_count, last_sent_at, mv_bucket
-         FROM clarice_users`,
-    )
-    .all() as unknown as AudienceRow[];
-  db.close();
+  let rows: AudienceRow[];
+  try {
+    rows = db
+      .prepare(
+        `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
+                opens_count, last_sent_at, mv_bucket
+           FROM clarice_users`,
+      )
+      .all() as unknown as AudienceRow[];
+  } finally {
+    // fecha o handle mesmo se o .prepare/.all lançar — no Windows, um handle
+    // SQLite aberto segura o lock do arquivo e trava um sync concorrente.
+    db.close();
+  }
 
   const ordered = segmentRampWarm(rows) as AudienceRow[];
   console.log(`Audiência elegível (1º envio, send_eligible, verificado): ${ordered.length.toLocaleString("pt-BR")} contatos.`);
@@ -206,6 +212,16 @@ async function run(
   console.log("Próximo passo: importar cada CSV como lista no Brevo (mesmo fluxo manual de clarice-import-waves.ts) e agendar os envios.");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+// Guard de execução direta Windows-safe (mesmo padrão de clarice-build-segment.ts):
+// process.argv[1] usa backslashes no Windows e import.meta.url usa file:/// —
+// normalizar pra não virar no-op silencioso quando rodado via `npx tsx ...`.
+const _argv1 = (process.argv[1] ?? "").replace(/\\/g, "/");
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
 }

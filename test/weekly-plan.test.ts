@@ -14,6 +14,8 @@ import {
   aggregateHealth,
   decideSemaphore,
   computeWeekPlan,
+  isColdCampaign,
+  baseVolumeFromLastSendDay,
   DEFAULT_HEALTH_THRESHOLDS,
   MATURATION_MS,
   type HealthAggregate,
@@ -189,4 +191,31 @@ test("computeWeekPlan — vermelho corta 30% e sinaliza flagged", () => {
   assert.deepEqual(plan.volumes, [700, 700, 700]);
   assert.equal(plan.flagged, true);
   assert.equal(plan.semaphore, "red");
+});
+
+test("isColdCampaign — cold diário (dNN) sim; digest mensal e naming estranho não", () => {
+  assert.equal(isColdCampaign({ name: "Clarice News 2605 d01-A (qua)" }), true);
+  assert.equal(isColdCampaign({ name: "Clarice News 2605 d08 (qua)" }), true);
+  // digest mensal (engajado) — excluído do agregado cold
+  assert.equal(isColdCampaign({ name: "Clarice News 2605-06 — B: assunto" }), false);
+  // naming fora do padrão Clarice — excluído por segurança
+  assert.equal(isColdCampaign({ name: "Newsletter promo qualquer" }), false);
+});
+
+test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não pega 1 só)", () => {
+  const mk = (id: number, sentDate: string, sent: number): BrevoCampaign =>
+    campaignSentHoursAgo(0, { id, sentDate, statistics: statsFor({ sent, delivered: sent, uniqueViews: 0 }) });
+  // 3 células no mesmo domingo BRT + 1 envio de terça (dia anterior, menor).
+  const camps = [
+    mk(1, "2026-07-05T09:00:00Z", 600), // dom
+    mk(2, "2026-07-05T09:00:00Z", 620), // dom (mesma data)
+    mk(3, "2026-07-05T09:05:00Z", 610), // dom (mesma data, minuto diferente)
+    mk(4, "2026-06-30T09:00:00Z", 500), // ter anterior — não deve entrar
+  ];
+  // soma das 3 do último dia = 600+620+610 = 1830 (não 610 de uma célula só)
+  assert.equal(baseVolumeFromLastSendDay(camps), 1830);
+});
+
+test("baseVolumeFromLastSendDay — vazio retorna 0", () => {
+  assert.equal(baseVolumeFromLastSendDay([]), 0);
 });

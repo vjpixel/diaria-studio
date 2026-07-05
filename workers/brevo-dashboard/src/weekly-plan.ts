@@ -23,10 +23,46 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey } from "./sections-core.ts";
+import { fmtTimeBRT } from "./render-links.ts";
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Janela da "semana anterior" (comentário do editor na issue: o agregado é da
+ * SEMANA PASSADA). Só campanhas enviadas nos últimos 7 dias entram no agregado
+ * de saúde — envios antigos (digests de semanas passadas, rampas de ciclos
+ * anteriores) não contaminam a decisão. Combinada com a maturação (>48h), a
+ * janela efetiva é ~[now−7d, now−48h].
+ */
+export const WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * É um envio COLD de crescimento de alcance (o que a rampa planeja)?
+ *
+ * Este Brevo account serve a migração Clarice News — os envios da rampa cold
+ * seguem o naming diário "Clarice News {yymm} d{NN}[-A/B/C]" (parseável, NÃO
+ * monthly). O digest MENSAL ("Clarice News {yymm-mm} — X", parsed.monthly) vai
+ * pra base ENGAJADA (assinantes ativos, baseline de abertura MUITO mais alto) —
+ * misturá-lo no agregado cold falsearia o semáforo (verde imerecido). Campanhas
+ * com naming fora do padrão Clarice → excluídas por segurança (não sabemos a
+ * audiência). O digest DIÁRIO da Diar.ia sai pelo Beehiiv, não por este account,
+ * então não aparece aqui.
+ */
+export function isColdCampaign(c: Pick<BrevoCampaign, "name">): boolean {
+  const parsed = parseClariceCampaignKey(c.name);
+  return parsed !== null && !parsed.monthly;
+}
+
+/** Chave de dia-calendário BRT (YYYY-MM-DD) de um sentDate — pra agrupar células A/B/C do mesmo envio. */
+function brtDayKey(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  // en-CA dá YYYY-MM-DD estável; timeZone fixa o dia no fuso de Brasília.
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+}
 
 /** Passo de escalonamento default (+7%, dentro da faixa +5–10% dos guardrails). */
 export const DEFAULT_WEEK_STEP = 0.07;
@@ -203,11 +239,30 @@ function fmtPct(n: number): string {
   return `${n.toFixed(2)}%`;
 }
 
-function fmtTimeBRT(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+/**
+ * Volume-base = soma do `sent` de TODAS as campanhas cold enviadas no MESMO dia
+ * (BRT) que o envio maduro mais recente. Somar por dia (não pegar 1 campanha)
+ * porque um envio cold pode ser fatiado em células A/B/C simultâneas (ex: cold
+ * sáb/dom da migração) — pegar só uma subestimaria o volume real em ~⅓ e a
+ * rampa escalaria sobre a base errada. Retorna 0 se não há envio maduro.
+ */
+export function baseVolumeFromLastSendDay(mature: BrevoCampaign[]): number {
+  let latestMs = -Infinity;
+  let latestDay: string | null = null;
+  for (const c of mature) {
+    const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
+    if (Number.isFinite(ms) && ms > latestMs) {
+      latestMs = ms;
+      latestDay = brtDayKey(c.sentDate);
+    }
+  }
+  if (latestDay === null) return 0;
+  let total = 0;
+  for (const c of mature) {
+    if (brtDayKey(c.sentDate) !== latestDay) continue;
+    total += pickStats(c)?.stats.sent ?? 0;
+  }
+  return total;
 }
 
 /**
@@ -222,32 +277,36 @@ export function renderWeeklyPlanTabPanel(
   campaigns: Array<BrevoCampaign & { listName?: string }>,
   now: Date = new Date(),
 ): string {
-  // Este Brevo account só serve Clarice News (digest + testes ABC + cold) —
-  // toda campanha "sent" aqui é candidata ao agregado de saúde do plano.
-  const sentCampaigns = campaigns.filter((c) => c.status === "sent" && c.sentDate);
-  const mature = filterMatureCampaigns(sentCampaigns, now);
+  // Só envios COLD de crescimento de alcance (a rampa não decide sobre o digest
+  // mensal engajado — baseline de abertura incomparável, ver isColdCampaign).
+  const coldSent = campaigns.filter((c) => c.status === "sent" && c.sentDate && isColdCampaign(c));
+  // Agregado da SEMANA ANTERIOR: maduro (>48h) E dentro da janela de 7 dias.
+  const nowMs = now.getTime();
+  const inWeek = (c: BrevoCampaign): boolean => {
+    const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
+    return Number.isFinite(ms) && nowMs - ms <= WEEK_WINDOW_MS;
+  };
+  const mature = filterMatureCampaigns(coldSent, now).filter(inWeek);
   const matureIds = new Set(mature.map((c) => c.id));
-  const immature = sentCampaigns.filter((c) => !matureIds.has(c.id));
+  // "Imaturo" pra transparência = cold, na janela da semana, mas ainda <48h.
+  const immature = coldSent.filter((c) => !matureIds.has(c.id) && inWeek(c));
 
-  if (sentCampaigns.length === 0) {
+  if (coldSent.length === 0) {
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
-  <p class="section-note">Nenhuma campanha enviada ainda.</p>
+  <p class="section-note">Nenhum envio cold encontrado.</p>
 </section>`;
   }
 
   const health = aggregateHealth(mature);
   const semaphore = decideSemaphore(health);
 
-  // baseVolume = volume (sent) do último envio maduro — se não há nenhum
-  // maduro ainda (ex: ritual roda cedo demais após o envio de domingo), não
-  // dá pra decidir: mostra apenas o estado de maturação, sem plano.
-  const lastMature = [...mature].sort(
-    (a, b) => Date.parse(b.sentDate ?? "") - Date.parse(a.sentDate ?? ""),
-  )[0];
-  const baseVolume = lastMature ? (pickStats(lastMature)?.stats.sent ?? 0) : 0;
-  const canPlan = Boolean(lastMature) && baseVolume > 0;
+  // baseVolume = soma dos envios cold do último dia maduro (células A/B/C
+  // somadas). Sem envio maduro na janela (ex: ritual roda cedo demais após o
+  // domingo), baseVolume=0 → sem plano, só mostra o estado de maturação.
+  const baseVolume = baseVolumeFromLastSendDay(mature);
+  const canPlan = baseVolume > 0;
   const plan = canPlan ? computeWeekPlan(baseVolume, semaphore) : null;
 
   const semLabel = { green: "Verde", yellow: "Amarelo", red: "Vermelho" }[semaphore];
