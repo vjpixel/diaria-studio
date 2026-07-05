@@ -31,6 +31,7 @@ import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
+import { getArg, hasFlag } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,16 +41,10 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") out.dryRun = true;
-    else if (a === "--edition" && argv[i + 1]) {
-      out.editionFilter = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
+  return {
+    dryRun: hasFlag(argv, "dry-run"),
+    editionFilter: getArg(argv, "edition") || undefined,
+  };
 }
 
 export interface Fix {

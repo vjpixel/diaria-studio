@@ -25,6 +25,7 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getArg, hasFlag } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,19 +38,6 @@ interface StageResult {
   status: "ok" | "skipped" | "failed";
   error?: string;
   files: string[];
-}
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--skip-images") {
-      args["skip-images"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
 }
 
 function run(cmd: string, opts?: { timeout?: number }): string {
@@ -95,15 +83,15 @@ function filesSince(dir: string, since: string[]): string[] {
 
 // ---- Main ----
 
-const args = parseArgs(process.argv.slice(2));
-const editionDate = args.date as string;
+const cliArgv = process.argv.slice(2);
+const editionDate = getArg(cliArgv, "date");
 if (!editionDate) {
   console.error("Usage: npx tsx scripts/benchmark-e2e.ts --date AAMMDD [--window 3] [--skip-images]");
   process.exit(1);
 }
 
-const windowDays = parseInt((args.window as string) ?? "3", 10);
-const skipImages = !!args["skip-images"];
+const windowDays = parseInt(getArg(cliArgv, "window") || "3", 10);
+const skipImages = hasFlag(cliArgv, "skip-images");
 
 // editionDate is already AAMMDD (e.g. 260423)
 const yymmdd = editionDate;
