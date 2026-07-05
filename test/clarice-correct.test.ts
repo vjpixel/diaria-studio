@@ -354,8 +354,14 @@ function makeFetchWithCapture(responsesPerCall: Array<Array<{ from: string; to: 
   return { fetchImpl, capturedBodies, callCount: () => callIndex };
 }
 
-/** Gera texto sintético com >10k chars usando parágrafos separados por \n\n. */
-function makeLongText(minLength = CLARICE_CHUNK_THRESHOLD + 5_000): string {
+/**
+ * Gera texto sintético que divide em EXATAMENTE 2 chunks no threshold corrente.
+ * #2798: sizing RELATIVO ao threshold (×1.5), não `+5_000` fixo — com o threshold
+ * baixado pra 4.5k, `+5_000` (=9.5k) virava 3 chunks e o ERRO_CHUNK2 (no fim) caía
+ * no chunk 3, mas o mock só alimenta a sugestão dele pro chunk 2. 1.5× garante 2
+ * chunks em qualquer threshold (chunk1 ~T com ERRO_CHUNK1; chunk2 ~0.5T com ERRO_CHUNK2).
+ */
+function makeLongText(minLength = Math.ceil(CLARICE_CHUNK_THRESHOLD * 1.5)): string {
   const paragraph = "Texto editorial de teste com conteúdo suficiente para chunking. ".repeat(5) + "\n\n";
   let text = "ERRO_CHUNK1 aparece aqui no início.\n\n";
   while (text.length < minLength) text += paragraph;
