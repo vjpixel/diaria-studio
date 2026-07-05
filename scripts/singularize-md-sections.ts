@@ -27,6 +27,7 @@ import {
   ALL_SECTION_NAMES_PATTERN,
   SECTION_EMOJI_PREFIX,
 } from "./lib/section-naming.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 interface SectionMutation {
   name: string;
@@ -137,10 +138,8 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs | null {
-  let md = "";
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--md" && argv[i + 1]) { md = argv[++i]; }
-  }
+  const flat = parseArgsSimple(argv);
+  const md = flat["md"];
   if (!md) return null;
   return { md };
 }

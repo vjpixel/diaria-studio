@@ -27,6 +27,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 export interface StructureToken {
   kind: "header" | "separator";
@@ -165,19 +166,8 @@ export function diffStructure(before: StructureToken[], after: StructureToken[])
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const { values: args } = parseArgs(process.argv.slice(2));
   if (!args.before || !args.after) {
     console.error("Uso: validate-section-structure.ts --before <path.md> --after <path.md>");
     process.exit(2);

@@ -30,6 +30,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "./lib/cli-args.ts";
 
 export interface EncodingIssue {
   type: "char_dropped" | "char_substituted";
@@ -154,32 +155,14 @@ function countSpecial(text: string): number {
   return count;
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[key] = next;
-        i++;
-      } else {
-        out[key] = true;
-      }
-    }
-  }
-  return out;
-}
-
 async function mainCli(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help || !args["email-file"] || !args["source-md"]) {
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  if (flags.has("help") || !values["email-file"] || !values["source-md"]) {
     console.error("Uso: lint-test-email-encoding.ts --email-file <file> --source-md <file> [--out <json>]");
     return 2;
   }
-  const emailFile = String(args["email-file"]);
-  const sourceMd = String(args["source-md"]);
+  const emailFile = values["email-file"];
+  const sourceMd = values["source-md"];
   if (!existsSync(emailFile) || !existsSync(sourceMd)) {
     console.error("Arquivo(s) faltando.");
     return 2;
@@ -195,7 +178,7 @@ async function mainCli(): Promise<number> {
     issues,
     passed: dropped.length === 0,
   };
-  if (args.out) writeFileSync(String(args.out), JSON.stringify(result, null, 2), "utf8");
+  if (values.out) writeFileSync(values.out, JSON.stringify(result, null, 2), "utf8");
   console.log(JSON.stringify(result, null, 2));
   if (dropped.length > 0) {
     console.error(`[lint-test-email-encoding] ${dropped.length} char(s) dropados (sem substituto):`);

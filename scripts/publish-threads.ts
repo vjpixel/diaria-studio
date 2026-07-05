@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts)
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -52,27 +53,6 @@ const THREADS_API_VERSION = "v1.0";
 
 /** Limite de caracteres por post no Threads. */
 export const THREADS_CHAR_LIMIT = 500;
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--skip-existing") {
-      args["skip-existing"] = true;
-    } else if (argv[i] === "--no-skip-existing") {
-      args["no-skip-existing"] = true;
-    } else if (argv[i] === "--test-mode") {
-      args["test-mode"] = true;
-    } else if (argv[i] === "--dry-run") {
-      // --dry-run: real guard — does NOT call fetch at all (unlike --test-mode which
-      // only skips sleep). Safe to run with real credentials in the environment.
-      args["dry-run"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
 
 function loadPublished(path: string): SocialPublished {
   if (existsSync(path)) {
@@ -294,16 +274,16 @@ async function fetchThreadsPermalink(
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDirArg = args["edition-dir"] as string | undefined;
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const editionDirArg = values["edition-dir"];
   if (!editionDirArg) {
     console.error("ERRO: --edition-dir é obrigatório.");
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirArg);
-  const skipExisting = args["no-skip-existing"] !== true;
-  const isTest = !!args["test-mode"];
-  const isDryRun = !!args["dry-run"];
+  const skipExisting = !flags.has("no-skip-existing");
+  const isTest = flags.has("test-mode");
+  const isDryRun = flags.has("dry-run");
 
   // Carregar credenciais — env vars obrigatórias em runtime
   const threadsUserId = process.env.THREADS_USER_ID || "";

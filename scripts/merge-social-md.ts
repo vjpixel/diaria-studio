@@ -31,23 +31,9 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashFromApprovedFile } from "./lib/social-source-hash.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-interface ParsedArgs {
-  editionDir?: string;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      args.editionDir = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
 
 /**
  * Conta ocorrências não-sobrepostas de `needle` em `haystack`.
@@ -179,13 +165,14 @@ function readTmpOrFail(check: TmpCheck): string {
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.editionDir) {
+  const args = parseArgsSimple(process.argv.slice(2));
+  const editionDirArg = args["edition-dir"];
+  if (!editionDirArg) {
     console.error("Erro: --edition-dir obrigatório.");
     process.exit(1);
   }
 
-  const editionDir = resolve(ROOT, args.editionDir);
+  const editionDir = resolve(ROOT, editionDirArg);
   const linkedinTmp: TmpCheck = {
     agent: "social-linkedin",
     path: resolve(editionDir, "_internal/03-linkedin.tmp.md"),

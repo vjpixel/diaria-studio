@@ -32,6 +32,7 @@ import {
 } from "./lib/intentional-errors.ts";
 // #1860: fallback de prosa quando o frontmatter falta.
 import { extractIntentionalErrorFromMd } from "./render-erro-intencional.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834
 
 interface Flags {
   md: string;
@@ -40,18 +41,11 @@ interface Flags {
 }
 
 function parseArgs(argv: string[]): Flags | null {
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      flags[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  if (!flags.md || !flags.edition || !flags.jsonl) {
+  const { values } = parseCliArgs(argv);
+  if (!values.md || !values.edition || !values.jsonl) {
     return null;
   }
-  return { md: flags.md, edition: flags.edition, jsonl: flags.jsonl };
+  return { md: values.md, edition: values.edition, jsonl: values.jsonl };
 }
 
 function appendJsonl(path: string, entry: IntentionalError): void {

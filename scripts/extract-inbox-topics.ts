@@ -32,6 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -87,20 +88,8 @@ export function extractInboxTopics(inboxMdPath: string, editorEmail: string): st
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2)).values;
   const inboxMd = args["inbox-md"] ?? "data/inbox.md";
   const editor = args["editor"] ?? process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(ROOT, "platform.config.json"));
   const outPath = args["out"];

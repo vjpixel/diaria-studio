@@ -46,6 +46,7 @@ import { resolve, join } from "node:path";
 import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
 import { resolveEditorEmail, readInboxLinkCountFromMarker } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 interface RawArticle {
   url?: string;
@@ -374,29 +375,8 @@ export function rewriteCoverageLineAsCaptureFailed(
   return { md, changed: false };
 }
 
-// Flags that have no value (boolean) — recognized as `--name` standalone.
-const BOOL_FLAGS = new Set(["check"]);
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    if (BOOL_FLAGS.has(key)) {
-      out[key] = "1";
-      continue;
-    }
-    if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[key] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const { flags, values: args } = parseArgs(process.argv.slice(2));
   const editionDir = args["edition-dir"];
   if (!editionDir) {
     console.error("Uso: sync-coverage-line.ts --edition-dir <path>");
@@ -466,7 +446,7 @@ function main(): void {
     console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...'");
     process.exit(1);
   }
-  const isCheckMode = args["check"] !== undefined;
+  const isCheckMode = flags.has("check");
   if (changed && !isCheckMode) writeFileSync(mdPath, updatedMd, "utf8");
 
   console.log(

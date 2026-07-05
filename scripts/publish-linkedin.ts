@@ -50,6 +50,7 @@ import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
 import { applyStage2Caps } from "./lib/apply-stage2-caps.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -81,36 +82,6 @@ import {
 } from "./lib/schemas/linkedin-payload.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--schedule") {
-      args.schedule = true;
-    } else if (argv[i] === "--fire-now") {
-      // #1101 — opt-in pra post imediato (sem agendamento). Default é agendar.
-      args["fire-now"] = true;
-    } else if (argv[i] === "--skip-existing") {
-      args["skip-existing"] = true;
-    } else if (argv[i] === "--test-mode") {
-      // #1056 — tagar entries com is_test:true pra delete-test-schedules safety
-      args["test-mode"] = true;
-    } else if (argv[i] === "--no-comments") {
-      // #1075 — skipar comment_diaria + comment_pixel (Make não suporta comments).
-      // #1310 — agora é no-op (comments já são skip default).
-      args["no-comments"] = true;
-    } else if (argv[i] === "--with-comments") {
-      // #1310 — opt-in raro pra forçar enqueue de comments (caso Make adicione
-      // suporte futuro). Default é skipar.
-      args["with-comments"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
 
 /**
  * Isola o bloco completo `## d{N}` dentro de `# LinkedIn` (incluindo eventuais
@@ -530,8 +501,8 @@ export function computeCommentScheduledAt(
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDirRaw = args["edition-dir"] as string | undefined;
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const editionDirRaw = values["edition-dir"];
   if (!editionDirRaw) {
     console.error(
       "Erro: --edition-dir obrigatório.\n" +
@@ -542,9 +513,9 @@ async function main(): Promise<void> {
   const editionDir = resolve(ROOT, editionDirRaw);
   // #1101: default = agendar. `--schedule` continua aceito (no-op se default já é true).
   // Pra forçar post imediato, usar `--fire-now` (opt-in explícito).
-  const fireNow = !!args["fire-now"];
+  const fireNow = flags.has("fire-now");
   const doSchedule = !fireNow;
-  const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
+  const isTest = flags.has("test-mode"); // #1056 — tag is_test:true em entries
   // #1310 — comments skipped por DEFAULT. Make.com LinkedIn module não suporta
   // `Create Comment` (nem company nem personal). Enfileirar items com
   // action:"comment" gera "Missing value of required parameter 'url'" no Make,
@@ -552,26 +523,26 @@ async function main(): Promise<void> {
   // pelo Pixel (~T+3min e T+8min após main). Use `--with-comments` pra forçar
   // se Make adicionar suporte futuro. Legacy `--no-comments` ainda aceito por
   // back-compat (no-op — comments já são skip default).
-  const noComments = !args["with-comments"]; // inverteu em #1310
-  if (args["no-comments"]) {
+  const noComments = !flags.has("with-comments"); // inverteu em #1310
+  if (flags.has("no-comments")) {
     console.warn("AVISO: --no-comments é no-op em #1310+ (comments já são skip default). Use --with-comments pra forçar.");
   }
-  if (args["skip-existing"]) {
+  if (flags.has("skip-existing")) {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
-  const skipExisting = args["no-skip-existing"] !== true; // default true (#725 bug #2)
-  const dayOffsetOverride = args["day-offset"]
-    ? parseInt(args["day-offset"] as string, 10)
+  const skipExisting = !flags.has("no-skip-existing"); // default true (#725 bug #2)
+  const dayOffsetOverride = values["day-offset"]
+    ? parseInt(values["day-offset"], 10)
     : undefined;
   // #595 — URL pública da edição Beehiiv pra substituir `{edition_url}` em
   // comment_diaria. Precedência: --edition-url flag > _internal/05-edition-url.txt
   // > fallback `https://diar.ia.br` (raiz) com warn.
-  const editionUrlFlag = args["edition-url"] as string | undefined;
+  const editionUrlFlag = values["edition-url"] || undefined;
 
   // Subset de destaques (--only d1,d2 → ["d1","d2"])
   // #2343: quando --only não fornecido, derivar da seção LinkedIn do 03-social.md
   // para suportar edições com 2 destaques (sem D3).
-  const onlyArg = args["only"] as string | undefined;
+  const onlyArg = values["only"] || undefined;
   let destaques: string[];
   if (onlyArg) {
     destaques = onlyArg

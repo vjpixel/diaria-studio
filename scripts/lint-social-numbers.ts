@@ -26,6 +26,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
+import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra teste
@@ -362,32 +363,16 @@ export function lintCommentDiariaCount(
   return { findings, fixed };
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      // Suporta flags boolean (--fix) e flags com valor (--social path)
-      if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-        out[key] = argv[i + 1];
-        i++;
-      } else {
-        out[key] = "true";
-      }
-    }
-  }
-  return out;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const parsed = parseArgsStructured(process.argv.slice(2));
+  const args = parsed.values;
   if (!args.social || !args.approved) {
     console.error(
       "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved-capped.json> [--fix]",
     );
     process.exit(1);
   }
-  const doFix = args.fix === "true";
+  const doFix = parsed.flags.has("fix");
   const socialPath = resolve(process.cwd(), args.social);
   let socialMd = readFileSync(socialPath, "utf8");
   // #2061: fallback pra 01-approved.json quando 01-approved-capped.json ausente
@@ -465,7 +450,7 @@ function main(): void {
 
   // Verificar placeholder não-resolvido somente em --post-stage5 mode.
   // Em Stage 2 (sem o flag), {outros_count} literal é esperado e não é erro.
-  const postStage5 = args["post-stage5"] === "true";
+  const postStage5 = parsed.flags.has("post-stage5");
   let hasUnresolvedPostStage5 = false;
   if (postStage5) {
     // Checar se algum comment_diaria ainda tem o placeholder literal

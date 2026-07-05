@@ -27,6 +27,7 @@
 import { existsSync, writeFileSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,14 +38,8 @@ const FALLBACK_CHAIN = [
 ] as const;
 
 function parseArgs(argv: string[]): { editionDir?: string } {
-  const args: { editionDir?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      args.editionDir = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
+  const flat = parseArgsSimple(argv);
+  return { editionDir: flat["edition-dir"] };
 }
 
 function main(): void {

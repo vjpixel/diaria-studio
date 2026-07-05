@@ -25,6 +25,7 @@
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
 
 export interface LintIssue {
   rule: string;
@@ -340,23 +341,10 @@ export function lintHtml(html: string, options: LintHtmlOptions = {}): LintResul
   };
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--strict") {
-      out.strict = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
-  const htmlArg = args.html;
+  const parsed = parseArgsStructured(process.argv.slice(2));
+  const htmlArg = parsed.values.html;
   if (typeof htmlArg !== "string") {
     console.error("Uso: lint-newsletter-html.ts --html <path> [--strict] [--destaque-count 2|3]");
     process.exit(1);
@@ -364,7 +352,7 @@ function main(): void {
   const htmlPath = resolve(ROOT, htmlArg);
   const html = readFileSync(htmlPath, "utf8");
   // #2316: --destaque-count 2 para edições com 2 destaques (default: 3)
-  const rawCount = args["destaque-count"];
+  const rawCount = parsed.values["destaque-count"];
   const expectedDestaqueCount: 2 | 3 =
     typeof rawCount === "string" && rawCount === "2" ? 2 : 3;
   const result = lintHtml(html, { expectedDestaqueCount });
@@ -375,7 +363,7 @@ function main(): void {
     console.error(`\n❌ ${result.errors.length} erro(s) bloqueante(s).`);
     process.exit(2);
   }
-  if (args.strict && result.warnings.length > 0) {
+  if (parsed.flags.has("strict") && result.warnings.length > 0) {
     console.error(`\n⚠️ ${result.warnings.length} warning(s) em modo --strict.`);
     process.exit(2);
   }
