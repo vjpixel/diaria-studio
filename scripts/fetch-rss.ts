@@ -24,6 +24,7 @@ import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 // em lib/strip-html.ts como stripHtmlBasic (nome distinto do stripHtml
 // anchor-preserving de auto-forward-newsletters.ts/capture-newsletter-urls.ts).
 import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
+import { getArg } from "./lib/cli-args.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -299,32 +300,16 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
   }
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        args[key] = next;
-        i++;
-      } else {
-        args[key] = "true";
-      }
-    }
-  }
-  return args;
-}
-
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const url = args.url;
-  const sourceName = args.source ?? "unknown";
-  const days = args.days ? Number(args.days) : DEFAULT_DAYS;
+  const argv = process.argv.slice(2);
+  const url = getArg(argv, "url") || undefined;
+  const sourceName = getArg(argv, "source") || "unknown";
+  const daysArg = getArg(argv, "days") || undefined;
+  const days = daysArg ? Number(daysArg) : DEFAULT_DAYS;
   // #347: --topic-filter "term1,term2,..." (parse por vírgula)
-  const topicFilter = args["topic-filter"]
-    ? args["topic-filter"].split(",").map((t) => t.trim()).filter(Boolean)
+  const topicFilterArg = getArg(argv, "topic-filter") || undefined;
+  const topicFilter = topicFilterArg
+    ? topicFilterArg.split(",").map((t) => t.trim()).filter(Boolean)
     : undefined;
 
   if (!url) {

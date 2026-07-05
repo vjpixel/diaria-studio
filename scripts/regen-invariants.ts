@@ -28,6 +28,7 @@ import { writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "context", "invariants.md");
@@ -185,18 +186,25 @@ export function loadConventionIssues(label: string, state: string): ConventionIs
 // CLI
 // ---------------------------------------------------------------------------
 
+// #2834: --dry-run é flag booleana incondicional no local (checada por
+// igualdade estrita ANTES da lógica genérica de valor/flag — vira true
+// independente do próximo token, mesmo se o próximo token for um valor "solto"
+// que o parseArgs canônico consumiria como values["dry-run"]). As demais
+// flags (--label/--out/--state) seguem a semântica padrão do parseArgs
+// canônico (consome valor só se o próximo token não começar com "--").
+// NÃO filtra --dry-run do argv antes de repassar pro parseArgs canônico:
+// como esse token começa com "--", ele nunca é elegível a virar valor de uma
+// flag anterior (condição `!next.startsWith("--")`) — removê-lo do array
+// mudaria a adjacência dos tokens vizinhos (ex: `--label --dry-run foo`
+// passaria a expor "foo" como próximo token de --label, fazendo-o consumir
+// um valor que originalmente não consumiria). Rodar sobre o array completo e
+// só sobrescrever a chave "dry-run" no final preserva a adjacência exata.
 function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") out["dry-run"] = true;
-    else if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
+  const dryRun = argv.includes("--dry-run");
+  const parsed = parseArgsShared(argv);
+  const out: Record<string, string | boolean> = { ...parsed.values };
+  for (const f of parsed.flags) out[f] = true;
+  out["dry-run"] = dryRun;
   return out;
 }
 

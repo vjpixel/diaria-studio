@@ -42,6 +42,7 @@ import {
 import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,18 +54,15 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: Record<string, string> = {};
-  let dryRun = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") {
-      dryRun = true;
-      continue;
-    }
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
+  // #2834: --dry-run é flag booleana incondicional no parser local original
+  // (checada antes da lógica genérica, com `continue` — nunca é tratada como
+  // valor de outra flag) → argv.includes preserva isso. O consumo de valor das
+  // demais flags é incondicional (argv[i+1] vira valor mesmo que comece com
+  // "--") → parseArgsSimple replica; por isso removemos "--dry-run" antes de
+  // repassar pro parser genérico, senão ele tentaria consumir o próximo token
+  // como se "--dry-run" fosse uma flag de valor.
+  const dryRun = argv.includes("--dry-run");
+  const args = parseArgsSimple(argv.filter((a) => a !== "--dry-run"));
   if (!args.edition || !args["new-order"]) {
     console.error(
       "Uso: reorder-destaques.ts --edition AAMMDD --new-order 2,1,3 [--edition-dir <path>] [--dry-run]",

@@ -36,32 +36,43 @@ import { computeScheduledAt as computeScheduledAtShared } from "./compute-social
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * #2834: migrado pra lib/cli-args.ts. Os 6 flags booleanos abaixo eram
+ * checados ANTES do loop genérico no parser local — incondicionais (nunca
+ * consomem o próximo token como valor, mesmo que seja um valor não-flag).
+ * hasFlag() da lib exigiria o token seguinte ser "--" ou fim do array, o que
+ * diverge; preservados via checagem incondicional (argv.includes).
+ *
+ * #1156: --allow-draft é o caso coberto pelo teste de regressão
+ * (test/publish-facebook.test.ts guarda a forma `argv[i] === "--allow-draft"`
+ * no source) — preservado via checagem indexada, equivalente a argv.includes.
+ * A rodada anterior quebrou este teste ao migrar --allow-draft com hasFlag().
+ */
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const args: Record<string, string | boolean> = {};
+  if (argv.includes("--schedule")) args.schedule = true;
+  if (argv.includes("--skip-existing")) args["skip-existing"] = true;
+  if (argv.includes("--reschedule")) args.reschedule = true;
+  // #1056 — tag entries com is_test:true pra delete-test-schedules safety
+  if (argv.includes("--test-mode")) args["test-mode"] = true;
+  // #725 bug #2: opt-out explícito do skip default.
+  if (argv.includes("--no-skip-existing")) args["no-skip-existing"] = true;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--schedule") {
-      args.schedule = true;
-    } else if (argv[i] === "--skip-existing") {
-      args["skip-existing"] = true;
-    } else if (argv[i] === "--reschedule") {
-      args.reschedule = true;
-    } else if (argv[i] === "--test-mode") {
-      // #1056 — tag entries com is_test:true pra delete-test-schedules safety
-      args["test-mode"] = true;
-    } else if (argv[i] === "--no-skip-existing") {
-      // #725 bug #2: opt-out explícito do skip default.
-      args["no-skip-existing"] = true;
-    } else if (argv[i] === "--allow-draft") {
+    if (argv[i] === "--allow-draft") {
       // #1156 — opt-in pra criar drafts sem warn (intent claro).
       args["allow-draft"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
+      break;
     }
+  }
+  // #725 bug #4: pares --key value só quando next não é outra flag boolean —
+  // reusa a lógica genérica de lib/cli-args.ts (mesma regra do parser local).
+  const { values } = parseCliArgs(argv);
+  for (const [k, v] of Object.entries(values)) {
+    if (!(k in args)) args[k] = v;
   }
   return args;
 }

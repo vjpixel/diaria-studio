@@ -34,6 +34,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -141,27 +142,9 @@ export function resolveEditionDir(
   return resolve(cwd, "data", "editions", args.edition ?? "");
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        out[key] = "true";
-      } else {
-        out[key] = val;
-        i++;
-      }
-    }
-  }
-  return out;
-}
-
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
-  const args = parseArgs(rest);
+  const args = parseCliArgs(rest).values;
 
   if (!args.edition) {
     console.error("[error] --edition é obrigatório");

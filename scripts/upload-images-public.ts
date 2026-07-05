@@ -36,6 +36,7 @@ import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
+import { parseArgsSimple } from "./lib/cli-args.ts"; // #2834
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -586,25 +587,24 @@ export function assertCacheCompleteness(
   }
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  // Flags booleanas (sem valor após). #1275: --no-require-keys opt-out de validação.
-  // #1418: --force-reupload ignora cache md5/target e força upload de novo.
-  const BOOL_FLAGS = new Set(["--no-cache", "--no-require-keys", "--force-reupload"]);
-  for (let i = 0; i < argv.length; i++) {
-    if (BOOL_FLAGS.has(argv[i])) {
-      out[argv[i].slice(2)] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  // #2834: migrado pra lib/cli-args.ts. O parser local tinha 3 flags booleanas
+  // INCONDICIONAIS (checadas antes do loop genérico, nunca consomem o próximo
+  // token) — via argv.includes. #1275: --no-require-keys opt-out de validação.
+  // #1418: --force-reupload ignora cache md5/target e força upload de novo.
+  // O restante (--edition-dir, --mode, --target) consumia o PRÓXIMO token
+  // INCONDICIONALMENTE (mesmo que comece com "--") — equivalente a
+  // parseArgsSimple, não parseArgs. Filtramos os bool flags do argv antes de
+  // rodar parseArgsSimple pra eles não serem "engolidos" como valor de um
+  // --key anterior (no parser local eles também nunca eram consumidos como
+  // valor — o branch booleano rodava primeiro pra esses tokens).
+  const BOOL_FLAG_TOKENS = new Set(["--no-cache", "--no-require-keys", "--force-reupload"]);
+  const noCache = argv.includes("--no-cache");
+  const noRequireKeys = argv.includes("--no-require-keys");
+  const forceReupload = argv.includes("--force-reupload");
+  const args = parseArgsSimple(argv.filter((a) => !BOOL_FLAG_TOKENS.has(a)));
   const editionDirArg = args["edition-dir"];
   if (typeof editionDirArg !== "string") {
     console.error(
@@ -616,8 +616,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirArg);
-  const skipExisting = !args["no-cache"];
-  const forceReupload = args["force-reupload"] === true;
+  const skipExisting = !noCache;
   const modeArg = args.mode;
   const mode: UploadMode =
     modeArg === "newsletter" || modeArg === "all" || modeArg === "social"
@@ -634,7 +633,7 @@ async function main(): Promise<void> {
   // #1275: validate cache completeness por default. Opt-out via --no-require-keys
   // pra casos onde caller sabe que cache final é parcial (raro).
   // #2352: pass destaque_count so d3 is not required for 2-destaque editions.
-  const requireKeys = !args["no-require-keys"];
+  const requireKeys = !noRequireKeys;
   if (requireKeys) {
     const dc = readDestaqueCount(editionDir);
     try {

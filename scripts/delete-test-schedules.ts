@@ -28,6 +28,7 @@ loadProjectEnv();
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import {
   readSocialPublished,
   appendSocialPosts,
@@ -109,26 +110,21 @@ function parseArgs(argv: string[]): {
   dryRun: boolean;
   requireIsTest: boolean;
 } {
-  let editionDir: string | null = null;
+  const parsed = parseArgsSimple(argv);
+  const editionDir = parsed["edition-dir"] ?? null;
+
   let platform: "all" | "facebook" | "linkedin" = "all";
-  let dryRun = false;
+  if (parsed["platform"] !== undefined) {
+    const v = parsed["platform"];
+    if (v === "facebook" || v === "linkedin") platform = v;
+    else throw new Error(`--platform deve ser facebook ou linkedin (got '${v}')`);
+  }
+
+  const dryRun = argv.includes("--dry-run");
   // #1056 — safety: by default só deleta entries com is_test:true. Pra forçar
   // deletar tudo (perigoso), passar --no-require-is-test.
-  let requireIsTest = true;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[++i];
-    } else if (arg === "--platform" && i + 1 < argv.length) {
-      const v = argv[++i];
-      if (v === "facebook" || v === "linkedin") platform = v;
-      else throw new Error(`--platform deve ser facebook ou linkedin (got '${v}')`);
-    } else if (arg === "--dry-run") {
-      dryRun = true;
-    } else if (arg === "--no-require-is-test") {
-      requireIsTest = false;
-    }
-  }
+  const requireIsTest = !argv.includes("--no-require-is-test");
+
   return { editionDir, platform, dryRun, requireIsTest };
 }
 

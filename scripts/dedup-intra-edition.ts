@@ -43,6 +43,7 @@ import {
 } from "./dedup.ts";
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -662,14 +663,19 @@ export function dedupIntraEdition(
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): { in: string; out: string; destaqueCount: number } {
-  let inPath = "";
-  let outPath = "";
+  const parsed = parseArgsSimple(argv);
+  const inPath = parsed["in"] ?? "";
+  const outPath = parsed["out"] ?? "";
+
+  // --destaque-count consome o próximo token incondicionalmente (mesmo se
+  // ausente, no fim do array) para preservar o fail-fast original: sem
+  // valor -> parseInt(undefined) -> NaN -> throw abaixo (#2834 fix-round).
   let destaqueCount = DEFAULT_INTRA_DESTAQUE_COUNT;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--in") inPath = argv[++i];
-    else if (argv[i] === "--out") outPath = argv[++i];
-    else if (argv[i] === "--destaque-count") destaqueCount = parseInt(argv[++i], 10);
+  const dcIdx = argv.lastIndexOf("--destaque-count");
+  if (dcIdx !== -1) {
+    destaqueCount = parseInt(argv[dcIdx + 1], 10);
   }
+
   if (!inPath || !outPath) {
     throw new Error("Uso: dedup-intra-edition.ts --in <categorized.json> --out <out.json> [--destaque-count N]");
   }

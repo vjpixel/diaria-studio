@@ -17,6 +17,7 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -272,18 +273,23 @@ function printComparisonTable(editions: { label: string; timings: StageTiming[] 
 
 // --- Main ---
 
+// #2834: --all é flag booleana incondicional no local (checada por igualdade
+// estrita ANTES da lógica genérica — vira true independente do próximo
+// token, mesmo se o próximo token for um valor "solto" que o parseArgs
+// canônico consumiria). As demais flags (--edition-dir/--edition) seguem
+// semântica padrão do parseArgs canônico (consome valor só se o próximo
+// token não começar com "--"). NÃO filtra --all do argv antes de repassar
+// pro parseArgs canônico: como esse token começa com "--", ele nunca é
+// elegível a virar valor de uma flag anterior — removê-lo do array mudaria a
+// adjacência dos tokens vizinhos (ex: `--edition-dir --all 260422` passaria
+// a expor "260422" como próximo token de --edition-dir). Rodar sobre o array
+// completo e só sobrescrever a chave "all" no final preserva a adjacência.
 function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--all") {
-      args.all = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    } else if (argv[i].startsWith("--")) {
-      args[argv[i].slice(2)] = true;
-    }
-  }
+  const all = argv.includes("--all");
+  const parsed = parseArgsShared(argv);
+  const args: Record<string, string | boolean> = { ...parsed.values };
+  for (const f of parsed.flags) args[f] = true;
+  args.all = all;
   return args;
 }
 

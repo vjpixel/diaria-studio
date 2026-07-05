@@ -37,6 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 interface FileSize {
   path: string;          // relative to repo root
@@ -57,23 +58,6 @@ interface PayloadSizesReport {
 }
 
 const TOKENS_PER_BYTE = 0.25; // 1 token ≈ 4 bytes (heurística JSON-conservadora)
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    const val = argv[i + 1];
-    if (val === undefined || val.startsWith("--")) {
-      out[key] = "true";
-    } else {
-      out[key] = val;
-      i++;
-    }
-  }
-  return out;
-}
 
 /**
  * Lista recursivamente arquivos `.json` em `_internal/`. Ignora subdiretórios
@@ -234,7 +218,7 @@ const isCli =
   /log-stage-1-payload-sizes\.ts$/.test(process.argv[1].replace(/\\/g, "/"));
 
 if (isCli) {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCliArgs(process.argv.slice(2)).values;
   if (!args.edition) {
     console.error("--edition AAMMDD é obrigatório");
     process.exit(2);

@@ -31,6 +31,7 @@ import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,15 +41,12 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") out.dryRun = true;
-    else if (a === "--edition" && argv[i + 1]) {
-      out.editionFilter = argv[i + 1];
-      i++;
-    }
-  }
+  // #2834 fix-round: --dry-run é boolean INCONDICIONAL no original (checado
+  // antes de qualquer outra coisa) — argv.includes preserva isso mesmo com
+  // [--dry-run, 260527] (guard destrutivo depende disso, não trocar por hasFlag).
+  const out: CliArgs = { dryRun: argv.includes("--dry-run") };
+  const parsed = parseArgsSimple(argv);
+  if (parsed["edition"]) out.editionFilter = parsed["edition"];
   return out;
 }
 

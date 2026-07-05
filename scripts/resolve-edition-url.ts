@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -57,28 +58,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Agora: flags booleanas conhecidas são tratadas separadamente; qualquer argumento
 // que começa com "--" não é consumido como valor de outra flag.
 
-const BOOLEAN_FLAGS = new Set(["validate-social"]);
-
+// #2834: --validate-social é flag booleana incondicional (sempre true quando
+// presente, independente do que vem depois) — argv.includes preserva isso
+// mesmo se o token seguinte pareceria um valor consumível. As demais flags
+// (--title/--slug/--edition-url/--edition-dir) usam consumo condicional
+// (só consome o próximo token se não começar com "--"), que é exatamente o
+// comportamento canônico de parseArgs.
 function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
-    if (BOOLEAN_FLAGS.has(key)) {
-      args[key] = true;
-      continue;
-    }
-    // Verificar se o próximo argumento existe e NÃO é outra flag
-    const nextArg = argv[i + 1];
-    if (nextArg !== undefined && !nextArg.startsWith("--")) {
-      args[key] = nextArg;
-      i++; // consumir o valor
-    } else {
-      // Sem valor (próximo é outra flag ou fim da lista) → tratar como booleano
-      args[key] = true;
-    }
-  }
+  const { values } = parseArgsLib(argv);
+  const args: Record<string, string | boolean> = { ...values };
+  if (argv.includes("--validate-social")) args["validate-social"] = true;
   return args;
 }
 
