@@ -280,7 +280,10 @@ export async function fetchPlanCredits(
   const kv = env.STATS_CACHE;
   if (mode !== "kv-only") {
     try {
-      const account = await brevoFetch<BrevoAccountResponse>("/account", env as Env);
+      // brevoFetch monta `https://api.brevo.com${path}` SEM prefixar /v3 — o path
+      // precisa incluí-lo. Sem o /v3, `/account` dá 404 e o plano cai pra "indisponível"
+      // (bug: #2910 nunca funcionou em prod — sempre 404 → denominador oculto).
+      const account = await brevoFetch<BrevoAccountResponse>("/v3/account", env as Env);
       const credits = extractPlanCredits(account);
       if (credits !== null) {
         if (kv) {
