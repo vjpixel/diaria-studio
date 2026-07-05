@@ -314,8 +314,8 @@ export interface MonthlyTotalRow {
   totalClicks: number;
   /** Open rate agregado = totalViews / totalDelivered (0 quando delivered=0) */
   openRate: number;
-  /** CTR agregado = totalClicks / totalDelivered (0 quando delivered=0) */
-  ctr: number;
+  /** CTOR agregado = totalClicks / totalViews (cliques ÷ aberturas; 0 quando views=0) */
+  ctor: number;
   /** #2442: Soma de hard+soft bounces no mês */
   totalBounces: number;
   /** #2442: Bounce rate agregado = totalBounces / totalSent (0 quando sent=0) */
@@ -412,7 +412,7 @@ export function aggregateByMonth(
         totalViews: d.totalViews,
         totalClicks: d.totalClicks,
         openRate: d.totalDelivered > 0 ? (d.totalViews / d.totalDelivered) * 100 : 0,
-        ctr: d.totalDelivered > 0 ? (d.totalClicks / d.totalDelivered) * 100 : 0,
+        ctor: d.totalViews > 0 ? (d.totalClicks / d.totalViews) * 100 : 0,
         // #2442
         totalBounces: d.totalBounces,
         bounceRate: d.totalSent > 0 ? (d.totalBounces / d.totalSent) * 100 : 0,
@@ -456,7 +456,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
 
   const tableRows = rows.map((r) => {
     const openRateFmt = r.totalDelivered > 0 ? r.openRate.toFixed(1) + "%" : "—";
-    const ctrFmt = r.totalDelivered > 0 ? r.ctr.toFixed(1) + "%" : "—";
+    const ctorFmt = r.totalViews > 0 ? r.ctor.toFixed(1) + "%" : "—";
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
     const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
     const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(1) + "%" : "—";
@@ -480,7 +480,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
       <td>${r.totalSent.toLocaleString("pt-BR")}</td>
       <td>${pct(r.totalDelivered, r.totalSent)}<br><small>${r.totalDelivered.toLocaleString("pt-BR")}</small></td>
       ${metricCell(openRateFmt, r.totalViews)}
-      ${metricCell(ctrFmt, r.totalClicks)}
+      ${metricCell(ctorFmt, r.totalClicks)}
       ${metricCell(bounceRateFmt, r.totalBounces, bounceAlert)}
       ${metricCell(unsubRateFmt, r.totalUnsub, unsubAlert)}
       ${metricCell(spamRateFmt, r.totalSpam, spamAlert)}
@@ -501,7 +501,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
         <th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
         <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
         <th title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
-        <th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
+        <th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
         <th title="Hard bounces + soft bounces. Bench: &lt;2% saudável. ≥3% pausa o ramp.">Bounces</th>
         <th title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
         <th title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
