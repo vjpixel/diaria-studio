@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { computeFailureStreak } from "./lib/source-runs.ts";
+import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
 
 type Outcome = "ok" | "fail" | "timeout";
 
@@ -53,21 +54,15 @@ interface HealthFile {
   notes?: string;
 }
 
+// #2834: local original só consumia valor quando o próximo token existia e
+// não começava com "--" (senão virava flag booleana "true") — semântica
+// idêntica ao parseArgs canônico de lib/cli-args.ts (values vs flags), só que
+// achatada num único Record<string,string>. Todos os campos deste script são
+// usados como valor (nunca como flag pura), então achatar flags→"true" basta.
 function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        out[key] = "true";
-      } else {
-        out[key] = val;
-        i++;
-      }
-    }
-  }
+  const parsed = parseArgsShared(argv);
+  const out: Record<string, string> = { ...parsed.values };
+  for (const f of parsed.flags) out[f] = "true";
   return out;
 }
 

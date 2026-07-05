@@ -45,6 +45,7 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PATH = resolve(ROOT, "data/regression-log.jsonl");
@@ -149,14 +150,16 @@ function parseArgs(argv: string[]): CliArgs {
     out.command = argv[0] as CliArgs["command"];
     argv = argv.slice(1);
   }
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--result") out.result = argv[++i] as Result;
-    else if (a === "--note") out.note = argv[++i];
-    else if (a === "--error") out.error = argv[++i];
-    else if (a === "--window") out.window = parseInt(argv[++i], 10);
-    else if (a === "--help" || a === "-h") out.help = true;
-  }
+  // #2834: consumo de valor é incondicional no parser local original (argv[++i]
+  // pega o próximo token mesmo que comece com "--") — parseArgsSimple replica
+  // isso exatamente. --help/-h são flags booleanas incondicionais (checadas
+  // isoladamente no loop original, nunca consomem valor) — argv.includes preserva.
+  const flat = parseArgsSimple(argv);
+  if (flat.result !== undefined) out.result = flat.result as Result;
+  if (flat.note !== undefined) out.note = flat.note;
+  if (flat.error !== undefined) out.error = flat.error;
+  if (flat.window !== undefined) out.window = parseInt(flat.window, 10);
+  if (argv.includes("--help") || argv.includes("-h")) out.help = true;
   return out;
 }
 

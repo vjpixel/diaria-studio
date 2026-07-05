@@ -27,6 +27,7 @@
 import { readFileSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize, stripUrlTrailingPunct } from "./lib/url-utils.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra tests
@@ -220,24 +221,11 @@ export function computeSwaps(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const cur = argv[i];
-    if (cur === "--dry-run") {
-      args["dry-run"] = true;
-    } else if (cur.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[cur.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDir = args["edition-dir"] as string;
-  const dryRun = !!args["dry-run"];
+  const argv = process.argv.slice(2);
+  const args = parseCliArgs(argv);
+  const editionDir = args.values["edition-dir"];
+  const dryRun = argv.includes("--dry-run");
 
   if (!editionDir) {
     console.error("Uso: match-prompts-to-destaques.ts --edition-dir <path> [--dry-run]");

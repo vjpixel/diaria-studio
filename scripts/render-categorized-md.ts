@@ -32,6 +32,7 @@ import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
 import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readEiaAnswer } from "./lib/eia-answer.ts";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
@@ -69,21 +70,11 @@ function parseArgs(): {
   sourceHealth?: string;
   inboxMd?: string;
 } {
-  const args = process.argv.slice(2);
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = args[i + 1];
-      if (val == null || val.startsWith("--")) {
-        flags[key] = "true";
-      } else {
-        flags[key] = val;
-        i++;
-      }
-    }
-  }
+  // #2834: consumo de valor condicional (só consome o próximo token se ele não
+  // começar com "--") já é o comportamento canônico de parseArgs — a única
+  // divergência do parser local era o fallback "true" (string) quando o valor
+  // faltava, nunca exercitado na prática (todas as flags aqui esperam valor real).
+  const { values: flags } = parseArgsLib(process.argv.slice(2));
   if (!flags.in || !flags.out || !flags.edition) {
     console.error(
       "Uso: render-categorized-md.ts --in <json> --out <md> --edition <YYMMDD> [--source-health <json>] [--inbox-md <path>]"

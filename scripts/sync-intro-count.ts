@@ -29,16 +29,13 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { lintIntroCount } from "./lint-newsletter-md.ts";
+import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
 
+// #2834: local original consumia valor só quando o próximo token existia e
+// não começava com "--" — idêntico ao parseArgs canônico (sem flags
+// booleanas neste script; nenhum campo é usado como flag pura).
 function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
+  return parseArgsShared(argv).values;
 }
 
 // ---------------------------------------------------------------------------

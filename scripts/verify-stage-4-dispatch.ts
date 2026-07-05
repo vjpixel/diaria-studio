@@ -37,6 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readSocialPublished, type PostEntry } from "./lib/social-published-store.ts";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -499,27 +500,18 @@ export function reconcileLinkedin(
 
 // ---- Main ----
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--strict") out.strict = true;
-    else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDirRaw = args["edition-dir"] as string | undefined;
+  const argv = process.argv.slice(2);
+  // #2834: --strict é flag booleana incondicional no parser local original
+  // (sempre true quando presente, independente do que vem depois) — argv.includes
+  // preserva isso; parseArgsLib().flags exigiria --strict seguido de -- ou fim.
+  const strict = argv.includes("--strict");
+  const editionDirRaw = parseArgsLib(argv).values["edition-dir"];
   if (!editionDirRaw) {
     console.error("Uso: verify-stage-4-dispatch.ts --edition-dir <path> [--strict]");
     process.exit(2);
   }
   const editionDir = resolve(ROOT, editionDirRaw);
-  const strict = !!args.strict;
 
   const internalPath = resolve(editionDir, "_internal", "06-social-published.json");
   const rootPath = resolve(editionDir, "06-social-published.json");

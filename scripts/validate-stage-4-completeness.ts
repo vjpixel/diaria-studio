@@ -26,6 +26,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 interface Missing {
   file: string;
@@ -134,16 +135,8 @@ export function findMissingStage4Outputs(
 }
 
 function parseArgs(argv: string[]): { editionDir: string; strict: boolean } {
-  let editionDir = "";
-  let strict = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--strict") {
-      strict = true;
-    }
-  }
+  const editionDir = parseCliArgs(argv).values["edition-dir"] ?? "";
+  const strict = argv.includes("--strict");
   if (!editionDir) {
     process.stderr.write("Usage: validate-stage-4-completeness.ts --edition-dir <path> [--strict]\n");
     process.exit(2);

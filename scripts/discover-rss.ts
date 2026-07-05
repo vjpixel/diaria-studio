@@ -35,6 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { fetchRss } from "./fetch-rss.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CSV = resolve(ROOT, "seed/sources.csv");
@@ -283,18 +284,12 @@ interface CliFlags {
 }
 
 function parseArgs(argv: string[]): CliFlags {
-  const flags: CliFlags = { csvPath: DEFAULT_CSV, dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") flags.dryRun = true;
-    else if (a === "--csv" && argv[i + 1]) {
-      flags.csvPath = resolve(ROOT, argv[i + 1]);
-      i++;
-    } else if (a === "--source" && argv[i + 1]) {
-      flags.source = argv[i + 1];
-      i++;
-    }
-  }
+  const parsed = parseArgsSimple(argv);
+  const flags: CliFlags = {
+    csvPath: parsed["csv"] ? resolve(ROOT, parsed["csv"]) : DEFAULT_CSV,
+    dryRun: argv.includes("--dry-run"),
+  };
+  if (parsed["source"]) flags.source = parsed["source"];
   return flags;
 }
 

@@ -15,30 +15,14 @@
  */
 
 import { fetchSitemapEntries } from "./lib/fetch-sitemap.ts";
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        args[key] = next;
-        i++;
-      } else {
-        args[key] = "true";
-      }
-    }
-  }
-  return args;
-}
+import { getArg } from "./lib/cli-args.ts";
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const url = args.url;
-  const sourceName = args.source ?? "unknown";
-  const days = args.days ? Number(args.days) : 4;
+  const argv = process.argv.slice(2);
+  const url = getArg(argv, "url") || undefined;
+  const sourceName = getArg(argv, "source") || "unknown";
+  const daysArg = getArg(argv, "days") || undefined;
+  const days = daysArg ? Number(daysArg) : 4;
 
   if (!url) {
     console.error(
