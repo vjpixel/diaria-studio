@@ -43,6 +43,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,25 +127,19 @@ function parseArgs(argv: string[]): {
   chunkSize: number;
   htmlPath: string | null;
 } {
-  let editionDir: string | null = null;
+  const values = parseArgsSimple(argv);
+  const editionDir = values["edition-dir"] ?? null;
   // #1177: default 2500 (era 6500). Chunks menores reduzem risco de corrupção
   // char-a-char durante transmissão LLM → javascript_tool string arg. Edição
   // 260513 expôs corrupção 1 char/6500 (B2B → B2C); 2500 não corrompeu.
   let chunkSize = 2500;
-  let htmlPath: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[++i];
-    } else if (arg === "--chunk-size" && i + 1 < argv.length) {
-      chunkSize = Number.parseInt(argv[++i], 10);
-      if (Number.isNaN(chunkSize) || chunkSize < 1) {
-        throw new Error(`--chunk-size inválido (got '${argv[i]}')`);
-      }
-    } else if (arg === "--html" && i + 1 < argv.length) {
-      htmlPath = argv[++i];
+  if (values["chunk-size"] !== undefined) {
+    chunkSize = Number.parseInt(values["chunk-size"], 10);
+    if (Number.isNaN(chunkSize) || chunkSize < 1) {
+      throw new Error(`--chunk-size inválido (got '${values["chunk-size"]}')`);
     }
   }
+  const htmlPath = values["html"] ?? null;
   return { editionDir, chunkSize, htmlPath };
 }
 

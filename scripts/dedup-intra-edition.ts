@@ -37,6 +37,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import {
   tokenizeForJaccard,
   jaccardSimilarity,
@@ -662,14 +663,13 @@ export function dedupIntraEdition(
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): { in: string; out: string; destaqueCount: number } {
-  let inPath = "";
-  let outPath = "";
-  let destaqueCount = DEFAULT_INTRA_DESTAQUE_COUNT;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--in") inPath = argv[++i];
-    else if (argv[i] === "--out") outPath = argv[++i];
-    else if (argv[i] === "--destaque-count") destaqueCount = parseInt(argv[++i], 10);
-  }
+  const values = parseArgsSimple(argv);
+  const inPath = values["in"] ?? "";
+  const outPath = values["out"] ?? "";
+  const destaqueCount =
+    values["destaque-count"] !== undefined
+      ? parseInt(values["destaque-count"], 10)
+      : DEFAULT_INTRA_DESTAQUE_COUNT;
   if (!inPath || !outPath) {
     throw new Error("Uso: dedup-intra-edition.ts --in <categorized.json> --out <out.json> [--destaque-count N]");
   }
