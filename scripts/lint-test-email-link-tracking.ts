@@ -33,6 +33,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "./lib/cli-args.ts";
 
 export interface LinkIssue {
   type: "link_dead" | "link_timeout" | "link_redirect_chain_long";
@@ -297,38 +298,20 @@ export async function checkLinkTracking(
   };
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[key] = next;
-        i++;
-      } else {
-        out[key] = true;
-      }
-    }
-  }
-  return out;
-}
-
 async function mainCli(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help || !args["email-file"]) {
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  if (flags.has("help") || !values["email-file"]) {
     console.error("Uso: lint-test-email-link-tracking.ts --email-file <file> [--out <json>]");
     return 2;
   }
-  const emailFile = String(args["email-file"]);
+  const emailFile = values["email-file"];
   if (!existsSync(emailFile)) {
     console.error(`email-file não existe: ${emailFile}`);
     return 2;
   }
   const content = readFileSync(emailFile, "utf8");
   const result = await checkLinkTracking(content);
-  if (args.out) writeFileSync(String(args.out), JSON.stringify(result, null, 2), "utf8");
+  if (values.out) writeFileSync(values.out, JSON.stringify(result, null, 2), "utf8");
   console.log(JSON.stringify(result, null, 2));
 
   if (result.issues.length > 0) {
