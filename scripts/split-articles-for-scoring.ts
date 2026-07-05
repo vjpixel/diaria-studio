@@ -40,6 +40,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -135,27 +136,15 @@ export function buildChunks(
   return splitRoundRobin(flat, count).map(toCategorized);
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-      out[key] = val;
-    }
-  }
-  return out;
-}
-
 export function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const categorizedPath = args.categorized;
-  const outDir = args["out-dir"];
-  const chunkSize = parseInt(args["chunk-size"] ?? "30", 10);
+  const { values } = parseArgs(process.argv.slice(2));
+  const categorizedPath = values.categorized;
+  const outDir = values["out-dir"];
+  const chunkSize = parseInt(values["chunk-size"] ?? "30", 10);
   // #2496: --pool-out emite o pool capado para que merge-scored-chunks use como
   // --categorized. Sem isso o merge compara contra o pool não-capado e gera
   // falso catastrophic quando use_melhor tem muitos itens capados.
-  const poolOut = args["pool-out"];
+  const poolOut = values["pool-out"];
 
   if (!categorizedPath || !outDir) {
     console.error(
@@ -164,7 +153,7 @@ export function main(): void {
     process.exit(1);
   }
   if (!Number.isFinite(chunkSize) || chunkSize < 1) {
-    console.error(`--chunk-size inválido: ${args["chunk-size"]}`);
+    console.error(`--chunk-size inválido: ${values["chunk-size"]}`);
     process.exit(1);
   }
 

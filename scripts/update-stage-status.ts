@@ -36,6 +36,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -496,24 +497,9 @@ export function saveDoc(editionDir: string, doc: StageStatusDoc): void {
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--init") out.init = true;
-    else if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDirRaw = args["edition-dir"] as string | undefined;
+  const { flags, values: args } = parseArgs(process.argv.slice(2));
+  const editionDirRaw = args["edition-dir"];
   if (!editionDirRaw) {
     console.error(
       "Uso:\n" +
@@ -528,9 +514,9 @@ async function main(): Promise<void> {
   const statusPath = resolve(editionDir, "stage-status.md");
 
   let doc: StageStatusDoc;
-  if (args.init) {
+  if (flags.has("init")) {
     doc = makeInitialDoc(editionId);
-  } else if (args["reconcile-running"]) {
+  } else if (flags.has("reconcile-running")) {
     // #2525: reconcile orphaned running stages on resume.
     // Marks all `running` stages as `failed` — orchestrator can re-run them.
     doc = loadDoc(editionDir, editionId);
@@ -557,12 +543,12 @@ async function main(): Promise<void> {
   } else {
     // #1216: load from JSON sidecar (canonical) — MD parse fallback for legacy.
     doc = loadDoc(editionDir, editionId);
-    const stage = parseInt(args.stage as string, 10);
+    const stage = parseInt(args.stage ?? "", 10);
     if (isNaN(stage)) {
       console.error("--stage é obrigatório (número)");
       process.exit(2);
     }
-    const status = (args.status as string) ?? "pending";
+    const status = args.status ?? "pending";
     if (!["pending", "running", "done", "failed"].includes(status)) {
       console.error(`--status inválido: ${status}`);
       process.exit(2);
@@ -584,16 +570,16 @@ async function main(): Promise<void> {
       {
         stage,
         status: status as StageStatus,
-        start: args.start as string | undefined,
-        end: args.end as string | undefined,
-        gate_at: args["gate-at"] as string | undefined,
-        duration_ms: args["duration-ms"] ? parseInt(args["duration-ms"] as string, 10) : undefined,
-        pipeline_ms: args["pipeline-ms"] ? parseInt(args["pipeline-ms"] as string, 10) : undefined,
-        cost_usd: args["cost-usd"] ? parseFloat(args["cost-usd"] as string) : undefined,
-        tokens_in: args["tokens-in"] ? parseInt(args["tokens-in"] as string, 10) : undefined,
-        tokens_out: args["tokens-out"] ? parseInt(args["tokens-out"] as string, 10) : undefined,
+        start: args.start,
+        end: args.end,
+        gate_at: args["gate-at"],
+        duration_ms: args["duration-ms"] ? parseInt(args["duration-ms"], 10) : undefined,
+        pipeline_ms: args["pipeline-ms"] ? parseInt(args["pipeline-ms"], 10) : undefined,
+        cost_usd: args["cost-usd"] ? parseFloat(args["cost-usd"]) : undefined,
+        tokens_in: args["tokens-in"] ? parseInt(args["tokens-in"], 10) : undefined,
+        tokens_out: args["tokens-out"] ? parseInt(args["tokens-out"], 10) : undefined,
         models: args.models
-          ? (args.models as string).split(",").map((s) => s.trim()).filter(Boolean)
+          ? args.models.split(",").map((s) => s.trim()).filter(Boolean)
           : undefined,
       },
       // #1783: now real pro auto-carimbo de start/end quando o playbook não passa.
@@ -619,7 +605,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       path: statusPath,
-      stage_updated: args.init ? "all (init)" : args.stage,
+      stage_updated: flags.has("init") ? "all (init)" : args.stage,
       totals,
     }),
   );

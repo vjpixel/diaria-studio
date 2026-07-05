@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const EAI_USED_PATH = resolve(ROOT, "data", "eia-used.json");
@@ -32,19 +33,6 @@ interface EaiUsedEntry {
 // (EaiMeta interface local removida em #1031 — usa central EiaMeta inferido
 // de parseEiaMeta. Schema central tem wikimedia required + image_url required;
 // cast removido pra evitar mascarar drift futuro.)
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") {
-      out["dry-run"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
 
 function loadEaiUsed(): EaiUsedEntry[] {
   // #257 migration: ler new path primeiro, fallback p/ legacy `eai-used.json`.
@@ -71,9 +59,9 @@ function isTitlePresent(entries: EaiUsedEntry[], title: string): boolean {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const editionsDir = resolve(ROOT, (args["editions-dir"] as string) ?? "data/editions/");
-  const dryRun = args["dry-run"] === true;
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const editionsDir = resolve(ROOT, values["editions-dir"] ?? "data/editions/");
+  const dryRun = flags.has("dry-run");
 
   let editionDirs: string[] = [];
   try {

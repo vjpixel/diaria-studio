@@ -29,17 +29,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { lintIntroCount } from "./lint-newsletter-md.ts";
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 // ---------------------------------------------------------------------------
 // Pure helpers (#876) — exportadas para testes
@@ -113,7 +103,7 @@ function loadRemovedSummary(path: string): LancamentosRemovedSummary | null {
 
 function main(): void {
   const ROOT = process.cwd();
-  const args = parseArgs(process.argv.slice(2));
+  const { values: args } = parseArgs(process.argv.slice(2));
   if (!args.md) {
     console.error(
       "Uso: sync-intro-count.ts --md <md-path> [--lancamentos-removed <path>]",

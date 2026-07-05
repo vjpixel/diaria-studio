@@ -17,6 +17,7 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -272,25 +273,10 @@ function printComparisonTable(editions: { label: string; timings: StageTiming[] 
 
 // --- Main ---
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--all") {
-      args.all = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    } else if (argv[i].startsWith("--")) {
-      args[argv[i].slice(2)] = true;
-    }
-  }
-  return args;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const { flags, values } = parseArgs(process.argv.slice(2));
 
-  if (args.all) {
+  if (flags.has("all")) {
     // Compare all editions
     const editionsDir = resolve(ROOT, "data/editions");
     const dirs = readdirSync(editionsDir)
@@ -312,12 +298,12 @@ function main(): void {
     let editionDir: string;
     let label: string;
 
-    if (args["edition-dir"]) {
-      editionDir = resolve(ROOT, args["edition-dir"] as string);
+    if (values["edition-dir"]) {
+      editionDir = resolve(ROOT, values["edition-dir"]);
       label = basename(editionDir);
-    } else if (args.edition) {
-      editionDir = resolve(ROOT, "data/editions", args.edition as string);
-      label = args.edition as string;
+    } else if (values.edition) {
+      editionDir = resolve(ROOT, "data/editions", values.edition);
+      label = values.edition;
     } else {
       const latest = detectLatestEdition();
       editionDir = resolve(ROOT, "data/editions", latest);
