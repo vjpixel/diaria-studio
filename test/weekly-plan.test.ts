@@ -14,7 +14,6 @@ import {
   aggregateHealth,
   decideSemaphore,
   computeWeekPlan,
-  isColdCampaign,
   renderWeeklyPlanTabPanel,
   baseVolumeFromLastSendDay,
   DEFAULT_HEALTH_THRESHOLDS,
@@ -27,15 +26,12 @@ const NOW = new Date("2026-07-10T12:00:00.000Z");
 
 function campaignSentHoursAgo(
   hoursAgo: number,
-  overrides: Partial<BrevoCampaign & { listName?: string }> = {},
-): BrevoCampaign & { listName?: string } {
+  overrides: Partial<BrevoCampaign> = {},
+): BrevoCampaign {
   const sentMs = NOW.getTime() - hoursAgo * 60 * 60 * 1000;
   return {
     id: overrides.id ?? Math.round(Math.random() * 1e6),
     name: overrides.name ?? "Clarice News 2606-07 — A · dom",
-    // Default: lista COLD (o que a rampa agrega). Testes de engajado/diário
-    // sobrescrevem `listName`. isColdCampaign classifica pela LISTA, não pelo nome.
-    listName: "cold 2606-07 dom-A",
     subject: "subject",
     status: "sent",
     sentDate: new Date(sentMs).toISOString(),
@@ -200,43 +196,36 @@ test("computeWeekPlan — vermelho corta 30% e sinaliza flagged", () => {
   assert.equal(plan.semaphore, "red");
 });
 
-test("isColdCampaign — classifica pela LISTA: 'cold …' sim; engajado/diário/sem-lista não", () => {
-  // sinal real = listName (a audiência), confirmado na Brevo: listas cold 62-67
-  assert.equal(isColdCampaign({ listName: "cold 2606-07 dom-A" }), true);
-  assert.equal(isColdCampaign({ listName: "cold 2606-07 sab-C" }), true);
-  assert.equal(isColdCampaign({ listName: "COLD 2606-07 dom-B" }), true); // case-insensitive
-  // engajado (já recebeu) — lista 59-61 "Clarice News … (A/B/C assunto)"
-  assert.equal(isColdCampaign({ listName: "Clarice News 2606-07 A (A/B/C assunto)" }), false);
-  // diário antigo
-  assert.equal(isColdCampaign({ listName: "Clarice Jun/2026 d20 (seg)" }), false);
-  // sem lista → excluído (audiência desconhecida)
-  assert.equal(isColdCampaign({ listName: undefined }), false);
-  assert.equal(isColdCampaign({}), false);
-  assert.equal(isColdCampaign({ listName: "coldwave sem espaço" }), false); // \b evita falso positivo
-});
-
-test("render — cold existe mas tudo <48h → 'aguardando maturar', sem semáforo vermelho falso (regressão do bug)", () => {
-  // Reproduz o caso real: os únicos envios cold (sáb/dom) ainda têm <48h.
-  const camps = [
-    campaignSentHoursAgo(12, { listName: "cold 2606-07 dom-A" }),
-    campaignSentHoursAgo(36, { listName: "cold 2606-07 sab-A" }),
-  ];
+test("render — só envios <48h → 'aguardando maturar', sem semáforo vermelho falso (regressão)", () => {
+  // Reproduz o caso real: os únicos envios recentes (sáb/dom) ainda têm <48h.
+  const camps = [campaignSentHoursAgo(12), campaignSentHoursAgo(36)];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.match(html, /aguardando maturar/i);
-  // NÃO pode virar 🔴 (agregado de amostra vazia daria abertura 0%) nem "nenhum cold"
-  assert.doesNotMatch(html, /Vermelho|Nenhum envio cold encontrado/);
+  // NÃO pode virar 🔴 (agregado de amostra vazia daria abertura 0%)
+  assert.doesNotMatch(html, /Vermelho/);
 });
 
-test("render — cold maduro (>48h) → semáforo + plano aparecem", () => {
+test("render — envio maduro (>48h) → semáforo + plano aparecem (sem diferenciar cold/quente)", () => {
   const camps = [
     campaignSentHoursAgo(60, {
-      listName: "cold 2606-07 dom-A",
       statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }),
     }),
   ];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.doesNotMatch(html, /aguardando maturar/i);
   assert.match(html, /Verde|Amarelo|Vermelho/);
+});
+
+test("saúde = últimos 10 MADUROS (amostra por contagem, não janela de tempo)", () => {
+  // 12 envios maduros → só os 10 mais recentes entram no agregado incluído.
+  const camps = Array.from({ length: 12 }, (_, i) =>
+    campaignSentHoursAgo(72 + i * 24, {
+      id: i + 1,
+      statistics: statsFor({ sent: 500, delivered: 495, uniqueViews: 80 }),
+    }),
+  );
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.match(html, /10 envios maduros/); // rótulo do agregado
 });
 
 test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não pega 1 só)", () => {
