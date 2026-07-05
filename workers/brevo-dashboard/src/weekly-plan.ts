@@ -59,18 +59,28 @@ export const RED_CUT_FRACTION = 0.3;
 export interface HealthThresholds {
   /** Abertura: >= green é 🟢; >= yellow (e < green) é 🟡; abaixo de yellow é 🔴. Maior é melhor. */
   openRate: { green: number; yellow: number };
-  /** Bounce/spam/unsub: < green é 🟢; < yellow (e >= green) é 🟡; >= yellow é 🔴. Menor é melhor. */
+  /** Hard bounce / bounce total / spam / unsub: < green é 🟢; < yellow é 🟡; >= yellow é 🔴. Menor é melhor. */
+  hardBounceRate: { green: number; yellow: number };
   bounceRate: { green: number; yellow: number };
   spamRate: { green: number; yellow: number };
   unsubRate: { green: number; yellow: number };
 }
 
-/** Thresholds do requisito da issue #2974 (comentário do editor). */
+/**
+ * Thresholds ancorados nos CIRCUIT BREAKERS do doc "Parceria Editorial
+ * Clarice.ai × Diar.ia" (métricas de reavaliação definidas pelo editor).
+ * 🔴 = o breaker do doc (nível de PAUSA — o doc tem UM nível só); 🟡 = zona de
+ * alerta que adicionamos ("olhar com cuidado / segurar o crescimento" chegando
+ * perto do breaker). Hard bounce e bounce total SEPARADOS: o doc tem dois
+ * breakers (hard ≥2%, total hard+soft ≥5%) — juntar perderia o caso
+ * hard-alto/total-baixo.
+ */
 export const DEFAULT_HEALTH_THRESHOLDS: HealthThresholds = {
-  openRate: { green: 14, yellow: 11 }, // ≥14% / 11-14% / <11%
-  bounceRate: { green: 1.5, yellow: 2.5 }, // <1,5% / 1,5-2,5% / >2,5%
-  spamRate: { green: 0.05, yellow: 0.1 }, // <0,05% / 0,05-0,1% / >0,1%
-  unsubRate: { green: 0.4, yellow: 0.7 }, // <0,4% / 0,4-0,7% / >0,7%
+  openRate: { green: 17, yellow: 15 }, // 🔴 <15% (breaker do doc)
+  hardBounceRate: { green: 1.5, yellow: 2 }, // 🔴 ≥2% (breaker)
+  bounceRate: { green: 4, yellow: 5 }, // 🔴 ≥5% total hard+soft (breaker)
+  spamRate: { green: 0.05, yellow: 0.1 }, // 🔴 ≥0,1% (breaker)
+  unsubRate: { green: 2, yellow: 3 }, // 🔴 ≥3% (breaker)
 };
 
 /**
@@ -93,6 +103,7 @@ export function filterMatureCampaigns<T extends Pick<BrevoCampaign, "sentDate">>
 
 export interface HealthAggregate {
   openRate: number;
+  hardBounceRate: number;
   bounceRate: number;
   spamRate: number;
   unsubRate: number;
@@ -111,6 +122,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
   let delivered = 0;
   let sent = 0;
   let views = 0;
+  let hardBounces = 0;
   let bounces = 0;
   let spam = 0;
   let unsub = 0;
@@ -122,6 +134,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
     delivered += s.delivered ?? 0;
     sent += s.sent ?? 0;
     views += s.uniqueViews ?? 0;
+    hardBounces += s.hardBounces ?? 0;
     bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     spam += s.complaints ?? 0;
     unsub += s.unsubscriptions ?? 0;
@@ -129,6 +142,7 @@ export function aggregateHealth(matureColdCampaigns: BrevoCampaign[]): HealthAgg
 
   return {
     openRate: delivered > 0 ? (views / delivered) * 100 : 0,
+    hardBounceRate: sent > 0 ? (hardBounces / sent) * 100 : 0,
     bounceRate: sent > 0 ? (bounces / sent) * 100 : 0,
     spamRate: sent > 0 ? (spam / sent) * 100 : 0,
     unsubRate: sent > 0 ? (unsub / sent) * 100 : 0,
@@ -173,6 +187,7 @@ export function decideSemaphore(
 ): Semaphore {
   return [
     classifyMetric(health.openRate, thresholds.openRate, "higher"),
+    classifyMetric(health.hardBounceRate, thresholds.hardBounceRate, "lower"),
     classifyMetric(health.bounceRate, thresholds.bounceRate, "lower"),
     classifyMetric(health.spamRate, thresholds.spamRate, "lower"),
     classifyMetric(health.unsubRate, thresholds.unsubRate, "lower"),
@@ -350,7 +365,8 @@ ${waitRows}
   };
   const metricDefs = [
     { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const },
-    { label: "Bounce", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const },
+    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const },
+    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const },
     { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const },
     { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const },
   ];
