@@ -2791,3 +2791,29 @@ describe("regressão #2738: renderEiaEngagementSection", () => {
     assert.match(panel, /id="eia-engagement"/, "seção eia-engagement deve estar dentro do panel Engajamento");
   });
 });
+
+// #2903: a aba Engajamento do clarice-dashboard (mensal) mostra edições MENSAIS
+describe("renderEiaEngagementSection — aceita ciclo MENSAL YYMM-MM (#2903)", () => {
+  test("edição mensal '2606-07' é renderizada (não filtrada como AAMMDD-only)", () => {
+    const summary: EiaEngagementSummary = {
+      editions: [
+        { edition: "2606-07", total_votes: 120, voted_a: 70, voted_b: 50, pct_correct: 58 },
+        { edition: "2605-06", total_votes: 90, voted_a: 40, voted_b: 50, pct_correct: 44 },
+      ] as EiaEngagementEdition[],
+      updated_at: "2026-07-05T12:00:00Z",
+    };
+    const html = renderEiaEngagementSection(summary);
+    assert.match(html, /2606-07/, "ciclo mensal deve aparecer na tabela");
+    assert.match(html, /2605-06/, "ciclo mensal anterior também");
+    assert.match(html, /Engajamento — É IA\?/);
+  });
+
+  test("edição malformada ainda é filtrada (guard preservado)", () => {
+    const summary: EiaEngagementSummary = {
+      editions: [{ edition: "lixo-99", total_votes: 10, voted_a: 5, voted_b: 5, pct_correct: null }] as EiaEngagementEdition[],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(summary);
+    assert.doesNotMatch(html, /lixo/, "edição malformada ainda é pulada");
+  });
+});

@@ -557,3 +557,32 @@ describe("buildEiaEngagementKvPayload (#2738) — payload SLIM, sem PII/leaderbo
     assert.deepEqual(payload, { editions: [], updated_at: null });
   });
 });
+
+// #2903: fetch com brand=clarice + descoberta de ciclos mensais
+describe("brand=clarice + discoverMonthlyCycles (#2903)", () => {
+  test("discoverMonthlyCycles acha só dirs YYMM-MM, ordenados", async () => {
+    const { discoverMonthlyCycles } = await import("../scripts/build-poll-eia-data.ts");
+    const dir = mkdtempSync(join(tmpdir(), "monthly-"));
+    for (const name of ["2606-07", "2605-06", "junk", "260705"]) mkdirSync(join(dir, name));
+    const cycles = discoverMonthlyCycles(dir);
+    assert.deepEqual(cycles, ["2605-06", "2606-07"], "só YYMM-MM, sorted; ignora junk e AAMMDD");
+  });
+
+  test("fetchEditionStats anexa &brand=clarice; diaria não anexa", async () => {
+    const { fetchEditionStats } = await import("../scripts/build-poll-eia-data.ts");
+    const urls: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ total: 0 }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await fetchEditionStats("https://poll.x", "2606-07", "clarice");
+      await fetchEditionStats("https://poll.x", "260705"); // default diaria
+      assert.match(urls[0], /edition=2606-07&brand=clarice/, "clarice anexa &brand=clarice");
+      assert.doesNotMatch(urls[1], /brand=/, "diaria (default) não anexa &brand=");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
