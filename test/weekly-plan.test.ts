@@ -13,6 +13,7 @@ import {
   filterMatureCampaigns,
   aggregateHealth,
   decideSemaphore,
+  classifyMetric,
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
   baseVolumeFromLastSendDay,
@@ -214,6 +215,31 @@ test("render — envio maduro (>48h) → semáforo + plano aparecem (sem diferen
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.doesNotMatch(html, /aguardando maturar/i);
   assert.match(html, /Verde|Amarelo|Vermelho/);
+});
+
+test("classifyMetric — fronteiras (higher=abertura; lower=bounce/spam/unsub)", () => {
+  // higher: maior é melhor
+  assert.equal(classifyMetric(14, { green: 14, yellow: 11 }, "higher"), "green");
+  assert.equal(classifyMetric(13.9, { green: 14, yellow: 11 }, "higher"), "yellow");
+  assert.equal(classifyMetric(10.9, { green: 14, yellow: 11 }, "higher"), "red");
+  // lower: menor é melhor (ex unsub 0,4/0,7)
+  assert.equal(classifyMetric(0.39, { green: 0.4, yellow: 0.7 }, "lower"), "green");
+  assert.equal(classifyMetric(0.5, { green: 0.4, yellow: 0.7 }, "lower"), "yellow");
+  assert.equal(classifyMetric(2.1, { green: 0.4, yellow: 0.7 }, "lower"), "red"); // caso real: unsub engajado
+});
+
+test("render — mostra coluna de Alvo + colore o valor (verde/vermelho) por métrica", () => {
+  // abertura alta (verde) + unsub alto (vermelho, como o caso real do engajado)
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 270, unsubscriptions: 21 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.match(html, /Alvo/); // coluna de alvo presente
+  assert.match(html, /#158a4a/); // valor verde (abertura 27%)
+  assert.match(html, /#c0392b/); // valor vermelho (unsub 2,1%)
+  assert.match(html, /PIOR métrica/); // explica o critério do semáforo
 });
 
 test("saúde = últimos 10 MADUROS (amostra por contagem, não janela de tempo)", () => {
