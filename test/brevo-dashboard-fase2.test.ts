@@ -1347,14 +1347,25 @@ describe("aggregateByWeekday (#2134)", () => {
 describe("renderVolumeSection (#2910 — ciclo de cobrança + denominador dinâmico)", () => {
   const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z")); // dentro do ciclo 04/jun→04/jul
 
-  test("com planCredits: mostra percentual + barra + créditos do plano (nunca 40k fixo)", () => {
+  test("denominador = RESTANTE + enviado (o total do ciclo), não o restante direto", () => {
+    // planCredits (arg) é o RESTANTE da Brevo (2000); enviado = 900.
+    // Total do ciclo = 2000 + 900 = 2900. pct = 900/2900 = 31.0%.
     const html = renderVolumeSection(900, window, 2000);
     assert.match(html, /900/, "deve mostrar 900 enviados");
-    assert.match(html, /2\.000/, "deve mostrar o denominador DINÂMICO (2000), não 40.000");
-    assert.doesNotMatch(html, /40\.000/, "NUNCA deve cair pro total fixo de 40k (bug do #2910)");
-    assert.match(html, /45[,.]0%/, "900\/2000 = 45.0%");
+    assert.match(html, /2\.900/, "denominador = restante (2000) + enviado (900) = 2900, NÃO o restante 2000");
+    assert.doesNotMatch(html, /de 2\.000 cr[ée]ditos/, "NUNCA usa o restante direto como denominador (bug 260705)");
+    assert.match(html, /31[,.]0%/, "900/(2000 restante + 900 enviado) = 900/2900 = 31.0%");
     assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
     assert.match(html, /Volume enviado no ciclo/);
+  });
+
+  test("cenário real do editor (260705): 5.292 enviado + 34.708 restante = 40.000 do plano", () => {
+    // A Brevo /v3/account retorna credits=34708 (RESTANTE do ciclo). O plano é 40.000.
+    // 5.292 + 34.708 = 40.000 exato. O denominador tem que ser o TOTAL, não o restante.
+    const html = renderVolumeSection(5292, window, 34708);
+    assert.match(html, /de 40\.000 cr[ée]ditos do plano/, "denominador = total do plano (40.000)");
+    assert.doesNotMatch(html, /34\.708 cr[ée]ditos do plano/, "NUNCA o restante (34.708) como denominador");
+    assert.match(html, /13[,.]2%/, "5292/40000 = 13.2%");
   });
 
   test("planCredits null: mostra número absoluto, sem percentual, sem inventar denominador", () => {

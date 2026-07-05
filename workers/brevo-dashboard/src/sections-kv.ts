@@ -245,11 +245,12 @@ export function renderScheduledSection(
  * `billingCycleWindow`), exibido explicitamente no rótulo pra nunca ser
  * confundido com o ciclo de CONTEÚDO/envio do #2909/#2923 (mês corrente,
  * planejamento de reenvio) — os dois são conceitos DIFERENTES por design.
- * `planCredits` é o denominador DINÂMICO (créditos/limite do plano Brevo do
- * mês corrente, varia mês a mês) — `null` quando indisponível (fetch ao vivo
- * falhou e não há valor em cache): a seção mostra o número absoluto sem
- * percentual/barra, NUNCA cai pra um total fixo hardcoded (bug do #2910 —
- * era sempre 40.000, congelado na rampa de migração de junho).
+ * `planCredits` é o RESTANTE do ciclo vindo da Brevo (/v3/account) — NÃO o total
+ * do plano. O denominador real (volume/allowance do ciclo) é derivado como
+ * `planCredits + cumulativeSent` (restante + já enviado). `null` quando o fetch
+ * falhou e não há cache: a seção mostra o número absoluto sem percentual/barra.
+ * (Correção 260705: o #2910 usava o restante direto como denominador, que encolhia
+ * a cada envio — o denominador correto é o total do ciclo, restante + enviado.)
  * Exportado pra teste unitário.
  */
 export function renderVolumeSection(
@@ -264,7 +265,13 @@ export function renderVolumeSection(
   // Tooltip compartilhado via ENVIOS_TOOLTIP — mesma cópia usada na tabela por-campanha e mensal.
   const sentLabel = `<strong title="${escHtml(ENVIOS_TOOLTIP)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong>`;
 
-  if (planCredits === null || planCredits <= 0) {
+  // `planCredits` da Brevo (/v3/account) é o RESTANTE do ciclo, NÃO o total do plano.
+  // O volume/allowance do ciclo (denominador) = restante + já enviado neste ciclo.
+  // Ex: 34.708 restante + 5.292 enviado = 40.000 (o plano real). O #2910 usava o
+  // restante direto como denominador → errado: encolhia a cada envio (bug do editor 260705).
+  const planTotal = planCredits === null ? null : planCredits + cumulativeSent;
+
+  if (planTotal === null || planTotal <= 0) {
     return `
 <section class="phase2-section" id="volume-ciclo">
   <h2 class="section-title">Volume enviado no ciclo</h2>
@@ -275,7 +282,7 @@ export function renderVolumeSection(
 </section>`;
   }
 
-  const pctBar = Math.min(100, (cumulativeSent / planCredits) * 100);
+  const pctBar = Math.min(100, (cumulativeSent / planTotal) * 100);
   const pctLabel = pctBar.toFixed(1);
   const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
   const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
@@ -283,7 +290,7 @@ export function renderVolumeSection(
 <section class="phase2-section" id="volume-ciclo">
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
-    ${sentLabel} de ${planCredits.toLocaleString("pt-BR")} créditos do plano (${pctLabel}%)<br>
+    ${sentLabel} de ${planTotal.toLocaleString("pt-BR")} créditos do plano (${pctLabel}%)<br>
     <span class="spark-bar" title="${pctLabel}% do plano do mês">${bar}</span><br>
     <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>
   </p>
