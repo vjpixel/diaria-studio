@@ -42,6 +42,7 @@ import {
 import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,18 +54,8 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: Record<string, string> = {};
-  let dryRun = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") {
-      dryRun = true;
-      continue;
-    }
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
+  const { flags, values: args } = parseCliArgs(argv);
+  const dryRun = flags.has("dry-run");
   if (!args.edition || !args["new-order"]) {
     console.error(
       "Uso: reorder-destaques.ts --edition AAMMDD --new-order 2,1,3 [--edition-dir <path>] [--dry-run]",

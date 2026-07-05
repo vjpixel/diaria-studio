@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -54,33 +55,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // #finding3: corrige crash quando --title (ou --slug / --edition-url) é seguido
 // de outra flag em vez de um valor. A lógica anterior tratava a próxima flag como
 // o valor da opção anterior (ex: --title --validate-social definia title="--validate-social").
-// Agora: flags booleanas conhecidas são tratadas separadamente; qualquer argumento
-// que começa com "--" não é consumido como valor de outra flag.
-
-const BOOLEAN_FLAGS = new Set(["validate-social"]);
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
-    if (BOOLEAN_FLAGS.has(key)) {
-      args[key] = true;
-      continue;
-    }
-    // Verificar se o próximo argumento existe e NÃO é outra flag
-    const nextArg = argv[i + 1];
-    if (nextArg !== undefined && !nextArg.startsWith("--")) {
-      args[key] = nextArg;
-      i++; // consumir o valor
-    } else {
-      // Sem valor (próximo é outra flag ou fim da lista) → tratar como booleano
-      args[key] = true;
-    }
-  }
-  return args;
-}
+// #2834: migrado pra scripts/lib/cli-args.ts — parseArgs canônico já trata
+// "--key --outro" como flag booleana (values[key] fica ausente, flags.has(key)
+// vira true), mesmo comportamento que o BOOLEAN_FLAGS allowlist local fazia
+// pra --validate-social e que o fallback "sem valor → true" fazia pras demais.
 
 // ── CLI guard ─────────────────────────────────────────────────────────────────
 // Prevent accidental execution when imported from tests
@@ -89,10 +67,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 }
 
 function main(argv: string[]): void {
-  const args = parseArgs(argv);
+  const { flags, values } = parseCliArgs(argv);
 
-  const editionDirRaw = args["edition-dir"] as string | undefined;
-  if (!editionDirRaw || typeof editionDirRaw !== "string") {
+  const editionDirRaw = values["edition-dir"];
+  if (!editionDirRaw) {
     console.error("Erro: --edition-dir é obrigatório.");
     process.exit(1);
   }
@@ -108,9 +86,9 @@ function main(argv: string[]): void {
 
   // ── Resolver a URL ────────────────────────────────────────────────────────
 
-  const titleArg = typeof args["title"] === "string" ? args["title"] : undefined;
-  const slugArg = typeof args["slug"] === "string" ? args["slug"] : undefined;
-  const editionUrlArg = typeof args["edition-url"] === "string" ? args["edition-url"] : undefined;
+  const titleArg = values["title"];
+  const slugArg = values["slug"];
+  const editionUrlArg = values["edition-url"];
 
   let editionUrl: string;
 
@@ -148,7 +126,7 @@ function main(argv: string[]): void {
 
   // ── Guard anti-placeholder (--validate-social) ────────────────────────────
 
-  if (args["validate-social"]) {
+  if (flags.has("validate-social")) {
     const socialMdPath = resolve(editionDir, "03-social.md");
     if (!existsSync(socialMdPath)) {
       console.error(

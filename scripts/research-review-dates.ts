@@ -46,6 +46,7 @@ import { verifyDate, type DateVerifyResult } from "./verify-dates.ts";
 import type { VerifyDateOptions } from "./lib/verify-options.ts";
 import { loadCache as loadVerifyCache } from "./lib/url-verify-cache.ts";
 import { filterDateWindow } from "./filter-date-window.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 /** Local copy do ArticleInput de verify-dates.ts (interface não-exportada lá). */
 interface ArticleInput {
@@ -176,19 +177,18 @@ export function unwrapCategorized(input: unknown): CategorizedShape {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Partial<Args> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const k = argv[i];
-    if (k === "--in") args.in = argv[++i];
-    else if (k === "--out") args.out = argv[++i];
-    else if (k === "--edition-dir") args.editionDir = argv[++i];
-    else if (k === "--anchor-iso") args.anchorIso = argv[++i];
-    else if (k === "--edition-iso") args.editionIso = argv[++i];
-    else if (k === "--window-days") args.windowDays = Number(argv[++i]);
-    else if (k === "--bodies-dir") args.bodiesDir = argv[++i];
-    else if (k === "--verify-cache") args.verifyCache = argv[++i];
-    else if (k === "--link-verify-json") args.linkVerifyJson = argv[++i]; // #1554 P2
-  }
+  const flat = parseArgsSimple(argv);
+  const args: Partial<Args> = {
+    in: flat["in"],
+    out: flat["out"],
+    editionDir: flat["edition-dir"],
+    anchorIso: flat["anchor-iso"],
+    editionIso: flat["edition-iso"],
+    windowDays: flat["window-days"] !== undefined ? Number(flat["window-days"]) : undefined,
+    bodiesDir: flat["bodies-dir"],
+    verifyCache: flat["verify-cache"],
+    linkVerifyJson: flat["link-verify-json"], // #1554 P2
+  };
   for (const required of ["in", "out", "editionDir", "anchorIso", "editionIso", "windowDays"] as const) {
     if (args[required] === undefined) {
       throw new Error(`--${required.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())} obrigatório`);

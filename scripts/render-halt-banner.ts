@@ -28,26 +28,20 @@
  */
 
 import { renderHaltBanner } from "./lib/gate-banner.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const RED_BG_WHITE_FG = "\x1b[41m\x1b[97m";
 const RESET = "\x1b[0m";
 
 function parseArgs(argv: string[]): { stage: string; reason: string; action: string } {
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      flags[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  if (!flags.stage || !flags.reason || !flags.action) {
+  const { values } = parseCliArgs(argv);
+  if (!values.stage || !values.reason || !values.action) {
     process.stderr.write(
       "Usage: render-halt-banner.ts --stage <stage> --reason <reason> --action <action>\n",
     );
     process.exit(2);
   }
-  return { stage: flags.stage, reason: flags.reason, action: flags.action };
+  return { stage: values.stage, reason: values.reason, action: values.action };
 }
 
 function shouldUseColor(): boolean {
