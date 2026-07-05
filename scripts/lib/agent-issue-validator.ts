@@ -281,7 +281,7 @@ export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * #2066: Marcadores de callout (midCallout/introCallout) — `**📣/📚/🎉 …**`.
+ * #2066: Marcadores de callout (boxDivulgacao1/boxDivulgacao2/introCallout) — `**📣/📚/🎉 …**`.
  * `stripCalloutMarker` (newsletter-render-html.ts) remove o marcador do HTML
  * renderizado nos caminhos de callout (multi-parágrafo desde #1938/#1942;
  * single-parágrafo com imagem desde #2066). O emoji existe só no MD source

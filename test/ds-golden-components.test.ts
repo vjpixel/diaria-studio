@@ -11,8 +11,8 @@
  *   - whyBox               (box "Por que isso importa"; contorno, paper/rule)
  *   - introCallout single  (1 parágrafo; painel bege; driftou em refactors callout)
  *   - introCallout multi   (multi-parágrafo; 1º = título serif 26px)
- *   - midCallout com img   (entre D1 e D2; o drift mais recorrente — #1807/#2066/#2067)
- *   - midCallout sem img   (degrada pra introCallout; cobertura do branch null)
+ *   - boxDivulgacao1 com img   (entre D1 e D2; o drift mais recorrente — #1807/#2066/#2067)
+ *   - boxDivulgacao1 sem img   (degrada pra introCallout; cobertura do branch null)
  *   - É IA? box            (painel bege + kicker; #1936 redesign)
  *   - SORTEIO box          (#2080 — kicker fora do box, corpo no painel bege)
  *
@@ -210,25 +210,25 @@ describe("ds-golden-components (#2071) — HTML canônico por componente do DS",
     assert.ok(!html.includes("📣"), "introCallout multi: marcador 📣 não deve aparecer");
   });
 
-  it("midCallout com imagem: <img> + botão CTA + link do box (DS box com screenshot)", () => {
+  it("boxDivulgacao1 com imagem: <img> + botão CTA + link do box (DS box com screenshot)", () => {
     const html = goldens["mid_callout_com_imagem"];
-    assert.match(html, /<img[^>]+src="[^"]*livros-promo/, "midCallout: <img> ausente");
-    assert.ok(html.includes("Confira a nova página"), "midCallout: label CTA ausente");
+    assert.match(html, /<img[^>]+src="[^"]*livros-promo/, "boxDivulgacao1: <img> ausente");
+    assert.ok(html.includes("Confira a nova página"), "boxDivulgacao1: label CTA ausente");
     assert.ok(
       html.includes("https://livros.diaria.workers.dev"),
-      "midCallout: link do destino ausente",
+      "boxDivulgacao1: link do destino ausente",
     );
     // #2071: painel bege (não teal)
-    assert.ok(!html.includes("background:#00A0A0"), "midCallout: painel NÃO deve ser teal");
+    assert.ok(!html.includes("background:#00A0A0"), "boxDivulgacao1: painel NÃO deve ser teal");
   });
 
-  it("midCallout sem imagem: degrada pra introCallout (sem <img>)", () => {
+  it("boxDivulgacao1 sem imagem: degrada pra introCallout (sem <img>)", () => {
     const html = goldens["mid_callout_sem_imagem"];
-    assert.ok(!html.includes("<img"), "midCallout sem imagem: <img> não deve aparecer");
+    assert.ok(!html.includes("<img"), "boxDivulgacao1 sem imagem: <img> não deve aparecer");
     // Ainda renderiza o link/texto
     assert.ok(
       html.includes("livros.diaria.workers.dev"),
-      "midCallout sem imagem: link deve estar no texto",
+      "boxDivulgacao1 sem imagem: link deve estar no texto",
     );
   });
 

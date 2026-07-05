@@ -5,7 +5,7 @@
  * goldens por componente (ds-golden-components.test.ts) não detectam.
  *
  * Motivação:
- *   #2069 — régua bege antes do midCallout sumiu silenciosamente. Todos os
+ *   #2069 — régua bege antes do boxDivulgacao1 sumiu silenciosamente. Todos os
  *   testes por componente passaram porque cada um verificava só o seu bloco;
  *   ninguém testava se a régua (renderDivulgacaoSeparator) aparecia no output
  *   composto antes do box do meio.
@@ -13,12 +13,12 @@
  * O que este arquivo cobre:
  *   1. Fixture sintética de edição completa — todas as seções que renderHTML
  *      compõe: 3 destaques, lançamentos, notícias/radar, use melhor, vídeo,
- *      É IA?, sorteio, erro intencional, encerrar, midCallout com e sem imagem,
+ *      É IA?, sorteio, erro intencional, encerrar, boxDivulgacao1 com e sem imagem,
  *      introCallout. Determinística — sem dados reais.
  *   2. 1 golden do HTML completo: mesmo mecanismo de atualização consciente dos
  *      goldens por componente (NODE_TEST_SNAPSHOTS=1 npm test).
  *   3. Asserções de composição ALÉM do golden bruto: ordem das seções no HTML,
- *      presença de exatamente 1 régua antes do midCallout, ausência de blocos
+ *      presença de exatamente 1 régua antes do boxDivulgacao1, ausência de blocos
  *      vazios — pra que a falha aponte O QUE quebrou, não só "snapshot difere".
  *
  * Como atualizar o golden (mudança legítima de design):
@@ -61,7 +61,7 @@ const SNAPSHOT_PATH = resolve(
  *   - coverageLine        (bloco transparente no topo)
  *   - introCallout        (CTA de destaque — 🎉 editorial, sem disclosure)
  *   - Destaque 1          (com imagem hero)
- *   - midCallout          (com imagem — régua "Divulgação" antes do box)
+ *   - boxDivulgacao1          (com imagem — régua "Divulgação" antes do box)
  *   - Destaque 2
  *   - É IA?               (após o último destaque, #2546)
  *   - Destaque 3
@@ -116,9 +116,9 @@ const FULL_FIXTURE: NewsletterContent = {
     },
   ],
 
-  midCallout:
+  boxDivulgacao1:
     "📚 Nossa curadoria de livros sobre IA ganhou uma nova página. [Confira a nova página](https://livros.diaria.workers.dev).",
-  midCalloutImage:
+  boxDivulgacao1Image:
     "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo-a1b2c3d4.jpg",
 
   eia: {
@@ -299,7 +299,7 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   // que aparecem na ordem correta no HTML composto.
   //
   // Ordem esperada (alinhada ao renderHTML):
-  //   INTRO → coverageLine → introCallout → D1 → midCallout → D2 → D3 → É IA? →
+  //   INTRO → coverageLine → introCallout → D1 → boxDivulgacao1 → D2 → D3 → É IA? →
   //   D3 → seções → SORTEIO → ERRO INTENCIONAL → PARA ENCERRAR
 
   it("composição: coverageLine antes do primeiro Destaque", () => {
@@ -311,11 +311,11 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assertOrder(html, "<!-- #1648 intro callout (sorteio/CTA) -->", "<!-- Destaque 1 -->");
   });
 
-  it("composição: Destaque 1 antes do midCallout", () => {
+  it("composição: Destaque 1 antes do boxDivulgacao1", () => {
     assertOrder(html, "<!-- Destaque 1 -->", "<!-- mid callout com imagem -->");
   });
 
-  it("composição: midCallout antes do Destaque 2", () => {
+  it("composição: boxDivulgacao1 antes do Destaque 2", () => {
     assertOrder(html, "<!-- mid callout com imagem -->", "<!-- Destaque 2 -->");
   });
 
@@ -345,18 +345,18 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assertOrder(html, "<!-- ERRO INTENCIONAL — reveal -->", "<!-- Para encerrar -->");
   });
 
-  // ── Composição: régua antes do midCallout (caso real #2069) ──────────────
+  // ── Composição: régua antes do boxDivulgacao1 (caso real #2069) ──────────────
   //
   // O bug #2069: a régua bege (renderDivulgacaoSeparator → renderKicker
-  // "Divulgação") sumiu antes do midCallout patrocinado. Os goldens por
+  // "Divulgação") sumiu antes do boxDivulgacao1 patrocinado. Os goldens por
   // componente não pegaram porque cada um testava só o seu bloco.
   //
   // Aqui verificamos no output COMPOSTO que:
   //   (a) a régua existe exatamente 1 vez antes do box do meio
   //   (b) está imediatamente antes do box (sem outros comentários de seção
-  //       entre ela e o midCallout)
+  //       entre ela e o boxDivulgacao1)
 
-  it("régua 'Divulgação' aparece antes do midCallout no HTML composto (#2069)", () => {
+  it("régua 'Divulgação' aparece antes do boxDivulgacao1 no HTML composto (#2069)", () => {
     const divulgacaoIdx = html.indexOf("Divulgação");
     const midCalloutIdx = html.indexOf("<!-- mid callout com imagem -->");
     assert.ok(
@@ -369,13 +369,13 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     );
     assert.ok(
       divulgacaoIdx < midCalloutIdx,
-      `Régua 'Divulgação' (idx ${divulgacaoIdx}) deveria preceder o midCallout (idx ${midCalloutIdx})`,
+      `Régua 'Divulgação' (idx ${divulgacaoIdx}) deveria preceder o boxDivulgacao1 (idx ${midCalloutIdx})`,
     );
   });
 
-  it("exatamente 1 kicker 'Divulgação' antes do midCallout (sem duplicata)", () => {
+  it("exatamente 1 kicker 'Divulgação' antes do boxDivulgacao1 (sem duplicata)", () => {
     const midCalloutIdx = html.indexOf("<!-- mid callout com imagem -->");
-    assert.ok(midCalloutIdx !== -1, "midCallout ausente");
+    assert.ok(midCalloutIdx !== -1, "boxDivulgacao1 ausente");
     const before = html.slice(0, midCalloutIdx);
     // Conta ocorrências do ponto teal ● seguido do label "Divulgação" no kicker.
     // O kicker usa text-transform:uppercase via CSS; o HTML raw mantém o acento.
@@ -383,7 +383,7 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.equal(
       matches.length,
       1,
-      `Esperado exatamente 1 kicker 'Divulgação' antes do midCallout, encontrado ${matches.length}`,
+      `Esperado exatamente 1 kicker 'Divulgação' antes do boxDivulgacao1, encontrado ${matches.length}`,
     );
   });
 

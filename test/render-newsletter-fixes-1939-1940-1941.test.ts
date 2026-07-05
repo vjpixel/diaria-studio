@@ -109,7 +109,7 @@ describe("#1941 — título de destaque sublinha todas as linhas", () => {
 });
 
 describe("#1940 — separador Divulgação antes de bloco patrocinado", () => {
-  it("emite kicker 'Divulgação' quando o midCallout começa com 📣", () => {
+  it("emite kicker 'Divulgação' quando o boxDivulgacao1 começa com 📣", () => {
     const dir = buildEdition("**📣 Escreva melhor com a Clarice.ai\n\nCorpo do anúncio.\n\n[Acesse](https://clarice.ai/x)**");
     try {
       const html = renderHTML(extractContent(dir));
@@ -128,7 +128,7 @@ describe("#1940 — separador Divulgação antes de bloco patrocinado", () => {
     const dir = buildEdition("**📚 Nossa curadoria de livros. [Confira](https://livros.diaria.workers.dev).**");
     try {
       const html = renderHTML(extractContent(dir));
-      assert.ok(html.includes("Divulgação"), "todo midCallout ganha o kicker Divulgação");
+      assert.ok(html.includes("Divulgação"), "todo boxDivulgacao1 ganha o kicker Divulgação");
       assert.ok(html.indexOf("Divulgação") < html.indexOf("curadoria de livros"), "kicker antes do box");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -169,7 +169,7 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     assert.equal(isSponsoredCallout(undefined), false);
   });
 
-  it("kicker '● DIVULGAÇÃO' antes do midCallout não-patrocinado (📚) — 260611 v2", () => {
+  it("kicker '● DIVULGAÇÃO' antes do boxDivulgacao1 não-patrocinado (📚) — 260611 v2", () => {
     const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
     try {
       const html = renderHTML(extractContent(dir));
@@ -182,7 +182,7 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     }
   });
 
-  it("midCallout patrocinado (📣) mantém o kicker Divulgação (com régua própria), sem régua dupla", () => {
+  it("boxDivulgacao1 patrocinado (📣) mantém o kicker Divulgação (com régua própria), sem régua dupla", () => {
     const dir = buildEdition("**📣 Anúncio pago [link](https://x.com).**");
     try {
       const html = renderHTML(extractContent(dir));

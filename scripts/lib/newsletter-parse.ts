@@ -105,26 +105,23 @@ export interface NewsletterContent {
    * com borda teal — diferente da coverage line (cinza itálico), pra não passar
    * despercebido. */
   introCallout?: string | null;
-  /** Box (estilo teal) posicionado ENTRE o 1º e o 2º destaque — ex: promo
-   * da nova página de livros. Parágrafo bold-wrapped `**📚 ...**` (ou 📣/🎉)
-   * colocado entre `**DESTAQUE 1` e `**DESTAQUE 2` no reviewed.md. */
-  midCallout?: string | null;
+  /** Box de divulgação (#2978) posicionado ENTRE o 1º e o 2º destaque —
+   * SLOT fixo por posição (gap D1/D2), independente do formato de conteúdo.
+   * Aceita QUALQUER marcador: bold-wrapped `**📚/📣/🎉 ...**` (formato
+   * bold-line) OU bloco `🛒 ...` (formato multi-parágrafo com CTA) — o
+   * formato é decidido pelo próprio marcador, não pelo slot (ver
+   * `renderBoxDivulgacao` em newsletter-render-html.ts). */
+  boxDivulgacao1?: string | null;
   /** URL pública de uma imagem (ex: screenshot da página de livros) pra
-   * tornar o box do meio mais proeminente: imagem + texto + botão CTA.
-   * Lida de `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
-  midCalloutImage?: string | null;
-  /** Box de produtos (estilo teal) posicionado ENTRE o 2º e o 3º destaque —
-   * ex: prateleira de afiliados Amazon com categorias e múltiplos links inline.
-   * Bloco iniciado por `🛒` colocado entre `**DESTAQUE 2` e `**DESTAQUE 3` no
-   * reviewed.md. Diferente do midCallout: preserva TODOS os links inline
-   * (não extrai um único CTA). Renderizado via renderIntroCallout. */
-  productBox?: string | null;
-  /** #2665: índice do destaque APÓS o qual o midCallout é renderizado (a lacuna
-   * em que o box `**📚/📣/🎉 …**` foi encontrado). Default 0 (D1/D2, legado). */
-  midCalloutAfter?: number;
-  /** #2665: índice do destaque APÓS o qual o productBox (🛒) é renderizado.
-   * Default 1 (D2/D3, legado). */
-  productBoxAfter?: number;
+   * tornar o box 1 mais proeminente: imagem + texto + botão CTA. Lida de
+   * `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto.
+   * Só o slot 1 suporta imagem (mantém o comportamento legado do antigo
+   * midCallout — o slot 2 nunca teve esse recurso). */
+  boxDivulgacao1Image?: string | null;
+  /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
+   * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
+   * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
+  boxDivulgacao2?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -563,24 +560,16 @@ export function extractIntroCallout(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-const MID_CALLOUT_MARKER = /^\*\*DESTAQUE/m;
-const MID_CALLOUT_BLOCK = /^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m;
-
 /**
- * Pure (#1972): localiza o bloco do midCallout no texto bruto, retornando o
- * conteúdo interno + os índices absolutos do match (`**…**` completo). Base
- * compartilhada por `extractMidCallout` (lê o conteúdo) e `stripMidCalloutFromD1`
- * (remove o bloco do corpo do D1). Região = entre o 1º e o 2º `**DESTAQUE`
- * (mesma do split legado, mas preservando offsets pra poder fatiar).
- */
-/**
- * #2665 (posição flexível): todas as lacunas ENTRE destaques consecutivos.
- * Cada gap = região [marker[i], marker[i+1]) com `gapIndex = i` (o índice do
+ * #2978: cada box de divulgação ocupa um SLOT fixo por POSIÇÃO — slot 1 =
+ * lacuna D1/D2 (gapIndex 0), slot 2 = lacuna D2/D3 (gapIndex 1). O FORMATO do
+ * conteúdo (bold-line 📚/📣/🎉 vs multi-parágrafo-com-CTA 🛒) é decidido pelo
+ * próprio marcador — cada slot aceita QUALQUER um dos dois formatos.
+ *
+ * `interDestaqueGaps` calcula as lacunas ENTRE destaques consecutivos: cada
+ * gap = região [marker[i], marker[i+1]) com `gapIndex = i` (o índice do
  * destaque que PRECEDE a lacuna). A região DEPOIS do último destaque (onde
- * vivem É IA? + seções) NÃO é uma lacuna — não é varrida. Isso permite que o
- * midCallout (📚/📣/🎉) e o productBox (🛒) sejam detectados em QUALQUER lacuna
- * entre destaques, não só nas posições fixas D1/D2 e D2/D3 (back-compat: o
- * layout legado cai na mesma lacuna de sempre).
+ * vivem É IA? + seções) NÃO é uma lacuna — não é varrida.
  */
 function interDestaqueGaps(
   text: string,
@@ -594,128 +583,100 @@ function interDestaqueGaps(
   return gaps;
 }
 
-function locateMidCallout(
+const BOX_DIVULGACAO_BOLD_RE = /^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m;
+// Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim da
+// região). Linhas em branco entre categorias são preservadas. `\r?` torna o
+// lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
+const BOX_DIVULGACAO_CART_RE = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m;
+
+/**
+ * Pure (#1972/#2978): localiza o box de divulgação numa lacuna ESPECÍFICA
+ * (por `gapIndex`), aceitando qualquer um dos dois formatos (bold-line OU
+ * carrinho 🛒) — o que vier primeiro na lacuna vence. Retorna o conteúdo
+ * interno + os índices absolutos do match, pra extract/strip compartilharem
+ * a mesma lógica.
+ */
+function locateBoxInGap(
   text: string,
-): { inner: string; matchStart: number; matchEnd: number; gapIndex: number } | null {
-  // #2665: varre TODAS as lacunas entre destaques (não só D1/D2). Retorna o
-  // primeiro `**📚/📣/🎉 …**` encontrado, com a lacuna em que vive.
-  for (const g of interDestaqueGaps(text)) {
-    const region = text.slice(g.start, g.end);
-    const m = MID_CALLOUT_BLOCK.exec(region);
-    if (m) {
-      const matchStart = g.start + m.index;
-      return {
-        inner: m[1].trim(),
-        matchStart,
-        matchEnd: matchStart + m[0].length,
-        gapIndex: g.gapIndex,
-      };
-    }
+  gapIndex: number,
+): { inner: string; matchStart: number; matchEnd: number } | null {
+  const gap = interDestaqueGaps(text).find((g) => g.gapIndex === gapIndex);
+  if (!gap) return null;
+  const region = text.slice(gap.start, gap.end);
+  const boldMatch = BOX_DIVULGACAO_BOLD_RE.exec(region);
+  const cartMatch = BOX_DIVULGACAO_CART_RE.exec(region);
+  let match: RegExpExecArray | null = null;
+  let inner = "";
+  if (boldMatch && (!cartMatch || boldMatch.index <= cartMatch.index)) {
+    match = boldMatch;
+    inner = boldMatch[1].trim();
+  } else if (cartMatch) {
+    match = cartMatch;
+    inner = cartMatch[0].trim();
   }
-  return null;
+  if (!match) return null;
+  const matchStart = gap.start + match.index;
+  return { inner, matchStart, matchEnd: matchStart + match[0].length };
 }
 
 /**
- * Callout box posicionado ENTRE o 1º e o 2º destaque (ex: promo da página de
- * livros). Mesmo estilo teal do introCallout. Procura um parágrafo
- * bold-wrapped iniciado por 📚/📣/🎉 na região do 1º destaque (tudo após
- * `**DESTAQUE 1` e antes de `**DESTAQUE 2`). Não casa títulos de destaque
- * (começam com `[`) nem headers de seção (vêm após o 3º destaque).
+ * Box de divulgação posicionado ENTRE o 1º e o 2º destaque (slot 1, gap
+ * D1/D2). Aceita bold-line (📚/📣/🎉) OU carrinho (🛒). Não casa títulos de
+ * destaque (começam com `[`) nem headers de seção.
  */
-export function extractMidCallout(text: string): string | null {
-  return locateMidCallout(text)?.inner ?? null;
+export function extractBoxDivulgacao1(text: string): string | null {
+  return locateBoxInGap(text, 0)?.inner ?? null;
+}
+
+/** Box de divulgação posicionado ENTRE o 2º e o 3º destaque (slot 2, gap D2/D3). */
+export function extractBoxDivulgacao2(text: string): string | null {
+  return locateBoxInGap(text, 1)?.inner ?? null;
 }
 
 /**
- * Pure (#1972): remove o bloco do midCallout do texto bruto ANTES do parse dos
- * destaques. Sem isso, um callout colado ANTES do `---` de fechamento do D1
- * (em vez de isolado entre dois `---`) é absorvido pelo corpo/why do D1 pelo
- * `parseDestaques` (que fatia em `^---$`) E renderizado como midCallout → box
- * duplicado e quebrado (260609). De-dup determinístico, robusto à posição do
- * `---`: o callout sai SÓ como midCallout. Idempotente quando não há callout.
+ * Pure (#1972/#2978): remove o bloco do box de divulgação de uma lacuna
+ * específica ANTES do parse dos destaques. Sem isso, um callout colado ANTES
+ * do `---` de fechamento do destaque anterior (em vez de isolado entre dois
+ * `---`) é absorvido pelo corpo/why desse destaque pelo `parseDestaques` (que
+ * fatia em `^---$`) E renderizado como box de divulgação → duplicado e
+ * quebrado (260609). De-dup determinístico, robusto à posição do `---`.
+ * Idempotente quando não há box na lacuna. Colapsa `---` órfãos e linhas em
+ * branco triplas deixadas pela remoção (seam-aware — ancorado em `$`/`^`,
+ * nunca global, pra não fundir separadores `---` não-relacionados).
  */
-export function stripMidCalloutFromD1(text: string): string {
-  const loc = locateMidCallout(text);
-  if (!loc) return text;
-  const without = text.slice(0, loc.matchStart) + text.slice(loc.matchEnd);
-  // Colapsa as linhas em branco órfãs deixadas pela remoção (evita parágrafo
-  // vazio). `(?:\r?\n)` (não `\n`) pra cobrir CRLF: sob `\r\n`, o `\s*$` do
-  // MID_CALLOUT_BLOCK consome o `\r` mas para antes do `\n`, deixando o seam
-  // `\r\n\r\n\n\r\n` — newlines intercalados com `\r` que `/\n{3,}/` não casaria.
-  return without.replace(/(?:\r?\n){3,}/g, "\n\n");
-}
-
-/**
- * Box de produtos entre D2 e D3 (prateleira de afiliados). Localiza um bloco
- * iniciado por `🛒` que vive na região DEPOIS do 2º marcador `**DESTAQUE` e
- * ANTES do 3º (ou do fim/seções). Diferente do midCallout (📚/📣/🎉 entre D1 e
- * D2): o box de produtos preserva TODOS os links inline. Multi-parágrafo
- * (intro + categorias). Retorna o range pra extract/strip compartilharem a
- * mesma lógica (análogo a locateMidCallout).
- */
-function locateProductBox(
-  text: string,
-): { inner: string; matchStart: number; matchEnd: number; gapIndex: number } | null {
-  // #2665: varre TODAS as lacunas entre destaques (não só D2/D3). Como cada
-  // gap é delimitado pelo próximo marcador `**DESTAQUE`, um `🛒` numa seção
-  // (RADAR/USE MELHOR/rodapé) — que vive DEPOIS do último destaque — nunca cai
-  // numa lacuna e não é falsamente extraído (substitui o antigo guard
-  // `markers.length < 3`, #review 260629).
-  for (const g of interDestaqueGaps(text)) {
-    const region = text.slice(g.start, g.end);
-    // Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim
-    // da região). Linhas em branco entre categorias são preservadas. `\r?` torna
-    // o lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
-    const m = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m.exec(region);
-    if (m) {
-      const matchStart = g.start + m.index;
-      return {
-        inner: m[0].trim(),
-        matchStart,
-        matchEnd: matchStart + m[0].length,
-        gapIndex: g.gapIndex,
-      };
-    }
-  }
-  return null;
-}
-
-/** Lê o conteúdo do box de produtos (🛒) entre D2 e D3, ou null. */
-export function extractProductBox(text: string): string | null {
-  return locateProductBox(text)?.inner ?? null;
-}
-
-/**
- * Remove o bloco do box de produtos ANTES do parse dos destaques. Sem isso, o
- * texto do box (após a why do D2) é absorvido como corpo do D2 por
- * `parseDestaques` e renderiza como markdown cru. Idempotente quando não há box.
- * Colapsa `---` órfãos e linhas em branco triplas deixadas pela remoção.
- */
-export function stripProductBox(text: string): string {
-  const loc = locateProductBox(text);
+function stripBoxInGap(text: string, gapIndex: number): string {
+  const loc = locateBoxInGap(text, gapIndex);
   if (!loc) return text;
   const before = text.slice(0, loc.matchStart);
   const after = text.slice(loc.matchEnd);
-  // O box vivia (tipicamente) entre dois `---`: separador de abertura no fim de
-  // `before` e de fechamento no início de `after`. Removê-lo deixaria `---`
-  // duplo. Colapsa APENAS no seam — ancorado em `$` de before / `^` de after,
-  // nunca global, pra não fundir separadores `---` não-relacionados em outras
-  // partes do MD (#review 260629). CRLF-tolerante (`\r?`).
   const openSep = /\n---[ \t]*\r?\n\s*$/;
   const closeSep = /^\s*\r?\n---[ \t]*\r?\n/;
   const joined =
     openSep.test(before) && closeSep.test(after)
       ? before + after.replace(closeSep, "\n")
       : before + after;
+  // `(?:\r?\n)` (não `\n`) pra cobrir CRLF: sob `\r\n`, o `\s*$` do
+  // BOX_DIVULGACAO_BOLD_RE consome o `\r` mas para antes do `\n`, deixando o
+  // seam `\r\n\r\n\n\r\n` — newlines intercalados com `\r` que `/\n{3,}/` não casaria.
   return joined.replace(/(?:\r?\n){3,}/g, "\n\n");
 }
 
+/** Remove o box do slot 1 (gap D1/D2) do texto bruto ANTES do parse dos destaques. */
+export function stripBoxDivulgacao1(text: string): string {
+  return stripBoxInGap(text, 0);
+}
+
+/** Remove o box do slot 2 (gap D2/D3) do texto bruto ANTES do parse dos destaques. */
+export function stripBoxDivulgacao2(text: string): string {
+  return stripBoxInGap(text, 1);
+}
+
 /**
- * #2136: discrimina se o midCallout é o box de livros (📚 ou link para
- * livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE 📣).
+ * #2136/#2978: discrimina se um box de divulgação é o de livros (📚 ou link
+ * para livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE 📣).
  * A imagem livros_promo só deve ser associada ao box de livros.
  */
-export function isMidCalloutLivros(text: string | null | undefined): boolean {
+export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean {
   if (!text) return false;
   // #260622: box combinado Livros+Cursos NÃO é o promo de livros — é um box de
   // seções com múltiplos CTAs (renderizado como texto, sem o screenshot da
@@ -727,23 +688,23 @@ export function isMidCalloutLivros(text: string | null | undefined): boolean {
 }
 
 /**
- * URL pública da imagem do box do meio (entry `livros_promo` de
+ * URL pública da imagem do box de divulgação slot 1 (entry `livros_promo` de
  * `06-public-images.json`), se presente. Lida no momento do render (o cache já
  * existe — upload-images-public roda antes). Graceful: ausente → null.
  *
- * #2136: só retorna a imagem se o midCallout for o box de livros. Box 📣
+ * #2136/#2978: só retorna a imagem se o box for o de livros. Box 📣
  * CLARICE (e outros sem link livros.diaria.workers.dev) → null (sem hero).
  */
-export function readMidCalloutImage(
+export function readBoxDivulgacao1Image(
   editionDir: string,
-  midCalloutText?: string | null,
+  boxText?: string | null,
 ): string | null {
   // #2136: imagem livros_promo só vai pro box de livros, nunca pro box CLARICE.
   // #finding-6: undefined (sem texto) é tratado como "desconhecido" → null por segurança.
   // Apenas `null` explícito bypassa (back-compat para callers antigos sem texto disponível).
   // Contrato: passe o texto do callout sempre que disponível; omitir é seguro mas
   // conservador (nunca anexa imagem livros_promo sem confirmação explícita de ser box livros).
-  if (midCalloutText == null || !isMidCalloutLivros(midCalloutText)) {
+  if (boxText == null || !isBoxDivulgacaoLivros(boxText)) {
     return null;
   }
   const p = resolve(editionDir, "06-public-images.json");
@@ -769,13 +730,12 @@ export function extractContent(editionDir: string): NewsletterContent {
 
   const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
 
-  // #1972: remove o bloco do midCallout ANTES do parse dos destaques. Se o
-  // callout estiver colado antes do `---` de fechamento do D1, o parser o
-  // absorveria no corpo/why do D1 (render duplicado). Strip → sai só como
-  // midCallout (extraído abaixo do texto original). De-dup determinístico.
-  // Strip do midCallout (entre D1-D2) E do box de produtos (entre D2-D3) antes
-  // do parse — ambos seriam absorvidos como corpo de destaque pelo parseDestaques.
-  const destaquesText = stripProductBox(stripMidCalloutFromD1(reviewedText));
+  // #1972/#2978: remove os blocos dos boxes de divulgação (slot 1 e slot 2)
+  // ANTES do parse dos destaques. Se um callout estiver colado antes do `---`
+  // de fechamento do destaque anterior, o parser o absorveria no corpo/why
+  // desse destaque (render duplicado). Strip → sai só como box de divulgação
+  // (extraído abaixo do texto original). De-dup determinístico.
+  const destaquesText = stripBoxDivulgacao2(stripBoxDivulgacao1(reviewedText));
 
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
   // #2316: aceita 2–3 destaques (o caso editorial legítimo é 2 quando o editor
@@ -850,18 +810,15 @@ export function extractContent(editionDir: string): NewsletterContent {
     : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
-  // #2665: box callout (📚/📣/🎉) e box de produtos (🛒) em QUALQUER lacuna
-  // entre destaques — não mais presos a D1/D2 e D2/D3. `*After` carrega o índice
-  // do destaque que precede a lacuna pra o render posicionar corretamente.
-  const midLoc = locateMidCallout(reviewedText);
-  const midCallout = midLoc?.inner ?? null;
-  const midCalloutAfter = midLoc?.gapIndex ?? 0;
-  // #2136: passa o texto do midCallout pra discriminar livros vs CLARICE.
-  // Imagem só vai pro box de livros; box 📣 CLARICE recebe null (sem hero).
-  const midCalloutImage = readMidCalloutImage(editionDir, midCallout);
-  const prodLoc = locateProductBox(reviewedText);
-  const productBox = prodLoc?.inner ?? null;
-  const productBoxAfter = prodLoc?.gapIndex ?? 1;
+  // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
+  // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
+  // OU carrinho 🛒).
+  const boxDivulgacao1 = extractBoxDivulgacao1(reviewedText);
+  // #2136: passa o texto do box pra discriminar livros vs CLARICE. Imagem só
+  // vai pro box de livros; box 📣 CLARICE recebe null (sem hero). Só o slot 1
+  // suporta imagem (comportamento legado, nunca existiu pro slot 2).
+  const boxDivulgacao1Image = readBoxDivulgacao1Image(editionDir, boxDivulgacao1);
+  const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -885,11 +842,9 @@ export function extractContent(editionDir: string): NewsletterContent {
     erroIntencional,
     coverageLine,
     introCallout,
-    midCallout,
-    midCalloutImage,
-    productBox,
-    midCalloutAfter,
-    productBoxAfter,
+    boxDivulgacao1,
+    boxDivulgacao1Image,
+    boxDivulgacao2,
   };
 }
 

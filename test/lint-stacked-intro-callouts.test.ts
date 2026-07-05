@@ -151,7 +151,7 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.match(fused as string, /\*\*/, "fusão greedy vaza '**' interno no texto — corrupção real que o lint previne");
   });
 
-  it("ok: callouts ENTRE destaques (midCallout) não contam pra intro — só a região antes do 1º DESTAQUE", () => {
+  it("ok: callouts ENTRE destaques (boxDivulgacao1) não contam pra intro — só a região antes do 1º DESTAQUE", () => {
     const md = [
       TITULO_SUBTITULO,
       COVERAGE_LINE,
@@ -164,14 +164,14 @@ describe("lintStackedIntroCallouts (#2729)", () => {
       "",
       "---",
       "",
-      "**📣 Callout entre D1 e D2 — midCallout, escopo diferente.**",
+      "**📣 Callout entre D1 e D2 — boxDivulgacao1, escopo diferente.**",
       "",
       "---",
       "",
       destaque(2),
     ].join("\n");
     const r = lintStackedIntroCallouts(md);
-    assert.equal(r.ok, true, `midCallout não deve contar pra intro: ${JSON.stringify(r)}`);
+    assert.equal(r.ok, true, `boxDivulgacao1 não deve contar pra intro: ${JSON.stringify(r)}`);
     assert.equal(r.count, 1);
   });
 
@@ -186,7 +186,7 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.equal(r.count, 2);
   });
 
-  it("ok: 📚 (marcador de midCallout de livros) não conta pra intro — introCallout só reconhece 🎉/📣", () => {
+  it("ok: 📚 (marcador de boxDivulgacao1 de livros) não conta pra intro — introCallout só reconhece 🎉/📣", () => {
     const md = [
       TITULO_SUBTITULO,
       COVERAGE_LINE,

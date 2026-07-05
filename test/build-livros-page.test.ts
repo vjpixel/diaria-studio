@@ -179,7 +179,7 @@ describe("renderLivrosPage (#1744)", () => {
 
   it("CTA segue DS: 16px, Geist, sem uppercase nem letter-spacing (#2079)", () => {
     // DS: CTAs são corpo (16px sans bold), não labels uppercase (12px).
-    // Referência: newsletter-render-html.ts midCallout CTA — font-size:16px, font-weight:bold, sem uppercase.
+    // Referência: newsletter-render-html.ts boxDivulgacao1 CTA — font-size:16px, font-weight:bold, sem uppercase.
     assert.match(html, /\.cta\s*\{[^}]*font-size:\s*16px/, "CTA deve ser 16px");
     assert.doesNotMatch(html, /\.cta\s*\{[^}]*font-size:\s*12px/, "CTA não pode ser 12px");
     assert.doesNotMatch(html, /\.cta\s*\{[^}]*text-transform:\s*uppercase/, "CTA não pode ser uppercase");
