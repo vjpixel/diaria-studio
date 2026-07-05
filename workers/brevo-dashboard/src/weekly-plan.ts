@@ -30,30 +30,16 @@ import { fmtTimeBRT } from "./render-links.ts";
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
 
 /**
- * Janela da "semana anterior" (comentário do editor na issue: o agregado é da
- * SEMANA PASSADA). Só campanhas enviadas nos últimos 7 dias entram no agregado
- * de saúde — envios antigos (digests de semanas passadas, rampas de ciclos
- * anteriores) não contaminam a decisão. Combinada com a maturação (>48h), a
- * janela efetiva é ~[now−7d, now−48h].
- */
-export const WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * É um envio COLD de crescimento de alcance (o que a rampa planeja)?
+ * Tamanho da amostra de saúde: os N envios MADUROS (>48h) mais recentes — decisão
+ * do editor (por CONTAGEM, não janela de tempo). 10 já é amostra farta pra
+ * abertura/bounce/spam/unsub.
  *
- * O sinal é a **LISTA de destino** (a audiência), NÃO o nome da campanha: o nome
- * do envio cold ("Clarice News {ciclo} — X · dom") é quase igual ao do engajado
- * ("… — X: assunto") — só o separador muda —, então o nome não separa. A LISTA
- * sim: os envios cold vão pra listas nomeadas **`cold {ciclo} {dia}-{célula}`**
- * (ex "cold 2606-07 dom-A"); o digest engajado vai pra "Clarice News {ciclo} X …"
- * e os diários pra "Clarice Jun/2026 dNN …". `listName` é populado por
- * fetchRecentCampaigns (brevo-api.ts, mesma fonte da coluna LISTA dos Envios).
- * Sem listName → excluído (audiência desconhecida): baseline incomparável
- * falsearia o semáforo.
+ * **Sem diferenciar cold/quente** (decisão do editor): o ISP enxerga a reputação
+ * AGREGADA do domínio, não por segmento — quentes abrindo (abertura alta) AJUDAM
+ * a entregabilidade, e conforme o universo escala eles viram uma fração pequena
+ * que quase não move a média. Todo envio `sent` entra no agregado.
  */
-export function isColdCampaign(c: { listName?: string }): boolean {
-  return /^\s*cold\b/i.test(c.listName ?? "");
-}
+export const HEALTH_SAMPLE_SIZE = 10;
 
 /** Chave de dia-calendário BRT (YYYY-MM-DD) de um sentDate — pra agrupar células A/B/C do mesmo envio. */
 function brtDayKey(iso: string | null): string | null {
@@ -240,16 +226,16 @@ function fmtPct(n: number): string {
 }
 
 /**
- * Volume-base = soma do `sent` de TODAS as campanhas cold enviadas no MESMO dia
- * (BRT) que o envio maduro mais recente. Somar por dia (não pegar 1 campanha)
- * porque um envio cold pode ser fatiado em células A/B/C simultâneas (ex: cold
- * sáb/dom da migração) — pegar só uma subestimaria o volume real em ~⅓ e a
- * rampa escalaria sobre a base errada. Retorna 0 se não há envio maduro.
+ * Volume-base = soma do `sent` de TODAS as campanhas enviadas no MESMO dia (BRT)
+ * que o envio mais recente (maduro OU NÃO — volume é conhecido na hora do envio,
+ * não precisa maturar; decisão do editor). Somar por dia porque um envio pode ser
+ * fatiado em células A/B/C simultâneas — pegar só uma subestimaria o volume real
+ * em ~⅓ e a rampa escalaria sobre a base errada. Retorna 0 se o array for vazio.
  */
-export function baseVolumeFromLastSendDay(mature: BrevoCampaign[]): number {
+export function baseVolumeFromLastSendDay(campaigns: BrevoCampaign[]): number {
   let latestMs = -Infinity;
   let latestDay: string | null = null;
-  for (const c of mature) {
+  for (const c of campaigns) {
     const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
     if (Number.isFinite(ms) && ms > latestMs) {
       latestMs = ms;
@@ -258,7 +244,7 @@ export function baseVolumeFromLastSendDay(mature: BrevoCampaign[]): number {
   }
   if (latestDay === null) return 0;
   let total = 0;
-  for (const c of mature) {
+  for (const c of campaigns) {
     if (brtDayKey(c.sentDate) !== latestDay) continue;
     total += pickStats(c)?.stats.sent ?? 0;
   }
@@ -274,34 +260,39 @@ export function baseVolumeFromLastSendDay(mature: BrevoCampaign[]): number {
  * ponta a ponta se necessário; o call site (index.ts) passa `new Date()`.
  */
 export function renderWeeklyPlanTabPanel(
-  campaigns: Array<BrevoCampaign & { listName?: string }>,
+  campaigns: BrevoCampaign[],
   now: Date = new Date(),
 ): string {
-  // Só envios COLD de crescimento de alcance (a rampa não decide sobre o digest
-  // mensal engajado — baseline de abertura incomparável, ver isColdCampaign).
-  const coldSent = campaigns.filter((c) => c.status === "sent" && c.sentDate && isColdCampaign(c));
-  // Agregado da SEMANA ANTERIOR: maduro (>48h) E dentro da janela de 7 dias.
-  const nowMs = now.getTime();
-  const inWeek = (c: BrevoCampaign): boolean => {
-    const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
-    return Number.isFinite(ms) && nowMs - ms <= WEEK_WINDOW_MS;
-  };
-  const mature = filterMatureCampaigns(coldSent, now).filter(inWeek);
-  const matureIds = new Set(mature.map((c) => c.id));
-  // "Imaturo" pra transparência = cold, na janela da semana, mas ainda <48h.
-  const immature = coldSent.filter((c) => !matureIds.has(c.id) && inWeek(c));
+  // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
+  // do domínio, ver HEALTH_SAMPLE_SIZE).
+  const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
 
-  if (coldSent.length === 0) {
+  if (allSent.length === 0) {
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
-  <p class="section-note">Nenhum envio cold encontrado na última semana.</p>
+  <p class="section-note">Nenhum envio registrado.</p>
 </section>`;
   }
 
-  // Cold existe mas nada maduro (>48h) ainda: NÃO decidir sobre dado imaturo —
-  // mostrar quem está maturando em vez de um semáforo vermelho falso (o agregado
-  // de amostra vazia daria abertura 0% = 🔴 enganoso).
+  // Saúde = os HEALTH_SAMPLE_SIZE (10) envios MADUROS (>48h) mais recentes.
+  const mature = filterMatureCampaigns(allSent, now)
+    .sort((a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string))
+    .slice(0, HEALTH_SAMPLE_SIZE);
+  const matureIds = new Set(mature.map((c) => c.id));
+  // Imaturos (<48h) — ainda fora do agregado de saúde, mostrados pra transparência.
+  const nowMs = now.getTime();
+  const immature = allSent.filter(
+    (c) => !matureIds.has(c.id) && nowMs - Date.parse(c.sentDate as string) <= MATURATION_MS,
+  );
+
+  // Volume-base = total do ÚLTIMO envio registrado (mesmo <48h) — volume é
+  // conhecido na hora, não precisa maturar (decisão do editor). Soma as células
+  // A/B/C do último dia de envio.
+  const baseVolume = baseVolumeFromLastSendDay(allSent);
+
+  // Sem envio maduro ainda → semáforo indefinido (não decidir crescimento sobre
+  // dado imaturo). Mostra os que estão maturando + o volume-base já conhecido.
   if (mature.length === 0) {
     const waitRows = immature
       .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td></tr>`)
@@ -309,21 +300,17 @@ export function renderWeeklyPlanTabPanel(
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
-  <p class="section-note">Nenhum envio cold <strong>maduro (&gt;48h)</strong> na última semana — as métricas ainda estão subindo. ${immature.length} envio(s) aguardando maturar:</p>
+  <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${immature.length} envio(s) aguardando maturar:</p>
   <table><thead><tr><th>Campanha</th><th>Enviado</th></tr></thead><tbody>
 ${waitRows}
 </tbody></table>
-  <p class="section-note"><small>O semáforo e o plano aparecem quando o envio cruzar 48h — não se decide crescimento sobre dado imaturo (requisito da issue).</small></p>
+  <p class="section-note"><small>Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.</small></p>
 </section>`;
   }
 
   const health = aggregateHealth(mature);
   const semaphore = decideSemaphore(health);
 
-  // baseVolume = soma dos envios cold do último dia maduro (células A/B/C
-  // somadas). Sem envio maduro na janela (ex: ritual roda cedo demais após o
-  // domingo), baseVolume=0 → sem plano, só mostra o estado de maturação.
-  const baseVolume = baseVolumeFromLastSendDay(mature);
   const canPlan = baseVolume > 0;
   const plan = canPlan ? computeWeekPlan(baseVolume, semaphore) : null;
 
@@ -354,7 +341,7 @@ ${waitRows}
       <tr><td>Domingo</td><td>${plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
     </tbody>
   </table>
-  <p class="section-note">Volume-base (último envio maduro): ${baseVolume.toLocaleString("pt-BR")}.${
+  <p class="section-note">Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.${
       plan.flagged
         ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
         : ""
@@ -368,7 +355,7 @@ ${waitRows}
   <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Métrica (agregado maduro)</th><th>Valor</th></tr></thead>
+    <thead><tr><th>Métrica (agregado — ${mature.length} envios maduros, sem diferenciar cold/quente)</th><th>Valor</th></tr></thead>
     <tbody>
       <tr><td>Abertura</td><td>${fmtPct(health.openRate)}</td></tr>
       <tr><td>Bounce</td><td>${fmtPct(health.bounceRate)}</td></tr>
