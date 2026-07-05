@@ -197,16 +197,21 @@ test("decideSemaphore — thresholds customizados são respeitados", () => {
   assert.equal(decideSemaphore(mkHealth({ openRate: 45 }), custom), "yellow");
 });
 
-test("computeWeekPlan — verde escalona +7% composto ter/sex/dom", () => {
-  const plan = computeWeekPlan(1000, "green", 0.07);
+test("computeWeekPlan — verde escalona +10% composto ter/sex/dom", () => {
+  const plan = computeWeekPlan(1000, "green", 0.1);
   assert.equal(plan.semaphore, "green");
   assert.equal(plan.flagged, false);
-  assert.equal(plan.volumes[0], Math.round(1000 * 1.07));
-  assert.equal(plan.volumes[1], Math.round(1000 * 1.07 ** 2));
-  assert.equal(plan.volumes[2], Math.round(1000 * 1.07 ** 3));
+  assert.equal(plan.volumes[0], Math.round(1000 * 1.1));
+  assert.equal(plan.volumes[1], Math.round(1000 * 1.1 ** 2));
+  assert.equal(plan.volumes[2], Math.round(1000 * 1.1 ** 3));
   // estritamente crescente
   assert.ok(plan.volumes[0] < plan.volumes[1]);
   assert.ok(plan.volumes[1] < plan.volumes[2]);
+});
+
+test("computeWeekPlan — default step é +10% (DEFAULT_WEEK_STEP)", () => {
+  const plan = computeWeekPlan(1000, "green");
+  assert.equal(plan.volumes[0], Math.round(1000 * 1.1));
 });
 
 test("computeWeekPlan — amarelo repete o volume-base nos 3 dias", () => {
@@ -261,14 +266,41 @@ test("render — mostra coluna de Alvo + colore o valor (verde/vermelho) por mé
     }),
   ];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
-  assert.match(html, /Alvo/); // coluna de alvo presente
+  assert.match(html, /Alvo 🟢/); // coluna de alvo verde presente
+  assert.match(html, /Alvo 🟡/); // coluna de alvo amarelo presente
+  assert.doesNotMatch(html, /<th>Status<\/th>/); // coluna Status removida
   assert.match(html, /#158a4a/); // valor verde (abertura 27%)
   assert.match(html, /#c0392b/); // valor vermelho (unsub 3,1% ≥ breaker 3%)
   assert.match(html, /PIOR métrica/); // explica o critério do semáforo
 });
 
-test("saúde = últimos 10 MADUROS (amostra por contagem, não janela de tempo)", () => {
-  // 12 envios maduros → só os 10 mais recentes entram no agregado incluído.
+test("render — aba renomeada para Agendamento (sem parentético no plano)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.match(html, /Agendamento — plano de envio semanal/);
+  assert.match(html, /<h3>Plano da semana<\/h3>/);
+});
+
+test("render — detalhes agrupados por DIA (dia A/B/C vira 1 linha somando o sent)", () => {
+  const abcDay = [
+    campaignSentHoursAgo(60, { id: 1, name: "Clarice News 2607-01 — A · ter", statistics: statsFor({ sent: 300, delivered: 297, uniqueViews: 60 }) }),
+    campaignSentHoursAgo(60, { id: 2, name: "Clarice News 2607-01 — B · ter", statistics: statsFor({ sent: 300, delivered: 297, uniqueViews: 60 }) }),
+    campaignSentHoursAgo(60, { id: 3, name: "Clarice News 2607-01 — C · ter", statistics: statsFor({ sent: 300, delivered: 297, uniqueViews: 60 }) }),
+  ];
+  const html = renderWeeklyPlanTabPanel(abcDay, NOW);
+  // 1 linha só pro dia, com o nome limpo (sem sufixo de célula) e soma dos sent (900).
+  assert.match(html, /Clarice News 2607-01/);
+  assert.doesNotMatch(html, /2607-01 — A/);
+  assert.match(html, /900/);
+  assert.match(html, /Dias de envio incluídos no agregado \(1\)/);
+});
+
+test("saúde = últimos 10 DIAS maduros (amostra por dia, não por campanha)", () => {
+  // 12 dias de envio maduros → só os 10 dias mais recentes entram no agregado.
   const camps = Array.from({ length: 12 }, (_, i) =>
     campaignSentHoursAgo(72 + i * 24, {
       id: i + 1,
@@ -276,7 +308,37 @@ test("saúde = últimos 10 MADUROS (amostra por contagem, não janela de tempo)"
     }),
   );
   const html = renderWeeklyPlanTabPanel(camps, NOW);
-  assert.match(html, /10 envios maduros/); // rótulo do agregado
+  assert.match(html, /10 envios maduros/); // rótulo do agregado (10 campanhas = 10 dias aqui)
+});
+
+test("agregado por DIA: 11 dias de envio → só os 10 mais recentes contam; dia A/B/C (3 campanhas) = 1 dia", () => {
+  // 11 dias distintos, 1 campanha por dia (dias 0..10, 0 = mais recente).
+  const singleDayCamps = Array.from({ length: 11 }, (_, i) =>
+    campaignSentHoursAgo(72 + i * 24, {
+      id: i + 1,
+      statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }),
+    }),
+  );
+  const html1 = renderWeeklyPlanTabPanel(singleDayCamps, NOW);
+  // 11 dias disponíveis, mas só 10 entram no agregado (o 11º — mais antigo — fica de fora).
+  assert.match(html1, /10 envios maduros/);
+
+  // Um dia de teste A/B/C (3 campanhas no MESMO dia) deve contar como 1 dia,
+  // não consumir 3 vagas da amostra de 10 dias.
+  const abcDay = [
+    campaignSentHoursAgo(72, { id: 101, name: "Clarice News 2607-01 — A · ter", statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }) }),
+    campaignSentHoursAgo(72, { id: 102, name: "Clarice News 2607-01 — B · ter", statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }) }),
+    campaignSentHoursAgo(72, { id: 103, name: "Clarice News 2607-01 — C · ter", statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }) }),
+  ];
+  const restOfDays = Array.from({ length: 9 }, (_, i) =>
+    campaignSentHoursAgo(96 + i * 24, {
+      id: 200 + i,
+      statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }),
+    }),
+  );
+  const html2 = renderWeeklyPlanTabPanel([...abcDay, ...restOfDays], NOW);
+  // 3 campanhas do dia A/B/C + 9 dias restantes = 12 campanhas maduras, mas só 10 DIAS (1 + 9).
+  assert.match(html2, /12 envios maduros/); // todas as campanhas dos 10 dias selecionados entram
 });
 
 test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não pega 1 só)", () => {

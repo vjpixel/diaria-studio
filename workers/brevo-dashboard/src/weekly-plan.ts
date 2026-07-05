@@ -30,16 +30,17 @@ import { fmtTimeBRT } from "./render-links.ts";
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
 
 /**
- * Tamanho da amostra de saúde: os N envios MADUROS (>48h) mais recentes — decisão
- * do editor (por CONTAGEM, não janela de tempo). 10 já é amostra farta pra
- * abertura/bounce/spam/unsub.
+ * Tamanho da amostra de saúde: os N DIAS-CALENDÁRIO BRT (não campanhas) MADUROS
+ * (>48h) mais recentes com envio — decisão do editor. Um dia de teste A/B/C
+ * (3 campanhas simultâneas) conta como 1 dia; todas as campanhas desses N dias
+ * entram no agregado. 10 já é amostra farta pra abertura/bounce/spam/unsub.
  *
  * **Sem diferenciar cold/quente** (decisão do editor): o ISP enxerga a reputação
  * AGREGADA do domínio, não por segmento — quentes abrindo (abertura alta) AJUDAM
  * a entregabilidade, e conforme o universo escala eles viram uma fração pequena
  * que quase não move a média. Todo envio `sent` entra no agregado.
  */
-export const HEALTH_SAMPLE_SIZE = 10;
+export const HEALTH_SAMPLE_DAYS = 10;
 
 /** Chave de dia-calendário BRT (YYYY-MM-DD) de um sentDate — pra agrupar células A/B/C do mesmo envio. */
 function brtDayKey(iso: string | null): string | null {
@@ -50,8 +51,25 @@ function brtDayKey(iso: string | null): string | null {
   return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
-/** Passo de escalonamento default (+7%, dentro da faixa +5–10% dos guardrails). */
-export const DEFAULT_WEEK_STEP = 0.07;
+/** YYYY-MM-DD → dd/mm (exibição BRT no dashboard). */
+function fmtDayKey(dayKey: string): string {
+  const [, m, d] = dayKey.split("-");
+  return `${d}/${m}`;
+}
+
+/**
+ * Deriva um nome "limpo" de edição a partir do nome de campanha — remove o
+ * sufixo de célula/variante do teste A/B/C (ex: "Clarice News 2606-07 — A ·
+ * dom" → "Clarice News 2606-07"). Sem esse separador, usa o nome truncado.
+ */
+function deriveEditionName(name: string): string {
+  const idx = name.indexOf(" — ");
+  if (idx !== -1) return name.slice(0, idx).trim();
+  return name.length > 40 ? `${name.slice(0, 40).trim()}…` : name;
+}
+
+/** Passo de escalonamento default (+10%, topo da faixa +5–10% dos guardrails). */
+export const DEFAULT_WEEK_STEP = 0.10;
 
 /** Corte no semáforo vermelho — "poda −30" (guardrail já em uso no ciclo cold). */
 export const RED_CUT_FRACTION = 0.3;
@@ -264,6 +282,34 @@ export function baseVolumeFromLastSendDay(campaigns: BrevoCampaign[]): number {
 }
 
 /**
+ * Seleciona as campanhas MADURAS dos `HEALTH_SAMPLE_DAYS` (10) dias-calendário
+ * BRT mais recentes com envio — não as N campanhas mais recentes. Um dia de
+ * teste A/B/C (3 campanhas simultâneas) conta como 1 dia; TODAS as campanhas
+ * desses dias entram no agregado (decisão do editor, #2974 refinamento).
+ */
+export function selectMatureCampaignsByDay(
+  matureCampaigns: BrevoCampaign[],
+  days: number = HEALTH_SAMPLE_DAYS,
+): BrevoCampaign[] {
+  const byDay = new Map<string, BrevoCampaign[]>();
+  for (const c of matureCampaigns) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    const arr = byDay.get(day);
+    if (arr) arr.push(c);
+    else byDay.set(day, [c]);
+  }
+  const topDays = [...byDay.keys()]
+    .sort((a, b) => (a < b ? 1 : -1))
+    .slice(0, days);
+  const topDaysSet = new Set(topDays);
+  return matureCampaigns.filter((c) => {
+    const day = brtDayKey(c.sentDate);
+    return day !== null && topDaysSet.has(day);
+  });
+}
+
+/**
  * Renderiza a aba "Rampa" do dashboard — semáforo, agregado maduro, quais
  * campanhas entraram vs foram excluídas por imaturidade (<48h, transparência
  * pro editor), e o plano de 3 volumes (ter/sex/dom 06:00).
@@ -276,21 +322,23 @@ export function renderWeeklyPlanTabPanel(
   now: Date = new Date(),
 ): string {
   // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
-  // do domínio, ver HEALTH_SAMPLE_SIZE).
+  // do domínio, ver HEALTH_SAMPLE_DAYS).
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
 
   if (allSent.length === 0) {
     return `
 <section class="phase2-section" id="weekly-plan">
-  <h2 class="section-title">Rampa — plano de envio semanal</h2>
+  <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note">Nenhum envio registrado.</p>
 </section>`;
   }
 
-  // Saúde = os HEALTH_SAMPLE_SIZE (10) envios MADUROS (>48h) mais recentes.
-  const mature = filterMatureCampaigns(allSent, now)
-    .sort((a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string))
-    .slice(0, HEALTH_SAMPLE_SIZE);
+  // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
+  // recentes com envio — todas as campanhas desses dias (célula A/B/C = 1 dia).
+  const matureAll = filterMatureCampaigns(allSent, now);
+  const mature = selectMatureCampaignsByDay(matureAll).sort(
+    (a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string),
+  );
   const matureIds = new Set(mature.map((c) => c.id));
   // Imaturos (<48h) — ainda fora do agregado de saúde, mostrados pra transparência.
   const nowMs = now.getTime();
@@ -311,7 +359,7 @@ export function renderWeeklyPlanTabPanel(
       .join("\n");
     return `
 <section class="phase2-section" id="weekly-plan">
-  <h2 class="section-title">Rampa — plano de envio semanal</h2>
+  <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${immature.length} envio(s) aguardando maturar:</p>
   <table><thead><tr><th>Campanha</th><th>Enviado</th></tr></thead><tbody>
 ${waitRows}
@@ -328,17 +376,41 @@ ${waitRows}
 
   const semLabel = { green: "Verde", yellow: "Amarelo", red: "Vermelho" }[semaphore];
   const semNote = {
-    green: "Saúde dentro da meta — escalona +7% ao dia (ter/sex/dom).",
+    green: "Saúde dentro da meta — escalona +10% ao dia (ter/sex/dom).",
     yellow: "Saúde na faixa de atenção — mantém o mesmo volume (sem crescer).",
     red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
   }[semaphore];
 
-  const excludedRows = immature
-    .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>ainda não maturou (&lt;48h)</td></tr>`)
-    .join("\n");
+  /** Agrupa campanhas por dia BRT → 1 linha por dia (Edição | Data | E-mails). */
+  function groupByDayForDetails(cs: BrevoCampaign[]): { rows: string; dayCount: number } {
+    const grouped = new Map<string, BrevoCampaign[]>();
+    for (const c of cs) {
+      const day = brtDayKey(c.sentDate);
+      if (!day) continue;
+      const arr = grouped.get(day);
+      if (arr) arr.push(c);
+      else grouped.set(day, [c]);
+    }
+    const entries = [...grouped.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    const rows = entries
+      .map(([day, dayCampaigns]) => {
+        const first = [...dayCampaigns].sort(
+          (a, b) => Date.parse(a.sentDate as string) - Date.parse(b.sentDate as string),
+        )[0];
+        const edition = deriveEditionName(first.name);
+        const emails = dayCampaigns.reduce((sum, c) => sum + (pickStats(c)?.stats.sent ?? 0), 0);
+        return `<tr><td>${escHtml(edition)}</td><td>${fmtDayKey(day)}</td><td>${emails.toLocaleString("pt-BR")}</td></tr>`;
+      })
+      .join("\n");
+    return { rows, dayCount: entries.length };
+  }
+
+  const includedDetails = groupByDayForDetails(mature);
+  const excludedDetails = groupByDayForDetails(immature);
 
   const planSection = plan
     ? `
+  <h3>Plano da semana</h3>
   <table>
     <thead><tr><th>Dia</th><th>Volume recomendado</th></tr></thead>
     <tbody>
@@ -373,11 +445,9 @@ ${waitRows}
   const metricRows = metricDefs
     .map((m) => {
       const s = classifyMetric(m.value, m.t, m.dir);
-      const target =
-        m.dir === "higher"
-          ? `≥${m.t.green}% 🟢 · ≥${m.t.yellow}% 🟡`
-          : `&lt;${m.t.green}% 🟢 · &lt;${m.t.yellow}% 🟡`;
-      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value)}</td><td style="opacity:0.7">${target}</td><td>${SEMAPHORE_EMOJI[s]}</td></tr>`;
+      const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
+      const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
+      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value)}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
     })
     .join("\n");
 
@@ -404,12 +474,12 @@ ${waitRows}
 
   return `
 <section class="phase2-section" id="weekly-plan">
-  <h2 class="section-title">Rampa — plano de envio semanal</h2>
+  <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
-  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
+  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${HEALTH_SAMPLE_DAYS} dias de envio, sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo (🟢 / 🟡)</th><th>Status</th></tr></thead>
+    <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo 🟢</th><th>Alvo 🟡</th></tr></thead>
     <tbody>
 ${metricRows}
     </tbody>
@@ -424,9 +494,15 @@ ${dayRows || '<tr><td colspan="6">Nenhum.</td></tr>'}
     </tbody>
   </table></div>
   <details>
-    <summary>Excluídas por imaturidade (&lt;48h) (${immature.length})</summary>
-    <div class="table-wrap"><table><thead><tr><th>Envio</th><th>Enviado</th><th>Motivo</th></tr></thead><tbody>
-    ${excludedRows || '<tr><td colspan="3">Nenhuma.</td></tr>'}
+    <summary>Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
+    <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
+    ${includedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
+    </tbody></table></div>
+  </details>
+  <details>
+    <summary>Excluídos por imaturidade (&lt;48h) (${excludedDetails.dayCount})</summary>
+    <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
+    ${excludedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
   </details>
 </section>`;
