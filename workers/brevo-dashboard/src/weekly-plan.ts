@@ -41,16 +41,18 @@ export const WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * É um envio COLD de crescimento de alcance (o que a rampa planeja)?
  *
- * Os envios cold da rampa seguem o naming **`cold {ciclo} {dia}-{célula}`** —
- * ex "cold 2606-07 dom-A", "cold 2606-07 sab-C" (prefixo `cold`). Só eles vão
- * pra quem NUNCA recebeu. O digest MENSAL engajado ("Clarice News {yymm-mm} — X")
- * e qualquer outro envio ("Clarice News …") vão pra base que JÁ recebeu (baseline
- * de abertura muito mais alto) — misturá-los no agregado cold falsearia o semáforo
- * (verde imerecido). Naming fora do padrão `cold` → excluído. O digest DIÁRIO da
- * Diar.ia sai pelo Beehiiv, não por este account, então não aparece aqui.
+ * O sinal é a **LISTA de destino** (a audiência), NÃO o nome da campanha: o nome
+ * do envio cold ("Clarice News {ciclo} — X · dom") é quase igual ao do engajado
+ * ("… — X: assunto") — só o separador muda —, então o nome não separa. A LISTA
+ * sim: os envios cold vão pra listas nomeadas **`cold {ciclo} {dia}-{célula}`**
+ * (ex "cold 2606-07 dom-A"); o digest engajado vai pra "Clarice News {ciclo} X …"
+ * e os diários pra "Clarice Jun/2026 dNN …". `listName` é populado por
+ * fetchRecentCampaigns (brevo-api.ts, mesma fonte da coluna LISTA dos Envios).
+ * Sem listName → excluído (audiência desconhecida): baseline incomparável
+ * falsearia o semáforo.
  */
-export function isColdCampaign(c: Pick<BrevoCampaign, "name">): boolean {
-  return /^\s*cold\b/i.test(c.name ?? "");
+export function isColdCampaign(c: { listName?: string }): boolean {
+  return /^\s*cold\b/i.test(c.listName ?? "");
 }
 
 /** Chave de dia-calendário BRT (YYYY-MM-DD) de um sentDate — pra agrupar células A/B/C do mesmo envio. */
@@ -293,7 +295,25 @@ export function renderWeeklyPlanTabPanel(
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Rampa — plano de envio semanal</h2>
-  <p class="section-note">Nenhum envio cold encontrado.</p>
+  <p class="section-note">Nenhum envio cold encontrado na última semana.</p>
+</section>`;
+  }
+
+  // Cold existe mas nada maduro (>48h) ainda: NÃO decidir sobre dado imaturo —
+  // mostrar quem está maturando em vez de um semáforo vermelho falso (o agregado
+  // de amostra vazia daria abertura 0% = 🔴 enganoso).
+  if (mature.length === 0) {
+    const waitRows = immature
+      .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td></tr>`)
+      .join("\n");
+    return `
+<section class="phase2-section" id="weekly-plan">
+  <h2 class="section-title">Rampa — plano de envio semanal</h2>
+  <p class="section-note">Nenhum envio cold <strong>maduro (&gt;48h)</strong> na última semana — as métricas ainda estão subindo. ${immature.length} envio(s) aguardando maturar:</p>
+  <table><thead><tr><th>Campanha</th><th>Enviado</th></tr></thead><tbody>
+${waitRows}
+</tbody></table>
+  <p class="section-note"><small>O semáforo e o plano aparecem quando o envio cruzar 48h — não se decide crescimento sobre dado imaturo (requisito da issue).</small></p>
 </section>`;
   }
 
