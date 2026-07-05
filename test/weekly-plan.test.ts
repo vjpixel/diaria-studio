@@ -193,13 +193,17 @@ test("computeWeekPlan — vermelho corta 30% e sinaliza flagged", () => {
   assert.equal(plan.semaphore, "red");
 });
 
-test("isColdCampaign — cold diário (dNN) sim; digest mensal e naming estranho não", () => {
-  assert.equal(isColdCampaign({ name: "Clarice News 2605 d01-A (qua)" }), true);
-  assert.equal(isColdCampaign({ name: "Clarice News 2605 d08 (qua)" }), true);
-  // digest mensal (engajado) — excluído do agregado cold
+test("isColdCampaign — prefixo 'cold' sim; digest engajado 'Clarice News' e outros não", () => {
+  // naming REAL dos envios cold (confirmado nos prints do editor): "cold {ciclo} {dia}-{célula}"
+  assert.equal(isColdCampaign({ name: "cold 2606-07 dom-A" }), true);
+  assert.equal(isColdCampaign({ name: "cold 2606-07 sab-C" }), true);
+  assert.equal(isColdCampaign({ name: "COLD 2606-07 dom-B" }), true); // case-insensitive
+  // digest engajado (já recebeu) — NÃO é cold, excluído do agregado
+  assert.equal(isColdCampaign({ name: "Clarice News 2606-07 A" }), false);
   assert.equal(isColdCampaign({ name: "Clarice News 2605-06 — B: assunto" }), false);
-  // naming fora do padrão Clarice — excluído por segurança
+  // naming fora do padrão cold — excluído por segurança
   assert.equal(isColdCampaign({ name: "Newsletter promo qualquer" }), false);
+  assert.equal(isColdCampaign({ name: "coldwave sem espaço" }), false); // \b evita falso positivo
 });
 
 test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não pega 1 só)", () => {

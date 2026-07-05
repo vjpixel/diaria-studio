@@ -23,7 +23,7 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP } from "./sections-core.ts";
 import { fmtTimeBRT } from "./render-links.ts";
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
@@ -41,18 +41,16 @@ export const WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * É um envio COLD de crescimento de alcance (o que a rampa planeja)?
  *
- * Este Brevo account serve a migração Clarice News — os envios da rampa cold
- * seguem o naming diário "Clarice News {yymm} d{NN}[-A/B/C]" (parseável, NÃO
- * monthly). O digest MENSAL ("Clarice News {yymm-mm} — X", parsed.monthly) vai
- * pra base ENGAJADA (assinantes ativos, baseline de abertura MUITO mais alto) —
- * misturá-lo no agregado cold falsearia o semáforo (verde imerecido). Campanhas
- * com naming fora do padrão Clarice → excluídas por segurança (não sabemos a
- * audiência). O digest DIÁRIO da Diar.ia sai pelo Beehiiv, não por este account,
- * então não aparece aqui.
+ * Os envios cold da rampa seguem o naming **`cold {ciclo} {dia}-{célula}`** —
+ * ex "cold 2606-07 dom-A", "cold 2606-07 sab-C" (prefixo `cold`). Só eles vão
+ * pra quem NUNCA recebeu. O digest MENSAL engajado ("Clarice News {yymm-mm} — X")
+ * e qualquer outro envio ("Clarice News …") vão pra base que JÁ recebeu (baseline
+ * de abertura muito mais alto) — misturá-los no agregado cold falsearia o semáforo
+ * (verde imerecido). Naming fora do padrão `cold` → excluído. O digest DIÁRIO da
+ * Diar.ia sai pelo Beehiiv, não por este account, então não aparece aqui.
  */
 export function isColdCampaign(c: Pick<BrevoCampaign, "name">): boolean {
-  const parsed = parseClariceCampaignKey(c.name);
-  return parsed !== null && !parsed.monthly;
+  return /^\s*cold\b/i.test(c.name ?? "");
 }
 
 /** Chave de dia-calendário BRT (YYYY-MM-DD) de um sentDate — pra agrupar células A/B/C do mesmo envio. */
