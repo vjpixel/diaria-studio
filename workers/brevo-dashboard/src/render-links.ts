@@ -40,7 +40,7 @@ export function cellClass(...names: Array<string | false | null | undefined>): s
   return valid.length === 0 ? "" : ` class="${valid.join(" ")}"`;
 }
 
-// ─── #2177: CTR por link ──────────────────────────────────────────────────────
+// ─── #2177: distribuição de cliques por link (não é CTR/CTOR — Brevo v3 não dá opens/unique-clicks por link) ───
 
 /**
  * URLs de tracking/sistema a filtrar do linksStats: unsubscribe, preferências,
@@ -135,7 +135,7 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
 }
 
 /**
- * Renderiza a tabela de CTR por link como HTML colapsável (<details>/<summary>).
+ * Renderiza a tabela de distribuição de cliques por link como HTML colapsável (<details>/<summary>).
  * Graceful quando linksStats ausente ou sem links editoriais: retorna stub vazio.
  *
  * @param campaignId - usado no id do <details> para unicidade

@@ -48,7 +48,10 @@ export function renderDashboardHtml(
       <tr class="links-row"><td colspan="11" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
-      const ctr = pct(s.uniqueClicks, s.delivered);
+      // CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas (não delivered).
+      // Mede engajamento com o CONTEÚDO entre quem abriu, isolando assunto/deliverability.
+      // Opens MPP-inclusive (uniqueViews) — mesma base do open rate principal (igual Brevo Web UI).
+      const ctor = pct(s.uniqueClicks, s.uniqueViews);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
       // Per circuit breakers doc 2026-05-12: unsub e spam sobre `sent`
       // (não `delivered`). Pequena diferença na prática (sent ≈ delivered +
@@ -109,7 +112,7 @@ export function renderDashboardHtml(
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
         <td${cellClass("metric", openAlert && "alert")}>${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews ?? 0}</small></td>
-        <td${cellClass("metric")}>${ctr}<br><small>${s.uniqueClicks}</small></td>
+        <td${cellClass("metric")}>${ctor}<br><small>${s.uniqueClicks}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
@@ -365,7 +368,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <div class="tab-bar" role="tablist">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
-  <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / CTR</label>
+  <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
   ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
@@ -391,7 +394,7 @@ ${scheduledSection}
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
 <th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
-<th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
+<th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Engajamento com o conteúdo entre quem abriu. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
 <th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
 <th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
 <th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
@@ -473,7 +476,7 @@ ${cohortsSection}
 ${eiaEngagementSection}
   </div><!-- /panel-engajamento -->
 
-  <!-- Aba 3: Links / CTR — links agregados do período -->
+  <!-- Aba 3: Links / Cliques — distribuição de cliques por link no período (não é taxa; Brevo v3 não dá opens/unique-clicks por link) -->
   <div class="tab-panel" id="panel-links" role="tabpanel" aria-labelledby="tablabel-links">
 ${aggregatedLinksSection}
   </div><!-- /panel-links -->
@@ -492,7 +495,7 @@ ${couponTabHtml}
 </div><!-- /tab-panels -->
 
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
-Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
+Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
 Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
 <script>

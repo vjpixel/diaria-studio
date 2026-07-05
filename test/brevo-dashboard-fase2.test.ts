@@ -703,7 +703,8 @@ describe("#2369 aggregateByMonth", () => {
     assert.equal(jun.totalViews, 75);
     assert.equal(jun.totalClicks, 9);
     assert.ok(Math.abs(jun.openRate - (75 / 294) * 100) < 0.01, `openRate deve ser ~25.5% mas foi ${jun.openRate}`);
-    assert.ok(Math.abs(jun.ctr - (9 / 294) * 100) < 0.01, `ctr deve ser ~3.06% mas foi ${jun.ctr}`);
+    // CTOR = cliques ÷ ABERTURAS (9/75), não ÷ delivered (9/294). Reverter o denominador quebra aqui.
+    assert.ok(Math.abs(jun.ctor - (9 / 75) * 100) < 0.01, `ctor deve ser ~12% (9/75) mas foi ${jun.ctor}`);
   });
 
   test("campanhas em meses diferentes geram linhas separadas", () => {
@@ -779,16 +780,16 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.ok(posMonthly < posCampaigns, "tabela mensal deve vir antes da lista detalhada");
   });
 
-  test("exibe open rate e CTR agregados corretos para fixture de 1 mês", () => {
+  test("exibe open rate e CTOR agregados corretos para fixture de 1 mês", () => {
     const rows = aggregateByMonth([
       makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
         { sent: 200, delivered: 196, uniqueViews: 60, uniqueClicks: 8 }),
     ]);
     const html = renderMonthlyTotalsSection(rows);
-    // openRate = 60/196*100 ≈ 30.6%
+    // openRate = 60/196*100 ≈ 30.6% (sobre delivered, inalterado)
     assert.match(html, /30\.[0-9]%/, "deve exibir open rate ~30.6%");
-    // ctr = 8/196*100 ≈ 4.1%
-    assert.match(html, /4\.[0-9]%/, "deve exibir CTR ~4.1%");
+    // CTOR = 8/60*100 ≈ 13.3% (cliques ÷ ABERTURAS, não ÷ delivered=4.1%)
+    assert.match(html, /13\.[0-9]%/, "deve exibir CTOR ~13.3%");
   });
 
   // #2429: rótulo "E-mails (eventos)" na coluna Sent da tabela mensal (#2491: renomeado de "Envios (eventos)")
@@ -2173,7 +2174,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
-    assert.match(html, /Links \/ CTR/, "deve ter label 'Links / CTR'");
+    assert.match(html, /Links \/ Cliques/, "deve ter label 'Links / Cliques'");
     assert.match(html, />Contatos</, "deve ter label 'Contatos' (#2653)");
     // #2880: aba Cohorts eliminada — não deve mais existir label/radio pra ela.
     assert.doesNotMatch(html, /for="tab-cohorts"/, "não deve ter mais label 'Cohorts' como aba própria");
@@ -2227,7 +2228,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     const panel = html.match(/id="panel-links"[\s\S]*?<\/div><!-- \/tab-panels -->/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-links deve existir no HTML");
-    assert.match(panel, /id="links-agregados"/, "Links agregados deve estar no panel Links/CTR");
+    assert.match(panel, /id="links-agregados"/, "Links agregados deve estar no panel Links/Cliques");
   });
 
   test("todas as seções principais estão presentes no HTML (nenhuma perdida pela reorganização)", () => {
