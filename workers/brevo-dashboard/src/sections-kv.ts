@@ -1066,10 +1066,11 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
 
   const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
 
-  // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez
-  // de produzir um bucket/label "NaN" na tabela. AAMMDD só, 6 dígitos.
-  const validEditions = eiaEngagement.editions.filter((e) => /^\d{6}$/.test(e.edition));
-  // Mais recente primeiro — AAMMDD ordena lexicograficamente = cronologicamente.
+  // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez de
+  // produzir um bucket/label "NaN" na tabela. Aceita AAMMDD (diária, 6 dígitos)
+  // OU o ciclo mensal YYMM-MM (#2903 — a dashboard mensal mostra as edições MENSAIS).
+  const validEditions = eiaEngagement.editions.filter((e) => /^\d{6}$|^\d{4}-\d{2}$/.test(e.edition));
+  // Mais recente primeiro — AAMMDD e YYMM-MM ordenam lexicograficamente = cronologicamente.
   const sorted = [...validEditions].sort((a, b) => b.edition.localeCompare(a.edition));
   const totalCount = sorted.length;
   const shown = sorted.slice(0, EIA_ENGAGEMENT_MAX_EDITIONS);
@@ -1099,7 +1100,7 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
   <table>
     <thead>
       <tr>
-        <th title="Edição (AAMMDD)">Edição</th>
+        <th title="Ciclo mensal da Clarice News (YYMM-MM)">Edição</th>
         <th title="Total de votos registrados na edição">Votos</th>
         <th title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
       </tr>

@@ -143,6 +143,23 @@ export function discoverEditions(editionsDir: string): string[] {
 }
 
 /**
+ * #2903: descobre os ciclos MENSAIS (YYMM-MM) em data/monthly/ — cada dir de ciclo
+ * é a própria edição-poll da Clarice News (brand=clarice), ex: "2606-07". Usado só
+ * pra popular a aba Engajamento do clarice-dashboard (mensal). Dir vazio → [].
+ */
+export function discoverMonthlyCycles(monthlyDir: string = join(DATA_DIR, "monthly")): string[] {
+  if (!existsSync(monthlyDir)) return [];
+  try {
+    return readdirSync(monthlyDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d{4}-\d{2}$/.test(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Descobre os slugs de meses únicos a partir de uma lista de edições.
  * Retorna slugs YYYY-MM ordenados cronologicamente.
  */
@@ -165,8 +182,11 @@ export function editionsToMonthSlugs(editions: string[]): string[] {
 export async function fetchEditionStats(
   workerUrl: string,
   edition: string,
+  brand: string = "diaria", // #2903: brand=clarice pras edições MENSAIS (aba do clarice-dashboard)
 ): Promise<PollStatsResponse | null> {
-  const url = `${workerUrl}/stats?edition=${encodeURIComponent(edition)}`;
+  // Convenção do Worker/close-poll: brand ausente/"diaria" não anexa &brand=.
+  const brandQ = brand && brand !== "diaria" ? `&brand=${encodeURIComponent(brand)}` : "";
+  const url = `${workerUrl}/stats?edition=${encodeURIComponent(edition)}${brandQ}`;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json" },
@@ -242,6 +262,7 @@ export async function fetchMonthLeaderboardJson(
 export async function buildPollEiaSummaryFromApi(
   editions: string[],
   workerUrl: string = DEFAULT_WORKER_URL,
+  brand: string = "diaria", // #2903: propaga pro fetch (clarice = mensal)
 ): Promise<PollEiaSummary> {
   // 1. Busca stats de cada edição (paralelo com throttle 5 concurrent)
   const BATCH = 5;
@@ -251,7 +272,7 @@ export async function buildPollEiaSummaryFromApi(
     const batch = editions.slice(i, i + BATCH);
     const results = await Promise.all(
       batch.map(async (edition) => {
-        const stats = await fetchEditionStats(workerUrl, edition);
+        const stats = await fetchEditionStats(workerUrl, edition, brand);
         if (!stats) return null;
         return {
           edition,
@@ -386,7 +407,18 @@ async function main(): Promise<void> {
     console.log(`[poll-eia] ✓ Escrito em ${OUT_PATH}`);
     console.log("[poll-eia] Próximo passo: npx tsx scripts/build-diaria-dashboard-data.ts --push");
 
-    await pushEiaEngagementToBrevoKv(summary);
+    // #2903: a aba Engajamento do clarice-dashboard é a dashboard MENSAL — mostra
+    // só as edições MENSAIS (brand=clarice), não as diárias. O arquivo local acima
+    // segue diário (consumido pelo diaria-dashboard). Aqui montamos um summary só
+    // das edições mensais e é ESSE que vai pro KV eia:engagement.
+    const monthlyCycles = discoverMonthlyCycles();
+    if (monthlyCycles.length === 0) {
+      console.warn("[poll-eia] nenhum ciclo mensal em data/monthly/ — KV eia:engagement não atualizado.");
+    } else {
+      const monthlySummary = await buildPollEiaSummaryFromApi(monthlyCycles, workerUrl, "clarice");
+      console.log(`[poll-eia] ${monthlySummary.editions.length} edições MENSAIS (brand=clarice) → KV eia:engagement`);
+      await pushEiaEngagementToBrevoKv(monthlySummary);
+    }
   } else {
     console.log("[poll-eia] Modo --dry-run: arquivo NÃO gravado. Use --push para persistir.");
   }
