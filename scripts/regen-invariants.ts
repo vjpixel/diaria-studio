@@ -28,6 +28,7 @@ import { writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "context", "invariants.md");
@@ -185,27 +186,12 @@ export function loadConventionIssues(label: string, state: string): ConventionIs
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") out["dry-run"] = true;
-    else if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const label = (args.label as string) ?? DEFAULT_LABEL;
-  const state = (args.state as string) ?? "closed";
-  const out = args.out ? resolve(ROOT, args.out as string) : DEFAULT_OUT;
-  const dryRun = !!args["dry-run"];
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const label = values["label"] ?? DEFAULT_LABEL;
+  const state = values["state"] ?? "closed";
+  const out = values["out"] ? resolve(ROOT, values["out"]) : DEFAULT_OUT;
+  const dryRun = flags.has("dry-run");
 
   process.stderr.write(`[regen-invariants] Carregando issues label='${label}' state='${state}'...\n`);
   const issues = loadConventionIssues(label, state);

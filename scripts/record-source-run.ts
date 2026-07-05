@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { computeFailureStreak } from "./lib/source-runs.ts";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 type Outcome = "ok" | "fail" | "timeout";
 
@@ -51,24 +52,6 @@ interface SourceEntry {
 interface HealthFile {
   sources: Record<string, SourceEntry>;
   notes?: string;
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        out[key] = "true";
-      } else {
-        out[key] = val;
-        i++;
-      }
-    }
-  }
-  return out;
 }
 
 function slugify(s: string): string {
@@ -114,26 +97,26 @@ export function buildRunReport(
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  const { values } = parseArgs(process.argv.slice(2));
 
-  if (!args.source) {
+  if (!values["source"]) {
     console.error("--source é obrigatório");
     process.exit(2);
   }
-  const outcome = args.outcome as Outcome;
+  const outcome = values["outcome"] as Outcome;
   if (!["ok", "fail", "timeout"].includes(outcome)) {
     console.error(`--outcome deve ser ok|fail|timeout (recebido: ${outcome})`);
     process.exit(2);
   }
 
   const now = new Date().toISOString();
-  const src = args.source;
+  const src = values["source"];
   const slug = slugify(src);
-  const durationMs = args["duration-ms"] ? Number(args["duration-ms"]) : null;
+  const durationMs = values["duration-ms"] ? Number(values["duration-ms"]) : null;
   const articlesCount = (() => {
-    if (!args["articles-json"]) return 0;
+    if (!values["articles-json"]) return 0;
     try {
-      return JSON.parse(args["articles-json"]).length ?? 0;
+      return JSON.parse(values["articles-json"]).length ?? 0;
     } catch {
       return 0;
     }
@@ -194,9 +177,9 @@ function main(): void {
   mkdirSync(dirname(sourceLogPath), { recursive: true });
 
   let articles: Array<{ title?: string; url?: string; published_at?: string }> = [];
-  if (args["articles-json"]) {
+  if (values["articles-json"]) {
     try {
-      articles = JSON.parse(args["articles-json"]);
+      articles = JSON.parse(values["articles-json"]);
     } catch (e) {
       console.error(`articles-json inválido, log individual sem detalhe: ${(e as Error).message}`);
     }
@@ -205,11 +188,11 @@ function main(): void {
   const logEntry = {
     timestamp: now,
     source: src,
-    edition: args.edition ?? null,
+    edition: values["edition"] ?? null,
     outcome,
     duration_ms: durationMs,
-    reason: args.reason ?? null,
-    query_used: args["query-used"] ?? null,
+    reason: values["reason"] ?? null,
+    query_used: values["query-used"] ?? null,
     articles_count: articlesCount,
     articles: articles.map((a) => ({
       title: a.title ?? null,

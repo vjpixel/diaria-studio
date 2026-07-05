@@ -33,6 +33,7 @@ import {
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -42,16 +43,8 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { fix: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--fix") out.fix = true;
-    else if (a === "--edition" && argv[i + 1]) {
-      out.editionFilter = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
+  const { flags, values } = parseCliArgs(argv);
+  return { fix: flags.has("fix"), editionFilter: values["edition"] };
 }
 
 interface DriftEntry {

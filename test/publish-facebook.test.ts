@@ -16,10 +16,13 @@ describe("publish-facebook draft warning (regression #1156)", () => {
   );
 
   it("aceita --allow-draft em parseArgs", () => {
+    // #2834: parseArgs local foi migrado pra scripts/lib/cli-args.ts (genérico,
+    // trata qualquer --flag como boolean automaticamente). O call-site que lê
+    // a flag continua explícito — é isso que a regressão original protegia.
     assert.match(
       src,
-      /argv\[i\]\s*===\s*["']--allow-draft["']/,
-      "parseArgs deve aceitar flag --allow-draft",
+      /flags\.has\(["']allow-draft["']\)/,
+      "main() deve ler a flag --allow-draft via flags.has()",
     );
   });
 

@@ -27,6 +27,7 @@
  */
 
 import "dotenv/config";
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 export interface VoteRecord {
   choice: "A" | "B";
@@ -70,20 +71,6 @@ export function statsEqual(a: StatsRecord, b: StatsRecord): boolean {
 
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace
 
-function parseArgs(argv: string[]): { edition: string | null; execute: boolean } {
-  let edition: string | null = null;
-  let execute = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition" && argv[i + 1]) {
-      edition = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--execute") {
-      execute = true;
-    }
-  }
-  return { edition, execute };
-}
-
 async function mainCli(): Promise<number> {
   const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
   const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -91,7 +78,9 @@ async function mainCli(): Promise<number> {
     console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
     return 2;
   }
-  const { edition, execute } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
+  const edition = values["edition"] || null;
+  const execute = flags.has("execute");
   if (!edition || !/^\d{6}$/.test(edition)) {
     console.error("Uso: rebuild-stats.ts --edition AAMMDD [--execute]");
     return 2;

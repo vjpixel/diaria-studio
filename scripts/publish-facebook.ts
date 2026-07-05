@@ -36,35 +36,9 @@ import { computeScheduledAt as computeScheduledAtShared } from "./compute-social
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
+import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--schedule") {
-      args.schedule = true;
-    } else if (argv[i] === "--skip-existing") {
-      args["skip-existing"] = true;
-    } else if (argv[i] === "--reschedule") {
-      args.reschedule = true;
-    } else if (argv[i] === "--test-mode") {
-      // #1056 — tag entries com is_test:true pra delete-test-schedules safety
-      args["test-mode"] = true;
-    } else if (argv[i] === "--no-skip-existing") {
-      // #725 bug #2: opt-out explícito do skip default.
-      args["no-skip-existing"] = true;
-    } else if (argv[i] === "--allow-draft") {
-      // #1156 — opt-in pra criar drafts sem warn (intent claro).
-      args["allow-draft"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
 
 function loadPublished(path: string): SocialPublished {
   if (existsSync(path)) {
@@ -476,20 +450,20 @@ async function rescheduleFacebookPosts(opts: {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const editionDir = resolve(ROOT, args["edition-dir"] as string);
-  const doSchedule = !!args.schedule;
-  // #725 bug #2: args["skip-existing"] é true (presente) ou undefined (ausente);
-  // `undefined !== false` === true → skipExisting era SEMPRE true independente
-  // da flag. Agora lê explicitamente: default true, desligar via --no-skip-existing.
-  if (args["skip-existing"]) {
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const editionDir = resolve(ROOT, values["edition-dir"] as string);
+  const doSchedule = flags.has("schedule");
+  // #725 bug #2: flags.has("skip-existing") é true (presente) ou false (ausente);
+  // era SEMPRE true independente da flag. Agora lê explicitamente: default true,
+  // desligar via --no-skip-existing.
+  if (flags.has("skip-existing")) {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
-  const skipExisting = args["no-skip-existing"] !== true;
-  const doReschedule = !!args.reschedule;
-  const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
-  const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
-  const allowDraft = !!args["allow-draft"]; // #1156 — opt-in pra suprimir warning de draft
+  const skipExisting = !flags.has("no-skip-existing");
+  const doReschedule = flags.has("reschedule");
+  const isTest = flags.has("test-mode"); // #1056 — tag is_test:true em entries
+  const dayOffsetOverride = values["day-offset"] ? parseInt(values["day-offset"], 10) : undefined;
+  const allowDraft = flags.has("allow-draft"); // #1156 — opt-in pra suprimir warning de draft
 
   // #1156 — Warning loud quando rodando sem --schedule (cria drafts) e sem opt-in
   // explícito via --allow-draft. Trap recorrente: editor/orchestrator esquece
