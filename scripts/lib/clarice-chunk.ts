@@ -63,8 +63,16 @@ export interface ApplyResult {
   skipped: Array<ClariceChunkSuggestion & { reason: string }>;
 }
 
-/** Threshold padrão de chars para ativar chunking. */
-export const CLARICE_CHUNK_THRESHOLD = 9_000;
+/**
+ * Threshold padrão de chars para ativar chunking.
+ * #2798: baixado de 9.000 → 4.500 — o cortex.clarice.ai dá timeout consistente
+ * (`rest_exit3_timeout`) em textos >5k, então seções secundárias de 5–9k ficavam
+ * ABAIXO do threshold antigo (enviadas inteiras num request) e estouravam as 3
+ * tentativas. Com 4.500, qualquer seção >4.5k é dividida em chunks menores que o
+ * endpoint processa dentro do timeout. Reincidiu (#2320 fechado como one-off,
+ * reapareceu em 260702) — a causa era tamanho de request, não flakiness pura.
+ */
+export const CLARICE_CHUNK_THRESHOLD = 4_500;
 
 /**
  * Divide o texto em chunks de no máximo `maxChars` chars, em fronteiras seguras:

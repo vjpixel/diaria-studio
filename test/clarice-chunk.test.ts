@@ -281,3 +281,28 @@ describe("findLastBoundary — guard de flag g (#2705)", () => {
     assert.equal(result, -1);
   });
 });
+
+// #2798: threshold baixado 9k→4.5k pra dividir seções >5k que davam timeout no cortex
+describe("CLARICE_CHUNK_THRESHOLD — seções >5k dividem (regressão #2798)", () => {
+  it("threshold é < 5.000 (seções secundárias >5k precisam dividir)", () => {
+    assert.ok(
+      CLARICE_CHUNK_THRESHOLD < 5_000,
+      `threshold deve ser <5000 pra dividir seções >5k (cortex timeout #2798), mas é ${CLARICE_CHUNK_THRESHOLD}`,
+    );
+  });
+
+  it("uma seção de ~6.000 chars (a que estourava) dividida em ≥2 chunks com o default", () => {
+    const paragraph = "Parágrafo editorial da seção secundária com conteúdo real. ".repeat(3) + "\n\n";
+    let text = "";
+    while (text.length < 6_000) text += paragraph;
+    const chunks = splitIntoChunks(text); // usa o default CLARICE_CHUNK_THRESHOLD
+    assert.ok(
+      chunks.length >= 2,
+      `seção de ${text.length} chars deve virar ≥2 chunks (antes era 1, sob o threshold antigo de 9k), recebido ${chunks.length}`,
+    );
+    for (const c of chunks) {
+      assert.ok(c.text.length <= CLARICE_CHUNK_THRESHOLD, `chunk excede o threshold: ${c.text.length}`);
+    }
+    assert.equal(chunks.map((c) => c.text).join(""), text, "concatenação reconstrói o original");
+  });
+});
