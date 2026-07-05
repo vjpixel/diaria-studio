@@ -33,6 +33,7 @@ import {
   REQUIRED_IMAGES_BASE,
   REQUIRED_IMAGES_D3,
 } from "./lib/invariant-checks/stage-3.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 // #2366: deriva a lista de imagens de destaque da fonte canônica
 // (REQUIRED_IMAGES_BASE/D3 em stage-3.ts) em vez de re-listar inline — sem isso,
@@ -135,23 +136,12 @@ export function findMissingStage3Outputs(editionDir: string): Missing[] {
   return missing;
 }
 
-function parseArgs(argv: string[]): { editionDir: string } {
-  let editionDir = "";
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[i + 1];
-      i++;
-    }
-  }
+function main(): void {
+  const editionDir = parseArgsSimple(process.argv.slice(2))["edition-dir"] ?? "";
   if (!editionDir) {
     process.stderr.write("Usage: validate-stage-3-completeness.ts --edition-dir <path>\n");
     process.exit(2);
   }
-  return { editionDir };
-}
-
-function main(): void {
-  const { editionDir } = parseArgs(process.argv.slice(2));
   const absDir = resolve(editionDir);
   if (!existsSync(absDir)) {
     process.stderr.write(`[validate-stage-3] edition dir ausente: ${absDir}\n`);

@@ -36,6 +36,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 export type Section = "LANCAMENTOS" | "PESQUISAS" | "NOTICIAS" | "OUTRAS";
 
@@ -207,18 +208,11 @@ export function verifyStability(preText: string, postText: string): UrlStability
   return compareUrls(extractUrlsBySection(preText), extractUrlsBySection(postText));
 }
 
-function parseArgs(argv: string[]): { pre?: string; post?: string } {
-  const out: { pre?: string; post?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--pre") out.pre = argv[++i];
-    else if (argv[i] === "--post") out.post = argv[++i];
-  }
-  return out;
-}
-
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const { pre, post } = parseArgs(process.argv.slice(2));
+  const argv = parseArgsSimple(process.argv.slice(2));
+  const pre = argv.pre;
+  const post = argv.post;
   if (!pre || !post) {
     console.error(
       "Uso: verify-clarice-url-stability.ts --pre <pre-clarice.md> --post <reviewed.md>",

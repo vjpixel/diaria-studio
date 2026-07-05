@@ -25,6 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { runMain } from "./lib/exit-handler.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 // Motivos legítimos pra skip — extender quando descobrir novos casos válidos.
 // Padrão: skip só é válido se há falha upstream concreta E verificável
@@ -43,23 +44,6 @@ interface PublishedJson {
   draft_url?: string | null;
   test_mode?: boolean;
   with_publish?: boolean;
-}
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    const next = argv[i + 1];
-    if (!next || next.startsWith("--")) {
-      out[key] = true;
-    } else {
-      out[key] = next;
-      i++;
-    }
-  }
-  return out;
 }
 
 export interface ValidationResult {
@@ -145,11 +129,11 @@ export function validate(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const editionDir = args["edition-dir"] as string | undefined;
+  const editionDir = args.values["edition-dir"];
   // Aceita "true"/"false" ou flag bool
-  const withPublishArg = args["with-publish"];
+  const withPublishArg = args.values["with-publish"];
   const withPublish =
-    withPublishArg === true || withPublishArg === "true" || withPublishArg === "1";
+    args.flags.has("with-publish") || withPublishArg === "true" || withPublishArg === "1";
 
   if (!editionDir) {
     console.error("Uso: validate-test-with-publish.ts --edition-dir <path> --with-publish <true|false>");

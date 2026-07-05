@@ -20,6 +20,7 @@
 import { existsSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -29,25 +30,15 @@ interface OutputCheck {
   resumeCmd: string;
 }
 
-function parseArgs(argv: string[]): { editionDir?: string } {
-  const args: { editionDir?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      args.editionDir = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.editionDir) {
+  const args = parseArgsSimple(process.argv.slice(2));
+  const editionDirArg = args["edition-dir"];
+  if (!editionDirArg) {
     console.error("Erro: --edition-dir obrigatório.");
     process.exit(1);
   }
 
-  const editionDir = resolve(ROOT, args.editionDir);
+  const editionDir = resolve(ROOT, editionDirArg);
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
 
   const checks: OutputCheck[] = [

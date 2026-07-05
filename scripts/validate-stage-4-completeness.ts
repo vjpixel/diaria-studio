@@ -26,6 +26,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs } from "./lib/cli-args.ts";
 
 interface Missing {
   file: string;
@@ -133,26 +134,14 @@ export function findMissingStage4Outputs(
   return missing;
 }
 
-function parseArgs(argv: string[]): { editionDir: string; strict: boolean } {
-  let editionDir = "";
-  let strict = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition-dir" && i + 1 < argv.length) {
-      editionDir = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--strict") {
-      strict = true;
-    }
-  }
+function main(): void {
+  const args = parseArgs(process.argv.slice(2));
+  const editionDir = args.values["edition-dir"] ?? "";
+  const strict = args.flags.has("strict");
   if (!editionDir) {
     process.stderr.write("Usage: validate-stage-4-completeness.ts --edition-dir <path> [--strict]\n");
     process.exit(2);
   }
-  return { editionDir, strict };
-}
-
-function main(): void {
-  const { editionDir, strict } = parseArgs(process.argv.slice(2));
   const absDir = resolve(editionDir);
   if (!existsSync(absDir)) {
     process.stderr.write(`[validate-stage-4] edition dir ausente: ${absDir}\n`);
