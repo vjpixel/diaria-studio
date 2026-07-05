@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -188,21 +189,6 @@ export function PER_EDITION_RULES(editionDir: string) {
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--static") out.static = true;
-    else if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
-  return out;
-}
-
 function walkMd(dir: string, visit: (path: string) => void): void {
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
@@ -218,11 +204,11 @@ async function main(): Promise<void> {
   // DIARIA_PROJECT_ROOT permite override pra teste e2e sem hijack do
   // `.env.local` real do projeto (#1010 item 4).
   loadProjectEnv(process.env.DIARIA_PROJECT_ROOT);
-  const args = parseArgs(process.argv.slice(2));
-  const isStatic = !!args.static;
-  const editionDir = args["edition-dir"] as string | undefined;
-  const onlyRule = args.rule as string | undefined;
-  const stageRaw = args.stage;
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const isStatic = flags.has("static");
+  const editionDir = values["edition-dir"] as string | undefined;
+  const onlyRule = values.rule as string | undefined;
+  const stageRaw = values.stage;
   const stage =
     typeof stageRaw === "string" && /^[0-6]$/.test(stageRaw)
       ? (Number(stageRaw) as 0 | 1 | 2 | 3 | 4 | 5 | 6)
