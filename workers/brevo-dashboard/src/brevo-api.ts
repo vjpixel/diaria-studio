@@ -498,16 +498,22 @@ export async function readKvTabs(
 export async function buildRateLimitFallback(
   env: Env,
   retryAfterSecs: number | null,
+  planCreditsOverride?: number | null,
 ): Promise<Response> {
   if (!env.STATS_CACHE) return rateLimitResponse(retryAfterSecs, true);
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
     .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
   const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
-  // #2910: "kv-only" — mesmo racional do #2779 (readKvTabs acima): caminho de
-  // erro de 429 do Brevo nunca faz chamada externa a mais; só lê o KV
-  // (último crédito bom conhecido) ou degrada pra "indisponível".
-  const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+  // Créditos do plano: o render principal busca /v3/account ANTES das campanhas
+  // (janela de rate-limit fresca) e passa o valor em memória aqui. Sem isso o
+  // fallback lia "kv-only" e o KV nunca era populado (a linha que populava rodava
+  // DEPOIS das campanhas, e o 429 a pulava) → denominador sempre "indisponível".
+  // `planCreditsOverride` numérico vence; null/ausente cai pro KV (último bom).
+  const planCredits =
+    typeof planCreditsOverride === "number"
+      ? planCreditsOverride
+      : await fetchPlanCredits(env, "kv-only").catch(() => null);
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
