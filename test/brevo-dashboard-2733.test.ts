@@ -214,6 +214,27 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     assert.ok(body.includes("rate-limit"), "banner de rate-limit injetado");
   });
 
+  it("planCreditsOverride numérico → denominador mostrado, nunca 'indisponível' nem kv-only (regressão: campanhas 429 antes de popular o KV de créditos)", async () => {
+    // KV SEM brevo:plan-credits (o bug: nunca era populado — o fetch que o populava
+    // rodava DEPOIS das campanhas e o 429 o pulava). Agora o render principal busca
+    // /v3/account ANTES das campanhas e passa o valor em memória aqui.
+    const kv = makeKv({
+      [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
+    });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    await withFetchSpy(async (externalCalls) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resp = await buildRateLimitFallback(env as any, 120, 34708);
+      const body = await resp.text();
+      assert.ok(body.includes("34.708"), "usa o override numérico como denominador do plano");
+      assert.ok(
+        !body.includes("créditos do plano Brevo indisponíveis"),
+        "NÃO degrada pra 'indisponível' quando o override existe",
+      );
+      assert.deepEqual(externalCalls, [], "override em memória → zero fetch (nem o kv-only de créditos)");
+    });
+  });
+
   it("KV miss de cupons + STRIPE_API_KEY configurada → ZERO chamada externa (#2779)", async () => {
     // Regressão #2779: o fallback de rate-limit é desenhado pra não depender de
     // NENHUMA chamada externa — mas um KV miss em `coupons:usage` com

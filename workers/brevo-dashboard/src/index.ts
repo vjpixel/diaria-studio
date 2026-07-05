@@ -201,7 +201,16 @@ export default {
     }
 
     if (path === "/" || path === "/index.html") {
+      // Créditos do plano declarados FORA do try: buscados ANTES das campanhas
+      // (janela de rate-limit fresca) e reusados pelo fallback de 429 em memória.
+      // Sem isso o fallback lia "kv-only" e o KV nunca era populado (o fetch que o
+      // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
+      let planCredits: number | null = null;
       try {
+        // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a /v3/account
+        // com a janela de rate-limit fresca, antes do fetch pesado de campanhas
+        // (~100 GETs). Fail-soft: cai pro KV/null se falhar, nunca lança.
+        planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
         // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
         // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
         // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
@@ -217,10 +226,7 @@ export default {
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
         const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-        // #2910: créditos do plano Brevo — denominador dinâmico da seção Volume.
-        // Fail-soft (nunca lança): cai pro KV se o fetch ao vivo falhar; null se
-        // nem isso — o render degrada pra "indisponível", nunca hardcoded 40k.
-        const planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+        // planCredits já foi buscado no topo do try (antes das campanhas).
         const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits);
         const response = new Response(html, {
           headers: {
@@ -251,7 +257,7 @@ export default {
           // com campanhas Brevo STALE (do KV) + abas de KV FRESCAS. Assim uma janela
           // de rate-limit do Brevo nunca esconde dado KV recém-publicado (o bug
           // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
-          return buildRateLimitFallback(env, e.retryAfterSecs);
+          return buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
         }
         return new Response(
           `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
