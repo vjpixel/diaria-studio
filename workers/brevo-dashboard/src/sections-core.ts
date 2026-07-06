@@ -264,7 +264,7 @@ export function renderDashboardHtml(
   details.never-sent > summary { cursor: pointer; font-size: 0.85rem; color: var(--ink); opacity: 0.75; padding: 6px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
+  th { background: var(--paper-alt); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
   td.metric { font-weight: 600; color: var(--brand); }
@@ -367,19 +367,19 @@ export function renderDashboardHtml(
 
 <!-- #2542: tab state inputs (hidden, CSS-only — sem JS externo) -->
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-rampa">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
-<input type="radio" class="tab-radios" name="dash-tab" id="tab-rampa">
 ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
+  <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Agendamento</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
-  <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Rampa</label>
   ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
@@ -477,6 +477,11 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </section>
   </div><!-- /panel-visaogeral -->
 
+  <!-- Aba Agendamento: plano de envio semanal cold (#2974) -->
+  <div class="tab-panel" id="panel-rampa" role="tabpanel" aria-labelledby="tablabel-rampa">
+${weeklyPlanSection}
+  </div><!-- /panel-rampa -->
+
   <!-- Aba 2: Engajamento — weekday + resumo A/B/C + coortes + É IA? (#2773) -->
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${weekdaySection}
@@ -496,11 +501,6 @@ ${aggregatedLinksSection}
 ${contactsSummarySection}
 ${cohortsTabSection}
   </div><!-- /panel-contatos -->
-
-  <!-- Aba Rampa: plano de envio semanal cold (#2974) -->
-  <div class="tab-panel" id="panel-rampa" role="tabpanel" aria-labelledby="tablabel-rampa">
-${weeklyPlanSection}
-  </div><!-- /panel-rampa -->
 
 ${couponUsage ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
