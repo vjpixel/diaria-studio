@@ -1,32 +1,111 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   classifyResult,
   buildVerifyUrl,
   mvOutputBase,
-  readInput,
+  readStoreCandidates,
   splitRows,
   parseArgs,
   type Bucket,
 } from "../scripts/verify-emails-mv.ts";
+import { SCHEMA } from "../scripts/lib/clarice-db.ts";
 
-describe("mvOutputBase (proveniência: stripe-export- → mv-export-)", () => {
-  it("mapeia o prefixo stripe-export- pra mv-export- e tira o .csv", () => {
-    assert.equal(mvOutputBase("stripe-export-t02-ex-assinantes.csv"), "mv-export-t02-ex-assinantes");
-    assert.equal(mvOutputBase("stripe-export-maio.csv"), "mv-export-maio");
+describe("mvOutputBase (proveniência: cohort → mv-export-{cohort}, #2886 PR3)", () => {
+  it("prefixa mv-export- ao slug de cohort", () => {
+    assert.equal(mvOutputBase("ex-assinantes"), "mv-export-ex-assinantes");
+    assert.equal(mvOutputBase("leads-2026-06"), "mv-export-leads-2026-06");
   });
-  it("aceita caminho completo (usa basename)", () => {
-    assert.equal(mvOutputBase("data/clarice-subscribers/stripe-export-maio.csv"), "mv-export-maio");
+});
+
+/** Helper: abre um store in-memory seedado com linhas de teste. */
+function seedDb(rows: Array<{
+  email: string;
+  name?: string | null;
+  cohort: string | null;
+  mv_bucket?: string | null;
+  mv_cycle?: string | null;
+}>): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec(SCHEMA);
+  const insert = db.prepare(
+    `INSERT INTO clarice_users (email, name, cohort, mv_bucket, mv_cycle) VALUES (?, ?, ?, ?, ?)`,
+  );
+  for (const r of rows) {
+    insert.run(r.email, r.name ?? null, r.cohort, r.mv_bucket ?? null, r.mv_cycle ?? null);
+  }
+  return db;
+}
+
+describe("readStoreCandidates (#2886 PR3 — fonte = store, não CSV)", () => {
+  it("retorna só contatos do cohort com mv_bucket IS NULL", () => {
+    const db = seedDb([
+      { email: "a@b.com", name: "A", cohort: "ex-assinantes", mv_bucket: null },
+      { email: "b@b.com", name: "B", cohort: "ex-assinantes", mv_bucket: "verified", mv_cycle: "2605-06" },
+      { email: "c@b.com", name: "C", cohort: "ex-assinantes", mv_bucket: "rejected", mv_cycle: "2604-05" },
+      { email: "d@b.com", name: "D", cohort: "leads-2026-06", mv_bucket: null },
+    ]);
+    try {
+      const { rows, emailKey } = readStoreCandidates(db, "ex-assinantes");
+      assert.equal(emailKey, "email");
+      assert.deepEqual(rows.map((r) => r.email).sort(), ["a@b.com"]);
+    } finally {
+      db.close();
+    }
   });
-  it("fallback: input sem o prefixo esperado mantém o basename (só tira .csv)", () => {
-    assert.equal(mvOutputBase("custom-list.csv"), "custom-list");
+
+  it('semântica "skip forever": contato verificado em QUALQUER ciclo anterior nunca reaparece, mesmo pra outro --cycle', () => {
+    // b@b.com foi verificado no ciclo 2605-06; mesmo consultando pro cohort em
+    // outro momento (ciclo novo), mv_bucket continua preenchido → nunca reentra.
+    const db = seedDb([
+      { email: "b@b.com", name: "B", cohort: "ex-assinantes", mv_bucket: "verified", mv_cycle: "2605-06" },
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "ex-assinantes");
+      assert.equal(rows.length, 0);
+    } finally {
+      db.close();
+    }
   });
-  it("idempotente: input já com mv-export- não dobra o prefixo", () => {
-    // só ^stripe-export- é mapeado; mv-export- já mapeado fica como está.
-    assert.equal(mvOutputBase("mv-export-maio.csv"), "mv-export-maio");
+
+  it("contato adicionado ao store DEPOIS de um ciclo anterior (mv_bucket NULL) é corretamente elegível", () => {
+    const db = seedDb([
+      { email: "old@b.com", cohort: "ex-assinantes", mv_bucket: "verified", mv_cycle: "2605-06" },
+      { email: "new@b.com", cohort: "ex-assinantes", mv_bucket: null }, // entrou depois do ciclo 2605-06
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "ex-assinantes");
+      assert.deepEqual(rows.map((r) => r.email), ["new@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("normaliza email (trim/lowercase) e ignora linhas com email vazio", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(SCHEMA);
+    db.prepare(
+      `INSERT INTO clarice_users (email, name, cohort, mv_bucket) VALUES (?, ?, ?, ?)`,
+    ).run("  Foo@Bar.com ", "F", "ex-assinantes", null);
+    try {
+      const { rows } = readStoreCandidates(db, "ex-assinantes");
+      assert.deepEqual(rows, [{ email: "foo@bar.com", name: "F" }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cohort diferente não vaza candidatos", () => {
+    const db = seedDb([
+      { email: "a@b.com", cohort: "ex-assinantes", mv_bucket: null },
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "leads-2026-06");
+      assert.equal(rows.length, 0);
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -75,46 +154,6 @@ describe("buildVerifyUrl", () => {
   it("encoda emails com caracteres especiais", () => {
     const url = new URL(buildVerifyUrl("K", "a+tag@b.com"));
     assert.equal(url.searchParams.get("email"), "a+tag@b.com");
-  });
-});
-
-describe("readInput", () => {
-  it("detecta coluna email e preserva todas as colunas", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mv-"));
-    try {
-      const p = join(dir, "t.csv");
-      writeFileSync(p, "email,NOME,OPEN_PROBABILITY\na@b.com,Ana,24\nc@d.com,Caio,30\n");
-      const { rows, emailKey } = readInput(p);
-      assert.equal(emailKey, "email");
-      assert.equal(rows.length, 2);
-      assert.deepEqual(rows[0], { email: "a@b.com", NOME: "Ana", OPEN_PROBABILITY: "24" });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("detecta variação 'E-mail' (case/hífen-insensitive)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mv-"));
-    try {
-      const p = join(dir, "t.csv");
-      writeFileSync(p, "Nome,E-mail\nX,x@y.com\n");
-      const { emailKey, fields } = readInput(p);
-      assert.equal(emailKey, "E-mail");
-      assert.deepEqual(fields, ["Nome", "E-mail"]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("lança erro quando não há coluna de email (não manda nomes pro MV)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mv-"));
-    try {
-      const p = join(dir, "t.csv");
-      writeFileSync(p, "endereco,nome\nx@y.com,X\n");
-      assert.throws(() => readInput(p), /sem coluna de email/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 
@@ -175,7 +214,7 @@ describe("splitRows", () => {
 describe("parseArgs", () => {
   it("defaults", () => {
     const a = parseArgs([]);
-    assert.equal(a.input, "stripe-export-ex-assinantes.csv");
+    assert.equal(a.cohort, "ex-assinantes");
     assert.equal(a.concurrency, 12);
     assert.equal(a.timeout, 20);
     assert.equal(a.limit, null);
@@ -184,12 +223,12 @@ describe("parseArgs", () => {
 
   it("flags customizadas", () => {
     const a = parseArgs([
-      "--input", "stripe-export-t03.csv",
+      "--cohort", "leads-2026-06",
       "--concurrency", "20",
       "--timeout", "30",
       "--limit", "50",
     ]);
-    assert.equal(a.input, "stripe-export-t03.csv");
+    assert.equal(a.cohort, "leads-2026-06");
     assert.equal(a.concurrency, 20);
     assert.equal(a.timeout, 30);
     assert.equal(a.limit, 50);
