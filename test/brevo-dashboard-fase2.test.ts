@@ -20,7 +20,9 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { validateSendPlan } from "../scripts/lib/send-plan.ts";
-import { computeMvStatus } from "../scripts/clarice-mv-status.ts";
+import { computeMvStatusFromStore } from "../scripts/clarice-mv-status.ts";
+import { openClariceDb } from "../scripts/lib/clarice-db.ts";
+import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES, COHORT_LEADS_CAUDAO } from "../scripts/lib/cohorts.ts";
 import {
   parseClariceCampaignKey,
   aggregateAbcSummary,
@@ -2577,103 +2579,113 @@ describe("regressão #2619 bug C: renderMvStatusSection — data no badge em DD/
   });
 });
 
-// ─── #2619: computeMvStatus — emissão de status "pending" ────────────────────
+// ─── #2619 / #2886 PR2: computeMvStatusFromStore — emissão de status "pending" ─
+//
+// Migrado de fixtures em filesystem (CSVs) para store SQLite in-memory —
+// #2886 PR2 elimina o CSV como SOURCE deste relatório (segue como TRANSPORT
+// em outros scripts). Mesmo comportamento observável, fonte diferente: em vez
+// de escrever `stripe-export-*.csv` / `mv-export-*-verified.csv` num dir
+// temp, os testes agora fazem INSERT direto em `clarice_users` (cohort,
+// mv_cycle, mv_bucket, mv_last_verified_at).
 
-describe("regressão #2619 bug D: computeMvStatus emite 'pending' quando ciclo existe sem arquivo verificado", () => {
-  let testBase: string;
-
-  function setup() {
-    testBase = join(tmpdir(), `mv-status-test-${Date.now()}`);
-    mkdirSync(testBase, { recursive: true });
+describe("regressão #2619/#2886 bug D: computeMvStatusFromStore emite 'pending' quando ciclo existe sem verificação", () => {
+  function seededDb(rows: Array<{ email: string; cohort: string | null; mv_cycle?: string | null; mv_bucket?: string | null }>) {
+    const db = openClariceDb(":memory:");
+    const stmt = db.prepare(
+      `INSERT INTO clarice_users (email, cohort, mv_cycle, mv_bucket) VALUES (?, ?, ?, ?)`,
+    );
+    for (const r of rows) {
+      stmt.run(r.email, r.cohort, r.mv_cycle ?? null, r.mv_bucket ?? null);
+    }
+    return db;
   }
 
-  function teardown() {
-    rmSync(testBase, { recursive: true, force: true });
-  }
-
-  test("ciclo sem mv-export-*-verified.csv gera entrada 'pending' para grupos T02+ conhecidos", () => {
-    setup();
+  test("cohort T02+ conhecido sem verificação no ciclo gera entrada 'pending'", () => {
+    const db = seededDb([
+      // T01 (pula) + ex-assinantes (deve gerar pending): ex-assinantes precisa
+      // aparecer no store SEM mv_bucket, mas o ciclo "2605-06" precisa ser
+      // conhecido — outro contato (irrelevante ao cohort) fixa o ciclo.
+      { email: "a@b.com", cohort: COHORT_ASSINANTES_ATIVOS },
+      { email: "c@d.com", cohort: COHORT_EX_ASSINANTES },
+      { email: "z@z.com", cohort: COHORT_LEADS_CAUDAO, mv_cycle: "2605-06", mv_bucket: "verified" },
+    ]);
     try {
-      // Base files: T01 (pula) + T02 (deve gerar pending)
-      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
-      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
-      // Ciclo válido sem arquivos verificados
-      mkdirSync(join(testBase, "2605-06"), { recursive: true });
-
-      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
 
       const pending = result.groups.filter((g) => g.status === "pending");
-      assert.equal(pending.length, 1, "deve ter 1 entrada pending para t02-ex-assinantes");
-      assert.equal(pending[0].group, "t02-ex-assinantes");
+      assert.equal(pending.length, 1, "deve ter 1 entrada pending para ex-assinantes");
+      assert.equal(pending[0].group, COHORT_EX_ASSINANTES);
       assert.equal(pending[0].cycle, "2605-06");
       assert.equal(pending[0].verifiedAt, null);
     } finally {
-      teardown();
+      db.close();
     }
   });
 
-  test("T01 da base aparece com status 't01', nunca 'pending'", () => {
-    setup();
+  test("cohort assinantes-ativos aparece com status 't01', nunca 'pending'", () => {
+    const db = seededDb([{ email: "a@b.com", cohort: COHORT_ASSINANTES_ATIVOS }]);
     try {
-      writeFileSync(join(testBase, "stripe-export-t01-assinantes-ativos.csv"), "email\na@b.com\n");
-      mkdirSync(join(testBase, "2605-06"), { recursive: true });
-
-      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
 
       const t01 = result.groups.filter((g) => g.status === "t01");
-      assert.ok(t01.length > 0, "deve ter entrada t01");
-      assert.equal(t01[0].group, "t01-assinantes-ativos");
+      assert.equal(t01.length, 1, "deve ter entrada t01");
+      assert.equal(t01[0].group, COHORT_ASSINANTES_ATIVOS);
       const pending = result.groups.filter((g) => g.status === "pending");
       assert.equal(pending.length, 0, "T01 nunca deve ser pending");
     } finally {
-      teardown();
+      db.close();
     }
   });
 
-  test("ciclo com mv-export verificado gera status 'verified', não 'pending'", () => {
-    setup();
+  test("ciclo com contatos mv_bucket preenchido gera status 'verified', não 'pending'", () => {
+    const db = seededDb([
+      { email: "e@f.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "verified" },
+      { email: "g@h.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "verified" },
+    ]);
     try {
-      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\nc@d.com\n");
-      mkdirSync(join(testBase, "2605-06"), { recursive: true });
-      writeFileSync(
-        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
-        "email\ne@f.com\ng@h.com\n",
-      );
-
-      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
 
       const verified = result.groups.filter((g) => g.status === "verified");
       assert.equal(verified.length, 1, "deve ter 1 entrada verified");
-      assert.equal(verified[0].group, "t02-ex-assinantes");
-      assert.equal(verified[0].verified, 2, "2 linhas de dados = 2 verificados");
+      assert.equal(verified[0].group, COHORT_EX_ASSINANTES);
+      assert.equal(verified[0].verified, 2, "2 contatos com mv_bucket='verified'");
       const pending = result.groups.filter((g) => g.status === "pending");
-      assert.equal(pending.length, 0, "não deve ter pending quando arquivo verificado existe");
+      assert.equal(pending.length, 0, "não deve ter pending quando há verificação no ciclo");
     } finally {
-      teardown();
+      db.close();
     }
   });
 
-  test("verificação PARCIAL: grupo T02+ sem arquivo verificado vira 'pending' mesmo com outro grupo verificado no mesmo ciclo", () => {
-    setup();
+  test("verificação PARCIAL: cohort sem contato verificado vira 'pending' mesmo com outro cohort verificado no mesmo ciclo", () => {
+    const db = seededDb([
+      // Dois cohorts T02+ conhecidos; só ex-assinantes tem verificação no ciclo.
+      { email: "a@b.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "verified" },
+      { email: "c@d.com", cohort: COHORT_LEADS_CAUDAO }, // conhecido, sem mv_cycle/mv_bucket
+    ]);
     try {
-      // Dois grupos T02+ na base; só um deles verificado no ciclo.
-      writeFileSync(join(testBase, "stripe-export-t02-ex-assinantes.csv"), "email\na@b.com\n");
-      writeFileSync(join(testBase, "stripe-export-t03-leads.csv"), "email\nc@d.com\n");
-      mkdirSync(join(testBase, "2605-06"), { recursive: true });
-      writeFileSync(
-        join(testBase, "2605-06", "mv-export-t02-ex-assinantes-verified.csv"),
-        "email\ne@f.com\n",
-      );
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
 
-      const result = computeMvStatus(testBase, new Date("2026-06-26T12:00:00Z"));
-
-      const t02 = result.groups.find((g) => g.group === "t02-ex-assinantes");
-      assert.equal(t02?.status, "verified", "t02 verificado");
-      const t03 = result.groups.find((g) => g.group === "t03-leads");
-      assert.equal(t03?.status, "pending", "t03 não-verificado deve aparecer como pending, não sumir");
-      assert.equal(t03?.cycle, "2605-06");
+      const exAssinantes = result.groups.find((g) => g.group === COHORT_EX_ASSINANTES);
+      assert.equal(exAssinantes?.status, "verified", "ex-assinantes verificado");
+      const leadsCaudao = result.groups.find((g) => g.group === COHORT_LEADS_CAUDAO);
+      assert.equal(leadsCaudao?.status, "pending", "leads-caudao não-verificado deve aparecer como pending, não sumir");
+      assert.equal(leadsCaudao?.cycle, "2605-06");
     } finally {
-      teardown();
+      db.close();
+    }
+  });
+
+  test("sem nenhum ciclo conhecido no store: nenhuma entrada 'pending'/'verified' pra cohorts T02+ (só t01, se houver)", () => {
+    const db = seededDb([
+      { email: "a@b.com", cohort: COHORT_ASSINANTES_ATIVOS },
+      { email: "c@d.com", cohort: COHORT_EX_ASSINANTES }, // conhecido, mas nenhum mv_cycle existe em lugar nenhum do store
+    ]);
+    try {
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
+      assert.equal(result.groups.length, 1, "só a entrada t01 (nenhum ciclo conhecido pra cross-join)");
+      assert.equal(result.groups[0].status, "t01");
+    } finally {
+      db.close();
     }
   });
 });
