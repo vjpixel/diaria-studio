@@ -353,8 +353,7 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
     <tr><td style="padding:16px 20px;">
       ${inner}
     </td></tr>
-    ${ctaButtonHtml}
-    ${afterCtaHtml ? `<tr><td style="padding:12px 20px 0;">${afterCtaHtml}</td></tr>` : ""}
+    ${ctaButtonHtml}${afterCtaHtml ? `\n    <tr><td style="padding:12px 20px 0;">${afterCtaHtml}</td></tr>` : ""}
     <tr><td style="padding:0 0 16px;"></td></tr>
   </table>
 </td></tr>`;
