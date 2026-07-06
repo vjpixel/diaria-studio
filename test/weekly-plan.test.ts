@@ -17,6 +17,8 @@ import {
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
   baseVolumeFromLastSendDay,
+  groupByBrtDay,
+  selectMatureDayCampaigns,
   DEFAULT_HEALTH_THRESHOLDS,
   MATURATION_MS,
   type HealthAggregate,
@@ -375,4 +377,82 @@ test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não
 
 test("baseVolumeFromLastSendDay — vazio retorna 0", () => {
   assert.equal(baseVolumeFromLastSendDay([]), 0);
+});
+
+// #2992 — fronteira das 48h pode rachar um dia A/B/C entre incluído/excluído.
+test("groupByBrtDay — agrupa campanhas em dias distintos corretamente", () => {
+  const camps = [
+    campaignSentHoursAgo(10, { id: 1, sentDate: "2026-07-08T12:00:00.000Z" }),
+    campaignSentHoursAgo(10, { id: 2, sentDate: "2026-07-08T13:00:00.000Z" }),
+    campaignSentHoursAgo(10, { id: 3, sentDate: "2026-07-09T12:00:00.000Z" }),
+    campaignSentHoursAgo(10, { id: 4, sentDate: null }),
+  ];
+  const grouped = groupByBrtDay(camps);
+  assert.equal(grouped.size, 2);
+  assert.deepEqual(
+    [...(grouped.get("2026-07-08")?.map((c) => c.id) ?? [])].sort(),
+    [1, 2],
+  );
+  assert.deepEqual(
+    [...(grouped.get("2026-07-09")?.map((c) => c.id) ?? [])].sort(),
+    [3],
+  );
+});
+
+test("selectMatureDayCampaigns — dia A/B/C que racha a fronteira 48h fica ATÔMICO (todo excluído)", () => {
+  // 3 células do mesmo dia BRT: 2 já maduras (>48h) e 1 ainda não (<48h) —
+  // a célula MAIS RECENTE (47.5h) ainda não cruzou 48h, então o dia inteiro
+  // deve ficar do lado IMATURO, mesmo que as outras 2 células já tenham >48h.
+  const day = [
+    campaignSentHoursAgo(47.5, { id: 1, name: "Clarice News 2607-08 — A · qua" }),
+    campaignSentHoursAgo(48.2, { id: 2, name: "Clarice News 2607-08 — B · qua" }),
+    campaignSentHoursAgo(48.5, { id: 3, name: "Clarice News 2607-08 — C · qua" }),
+  ];
+  const { mature, immature } = selectMatureDayCampaigns(day, NOW);
+  assert.deepEqual(mature, []);
+  assert.deepEqual(
+    immature.map((c) => c.id).sort(),
+    [1, 2, 3],
+  );
+});
+
+test("selectMatureDayCampaigns — dia A/B/C onde a célula mais recente já passou de 48h fica ATÔMICO (todo incluído)", () => {
+  const day = [
+    campaignSentHoursAgo(48.1, { id: 1, name: "Clarice News 2607-08 — A · qua" }),
+    campaignSentHoursAgo(49, { id: 2, name: "Clarice News 2607-08 — B · qua" }),
+    campaignSentHoursAgo(50, { id: 3, name: "Clarice News 2607-08 — C · qua" }),
+  ];
+  const { mature, immature } = selectMatureDayCampaigns(day, NOW);
+  assert.deepEqual(
+    mature.map((c) => c.id).sort(),
+    [1, 2, 3],
+  );
+  assert.deepEqual(immature, []);
+});
+
+test("render — dia A/B/C rachando a fronteira 48h aparece TODO em excluídos, nunca dividido (regressão #2992)", () => {
+  const straddling = [
+    campaignSentHoursAgo(47.5, {
+      id: 1,
+      name: "Clarice News 2607-08 — A · qua",
+      statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }),
+    }),
+    campaignSentHoursAgo(48.2, {
+      id: 2,
+      name: "Clarice News 2607-08 — B · qua",
+      statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }),
+    }),
+    campaignSentHoursAgo(48.5, {
+      id: 3,
+      name: "Clarice News 2607-08 — C · qua",
+      statistics: statsFor({ sent: 100, delivered: 99, uniqueViews: 20 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(straddling, NOW);
+  // Nenhum envio maduro ainda (o dia inteiro fica do lado imaturo) — mensagem
+  // de "aguardando maturar", e as 3 campanhas aparecem juntas na lista de espera.
+  assert.match(html, /Nenhum envio.*maduro/);
+  assert.match(html, /2607-08 — A/);
+  assert.match(html, /2607-08 — B/);
+  assert.match(html, /2607-08 — C/);
 });
