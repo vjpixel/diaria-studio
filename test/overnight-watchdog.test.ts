@@ -14,9 +14,10 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 import {
   detectStall,
@@ -25,6 +26,8 @@ import {
   findActiveRun,
   getLastRunLogActivity,
   diagnoseWatchdogActivity,
+  buildTelegramAlertRequest,
+  WATCHDOG_IO_TIMEOUT_MS,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
 
@@ -445,5 +448,78 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.equal(typeof result.elapsedMin, "number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildTelegramAlertRequest + timeouts (#2958)
+// ---------------------------------------------------------------------------
+//
+// #2958 (260704): a task Task Scheduler roda com ExecutionTimeLimit de 5 min;
+// se o watchdog ficasse pendurado num I/O sem timeout, o Task Scheduler
+// forçava o término (Last Result 267014). Dois pontos sem timeout: o fetch
+// do alerta Telegram e os execFileSync de render-halt-banner/log-event.
+
+describe("buildTelegramAlertRequest (#2958)", () => {
+  it("inclui um AbortSignal de timeout na requisição (nunca fica pendurado sem limite)", () => {
+    const { url, options } = buildTelegramAlertRequest("TOKEN123", "chat-1", "mensagem de teste");
+    assert.equal(url, "https://api.telegram.org/botTOKEN123/sendMessage");
+    assert.ok(options.signal instanceof AbortSignal, "options.signal deve ser um AbortSignal");
+    assert.equal(options.method, "POST");
+  });
+
+  it("o corpo carrega chat_id e a mensagem informados", () => {
+    const { options } = buildTelegramAlertRequest("TOKEN123", "chat-42", "stall detectado");
+    const body = JSON.parse(options.body as string);
+    assert.equal(body.chat_id, "chat-42");
+    assert.equal(body.text, "stall detectado");
+  });
+
+  it("WATCHDOG_IO_TIMEOUT_MS é um valor finito e positivo (bounded, nunca 0/Infinity)", () => {
+    assert.ok(Number.isFinite(WATCHDOG_IO_TIMEOUT_MS) && WATCHDOG_IO_TIMEOUT_MS > 0);
+  });
+});
+
+describe("main() não roda como efeito colateral de importar o módulo (#2958)", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const source = readFileSync(resolve(ROOT, "scripts/overnight-watchdog.ts"), "utf8");
+
+  it("main() está atrás de um guard de CLI (import.meta.url === pathToFileURL(process.argv[1]))", () => {
+    assert.match(
+      source,
+      /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{\s*\n\s*main\(\)/,
+      "sem o guard, importar o módulo (como este próprio arquivo de teste faz) dispara main() e roda a lógica real do watchdog contra data/overnight/ de verdade",
+    );
+  });
+
+  it("não sobrou um main() solto fora do guard (regressão: guard aplicado só a UM dos dois)", () => {
+    const bareMainCalls = source.match(/^main\(\)\.catch/gm) ?? [];
+    assert.equal(bareMainCalls.length, 0, "não deve haver chamada de main() fora do guard de CLI");
+  });
+});
+
+describe("execFileSync de render-halt-banner/log-event usam timeout limitado (#2958)", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const source = readFileSync(resolve(ROOT, "scripts/overnight-watchdog.ts"), "utf8");
+
+  it("renderHaltBanner passa timeout: WATCHDOG_IO_TIMEOUT_MS ao execFileSync", () => {
+    const rendererBlock = source.slice(
+      source.indexOf("function renderHaltBanner"),
+      source.indexOf("function emitRunLogEvent"),
+    );
+    assert.match(
+      rendererBlock,
+      /timeout:\s*WATCHDOG_IO_TIMEOUT_MS/,
+      "execFileSync do render-halt-banner deve ter timeout limitado — sem isso, um hang no script filho trava o watchdog até o Task Scheduler matá-lo (#2958)",
+    );
+  });
+
+  it("emitRunLogEvent passa timeout: WATCHDOG_IO_TIMEOUT_MS ao execFileSync", () => {
+    const emitBlock = source.slice(source.indexOf("function emitRunLogEvent"));
+    assert.match(
+      emitBlock,
+      /timeout:\s*WATCHDOG_IO_TIMEOUT_MS/,
+      "execFileSync do log-event deve ter timeout limitado (#2958)",
+    );
   });
 });
