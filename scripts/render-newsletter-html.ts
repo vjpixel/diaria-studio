@@ -48,6 +48,7 @@ export {
   stripBoxDivulgacao1,
   stripBoxDivulgacao2,
   readBoxDivulgacao1Image,
+  readBoxDivulgacao2Image,
   isBoxDivulgacaoLivros,
   extractContent,
   unescapeMd,

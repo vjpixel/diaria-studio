@@ -413,7 +413,8 @@ export function findMarkdownLinks(
  * pelo slot: `🛒` → prateleira multi-parágrafo com CTA pill (reusa
  * `renderIntroCallout` com `forceCtaPill=true`, marcador estrutural removido
  * do HTML); `📚`/`📣`/`🎉` → bold-line (reusa `renderMidCallout`, que aceita
- * imagem opcional pro slot 1). Ambos os slots chamam este dispatcher.
+ * imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos os slots
+ * chamam este dispatcher.
  */
 export function renderBoxDivulgacao(box: string, imageUrl: string | null = null): string {
   if (/^\s*🛒/u.test(box)) {
@@ -425,9 +426,10 @@ export function renderBoxDivulgacao(box: string, imageUrl: string | null = null)
 }
 
 /**
- * Box do meio (entre D1 e D2) com imagem proeminente + texto + botão CTA.
- * Sem imagem → cai no box só-texto (renderIntroCallout). Extrai o link
- * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
+ * Box de divulgação (slot 1 gap D1/D2 OU slot 2 gap D2/D3, #2978-slot2-parity)
+ * com imagem proeminente + texto + botão CTA. Sem imagem → cai no box
+ * só-texto (renderIntroCallout). Extrai o link `[texto](url)` do próprio box
+ * pra usar na imagem clicável e no botão.
  */
 export function renderMidCallout(text: string, imageUrl: string | null): string {
   if (!imageUrl) return renderIntroCallout(text);
@@ -906,7 +908,10 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
     if (content.boxDivulgacao2 && i === 1) {
       parts.push(renderDivulgacaoSeparator());
-      parts.push(renderBoxDivulgacao(content.boxDivulgacao2));
+      // #2978-slot2-parity: passa a imagem (quando presente) igual ao slot 1 —
+      // antes caía sempre em renderMidCallout(text, null) → degradava pro box
+      // só-texto (sem imagem/CTA-pill) mesmo quando o box de livros caía aqui.
+      parts.push(renderBoxDivulgacao(content.boxDivulgacao2, content.boxDivulgacao2Image ?? null));
     }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
