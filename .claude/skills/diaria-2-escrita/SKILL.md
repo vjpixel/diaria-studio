@@ -21,12 +21,20 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
 
 Os blocos Bash/Agent abaixo usam placeholders. **O Claude executando este skill substitui pelos valores reais antes de invocar cada tool.**
 
-- `$1` → AAMMDD recebido como argumento (ex: `260423`). Aparece em paths e prompts de Agent.
+- `$1` → AAMMDD recebido como argumento (ex: `260423`). Aparece em prompts de Agent e em `--edition $1` (scripts que já resolvem o layout internamente).
 - `{YYMM}` → primeiros 4 chars de `$1` (ex: `2604`). Aparece no path do Drive e no gate output.
+- `{EDIR}` → diretório REAL da edição no disco (#2463/#3024). **Nunca** monta como `data/editions/$1` — a edição pode estar no layout flat legado OU no nested novo (`data/editions/{YYMM}/$1`), dependendo de quando foi criada. Resolver **uma vez**, no Passo 0b abaixo, e reusar em todos os paths deste skill:
+  ```bash
+  EDIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve $1)
+  ```
+
+## Passo 0b — Resolver diretório real da edição (#3024)
+
+Antes de qualquer leitura/escrita em arquivo da edição, resolver `{EDIR}` (ver Placeholders acima). Todo path abaixo escrito como `{EDIR}/...` deve usar esse valor resolvido, não uma construção manual `data/editions/$1/...`.
 
 ## Pré-requisitos
 
-- `data/editions/$1/_internal/01-approved.json` deve existir com `highlights[]` (scorer já rodou na Etapa 1). Se não, avise: rode `/diaria-1-pesquisa` primeiro e aprove.
+- `{EDIR}/_internal/01-approved.json` deve existir com `highlights[]` (scorer já rodou na Etapa 1). Se não, avise: rode `/diaria-1-pesquisa` primeiro e aprove.
 
 ## Passo 0 — Task tracking setup (#904)
 
@@ -50,7 +58,7 @@ Cada task fica `pending` até o passo correspondente começar (`in_progress`) e 
 
 ## Resume
 
-Se `data/editions/$1/02-reviewed.md` já existir **e** `$2` não foi passado ou `$2 = newsletter`:
+Se `{EDIR}/02-reviewed.md` já existir **e** `$2` não foi passado ou `$2 = newsletter`:
 
 **Mid-Clarice resume (#874).** Se `_internal/02-pre-clarice.md` existir AND `_internal/02-clarice-suggestions.json` existir AND `02-reviewed.md` existir, é um sinal de que Clarice chegou a rodar pelo menos parcialmente. Re-aplicar Clarice em cima de `02-humanized.md` (que pode estar mid-state) ou em cima de `02-reviewed.md` (que pode já ter sugestões parcialmente aplicadas) corrompe o texto via double-application. Perguntar explicitamente:
 
@@ -80,7 +88,7 @@ Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — se
 Puxar versão mais recente de `01-approved.json` do Drive:
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 2 --files _internal/01-approved.json
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 2 --files _internal/01-approved.json
 ```
 
 Falha de sync = warning, **nunca bloqueia**.
@@ -96,8 +104,8 @@ Antes de passar o approved.json ao writer, truncar buckets aos limites de #358:
 
 ```bash
 npx tsx scripts/apply-stage2-caps.ts \
-  --in data/editions/$1/_internal/01-approved.json \
-  --out data/editions/$1/_internal/01-approved-capped.json
+  --in {EDIR}/_internal/01-approved.json \
+  --out {EDIR}/_internal/01-approved-capped.json
 ```
 
 Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do script (input ausente, etc.) = parar — sem caps o writer pode publicar 9 notícias quando cap esperado era 4 (caso real em 260507).
@@ -106,8 +114,8 @@ Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do 
 
 ```bash
 npx tsx scripts/translate-summaries.ts \
-  --in data/editions/$1/_internal/01-approved-capped.json \
-  --out data/editions/$1/_internal/01-approved-capped.json
+  --in {EDIR}/_internal/01-approved-capped.json \
+  --out {EDIR}/_internal/01-approved-capped.json
 ```
 
 Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de prefixo arXiv + 1ª frase + truncate 150 chars. Stitch adiciona prefix `[TRADUZIR]` em items `summary_lang === "en"`; humanizer (ou editor no gate) remove o prefix downstream.
@@ -121,7 +129,7 @@ Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de
 ```bash
 node -e "
   const fs=require('fs');
-  const j=JSON.parse(fs.readFileSync('data/editions/$1/_internal/01-approved-capped.json','utf8'));
+  const j=JSON.parse(fs.readFileSync('{EDIR}/_internal/01-approved-capped.json','utf8'));
   const n=j.highlights?.length||0;
   if(!j.highlights||n<2||n>3){
     console.error('FALLBACK: highlights.length='+n+' — fora do range {2,3}, usar writer legacy');
@@ -139,7 +147,7 @@ Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legac
 Agent({
   subagent_type: "writer-destaque",
   description: "Etapa 2 — D1 writer",
-  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path=data/editions/$1/_internal/02-d1-draft.md, image_prompt_out_path=data/editions/$1/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
+  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path={EDIR}/_internal/02-d1-draft.md, image_prompt_out_path={EDIR}/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
 })
 
 Agent({
@@ -159,23 +167,23 @@ Agent({
 Agent({
   subagent_type: "social-linkedin",
   description: "Etapa 2 — LinkedIn writer",
-  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
+  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
 })
 
 Agent({
   subagent_type: "social-facebook",
   description: "Etapa 2 — Facebook writer",
-  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
+  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
 })
 ```
 
 **Após os 3 writer-destaques retornarem, rodar stitch:**
 
 ```bash
-npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/$1/
+npx tsx scripts/stitch-newsletter.ts --edition-dir {EDIR}/
 ```
 
-Output: `data/editions/$1/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA? + seções secundárias + ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR).
+Output: `{EDIR}/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA? + seções secundárias + ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR).
 
 ### Fallback (writer único legacy)
 
@@ -185,19 +193,19 @@ Quando `highlights.length !== 3` ou falha de dispatch parallel:
 Agent({
   subagent_type: "writer",
   description: "Etapa 2 — newsletter writer (fallback legacy)",
-  prompt: "Escreve a newsletter completa da edição $1 a partir de data/editions/$1/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: data/editions/$1/_internal/02-draft.md"
+  prompt: "Escreve a newsletter completa da edição $1 a partir de {EDIR}/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: {EDIR}/_internal/02-draft.md"
 })
 
 Agent({
   subagent_type: "social-linkedin",
   description: "Etapa 2 — LinkedIn writer",
-  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
+  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
 })
 
 Agent({
   subagent_type: "social-facebook",
   description: "Etapa 2 — Facebook writer",
-  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
+  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
 })
 ```
 
@@ -216,8 +224,8 @@ Dispatchar `social-linkedin` + `social-facebook` em paralelo. Pular steps de new
 ### 2b-news — assim que `writer` retornar
 
 ```bash
-cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
 ```
 
 Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `social-facebook` retornarem.
@@ -227,13 +235,13 @@ Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `socia
 ```bash
 node -e "
   const fs=require('fs');
-  const dir='data/editions/$1/';
+  const dir='{EDIR}/';
   const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
   const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
   fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
 "
 
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 03-social.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 03-social.md
 ```
 
 Se `$2 = newsletter`, só roda 2b-news (pula 2b-soc).
@@ -247,28 +255,28 @@ Após ambos terminarem, prosseguir para Passo 3 (lint + Clarice/humanize na news
 
 ```bash
 npx tsx scripts/lint-newsletter-md.ts \
-  --md data/editions/$1/_internal/02-draft.md \
-  --approved data/editions/$1/_internal/01-approved-capped.json
+  --md {EDIR}/_internal/02-draft.md \
+  --approved {EDIR}/_internal/01-approved-capped.json
 npx tsx scripts/lint-newsletter-md.ts \
   --check title-length \
-  --md data/editions/$1/_internal/02-draft.md
+  --md {EDIR}/_internal/02-draft.md
 npx tsx scripts/lint-newsletter-md.ts \
   --check why-matters-format \
-  --md data/editions/$1/_internal/02-draft.md
+  --md {EDIR}/_internal/02-draft.md
 npx tsx scripts/lint-newsletter-md.ts \
   --check section-counts \
-  --md data/editions/$1/_internal/02-draft.md \
-  --approved data/editions/$1/_internal/01-approved-capped.json
+  --md {EDIR}/_internal/02-draft.md \
+  --approved {EDIR}/_internal/01-approved-capped.json
 npx tsx scripts/lint-newsletter-md.ts \
   --check destaque-min-chars \
-  --md data/editions/$1/_internal/02-draft.md
-npx tsx scripts/validate-domains.ts data/editions/$1/_internal/02-draft.md
+  --md {EDIR}/_internal/02-draft.md
+npx tsx scripts/validate-domains.ts {EDIR}/_internal/02-draft.md
 npx tsx scripts/normalize-newsletter.ts \
-  --in data/editions/$1/_internal/02-draft.md \
-  --out data/editions/$1/_internal/02-draft.md
+  --in {EDIR}/_internal/02-draft.md \
+  --out {EDIR}/_internal/02-draft.md
 npx tsx scripts/lint-newsletter-md.ts \
   --check section-item-format \
-  --md data/editions/$1/_internal/02-draft.md
+  --md {EDIR}/_internal/02-draft.md
 ```
 
 `--check section-item-format` (#909) roda **depois** de normalize — se ainda houver item com título+descrição na mesma linha (caso heurístico do normalize não resolveu), exit 1 = re-disparar writer com instrução explícita de quebrar.
@@ -282,15 +290,15 @@ npx tsx scripts/lint-newsletter-md.ts \
 **⚠️ Fallback REST automático (#1329, substitui fail-fast de #738; chunking #2626):** Se `<system-reminder>` indicar que o MCP Clarice ficou offline OU a chamada `mcp__clarice__correct_text` falhar com disconnect/unavailable, **não fazer halt** — cair direto no fallback REST. **Sempre passar `--corrected-out` e `--retry`** (#2626): o script chunka textos > 9k e aplica as sugestões chunk-localmente via `mergeChunkSuggestions`, gravando o texto corrigido nesse arquivo:
 ```bash
 npx tsx scripts/clarice-correct.ts \
-  --in data/editions/$1/_internal/02-draft.md \
-  --out data/editions/$1/_internal/02-clarice-suggestions.json \
-  --corrected-out data/editions/$1/_internal/02-clarice-corrected.md \
+  --in {EDIR}/_internal/02-draft.md \
+  --out {EDIR}/_internal/02-clarice-suggestions.json \
+  --corrected-out {EDIR}/_internal/02-clarice-corrected.md \
   --retry
 ```
 (Substitua `02-draft.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.)
 Exit 0 = sucesso. **Em sucesso, NÃO rodar o passo 4 (`clarice-apply.ts`)** — o texto corrigido já está pronto em `02-clarice-corrected.md` (chunk-applied). **Re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` sub-corrige textos multi-chunk** (âncora única dentro de um chunk pode aparecer 2+× no texto inteiro → pulada como ambígua). Copiar o corrigido diretamente para o working draft:
 ```bash
-cp data/editions/$1/_internal/02-clarice-corrected.md data/editions/$1/_internal/02-draft.md
+cp {EDIR}/_internal/02-clarice-corrected.md {EDIR}/_internal/02-draft.md
 ```
 Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt.
 Sempre logar warn no run-log quando cair no fallback (não silenciar — o editor precisa saber que o caminho normal falhou, mesmo que o fallback tenha funcionado).
@@ -298,29 +306,29 @@ Sempre logar warn no run-log quando cair no fallback (não silenciar — o edito
 Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.
 
 ```bash
-cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-pre-clarice.md
+cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-pre-clarice.md
 ```
 
 **Assertion obrigatória (review #889 P2).** Antes de chamar `mcp__clarice__correct_text`, verificar que o snapshot foi gravado. Se `_internal/02-pre-clarice.md` não existir nesse momento, **abortar** e logar erro:
 
 ```bash
-test -f data/editions/$1/_internal/02-pre-clarice.md || {
+test -f {EDIR}/_internal/02-pre-clarice.md || {
   npx tsx scripts/log-event.ts --edition $1 --stage 2 --agent orchestrator --level error --message "pre-clarice snapshot missing — aborting before MCP Clarice call"
   echo "ERRO: snapshot pré-Clarice ausente — abortar antes de chamar MCP Clarice. Re-rodar /diaria-2-escrita $1 do zero." >&2
   exit 1
 }
 ```
 
-1. Ler `data/editions/$1/_internal/02-draft.md`.
+1. Ler `{EDIR}/_internal/02-draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `data/editions/$1/_internal/02-clarice-suggestions.json`.
+3. Salvar sugestões: `{EDIR}/_internal/02-clarice-suggestions.json`.
 4. Aplicar via helper:
    ```bash
    npx tsx scripts/clarice-apply.ts \
-     --text-file data/editions/$1/_internal/02-draft.md \
-     --suggestions data/editions/$1/_internal/02-clarice-suggestions.json \
-     --out data/editions/$1/_internal/02-draft.md \
-     --report data/editions/$1/_internal/02-clarice-report.json
+     --text-file {EDIR}/_internal/02-draft.md \
+     --suggestions {EDIR}/_internal/02-clarice-suggestions.json \
+     --out {EDIR}/_internal/02-draft.md \
+     --report {EDIR}/_internal/02-clarice-report.json
    ```
 5. Ler `_internal/02-clarice-report.json` para extrair contagens (`applied`, `skipped`).
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
@@ -330,7 +338,7 @@ test -f data/editions/$1/_internal/02-pre-clarice.md || {
 Snapshot pré-Humanize antes de dispatchar o agent — usado para rollback se o agent falhar OU se o draft pós-humanize ficar corrompido (perda de seção, perda de URL, etc.):
 
 ```bash
-cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.pre-humanize.md
+cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-draft.pre-humanize.md
 ```
 
 ```
@@ -338,7 +346,7 @@ Agent({
   description: "Humanizar newsletter $1",
   prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
 
-Arquivo: data/editions/$1/_internal/02-draft.md
+Arquivo: {EDIR}/_internal/02-draft.md
 
 OBRIGATÓRIO — execute em ordem:
 
@@ -369,7 +377,7 @@ Regras de preservação: sem markdown (nada de **, #, - ), preservar template da
 Se o Agent retornar erro OU se uma checagem rápida pós-humanize indicar corrupção (`02-draft.md` vazio, sem seção É IA?, sem alguma das URLs originais), restaurar o snapshot:
 
 ```bash
-cp data/editions/$1/_internal/02-draft.pre-humanize.md data/editions/$1/_internal/02-draft.md
+cp {EDIR}/_internal/02-draft.pre-humanize.md {EDIR}/_internal/02-draft.md
 ```
 
 Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
@@ -379,25 +387,25 @@ Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
 Copiar o draft final para a versão que o editor revisa **antes** de rodar verify/diff — assim a verificação de URLs e o diff são feitos contra o mesmo path que o orchestrator usa (review #889 P1 — consistência de paths):
 
 ```bash
-cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
+cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
 ```
 
 `clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice (snapshot canonical `02-pre-clarice.md`) e `02-reviewed.md`, mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer:
 
 ```bash
-npx tsx scripts/validate-lancamentos.ts data/editions/$1/02-reviewed.md
+npx tsx scripts/validate-lancamentos.ts {EDIR}/02-reviewed.md
 npx tsx scripts/clarice-diff.ts \
-  data/editions/$1/_internal/02-pre-clarice.md \
-  data/editions/$1/02-reviewed.md \
-  data/editions/$1/_internal/02-clarice-diff.md
+  {EDIR}/_internal/02-pre-clarice.md \
+  {EDIR}/02-reviewed.md \
+  {EDIR}/_internal/02-clarice-diff.md
 ```
 
 **Sync intro count (#743, #876, #906) — corrigir 'Selecionamos os N mais relevantes':**
 
 ```bash
 npx tsx scripts/sync-intro-count.ts \
-  --md data/editions/$1/02-reviewed.md \
-  --lancamentos-removed data/editions/$1/_internal/02-lancamentos-removed.json
+  --md {EDIR}/02-reviewed.md \
+  --lancamentos-removed {EDIR}/_internal/02-lancamentos-removed.json
 ```
 
 Após caps (#358) + lançamentos rejeitados, o número declarado na intro pode divergir do número real de artigos no body (writer copia `coverage.line` do approved.json bruto, que não reflete os caps). Script conta URLs editoriais reais e corrige cirurgicamente — só o número, sem mexer no resto. `--lancamentos-removed` é opcional; quando ausente, sync-intro-count ignora silenciosamente o ajuste de "X lançamentos".
@@ -407,7 +415,7 @@ Após caps (#358) + lançamentos rejeitados, o número declarado na intro pode d
 ```bash
 npx tsx scripts/render-erro-intencional.ts \
   --edition $1 \
-  --md data/editions/$1/02-reviewed.md
+  --md {EDIR}/02-reviewed.md
 ```
 
 Lê `data/intentional-errors.jsonl`, encontra o erro intencional declarado da edição anterior mais recente (`is_feature: true` + `edition < $1`), compõe parágrafo de revelação com `detail` + `gabarito`, e insere/atualiza a seção `**ERRO INTENCIONAL**` no MD antes de ASSINE/encerramento. Idempotente: re-executar não duplica a seção. Sem erro anterior declarado, emite placeholder neutro ("não trazia erro intencional declarado") + convite à participação atual.
@@ -416,8 +424,8 @@ Lê `data/intentional-errors.jsonl`, encontra o erro intencional declarado da ed
 
 ```bash
 npx tsx scripts/verify-clarice-url-stability.ts \
-  --pre data/editions/$1/_internal/02-pre-clarice.md \
-  --post data/editions/$1/02-reviewed.md
+  --pre {EDIR}/_internal/02-pre-clarice.md \
+  --post {EDIR}/02-reviewed.md
 ```
 
 Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
@@ -427,7 +435,7 @@ Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir outpu
 Newsletter pós-Clarice/humanize está estável. Subir pro Drive **agora** — não esperar o social terminar (passo 4). Editor pode revisar `02-reviewed.md` no celular enquanto a pipeline de social ainda processa em paralelo. Falha não bloqueia (passo 5 sobe novamente como fallback).
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
 ```
 
 Pular se `$2 = social` (newsletter não foi processada nessa run).
@@ -439,7 +447,7 @@ Pular se `$2 = social` (newsletter não foi processada nessa run).
 ```bash
 node -e "
   const fs=require('fs');
-  const dir='data/editions/$1/';
+  const dir='{EDIR}/';
   if (fs.existsSync(dir+'_internal/03-linkedin.tmp.md')) fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
   if (fs.existsSync(dir+'_internal/03-facebook.tmp.md')) fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
 "
@@ -447,16 +455,16 @@ node -e "
 
 ### 4b. Clarice
 
-1. Ler `data/editions/$1/03-social.md`.
+1. Ler `{EDIR}/03-social.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `data/editions/$1/_internal/03-clarice-suggestions.json`.
+3. Salvar sugestões: `{EDIR}/_internal/03-clarice-suggestions.json`.
 4. Aplicar via helper:
    ```bash
    npx tsx scripts/clarice-apply.ts \
-     --text-file data/editions/$1/03-social.md \
-     --suggestions data/editions/$1/_internal/03-clarice-suggestions.json \
-     --out data/editions/$1/03-social.md \
-     --report data/editions/$1/_internal/03-clarice-report.json
+     --text-file {EDIR}/03-social.md \
+     --suggestions {EDIR}/_internal/03-clarice-suggestions.json \
+     --out {EDIR}/03-social.md \
+     --report {EDIR}/_internal/03-clarice-report.json
    ```
 5. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro**.
@@ -466,7 +474,7 @@ node -e "
 Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se as seções `# LinkedIn` / `# Facebook` / `## d1`-`d3` desaparecerem:
 
 ```bash
-cp data/editions/$1/03-social.md data/editions/$1/_internal/03-social.pre-humanize.md
+cp {EDIR}/03-social.md {EDIR}/_internal/03-social.pre-humanize.md
 ```
 
 ```
@@ -474,7 +482,7 @@ Agent({
   description: "Humanizar social $1",
   prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
 
-Arquivo: data/editions/$1/03-social.md
+Arquivo: {EDIR}/03-social.md
 
 OBRIGATÓRIO — execute em ordem:
 
@@ -500,7 +508,7 @@ Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Li
 Se o Agent retornar erro OU se a integridade dos cabeçalhos quebrar, restaurar o snapshot:
 
 ```bash
-cp data/editions/$1/_internal/03-social.pre-humanize.md data/editions/$1/03-social.md
+cp {EDIR}/_internal/03-social.pre-humanize.md {EDIR}/03-social.md
 ```
 
 Falha **não bloqueia**.
@@ -510,7 +518,7 @@ Falha **não bloqueia**.
 Social pós-Clarice/humanize está estável. Subir pro Drive **agora** — independente da newsletter (passo 3 pode já ter terminado e subido em 3e, ou ainda estar processando). Editor revisa cada arquivo assim que estabiliza, sem esperar a pipeline inteira. Falha não bloqueia (passo 5 sobe novamente como fallback).
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 03-social.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 03-social.md
 ```
 
 Pular se `$2 = newsletter` (social não foi processado nessa run).
@@ -520,7 +528,7 @@ Pular se `$2 = newsletter` (social não foi processado nessa run).
 Re-roda o push com **ambos** os arquivos. Garante que qualquer alteração pós-3e/4d (ex: editor mexendo no arquivo entre passos) seja capturada, e cobre o caso onde os pushes incrementais falharam silenciosamente. Pulado individualmente quando `$2` limita escopo.
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md,03-social.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md,03-social.md
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
@@ -529,8 +537,8 @@ Após o push, limpar os snapshots intermediários (não precisam mais — rollba
 
 ```bash
 for f in \
-  data/editions/$1/_internal/02-draft.pre-humanize.md \
-  data/editions/$1/_internal/03-social.pre-humanize.md; do
+  {EDIR}/_internal/02-draft.pre-humanize.md \
+  {EDIR}/_internal/03-social.pre-humanize.md; do
   [ -f "$f" ] && rm "$f"
 done
 ```
@@ -546,11 +554,11 @@ done
 ```
 Etapa 2 — Escrita pronta.
 
-📁 Newsletter: data/editions/$1/02-reviewed.md
+📁 Newsletter: {EDIR}/02-reviewed.md
    ⚠️  Cada destaque tem 3 opções de título — apague 2 antes de aprovar,
        ou aprove direto pra deixar o title-picker (Sonnet) escolher.
 
-📁 Social: data/editions/$1/03-social.md
+📁 Social: {EDIR}/03-social.md
 📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/
 
 Newsletter — Clarice: A aplicadas, B skipadas
@@ -575,10 +583,10 @@ Se editor já editou diretamente no arquivo/Drive antes de aprovar, este passo �
 
 ```bash
 # Pull pós-aprovação (editor pode ter podado no Drive)
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
 
 # Verificar titles-per-highlight
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md {EDIR}/02-reviewed.md
 ```
 
 Se lint retornar erro (>1 título por destaque), disparar title-picker:
@@ -587,13 +595,13 @@ Se lint retornar erro (>1 título por destaque), disparar title-picker:
 Agent({
   subagent_type: "title-picker",
   description: "Escolher título final por destaque (fallback pós-gate)",
-  prompt: "Editor aprovou Etapa 2 sem podar manualmente os 3 títulos por destaque. Leia data/editions/$1/02-reviewed.md e escolha 1 dos títulos por destaque, reescrevendo o arquivo. Preservar todo o resto. Justificar escolhas em data/editions/$1/_internal/02-title-picks.json."
+  prompt: "Editor aprovou Etapa 2 sem podar manualmente os 3 títulos por destaque. Leia {EDIR}/02-reviewed.md e escolha 1 dos títulos por destaque, reescrevendo o arquivo. Preservar todo o resto. Justificar escolhas em {EDIR}/_internal/02-title-picks.json."
 })
 ```
 
 Após title-picker, re-rodar lint:
 ```bash
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md {EDIR}/02-reviewed.md
 ```
 
 ## Passo 7b — Inserir TÍTULO/SUBTÍTULO no topo (#916)
@@ -602,7 +610,7 @@ Roda **depois** que cada destaque tem 1 só título (pós-poda manual do gate ou
 
 ```bash
 npx tsx scripts/insert-titulo-subtitulo.ts \
-  --in data/editions/$1/02-reviewed.md
+  --in {EDIR}/02-reviewed.md
 ```
 
 Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs quebrar, editor preenche manualmente como antes.
@@ -610,7 +618,7 @@ Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs que
 ## Passo 7c — Push final ao Drive
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
 ```
 
 Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
@@ -618,19 +626,19 @@ Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicion
 **Cleanup do snapshot pré-Clarice (#874).** Após o gate fechar (com ou sem title-picker), o snapshot `_internal/02-pre-clarice.md` pode ser removido — não há mais resume mid-Clarice possível pra essa edição:
 
 ```bash
-[ -f data/editions/$1/_internal/02-pre-clarice.md ] && rm data/editions/$1/_internal/02-pre-clarice.md
+[ -f {EDIR}/_internal/02-pre-clarice.md ] && rm {EDIR}/_internal/02-pre-clarice.md
 ```
 
 ## Outputs
 
-- `data/editions/$1/02-reviewed.md` — newsletter final
-- `data/editions/$1/03-social.md` — posts LinkedIn + Facebook (seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`/`## d2`/`## d3`)
-- `data/editions/$1/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
-- `data/editions/$1/_internal/02-clarice-report.json` — relatório de sugestões newsletter
-- `data/editions/$1/_internal/03-clarice-report.json` — relatório de sugestões social
+- `{EDIR}/02-reviewed.md` — newsletter final
+- `{EDIR}/03-social.md` — posts LinkedIn + Facebook (seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`/`## d2`/`## d3`)
+- `{EDIR}/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
+- `{EDIR}/_internal/02-clarice-report.json` — relatório de sugestões newsletter
+- `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social
 
 **Outputs intermediários (mid-stage, removidos no fim):**
-- `data/editions/$1/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido após o gate fechar.
+- `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido após o gate fechar.
 
 ## Notas
 

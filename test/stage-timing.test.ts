@@ -15,7 +15,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { fileToStage } from "../scripts/stage-timing.ts";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileToStage, detectLatestEditionIn } from "../scripts/stage-timing.ts";
 
 describe("fileToStage (#1405)", () => {
   it("01-eia* → Stage 1 Research", () => {
@@ -66,6 +69,32 @@ describe("fileToStage (#1405)", () => {
     assert.equal(fileToStage("README.md"), null);
     assert.equal(fileToStage("random.txt"), null);
     assert.equal(fileToStage("99-future.json"), null);
+  });
+
+  it("detectLatestEditionIn: retorna null quando editions dir não existe", () => {
+    assert.equal(detectLatestEditionIn("/nonexistent/path"), null);
+  });
+
+  it("detectLatestEditionIn: retorna null quando editions dir está vazio", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-timing-empty-"));
+    try {
+      assert.equal(detectLatestEditionIn(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2463/#3024: detectLatestEdition (via --all e auto-detect) precisa
+  // enxergar edições no layout NESTED novo, não só no flat legado.
+  it("detectLatestEditionIn: encontra a mais recente entre flat e nested misturados", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-timing-mixed-"));
+    try {
+      mkdirSync(join(dir, "260421"), { recursive: true }); // flat legado
+      mkdirSync(join(dir, "2604", "260423"), { recursive: true }); // nested novo, mais recente
+      assert.equal(detectLatestEditionIn(dir), "260423");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("nunca retorna Stage 5 ou 6 (não existem no pipeline atual)", () => {

@@ -27,12 +27,13 @@
  * cálculo testável e evita acoplamento com Beehiiv MCP shape exato.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
-import { editionsRoot } from "./lib/edition-paths.ts";
+import { editionDir as buildEditionDir, editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export interface PollResponse {
   choice: string;
@@ -62,7 +63,8 @@ export function findPreviousEdition(
   currentEdition: string,
 ): string | null {
   if (!existsSync(editionsDir)) return null;
-  const entries = readdirSync(editionsDir).filter((e) => /^\d{6}$/.test(e));
+  // #2463: enumera ambos os layouts (flat legado + nested novo).
+  const entries = [...enumerateEditionDirs(editionsDir).keys()];
   const earlier = entries.filter((e) => e < currentEdition).sort();
   return earlier.length > 0 ? earlier[earlier.length - 1] : null;
 }
@@ -147,9 +149,11 @@ function main(): void {
   const editionsDir = resolve(ROOT, editionsRoot());
   const prevEdition =
     args["prev-edition"] ?? findPreviousEdition(editionsDir, edition);
+  // #2463: edição ATUAL — write path sempre via editionDir() (produz o layout
+  // novo, nested), nunca montado à mão.
   const outPath =
     args.out ??
-    resolve(editionsDir, edition, "_internal/04-eia-poll-stats.json");
+    resolve(ROOT, buildEditionDir(edition), "_internal/04-eia-poll-stats.json");
 
   const skipBase: PollStats = {
     previous_edition: prevEdition,
@@ -168,7 +172,9 @@ function main(): void {
     return;
   }
 
-  const prevDir = resolve(editionsDir, prevEdition);
+  // #2463: edição ANTERIOR pode estar em qualquer um dos 2 layouts — resolve
+  // via o mesmo enumerate usado por findPreviousEdition, não monta à mão.
+  const prevDir = enumerateEditionDirs(editionsDir).get(prevEdition) ?? resolve(editionsDir, prevEdition);
   const meta = readEiaMeta(prevDir);
   const correctChoice =
     args["correct-choice"] ?? (meta?.ai_side ?? null);

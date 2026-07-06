@@ -21,11 +21,37 @@ import { join, resolve } from "node:path";
 import { resolveEditionDir } from "../scripts/pipeline-sentinel.ts";
 import { writeSentinel, assertSentinel, sentinelExists } from "../scripts/lib/pipeline-state.ts";
 
-describe("resolveEditionDir (#2795)", () => {
-  it("sem --dir: default é data/editions/{edition} (compat diária inalterada)", () => {
+describe("resolveEditionDir (#2795, atualizado #2463/#3024)", () => {
+  it("sem --dir e edição não existe no disco: default NESTED (#2463/#3024 — mesmo layout de editionDir())", () => {
+    // #3024: quando a edição não está em nenhum layout no disco (ex: cwd
+    // fictício de teste, ou edição nova ainda não criada), o fallback
+    // segue o layout NESTED — o mesmo que editionDir() produz a partir de
+    // #3023, não mais o flat legado hardcoded.
     const cwd = "C:/repo";
     const dir = resolveEditionDir({ edition: "260418" }, cwd);
-    assert.equal(dir, resolve(cwd, "data", "editions", "260418"));
+    assert.equal(dir, resolve(cwd, "data", "editions", "2604", "260418"));
+  });
+
+  it("sem --dir mas edição já existe FLAT no disco: resolve pro flat existente (não recria nested)", () => {
+    const root = mkdtempSync(join(tmpdir(), "pipeline-sentinel-flat-"));
+    try {
+      mkdirSync(join(root, "data", "editions", "260418"), { recursive: true });
+      const dir = resolveEditionDir({ edition: "260418" }, root);
+      assert.equal(dir, resolve(root, "data", "editions", "260418"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --dir e edição já existe NESTED no disco: resolve pro nested existente", () => {
+    const root = mkdtempSync(join(tmpdir(), "pipeline-sentinel-nested-"));
+    try {
+      mkdirSync(join(root, "data", "editions", "2604", "260418"), { recursive: true });
+      const dir = resolveEditionDir({ edition: "260418" }, root);
+      assert.equal(dir, resolve(root, "data", "editions", "2604", "260418"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("com --dir: usa o path explícito em vez de data/editions/", () => {

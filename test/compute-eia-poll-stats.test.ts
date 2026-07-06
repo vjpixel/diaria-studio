@@ -135,4 +135,12 @@ describe("findPreviousEdition", () => {
   it("retorna null se diretório não existe", () => {
     assert.equal(findPreviousEdition("/tmp/nao-existe-xyz-123", "260424"), null);
   });
+
+  // #2463/#3024: edição anterior pode estar no layout NESTED novo.
+  it("encontra edição anterior no layout NESTED (data/editions/{AAMM}/{AAMMDD})", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "eai-poll-nested-"));
+    mkdirSync(join(tmp, "260421")); // flat legado
+    mkdirSync(join(tmp, "2604", "260423"), { recursive: true }); // nested novo
+    assert.equal(findPreviousEdition(tmp, "260424"), "260423");
+  });
 });

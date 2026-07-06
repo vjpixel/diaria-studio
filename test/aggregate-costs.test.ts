@@ -158,6 +158,27 @@ describe("aggregateCosts — integração", () => {
     }
   });
 
+  // #2463/#3024: cost.md de edições no layout NESTED novo ({AAMM}/{AAMMDD})
+  // precisa ser agregado junto com o flat legado.
+  it("agrega edições em layout NESTED junto com flat legado", () => {
+    const { editionsDir } = setup();
+    try {
+      addEdition(editionsDir, "260421", SAMPLE_COST); // flat legado
+      // Nested novo — cria diretamente (addEdition monta {name}/_internal)
+      const nestedInternal = join(editionsDir, "2604", "260423", "_internal");
+      mkdirSync(nestedInternal, { recursive: true });
+      writeFileSync(join(nestedInternal, "cost.md"), SAMPLE_COST);
+
+      const result = aggregateCosts({ editionsDir });
+      assert.deepEqual(
+        result.map((e) => e.edition).sort(),
+        ["260421", "260423"],
+      );
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
   it("edições retornadas em ordem crescente", () => {
     const { editionsDir } = setup();
     try {

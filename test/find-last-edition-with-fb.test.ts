@@ -100,4 +100,34 @@ describe("findLastEditionWithFb", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #2463/#3024: edição pode estar no layout NESTED novo `{AAMM}/{AAMMDD}`
+  // em vez do flat legado — regressão pro bug corrigido em #3024.
+  it("encontra edição no layout NESTED (data/editions/{AAMM}/{AAMMDD})", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-find-nested-"));
+    try {
+      const nestedDir = join(dir, "2604", "260423");
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(join(nestedDir, "06-social-published.json"), "{}");
+      assert.equal(findLastEditionWithFb(dir, "260424"), "data/editions/2604/260423");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("encontra a mais recente entre layouts flat e nested misturados", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-find-mixed-"));
+    try {
+      // Flat legado
+      mkdirSync(join(dir, "260421"), { recursive: true });
+      writeFileSync(join(dir, "260421", "06-social-published.json"), "{}");
+      // Nested novo, mais recente
+      const nestedDir = join(dir, "2604", "260423");
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(join(nestedDir, "06-social-published.json"), "{}");
+      assert.equal(findLastEditionWithFb(dir, "260424"), "data/editions/2604/260423");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

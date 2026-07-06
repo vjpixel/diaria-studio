@@ -24,7 +24,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { parseArgsSimple as parseArgs } from "./cli-args.ts";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
@@ -199,16 +199,55 @@ export function findEditionsInProgress(
   return candidates.sort();
 }
 
+/**
+ * Resolve o path RELATIVO real de uma edição a partir do AAMMDD (#3024).
+ *
+ * Usado por SKILL.md prose (`/diaria-2-escrita` a `/diaria-6-agendamento`)
+ * pra nunca montar `data/editions/{AAMMDD}/...` à mão — a edição pode já
+ * existir no disco em QUALQUER um dos 2 layouts (flat legado ou nested novo,
+ * coexistindo até a migração real — step 3 do #2463, gated). Ordem:
+ *   1. Se existir no disco (flat OU nested) → retorna esse path exato.
+ *   2. Senão (edição ainda não criada por nenhum stage anterior) → retorna o
+ *      path NESTED (default de `editionDir()`, o layout que qualquer novo
+ *      write vai produzir a partir de #3023).
+ *
+ * Retorna path RELATIVO (ex: `data/editions/2604/260423`), com `/` mesmo
+ * no Windows — consistente com o resto da CLI (aparece em prompts/bash).
+ */
+export function resolveEditionDir(
+  editionsRootDir: string,
+  aammdd: string,
+): string {
+  const found = enumerateEditionDirs(editionsRootDir);
+  const onDisk = found.get(aammdd);
+  if (onDisk) return onDisk;
+  const aamm = aammdd.slice(0, 4);
+  return join(editionsRootDir, aamm, aammdd);
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args["resolve"]) {
+    const aammdd = args["resolve"];
+    if (!AAMMDD_RE.test(aammdd)) {
+      console.error("Uso: find-current-edition.ts --resolve <AAMMDD>");
+      process.exit(1);
+    }
+    const editionsRootDir = resolve(process.cwd(), EDITIONS_DIR);
+    const dir = resolveEditionDir(editionsRootDir, aammdd);
+    process.stdout.write(relative(process.cwd(), dir).replaceAll("\\", "/") + "\n");
+    return;
+  }
+
   const stageRaw = args["stage"];
   const stageNum = parseInt(stageRaw ?? "", 10);
   if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5 && stageNum !== 6) {
-    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6>");
+    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6> | --resolve <AAMMDD>");
     process.exit(1);
   }
   const candidates = findEditionsInProgress(stageNum as Stage);

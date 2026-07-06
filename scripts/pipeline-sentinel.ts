@@ -35,6 +35,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { resolveEditionDir as resolveFindEditionDir } from "./lib/find-current-edition.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -139,7 +140,11 @@ export function resolveEditionDir(
   cwd: string = process.cwd(),
 ): string {
   if (args.dir) return resolve(cwd, args.dir);
-  return resolve(cwd, "data", "editions", args.edition ?? "");
+  // #3024: resolve o path REAL da edição (flat legado OU nested novo, #2463)
+  // em vez de montar `data/editions/{edition}` à mão — hardcode flat quebraria
+  // pra qualquer edição criada após o cutover de editionDir() pro layout nested.
+  const editionsDirAbs = resolve(cwd, "data", "editions");
+  return resolveFindEditionDir(editionsDirAbs, args.edition ?? "");
 }
 
 function main(): void {
