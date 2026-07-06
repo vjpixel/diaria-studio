@@ -71,6 +71,62 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
 
 const EDITIONS_DIR = "data/editions";
 const AAMMDD_RE = /^\d{6}$/;
+const AAMM_RE = /^\d{4}$/;
+
+/**
+ * Enumera candidatos {aammdd → editionDirPath} olhando os DOIS layouts
+ * possíveis (#2463): o FLAT legado `data/editions/{AAMMDD}/` (ainda em uso
+ * até a migração real — step 3, gated — rodar) e o NESTED novo
+ * `data/editions/{AAMM}/{AAMMDD}/` (o que `editionDir()` já produz a partir
+ * deste PR). Coexistem no disco até a migração. Se uma mesma AAMMDD existir
+ * nos dois layouts (não deveria acontecer na prática), prefere o NESTED.
+ */
+function enumerateEditionDirs(editionsRoot: string): Map<string, string> {
+  const found = new Map<string, string>();
+  if (!existsSync(editionsRoot)) return found;
+
+  for (const entry of readdirSync(editionsRoot)) {
+    const entryPath = join(editionsRoot, entry);
+    let isDir = false;
+    try {
+      isDir = statSync(entryPath).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+
+    if (AAMMDD_RE.test(entry)) {
+      // Layout FLAT: data/editions/{AAMMDD}/
+      // Só registra se ainda não tiver entrada nested pra essa AAMMDD (nested tem prioridade,
+      // mas nesta ordem de iteração ainda não sabemos — resolvido no 2º passe abaixo).
+      if (!found.has(entry)) found.set(entry, entryPath);
+      continue;
+    }
+
+    if (AAMM_RE.test(entry)) {
+      // Layout NESTED: data/editions/{AAMM}/{AAMMDD}/
+      for (const sub of readdirSync(entryPath)) {
+        if (!AAMMDD_RE.test(sub)) continue;
+        // Sanidade: {AAMM} deve ser o prefixo de {AAMMDD}
+        if (!sub.startsWith(entry)) continue;
+        const subPath = join(entryPath, sub);
+        let subIsDir = false;
+        try {
+          subIsDir = statSync(subPath).isDirectory();
+        } catch {
+          continue;
+        }
+        if (!subIsDir) continue;
+        // Nested sempre vence — sobrescreve eventual entrada flat já registrada.
+        found.set(sub, subPath);
+      }
+      continue;
+    }
+    // Nem AAMMDD nem AAMM — ignora (ruído, ex: .tmp, archive, notes.md).
+  }
+
+  return found;
+}
 
 export function findEditionsInProgress(
   stage: Stage,
@@ -82,17 +138,9 @@ export function findEditionsInProgress(
   const reqs = STAGE_REQUIREMENTS[stage];
   const candidates: string[] = [];
 
-  for (const entry of readdirSync(editionsRoot)) {
-    if (!AAMMDD_RE.test(entry)) continue;
-    const editionDir = join(editionsRoot, entry);
-    let isDir = false;
-    try {
-      isDir = statSync(editionDir).isDirectory();
-    } catch {
-      continue;
-    }
-    if (!isDir) continue;
+  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
 
+  for (const [entry, editionDir] of editionDirsByAammdd) {
     const prereqOk = reqs.prereq.every((f) => existsSync(join(editionDir, f)));
     if (!prereqOk) continue;
 

@@ -94,11 +94,14 @@ export function editionsRoot(): string {
 }
 
 /**
- * Diretório de uma edição a partir do AAMMDD. Layout ATUAL = flat:
- * `data/editions/{AAMMDD}`. É o ÚNICO ponto de construção desse path — a
- * futura migração para `data/editions/{AAMM}/{AAMMDD}` (#2463) muda só aqui.
- * Retorna path RELATIVO sem barra final, drop-in para os call-sites no padrão
- * `data/editions/${aammdd}`. Valida o formato AAMMDD (exatamente 6 dígitos).
+ * Diretório de uma edição a partir do AAMMDD. Layout (#2463, a partir deste
+ * PR) = NESTED por mês: `data/editions/{AAMM}/{AAMMDD}`. É o ÚNICO ponto de
+ * construção desse path — a migração das pastas EXISTENTES no disco (flat →
+ * nested) é feita separadamente por `scripts/migrate-edition-layout.ts`
+ * (gated, Gate B com o editor); este helper já assume o layout novo.
+ * Retorna path RELATIVO sem barra final. Valida o formato AAMMDD (exatamente
+ * 6 dígitos) — lança erro claro em input malformado, já que é um path
+ * builder crítico para correção (rodar Stage destrutivo na pasta errada).
  */
 export function editionDir(aammdd: string): string {
   if (!/^\d{6}$/.test(aammdd)) {
@@ -106,5 +109,6 @@ export function editionDir(aammdd: string): string {
       `editionDir: AAMMDD inválido: ${JSON.stringify(aammdd)} (esperado exatamente 6 dígitos)`,
     );
   }
-  return join(editionsRoot(), aammdd);
+  const aamm = aammdd.slice(0, 4);
+  return join(editionsRoot(), aamm, aammdd);
 }
