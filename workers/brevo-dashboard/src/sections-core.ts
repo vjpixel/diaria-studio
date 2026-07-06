@@ -166,7 +166,8 @@ export function renderDashboardHtml(
   // mesmo naming, ex: engajado sexta + cold domingo, viram seções distintas
   // pela data). Sem reset placeholder (o #2871 é do diário); sem teste mensal
   // → nada. Mais recente primeiro.
-  const monthlyAbcSection = groupMonthlyAbcTests(campaigns)
+  const monthlyAbcGroups = groupMonthlyAbcTests(campaigns);
+  const monthlyAbcSection = monthlyAbcGroups
     .map((g) =>
       renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
         title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
@@ -175,6 +176,14 @@ export function renderDashboardHtml(
         id: `abc-summary-monthly-${g.cycle}-${g.dateKey}`,
       }),
     )
+    .join("\n");
+  // #2976: Resumo A/B/C por AUDIÊNCIA (Agregada/Fria/Quente) — aditivo, um bloco
+  // por ciclo mensal distinto (agrupa TODAS as datas de teste do ciclo, ao
+  // contrário de `monthlyAbcSection` acima que separa por data). Vem ANTES do
+  // detalhe cronológico por data — é a leitura primária pra decidir o teste.
+  const monthlyAbcCycles = [...new Set(monthlyAbcGroups.map((g) => g.cycle))];
+  const abcAudienceSection = monthlyAbcCycles
+    .map((cycle) => renderAbcAudienceSection(cycle, aggregateAbcByAudience(campaigns, cycle)))
     .join("\n");
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
@@ -486,6 +495,7 @@ ${weeklyPlanSection}
   <div class="tab-panel" id="panel-engajamento" role="tabpanel" aria-labelledby="tablabel-engajamento">
 ${weekdaySection}
 ${abcSection}
+${abcAudienceSection}
 ${monthlyAbcSection}
 ${cohortsSection}
 ${eiaEngagementSection}
@@ -858,6 +868,344 @@ export function groupMonthlyAbcTests(
     .sort((a, b) => (a.dateKey < b.dateKey ? 1 : a.dateKey > b.dateKey ? -1 : 0));
 }
 
+// ─── #2976: Resumo A/B/C por AUDIÊNCIA (Agregada / Fria / Quente) ────────────
+
+export type ClariceAudience = "cold" | "warm";
+
+/**
+ * Classifica o naming de uma campanha Clarice em fria (cold, nunca recebeu a
+ * newsletter) ou quente (já engajada) — sinal usado pra separar o Resumo A/B/C
+ * em 3 tabelas (#2976). Convenção de naming do editor: campanhas frias começam
+ * com "cold " (ex: "cold 2606-07 — A: subject"); campanhas quentes seguem o
+ * padrão "Clarice News ..." já reconhecido por `parseClariceCampaignKey`.
+ * Retorna `null` quando o naming não bate com nenhum dos dois padrões.
+ */
+export function classifyClariceAudience(campaignName: string): ClariceAudience | null {
+  if (/^cold\b/i.test(campaignName.trim())) return "cold";
+  if (parseClariceCampaignKey(campaignName)) return "warm";
+  return null;
+}
+
+/**
+ * Parseia uma campanha de teste A/B/C (fria OU quente) do naming pra extrair
+ * ciclo + célula, independente de audiência. Reusa `parseClariceCampaignKey`
+ * pro caso quente (mensal, "Clarice News AAMM-MM — X"); implementa um parser
+ * paralelo pro caso frio ("cold AAMM-MM — X" ou "cold AAMM-MM X"). Só campanhas
+ * com célula A/B/C explícita participam do Resumo por Audiência — envios
+ * únicos (sem A/B/C) são ignorados aqui (mesma convenção do #2360).
+ * Exportado pra teste unitário.
+ */
+export function parseAbcAudienceCampaign(
+  campaignName: string,
+): { cycle: string; cell: "A" | "B" | "C"; audience: ClariceAudience } | null {
+  const warm = parseClariceCampaignKey(campaignName);
+  if (warm && warm.cell) {
+    return { cycle: warm.cycle, cell: warm.cell, audience: "warm" };
+  }
+  const cold = campaignName.match(/^cold\s+(\d{4}-\d{2})(?:\s*[—–-]\s*|\s+)([ABC])\b/i);
+  if (cold) {
+    return { cycle: cold[1], cell: cold[2].toUpperCase() as "A" | "B" | "C", audience: "cold" };
+  }
+  return null;
+}
+
+/** Métricas por célula do Resumo A/B/C por Audiência (#2976) — superset de `CellSummary`. */
+export interface CellSummaryV2 {
+  cell: "A" | "B" | "C";
+  campaignCount: number;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  unsubscriptions: number;
+  /** opens / delivered */
+  openRate: number;
+  /** clicks / opens — qualidade da abertura */
+  ctor: number;
+  /** clicks / delivered — o "fundo do poço" do engajamento (#2976) */
+  clickRate: number;
+  /** unsub / sent */
+  unsubRate: number;
+  /** (hard+soft bounce) / sent */
+  bounceRate: number;
+  /** spam complaints / sent */
+  spamRate: number;
+}
+
+/** Resultado do teste de proporção (z-test) entre 2 células — usado para o flag de significância. */
+export interface ZTestResult {
+  z: number;
+  pValue: number;
+}
+
+/**
+ * Aproximação de Abramowitz-Stegun pra função erro — sem dependência externa
+ * (princípio "zero custo recorrente"/sem lib nova, CLAUDE.md). Erro máximo
+ * ~1.5e-7, mais que suficiente pro flag de significância (p < 0.05).
+ */
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const t = 1 / (1 + p * ax);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);
+  return sign * y;
+}
+
+function normCdf(z: number): number {
+  return 0.5 * (1 + erf(z / Math.SQRT2));
+}
+
+/**
+ * Teste de duas proporções (z-test) — compara a taxa de clique de 2 células
+ * (x1/n1 vs x2/n2). Retorna o z-score e o p-value bicaudal. Sem dependência
+ * externa (implementação from-scratch, ver `erf`). `n1`/`n2` = 0 → z=0/p=1
+ * (indeterminado, tratado como não-significativo). Exportado pra teste
+ * unitário. #2976.
+ */
+export function twoProportionZTest(x1: number, n1: number, x2: number, n2: number): ZTestResult {
+  if (n1 <= 0 || n2 <= 0) return { z: 0, pValue: 1 };
+  const p1 = x1 / n1;
+  const p2 = x2 / n2;
+  const pooled = (x1 + x2) / (n1 + n2);
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2));
+  if (se === 0) return { z: 0, pValue: 1 };
+  const z = (p1 - p2) / se;
+  const pValue = 2 * (1 - normCdf(Math.abs(z)));
+  return { z, pValue };
+}
+
+/** Limiar de significância padrão (p < 0.05) usado no flag `significantClick`. #2976 */
+export const SIGNIFICANCE_ALPHA = 0.05;
+
+export interface AbcAudienceTable {
+  cells: CellSummaryV2[];
+  /** Célula com maior open rate entre as amostradas (empate → null). */
+  leaderOpenRate: "A" | "B" | "C" | null;
+  /** Célula com maior click rate entre as amostradas (empate → null) — o "fundo do poço" que decide o teste (#2976). */
+  leaderClickRate: "A" | "B" | "C" | null;
+  /** true se a diferença de click rate entre a líder e a 2ª colocada é estatisticamente significativa (p < 0.05). */
+  significantClick: boolean;
+  /** p-value do z-test líder vs 2ª colocada (null quando não há 2 células amostradas). */
+  pValue: number | null;
+}
+
+function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
+  return {
+    cell,
+    campaignCount: 0,
+    sent: 0,
+    delivered: 0,
+    opens: 0,
+    clicks: 0,
+    unsubscriptions: 0,
+    openRate: 0,
+    ctor: 0,
+    clickRate: 0,
+    unsubRate: 0,
+    bounceRate: 0,
+    spamRate: 0,
+  };
+}
+
+/** Agrega uma lista de campanhas JÁ FILTRADA (por audiência/ciclo) em CellSummaryV2[A,B,C]. */
+function aggregateCellsV2(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string,
+  audienceFilter: ClariceAudience | "any",
+): CellSummaryV2[] {
+  const acc: Record<"A" | "B" | "C", { sent: number; delivered: number; opens: number; clicks: number; unsub: number; bounces: number; spam: number; count: number }> = {
+    A: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+    B: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+    C: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+  };
+  for (const c of campaigns) {
+    const parsed = parseAbcAudienceCampaign(c.name);
+    if (!parsed || parsed.cycle !== cycle) continue;
+    if (audienceFilter !== "any" && parsed.audience !== audienceFilter) continue;
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const s = picked.stats;
+    const a = acc[parsed.cell];
+    a.sent += s.sent ?? 0;
+    a.delivered += s.delivered ?? 0;
+    a.opens += s.uniqueViews ?? 0;
+    a.clicks += s.uniqueClicks ?? 0;
+    a.unsub += s.unsubscriptions ?? 0;
+    a.bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
+    a.spam += s.complaints ?? 0;
+    a.count += 1;
+  }
+  return (["A", "B", "C"] as const).map((cell) => {
+    const d = acc[cell];
+    if (d.count === 0) return emptyCellV2(cell);
+    return {
+      cell,
+      campaignCount: d.count,
+      sent: d.sent,
+      delivered: d.delivered,
+      opens: d.opens,
+      clicks: d.clicks,
+      unsubscriptions: d.unsub,
+      openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
+      ctor: d.opens > 0 ? (d.clicks / d.opens) * 100 : 0,
+      clickRate: d.delivered > 0 ? (d.clicks / d.delivered) * 100 : 0,
+      unsubRate: d.sent > 0 ? (d.unsub / d.sent) * 100 : 0,
+      bounceRate: d.sent > 0 ? (d.bounces / d.sent) * 100 : 0,
+      spamRate: d.sent > 0 ? (d.spam / d.sent) * 100 : 0,
+    };
+  });
+}
+
+function buildAbcAudienceTable(cells: CellSummaryV2[]): AbcAudienceTable {
+  const sampled = cells.filter((c) => c.campaignCount > 0);
+
+  function pickLeader(metric: (c: CellSummaryV2) => number): "A" | "B" | "C" | null {
+    if (sampled.length < 2) return null;
+    const max = sampled.reduce((m, c) => Math.max(m, metric(c)), -Infinity);
+    const tied = sampled.filter((c) => metric(c) === max);
+    return tied.length === 1 ? tied[0].cell : null;
+  }
+
+  const leaderOpenRate = pickLeader((c) => c.openRate);
+  const leaderClickRate = pickLeader((c) => c.clickRate);
+
+  let significantClick = false;
+  let pValue: number | null = null;
+  if (leaderClickRate && sampled.length >= 2) {
+    const leader = sampled.find((c) => c.cell === leaderClickRate)!;
+    // 2ª colocada por click rate (a que mais ameaça a liderança).
+    const runnerUp = [...sampled]
+      .filter((c) => c.cell !== leaderClickRate)
+      .sort((a, b) => b.clickRate - a.clickRate)[0];
+    if (runnerUp) {
+      const test = twoProportionZTest(leader.clicks, leader.delivered, runnerUp.clicks, runnerUp.delivered);
+      pValue = test.pValue;
+      significantClick = test.pValue < SIGNIFICANCE_ALPHA;
+    }
+  }
+
+  return { cells, leaderOpenRate, leaderClickRate, significantClick, pValue };
+}
+
+/**
+ * Agrega o Resumo A/B/C de um ciclo em 3 tabelas (#2976): Agregada (fria +
+ * quente), Fria (só campanhas classificadas `cold`) e Quente (`warm`). Cada
+ * tabela tem seu próprio LÍDER (abertura E clique) + flag de significância
+ * estatística do clique (o critério que decidiu o vencedor real no ciclo
+ * 2606-07 — abertura dava A, clique dava B). Exportado pra teste unitário.
+ */
+export function aggregateAbcByAudience(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string,
+): { aggregate: AbcAudienceTable; cold: AbcAudienceTable; warm: AbcAudienceTable } {
+  return {
+    aggregate: buildAbcAudienceTable(aggregateCellsV2(campaigns, cycle, "any")),
+    cold: buildAbcAudienceTable(aggregateCellsV2(campaigns, cycle, "cold")),
+    warm: buildAbcAudienceTable(aggregateCellsV2(campaigns, cycle, "warm")),
+  };
+}
+
+/** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. */
+function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
+  const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
+  if (cells.every((c) => c.campaignCount === 0)) {
+    return `
+  <h4 style="margin:16px 0 4px 0;">${escHtml(title)}</h4>
+  <p class="section-note"><small>Sem dados desta audiência neste ciclo.</small></p>`;
+  }
+  const orderedRows = [...cells].sort((a, b) => {
+    if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
+    if (a.campaignCount === 0) return 1;
+    if (b.campaignCount === 0) return -1;
+    return b.clickRate - a.clickRate;
+  });
+  const rows = orderedRows
+    .map((c) => {
+      if (c.campaignCount === 0) {
+        return `<tr><td><strong>Célula ${c.cell}</strong></td><td colspan="8" style="opacity:0.5;">— sem envios —</td></tr>`;
+      }
+      const openTag = c.cell === leaderOpenRate ? ` <strong style="color:${DS.brand}">▲ ABERTURA</strong>` : "";
+      const clickTag = c.cell === leaderClickRate ? ` <strong style="color:${DS.brand}">▲ CLIQUE</strong>` : "";
+      return `<tr>
+        <td><strong>Célula ${c.cell}</strong></td>
+        <td>${c.campaignCount}</td>
+        <td>${c.delivered.toLocaleString("pt-BR")}</td>
+        <td class="metric">${c.openRate.toFixed(1)}%${openTag}</td>
+        <td class="metric">${c.ctor.toFixed(1)}%</td>
+        <td class="metric">${c.clickRate.toFixed(2)}%${clickTag}</td>
+        <td>${c.clicks.toLocaleString("pt-BR")}</td>
+        <td>${c.unsubRate.toFixed(2)}%</td>
+        <td>${c.bounceRate.toFixed(2)}% / ${c.spamRate.toFixed(3)}%</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const sampled = cells.filter((c) => c.campaignCount > 0);
+  const conclusionNote =
+    sampled.length < 2
+      ? "Dados insuficientes para comparação."
+      : !leaderClickRate
+      ? "Empate no clique — aguardar mais dados."
+      : significantClick
+      ? `Vencedor por CLIQUE: <strong style="color:${DS.brand}">Célula ${leaderClickRate}</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}). Já dá pra concluir.`
+      : `Vencedor provisório por clique: <strong style="color:${DS.brand}">Célula ${leaderClickRate}</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
+
+  return `
+  <h4 style="margin:16px 0 4px 0;">${escHtml(title)}</h4>
+  <p class="section-note">${conclusionNote}</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Célula do teste A/B/C">Célula</th>
+        <th title="Dias/envios contabilizados">Envios</th>
+        <th title="Total entregue">Delivered</th>
+        <th title="Aberturas únicas ÷ delivered">Open rate</th>
+        <th title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura">CTOR</th>
+        <th title="Cliques únicos ÷ delivered — o &quot;fundo do poço&quot; do engajamento, decide o vencedor real">Click rate</th>
+        <th title="Total de cliques únicos">Cliques</th>
+        <th title="Descadastros ÷ sent">Unsub</th>
+        <th title="Bounce (hard+soft) ÷ sent / Spam ÷ sent">Bounce / Spam</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  </div>`;
+}
+
+/**
+ * Renderiza o Resumo A/B/C por Audiência (#2976) — 3 tabelas: Agregada, Fria,
+ * Quente. Substitui o agrupamento por DATA de envio (que dispersa o sinal
+ * quando fria/quente se comportam muito diferente) pelo agrupamento por TIPO
+ * de audiência, que é o que de fato decide o teste. Aditivo — as seções por
+ * data (`groupMonthlyAbcTests`/`renderAbcSection`) continuam servindo como
+ * detalhe cronológico logo abaixo. Exportado pra teste unitário.
+ */
+export function renderAbcAudienceSection(
+  cycle: string,
+  result: { aggregate: AbcAudienceTable; cold: AbcAudienceTable; warm: AbcAudienceTable },
+): string {
+  const allEmpty =
+    result.aggregate.cells.every((c) => c.campaignCount === 0) &&
+    result.cold.cells.every((c) => c.campaignCount === 0) &&
+    result.warm.cells.every((c) => c.campaignCount === 0);
+  if (allEmpty) return "";
+  return `
+<section class="phase2-section" id="abc-audience-${escHtml(cycle)}">
+  <h2 class="section-title">Resumo A/B/C por Audiência (${escHtml(cycle)})</h2>
+  <p class="section-note"><small>Agrupado por TIPO de audiência (fria = nunca recebeu; quente = base engajada), não por data de envio — o comportamento entre elas diverge o suficiente (abertura ~15% vs ~60%) pra dispersar o sinal se agrupado por data. Vencedor decidido pelo CLIQUE (click rate), não só pela abertura.</small></p>
+  ${renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate)}
+  ${renderAbcAudienceTable("Fria (nunca recebeu)", result.cold)}
+  ${renderAbcAudienceTable("Quente (já engajada)", result.warm)}
+</section>`;
+}
+
 // ─── #2134: tabela de open rate por dia da semana ────────────────────────────
 
 /**
@@ -1030,6 +1378,25 @@ export function aggregateByWeekday(
     });
 
   return { rows, excluded };
+}
+
+/**
+ * #2989: seleciona os N (default 3) melhores dias da semana por open rate
+ * agregado, entre os dias com dados (count > 0). Empates na fronteira do corte
+ * podem incluir mais de N itens (nunca corta um empate no meio — evita sugerir
+ * um dia arbitrariamente sobre outro com a mesma taxa). Pura, testável com
+ * fixtures — reusa `WeekdaySummary` já produzida por `aggregateByWeekday`
+ * (não recomputa nada). Exportado pra teste unitário.
+ */
+export function pickTopWeekdays(rows: WeekdaySummary[], n = 3): WeekdaySummary[] {
+  const sampled = rows.filter((r) => r.count > 0);
+  if (sampled.length === 0) return [];
+  const sorted = [...sampled].sort((a, b) => b.openRate - a.openRate);
+  if (sorted.length <= n) return sorted;
+  const cutoffRate = sorted[n - 1].openRate;
+  // Inclui tudo que empata com a taxa do último item dentro do corte (nunca
+  // quebra um empate arbitrariamente no meio).
+  return sorted.filter((r) => r.openRate >= cutoffRate);
 }
 
 /**

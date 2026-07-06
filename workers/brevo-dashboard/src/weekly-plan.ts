@@ -23,7 +23,7 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS } from "./sections-core.ts";
 import { fmtTimeBRT } from "./render-links.ts";
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
@@ -320,6 +320,35 @@ export function selectMatureCampaignsByDay(
 }
 
 /**
+ * #2989: renderiza a nota "melhores dias da semana" na aba Agendamento —
+ * sugestão MENSAL/MANUAL (o editor decide se migra a cadência de propósito),
+ * NUNCA troca automática. Reusa `aggregateByWeekday`/`pickTopWeekdays` (já
+ * existentes, dado histórico completo) — não recomputa nada. Vazio quando não
+ * há dados suficientes (< 2 dias com envio).
+ */
+export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date = new Date()): string {
+  const { rows } = aggregateByWeekday(campaigns, null, now);
+  const top = pickTopWeekdays(rows, 3);
+  if (top.length === 0 || rows.filter((r) => r.count > 0).length < 2) return "";
+  const topLabels = top.map((r) => WEEKDAY_LABELS[r.weekday]).join(", ");
+  const rowsHtml = top
+    .map(
+      (r) =>
+        `<tr><td><strong>${escHtml(r.label)}</strong></td><td>${r.count}</td><td class="metric">${r.openRate.toFixed(1)}%</td></tr>`,
+    )
+    .join("\n");
+  return `
+  <h3>Melhores dias da semana (abertura) — sugestão mensal</h3>
+  <p class="section-note">Melhores dias: <strong style="color:var(--brand)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Dia</th><th>Envios</th><th title="Open rate agregado (histórico completo)">Open rate agr.</th></tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  </div>`;
+}
+
+/**
  * Renderiza a aba "Rampa" do dashboard — semáforo, agregado maduro, quais
  * campanhas entraram vs foram excluídas por imaturidade (<48h, transparência
  * pro editor), e a recomendação de volume dos próximos 3 envios (sem data fixa).
@@ -480,6 +509,7 @@ ${metricRows}
   </table>
   </div>
   ${planSection}
+  ${renderTopWeekdaysSection(campaigns, now)}
   <details>
     <summary>Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
     <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
