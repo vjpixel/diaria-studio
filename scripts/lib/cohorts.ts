@@ -38,6 +38,20 @@ export const COHORT_ASSINANTES_ATIVOS = "assinantes-ativos";
 export const COHORT_EX_ASSINANTES = "ex-assinantes";
 export const COHORT_LEADS_CAUDAO = "leads-caudao";
 
+/**
+ * Cohort é isento de verificação MillionVerifier (#1297, #2886 PR3 review)?
+ * Hoje só `assinantes-ativos` — pagamento Stripe já valida implicitamente.
+ * Predicado ÚNICO compartilhado entre `classifyEligibility` (clarice-db.ts —
+ * decide `send_eligible`/`mv_unverified`) e `verify-emails-mv.ts` (decide se
+ * um `--cohort` é sequer verificável). Antes da extração (#2886 PR3 review),
+ * cada site comparava `cohort === COHORT_ASSINANTES_ATIVOS` de forma
+ * independente; um 2º cohort isento no futuro exigiria lembrar de atualizar
+ * os dois pontos — agora só este predicado muda.
+ */
+export function isMvExemptCohort(cohort: string | null | undefined): boolean {
+  return cohort === COHORT_ASSINANTES_ATIVOS;
+}
+
 // ---------------------------------------------------------------------------
 // Emails internos (#2809) — editor + parceiro Clarice. Abrem/testam envios
 // por ofício; o engajamento deles não é sinal de audiência. Movido pra cá

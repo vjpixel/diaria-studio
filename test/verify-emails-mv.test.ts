@@ -6,11 +6,14 @@ import {
   buildVerifyUrl,
   mvOutputBase,
   readStoreCandidates,
+  cohortMemberCount,
+  hasLegacyInputFlag,
   splitRows,
   parseArgs,
   type Bucket,
 } from "../scripts/verify-emails-mv.ts";
 import { SCHEMA } from "../scripts/lib/clarice-db.ts";
+import { isMvExemptCohort, COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 
 describe("mvOutputBase (proveniência: cohort → mv-export-{cohort}, #2886 PR3)", () => {
   it("prefixa mv-export- ao slug de cohort", () => {
@@ -106,6 +109,71 @@ describe("readStoreCandidates (#2886 PR3 — fonte = store, não CSV)", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("mv_bucket='' (string vazia) é tratado como nunca-verificado, igual a NULL (review #2886 PR3 — mesma convenção de classifyEligibility)", () => {
+    const db = seedDb([
+      { email: "empty@b.com", cohort: "ex-assinantes", mv_bucket: "" },
+      { email: "null@b.com", cohort: "ex-assinantes", mv_bucket: null },
+      { email: "verified@b.com", cohort: "ex-assinantes", mv_bucket: "verified" },
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "ex-assinantes");
+      assert.deepEqual(rows.map((r) => r.email).sort(), ["empty@b.com", "null@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("cohortMemberCount (#2886 PR3 review — distingue '0 já verificado' de '0 membros no store')", () => {
+  it("conta todos os membros do cohort, verificados ou não", () => {
+    const db = seedDb([
+      { email: "a@b.com", cohort: "ex-assinantes", mv_bucket: null },
+      { email: "b@b.com", cohort: "ex-assinantes", mv_bucket: "verified" },
+      { email: "c@b.com", cohort: "leads-2026-06", mv_bucket: null },
+    ]);
+    try {
+      assert.equal(cohortMemberCount(db, "ex-assinantes"), 2);
+      assert.equal(cohortMemberCount(db, "leads-2026-06"), 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cohort sem NENHUM membro no store retorna 0 (sinal de provável typo)", () => {
+    const db = seedDb([{ email: "a@b.com", cohort: "ex-assinantes", mv_bucket: null }]);
+    try {
+      assert.equal(cohortMemberCount(db, "leads-2026-07"), 0);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("hasLegacyInputFlag (#2886 PR3 review — --input removido não pode cair silenciosamente no --cohort default)", () => {
+  it("detecta --input em qualquer posição do argv", () => {
+    assert.equal(hasLegacyInputFlag(["--cycle", "2605-06", "--input", "stripe-export-ex-assinantes.csv"]), true);
+    assert.equal(hasLegacyInputFlag(["--input", "x.csv"]), true);
+  });
+
+  it("argv sem --input retorna false", () => {
+    assert.equal(hasLegacyInputFlag(["--cycle", "2605-06", "--cohort", "ex-assinantes"]), false);
+    assert.equal(hasLegacyInputFlag([]), false);
+  });
+});
+
+describe("isMvExemptCohort (cohorts.ts — predicado compartilhado com classifyEligibility, #2886 PR3 review)", () => {
+  it("assinantes-ativos é isento", () => {
+    assert.equal(isMvExemptCohort(COHORT_ASSINANTES_ATIVOS), true);
+    assert.equal(isMvExemptCohort("assinantes-ativos"), true);
+  });
+
+  it("qualquer outro cohort (ou null/undefined) não é isento", () => {
+    assert.equal(isMvExemptCohort("ex-assinantes"), false);
+    assert.equal(isMvExemptCohort("leads-2026-06"), false);
+    assert.equal(isMvExemptCohort(null), false);
+    assert.equal(isMvExemptCohort(undefined), false);
   });
 });
 
