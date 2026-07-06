@@ -10,8 +10,17 @@
  * rankeando por recência acima dos buckets legados que herdariam o mesmo tier
  * residual do merge — ver test/clarice-segment.test.ts, equivalência (a)/(b)).
  *
- * NÃO dispara, NÃO faz fetch ao vivo, NÃO escreve nada — só lê o store
- * (#2647) e imprime um relatório comparativo lado a lado.
+ * NÃO dispara, NÃO escreve nada além do relatório opcional (`--out`) — só lê
+ * o store (#2647) e imprime um relatório comparativo lado a lado.
+ *
+ * Paridade preview vs. real (#2994/#3015): se `BREVO_CLARICE_API_KEY` estiver
+ * definida, faz UMA consulta opcional e não-bloqueante à Brevo
+ * (`fetchQueuedCampaignListIds`) pra excluir do universo firstSend contatos
+ * já comprometidos com uma campanha `queued` — mesmo guard aplicado em
+ * `clarice-build-edition-sends.ts`/`weekly-send-plan-audience.ts`, senão o
+ * preview aqui divergiria do que o build real selecionaria. Sem a chave, ou
+ * se a consulta falhar, o script segue normalmente sem o filtro (avisando) —
+ * é uma ferramenta de inspeção read-only, nunca bloqueia por causa disso.
  *
  * ⚠️ O relatório contém EMAILS (PII) nas top-N posições de cada ordem — mesma
  * ressalva de scripts/lib/clarice-waves-dryrun.ts: manter local, não commitar.
@@ -24,9 +33,10 @@
 
 import { writeFileSync } from "node:fs";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { loadStoreRows, isFirstSend, type StoreRow } from "./lib/clarice-segment.ts";
+import { loadStoreRows, isFirstSend, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { cohortSendRank } from "./lib/cohorts.ts";
 import { getArg } from "./lib/cli-args.ts";
+import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 const DEFAULT_TOP = 50;
 
@@ -167,13 +177,13 @@ ${diffRows}
 `;
 }
 
-export function main(argv: string[] = process.argv.slice(2)): void {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const top = Number(getArg(argv, "top")) || DEFAULT_TOP;
   const out = getArg(argv, "out");
 
   const db = openClariceDb(dbPath);
-  const rows = loadStoreRows(db);
+  let rows = loadStoreRows(db);
   db.close();
 
   if (rows.length === 0) {
@@ -182,6 +192,28 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         `clarice-sync-brevo.ts antes. Comparar ordens sobre um store vazio é inútil.`,
     );
     process.exit(1);
+  }
+
+  // #2994/#3015: paridade preview vs. real — opcional, nunca bloqueia (ver docstring).
+  const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  if (apiKey) {
+    try {
+      const queuedListIds = await fetchQueuedCampaignListIds(apiKey);
+      if (queuedListIds.size > 0) {
+        const before = rows.length;
+        rows = excludeCommittedToQueuedCampaigns(rows, queuedListIds);
+        const excluded = before - rows.length;
+        if (excluded > 0) {
+          console.error(
+            `🔒 excludeCommittedToQueuedCampaigns (#2994/#3015): ${excluded} contato(s) já comprometidos com campanha agendada (queued) — excluídos do preview.`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️  Não foi possível consultar campanhas agendadas (queued) na Brevo — preview segue sem o filtro: ${err instanceof Error ? err.message : err}`);
+    }
+  } else {
+    console.warn("⚠️  BREVO_CLARICE_API_KEY não definida — preview segue sem excluir campanhas agendadas (queued).");
   }
 
   const cmp = compareOrders(rows, top);
@@ -202,5 +234,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
 }

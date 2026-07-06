@@ -67,7 +67,13 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { segmentFromStore, priorityQueue, resolveCohortArg, type StoreRow } from "./lib/clarice-segment.ts";
+import {
+  segmentFromStore,
+  priorityQueue,
+  resolveCohortArg,
+  excludeCommittedToQueuedCampaigns,
+  type StoreRow,
+} from "./lib/clarice-segment.ts";
 import {
   loadSendPlan,
   allBlocks,
@@ -79,6 +85,7 @@ import {
 } from "./lib/send-plan.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
+import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 loadProjectEnv();
 
@@ -476,7 +483,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   try {
     storeRows = db
       .prepare(
-        `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count
+        `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
+                brevo_list_ids
            FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
       )
       .all(...(cohort ? [cohort] : [])) as unknown as (StoreRow & { name?: string | null })[];
@@ -498,11 +506,49 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const nameByEmail = new Map(storeRows.map((r) => [r.email, firstName(r.name)]));
   const seg = segmentFromStore(storeRows);
-  const queue = priorityQueue(seg);
+  let queue = priorityQueue(seg);
 
   console.error(
     `Fila de prioridade: ${queue.length} elegíveis (re-envio=${seg.reSend.length} 1º-envio=${seg.firstSend.length} excluídos=${seg.excluded.length})`,
   );
+
+  // #3015 (#2994 incompleto): mesmo guard P0 já wired em
+  // weekly-send-plan-audience.ts — exclui da fila quem pertence a uma lista
+  // Brevo com campanha AGENDADA (queued) mas ainda não disparada.
+  // `sends_count=0` sozinho não distingue "nunca agendado" de "agendado,
+  // ainda não disparado" (ver docstring de `excludeCommittedToQueuedCampaigns`
+  // em clarice-segment.ts). Este script escreve CSVs REAIS (consumidos por
+  // clarice-import-waves.ts) — mesma criticidade do weekly-plan, então
+  // mesma semântica fail-safe: sem a chave (ou se a consulta falhar),
+  // `--dry-run` prossegue com aviso; escrita real é bloqueada.
+  const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  if (apiKey) {
+    try {
+      const queuedListIds = await fetchQueuedCampaignListIds(apiKey);
+      if (queuedListIds.size > 0) {
+        const before = queue.length;
+        queue = excludeCommittedToQueuedCampaigns(queue, queuedListIds);
+        const excluded = before - queue.length;
+        if (excluded > 0) {
+          console.error(
+            `🔒 excludeCommittedToQueuedCampaigns (#2994/#3015): ${excluded} contato(s) já comprometidos com campanha agendada (queued) — excluídos da fila.`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️  Não foi possível consultar campanhas agendadas (queued) na Brevo: ${err instanceof Error ? err.message : err}`);
+      if (!dryRun) {
+        console.error("❌ escrita real requer a checagem de campanhas agendadas (queued) bem-sucedida — evita envio duplicado. Abortando.");
+        process.exit(1);
+      }
+    }
+  } else {
+    console.warn("⚠️  BREVO_CLARICE_API_KEY não definida — checagem de campanhas agendadas (queued) pulada.");
+    if (!dryRun) {
+      console.error("❌ escrita real requer BREVO_CLARICE_API_KEY (checagem de campanhas agendadas/queued é obrigatória — evita envio duplicado). Abortando.");
+      process.exit(1);
+    }
+  }
 
   // #2883: guard anti-duplo-envio POR CICLO — exclui da fila quem já foi
   // designado numa wave anterior deste ciclo (dedup por CONTEÚDO dos CSVs já

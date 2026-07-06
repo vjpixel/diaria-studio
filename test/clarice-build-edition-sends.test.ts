@@ -17,7 +17,12 @@ import {
 } from "../scripts/clarice-build-edition-sends.ts";
 import type { SendsSummaryEntry } from "../scripts/lib/send-plan.ts";
 import type { SendPlanEntry } from "../scripts/lib/send-plan.ts";
-import type { StoreRow } from "../scripts/lib/clarice-segment.ts";
+import {
+  segmentFromStore,
+  priorityQueue,
+  excludeCommittedToQueuedCampaigns,
+  type StoreRow,
+} from "../scripts/lib/clarice-segment.ts";
 import { CLARICE_SEED_EMAIL } from "../scripts/lib/clarice-seed.ts";
 import { cohortFromTier } from "../scripts/lib/cohorts.ts";
 
@@ -584,5 +589,64 @@ describe("regressão #2915 — buildSends recebe só o plano EM ESCOPO (não o p
       "wave 2 prioriza quem tem prioridade mais alta remanescente (u6-u11 promovidos), não pula pra u12-u17",
     );
     assert.deepEqual([...wave2Emails].filter((e) => wave1Emails.has(e)), [], "ainda disjunta da wave 1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3015 (#2994 incompleto): excludeCommittedToQueuedCampaigns precisa ser
+// aplicado sobre a MESMA fila (segmentFromStore -> priorityQueue) que
+// clarice-build-edition-sends.ts usa pra escrever os CSVs reais — não só em
+// weekly-send-plan-audience.ts. Réplica do cenário do incidente 260706: um
+// contato com sends_count=0 (ainda "1º envio") cuja `brevo_list_ids` inclui
+// uma lista vinculada a uma campanha Brevo `queued` deve ser excluído ANTES
+// de entrar em `buildSends` — senão o script duplica o envio numa campanha
+// agendada imutável.
+// ---------------------------------------------------------------------------
+
+describe("#3015: guard de campanha queued aplicado sobre a fila de clarice-build-edition-sends.ts", () => {
+  function storeRow(p: Partial<StoreRow> & { email: string }): StoreRow {
+    const tier = p.tier ?? null;
+    return {
+      tier,
+      cohort: cohortFromTier(tier),
+      priority_points: 0,
+      send_eligible: 1,
+      ineligible_reason: null,
+      sends_count: 0,
+      ...p,
+    };
+  }
+
+  it("contato com sends_count=0 e brevo_list_ids sobrepondo lista queued é excluído da fila real (era o bug)", () => {
+    const rows: StoreRow[] = [
+      storeRow({ email: "committed@x.com", tier: 3, sends_count: 0, brevo_list_ids: '["68"]' }),
+      storeRow({ email: "fresh@x.com", tier: 3, sends_count: 0, brevo_list_ids: '["99"]' }),
+    ];
+    const seg = segmentFromStore(rows);
+    const queue = priorityQueue(seg);
+    assert.deepEqual(
+      queue.map((r) => r.email).sort(),
+      ["committed@x.com", "fresh@x.com"],
+      "sem o guard, ambos entrariam na fila (bug reportado na #3015)",
+    );
+
+    // Mesma chamada que main() de clarice-build-edition-sends.ts agora aplica
+    // antes de fatiar por bloco (buildSends).
+    const filtered = excludeCommittedToQueuedCampaigns(queue, new Set(["68"]));
+    assert.deepEqual(
+      filtered.map((r) => r.email),
+      ["fresh@x.com"],
+      "committed@x.com (lista 68, campanha queued) deve ser excluído — não pode ir pra buildSends",
+    );
+  });
+
+  it("sem campanhas queued (Set vazio), fila permanece intocada", () => {
+    const rows: StoreRow[] = [
+      storeRow({ email: "a@x.com", tier: 3, sends_count: 0, brevo_list_ids: '["68"]' }),
+    ];
+    const seg = segmentFromStore(rows);
+    const queue = priorityQueue(seg);
+    const filtered = excludeCommittedToQueuedCampaigns(queue, new Set());
+    assert.deepEqual(filtered.map((r) => r.email), ["a@x.com"]);
   });
 });
