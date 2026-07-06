@@ -67,6 +67,13 @@ export interface StoreRow {
   opens_count?: number;
   last_sent_at?: string | null;
   mv_bucket?: string | null;
+  // #2994: JSON array (string) de list_ids Brevo que o contato pertence, tal
+  // como sincronizado pelo Brevo sync (`brevo_list_ids` — coluna TEXT em
+  // clarice-db.ts). Opcional (mesmo padrão de opens_count/last_sent_at/
+  // mv_bucket acima) — fixtures que não populam este campo continuam válidos;
+  // `excludeCommittedToQueuedCampaigns` trata ausência/parse-falho como "sem
+  // list nenhuma" (não exclui por engano).
+  brevo_list_ids?: string | null;
 }
 
 export interface Segmentation {
@@ -234,10 +241,60 @@ export function loadStoreRows(db: {
   return db
     .prepare(
       `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-              opens_count, last_sent_at, mv_bucket
+              opens_count, last_sent_at, mv_bucket, brevo_list_ids
          FROM clarice_users`,
     )
     .all() as StoreRow[];
+}
+
+/**
+ * Parseia `brevo_list_ids` (JSON array serializado na coluna TEXT) num array
+ * de string de list_ids. Tolerante: ausente/vazio/JSON inválido/não-array →
+ * `[]` (nunca lança) — trata dado corrompido como "sem membership conhecida"
+ * em vez de derrubar o pipeline de seleção inteiro por um valor ruim.
+ */
+export function parseBrevoListIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((v) => String(v));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #2994 (P0): exclui da seleção contatos que pertencem a alguma lista Brevo
+ * com campanha AGENDADA (`queued`/`scheduled`) mas ainda NÃO enviada.
+ *
+ * Contexto do bug: o corte de segurança existente (`sends_count=0` via
+ * `isFirstSend`/`isRampWarm`) só sabe distinguir "já recebeu" de "nunca
+ * recebeu" — um contato cujo envio já foi AGENDADO (mas ainda não disparado)
+ * continua com `sends_count=0` (só incrementa depois do envio de fato), então
+ * a seleção atual o trataria como "fresh" e o selecionaria de novo pro
+ * PRÓXIMO envio agendado antes do primeiro sair. Como campanha agendada no
+ * Brevo é IMUTÁVEL (não dá pra desagendar/deletar depois), esse duplicado só
+ * seria descoberto tarde demais.
+ *
+ * `queuedListIds` vem de uma consulta FRESCA à Brevo (`GET /v3/emailCampaigns
+ * ?status=queued` → `recipients.lists` de cada campanha) — ver
+ * `fetchQueuedCampaignListIds` neste módulo. Aqui só a parte PURA/testável:
+ * cruza `brevo_list_ids` de cada linha contra o Set de listas comprometidas.
+ *
+ * Não distingue send_eligible/isFirstSend — é uma camada adicional aplicada
+ * SOBRE o resultado de `segmentRampWarm`/`segmentFromStore`/etc, não um
+ * substituto. Puro, testável sem rede.
+ */
+export function excludeCommittedToQueuedCampaigns<T extends Pick<StoreRow, "brevo_list_ids">>(
+  rows: T[],
+  queuedListIds: ReadonlySet<string>,
+): T[] {
+  if (queuedListIds.size === 0) return rows.slice();
+  return rows.filter((r) => {
+    const lists = parseBrevoListIds(r.brevo_list_ids);
+    return !lists.some((id) => queuedListIds.has(id));
+  });
 }
 
 // ---------------------------------------------------------------------------

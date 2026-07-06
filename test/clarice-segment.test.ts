@@ -20,6 +20,8 @@ import {
   segmentRampWarm,
   isNamedGroupKey,
   NAMED_GROUPS,
+  parseBrevoListIds,
+  excludeCommittedToQueuedCampaigns,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
@@ -800,4 +802,89 @@ test("#2885 grupos nomeados: --budget-like corte pega o TOPO pós-ordenação (n
   assert.deepEqual(ordered, ["a@x.com", "b@x.com", "c@x.com"]);
   // simula o corte de --budget=2 do CLI: sempre os 2 primeiros da ordem certa.
   assert.deepEqual(ordered.slice(0, 2), ["a@x.com", "b@x.com"]);
+});
+
+// ---------------------------------------------------------------------------
+// #2994 (P0): excludeCommittedToQueuedCampaigns — evita envio duplicado a
+// contatos já comprometidos com uma campanha AGENDADA (queued) mas ainda não
+// enviada. sends_count=0 sozinho não distingue "nunca agendado" de
+// "agendado, ainda não disparado" — ver comentário no fonte.
+// ---------------------------------------------------------------------------
+
+test("parseBrevoListIds: parseia JSON array válido, tolera ausente/vazio/inválido/não-array", () => {
+  assert.deepEqual(parseBrevoListIds('["68","70"]'), ["68", "70"]);
+  assert.deepEqual(parseBrevoListIds(null), []);
+  assert.deepEqual(parseBrevoListIds(undefined), []);
+  assert.deepEqual(parseBrevoListIds(""), []);
+  assert.deepEqual(parseBrevoListIds("not json"), []);
+  assert.deepEqual(parseBrevoListIds('{"not":"array"}'), []);
+  assert.deepEqual(parseBrevoListIds("[68, 70]"), ["68", "70"]); // números viram string
+});
+
+test("excludeCommittedToQueuedCampaigns: contato em lista com campanha queued é EXCLUÍDO mesmo com sends_count=0 (#2994 cenário real)", () => {
+  // Réplica do incidente 260706: campanha 87 agendada pra lista 68, contatos
+  // ainda com sends_count=0 (não dispararam) — precisam sumir da PRÓXIMA
+  // seleção antes da campanha 87 sair, senão duplica.
+  const rows = [
+    row({ email: "committed@x.com", sends_count: 0, brevo_list_ids: '["68"]' }),
+    row({ email: "fresh@x.com", sends_count: 0, brevo_list_ids: '["99"]' }),
+  ];
+  const queuedListIds = new Set(["68"]);
+  const result = excludeCommittedToQueuedCampaigns(rows, queuedListIds);
+  assert.deepEqual(
+    result.map((r) => r.email),
+    ["fresh@x.com"],
+  );
+});
+
+test("excludeCommittedToQueuedCampaigns: contato em lista cuja campanha já foi SENT não é afetado (comportamento inalterado — já coberto por sends_count)", () => {
+  // Campanha já enviada não aparece em queuedListIds (só status=queued é
+  // consultado) — então mesmo contato de uma lista de campanha `sent` passa
+  // batido por esta função; o corte de repetição pra ele já é feito à
+  // montante por isFirstSend/sends_count>0.
+  const rows = [
+    row({ email: "already-sent@x.com", sends_count: 1, brevo_list_ids: '["50"]' }),
+  ];
+  const queuedListIds = new Set(["68"]); // lista 50 (da campanha sent) não está aqui
+  const result = excludeCommittedToQueuedCampaigns(rows, queuedListIds);
+  assert.deepEqual(result.map((r) => r.email), ["already-sent@x.com"]);
+});
+
+test("excludeCommittedToQueuedCampaigns: contato sem envio pendente permanece elegível normalmente", () => {
+  const rows = [
+    row({ email: "no-pending@x.com", sends_count: 0, brevo_list_ids: '["10","20"]' }),
+  ];
+  const result = excludeCommittedToQueuedCampaigns(rows, new Set(["68", "70"]));
+  assert.deepEqual(result.map((r) => r.email), ["no-pending@x.com"]);
+});
+
+test("excludeCommittedToQueuedCampaigns: queuedListIds vazio é no-op (retorna cópia, não muta)", () => {
+  const rows = [row({ email: "a@x.com", brevo_list_ids: '["1"]' })];
+  const result = excludeCommittedToQueuedCampaigns(rows, new Set());
+  assert.deepEqual(result, rows);
+  assert.notEqual(result, rows); // cópia, não a mesma referência
+});
+
+test("excludeCommittedToQueuedCampaigns: brevo_list_ids ausente/corrompido nunca exclui por engano (fail-safe)", () => {
+  const rows = [
+    row({ email: "no-lists@x.com" }), // brevo_list_ids ausente
+    row({ email: "bad-json@x.com", brevo_list_ids: "not json" }),
+  ];
+  const result = excludeCommittedToQueuedCampaigns(rows, new Set(["68"]));
+  assert.deepEqual(
+    result.map((r) => r.email).sort(),
+    ["bad-json@x.com", "no-lists@x.com"],
+  );
+});
+
+test("excludeCommittedToQueuedCampaigns: aplica sobre segmentRampWarm real (integração com o gate de produção)", () => {
+  const rows: StoreRow[] = [
+    row({ email: "warm-committed@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: '["68"]' }),
+    row({ email: "warm-fresh@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: '["99"]' }),
+    row({ email: "not-verified@x.com", sends_count: 0, mv_bucket: "unknown", brevo_list_ids: '["99"]' }),
+  ];
+  const rampWarm = segmentRampWarm(rows);
+  assert.deepEqual(rampWarm.map((r) => r.email).sort(), ["warm-committed@x.com", "warm-fresh@x.com"]);
+  const filtered = excludeCommittedToQueuedCampaigns(rampWarm, new Set(["68"]));
+  assert.deepEqual(filtered.map((r) => r.email), ["warm-fresh@x.com"]);
 });
