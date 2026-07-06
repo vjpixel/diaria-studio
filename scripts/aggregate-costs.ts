@@ -19,7 +19,6 @@
 
 import {
   existsSync,
-  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -27,6 +26,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export interface StageCost {
   stage: string;
@@ -147,17 +147,14 @@ export function aggregateCosts(opts: AggregateOptions): EditionCost[] {
   if (!existsSync(editionsDir)) return [];
 
   const editions: EditionCost[] = [];
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir).filter((d) => /^\d{6}$/.test(d));
-  } catch {
-    return [];
-  }
+  // #2463: enumera ambos os layouts (flat legado + nested novo).
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const dirs = [...editionDirsByAammdd.keys()];
 
   for (const edition of dirs) {
     if (opts.since && edition < opts.since) continue;
     if (opts.until && edition > opts.until) continue;
-    const costPath = resolve(editionsDir, edition, "_internal/cost.md");
+    const costPath = resolve(editionDirsByAammdd.get(edition)!, "_internal/cost.md");
     if (!existsSync(costPath)) continue;
     const content = readFileSync(costPath, "utf8");
     const stages = parseCostMd(content);

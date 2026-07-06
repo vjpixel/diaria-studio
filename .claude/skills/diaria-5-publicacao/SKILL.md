@@ -23,6 +23,11 @@ Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 4 (Revisão) aprovado e Stage 5 incompleto. Rode /diaria-4-revisao primeiro ou passe AAMMDD explicitamente.`
   - **Se `candidates.length >= 2`**: perguntar ao editor qual.
 
+**`{EDITION_DIR}` (#2463/#3024):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Resolver **uma vez** logo após ter `{AAMMDD}`, e usar em todo path abaixo que hoje aparece como `{EDITION_DIR}/`:
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 Crítico: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar na edição errada causa publicação real de conteúdo desatualizado.
 
 ## Pré-requisitos
@@ -69,9 +74,9 @@ Modo de publicação para esta edição (default = tudo automático):
   [1] Beehiiv automático  — top-level segue context/publishers/beehiiv-playbook.md
   [2] Beehiiv manual      — você faz o paste no Beehiiv
   [3] LinkedIn automático — Worker queue + Make webhook (agenda 17:00 BRT)
-  [4] LinkedIn manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
+  [4] LinkedIn manual     — você posta; copy: {EDITION_DIR}/03-social.md
   [5] Facebook automático — Graph API agenda os 3 posts
-  [6] Facebook manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
+  [6] Facebook manual     — você posta; copy: {EDITION_DIR}/03-social.md
 
 Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
 ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar.
@@ -86,7 +91,7 @@ Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-5.md` com
 
 ```bash
 npx tsx scripts/preflight-poll-dispatch.ts --edition {AAMMDD}
-npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
+npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
 ```
 
 ### Etapa 5b — Publicação paralela (#38)

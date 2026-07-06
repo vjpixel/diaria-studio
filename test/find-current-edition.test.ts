@@ -199,4 +199,80 @@ describe("findEditionsInProgress", () => {
       cleanup();
     }
   });
+
+  // #2463: layout nested convive com o flat legado até a migração (step 3, gated) rodar.
+  describe("#2463: dual-layout (flat legado + nested novo)", () => {
+    function makeNestedEdition(
+      root: string,
+      aammdd: string,
+      files: string[],
+    ): void {
+      const aamm = aammdd.slice(0, 4);
+      const editionDir = join(root, "data/editions", aamm, aammdd);
+      for (const f of files) {
+        const full = join(editionDir, f);
+        mkdirSync(join(full, ".."), { recursive: true });
+        writeFileSync(full, "x");
+      }
+    }
+
+    it("finds an in-progress edition in the OLD flat layout", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeEdition(root, "260505", ["_internal/01-approved.json"]);
+        assert.deepEqual(findEditionsInProgress(2, root), ["260505"]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("finds an in-progress edition in the NEW nested layout", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeNestedEdition(root, "260706", ["_internal/01-approved.json"]);
+        assert.deepEqual(findEditionsInProgress(2, root), ["260706"]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("finds candidates across BOTH layouts simultaneously, sorted together", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeEdition(root, "260505", ["_internal/01-approved.json"]); // flat (pre-migration)
+        makeNestedEdition(root, "260706", ["_internal/01-approved.json"]); // nested (post-migration)
+        assert.deepEqual(findEditionsInProgress(2, root), ["260505", "260706"]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("ignores AAMM-looking dirs with no valid AAMMDD subdirs, and non-AAMM noise", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeEdition(root, "260505", ["_internal/01-approved.json"]);
+        mkdirSync(join(root, "data/editions/2607"), { recursive: true }); // empty AAMM dir
+        mkdirSync(join(root, "data/editions/archive"), { recursive: true });
+        assert.deepEqual(findEditionsInProgress(2, root), ["260505"]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("if same AAMMDD exists in both layouts (shouldn't happen in practice), prefers nested", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        // Flat: only prereq present (in-progress if it were the source of truth)
+        makeEdition(root, "260706", ["_internal/01-approved.json"]);
+        // Nested: prereq + output already present (done) — nested should win, so NOT a candidate
+        makeNestedEdition(root, "260706", [
+          "_internal/01-approved.json",
+          "02-reviewed.md",
+        ]);
+        assert.deepEqual(findEditionsInProgress(2, root), []);
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });

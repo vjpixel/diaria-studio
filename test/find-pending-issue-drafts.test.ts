@@ -201,6 +201,26 @@ describe("findPendingDrafts", () => {
     assert.deepEqual(findPendingDrafts("/nonexistent", "260424", 3), []);
   });
 
+  // #2463/#3024: edição no layout NESTED novo ({AAMM}/{AAMMDD}) precisa ser
+  // enxergada junto com o flat legado.
+  it("detecta draft pendente em edição no layout NESTED", () => {
+    const dir = setupEditions([{ name: "260424", empty: true }]);
+    try {
+      const nestedInternal = join(dir, "2604", "260421", "_internal");
+      mkdirSync(nestedInternal, { recursive: true });
+      writeFileSync(
+        join(nestedInternal, "issues-draft.json"),
+        JSON.stringify({ edition: "260421", signals: [{ kind: "source_streak" }] }),
+      );
+      const pending = findPendingDrafts(dir, "260424", 3);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].edition, "260421");
+      assert.ok(pending[0].draft_path.includes(join("2604", "260421")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("draft com JSON malformado é pulado (não quebra)", () => {
     const dir = setupEditions([{ name: "260423", empty: true }]);
     // Escrever draft malformado manualmente

@@ -18,15 +18,23 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
   - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
   - `d1` / `d2` / `d3` → regenera só aquela imagem de destaque
 
+## Placeholders
+
+- `$1` → AAMMDD recebido como argumento.
+- `{EDIR}` → diretório REAL da edição no disco (#2463/#3024). **Nunca** montar como `data/editions/$1` — a edição pode estar no layout flat legado OU no nested novo, dependendo de quando foi criada. Resolver **uma vez**, antes de qualquer leitura/escrita:
+  ```bash
+  EDIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve $1)
+  ```
+
 ## Pré-requisitos
 
-- `data/editions/$1/_internal/01-approved.json` deve existir (para É IA? buscar contexto da edição)
+- `{EDIR}/_internal/01-approved.json` deve existir (para É IA? buscar contexto da edição)
 
 ## Passo 0 — Task tracking setup (#904)
 
 **Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*`, `Stage 1*`, `Stage 2*`). Em seguida, criar tasks pra esta etapa: `Stage 3a — É IA? collect/regenerate`, `Stage 3b — image generate (d1/d2/d3)`, `Stage 3c — gate humano`. Marcar `completed` quando cada passo retornar; `Stage 3c` fecha imediatamente após aprovação do gate. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
 - `GEMINI_API_KEY` configurada como variável de ambiente (para geração das imagens e É IA?)
-- Para as imagens de destaque: `data/editions/$1/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
+- Para as imagens de destaque: `{EDIR}/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
 - (Opcional) `BEEHIIV_API_KEY` + `BEEHIIV_PUBLICATION_ID` para auto-fill de resultado do poll anterior no É IA?
 
 ## Parte 1 — É IA? (rodar APENAS se `$2 = eia`; #371, #748)
@@ -39,13 +47,13 @@ A aprovação do É IA? acontece no **gate integrado da Etapa 1**, onde o bloco 
 
 O `scripts/eia-compose.ts` foi disparado em background durante a Etapa 1 via `Bash(run_in_background=true)` (era Agent dispatch antes de #1111).
 
-- Se `data/editions/$1/01-eia.md` já existe → pular dispatch, ir direto ao gate do É IA? abaixo.
+- Se `{EDIR}/01-eia.md` já existe → pular dispatch, ir direto ao gate do É IA? abaixo.
 - Se `01-eia.md` **não** existe:
-  - Se há background bash ainda rodando (via `eia_bash_id`) → aguardar via file-presence check (pollar `existsSync('data/editions/$1/01-eia.md')` a cada 10s).
+  - Se há background bash ainda rodando (via `eia_bash_id`) → aguardar via file-presence check (pollar `existsSync('{EDIR}/01-eia.md')` a cada 10s).
   - Caso contrário → disparar agora:
 
     ```bash
-    npx tsx scripts/eia-compose.ts --edition $1 --out-dir data/editions/$1/
+    npx tsx scripts/eia-compose.ts --edition $1 --out-dir {EDIR}/
     ```
 
     Aguardar o script terminar (Bash síncrono, sem `run_in_background`) antes de continuar.
@@ -57,9 +65,9 @@ Apresentar ao usuário para confirmação/retry:
 ```
 É IA? pronto.
 
-📁 data/editions/$1/01-eia.md  (frontmatter revela o mapping real/IA pro editor)
-📁 data/editions/$1/01-eia-A.jpg
-📁 data/editions/$1/01-eia-B.jpg
+📁 {EDIR}/01-eia.md  (frontmatter revela o mapping real/IA pro editor)
+📁 {EDIR}/01-eia-A.jpg
+📁 {EDIR}/01-eia-B.jpg
 
 ℹ️  A aprovação editorial já aconteceu (ou acontecerá) no gate integrado da Etapa 1,
     onde o É IA? aparece embutido em 01-categorized.md (#371).
@@ -76,7 +84,7 @@ Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer
 Puxar prompts do Drive (caso o editor tenha editado):
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
 
 Falha = warning, **nunca bloqueia**.
@@ -87,7 +95,7 @@ Editor pode ter reordenado destaques no gate da Etapa 2 (D1↔D3, etc.).
 Antes de gerar imagens, alinhar prompts à ordem atual do `02-reviewed.md`:
 
 ```bash
-npx tsx scripts/match-prompts-to-destaques.ts --edition-dir data/editions/$1/
+npx tsx scripts/match-prompts-to-destaques.ts --edition-dir {EDIR}/
 ```
 
 Se prompts já alinhados (ordem original respeitada) → no-op silencioso.
@@ -103,8 +111,8 @@ Para cada destaque indicado (ou todos se sem argumento), chamar **uma vez** por 
 
 ```bash
 npx tsx scripts/image-generate.ts \
-  --editorial data/editions/$1/_internal/02-d{N}-prompt.md \
-  --out-dir data/editions/$1/ \
+  --editorial {EDIR}/_internal/02-d{N}-prompt.md \
+  --out-dir {EDIR}/ \
   --destaque d{N}
 ```
 
@@ -119,7 +127,7 @@ Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Par
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
 
 > **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito A/B) já está embutido em `01-categorized.md` via `render-categorized-md.ts` (#371) e `eia_answer` é propagado pra `02-reviewed.md` frontmatter via `normalize-newsletter.ts` (#744). Arquivo permanece local pra scripts consumirem.
@@ -136,13 +144,13 @@ Anotar warnings pra mencionar no gate. Falha não bloqueia.
 Etapa 3 — Imagens prontas.
 
 É IA?:
-  📁 data/editions/$1/01-eia-A.jpg
-  📁 data/editions/$1/01-eia-B.jpg
+  📁 {EDIR}/01-eia-A.jpg
+  📁 {EDIR}/01-eia-B.jpg
 
 Imagens de destaque:
-  📁 data/editions/$1/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
-  📁 data/editions/$1/04-d2-1x1.jpg
-  📁 data/editions/$1/04-d3-1x1.jpg
+  📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
+  📁 {EDIR}/04-d2-1x1.jpg
+  📁 {EDIR}/04-d3-1x1.jpg
 
 [⚠️ Drive sync: N warning(s)] (se houve)
 
@@ -153,12 +161,12 @@ Aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para
 
 ## Outputs
 
-- `data/editions/$1/01-eia.md` — frontmatter `eia_answer` + linha de crédito
-- `data/editions/$1/01-eia-A.jpg` — slot A (real ou IA, depende do sorteio)
-- `data/editions/$1/01-eia-B.jpg` — slot B (oposto de A)
-- `data/editions/$1/_internal/01-eia-meta.json` — metadata com `ai_side`
-- `data/editions/$1/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
-- `data/editions/$1/04-d{N}-sd-prompt.json` — prompts usados na geração
+- `{EDIR}/01-eia.md` — frontmatter `eia_answer` + linha de crédito
+- `{EDIR}/01-eia-A.jpg` — slot A (real ou IA, depende do sorteio)
+- `{EDIR}/01-eia-B.jpg` — slot B (oposto de A)
+- `{EDIR}/_internal/01-eia-meta.json` — metadata com `ai_side`
+- `{EDIR}/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
+- `{EDIR}/04-d{N}-sd-prompt.json` — prompts usados na geração
 
 ## Notas
 

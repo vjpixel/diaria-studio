@@ -16,6 +16,11 @@ Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 3 aprovado e Stage 4 incompleto. Rode /diaria-3-imagens primeiro ou passe AAMMDD explicitamente.`
   - **Se `candidates.length >= 2`**: perguntar ao editor qual: `Múltiplas edições em curso: {lista}. Qual processar?`
 
+**`{EDITION_DIR}` (#2463/#3024):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Resolver **uma vez** logo após ter `{AAMMDD}`, e usar em todo path abaixo que hoje aparece como `data/editions/{AAMMDD}/`:
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ## Pré-requisitos
 
 - Etapas 1–3 completas: `02-reviewed.md`, `03-social.md`, `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg`, `04-d{1,2,3}*.jpg`
@@ -55,7 +60,7 @@ Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 4 \
   --outputs "02-reviewed.md,03-social.md"
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status done
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status done
 ```
 
 ## Output

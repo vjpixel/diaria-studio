@@ -20,13 +20,17 @@
  * pra edições pending, com flag `(pending_publish)` no título pra distinguir.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
-const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
+// #3024: fileURLToPath (não `.pathname` cru) — `.pathname` produz path
+// malformado no Windows (ex: `C:\C:\Users\...`), quebrando qualquer resolve()
+// subsequente baseado em ROOT (editionsDir, MD_PATH).
+const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const MD_PATH = resolve(ROOT, "data/past-editions.md");
 
 interface ApprovedJson {
@@ -127,17 +131,14 @@ function main() {
     md = readFileSync(MD_PATH, "utf8");
   }
 
-  // Listar pastas de edições
-  let editionDirs: string[] = [];
-  try {
-    editionDirs = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
-      .map((d) => d.name);
-  } catch {
+  // Listar pastas de edições (#2463: ambos os layouts — flat legado + nested novo)
+  if (!existsSync(editionsDir)) {
     // diretório não existe ainda — normal em primeiros runs
     console.log(JSON.stringify({ pending_found: 0, injected: 0 }));
     return;
   }
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const editionDirs = [...editionDirsByAammdd.keys()];
 
   const pendingEditions: Array<{ yymmdd: string; iso: string; urls: string[]; daysAgo: number }> = [];
 
@@ -149,7 +150,7 @@ function main() {
     if (editionMs < cutoffMs) continue; // fora da janela
     if (editionMs >= new Date(currentIso).getTime()) continue; // futura
 
-    const editionDir = join(editionsDir, yymmdd);
+    const editionDir = editionDirsByAammdd.get(yymmdd)!;
     const approvedPath = join(editionDir, "_internal", "01-approved.json");
 
     if (!existsSync(approvedPath)) continue; // stage 1 não completou

@@ -14,30 +14,37 @@
  * Exit code: 0 sempre (não bloqueia pipeline). Escrever path em stdout.
  */
 
-import { existsSync, readdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export function findLastEditionWithFb(
   editionsDir: string,
   current: string,
 ): string | null {
   if (!existsSync(editionsDir)) return null;
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir)
-      .filter((d) => /^\d{6}$/.test(d) && d < current)
-      .sort()
-      .reverse();
-  } catch {
-    return null;
-  }
+  // #2463: enumera ambos os layouts (flat legado + nested novo) — a edição
+  // pode estar em qualquer um dos 2 dependendo de quando foi criada.
+  const found = enumerateEditionDirs(editionsDir);
+  const dirs = [...found.keys()]
+    .filter((d) => d < current)
+    .sort()
+    .reverse();
   for (const d of dirs) {
-    const publishedPath = resolve(editionsDir, d, "06-social-published.json");
+    const editionPath = found.get(d)!;
+    const publishedPath = resolve(editionPath, "06-social-published.json");
     if (existsSync(publishedPath)) {
-      return `data/editions/${d}`;
+      // Path simbólico `data/editions/{...}` — mesma convenção do
+      // comportamento anterior (o prefixo `data/editions` é sempre fixo,
+      // independente de onde `editionsDir` fisicamente mora no disco em
+      // testes). Nested vs flat é decidido pelo nome do diretório pai
+      // encontrado (`{AAMM}`), não montado à mão a partir só do AAMMDD.
+      const parentName = basename(dirname(editionPath));
+      const isNested = parentName === d.slice(0, 4);
+      return isNested ? `data/editions/${parentName}/${d}` : `data/editions/${d}`;
     }
   }
   return null;

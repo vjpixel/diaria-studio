@@ -16,11 +16,12 @@
  * Vazio se nada pendente.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export interface PendingDraft {
   edition: string;
@@ -78,21 +79,19 @@ export function findPendingDrafts(
 ): PendingDraft[] {
   if (!existsSync(editionsDir)) return [];
 
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir)
-      .filter((d) => /^\d{6}$/.test(d) && d < currentEdition)
-      .sort()
-      .reverse()
-      .slice(0, window);
-  } catch {
-    return [];
-  }
+  // #2463: enumera ambos os layouts (flat legado + nested novo).
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const dirs = [...editionDirsByAammdd.keys()]
+    .filter((d) => d < currentEdition)
+    .sort()
+    .reverse()
+    .slice(0, window);
 
   const pending: PendingDraft[] = [];
 
   for (const edition of dirs) {
-    const draftPath = resolve(editionsDir, edition, "_internal/issues-draft.json");
+    const editionDir = editionDirsByAammdd.get(edition)!;
+    const draftPath = resolve(editionDir, "_internal/issues-draft.json");
     if (!existsSync(draftPath)) continue;
 
     let draft: DraftFile;
@@ -104,7 +103,7 @@ export function findPendingDrafts(
     const signals = draft.signals ?? [];
     if (signals.length === 0) continue; // draft vazio, nada pra reportar
 
-    const reportedPath = resolve(editionsDir, edition, "_internal/issues-reported.json");
+    const reportedPath = resolve(editionDir, "_internal/issues-reported.json");
     let reported: ReportedFile | null = null;
     if (existsSync(reportedPath)) {
       try {

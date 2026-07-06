@@ -1,13 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync, cpSync, symlinkSync } from "node:fs";
+import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import {
   aammddToIso,
   isWithinPendingWindow,
   extractUrlsFromApproved,
 } from "../scripts/merge-local-pending.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("aammddToIso (#863)", () => {
   it("converte AAMMDD pra ISO", () => {
@@ -140,5 +147,63 @@ describe("extractUrlsFromApproved — buckets #1629 (#1659)", () => {
       extractUrlsFromApproved(join(tmpdir(), "nonexistent-mlp-dir", "01-approved.json")),
       [],
     );
+  });
+});
+
+// #2463/#3024: main() precisa detectar edições pending no layout NESTED novo
+// ({AAMM}/{AAMMDD}), não só no flat legado — regressão do bug corrigido em
+// #3024 (readdirSync raso só enxergava flat).
+describe("merge-local-pending.ts CLI — layout flat + nested (#3024)", () => {
+  it("detecta edição pending no layout NESTED", () => {
+    const sandboxRoot = mkdtempSync(join(tmpdir(), "mlp-nested-"));
+    try {
+      cpSync(resolve(ROOT, "scripts"), join(sandboxRoot, "scripts"), { recursive: true });
+      cpSync(resolve(ROOT, "package.json"), join(sandboxRoot, "package.json"));
+      cpSync(resolve(ROOT, "tsconfig.json"), join(sandboxRoot, "tsconfig.json"));
+      if (existsSync(resolve(ROOT, "node_modules"))) {
+        try {
+          symlinkSync(
+            resolve(ROOT, "node_modules"),
+            join(sandboxRoot, "node_modules"),
+            isWindows ? "junction" : "dir",
+          );
+        } catch {
+          cpSync(resolve(ROOT, "node_modules"), join(sandboxRoot, "node_modules"), {
+            recursive: true,
+          });
+        }
+      }
+      // Edição NESTED, aprovada localmente (Stage 1 completo), não publicada.
+      const nestedInternal = join(sandboxRoot, "data/editions/2605/260505/_internal");
+      mkdirSync(nestedInternal, { recursive: true });
+      writeFileSync(
+        join(nestedInternal, "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://x.com/pending-nested" }] }),
+      );
+
+      const out = execFileSync(
+        NPX,
+        [
+          "tsx",
+          "scripts/merge-local-pending.ts",
+          "--current",
+          "260507",
+          "--editions-dir",
+          "data/editions/",
+          "--window-days",
+          "5",
+          "--anchor-iso",
+          "2026-05-07",
+        ],
+        { cwd: sandboxRoot, stdio: "pipe", shell: isWindows },
+      ).toString();
+      const result = JSON.parse(out.trim().split("\n").pop() ?? "{}") as {
+        pending_found: number;
+        injected: number;
+      };
+      assert.equal(result.pending_found, 1, "deve detectar a edição nested como pending");
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true });
+    }
   });
 });

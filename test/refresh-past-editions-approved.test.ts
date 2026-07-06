@@ -70,7 +70,9 @@ describe("extractUrlsFromApproved (#238)", () => {
   });
 
   function writeApproved(yymmdd: string, content: unknown) {
-    const dir = join(tmpRoot, "data/editions", yymmdd, "_internal");
+    // #3024 follow-up: editionDir() agora retorna o layout nested
+    // (data/editions/{AAMM}/{AAMMDD}/) — fixture precisa espelhar isso.
+    const dir = join(tmpRoot, "data/editions", yymmdd.slice(0, 4), yymmdd, "_internal");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "01-approved.json"), JSON.stringify(content), "utf8");
   }
@@ -86,7 +88,7 @@ describe("extractUrlsFromApproved (#238)", () => {
   });
 
   it("retorna [] quando JSON é malformado (silent fallback)", () => {
-    const dir = join(tmpRoot, "data/editions/260425/_internal");
+    const dir = join(tmpRoot, "data/editions/2604/260425/_internal");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "01-approved.json"), "{ not json", "utf8");
     const urls = extractUrlsFromApproved("260425", tmpRoot);
@@ -187,7 +189,9 @@ describe("populateLinksFromApproved (#238)", () => {
   });
 
   function writeApproved(yymmdd: string, urls: string[]) {
-    const dir = join(tmpRoot, "data/editions", yymmdd, "_internal");
+    // #3024 follow-up: editionDir() agora retorna o layout nested
+    // (data/editions/{AAMM}/{AAMMDD}/) — fixture precisa espelhar isso.
+    const dir = join(tmpRoot, "data/editions", yymmdd.slice(0, 4), yymmdd, "_internal");
     mkdirSync(dir, { recursive: true });
     const content = {
       highlights: [],

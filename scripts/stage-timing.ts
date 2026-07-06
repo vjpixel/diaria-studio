@@ -19,6 +19,7 @@ import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
 import { editionDir as buildEditionDir, editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -161,21 +162,27 @@ function fmtTime(d: Date | null): string {
   return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+// Exportado (#3024) pra permitir teste de regressão flat vs nested sem
+// depender do ROOT fixo do processo (process.exit em caso de erro real).
+export function detectLatestEditionIn(editionsDir: string): string | null {
+  if (!existsSync(editionsDir)) return null;
+  // #2463: enumera ambos os layouts (flat legado + nested novo).
+  const dirs = [...enumerateEditionDirs(editionsDir).keys()].sort().reverse();
+  return dirs.length > 0 ? dirs[0] : null;
+}
+
 function detectLatestEdition(): string {
   const editionsDir = resolve(ROOT, editionsRoot());
+  const latest = detectLatestEditionIn(editionsDir);
   if (!existsSync(editionsDir)) {
     console.error("data/editions/ not found");
     process.exit(1);
   }
-  const dirs = readdirSync(editionsDir)
-    .filter((d) => /^\d{6}$/.test(d))
-    .sort()
-    .reverse();
-  if (dirs.length === 0) {
+  if (latest === null) {
     console.error("No editions found in data/editions/");
     process.exit(1);
   }
-  return dirs[0];
+  return latest;
 }
 
 function printEditionReport(editionDir: string, editionLabel: string): StageTiming[] {
@@ -300,13 +307,13 @@ function main(): void {
   if (args.all) {
     // Compare all editions
     const editionsDir = resolve(ROOT, editionsRoot());
-    const dirs = readdirSync(editionsDir)
-      .filter((d) => /^\d{6}$/.test(d))
-      .sort();
+    // #2463: enumera ambos os layouts (flat legado + nested novo).
+    const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+    const dirs = [...editionDirsByAammdd.keys()].sort();
 
     const results: { label: string; timings: StageTiming[] }[] = [];
     for (const d of dirs) {
-      const editionDir = resolve(editionsDir, d);
+      const editionDir = editionDirsByAammdd.get(d)!;
       const timings = printEditionReport(editionDir, d);
       if (timings.length > 0) results.push({ label: d, timings });
     }

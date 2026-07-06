@@ -12,10 +12,11 @@
  * Output (stdout): JSON { scanned, added, already_present, skipped_no_meta }
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const EAI_USED_PATH = resolve(ROOT, "data", "eia-used.json");
@@ -75,13 +76,11 @@ function main() {
   const editionsDir = resolve(ROOT, (args["editions-dir"] as string) ?? "data/editions/");
   const dryRun = args["dry-run"] === true;
 
-  let editionDirs: string[] = [];
-  try {
-    editionDirs = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
-      .map((d) => d.name)
-      .sort();
-  } catch {
+  // #2463: enumera ambos os layouts (flat legado + nested novo) em vez de
+  // um readdirSync raso que só enxerga o flat.
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const editionDirs = [...editionDirsByAammdd.keys()].sort();
+  if (editionDirs.length === 0 && !existsSync(editionsDir)) {
     console.log(JSON.stringify({ scanned: 0, added: 0, already_present: 0, skipped_no_meta: 0 }));
     return;
   }
@@ -93,12 +92,13 @@ function main() {
   let alreadyPresent = 0;
 
   for (const yymmdd of editionDirs) {
+    const editionDir = editionDirsByAammdd.get(yymmdd)!;
     // #257 migration: tentar novo nome primeiro, fallback p/ legacy.
     // Garante que edições históricas (com `01-eai-meta.json`) sejam reconstruídas
     // corretamente após o rename, evitando que o set de POTDs usadas vire zero.
     const candidates = [
-      join(editionsDir, yymmdd, "_internal", "01-eia-meta.json"),
-      join(editionsDir, yymmdd, "_internal", "01-eai-meta.json"),
+      join(editionDir, "_internal", "01-eia-meta.json"),
+      join(editionDir, "_internal", "01-eai-meta.json"),
     ];
     const metaPath = candidates.find((p) => existsSync(p));
     if (!metaPath) {

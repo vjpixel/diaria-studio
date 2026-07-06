@@ -95,3 +95,50 @@ describe("sync-eia-used.ts — JSON shape (#865)", () => {
     );
   });
 });
+
+// #2463/#3024: sync-eia-used.ts precisa escanear edições no layout NESTED
+// novo ({AAMM}/{AAMMDD}), não só no flat legado — regressão do bug corrigido
+// em #3024 (readdirSync raso só enxergava flat).
+describe("sync-eia-used.ts — layout flat + nested (#3024)", () => {
+  let sandboxRoot: string;
+
+  before(() => {
+    sandboxRoot = mkdtempSync(join(tmpdir(), "sync-eia-nested-"));
+    cpSync(resolve(ROOT, "scripts"), join(sandboxRoot, "scripts"), {
+      recursive: true,
+    });
+    cpSync(resolve(ROOT, "package.json"), join(sandboxRoot, "package.json"));
+    cpSync(resolve(ROOT, "tsconfig.json"), join(sandboxRoot, "tsconfig.json"));
+    if (existsSync(resolve(ROOT, "node_modules"))) {
+      try {
+        symlinkSync(
+          resolve(ROOT, "node_modules"),
+          join(sandboxRoot, "node_modules"),
+          isWindows ? "junction" : "dir",
+        );
+      } catch {
+        cpSync(resolve(ROOT, "node_modules"), join(sandboxRoot, "node_modules"), {
+          recursive: true,
+        });
+      }
+    }
+    // Edição flat legado, sem 01-eia-meta.json (conta como scanned, skipped_no_meta)
+    mkdirSync(join(sandboxRoot, "data/editions/260421/_internal"), { recursive: true });
+    // Edição no layout NESTED novo, também sem meta
+    mkdirSync(join(sandboxRoot, "data/editions/2604/260423/_internal"), { recursive: true });
+  });
+
+  after(() => {
+    rmSync(sandboxRoot, { recursive: true, force: true });
+  });
+
+  it("escaneia edições em ambos os layouts (scanned: 2)", () => {
+    const out = execFileSync(
+      NPX,
+      ["tsx", "scripts/sync-eia-used.ts", "--editions-dir", "data/editions/"],
+      { cwd: sandboxRoot, stdio: "pipe", shell: isWindows },
+    ).toString();
+    const result = JSON.parse(out.trim().split("\n").pop() ?? "{}") as Record<string, unknown>;
+    assert.equal(result.scanned, 2, "deve enxergar 1 flat + 1 nested = 2 edições escaneadas");
+  });
+});

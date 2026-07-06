@@ -24,7 +24,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { parseArgsSimple as parseArgs } from "./cli-args.ts";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
@@ -71,6 +71,83 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
 
 const EDITIONS_DIR = "data/editions";
 const AAMMDD_RE = /^\d{6}$/;
+const AAMM_RE = /^\d{4}$/;
+
+/**
+ * Enumera candidatos {aammdd → editionDirPath} olhando os DOIS layouts
+ * possíveis (#2463): o FLAT legado `data/editions/{AAMMDD}/` (ainda em uso
+ * até a migração real — step 3, gated — rodar) e o NESTED novo
+ * `data/editions/{AAMM}/{AAMMDD}/` (o que `editionDir()` já produz a partir
+ * deste PR). Coexistem no disco até a migração.
+ *
+ * Ordem de processamento (determinística, NÃO depende da ordem do
+ * `readdirSync`): primeiro registra TODAS as entradas FLAT, depois processa
+ * as NESTED por cima — nested sempre sobrescreve incondicionalmente. Isso
+ * garante "nested vence em caso de conflito" (não deveria acontecer na
+ * prática) independente de como o SO ordena a listagem do diretório.
+ *
+ * Exportado (não só de uso interno) para reuso futuro por outros scripts que
+ * precisam enumerar edições em ambos os layouts (ex: reports/aggregators
+ * hoje ainda fazem `readdirSync(editionsRoot()).filter(/^\d{6}$/)` direto —
+ * candidatos a migrar pra este helper quando tocados).
+ */
+export function enumerateEditionDirs(editionsRoot: string): Map<string, string> {
+  const found = new Map<string, string>();
+  if (!existsSync(editionsRoot)) return found;
+
+  const entries = readdirSync(editionsRoot);
+
+  // Passo 1: registra todo layout FLAT primeiro.
+  for (const entry of entries) {
+    if (!AAMMDD_RE.test(entry)) continue;
+    const entryPath = join(editionsRoot, entry);
+    let isDir = false;
+    try {
+      isDir = statSync(entryPath).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+    found.set(entry, entryPath);
+  }
+
+  // Passo 2: processa layout NESTED por cima — sempre sobrescreve (nested vence).
+  for (const entry of entries) {
+    if (!AAMM_RE.test(entry)) continue;
+    const entryPath = join(editionsRoot, entry);
+    let isDir = false;
+    try {
+      isDir = statSync(entryPath).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+
+    let subEntries: string[];
+    try {
+      subEntries = readdirSync(entryPath);
+    } catch {
+      continue; // dir apagado/inacessível entre o statSync e o readdirSync — não deixa crashar todo o scan
+    }
+
+    for (const sub of subEntries) {
+      if (!AAMMDD_RE.test(sub)) continue;
+      // Sanidade: {AAMM} deve ser o prefixo de {AAMMDD}
+      if (!sub.startsWith(entry)) continue;
+      const subPath = join(entryPath, sub);
+      let subIsDir = false;
+      try {
+        subIsDir = statSync(subPath).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!subIsDir) continue;
+      found.set(sub, subPath);
+    }
+  }
+
+  return found;
+}
 
 export function findEditionsInProgress(
   stage: Stage,
@@ -82,17 +159,9 @@ export function findEditionsInProgress(
   const reqs = STAGE_REQUIREMENTS[stage];
   const candidates: string[] = [];
 
-  for (const entry of readdirSync(editionsRoot)) {
-    if (!AAMMDD_RE.test(entry)) continue;
-    const editionDir = join(editionsRoot, entry);
-    let isDir = false;
-    try {
-      isDir = statSync(editionDir).isDirectory();
-    } catch {
-      continue;
-    }
-    if (!isDir) continue;
+  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
 
+  for (const [entry, editionDir] of editionDirsByAammdd) {
     const prereqOk = reqs.prereq.every((f) => existsSync(join(editionDir, f)));
     if (!prereqOk) continue;
 
@@ -130,16 +199,55 @@ export function findEditionsInProgress(
   return candidates.sort();
 }
 
+/**
+ * Resolve o path RELATIVO real de uma edição a partir do AAMMDD (#3024).
+ *
+ * Usado por SKILL.md prose (`/diaria-2-escrita` a `/diaria-6-agendamento`)
+ * pra nunca montar `data/editions/{AAMMDD}/...` à mão — a edição pode já
+ * existir no disco em QUALQUER um dos 2 layouts (flat legado ou nested novo,
+ * coexistindo até a migração real — step 3 do #2463, gated). Ordem:
+ *   1. Se existir no disco (flat OU nested) → retorna esse path exato.
+ *   2. Senão (edição ainda não criada por nenhum stage anterior) → retorna o
+ *      path NESTED (default de `editionDir()`, o layout que qualquer novo
+ *      write vai produzir a partir de #3023).
+ *
+ * Retorna path RELATIVO (ex: `data/editions/2604/260423`), com `/` mesmo
+ * no Windows — consistente com o resto da CLI (aparece em prompts/bash).
+ */
+export function resolveEditionDir(
+  editionsRootDir: string,
+  aammdd: string,
+): string {
+  const found = enumerateEditionDirs(editionsRootDir);
+  const onDisk = found.get(aammdd);
+  if (onDisk) return onDisk;
+  const aamm = aammdd.slice(0, 4);
+  return join(editionsRootDir, aamm, aammdd);
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args["resolve"]) {
+    const aammdd = args["resolve"];
+    if (!AAMMDD_RE.test(aammdd)) {
+      console.error("Uso: find-current-edition.ts --resolve <AAMMDD>");
+      process.exit(1);
+    }
+    const editionsRootDir = resolve(process.cwd(), EDITIONS_DIR);
+    const dir = resolveEditionDir(editionsRootDir, aammdd);
+    process.stdout.write(relative(process.cwd(), dir).replaceAll("\\", "/") + "\n");
+    return;
+  }
+
   const stageRaw = args["stage"];
   const stageNum = parseInt(stageRaw ?? "", 10);
   if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5 && stageNum !== 6) {
-    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6>");
+    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6> | --resolve <AAMMDD>");
     process.exit(1);
   }
   const candidates = findEditionsInProgress(stageNum as Stage);
