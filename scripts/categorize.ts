@@ -67,6 +67,8 @@ import {
   isVideoUrl,
   isOfficialLancamentoUrl,
   categorize,
+  MIXED_TUTORIAL_ESSAY_HOSTS,
+  ESSAY_ANALYSIS_TITLE_RE,
 } from "./lib/launch-heuristics.ts"; // #2833: extraído — movimentação pura
 
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
@@ -100,6 +102,8 @@ export {
   isVideoUrl,
   isOfficialLancamentoUrl,
   categorize,
+  MIXED_TUTORIAL_ESSAY_HOSTS,
+  ESSAY_ANALYSIS_TITLE_RE,
 };
 
 export interface BucketedArticles {
@@ -160,6 +164,25 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
       continue;
     }
     const cat = categorize(article);
+    // #2986: gate de relevância-IA restrito à categoria `noticias` — o catch-all
+    // genérico do categorize() (cobertura de imprensa sem domínio dedicado).
+    // Fontes cadastradas ainda trazem, ocasionalmente, conteúdo sem ângulo de IA
+    // (ex: cobertura de app store/regulação — "AltStore PAL no Brasil: vale a
+    // pena usar loja alternativa do iPhone?", canaltech, 260706).
+    //
+    // Deliberadamente NÃO aplicado a `tutorial`/`pesquisa`/`lancamento`/`video`:
+    // essas categorias já carregam sinal de relevância pelo PRÓPRIO domínio
+    // dedicado (TUTORIAL_DOMAINS/PESQUISA_DOMAINS/LANCAMENTO_DOMAINS) ou pattern
+    // — aplicar o gate ali arriscaria descartar tutorial/paper legítimo cujo
+    // título não contém keyword de IA explícita (ex: cookbook.openai.com
+    // "Structured Outputs" é tutorial de IA mas o título não bate
+    // AI_RELEVANT_TERMS). `pesquisa` de arXiv já tem seu próprio filtro
+    // (isArxivRelevant) dentro de categorize(); reforçar aqui duplicaria sem
+    // necessidade e ampliaria a superfície de falso-positivo.
+    if (cat === "noticias" && !isArticleAIRelevant(article)) {
+      console.error(`[categorize] #2986 dropping non-AI-relevant item (noticias): ${article.url}`);
+      continue;
+    }
     const bucket = categoryToBucket(cat);
     result[bucket].push({ ...article, category: cat });
   }

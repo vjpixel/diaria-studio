@@ -303,9 +303,12 @@ describe("isUnresolvableInboxArticle (#722 — drop unresolvable inbox articles)
   it("categorizeArticles descarta artigo editor_submitted com placeholder + summary vazio", () => {
     const articles: Article[] = [
       {
+        // #2986: título/summary precisam de sinal de IA explícito (ChatGPT) —
+        // desde #2986 o gate de relevância-IA descarta itens de bucket
+        // secundário (radar/use_melhor) sem esse sinal.
         url: "https://example.com/real-article",
-        title: "Artigo real sobre IA",
-        summary: "Este artigo tem conteúdo real e vai para o pipeline.",
+        title: "Artigo real sobre o ChatGPT",
+        summary: "Este artigo tem conteúdo real sobre o ChatGPT e vai para o pipeline.",
       },
       {
         url: "https://example.com/unresolvable",
@@ -700,5 +703,54 @@ describe("categorize() — type_hint override em lançamento (#1173)", () => {
       }),
       "lancamento",
     );
+  });
+});
+
+describe("categorizeArticles() — gate de relevância-IA em buckets secundários (#2986)", () => {
+  it("#2986 CASO REAL: AltStore PAL (loja alternativa iOS, sem ângulo de IA) é excluído", () => {
+    const art: Article = {
+      url: "https://canaltech.com.br/apps/altstore-pal-no-brasil-vale-a-pena-usar-loja-alternativa-do-iphone/",
+      title: "AltStore PAL no Brasil: vale a pena usar loja alternativa do iPhone?",
+      summary: "AltStore PAL é uma loja alternativa de apps para iOS na União Europeia. O que é iOS?",
+    };
+    const result = categorizeArticles([art]);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 0, "item sem ângulo de IA não deve sobreviver em nenhum bucket");
+  });
+
+  it("item AI-relevante em veículo generalista continua no RADAR (sem falso-positivo)", () => {
+    const art: Article = {
+      url: "https://canaltech.com.br/inteligencia-artificial/openai-lanca-novo-modelo-gpt/",
+      title: "OpenAI lança novo modelo GPT com foco em raciocínio",
+      summary: "A OpenAI anunciou o GPT mais recente, com ganhos de desempenho em benchmarks de raciocínio.",
+    };
+    const result = categorizeArticles([art]);
+    assert.equal(result.radar.length, 1);
+    assert.equal(result.radar[0].url, art.url);
+  });
+
+  it("#2986 sem-regressão: tutorial de domínio dedicado (cookbook.openai.com) sem keyword de IA no título continua em use_melhor", () => {
+    // "Structured Outputs" não bate AI_RELEVANT_TERMS, mas o domínio já garante
+    // relevância — categoria tutorial fica FORA do gate #2986 (só `noticias`).
+    const art: Article = {
+      url: "https://cookbook.openai.com/examples/structured_outputs_intro",
+      title: "Structured Outputs",
+      summary: "A quick primer on structured outputs.",
+    };
+    const result = categorizeArticles([art]);
+    assert.equal(result.use_melhor.length, 1);
+    assert.equal(result.use_melhor[0].url, art.url);
+  });
+
+  it("bucket lancamento NÃO passa pelo gate de relevância-IA (fora de escopo do #2986)", () => {
+    // Domínio oficial cadastrado como lançamento — não checado pelo gate extra,
+    // mesmo que título/summary não tenham keyword de IA explícita.
+    const art: Article = {
+      url: "https://openai.com/index/introducing-new-feature",
+      title: "Introducing a new feature",
+      summary: "A short announcement.",
+    };
+    const result = categorizeArticles([art]);
+    assert.equal(result.lancamento.length, 1);
   });
 });
