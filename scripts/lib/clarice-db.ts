@@ -33,6 +33,7 @@ import {
   COHORT_EX_ASSINANTES,
   cohortFromTier,
   isKnownCohortSlug,
+  isMvExemptCohort,
   isTestAccount,
 } from "./cohorts.ts";
 import { canonicalizeGmail, GMAIL_DOMAINS } from "./canonicalize-gmail.ts";
@@ -434,10 +435,30 @@ export function classifyEligibility(i: EligibilityInput): {
   // self-review achado 1): se o ingest algum dia gravar `mv_bucket=''`, a linha
   // NÃO deve escapar como elegível silenciosamente — falha p/ o lado seguro
   // (inelegível/mv_unverified), coerente com a intenção do corte.
-  if (!i.mv_bucket && i.cohort !== COHORT_ASSINANTES_ATIVOS && !engaged)
+  // #2886 PR3 review: comparação inline substituída pelo predicado compartilhado
+  // `isMvExemptCohort` (cohorts.ts) — mesmo predicado usado por
+  // `verify-emails-mv.ts` pra recusar `--cohort assinantes-ativos`. Um 2º
+  // cohort isento no futuro só precisa mudar num lugar.
+  if (!i.mv_bucket && !isMvExemptCohort(i.cohort) && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }
+
+// ---------------------------------------------------------------------------
+// MV never-verified predicate (#2886 PR3 review) — nomeado/exportado pra que
+// um 2º consumidor de "quem ainda precisa de verificação MV" (dashboard,
+// script de auditoria) importe esta constante em vez de re-digitar o WHERE —
+// evita a variante sutilmente ERRADA "mv_cycle = ?" (verificar 1x por ciclo),
+// que NÃO é a semântica desejada (decisão do editor #2886: skip forever —
+// quem já foi verificado em QUALQUER ciclo nunca reentra). `mv_bucket = ''`
+// incluído por defesa: nenhum ingest atual escreve string vazia (`ingestMv`
+// sempre grava `classifyResult(...)`, que nunca retorna `""`), mas
+// `classifyEligibility` acima trata `mv_bucket` vazio como não-verificado via
+// checagem falsy (`!i.mv_bucket`) — esta constante espelha a MESMA convenção
+// pra quem faz SELECT direto no store em vez de ler a coluna em JS.
+// ---------------------------------------------------------------------------
+
+export const MV_NEVER_VERIFIED_SQL = "(mv_bucket IS NULL OR mv_bucket = '')";
 
 /**
  * FALLBACK LEGADO (#2857 fase C): deriva o cohort de uma linha a partir de

@@ -13,7 +13,7 @@
  *
  * Uso:
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06                          # ex-assinantes (default)
- *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --input stripe-export-leads-2026-06.csv
+ *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --cohort leads-2026-06
  *   npx tsx scripts/verify-emails-mv.ts --single foo@bar.com     # smoke (1 crédito; sem --cycle)
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --limit 50               # só os 50 primeiros
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --concurrency 20
@@ -22,12 +22,38 @@
  * Env:
  *   MILLION_VERIFIER_API_KEY   obrigatório (dashboard MV → API)
  *
- * Input  (BASE, no root data/clarice-subscribers/) — nome = cohort (#2857 fase C,
- * ver scripts/merge-clarice-subscribers.ts):
- *   stripe-export-ex-assinantes.csv   colunas: email,NOME,OPEN_PROBABILITY
+ * MIGRAÇÃO (#2886 PR3 — SOURCE eliminada, fonte agora é o store): a lista de
+ * candidatos a verificar deixou de vir de um CSV (`stripe-export-{cohort}.csv`)
+ * e passa a ser derivada DIRETO do store (`clarice_users`), via:
  *
- * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/). Proveniência:
- * input `stripe-export-` → saídas `mv-export-` (output do MillionVerifier):
+ *   SELECT email, name FROM clarice_users WHERE cohort = ? AND MV_NEVER_VERIFIED_SQL
+ *   (MV_NEVER_VERIFIED_SQL = "(mv_bucket IS NULL OR mv_bucket = '')", clarice-db.ts)
+ *
+ * Semântica de re-verificação (decisão do editor, #2886): um contato que JÁ
+ * foi verificado em QUALQUER ciclo anterior (`mv_bucket` preenchido) é
+ * PULADO PARA SEMPRE — nunca re-verificado, mesmo em ciclos futuros. Isso é
+ * deliberado (mais barato; assume que validade de email não degrada) — NÃO é
+ * "pendente neste ciclo": é "nunca verificado, em ciclo nenhum".
+ *
+ * Interface CLI (mudança de contrato):
+ *   ANTES: --input stripe-export-{cohort}.csv   (fonte = arquivo CSV na base)
+ *   AGORA: --cohort {cohort}                    (fonte = query no store; default "ex-assinantes";
+ *                                                resolvido via `resolveCohortArg` — mesmo helper de
+ *                                                clarice-build-waves-store.ts/clarice-build-edition-sends.ts,
+ *                                                aceita slug canônico, alias pt-BR ou YYYY-MM, falha alto
+ *                                                em valor não reconhecido)
+ *   Uma invocação com o `--input` ANTIGO agora aborta com erro explícito (não
+ *   cai silenciosamente no --cohort default) — ver `hasLegacyInputFlag`.
+ *
+ * `assinantes-ativos` (T01): NUNCA elegível como `--cohort` aqui — pagamento
+ * Stripe já valida implicitamente (#1297), o cohort é isento de MV inteiro
+ * (`isMvExemptCohort`, cohorts.ts — mesmo predicado usado por
+ * `classifyEligibility` em clarice-db.ts). Passar esse cohort aborta com erro
+ * explícito em vez de silenciosamente gastar créditos à toa.
+ *
+ * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/) — INALTERADO,
+ * continua CSV como TRANSPORT (import Brevo / auditoria). Proveniência do nome:
+ * `mv-export-{cohort}` (sem mais depender do basename de um arquivo de input):
  *   mv-export-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
  *   mv-export-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
  *   mv-export-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
@@ -37,11 +63,15 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceBaseFile, clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
+import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
+import { openClariceDb, DEFAULT_DB_PATH, MV_NEVER_VERIFIED_SQL } from "./lib/clarice-db.ts";
+import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
+import { resolveCohortArg } from "./lib/clarice-segment.ts";
 
 // .env.local (precedência) + .env — loader canônico do projeto (#923).
 // Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
@@ -72,15 +102,14 @@ export function classifyResult(result: string | undefined | null): Bucket {
 }
 
 /**
- * Basename das SAÍDAS do MV a partir do nome do input. Proveniência: o input é
- * output da merge (`stripe-export-…`); as saídas são do MillionVerifier, então o
- * prefixo vira `mv-export-` (convenção: nome = última ferramenta que processou).
- * Fallback: input sem o prefixo esperado mantém o basename (só tira o .csv).
+ * Basename das SAÍDAS do MV a partir do slug de cohort. Proveniência: as saídas
+ * são do MillionVerifier, então o prefixo é `mv-export-` (convenção: nome =
+ * última ferramenta que processou). #2886 PR3: antes derivado do basename do
+ * `--input` CSV (`stripe-export-…` → `mv-export-…`); agora o cohort É a fonte
+ * (query no store), então o basename deriva direto do slug do cohort.
  */
-export function mvOutputBase(inputFile: string): string {
-  return basename(inputFile)
-    .replace(/\.csv$/i, "")
-    .replace(/^stripe-export-/, "mv-export-");
+export function mvOutputBase(cohort: string): string {
+  return `mv-export-${cohort}`;
 }
 
 /** Monta a URL da single-verification API (testável sem rede). */
@@ -127,31 +156,73 @@ type Checkpoint = Record<string, CachedResult>;
 class FatalApiError extends Error {}
 
 // ---------------------------------------------------------------------------
-// CSV helpers
+// Candidate selection (store) — #2886 PR3
 // ---------------------------------------------------------------------------
 
-/** Lê o input preservando TODAS as colunas. Retorna linhas + colunas + nome da coluna de email. */
-export function readInput(path: string): {
-  rows: Record<string, string>[];
-  fields: string[];
-  emailKey: string;
-} {
-  const text = readFileSync(path, "utf-8");
-  const parsed = Papa.parse<Record<string, string>>(text, {
-    header: true,
-    skipEmptyLines: true,
-  });
-  const fields = parsed.meta.fields ?? [];
-  // Coluna de email: nome contendo "email"/"e-mail" (case-insensitive).
-  // Sem fallback pra fields[0]: mandar a coluna errada (ex: NOME) pro MV
-  // queimaria 1 crédito por linha em lixo. Melhor falhar alto.
-  const emailKey = fields.find((f) => /e-?mail/i.test(f.trim()));
-  if (!emailKey) {
-    throw new Error(
-      `CSV sem coluna de email (colunas: ${fields.join(", ") || "nenhuma"}): ${path}`,
-    );
-  }
-  return { rows: parsed.data, fields, emailKey };
+/**
+ * #2886 PR3: candidatos-a-verificar vêm do STORE, não de um CSV. Query pura
+ * (recebe `DatabaseSync` já aberta — produção usa `openClariceDb()`, testes
+ * usam `openClariceDb(":memory:")` seeded via INSERT direto, mesmo padrão de
+ * `computeMvStatusFromStore` em clarice-mv-status.ts).
+ *
+ * Semântica "skip forever" (decisão do editor): `MV_NEVER_VERIFIED_SQL`
+ * (clarice-db.ts) seleciona SÓ quem nunca foi submetido ao MV em NENHUM
+ * ciclo — um contato com `mv_bucket` preenchido (de um ciclo anterior
+ * QUALQUER, não só o atual) é excluído do candidate set, mesmo que o
+ * `mv_cycle` gravado seja de um ciclo diferente do `--cycle` desta
+ * invocação. Isso é INTENCIONAL: nunca re-verificar, não "verificar 1x por
+ * ciclo" — por isso o predicado é nomeado/exportado (clarice-db.ts) em vez
+ * de um WHERE inline: um 2º consumidor deste candidate set (dashboard,
+ * script de auditoria) reusa a constante em vez de reimplementar um WHERE
+ * sutilmente diferente (ex: `mv_cycle = ?`, que NÃO é a semântica aqui).
+ *
+ * Retorna linhas no mesmo shape que `splitRows`/`Papa.unparse` esperam
+ * (Record<string,string>) — colunas fixas `email` + `name` (o que o store
+ * tem disponível; `OPEN_PROBABILITY` do CSV legado não existe mais aqui).
+ */
+export function readStoreCandidates(
+  db: DatabaseSync,
+  cohort: string,
+): { rows: Record<string, string>[]; fields: string[]; emailKey: string } {
+  const raw = db
+    .prepare(
+      `SELECT email, name FROM clarice_users WHERE cohort = ? AND ${MV_NEVER_VERIFIED_SQL}`,
+    )
+    .all(cohort) as Array<{ email: string; name: string | null }>;
+  const rows = raw
+    .filter((r) => (r.email ?? "").trim().length > 0)
+    .map((r) => ({ email: r.email.trim().toLowerCase(), name: r.name ?? "" }));
+  return { rows, fields: ["email", "name"], emailKey: "email" };
+}
+
+/**
+ * Total de contatos do cohort no store, independente de já terem sido
+ * verificados (#2886 PR3 review). Usado só pra diferenciar "0 candidatos
+ * porque o cohort já foi todo verificado em ciclos anteriores" (nenhum aviso
+ * necessário — steady-state normal) de "0 candidatos porque o cohort não tem
+ * NENHUM membro no store" (provável typo num slug de forma válida, ex:
+ * `leads-2026-07` digitado no lugar de `leads-2026-06` — `resolveCohortArg`
+ * não pega esse caso porque as duas formas são igualmente válidas).
+ */
+export function cohortMemberCount(db: DatabaseSync, cohort: string): number {
+  return (
+    db.prepare(`SELECT COUNT(*) as n FROM clarice_users WHERE cohort = ?`).get(cohort) as {
+      n: number;
+    }
+  ).n;
+}
+
+/**
+ * `--input` foi REMOVIDO nesta migração (#2886 PR3 — fonte agora é
+ * `--cohort`, query no store). Uma invocação com o `--input` antigo (ex: de
+ * um runbook/histórico de shell não atualizado — CLAUDE.md documentava
+ * exatamente esse comando antes desta PR) NUNCA deve cair silenciosamente no
+ * `--cohort` default: isso verificaria o cohort ERRADO sem aviso nenhum —
+ * exatamente o risco de bounce/reputação que este script existe pra evitar
+ * (#1297). Pure/testável — main() decide o que fazer com o resultado.
+ */
+export function hasLegacyInputFlag(argv: string[]): boolean {
+  return argv.includes("--input");
 }
 
 /**
@@ -302,7 +373,8 @@ async function runPool<T>(
 // ---------------------------------------------------------------------------
 
 interface Args {
-  input: string;
+  cohort: string;
+  db: string;
   concurrency: number;
   timeout: number;
   limit: number | null;
@@ -326,7 +398,8 @@ export function parseArgs(argv: string[]): Args {
   const rawLimit = get("--limit");
   const parsedLimit = rawLimit != null ? parseInt(rawLimit, 10) : NaN;
   return {
-    input: get("--input") ?? "stripe-export-ex-assinantes.csv",
+    cohort: get("--cohort") ?? "ex-assinantes",
+    db: get("--db") ?? DEFAULT_DB_PATH,
     concurrency: posInt(get("--concurrency"), 12),
     timeout: posInt(get("--timeout"), 20),
     // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.
@@ -371,29 +444,88 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // --- Modo lista ---
-  // #1961: input é a BASE (tier no root, output da merge); as saídas verificadas
-  // + cache são POR-CICLO → vivem em data/clarice-subscribers/{conteúdo}-{envio}/.
+  // #2886 PR3 review: `--input` foi removido nesta migração. Uma invocação
+  // com o comando ANTIGO (`--input stripe-export-{cohort}.csv`, ainda
+  // documentado em runbooks/histórico de shell não atualizados) NUNCA deve
+  // cair silenciosamente no `--cohort` default — isso verificaria o cohort
+  // ERRADO sem aviso. Falha alto e explica a migração em vez de prosseguir.
+  if (hasLegacyInputFlag(argv)) {
+    console.error(
+      "--input foi removido (#2886 PR3) — a fonte agora é o store, não um CSV. " +
+        "Use --cohort {slug} no lugar (ex: --cohort ex-assinantes). Ver CLAUDE.md.",
+    );
+    process.exit(1);
+  }
+  // #1961: as saídas verificadas + cache são POR-CICLO → vivem em
+  // data/clarice-subscribers/{conteúdo}-{envio}/.
   if (!args.cycle) {
     console.error("--cycle {conteúdo}-{envio} é obrigatório (saídas em {ciclo}/ — ex: --cycle 2605-06).");
     process.exit(1);
   }
-  const cycleDir = clariceCycleDir(args.cycle);
-  const inputPath = clariceBaseFile(args.input);
-  if (!existsSync(inputPath)) {
-    console.error(`input não encontrado: ${inputPath}`);
+  // #2886 PR3 review: resolve o --cohort via o MESMO helper usado pelos
+  // scripts irmãos que já aceitam --cohort (clarice-build-waves-store.ts,
+  // clarice-build-edition-sends.ts) — aceita o slug canônico, um alias pt-BR
+  // ("junho") ou a forma YYYY-MM, e FALHA ALTO (Error) num valor não
+  // reconhecido, em vez de prosseguir silenciosamente rumo a um run de 0
+  // candidatos (o comportamento antigo, ad-hoc, só avisava e continuava).
+  let cohort: string;
+  try {
+    cohort = resolveCohortArg(args.cohort);
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
     process.exit(1);
   }
-  // Só cria a pasta do ciclo DEPOIS de validar o input — senão um typo no
-  // --input deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
+  // assinantes-ativos (T01) é ISENTO de MV — pagamento Stripe já valida
+  // implicitamente (#1297; mesmo predicado de `classifyEligibility` em
+  // clarice-db.ts, via `isMvExemptCohort`, cohorts.ts). Nunca deve ser
+  // passado aqui: abortar cedo em vez de queimar créditos à toa numa cohort
+  // que a pipeline de elegibilidade já trata como N/A.
+  if (isMvExemptCohort(cohort)) {
+    console.error(
+      `--cohort ${COHORT_ASSINANTES_ATIVOS} não é verificável: pagamento Stripe já valida ` +
+        `implicitamente (#1297) — este cohort é isento de MV em toda a pipeline.`,
+    );
+    process.exit(1);
+  }
+  const cycleDir = clariceCycleDir(args.cycle);
+  // #2886 PR3 review: ":memory:" passa direto (mesma exceção de
+  // clarice-mv-status.ts) — permite invocar main() com um store in-memory
+  // (smoke manual / integração) sem falsamente reportar "não encontrado".
+  if (args.db !== ":memory:" && !existsSync(args.db)) {
+    console.error(`store não encontrado em ${args.db}. Rode clarice-build-db.ts primeiro, ou use --db para apontar outro path.`);
+    process.exit(1);
+  }
+  // Só cria a pasta do ciclo DEPOIS de validar o store — senão um typo no
+  // --cohort/--db deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
   ensureDir(cycleDir);
 
-  // Proveniência: input é output da merge (`stripe-export-…`); as SAÍDAS são do
-  // MillionVerifier → prefixo vira `mv-export-` (convenção: nome = última ferramenta).
-  const base = mvOutputBase(args.input);
+  // Proveniência: as SAÍDAS são do MillionVerifier → prefixo `mv-export-`
+  // (convenção: nome = última ferramenta que processou).
+  const base = mvOutputBase(cohort);
   const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);
 
-  const { rows, fields, emailKey } = readInput(inputPath);
-  console.error(`📂 ${args.input}: ${rows.length} linhas (coluna email="${emailKey}")`);
+  // #2886 PR3 review: try/finally garante db.close() mesmo se a query
+  // falhar (store corrompido, erro de schema inesperado) — mesmo padrão de
+  // `clarice-mv-status.ts` (`try { ... } finally { db.close(); }`).
+  const db = openClariceDb(args.db);
+  let rows: Record<string, string>[], fields: string[], emailKey: string, memberCount: number;
+  try {
+    ({ rows, fields, emailKey } = readStoreCandidates(db, cohort));
+    memberCount = cohortMemberCount(db, cohort);
+  } finally {
+    db.close();
+  }
+  console.error(`📂 store cohort="${cohort}": ${rows.length} candidatos (nunca verificados)`);
+  // #2886 PR3 review: 0 candidatos + 0 membros no store é suspeito — provável
+  // typo num slug de FORMA válida (ex: leads-2026-07 no lugar de
+  // leads-2026-06; ambos passam resolveCohortArg). Distinto do steady-state
+  // normal (cohort com membros, todos já verificados em ciclos anteriores).
+  if (rows.length === 0 && memberCount === 0) {
+    console.error(
+      `⚠️  cohort "${cohort}" não tem NENHUM contato no store (0 candidatos, 0 membros) — ` +
+        `provável typo (slug de forma válida mas errado). Confira scripts/lib/cohorts.ts.`,
+    );
+  }
 
   // Emails únicos, normalizados.
   const allEmails = [
@@ -508,7 +640,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const summary = {
-    input: args.input,
+    cohort,
     total_rows: rows.length,
     unique_emails: allEmails.length,
     // Quantos emails foram efetivamente verificados via API NESTE run (≠ bucket
