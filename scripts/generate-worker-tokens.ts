@@ -78,18 +78,22 @@ export function generateTokensContent(colors: typeof COLORS, fonts: typeof FONTS
 /**
  * Tokens de cor do DS (espelho de COLORS em design-tokens.ts).
  *
- * Exclusão intencional: paperEmail, ruleStrong e onInk existem em COLORS mas
- * NÃO são gerados — o dashboard não os usa. Se o dashboard passar a usar um
- * deles, adicione-o no template de scripts/generate-worker-tokens.ts e
- * regenere (senão fica undefined em runtime sem
- * erro de tipo).
+ * Exclusão intencional: ruleStrong e onInk existem em COLORS mas NÃO são
+ * gerados — nenhum worker os usa. Se algum worker passar a usar um deles,
+ * adicione-o no template de scripts/generate-worker-tokens.ts e regenere
+ * (senão fica undefined em runtime sem erro de tipo).
+ *
+ * paperEmail (#2991): incluído a partir da Clarice News Dashboard, que usa
+ * branco puro como fundo de "card" sobre o --paper cream (mesmo par usado
+ * nos e-mails, ver COLORS.paperEmail em design-tokens.ts).
  */
 export const DS_COLORS = {
-  brand:    ${JSON.stringify(colors.brand)},
-  ink:      ${JSON.stringify(colors.ink)},
-  paper:    ${JSON.stringify(colors.paper)},
-  paperAlt: ${JSON.stringify(colors.paperAlt)},
-  rule:     ${JSON.stringify(colors.rule)},
+  brand:      ${JSON.stringify(colors.brand)},
+  ink:        ${JSON.stringify(colors.ink)},
+  paper:      ${JSON.stringify(colors.paper)},
+  paperAlt:   ${JSON.stringify(colors.paperAlt)},
+  rule:       ${JSON.stringify(colors.rule)},
+  paperEmail: ${JSON.stringify(colors.paperEmail)},
 } as const;
 
 /** Tokens de fonte do DS (espelho de FONTS em design-tokens.ts). */

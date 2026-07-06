@@ -1,6 +1,6 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { DS, DASH_THEME, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
+import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -243,13 +243,12 @@ export function renderDashboardHtml(
   // logo abaixo da recomendação dos próximos 3 envios.
   const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled);
 
-  // #2991: paleta visual da dashboard vem de DASH_THEME (skin interno, NÃO
-  // deriva de design-tokens.ts / DS_COLORS — que seguem espelhando a marca
-  // pública/teal usada em e-mails). Trocar os valores aqui restyla TODAS as
-  // abas de uma vez só, porque toda tabela/seção já consome estas mesmas CSS
-  // vars (mesmo padrão da aba Agendamento, #2974/#2981, agora generalizado).
-  // --muted/--rule-header não têm token canônico próprio: derivados via
-  // opacity sobre --ink (ver classes abaixo).
+  // #2991: paleta visual da dashboard usa os tokens CANÔNICOS do DS (decisão
+  // do editor — dashboard não tem paleta própria, segue design-tokens.ts como
+  // qualquer outra superfície). --card usa DS.paperEmail (branco puro, já
+  // canônico pra "card sobre fundo cream" — mesmo par usado nos e-mails).
+  // Sem --ink-soft: o DS não tem tier de cinza (consolidado em ink único);
+  // texto secundário usa opacity sobre --ink (ver .sub abaixo).
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -258,14 +257,13 @@ export function renderDashboardHtml(
 <title>Clarice News Dashboard</title>
 <style>
   :root {
-    --brand: ${DASH_THEME.brand};
-    --ink: ${DASH_THEME.ink};
-    --ink-soft: ${DASH_THEME.inkSoft};
-    --paper: ${DASH_THEME.paper};
-    --paper-alt: ${DASH_THEME.paperAlt};
-    --card: ${DASH_THEME.card};
-    --rule: ${DASH_THEME.hair};
-    --hair: ${DASH_THEME.hair};
+    --brand: ${DS.brand};
+    --ink: ${DS.ink};
+    --paper: ${DS.paper};
+    --paper-alt: ${DS.paperAlt};
+    --card: ${DS.paperEmail};
+    --rule: ${DS.rule};
+    --hair: ${DS.rule};
     --alert: ${DS.alert};
   }
   body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }

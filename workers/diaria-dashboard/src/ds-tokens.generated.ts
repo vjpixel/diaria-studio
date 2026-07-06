@@ -16,18 +16,22 @@
 /**
  * Tokens de cor do DS (espelho de COLORS em design-tokens.ts).
  *
- * Exclusão intencional: paperEmail, ruleStrong e onInk existem em COLORS mas
- * NÃO são gerados — o dashboard não os usa. Se o dashboard passar a usar um
- * deles, adicione-o no template de scripts/generate-worker-tokens.ts e
- * regenere (senão fica undefined em runtime sem
- * erro de tipo).
+ * Exclusão intencional: ruleStrong e onInk existem em COLORS mas NÃO são
+ * gerados — nenhum worker os usa. Se algum worker passar a usar um deles,
+ * adicione-o no template de scripts/generate-worker-tokens.ts e regenere
+ * (senão fica undefined em runtime sem erro de tipo).
+ *
+ * paperEmail (#2991): incluído a partir da Clarice News Dashboard, que usa
+ * branco puro como fundo de "card" sobre o --paper cream (mesmo par usado
+ * nos e-mails, ver COLORS.paperEmail em design-tokens.ts).
  */
 export const DS_COLORS = {
-  brand:    "#00A0A0",
-  ink:      "#171411",
-  paper:    "#FBFAF6",
-  paperAlt: "#EBE5D0",
-  rule:     "#EBE5D0",
+  brand:      "#00A0A0",
+  ink:        "#171411",
+  paper:      "#FBFAF6",
+  paperAlt:   "#EBE5D0",
+  rule:       "#EBE5D0",
+  paperEmail: "#FFFFFF",
 } as const;
 
 /** Tokens de fonte do DS (espelho de FONTS em design-tokens.ts). */

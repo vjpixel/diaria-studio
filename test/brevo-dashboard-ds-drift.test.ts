@@ -66,14 +66,13 @@ describe("index.ts re-exporta tokens gerados sem drift (#2107)", () => {
   });
 });
 
-describe("brevo-dashboard CSS aplica tema visual da dashboard (DASH_THEME, #2991)", () => {
-  // #2991: a partir do restyle "Agendamento em todas as abas", o :root da
-  // dashboard passou a usar DASH_THEME (workers/brevo-dashboard/src/render-links.ts)
-  // — um skin INTENCIONALMENTE separado de DS_COLORS/design-tokens.ts (marca
-  // pública teal, usada nos e-mails). Os testes abaixo (que checavam os valores
-  // DS canônicos no HTML renderizado) foram atualizados para os novos valores
-  // de DASH_THEME; os testes de paridade DS_COLORS×design-tokens.ts acima
-  // continuam intactos (essa camada não mudou).
+describe("brevo-dashboard CSS aplica tokens DS canônicos (#2084, restyle #2991)", () => {
+  // #2991: o restyle "Agendamento em todas as abas" introduziu temporariamente
+  // um DASH_THEME separado (verde #1f7a5c, paper #faf8f3 etc) — revertido por
+  // decisão do editor: a dashboard não tem paleta própria, segue os mesmos
+  // tokens canônicos de design-tokens.ts (marca pública, usada também nos
+  // e-mails). --card usa DS.paperEmail (#FFFFFF), o único token adicional
+  // necessário (branco puro sobre o --paper cream, mesmo par dos e-mails).
   const baseCampaign = {
     id: 1,
     name: "Test",
@@ -97,31 +96,31 @@ describe("brevo-dashboard CSS aplica tema visual da dashboard (DASH_THEME, #2991
 
   const html = renderDashboardHtml([baseCampaign]);
 
-  test("fundo paper (cream) aplicado ao body (#faf8f3)", () => {
+  test("fundo paper DS aplicado ao body (#FBFAF6)", () => {
     assert.match(html, /background: var\(--paper\)/, "body deve ter background: var(--paper)");
-    assert.match(html, /--paper: #faf8f3/, "CSS custom property --paper deve ser #faf8f3 (DASH_THEME)");
+    assert.match(html, /--paper: #FBFAF6/, "CSS custom property --paper deve ser #FBFAF6 canônico");
   });
 
-  test("--brand verde DASH_THEME aplicado (#1f7a5c)", () => {
-    assert.match(html, /--brand: #1f7a5c/, "CSS custom property --brand deve ser #1f7a5c");
+  test("--brand teal DS aplicado (#00A0A0)", () => {
+    assert.match(html, /--brand: #00A0A0/, "CSS custom property --brand deve ser #00A0A0");
   });
 
-  test("--ink DASH_THEME aplicado (#262019)", () => {
-    assert.match(html, /--ink: #262019/, "CSS custom property --ink deve ser #262019");
+  test("--ink DS aplicado (#171411)", () => {
+    assert.match(html, /--ink: #171411/, "CSS custom property --ink deve ser #171411");
   });
 
-  test("--paper-alt bege DASH_THEME aplicado aos headers (#f0ece1)", () => {
-    assert.match(html, /--paper-alt: #f0ece1/, "CSS custom property --paper-alt deve ser #f0ece1");
+  test("--paper-alt bege DS aplicado aos headers (#EBE5D0)", () => {
+    assert.match(html, /--paper-alt: #EBE5D0/, "CSS custom property --paper-alt deve ser #EBE5D0");
     assert.match(html, /background: var\(--paper-alt\)/, "th deve usar var(--paper-alt) como fundo");
   });
 
-  test("--rule/--hair DASH_THEME aplicado (#e4ddcf)", () => {
-    assert.match(html, /--rule: #e4ddcf/, "CSS custom property --rule deve ser #e4ddcf");
-    assert.match(html, /--hair: #e4ddcf/, "CSS custom property --hair deve ser #e4ddcf");
+  test("--rule/--hair DS aplicado (#EBE5D0)", () => {
+    assert.match(html, /--rule: #EBE5D0/, "CSS custom property --rule deve ser #EBE5D0");
+    assert.match(html, /--hair: #EBE5D0/, "CSS custom property --hair deve ser #EBE5D0");
   });
 
-  test("--card branco DASH_THEME aplicado (#ffffff)", () => {
-    assert.match(html, /--card: #ffffff/, "CSS custom property --card deve ser #ffffff");
+  test("--card branco DS aplicado (#FFFFFF, paperEmail)", () => {
+    assert.match(html, /--card: #FFFFFF/, "CSS custom property --card deve ser #FFFFFF (DS.paperEmail)");
   });
 
   test("font-family Geist DS aplicada ao body", () => {
