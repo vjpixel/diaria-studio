@@ -58,6 +58,24 @@ function fmtDayKey(dayKey: string): string {
 }
 
 /**
+ * Agrupa campanhas por dia-calendário BRT (#2992 — extraído de 2 loops
+ * duplicados: `selectMatureCampaignsByDay` e `groupByDayForDetails`). Campanhas
+ * sem `sentDate` válido são ignoradas (não entram em nenhum grupo). Exportada
+ * pra ser testada isoladamente.
+ */
+export function groupByBrtDay(campaigns: BrevoCampaign[]): Map<string, BrevoCampaign[]> {
+  const byDay = new Map<string, BrevoCampaign[]>();
+  for (const c of campaigns) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    const arr = byDay.get(day);
+    if (arr) arr.push(c);
+    else byDay.set(day, [c]);
+  }
+  return byDay;
+}
+
+/**
  * Deriva um nome "limpo" de edição a partir do nome de campanha — remove o
  * sufixo de célula/variante do teste A/B/C (ex: "Clarice News 2606-07 — A ·
  * dom" → "Clarice News 2606-07"). Sem esse separador, usa o nome truncado.
@@ -301,14 +319,7 @@ export function selectMatureCampaignsByDay(
   matureCampaigns: BrevoCampaign[],
   days: number = HEALTH_SAMPLE_DAYS,
 ): BrevoCampaign[] {
-  const byDay = new Map<string, BrevoCampaign[]>();
-  for (const c of matureCampaigns) {
-    const day = brtDayKey(c.sentDate);
-    if (!day) continue;
-    const arr = byDay.get(day);
-    if (arr) arr.push(c);
-    else byDay.set(day, [c]);
-  }
+  const byDay = groupByBrtDay(matureCampaigns);
   const topDays = [...byDay.keys()]
     .sort((a, b) => (a < b ? 1 : -1))
     .slice(0, days);
@@ -317,6 +328,49 @@ export function selectMatureCampaignsByDay(
     const day = brtDayKey(c.sentDate);
     return day !== null && topDaysSet.has(day);
   });
+}
+
+/**
+ * #2992: seleciona os `days` dias-calendário BRT mais recentes que estão
+ * ATOMICAMENTE maduros — um dia matura só quando sua célula A/B/C MAIS RECENTE
+ * cruza 48h. Sem isso, um dia com células enviadas minutos antes/depois da
+ * fronteira de 48h poderia aparecer parcialmente maduro (algumas células no
+ * agregado, outras não) — o dia deixa de ser atômico nas 2 tabelas ("incluídos"
+ * vs "excluídos"). `allSentCampaigns` deve conter TODOS os envios (maduros e
+ * não), pra avaliar a maturidade do dia pela campanha mais recente do dia,
+ * não só pelas já filtradas como maduras.
+ */
+export function selectMatureDayCampaigns(
+  allSentCampaigns: BrevoCampaign[],
+  now: Date,
+  days: number = HEALTH_SAMPLE_DAYS,
+  minAgeMs: number = MATURATION_MS,
+): { mature: BrevoCampaign[]; immature: BrevoCampaign[] } {
+  const byDay = groupByBrtDay(allSentCampaigns);
+  const nowMs = now.getTime();
+
+  const matureDays: string[] = [];
+  const immatureDays: string[] = [];
+  for (const [day, cs] of byDay) {
+    const mostRecentMs = Math.max(...cs.map((c) => Date.parse(c.sentDate as string)));
+    if (nowMs - mostRecentMs > minAgeMs) matureDays.push(day);
+    else immatureDays.push(day);
+  }
+
+  const topMatureDays = matureDays.sort((a, b) => (a < b ? 1 : -1)).slice(0, days);
+  const topMatureDaysSet = new Set(topMatureDays);
+  const immatureDaysSet = new Set(immatureDays);
+
+  const mature = allSentCampaigns.filter((c) => {
+    const day = brtDayKey(c.sentDate);
+    return day !== null && topMatureDaysSet.has(day);
+  });
+  const immature = allSentCampaigns.filter((c) => {
+    const day = brtDayKey(c.sentDate);
+    return day !== null && immatureDaysSet.has(day);
+  });
+
+  return { mature, immature };
 }
 
 /**
@@ -374,15 +428,12 @@ export function renderWeeklyPlanTabPanel(
 
   // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
   // recentes com envio — todas as campanhas desses dias (célula A/B/C = 1 dia).
-  const matureAll = filterMatureCampaigns(allSent, now);
-  const mature = selectMatureCampaignsByDay(matureAll).sort(
+  // #2992: maturidade é avaliada por DIA (o dia matura quando a célula A/B/C
+  // MAIS RECENTE dele passa de 48h) — o dia é atômico, nunca rachado entre
+  // "incluído" e "excluído".
+  const { mature: matureUnsorted, immature } = selectMatureDayCampaigns(allSent, now);
+  const mature = matureUnsorted.sort(
     (a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string),
-  );
-  const matureIds = new Set(mature.map((c) => c.id));
-  // Imaturos (<48h) — ainda fora do agregado de saúde, mostrados pra transparência.
-  const nowMs = now.getTime();
-  const immature = allSent.filter(
-    (c) => !matureIds.has(c.id) && nowMs - Date.parse(c.sentDate as string) <= MATURATION_MS,
   );
 
   // Volume-base = total do ÚLTIMO envio registrado (mesmo <48h) — volume é
@@ -422,14 +473,7 @@ ${waitRows}
 
   /** Agrupa campanhas por dia BRT → 1 linha por dia (Edição | Data | E-mails). */
   function groupByDayForDetails(cs: BrevoCampaign[]): { rows: string; dayCount: number } {
-    const grouped = new Map<string, BrevoCampaign[]>();
-    for (const c of cs) {
-      const day = brtDayKey(c.sentDate);
-      if (!day) continue;
-      const arr = grouped.get(day);
-      if (arr) arr.push(c);
-      else grouped.set(day, [c]);
-    }
+    const grouped = groupByBrtDay(cs);
     const entries = [...grouped.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
     const rows = entries
       .map(([day, dayCampaigns]) => {
