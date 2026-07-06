@@ -3,7 +3,6 @@ import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { DS, DASH_THEME, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
 import {
   renderVolumeSection,
-  renderScheduledSection,
   aggregateByMonth,
   renderMonthlyTotalsSection,
   renderEngagementCohortsSection,
@@ -122,7 +121,12 @@ export function renderDashboardHtml(
     })
     .join("\n");
 
-  const now = new Date().toLocaleString("pt-BR", {
+  // #3011: `nowDate` é o mesmo instante do cabeçalho ("Dados em tempo real —
+  // carregado às ${now} BRT") — passado às seções com dado pré-computado (KV)
+  // pra decidir (via shouldShowStalenessNote) se a nota de "atualizado em X"
+  // deve aparecer (dado diverge do cabeçalho) ou ficar oculta (dado coincide).
+  const nowDate = new Date();
+  const now = nowDate.toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     day: "2-digit",
     month: "2-digit",
@@ -205,21 +209,22 @@ export function renderDashboardHtml(
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
   const edicaoLabel = deriveLinksSectionTitle(campaigns);
   const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks, edicaoLabel);
-  // #2251: seção de campanhas agendadas (status queued) — só sobre `scheduled`,
-  // nunca polui os agregadores de enviadas (A/B/C, volume, weekday).
-  const scheduledSection = renderScheduledSection(scheduled);
+  // #2251/#3010: seção de campanhas agendadas (status queued) — só sobre
+  // `scheduled`, nunca polui os agregadores de enviadas (A/B/C, volume,
+  // weekday). Movida pra aba Agendamento (renderWeeklyPlanTabPanel abaixo) —
+  // não é mais injetada no panel-visaogeral aqui (#3010).
   // #2369: tabela de totais por mês — à parte da lista detalhada de campanhas.
   const monthlyTotalsRows = aggregateByMonth(campaigns);
   const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
-  const cohortsSection = renderEngagementCohortsSection(cohorts);
+  const cohortsSection = renderEngagementCohortsSection(cohorts, nowDate);
   // #2736: "Status MillionVerifier por grupo" removida da aba Engajamento
   // (ruído, decisão do editor). renderMvStatusSection permanece exportada e
   // testada (reuso futuro); a leitura do KV mv:status em readKvTabs também
   // fica (custo desprezível, já paralela às outras — reverter é maior cirurgia
   // do que o pedido pede; ver corpo do PR).
   // #2653: sumário do store único de contatos (pré-computado via KV).
-  const contactsSummarySection = renderContactsSummarySection(contactsSummary);
+  const contactsSummarySection = renderContactsSummarySection(contactsSummary, nowDate);
   // #2864: aba Cohorts — comparativo de envio/engajamento por cohort. Deriva
   // de contactsSummary (mesmo payload KV de Contatos, campo cohort_stats
   // opcional) — sem parâmetro novo na assinatura desta função.
@@ -230,13 +235,13 @@ export function renderDashboardHtml(
     contactsSummary?.cycle_start ?? null,
   );
   // #2738: engajamento do poll "É IA?" por edição (pré-computado via KV).
-  const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement);
+  const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement, nowDate);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
-  const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage) : "";
-  // #2974: aba "Rampa" — plano de envio semanal (maturação >48h → agregado →
-  // semáforo → 3 volumes). Sem PII, sem parâmetro novo (usa `campaigns` já
-  // disponível nesta função).
-  const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, new Date());
+  const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate) : "";
+  // #2974: aba "Rampa"/Agendamento — plano de envio semanal (maturação >48h →
+  // agregado → semáforo → 3 volumes) + #3010: campanhas agendadas (`scheduled`)
+  // logo abaixo da recomendação dos próximos 3 envios.
+  const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled);
 
   // #2991: paleta visual da dashboard vem de DASH_THEME (skin interno, NÃO
   // deriva de design-tokens.ts / DS_COLORS — que seguem espelhando a marca
@@ -408,11 +413,10 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 1: Visão geral — totais mensais + volume + agendados + envios -->
+  <!-- Aba 1: Visão geral — totais mensais + volume + envios (#3010: agendados moveu pra aba Agendamento) -->
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
 ${monthlyTotalsSection}
 ${volumeSection}
-${scheduledSection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
 <div class="table-wrap">

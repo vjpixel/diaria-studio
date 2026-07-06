@@ -2264,7 +2264,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.doesNotMatch(html, /id="mv-status"/, 'seção id="mv-status" foi removida (#2736)');
   });
 
-  test("scheduled-campaigns aparece dentro de panel-visaogeral quando há agendados", () => {
+  test("scheduled-campaigns aparece dentro de panel-rampa (Agendamento), não mais em panel-visaogeral (#3010)", () => {
     const scheduled = [{
       id: 200,
       name: "Clarice News 2605 d02-A (qua)",
@@ -2278,9 +2278,25 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
       listSize: 500,
     }];
     const html = renderDashboardHtml([baseCampaignForTabs], scheduled);
-    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";
-    assert.ok(panel.length > 0, "panel-visaogeral deve existir");
-    assert.match(panel, /id="scheduled-campaigns"/, "scheduled-campaigns deve estar no panel Visão geral");
+    // panel-visaogeral isolado (até o INÍCIO de panel-rampa, que agora vem logo em seguida) —
+    // não deve mais conter a seção.
+    const visaoGeralPanel = html.match(/id="panel-visaogeral"[\s\S]*?(?=<!-- Aba Agendamento)/)?.[0] ?? "";
+    assert.ok(visaoGeralPanel.length > 0, "panel-visaogeral deve existir");
+    assert.doesNotMatch(
+      visaoGeralPanel,
+      /id="scheduled-campaigns"/,
+      "scheduled-campaigns NÃO deve mais estar no panel Visão geral (#3010)",
+    );
+
+    const rampaPanel = html.match(/id="panel-rampa"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";
+    assert.ok(rampaPanel.length > 0, "panel-rampa deve existir");
+    assert.match(rampaPanel, /id="scheduled-campaigns"/, "scheduled-campaigns deve estar no panel Agendamento (#3010)");
+
+    // Posicional: scheduled-campaigns deve vir DEPOIS da recomendação dos próximos 3 envios.
+    const idxRecomendacao = rampaPanel.indexOf("Recomendação");
+    const idxScheduled = rampaPanel.indexOf('id="scheduled-campaigns"');
+    assert.ok(idxRecomendacao >= 0, "Recomendação — próximos 3 envios deve estar presente");
+    assert.ok(idxScheduled > idxRecomendacao, "scheduled-campaigns deve vir imediatamente abaixo da recomendação (#3010)");
   });
 
   test("CSS das abas usa :checked (sem JS externo para tab switching)", () => {

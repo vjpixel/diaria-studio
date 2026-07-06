@@ -37,6 +37,7 @@ import type { Env } from "./types.ts";
 export * from "./types.ts";
 export * from "./render-links.ts";
 export * from "./billing-cycle.ts";
+export * from "./staleness.ts";
 export * from "./sections-kv.ts";
 export * from "./brevo-api.ts";
 export * from "./sections-core.ts";

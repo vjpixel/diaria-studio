@@ -293,6 +293,41 @@ test("render — aba renomeada para Agendamento (sem parentético no plano)", ()
   assert.doesNotMatch(html, /Terça|Sexta|Domingo/);
 });
 
+test("render — scheduledSection (#2251) aparece logo abaixo da recomendação, dentro da aba Agendamento (#3010)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }),
+    }),
+  ];
+  const scheduled = [{
+    id: 200,
+    name: "Clarice News 2605 d02-A (qua)",
+    subject: "Test",
+    status: "queued",
+    sentDate: null,
+    scheduledAt: "2026-07-15T09:00:00Z",
+    createdAt: "2026-07-14T00:00:00Z",
+    recipients: { lists: [1] },
+    listName: "T1-W2",
+    listSize: 500,
+  }];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, scheduled as any);
+  assert.match(html, /id="scheduled-campaigns"/, "scheduled-campaigns deve renderizar quando `scheduled` é passado");
+  const idxRecomendacao = html.indexOf("Recomendação — próximos 3 envios");
+  const idxScheduled = html.indexOf('id="scheduled-campaigns"');
+  assert.ok(idxRecomendacao >= 0 && idxScheduled > idxRecomendacao, "scheduled-campaigns deve vir depois da recomendação");
+});
+
+test("render — sem `scheduled` (default []), scheduledSection não aparece (compat retroativa)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.doesNotMatch(html, /id="scheduled-campaigns"/);
+});
+
 test("deriveEditionName — formato DIÁRIO 'd01-A' não vaza o sufixo de célula na Edição (#2983)", () => {
   // bug do review: nome cold diário "Clarice News 2607 d01-A (ter)" — o "-A"
   // vazava pra coluna Edição. Deve virar "Clarice News 2607 d01" (sem célula).

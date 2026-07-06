@@ -9,6 +9,9 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT, cellClass } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP } from "./sections-core.ts";
+// #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
+// pré-computado (KV) diverge do timestamp do cabeçalho da dashboard.
+import { shouldShowStalenessNote } from "./staleness.ts";
 import {
   formatBillingWindowLabel,
   BILLING_CYCLE_DAY,
@@ -530,7 +533,10 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
  * com a instrução de como gerar — seção presente, nunca quebra o render.
  * Exportado pra teste unitário.
  */
-export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null): string {
+export function renderEngagementCohortsSection(
+  cohorts: EngagementCohorts | null,
+  headerNow: Date = new Date(),
+): string {
   if (!cohorts) {
     return `
 <section class="phase2-section" id="engagement-cohorts">
@@ -541,6 +547,10 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
 
   const u = cohorts.universe;
   const genBRT = fmtTimeBRT(cohorts.generatedAt);
+  // #3011: nota só aparece quando o dado pré-computado diverge do cabeçalho.
+  const staleNote = shouldShowStalenessNote(cohorts.generatedAt, headerNow)
+    ? ` Pré-computado às ${genBRT} BRT.`
+    : "";
   // Rótulo "2+" (#2426 review): os buckets são definidos como ≥2 (abriu ≥2 /
   // recebeu ≥2), então "2+" é sempre exato — não acoplar ao maxReceived, que
   // descreve o máximo recebido e podia rotular errado o bucket de OPENS (open
@@ -580,7 +590,7 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" = aberturas reais (trackable) per-contato — <strong>EXCLUI MPP</strong> (a Brevo não atribui MPP a contatos individuais; <code>appleMppOpens</code> é só agregado de campanha). Por isso os números aqui diferem de "Totais por mês" (que usa <code>uniqueViews</code>, MPP-inclusivo) — não comparar 1:1. Escopo: toda a base Clarice (todas as edições). Pré-computado às ${genBRT} BRT.</p>
+  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" = aberturas reais (trackable) per-contato — <strong>EXCLUI MPP</strong> (a Brevo não atribui MPP a contatos individuais; <code>appleMppOpens</code> é só agregado de campanha). Por isso os números aqui diferem de "Totais por mês" (que usa <code>uniqueViews</code>, MPP-inclusivo) — não comparar 1:1. Escopo: toda a base Clarice (todas as edições).${staleNote}</p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -604,6 +614,7 @@ export function renderEngagementCohortsSection(cohorts: EngagementCohorts | null
  */
 export function renderContactsSummarySection(
   s: ContactsSummary | null,
+  headerNow: Date = new Date(),
 ): string {
   // Stub quando a chave KV não existe (null) OU o payload está malformado (total
   // não-numérico). NÃO usa `!s.total`: um store legitimamente vazio (total=0) é
@@ -626,6 +637,10 @@ export function renderContactsSummarySection(
 
   const n = fmtCount; // #2875: dedup — ver fmtCount module-level
   const genBRT = escHtml(fmtTimeBRT(s.generated_at));
+  // #3011: nota só aparece quando o dado pré-computado diverge do cabeçalho.
+  const staleNote = shouldShowStalenessNote(s.generated_at, headerNow)
+    ? ` Gerado às ${genBRT} BRT.`
+    : "";
 
   // tabelinha {rótulo → contagem}, ordenada por contagem desc. #2880 E: com
   // linha "Total" ao fim (só quando há ≥1 linha). Usada por "Inelegíveis por
@@ -732,7 +747,7 @@ ${totalRow}</tbody></table></div>`;
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
-  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}. Gerado às ${genBRT} BRT.</p>
+  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
   ${priorityPointsSection}
   <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
   <div class="side-by-side">
@@ -987,7 +1002,10 @@ ${totalRow}</tbody>
  * Stub gracioso quando `mvStatus` é null (KV não populado ainda).
  * Exportado pra teste unitário.
  */
-export function renderMvStatusSection(mvStatus: MvStatus | null): string {
+export function renderMvStatusSection(
+  mvStatus: MvStatus | null,
+  headerNow: Date = new Date(),
+): string {
   // Trata payload vazio (groups:[]) como não-gerado: mesma orientação acionável, em vez
   // de renderizar uma <tbody> vazia sem contexto.
   if (!mvStatus || mvStatus.groups.length === 0) {
@@ -999,6 +1017,10 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
   }
 
   const genBRT = fmtTimeBRT(mvStatus.generatedAt);
+  // #3011: nota só aparece quando o dado pré-computado diverge do cabeçalho.
+  const staleNote = shouldShowStalenessNote(mvStatus.generatedAt, headerNow)
+    ? ` Gerado às ${genBRT} BRT.`
+    : "";
 
   const tableRows = mvStatus.groups.map((g) => {
     let badge: string;
@@ -1020,7 +1042,7 @@ export function renderMvStatusSection(mvStatus: MvStatus | null): string {
   return `
 <section class="phase2-section" id="mv-status">
   <h2 class="section-title">Status MillionVerifier por grupo</h2>
-  <p class="section-note">Verificação de e-mails (MillionVerifier) por grupo/tier. T01 pula verificação — pagamento Stripe valida implicitamente. Gerado às ${genBRT} BRT.</p>
+  <p class="section-note">Verificação de e-mails (MillionVerifier) por grupo/tier. T01 pula verificação — pagamento Stripe valida implicitamente.${staleNote}</p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -1055,7 +1077,10 @@ export const EIA_ENGAGEMENT_MAX_EDITIONS = 30;
  * edições. Dado gravado por `scripts/build-poll-eia-data.ts --push`.
  * Exportado pra teste unitário.
  */
-export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary | null): string {
+export function renderEiaEngagementSection(
+  eiaEngagement: EiaEngagementSummary | null,
+  headerNow: Date = new Date(),
+): string {
   if (!eiaEngagement || eiaEngagement.editions.length === 0) {
     return `
 <section class="phase2-section" id="eia-engagement">
@@ -1064,7 +1089,13 @@ export function renderEiaEngagementSection(eiaEngagement: EiaEngagementSummary |
 </section>`;
   }
 
-  const genBRT = eiaEngagement.updated_at ? fmtTimeBRT(eiaEngagement.updated_at) : null;
+  // #3011: antes exibida sempre que `updated_at` existisse — agora gateada
+  // por `shouldShowStalenessNote` (divergência real vs. o cabeçalho), não só
+  // presença do campo.
+  const genBRT =
+    eiaEngagement.updated_at && shouldShowStalenessNote(eiaEngagement.updated_at, headerNow)
+      ? fmtTimeBRT(eiaEngagement.updated_at)
+      : null;
 
   // Guard: edition malformado (KV corrompido/escrita parcial) — pula em vez de
   // produzir um bucket/label "NaN" na tabela. Aceita AAMMDD (diária, 6 dígitos)
@@ -1125,7 +1156,7 @@ interface FlatPayment {
   epoch: number;
 }
 
-export function renderCouponTabPanel(usage: CouponUsageReport): string {
+export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date = new Date()): string {
   const fmtBRL = (cents: number): string => {
     const abs = Math.abs(cents);
     return `R$${Math.floor(abs / 100)},${String(abs % 100).padStart(2, "0")}`;
@@ -1137,9 +1168,13 @@ export function renderCouponTabPanel(usage: CouponUsageReport): string {
   // #2766: momento em que o report foi montado — mesmo valor em todos os
   // códigos (carimbado por fetchCouponUsage). Ausente em KV pré-#2766.
   const generatedAt = codes.map((code) => (usage[code] as CouponCodeReport).generatedAt).find((g) => g != null);
-  const generatedAtNote = generatedAt
+  // #3011: nota só aparece quando o dado pré-computado diverge do cabeçalho
+  // (ou quando o timestamp está simplesmente ausente — KV antigo, aviso mantido).
+  const generatedAtNote = !generatedAt
+    ? `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Data de atualização indisponível (KV antigo — aguarde o próximo refresh, #2750).</p>`
+    : shouldShowStalenessNote(generatedAt, headerNow)
     ? `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Atualizado ${escHtml(fmtTimeBRT(generatedAt))} BRT.</p>`
-    : `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Data de atualização indisponível (KV antigo — aguarde o próximo refresh, #2750).</p>`;
+    : "";
 
   // #2749: data em BRT (America/Sao_Paulo), consistente com fmtDateBRT do resto
   // do dashboard — sem timeZone o worker (UTC) mostraria o dia-calendário errado
