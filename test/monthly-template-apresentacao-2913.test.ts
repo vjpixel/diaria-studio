@@ -120,9 +120,13 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     // O wordmark estiliza "diar.ia.br" com pontos teal (applyBrandWordmark) —
     // ver test/monthly-branding-2937.test.ts para o formato exato do span.
     assert.match(html, /diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span>/);
-    // E, na mensal, o wordmark vira link pro Beehiiv (MENSAL_BRAND_LINK, #2937).
-    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com"[^>]*>/);
-    // O CTA "aqui" segue como link normal pro mesmo destino.
-    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com"[^>]*>aqui<\/a>/);
+    // E, na mensal, o wordmark vira link pro Beehiiv (MENSAL_BRAND_LINK, #2937),
+    // carregando o UTM de atribuição Clarice→Beehiiv (#2975 — sem isso, o
+    // Beehiiv taggeia esses assinantes como "sendinblue" e a migração fica
+    // invisível na atribuição). Ver test/monthly-utm-clarice-2975.test.ts.
+    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07"[^>]*>/);
+    // O CTA "aqui" segue como link normal pro mesmo destino, também com UTM.
+    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07"[^>]*>aqui<\/a>/);
+    assert.doesNotMatch(html, /sendinblue/);
   });
 });
