@@ -51,7 +51,7 @@ const KNOWN_ALIASES: Record<string, string> = {
  * lista precise mudar, o teste abaixo falha e força atualização consciente
  * (endereçar o gap ou documentar o novo).
  */
-const ACKNOWLEDGED_GAPS = ["Tecnoblog (IA)", "CNN", "StartSe (IA)", "Brazil Journal (IA)"].sort();
+const ACKNOWLEDGED_GAPS = ["CNN", "StartSe (IA)", "Brazil Journal (IA)"].sort();
 
 interface SourceRow {
   nome: string;
