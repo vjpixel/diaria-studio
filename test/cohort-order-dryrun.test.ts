@@ -11,7 +11,7 @@ import {
   main,
 } from "../scripts/cohort-order-dryrun.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
-import { loadStoreRows, type StoreRow } from "../scripts/lib/clarice-segment.ts";
+import { loadStoreRows, excludeCommittedToQueuedCampaigns, type StoreRow } from "../scripts/lib/clarice-segment.ts";
 import { cohortFromTier } from "../scripts/lib/cohorts.ts";
 
 function row(p: Partial<StoreRow> & { email: string }): StoreRow {
@@ -104,7 +104,9 @@ test("renderComparisonReport: sem firstSend (universo vazio) não lança e mostr
   assert.match(md, /nenhum contato firstSend/);
 });
 
-test("main: smoke sobre store seedado — imprime relatório sem lançar, store vazio aborta com erro claro", () => {
+test("main: smoke sobre store seedado — imprime relatório sem lançar, store vazio aborta com erro claro", async () => {
+  const savedKey = process.env.BREVO_CLARICE_API_KEY;
+  delete process.env.BREVO_CLARICE_API_KEY; // sem chave -> sem fetch ao vivo à Brevo neste smoke test
   const dir = mkdtempSync(resolve(tmpdir(), "cohort-dryrun-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
@@ -121,7 +123,7 @@ test("main: smoke sobre store seedado — imprime relatório sem lançar, store 
   const orig = console.log;
   console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
   try {
-    assert.doesNotThrow(() => main(["--db", dbPath, "--top", "5"]));
+    await assert.doesNotReject(main(["--db", dbPath, "--top", "5"]));
   } finally {
     console.log = orig;
   }
@@ -137,10 +139,12 @@ test("main: smoke sobre store seedado — imprime relatório sem lançar, store 
   // @ts-expect-error — stub de process.exit pra capturar sem matar o test runner
   process.exit = (code?: number) => { throw new Error(`exit:${code}`); };
   try {
-    assert.throws(() => main(["--db", emptyDbPath]), /exit:1/);
+    await assert.rejects(main(["--db", emptyDbPath]), /exit:1/);
   } finally {
     console.error = origErr;
     process.exit = origExit;
+    if (savedKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = savedKey;
   }
   assert.ok(errors.some((e) => /store vazio/.test(e)));
 });
@@ -156,4 +160,26 @@ test("compareOrders: opera sobre StoreRow[] vindo de loadStoreRows (integração
   db.close();
   const cmp = compareOrders(rows, 5);
   assert.equal(cmp.firstSendTotal, 1);
+});
+
+// ---------------------------------------------------------------------------
+// #3015 (#2994 incompleto): paridade preview vs. real — quando main() aplica
+// excludeCommittedToQueuedCampaigns (guard opcional via BREVO_CLARICE_API_KEY,
+// ver docstring do script), o contato comprometido some das DUAS ordens
+// comparadas, não só de uma — senão o preview continuaria mostrando alguém
+// que o build real (clarice-build-edition-sends.ts) já exclui.
+// ---------------------------------------------------------------------------
+test("#3015: excludeCommittedToQueuedCampaigns aplicado antes de compareOrders remove o contato comprometido das duas ordens", () => {
+  const rows: StoreRow[] = [
+    row({ email: "committed@x.com", tier: 3, brevo_list_ids: '["68"]' }),
+    row({ email: "fresh@x.com", tier: 3, brevo_list_ids: '["99"]' }),
+  ];
+  const cmpBefore = compareOrders(rows, 5);
+  assert.deepEqual(cmpBefore.tierOrderTop.sort(), ["committed@x.com", "fresh@x.com"]);
+  assert.deepEqual(cmpBefore.cohortOrderTop.sort(), ["committed@x.com", "fresh@x.com"]);
+
+  const filtered = excludeCommittedToQueuedCampaigns(rows, new Set(["68"]));
+  const cmpAfter = compareOrders(filtered, 5);
+  assert.deepEqual(cmpAfter.tierOrderTop, ["fresh@x.com"]);
+  assert.deepEqual(cmpAfter.cohortOrderTop, ["fresh@x.com"]);
 });
