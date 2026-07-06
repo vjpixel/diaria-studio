@@ -25,6 +25,10 @@
 import type { BrevoCampaign } from "./types.ts";
 import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS } from "./sections-core.ts";
 import { fmtTimeBRT } from "./render-links.ts";
+// #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
+// import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
+// acima (uso só dentro de corpo de função, em request-time).
+import { renderScheduledSection } from "./sections-kv.ts";
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
@@ -413,7 +417,15 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
 export function renderWeeklyPlanTabPanel(
   campaigns: BrevoCampaign[],
   now: Date = new Date(),
+  // #3010: campanhas agendadas (status queued) — movida da aba Visão Geral pra
+  // cá, logo abaixo da recomendação dos próximos 3 envios. Default [] preserva
+  // call sites/testes existentes que ainda não passam esse argumento.
+  scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [],
 ): string {
+  // #3010: renderizada uma única vez e reaproveitada em todos os branches de
+  // retorno desta função (mesmo quando não há plano/recomendação ainda).
+  const scheduledSection = renderScheduledSection(scheduled);
+
   // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
   // do domínio, ver HEALTH_SAMPLE_DAYS).
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
@@ -423,7 +435,8 @@ export function renderWeeklyPlanTabPanel(
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note">Nenhum envio registrado.</p>
-</section>`;
+</section>
+${scheduledSection}`;
   }
 
   // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
@@ -455,7 +468,8 @@ export function renderWeeklyPlanTabPanel(
 ${waitRows}
 </tbody></table>
   <p class="section-note"><small>Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.</small></p>
-</section>`;
+</section>
+${scheduledSection}`;
   }
 
   const health = aggregateHealth(mature);
@@ -553,6 +567,7 @@ ${metricRows}
   </table>
   </div>
   ${planSection}
+  ${scheduledSection}
   ${renderTopWeekdaysSection(campaigns, now)}
   <details>
     <summary>Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
