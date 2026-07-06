@@ -323,6 +323,10 @@ function main(): void {
       editionDir = resolve(ROOT, args["edition-dir"] as string);
       label = basename(editionDir);
     } else if (args.edition) {
+      if (!/^\d{6}$/.test(args.edition as string)) {
+        console.error(`Invalid --edition (expected AAMMDD, 6 digits): ${args.edition}`);
+        process.exit(1);
+      }
       editionDir = resolve(ROOT, buildEditionDir(args.edition as string));
       label = args.edition as string;
     } else {

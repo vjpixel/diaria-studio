@@ -111,7 +111,7 @@ const yymmdd = editionDate;
 
 // Create benchmark edition dir (timestamped to allow multiple runs)
 const ts = Date.now();
-const benchDir = resolve(ROOT, `data/editions/bench-${yymmdd}-${ts}`);
+const benchDir = resolve(ROOT, editionsRoot(), `bench-${yymmdd}-${ts}`);
 mkdirSync(benchDir, { recursive: true });
 
 console.log(`\n${"=".repeat(72)}`);

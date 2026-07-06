@@ -61,6 +61,10 @@ const cliArgs = parseArgsSimple(process.argv.slice(2));
 const fixtureEdition = cliArgs.fixture ?? "260422";
 const numRuns = parseInt(cliArgs.runs ?? "3", 10);
 
+if (!/^\d{6}$/.test(fixtureEdition)) {
+  console.error(`Invalid --fixture (expected AAMMDD, 6 digits): ${fixtureEdition}`);
+  process.exit(1);
+}
 const fixtureDir = resolve(ROOT, editionDir(fixtureEdition));
 if (!existsSync(fixtureDir)) {
   console.error(`Fixture edition not found: ${fixtureDir}`);
