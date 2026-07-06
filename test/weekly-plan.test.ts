@@ -282,7 +282,25 @@ test("render — aba renomeada para Agendamento (sem parentético no plano)", ()
   ];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.match(html, /Agendamento — plano de envio semanal/);
-  assert.match(html, /<h3>Plano da semana<\/h3>/);
+  assert.match(html, /<h3>Recomendação — próximos 3 envios<\/h3>/);
+  // rótulos relativos (sem data fixa) + total dos 3 envios
+  assert.match(html, /Próximo envio/);
+  assert.match(html, /2º envio/);
+  assert.match(html, /3º envio/);
+  assert.match(html, /Total \(3 envios\)/);
+  assert.doesNotMatch(html, /Terça|Sexta|Domingo/);
+});
+
+test("deriveEditionName — formato DIÁRIO 'd01-A' não vaza o sufixo de célula na Edição (#2983)", () => {
+  // bug do review: nome cold diário "Clarice News 2607 d01-A (ter)" — o "-A"
+  // vazava pra coluna Edição. Deve virar "Clarice News 2607 d01" (sem célula).
+  const daily = [
+    campaignSentHoursAgo(60, { id: 1, name: "Clarice News 2607 d01-A (ter)", statistics: statsFor({ sent: 200, delivered: 198, uniqueViews: 40 }) }),
+    campaignSentHoursAgo(60, { id: 2, name: "Clarice News 2607 d01-B (ter)", statistics: statsFor({ sent: 200, delivered: 198, uniqueViews: 40 }) }),
+  ];
+  const html = renderWeeklyPlanTabPanel(daily, NOW);
+  assert.match(html, /Clarice News 2607 d01</);
+  assert.doesNotMatch(html, /d01-A|d01-B/); // sufixo de célula não vaza
 });
 
 test("render — detalhes agrupados por DIA (dia A/B/C vira 1 linha somando o sent)", () => {

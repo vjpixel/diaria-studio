@@ -23,7 +23,7 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey } from "./sections-core.ts";
 import { fmtTimeBRT } from "./render-links.ts";
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
@@ -63,6 +63,16 @@ function fmtDayKey(dayKey: string): string {
  * dom" → "Clarice News 2606-07"). Sem esse separador, usa o nome truncado.
  */
 function deriveEditionName(name: string): string {
+  // Reusa parseClariceCampaignKey (parseia diário "Clarice News 2607 d01-A" E
+  // mensal "Clarice News 2606-07 — A") pra montar um rótulo de edição SEM o
+  // sufixo de célula A/B/C. Split ingênuo por " — " deixava o "-A" do diário
+  // vazar pra coluna Edição (bug do review #2983). Fallback: heurística antiga.
+  const parsed = parseClariceCampaignKey(name);
+  if (parsed) {
+    return parsed.monthly
+      ? `Clarice News ${parsed.cycle}`
+      : `Clarice News ${parsed.cycle} d${String(parsed.dayNum).padStart(2, "0")}`;
+  }
   const idx = name.indexOf(" — ");
   if (idx !== -1) return name.slice(0, idx).trim();
   return name.length > 40 ? `${name.slice(0, 40).trim()}…` : name;
@@ -213,7 +223,7 @@ export function decideSemaphore(
 }
 
 export interface WeekPlan {
-  /** 3 volumes recomendados, na ordem ter/sex/dom. */
+  /** 3 volumes recomendados para os próximos 3 envios (ordem: próximo, 2º, 3º). */
   volumes: [number, number, number];
   semaphore: Semaphore;
   /** true no semáforo vermelho — sinaliza que o editor deve revisar antes de prosseguir. */
@@ -221,8 +231,8 @@ export interface WeekPlan {
 }
 
 /**
- * 4. Plano da semana a partir do volume-base (último envio maduro da semana
- * anterior): 🟢 escalona +step (composto, um step por dia: ter/sex/dom);
+ * 4. Recomendação dos próximos 3 envios a partir do volume-base (último envio):
+ * 🟢 escalona +step (composto, um step por envio, sem data fixa);
  * 🟡 repete o mesmo volume (mantém, sem crescer); 🔴 corta (poda -30%, ver
  * RED_CUT_FRACTION) e sinaliza `flagged` pro editor decidir.
  */
@@ -312,7 +322,7 @@ export function selectMatureCampaignsByDay(
 /**
  * Renderiza a aba "Rampa" do dashboard — semáforo, agregado maduro, quais
  * campanhas entraram vs foram excluídas por imaturidade (<48h, transparência
- * pro editor), e o plano de 3 volumes (ter/sex/dom 06:00).
+ * pro editor), e a recomendação de volume dos próximos 3 envios (sem data fixa).
  *
  * `now` injetado (não `new Date()` interno) pra manter a função testável de
  * ponta a ponta se necessário; o call site (index.ts) passa `new Date()`.
@@ -376,7 +386,7 @@ ${waitRows}
 
   const semLabel = { green: "Verde", yellow: "Amarelo", red: "Vermelho" }[semaphore];
   const semNote = {
-    green: "Saúde dentro da meta — escalona +10% ao dia (ter/sex/dom).",
+    green: "Saúde dentro da meta — escalona +10% a cada envio.",
     yellow: "Saúde na faixa de atenção — mantém o mesmo volume (sem crescer).",
     red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
   }[semaphore];
@@ -410,14 +420,19 @@ ${waitRows}
 
   const planSection = plan
     ? `
-  <h3>Plano da semana</h3>
+  <h3>Recomendação — próximos 3 envios</h3>
   <table>
-    <thead><tr><th>Dia</th><th>Volume recomendado</th></tr></thead>
+    <thead><tr><th>Envio</th><th>Volume recomendado</th></tr></thead>
     <tbody>
-      <tr><td>Terça</td><td>${plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
-      <tr><td>Sexta</td><td>${plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
-      <tr><td>Domingo</td><td>${plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>Próximo envio</td><td>${plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>2º envio</td><td>${plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>3º envio</td><td>${plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
     </tbody>
+    <tfoot>
+      <tr style="font-weight:700;border-top:2px solid var(--rule)"><td>Total (3 envios)</td><td>${plan.volumes
+        .reduce((a, b) => a + b, 0)
+        .toLocaleString("pt-BR")}</td></tr>
+    </tfoot>
   </table>
   <p class="section-note">Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.${
       plan.flagged
@@ -451,32 +466,11 @@ ${waitRows}
     })
     .join("\n");
 
-  // Agregado POR DIA (o que importa — uma ocasião de envio = um dia; as células
-  // A/B/C do mesmo dia são um envio só). Cada dia agregado com aggregateHealth,
-  // ordenado do mais recente pro mais antigo.
-  const byDay = new Map<string, BrevoCampaign[]>();
-  for (const c of mature) {
-    const day = brtDayKey(c.sentDate);
-    if (!day) continue;
-    const arr = byDay.get(day);
-    if (arr) arr.push(c);
-    else byDay.set(day, [c]);
-  }
-  const dayRows = [...byDay.entries()]
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([day, cs]) => {
-      const h = aggregateHealth(cs);
-      const oCol = STATUS_COLOR[classifyMetric(h.openRate, T.openRate, "higher")];
-      const uCol = STATUS_COLOR[classifyMetric(h.unsubRate, T.unsubRate, "lower")];
-      return `<tr><td>${day}</td><td>${h.delivered.toLocaleString("pt-BR")}</td><td style="color:${oCol}">${fmtPct(h.openRate)}</td><td>${fmtPct(h.bounceRate)}</td><td>${fmtPct(h.spamRate)}</td><td style="color:${uCol}">${fmtPct(h.unsubRate)}</td></tr>`;
-    })
-    .join("\n");
-
   return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
-  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${HEALTH_SAMPLE_DAYS} dias de envio, sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
+  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${includedDetails.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo 🟢</th><th>Alvo 🟡</th></tr></thead>
@@ -486,13 +480,6 @@ ${metricRows}
   </table>
   </div>
   ${planSection}
-  <p class="section-note" style="font-weight:600;margin-top:8px">Por dia de envio (o que importa)</p>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Dia (BRT)</th><th title="${escHtml(ENVIOS_TOOLTIP)}">Entregues</th><th>Abertura</th><th>Bounce</th><th>Spam</th><th>Unsub</th></tr></thead>
-    <tbody>
-${dayRows || '<tr><td colspan="6">Nenhum.</td></tr>'}
-    </tbody>
-  </table></div>
   <details>
     <summary>Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
     <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
