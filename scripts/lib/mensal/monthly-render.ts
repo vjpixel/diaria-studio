@@ -64,6 +64,50 @@ export function stripBackslashEscapes(s: string): string {
 // no applyBrandWordmark compartilhado.
 const MENSAL_BRAND_LINK = "https://diaria.beehiiv.com";
 
+/**
+ * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
+ * "anônimos" no Acquisition details (Brevo auto-taggeia `utm_source=sendinblue`
+ * + `utm_campaign` vazio nos links que ele reenvia) — impossível medir a
+ * conversão da migração Clarice→Diar.ia, que é o objetivo de todo o rollout
+ * cold em andamento. Solução: UTM PRÓPRIO em todo link `diaria.beehiiv.com`
+ * do email mensal (`utm_source=clarice`, `utm_medium=email`,
+ * `utm_campaign=clarice-{ciclo}`) — sobrescreve/precede o auto-tag do Brevo e
+ * permite filtrar no Beehiiv "assinantes vindos da Clarice" por ciclo.
+ *
+ * Estado module-level (setado 1x por render em `draftToEmail`, resetado no
+ * `finally`) em vez de threadar um parâmetro `ciclo` por TODA função render*
+ * deste arquivo (renderTextInline é chamado transitivamente por praticamente
+ * todas elas). `draftToEmail` é sempre síncrono e single-pass — sem risco de
+ * interleaving entre ciclos diferentes.
+ */
+let currentMonthlyUtmCiclo: string | null = null;
+
+/** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem passar por `draftToEmail`. */
+export function setMonthlyUtmCiclo(ciclo: string | null): void {
+  currentMonthlyUtmCiclo = ciclo;
+}
+
+/**
+ * Injeta (ou sobrescreve) o UTM de atribuição Clarice em URLs que apontam pra
+ * `diaria.beehiiv.com` — no-op para qualquer outro host (Clarice, tecnoblog,
+ * Workers de curadoria, etc.) e no-op se nenhum ciclo estiver setado no
+ * momento (render fora de `draftToEmail`, ex.: chamada direta de teste).
+ */
+function withClariceUtm(url: string): string {
+  if (!currentMonthlyUtmCiclo) return url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url; // URL relativa/inválida — não é o link do Beehiiv, preserva como está.
+  }
+  if (parsed.hostname !== "diaria.beehiiv.com") return url;
+  parsed.searchParams.set("utm_source", "clarice");
+  parsed.searchParams.set("utm_medium", "email");
+  parsed.searchParams.set("utm_campaign", `clarice-${currentMonthlyUtmCiclo}`);
+  return parsed.toString();
+}
+
 function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
@@ -76,7 +120,7 @@ function renderTextInline(s: string): string {
         .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
         .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
     ),
-    MENSAL_BRAND_LINK,
+    withClariceUtm(MENSAL_BRAND_LINK), // #2975: link do wordmark carrega UTM clarice
   );
 }
 
@@ -99,7 +143,10 @@ const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
 
 export function normalizeKnownUrl(url: string): string {
   for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
-  return url;
+  // #2975: cobre links `diaria.beehiiv.com` escritos como markdown `[texto](url)`
+  // pelo writer-monthly (boilerplate APRESENTAÇÃO, CTA de ENCERRAMENTO) — não só
+  // o wordmark automático (`renderTextInline`/`applyBrandWordmark`).
+  return withClariceUtm(url);
 }
 
 /**
@@ -354,7 +401,7 @@ export function renderCtaButton(line: string): string {
   const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
   if (!linkM) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(text)}</p>`;
   const idx = linkM.index ?? 0;
-  const url = linkM[2];
+  const url = normalizeKnownUrl(linkM[2]); // #2975: CTA pra diaria.beehiiv.com também ganha UTM clarice
   const linkText = linkM[1];
   const pre = text.slice(0, idx).trim().replace(/[:：]\s*$/, "").trim();
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
@@ -995,6 +1042,19 @@ export function draftToEmail(
   const chunkBody = (chunk: string): string =>
     chunk.split("\n").slice(1).join("\n").trim();
 
+  // #2975: liga o UTM `clarice-{ciclo}` pra todo link diaria.beehiiv.com renderizado
+  // abaixo (wordmark + markdown links + CTA). `eiaEditionFromYymm` já deriva o
+  // ciclo `{YYMM-conteúdo}-{MM-envio}` (ex: "2606" → "2606-07") — mesmo formato
+  // usado no resto do email (É IA?, polls). `finally` garante reset mesmo em erro,
+  // pra não vazar o ciclo dessa chamada pra um `draftToEmail` seguinte no mesmo processo.
+  setMonthlyUtmCiclo(eiaEditionFromYymm(yymm));
+  try {
+    return draftToEmailBody();
+  } finally {
+    setMonthlyUtmCiclo(null);
+  }
+
+  function draftToEmailBody(): { subject: string; previewText: string; html: string } {
   for (let idx = 0; idx < rawSections.length; idx++) {
     const chunk = rawSections[idx].trim();
     if (!chunk) continue;
@@ -1119,4 +1179,5 @@ export function draftToEmail(
     previewText,
     html: wrapEmail(subject, bodyParts),
   };
+  }
 }
