@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ScorePair } from "./merge-scored-chunks.ts";
+import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -70,17 +71,6 @@ export function assemble(selection: Selection, allScored: AllScoredFile): Assemb
   return out;
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-      out[key] = val;
-    }
-  }
-  return out;
-}
 
 export function main(): void {
   const args = parseArgs(process.argv.slice(2));

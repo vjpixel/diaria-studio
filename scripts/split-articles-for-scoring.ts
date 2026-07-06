@@ -40,6 +40,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
+import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -133,18 +134,6 @@ export function buildChunks(
   const count = chunkCountFor(flat.length, chunkSize);
   if (count === 0) return [];
   return splitRoundRobin(flat, count).map(toCategorized);
-}
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-      out[key] = val;
-    }
-  }
-  return out;
 }
 
 export function main(): void {

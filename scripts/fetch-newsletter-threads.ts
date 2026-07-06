@@ -40,6 +40,10 @@ import {
   clearCaptureFailedSentinel,
   writeCaptureFailedSentinel,
 } from "./lib/newsletter-capture-failure.ts";
+// #2834: stripHtmlForBody era byte-idêntico ao stripHtml de lib/strip-html.ts
+// (mesma variante já consolidada em capture-newsletter-urls.ts).
+import { stripHtml as stripHtmlForBody } from "./lib/strip-html.ts";
+export { stripHtmlForBody };
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
@@ -118,30 +122,6 @@ export function extractTextPart(part: GmailMessagePart): string {
     }
   }
   return "";
-}
-
-/**
- * Minimal HTML stripper — extracts href URLs and visible text so URL
- * extraction still works when text/plain is absent.
- *
- * Intentionally lightweight: no external deps. Mirrors the stripHtml in
- * capture-newsletter-urls.ts but is kept local so this script is self-contained.
- */
-export function stripHtmlForBody(html: string): string {
-  // Preserve href values so URL extraction captures links
-  let text = html.replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>/gi, "$1 ");
-  text = text.replace(/<\/(p|div|tr|li)>/gi, "\n");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<[^>]+>/g, " ");
-  text = text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ");
-  text = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
-  return text.trim();
 }
 
 /**
