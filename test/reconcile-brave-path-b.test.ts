@@ -23,7 +23,29 @@ function seed(path: string, entries: object[]): void {
 
 test("reconcile: grava o gap do header como Path B; local passa a bater com o real", () => {
   const path = tmpPath();
-  // 5 reais locais; última com quota_remaining=49 → real_used=1951 → gap=1946
+  // 999 reais locais; última com quota_remaining=49 → real_used=1951 → gap=952.
+  // Divergência ~2× (plausível, #2668) — não descartada pelo guard de #3002.
+  seed(path, [
+    ...Array.from({ length: 998 }, (_, i) => ({ timestamp: `${MONTH}-15T10:00:00Z`, query: `q${i}`, status: "ok" })),
+    { timestamp: `${MONTH}-15T10:05:00Z`, query: "q999", status: "ok", quota_remaining: 49 },
+  ]);
+
+  main(["--edition", "260701"], path, NOW);
+
+  const s = computeBraveCreditStats("260701", path, NOW);
+  assert.equal(s.queries_this_month_estimated, 952, "deve gravar 952 estimadas (o gap)");
+  assert.equal(s.queries_this_month, 1951, "local agora bate com o real do header");
+  assert.equal(s.delta_untracked, 0, "delta zera após reconciliar");
+  rmSync(path, { recursive: true, force: true });
+});
+
+// (#3002) Quando o header diverge implausivelmente do local (ciclo de rate-limit
+// desalinhado), computeBraveCreditStats já descarta o header (delta_untracked
+// fica undefined) — reconcile deve então cair no branch "no_header" e NÃO gravar
+// nenhuma estimativa fantasma a partir do gap implausível.
+test("reconcile: header descartado por divergência implausível → no-op (regressão #3002)", () => {
+  const path = tmpPath();
+  // 5 reais locais; última com quota_remaining=49 → real_used=1951 → ratio 390× (implausível)
   seed(path, [
     ...Array.from({ length: 4 }, (_, i) => ({ timestamp: `${MONTH}-15T10:00:00Z`, query: `q${i}`, status: "ok" })),
     { timestamp: `${MONTH}-15T10:05:00Z`, query: "q5", status: "ok", quota_remaining: 49 },
@@ -32,9 +54,8 @@ test("reconcile: grava o gap do header como Path B; local passa a bater com o re
   main(["--edition", "260701"], path, NOW);
 
   const s = computeBraveCreditStats("260701", path, NOW);
-  assert.equal(s.queries_this_month_estimated, 1946, "deve gravar 1946 estimadas (o gap)");
-  assert.equal(s.queries_this_month, 1951, "local agora bate com o real do header");
-  assert.equal(s.delta_untracked, 0, "delta zera após reconciliar");
+  assert.equal(s.queries_this_month_estimated, 0, "não deve gravar nenhuma estimativa fantasma");
+  assert.equal(s.queries_this_month, 5, "local permanece 5 — sem reconciliação espúria");
   rmSync(path, { recursive: true, force: true });
 });
 
