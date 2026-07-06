@@ -20,6 +20,31 @@
  *   (d) Alert Telegram (opcional): se TELEGRAM_BOT_TOKEN + TELEGRAM_WATCHDOG_CHAT_ID
  *       estiverem definidos, envia mensagem diretamente via Bot API.
  *
+ * #2958: a task Task Scheduler roda com `ExecutionTimeLimit` de 5 min
+ * (`setup-watchdog-schedule.ps1`) — se estourado, o Task Scheduler força o
+ * término e grava `Last Result: 267014` (0x41306 SCHED_S_TASK_TERMINATED),
+ * exatamente o sintoma reportado no incidente 260704 (task presente e
+ * habilitada, mas a execução não completa). Este módulo tinha DOIS pontos de
+ * I/O sem timeout que podiam bloquear indefinidamente e nunca devolver o
+ * controle ao processo: os `execFileSync` para `render-halt-banner.ts`/
+ * `log-event.ts` (default do Node = sem timeout) e o `fetch` do alerta
+ * Telegram (sem `AbortSignal`). Qualquer hang em um desses (rede lenta pra
+ * api.telegram.org, ou um dos scripts filhos travando em I/O) fazia o
+ * watchdog inteiro ficar pendurado até o Task Scheduler matá-lo aos 5 min —
+ * causa raiz plausível do 267014. Fix: timeout explícito nos dois pontos —
+ * se estourar, a chamada lança, o `catch` já existente trata como falha
+ * suave, e o processo SEGUE e SAI normalmente em vez de travar (diagnóstico
+ * ao vivo em 260706: task saudável, `Last Result: 0` — o sintoma não
+ * reproduziu nesta checagem pontual, mas os dois hangs sem timeout eram bugs
+ * reais e válidos de corrigir preventivamente independente da causa exata do
+ * incidente histórico). De quebra, um terceiro bug adjacente encontrado ao
+ * escrever o teste de regressão: `main()` rodava incondicionalmente ao
+ * IMPORTAR o módulo (sem guard de CLI) — `test/overnight-watchdog.test.ts`
+ * importa as funções puras exportadas aqui e, como efeito colateral,
+ * disparava a lógica real do watchdog contra o `data/overnight/` de verdade
+ * a cada `npm test`. Fix: mesmo guard de CLI já usado em
+ * `scripts/lib/check-watchdog-armed.ts`.
+ *
  * Flags:
  *   --dry-run          Apenas diagnóstico; sem writes nem alertas.
  *   --threshold <min>  Override do limiar (default: 60 ou OVERNIGHT_WATCHDOG_STALL_MIN).
@@ -39,6 +64,7 @@ import {
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
@@ -197,14 +223,21 @@ export function getLastRunLogActivity(
 // Alert channels
 // ---------------------------------------------------------------------------
 
-async function sendTelegramAlert(message: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_WATCHDOG_CHAT_ID;
-  if (!token || !chatId) return;
+/** #2958: nenhuma chamada de rede/subprocesso neste script pode ficar sem timeout. */
+export const WATCHDOG_IO_TIMEOUT_MS = 10_000;
 
-  try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    const resp = await fetch(url, {
+/**
+ * Pure: monta a requisição do alerta Telegram (url + options), incluindo o
+ * `signal` de timeout (#2958) — extraído pra ser testável sem mockar rede.
+ */
+export function buildTelegramAlertRequest(
+  token: string,
+  chatId: string,
+  message: string,
+): { url: string; options: RequestInit } {
+  return {
+    url: `https://api.telegram.org/bot${token}/sendMessage`,
+    options: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -212,7 +245,19 @@ async function sendTelegramAlert(message: string): Promise<void> {
         text: message,
         parse_mode: "Markdown",
       }),
-    });
+      signal: AbortSignal.timeout(WATCHDOG_IO_TIMEOUT_MS),
+    },
+  };
+}
+
+async function sendTelegramAlert(message: string): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_WATCHDOG_CHAT_ID;
+  if (!token || !chatId) return;
+
+  try {
+    const { url, options } = buildTelegramAlertRequest(token, chatId, message);
+    const resp = await fetch(url, options);
     if (!resp.ok) {
       const body = await resp.text();
       process.stderr.write(
@@ -254,7 +299,12 @@ function renderHaltBanner(
         "--action",
         `verifique a sessão overnight no terminal; responda 'retry' pra retomar ou 'abort' pra encerrar`,
       ],
-      { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: rootDir,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: WATCHDOG_IO_TIMEOUT_MS,
+      },
     );
     process.stdout.write(out);
   } catch (e: unknown) {
@@ -298,7 +348,7 @@ function emitRunLogEvent(
           last_activity_source: lastSource,
         }),
       ],
-      { cwd: rootDir, stdio: "pipe" },
+      { cwd: rootDir, stdio: "pipe", timeout: WATCHDOG_IO_TIMEOUT_MS },
     );
   } catch {
     process.stderr.write("[watchdog] Aviso: falha ao emitir evento no run-log.\n");
@@ -507,7 +557,15 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((e: unknown) => {
-  process.stderr.write(`[watchdog] Erro fatal: ${String(e)}\n`);
-  process.exit(1);
-});
+// #2958: sem este guard, importar o módulo (ex: test/overnight-watchdog.test.ts
+// importando as funções puras exportadas acima) também disparava main() como
+// efeito colateral do import — rodando a lógica real do watchdog (leitura de
+// data/overnight/, e potencialmente emitRunLogEvent/renderHaltBanner/Telegram
+// se uma rodada real estivesse em stall) durante `npm test`. Mesmo padrão de
+// guard já usado em scripts/lib/check-watchdog-armed.ts.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e: unknown) => {
+    process.stderr.write(`[watchdog] Erro fatal: ${String(e)}\n`);
+    process.exit(1);
+  });
+}
