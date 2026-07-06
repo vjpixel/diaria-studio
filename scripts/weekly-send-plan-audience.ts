@@ -40,10 +40,10 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { segmentRampWarm, type StoreRow } from "./lib/clarice-segment.ts";
+import { excludeCommittedToQueuedCampaigns, segmentRampWarm, type StoreRow } from "./lib/clarice-segment.ts";
 import { CLARICE_BASE, ensureDir } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
-import { brevoGet } from "./lib/brevo-client.ts";
+import { brevoGet, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 /**
  * DUPLICADO de `extractPlanCredits` (workers/brevo-dashboard/src/brevo-api.ts,
@@ -161,13 +161,41 @@ async function run(
     }
   }
 
+  // #2994 (P0): contatos em listas com campanha AGENDADA (queued) mas ainda não
+  // enviada precisam ser excluídos ANTES de fatiar volumes — `sends_count=0`
+  // sozinho não distingue "nunca agendado" de "agendado, ainda não disparado"
+  // (campanha Brevo agendada é imutável — um duplicado só seria descoberto
+  // tarde demais, ver incidente 260706 na issue). Fail-safe: sem a chave (ou
+  // se a consulta falhar), `--write` é bloqueado; dry-run prossegue com aviso
+  // (não bloqueia inspeção/planejamento, só a escrita real dos CSVs).
+  let queuedListIds: Set<string> = new Set();
+  if (apiKey) {
+    try {
+      queuedListIds = await fetchQueuedCampaignListIds(apiKey);
+      if (queuedListIds.size > 0) {
+        console.log(
+          `Campanhas agendadas (queued) detectadas — ${queuedListIds.size} lista(s) comprometida(s) serão excluídas da seleção.`,
+        );
+      }
+    } catch (err) {
+      console.warn(`⚠️  Não foi possível consultar campanhas agendadas (queued) na Brevo: ${err instanceof Error ? err.message : err}`);
+      if (opts.write) {
+        console.error("❌ --write requer a checagem de campanhas agendadas (queued) bem-sucedida — evita envio duplicado. Abortando.");
+        process.exit(1);
+      }
+    }
+  } else if (opts.write) {
+    console.error("❌ --write requer BREVO_CLARICE_API_KEY (checagem de campanhas agendadas/queued é obrigatória — evita envio duplicado). Abortando.");
+    process.exit(1);
+  }
+
   const db = openClariceDb(opts.dbPath);
   let rows: AudienceRow[];
   try {
     rows = db
       .prepare(
         `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-                opens_count, last_sent_at, mv_bucket
+                opens_count, last_sent_at, mv_bucket, brevo_list_ids
            FROM clarice_users`,
       )
       .all() as unknown as AudienceRow[];
@@ -177,7 +205,14 @@ async function run(
     db.close();
   }
 
-  const ordered = segmentRampWarm(rows) as AudienceRow[];
+  const rampWarm = segmentRampWarm(rows) as AudienceRow[];
+  const ordered = excludeCommittedToQueuedCampaigns(rampWarm, queuedListIds);
+  const committedExcluded = rampWarm.length - ordered.length;
+  if (committedExcluded > 0) {
+    console.log(
+      `Excluídos ${committedExcluded.toLocaleString("pt-BR")} contato(s) já comprometidos com uma campanha agendada (queued) — evita envio duplicado.`,
+    );
+  }
   console.log(`Audiência elegível (1º envio, send_eligible, verificado): ${ordered.length.toLocaleString("pt-BR")} contatos.`);
 
   const groups = sliceIntoVolumes(ordered, volumes);

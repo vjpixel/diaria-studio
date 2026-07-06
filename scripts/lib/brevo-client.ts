@@ -327,3 +327,59 @@ export async function brevoGet(
   }
   throw new Error(`Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`);
 }
+
+// ---------------------------------------------------------------------------
+// #2994 (P0): campanhas AGENDADAS (queued) — fonte de verdade pra excluir da
+// seleção de audiência contatos comprometidos com um envio ainda não disparado
+// (`sends_count=0` sozinho não distingue "nunca agendado" de "agendado, ainda
+// não enviado" — ver clarice-segment.ts `excludeCommittedToQueuedCampaigns`).
+// ---------------------------------------------------------------------------
+
+interface BrevoCampaignListRef {
+  id?: number;
+  // #2994: campo real da Brevo API é `recipients.lists` (array de list_id),
+  // NÃO `recipients.listIds` — mesmo shape já consumido em
+  // scripts/clarice-engagement-cohorts.ts (`c?.recipients?.lists`). Confirmado
+  // no código existente antes de assumir o nome do campo.
+  recipients?: { lists?: number[] };
+}
+interface BrevoCampaignsResponse {
+  campaigns?: BrevoCampaignListRef[];
+  count?: number;
+}
+
+/**
+ * Busca (paginado, `GET /v3/emailCampaigns?status=queued`) todas as listas
+ * Brevo que alimentam alguma campanha AGENDADA mas ainda não enviada, e
+ * devolve o Set de `list_id` (como string, mesma forma serializada de
+ * `brevo_list_ids` no store — ver `parseBrevoListIds`).
+ *
+ * `status=queued` é o status Brevo pra "agendado, na fila, ainda não
+ * disparado" (distinto de `sent`) — mesma distinção que motivou o guard #573
+ * (`resolveBeehiivState` etc) pra Beehiiv; aqui o equivalente pra Brevo.
+ *
+ * Usa `brevoGet` (retry-on-429/5xx embutido, fail-alto em outros erros) —
+ * nunca engole falha silenciosamente: se a Brevo estiver inacessível, quem
+ * chama deve tratar a exceção como bloqueio de `--write` (fail-safe: na
+ * dúvida, não escrever audiência sem essa checagem).
+ */
+export async function fetchQueuedCampaignListIds(apiKey: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  let offset = 0;
+  const limit = 50;
+  for (;;) {
+    const { body } = await brevoGet(
+      apiKey,
+      `/emailCampaigns?status=queued&limit=${limit}&offset=${offset}`,
+    );
+    const campaigns = (body as BrevoCampaignsResponse)?.campaigns ?? [];
+    for (const c of campaigns) {
+      for (const listId of c.recipients?.lists ?? []) {
+        out.add(String(listId));
+      }
+    }
+    if (campaigns.length < limit) break;
+    offset += limit;
+  }
+  return out;
+}
