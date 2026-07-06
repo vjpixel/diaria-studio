@@ -200,6 +200,7 @@ export function renderBodyParasInner(text: string): string {
 
 /** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker teal). HTML interno. */
 export function renderWhyBoxInner(text: string): string {
+  if (!text || !text.trim()) return "";
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
@@ -262,66 +263,62 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
       ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
       : `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
 
-    // #2136: callout patrocinado → verifica se o último parágrafo é só o link
-    // CTA (possivelmente prefixado por `→ ` ou `Acesse `). Se sim, extrai o
-    // link como botão pill centralizado; remove-o dos parágrafos de corpo.
+    // #2136: callout patrocinado → verifica se ALGUM parágrafo é só o link CTA
+    // (possivelmente prefixado por `→ ` ou `Acesse `). Se sim, extrai o link
+    // como botão pill centralizado; remove-o dos parágrafos de corpo. Parágrafos
+    // ANTES do CTA seguem como corpo acima do botão; parágrafos DEPOIS (ex: um
+    // disclosure de comissão/afiliado) seguem como corpo ABAIXO do botão (#2996
+    // — antes só o ÚLTIMO parágrafo virava pill, quebrando o botão quando havia
+    // texto de disclosure depois dele).
     let bodyParas = paras.slice(1);
+    let afterCtaParas: string[] = [];
     let ctaButtonHtml = "";
-    if ((sponsored || forceCtaPill) && bodyParas.length > 0) {
-      const lastPara = bodyParas[bodyParas.length - 1];
-      // Strip `→ ` / `Acesse ` prefix antes de testar se sobrou só um link.
-      const lastStripped = lastPara.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
-      const lastLinks = findMarkdownLinks(lastStripped);
-      // #260622: o parágrafo é "só CTAs" quando, removidos TODOS os links e os
-      // separadores (·/•/| + pontuação/seta), não sobra texto substancial.
-      // Suporta múltiplos botões (ex: "→ [Livros](u1) · [Cursos](u2)").
-      let onlyCtas = false;
-      if (lastLinks.length > 0) {
-        let rem = lastStripped;
-        for (let k = lastLinks.length - 1; k >= 0; k--) {
-          rem = rem.slice(0, lastLinks[k].start) + rem.slice(lastLinks[k].end);
+    if (sponsored || forceCtaPill) {
+      for (let idx = 0; idx < bodyParas.length; idx++) {
+        const para = bodyParas[idx];
+        // Strip `→ ` / `Acesse ` prefix antes de testar se sobrou só um link.
+        const stripped = para.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
+        const links = findMarkdownLinks(stripped);
+        if (links.length === 0) continue;
+        // #260622: o parágrafo é "só CTAs" quando, removidos TODOS os links e os
+        // separadores (·/•/| + pontuação/seta), não sobra texto substancial.
+        // Suporta múltiplos botões (ex: "→ [Livros](u1) · [Cursos](u2)").
+        let rem = stripped;
+        for (let k = links.length - 1; k >= 0; k--) {
+          rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
         }
-        onlyCtas = rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
-      }
-      if (lastLinks.length > 1 && onlyCtas) {
-        // Múltiplos CTAs → 1 pill por link (margin entre eles).
-        const pills = lastLinks
-          .map(
-            (l) =>
-              `<a href="${esc(l.url)}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;margin:0 4px 8px;">${esc(l.label)}</a>`,
-          )
-          .join("");
-        ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">${pills}</td></tr>`;
-        bodyParas = bodyParas.slice(0, -1);
-      } else if (lastLinks.length > 0) {
-        // Verifica se o parágrafo é apenas o link (sem outro texto substancial).
-        const firstLink = lastLinks[0];
-        let remainingText = lastStripped.slice(0, firstLink.start) + lastStripped.slice(firstLink.end);
-        // Qualquer pontuação terminal após o link é aceitável (`.`, `!`, `?`, `,`, `…`),
-        // mas qualquer outro texto → não é só-link. (#finding-1: regex ampliado)
-        remainingText = remainingText.replace(/^[.,!?…\s]*$/, "").trim();
-        if (!remainingText) {
-          // O parágrafo é só o link (+ possível pontuação) → botão pill.
+        const onlyCtas = rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
+        if (!onlyCtas) continue;
+
+        if (links.length > 1) {
+          // Múltiplos CTAs → 1 pill por link (margin entre eles).
+          const pills = links
+            .map(
+              (l) =>
+                `<a href="${esc(l.url)}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;margin:0 4px 8px;">${esc(l.label)}</a>`,
+            )
+            .join("");
+          ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">${pills}</td></tr>`;
+        } else {
+          // 1 link (+ possível pontuação) → botão pill único.
           // (#finding-4: label vem do campo `label` de findMarkdownLinks, dedup com renderMidCallout)
+          const firstLink = links[0];
           const safeLabel = esc(firstLink.label);
           const safeHref = esc(firstLink.url);
           ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">` +
             `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
             `</td></tr>`;
-          bodyParas = bodyParas.slice(0, -1);
-        } else {
-          // #finding-2: CTA detection failed (e.g., extra punctuation) — strip `→ ` prefix
-          // from the last paragraph so it doesn't render as an orphan arrow in the body.
-          bodyParas = [
-            ...bodyParas.slice(0, -1),
-            lastPara.replace(/^→\s*/u, ""),
-          ];
         }
-      } else {
-        // #finding-2: no links in lastPara — strip `→ ` prefix regardless.
+        afterCtaParas = bodyParas.slice(idx + 1).map((p) => p.replace(/^→\s*/u, ""));
+        bodyParas = bodyParas.slice(0, idx);
+        break;
+      }
+      if (!ctaButtonHtml && bodyParas.length > 0) {
+        // #finding-2: nenhum parágrafo qualificou como CTA-only — strip `→ `
+        // prefix do último parágrafo pra não deixar seta órfã no corpo.
         bodyParas = [
           ...bodyParas.slice(0, -1),
-          lastPara.replace(/^→\s*/u, ""),
+          bodyParas[bodyParas.length - 1].replace(/^→\s*/u, ""),
         ];
       }
     }
@@ -344,6 +341,11 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
     inner = bodyHtml ? `${titleHtml}\n      ${bodyHtml}` : titleHtml;
 
     if (ctaButtonHtml) {
+      // #2996: parágrafos DEPOIS do CTA (ex: disclosure de comissão) renderizam
+      // como corpo normal ABAIXO do botão, numa linha própria dentro do box.
+      const afterCtaHtml = afterCtaParas
+        .map((p, i) => bodyP(`${i === 0 ? "12px" : "8px"} 0 0`, processInlineLinks(p)))
+        .join("\n      ");
       // Botão pill em linha separada dentro do mesmo box, centralizado.
       return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td class="pad" style="padding:8px 32px 0;">
@@ -352,6 +354,7 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
       ${inner}
     </td></tr>
     ${ctaButtonHtml}
+    ${afterCtaHtml ? `<tr><td style="padding:12px 20px 0;">${afterCtaHtml}</td></tr>` : ""}
     <tr><td style="padding:0 0 16px;"></td></tr>
   </table>
 </td></tr>`;

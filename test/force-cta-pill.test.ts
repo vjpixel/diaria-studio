@@ -64,6 +64,41 @@ describe("renderIntroCallout forceCtaPill (#2797)", () => {
   // com forceCtaPill=true — o rótulo torna o parágrafo não-CTA-only, então os
   // links seguem inline (comportamento documentado do boxDivulgacao2). Guarda contra
   // o forceCtaPill converter prateleiras rotuladas em botões.
+  // #2996: o editor quer poder colocar um parágrafo de disclosure DEPOIS do
+  // botão CTA (ex: "Ao comprar por estes links, a diar.ia.br pode receber uma
+  // comissão..."). Antes, só o ÚLTIMO parágrafo virava pill — um parágrafo de
+  // texto depois do link quebrava a detecção (o link deixava de ser o último
+  // parágrafo) e o CTA renderizava como link inline em vez de pill.
+  it("forceCtaPill: parágrafo CTA-only vira pill mesmo com disclosure DEPOIS dele", () => {
+    const WITH_DISCLOSURE = `Equipe sua casa com a Alexa+
+
+Estou testando a Alexa+ há alguns dias e a diferença é grande.
+
+[Conhecer a Alexa+ e ver as ofertas](https://link.amazon/B0fmBTpob)
+
+Ao comprar por estes links, a diar.ia.br pode receber uma comissão.`;
+    const html = renderIntroCallout(WITH_DISCLOSURE, "serif", true);
+    assert.match(html, PILL_RE, "o link CTA-only deve virar pill mesmo com texto depois");
+    assert.match(html, CENTERED_CTA_RE);
+    assert.match(html, /Conhecer a Alexa\+ e ver as ofertas<\/a>/);
+    // O disclosure aparece como corpo normal, e DEPOIS do botão no HTML.
+    // (A marca "diar.ia.br" é estilizada com spans teal no render, então
+    // asserta-se os trechos ao redor, não o literal completo.)
+    assert.match(html, /Ao comprar por estes links, a/);
+    assert.match(html, /pode receber uma comissão\./);
+    const ctaIdx = html.indexOf("Conhecer a Alexa+ e ver as ofertas");
+    const disclosureIdx = html.indexOf("Ao comprar por estes links");
+    assert.ok(ctaIdx > -1 && disclosureIdx > -1 && disclosureIdx > ctaIdx, "disclosure deve vir depois do botão no HTML");
+    // Preserva corpo anterior ao CTA.
+    assert.match(html, /Estou testando a Alexa\+ há alguns dias/);
+  });
+
+  it("forceCtaPill: link como último parágrafo continua funcionando (sem regressão)", () => {
+    const html = renderIntroCallout(CALLOUT, "serif", true);
+    assert.match(html, PILL_RE);
+    assert.match(html, /Conhecer a Alexa\+ e ver as ofertas<\/a>/);
+  });
+
   it("forceCtaPill NÃO vira pill quando o último parágrafo é rotulado (prateleira)", () => {
     const SHELF = `Equipe sua casa com a Alexa+. Veja os dispositivos:
 
