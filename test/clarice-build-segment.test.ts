@@ -119,6 +119,26 @@ test("buildSegmentArtifact: internos (#2809) nunca aparecem em 'engajados'/'reat
   assert.equal(buildSegmentArtifact(rows, "reativacao", 0).manifestEntry.count, 0);
 });
 
+test("buildSegmentArtifact: --min-score exclui priority_points abaixo do piso ANTES do budget (#2973)", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "a@x.com", sends_count: 2, priority_points: 90 }),
+    row({ email: "b@x.com", sends_count: 2, priority_points: 50 }),
+    row({ email: "c@x.com", sends_count: 2, priority_points: 10 }), // abaixo do piso
+  ];
+  const { manifestEntry, csv } = buildSegmentArtifact(rows, "engajados", 0, 20);
+  assert.equal(manifestEntry.count, 2);
+  assert.deepEqual(emailsOf(csv), ["a@x.com", "b@x.com"]); // "c" (10) fica de fora do piso 20
+});
+
+test("buildSegmentArtifact: --min-score=0 (omitido) não corta nada — comportamento inalterado", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "a@x.com", sends_count: 2, priority_points: 90 }),
+    row({ email: "c@x.com", sends_count: 2, priority_points: 10 }),
+  ];
+  const { manifestEntry } = buildSegmentArtifact(rows, "engajados", 0, 0);
+  assert.equal(manifestEntry.count, 2);
+});
+
 // ---------------------------------------------------------------------------
 // main() — integração ponta-a-ponta com o store SQLite
 // ---------------------------------------------------------------------------
@@ -196,4 +216,25 @@ test("main: --budget corta o grupo antes de escrever", () => {
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.selected, 2);
   assert.equal(out.budget, 2);
+});
+
+test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulário do editor", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-score-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('a@x.com','A',2,5,5,'verified')",
+  ).run(); // priority_points alto
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('b@x.com','B',2,1,1,'verified')",
+  ).run(); // priority_points baixo
+  recomputeDerived(db);
+  db.close();
+
+  const logs = captureLogs(() => {
+    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--score", "50", "--dry-run"]);
+  });
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.min_score, 50);
+  assert.equal(out.selected, 1); // só quem bate o piso 50 (a@x.com)
 });

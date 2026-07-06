@@ -30,11 +30,20 @@
  * plano sem escrever.
  *
  * Uso:
- *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2606-07 [--budget N] [--dry-run]
+ *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2606-07 [--budget N] [--min-score N] [--dry-run]
  *   --group X    OBRIGATÓRIO — um dos grupos nomeados (ver NAMED_GROUPS em clarice-segment.ts).
  *   --cycle X    OBRIGATÓRIO — {conteúdo}-{envio} (destino dos artefatos, ver clarice-paths.ts).
  *   --budget N   OPCIONAL (>0) — teto do grupo; pega o TOPO da ordem (pós-sort).
  *                Sem a flag, o grupo inteiro é escrito.
+ *   --min-score N / --score N   OPCIONAL (#2973 — "score" é o termo do editor
+ *                pro dia a dia, alias puro de `priority_points`; NÃO reintroduz
+ *                o `score`/`OPEN_PROBABILITY` legado removido em #2647, que
+ *                segue morto). Exclui contatos com `priority_points < N` ANTES
+ *                do sort/budget do grupo. `--score` é apenas um atalho pro
+ *                mesmo valor de `--min-score` (o editor pode usar qualquer um
+ *                dos dois nomes); se ambos forem passados, `--min-score` vence.
+ *                Sem a flag, nenhum corte por score é aplicado (comportamento
+ *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
@@ -101,13 +110,18 @@ export function buildSegmentArtifact(
   rows: SegmentRow[],
   group: NamedGroupKey,
   budget: number,
+  minScore = 0,
 ): { csv: string; manifestEntry: SegmentManifestEntry; selected: SegmentRow[] } {
   const def = NAMED_GROUPS[group];
   const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
+  // #2973: "score" = alias do editor pra `priority_points` (NÃO o score/
+  // OPEN_PROBABILITY legado morto em #2647). Corte ANTES do sort/budget do
+  // predicado do grupo — quem não bate o piso nunca entra na ordenação.
+  const scoped = minScore > 0 ? rows.filter((r) => (r.priority_points ?? 0) >= minScore) : rows;
   // `def.segment` filtra+ordena preservando a IDENTIDADE dos objetos de `rows`
   // (não clona) — o cast de volta pra SegmentRow[] é seguro porque cada
   // elemento retornado É um dos objetos de `rows` (que já são SegmentRow).
-  const ordered = def.segment(rows) as SegmentRow[];
+  const ordered = def.segment(scoped) as SegmentRow[];
   const selected = budget > 0 ? ordered.slice(0, budget) : ordered;
 
   const csvRows = selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
@@ -147,6 +161,20 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     budget = n;
   }
 
+  // #2973: --min-score / --score são ALIASES do mesmo corte (score := priority_points,
+  // vocabulário do editor no dia a dia — não o score/OPEN_PROBABILITY legado morto em #2647).
+  // --min-score vence se ambos forem passados.
+  const minScoreArg = getArg(argv, "min-score") || getArg(argv, "score");
+  let minScore = 0;
+  if (minScoreArg) {
+    const n = Number(minScoreArg);
+    if (!Number.isFinite(n)) {
+      console.error("❌ --min-score/--score precisa ser um número (omita a flag pra não ter piso).");
+      process.exit(1);
+    }
+    minScore = n;
+  }
+
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
@@ -164,7 +192,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
 
-  const { csv, manifestEntry } = buildSegmentArtifact(rows, group, budget);
+  const { csv, manifestEntry } = buildSegmentArtifact(rows, group, budget, minScore);
 
   const summary = {
     cycle,
@@ -172,6 +200,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     label: NAMED_GROUPS[group].label,
     source: "store-driven, grupo nomeado (#2885)",
     budget: budget || undefined,
+    min_score: minScore || undefined,
     universe_total: rows.length,
     selected: manifestEntry.count,
   };
