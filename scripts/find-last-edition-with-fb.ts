@@ -18,6 +18,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { editionsRoot } from "./lib/edition-paths.ts";
 
 export function findLastEditionWithFb(
   editionsDir: string,
@@ -50,7 +51,7 @@ function main(): void {
     console.error("Uso: find-last-edition-with-fb.ts --current AAMMDD");
     process.exit(1);
   }
-  const editionsDir = resolve(ROOT, "data/editions");
+  const editionsDir = resolve(ROOT, editionsRoot());
   const result = findLastEditionWithFb(editionsDir, current);
   process.stdout.write(result ?? "");
 }

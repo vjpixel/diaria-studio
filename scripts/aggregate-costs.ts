@@ -26,6 +26,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { editionsRoot } from "./lib/edition-paths.ts";
 
 export interface StageCost {
   stage: string;
@@ -297,7 +298,7 @@ _Estimativa monetária requer incluir token counts em cost.md (follow-up)._
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
-  const editionsDir = resolve(ROOT, "data/editions");
+  const editionsDir = resolve(ROOT, editionsRoot());
   const since = args.since;
   const until = args.until;
 

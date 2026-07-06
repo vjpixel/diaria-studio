@@ -20,6 +20,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { editionsRoot } from "./lib/edition-paths.ts";
 
 export interface PendingDraft {
   edition: string;
@@ -136,7 +137,7 @@ function main(): void {
     process.exit(1);
   }
   const window = args.window ? parseInt(args.window, 10) : 3;
-  const editionsDir = resolve(ROOT, "data/editions");
+  const editionsDir = resolve(ROOT, editionsRoot());
   const result = findPendingDrafts(editionsDir, current, window);
   process.stdout.write(JSON.stringify(result, null, 2));
 }

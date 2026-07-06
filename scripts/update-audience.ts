@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
+import { editionsRoot } from "./lib/edition-paths.ts";
 // isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
 // analyze-h4.ts. Importado para uso interno + re-exportado para manter
 // compatibilidade com testes e importadores externos.
@@ -435,7 +436,7 @@ function main() {
   const h4CtrRows = loadCtrRowsH4(CTR_CSV);
   if (h4CtrRows.length > 0) {
     const alreadyComputed = loadHistoryEditions(H4_HISTORY);
-    const editionsDir = resolve(ROOT, "data/editions");
+    const editionsDir = resolve(ROOT, editionsRoot());
     const newEntries = computeNewH4Entries(h4CtrRows, editionsDir, alreadyComputed);
     if (newEntries.length > 0) {
       appendHistory(H4_HISTORY, newEntries);

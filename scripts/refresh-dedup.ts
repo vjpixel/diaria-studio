@@ -44,6 +44,7 @@ import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { editionsRoot as getEditionsRoot } from "./lib/edition-paths.ts";
 import {
   type Post,
   populateLinksFromTracking,
@@ -499,7 +500,7 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   // que Stage 0 da próxima edição não precise re-investigar status de Stage 4
   // anterior. Idempotente; só toca edições que existem localmente.
   if (!opts.dryRun && !opts.noAutoStamp) {
-    const editionsRoot = opts.editionsRoot ?? resolve(ROOT, "data/editions");
+    const editionsRoot = opts.editionsRoot ?? resolve(ROOT, getEditionsRoot());
     let stamped = 0;
     let reports = 0;
     for (const post of truncated) {
