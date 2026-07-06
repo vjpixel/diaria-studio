@@ -9,7 +9,6 @@ import {
   openProbability,
   hasClariceAudienceTag,
   cohortOf,
-  cohortFileName,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -556,19 +555,5 @@ describe("cohortOf", () => {
     const t2 = merged({ status: "canceled", payment_count: 5, total_spend: 100 });
     assert.equal(cohortOf(t1), "assinantes-ativos");
     assert.equal(cohortOf(t2), "ex-assinantes");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// cohortFileName — nome de arquivo (#2857 fase C — sucessor de tierFileName)
-// ---------------------------------------------------------------------------
-
-describe("cohortFileName", () => {
-  it("stripe-export-{cohort}.csv — sem prefixo numérico (cutover removeu t{NN}-)", () => {
-    assert.equal(cohortFileName("assinantes-ativos"), "stripe-export-assinantes-ativos.csv");
-    assert.equal(cohortFileName("ex-assinantes"), "stripe-export-ex-assinantes.csv");
-    assert.equal(cohortFileName("leads-caudao"), "stripe-export-leads-caudao.csv");
-    assert.equal(cohortFileName("leads-2026-06"), "stripe-export-leads-2026-06.csv");
-    assert.equal(cohortFileName("leads-2025h2"), "stripe-export-leads-2025h2.csv");
   });
 });

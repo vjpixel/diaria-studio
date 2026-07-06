@@ -13,14 +13,18 @@
  * Uso:
  *   npx tsx scripts/merge-clarice-subscribers.ts [--filter-clrc-pt]
  *
- * Output (em data/clarice-subscribers/) — nome descritivo via cohortFileName():
- *   stripe-export-assinantes-ativos.csv   Assinante atual
- *   stripe-export-ex-assinantes.csv       Ex-assinante (pagou alguma vez)
- *   stripe-export-leads-2026-06.csv       Lead — safra mensal (created >= epoch #2817)
- *   stripe-export-leads-2025h2.csv        Lead — semestre real do created (pré-epoch)
- *   ...                                    (1 arquivo por cohort presente na base)
- *   stripe-export-leads-caudao.csv        Lead sem `created` (fóssil)
+ * Output (em data/clarice-subscribers/):
  *   stripe-export-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
+ *
+ * O universo por cohort (assinantes-ativos, ex-assinantes, leads-*) NÃO é
+ * mais escrito em CSV por cohort (#2886 PR4) — CSV-as-SOURCE foi eliminado
+ * depois que PR2 (#3019, clarice-mv-status.ts) e PR3 (#3020,
+ * verify-emails-mv.ts) migraram seus leitores pro store. O universo
+ * pontuado/classificado alimenta o store único via `buildUniverse()`
+ * (consumido por `scripts/clarice-build-db.ts`); o `main()` abaixo só
+ * escreve o audit trail de excluídos + faz o cleanup de outputs órfãos de
+ * runs antigos deste script (o cleanup roda em toda invocação — não é
+ * one-time, ver `orphanPatterns`).
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
@@ -442,16 +446,6 @@ export function cohortOf(m: Merged): string {
   return deriveLeadCohort(created) ?? COHORT_LEADS_CAUDAO; // sem created → fóssil
 }
 
-/**
- * Nome de arquivo DESCRITIVO do cohort — `stripe-export-{slug}.csv` (#2857
- * fase C: o prefixo numérico `t{NN}-` foi removido — o slug do cohort JÁ é
- * o identificador canônico e ordenável cronologicamente via `cohortSendRank`,
- * não precisa mais de um índice artificial pra ordenar no filesystem).
- */
-export function cohortFileName(cohort: string): string {
-  return `stripe-export-${cohort}.csv`;
-}
-
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
@@ -463,43 +457,20 @@ export interface Scored extends Merged {
   cohort: string;
 }
 
-function formatCohortRow(r: Scored): { [k: string]: string | number } {
-  // Schema mínimo pra import no Brevo (3 colunas — #1019):
-  // - email             (identidade)
-  // - NOME              (personalização: "Olá, {{NOME}}")
-  // - OPEN_PROBABILITY  (atributo Brevo pra segmentação)
-  //
-  // Headers em UPPERCASE batem com nomes dos atributos no Brevo deste account
-  // (PT-BR: NOME mapeia pra firstname). Sem uppercase, o Brevo cria atributos
-  // novos (first_name) em vez de popular os canônicos (verificado via API).
-  //
-  // Cohort é implícito no filename (stripe-export-{cohort}.csv).
-  // Ordem das linhas implica ordenação por score (não precisa coluna).
-  //
-  // verify_risk não vai no output: a verificação MillionVerifier é um passo
-  // separado (`scripts/verify-emails-mv.ts`) rodado sobre o CSV do cohort antes
-  // do envio. Convenção #1297: cohorts não-assinantes verificam no MV.
-  return {
-    email: r.email,
-    NOME: r.name?.split(" ")[0] || "",
-    OPEN_PROBABILITY: r.open_probability,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // buildUniverse — pipeline read→merge→filter→score→tier como função reutilizável.
 //
 // Extraído pra alimentar o store único da Clarice (#2647,
-// `scripts/clarice-build-db.ts`) sem reexecutar o `main()` (que também escreve
-// os CSVs de tier + faz logging). Retorna o universo completo com TODOS os
-// sinais do Stripe preservados (o `Scored` carrega os campos brutos do `Merged`),
-// ao contrário dos CSVs de tier que só guardam email/NOME/OPEN_PROBABILITY.
+// `scripts/clarice-build-db.ts`) sem reexecutar o `main()` (que faz logging +
+// escreve só o audit trail de excluídos desde #2886 PR4 — o write side por
+// cohort foi eliminado). Retorna o universo completo com TODOS os sinais do
+// Stripe preservados (o `Scored` carrega os campos brutos do `Merged`).
 //
 // NB (#2647): `main()` abaixo ainda tem uma cópia inline desta lógica (logging
 // per-arquivo + distribuições). Migrar `main()` pra chamar `buildUniverse` é
-// follow-up — mantido separado aqui pra não tocar o caminho de geração de CSV
+// follow-up — mantido separado aqui pra não tocar o caminho de leitura/merge
 // já validado em produção. As duas cópias compartilham os mesmos helpers
-// (readCsv/normalizeRow/mergeRecord/computeScore/verifyRisk/tierOf).
+// (readCsv/normalizeRow/mergeRecord/computeScore/verifyRisk/cohortOf).
 // ---------------------------------------------------------------------------
 
 export interface Universe {
@@ -732,45 +703,32 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
     });
   }
 
-  function writeCohort(filename: string, rows: Scored[]): void {
-    const csv = Papa.unparse(rows.map(formatCohortRow));
-    writeFileSync(resolve(dataDir, filename), csv, "utf8");
-  }
-
-  // Output: 1 CSV por cohort presente na base (stripe-export-assinantes-ativos.csv …).
-  // Ordem determinística via cohortSendRank (morno→frio), só afeta a ordem do
-  // log/write — cada cohort vira seu próprio arquivo independente do resto.
-  // Escrevemos ANTES de limpar (ver cleanup abaixo): os arquivos canônicos nunca
-  // ficam ausentes numa janela — write sobrescreve, depois remove só os órfãos.
+  // Ordem determinística via cohortSendRank (morno→frio) — só afeta a ordem
+  // do logging abaixo (cohortCounts/sample); cada cohort não vira mais CSV
+  // (#2886 PR4 — o write side de `stripe-export-{cohort}.csv` foi eliminado:
+  // a lista base por cohort agora vive só no store, via `buildUniverse` +
+  // `clarice-build-db.ts`. `stripe-export-{cohort}.csv` não tinha mais
+  // nenhum leitor desde PR2 (#3019, clarice-mv-status.ts) e PR3 (#3020,
+  // verify-emails-mv.ts) migrarem pra query no store).
   const cohortsSorted = [...byCohort.keys()].sort(
     (a, b) => cohortSendRank(a) - cohortSendRank(b),
   );
-  const written = new Set<string>();
-  for (const cohort of cohortsSorted) {
-    const rows = byCohort.get(cohort)!;
-    const filename = cohortFileName(cohort);
-    writeCohort(filename, rows);
-    written.add(filename);
-  }
 
-  // Cleanup de outputs órfãos: `stripe-export-{cohort}.csv` de outro run cujo
-  // cohort não está mais presente na base (ex: safra mensal esvaziada) + o
-  // formato numérico ANTIGO `stripe-export-t{NN}-*` (#2857 fase C — migração
-  // one-time, o cutover troca de convenção) + os esquemas LEGADOS
-  // (`kit-import-*`, `brevo-import-tier{N}`, `brevo-import-t{NN}[-slug]`).
-  // Roda DEPOIS do write e PULA os nomes recém-escritos (`written`) — nunca
-  // apaga o output deste run. Nunca casa `stripe-export-excluded.csv` (não tem
-  // prefixo de cohort reconhecido).
+  // Cleanup de outputs órfãos: qualquer `stripe-export-{cohort}.csv` de um run
+  // anterior (agora sempre órfão, já que este script parou de escrever esses
+  // arquivos) + o formato numérico ANTIGO `stripe-export-t{NN}-*` (#2857 fase
+  // C) + os esquemas LEGADOS (`kit-import-*`, `brevo-import-tier{N}`,
+  // `brevo-import-t{NN}[-slug]`). Nunca casa `stripe-export-excluded.csv`
+  // (audit trail distinto, mantido — não tem prefixo de cohort reconhecido).
   // (não pega -verified/-rejected/-unknown, que moram no dir do ciclo, não no root)
   const orphanPatterns = [
     /^kit-import-(tier\d+|excluded)\.csv$/,
     /^brevo-import-tier\d+\.csv$/, // legado sem padding (tier1, tier2, tier3 antigos)
     /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // legado pré-stripe-export (#1965)
     /^stripe-export-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // formato numérico pré-#2857-fase-C
-    /^stripe-export-(assinantes-ativos|ex-assinantes|leads-[\w-]+)\.csv$/, // cohort atual: slug-drift entre runs
+    /^stripe-export-(assinantes-ativos|ex-assinantes|leads-[\w-]+)\.csv$/, // cohort atual: sempre órfão pós-#2886 PR4
   ];
   for (const f of readdirSync(dataDir)) {
-    if (written.has(f)) continue; // nunca remove o que acabamos de escrever
     if (orphanPatterns.some((re) => re.test(f))) {
       const path = resolve(dataDir, f);
       try {
