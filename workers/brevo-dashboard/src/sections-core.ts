@@ -1,6 +1,6 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
+import { DS, DASH_THEME, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
 import {
   renderVolumeSection,
   renderScheduledSection,
@@ -238,11 +238,13 @@ export function renderDashboardHtml(
   // disponível nesta função).
   const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, new Date());
 
-  // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
-  // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
-  // sem token canônico de cinza — DS só tem ink; usamos inline hex aproximado
-  // #666 → substituído por DS.ink para uniformidade, com opacity via class).
-  // --rule-header = DS.rule (bege #EBE5D0); --rule de linhas = DS.rule.
+  // #2991: paleta visual da dashboard vem de DASH_THEME (skin interno, NÃO
+  // deriva de design-tokens.ts / DS_COLORS — que seguem espelhando a marca
+  // pública/teal usada em e-mails). Trocar os valores aqui restyla TODAS as
+  // abas de uma vez só, porque toda tabela/seção já consome estas mesmas CSS
+  // vars (mesmo padrão da aba Agendamento, #2974/#2981, agora generalizado).
+  // --muted/--rule-header não têm token canônico próprio: derivados via
+  // opacity sobre --ink (ver classes abaixo).
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -251,17 +253,28 @@ export function renderDashboardHtml(
 <title>Clarice News Dashboard</title>
 <style>
   :root {
-    --brand: ${DS.brand};
-    --ink: ${DS.ink};
-    --paper: ${DS.paper};
-    --paper-alt: ${DS.paperAlt};
-    --rule: ${DS.rule};
+    --brand: ${DASH_THEME.brand};
+    --ink: ${DASH_THEME.ink};
+    --ink-soft: ${DASH_THEME.inkSoft};
+    --paper: ${DASH_THEME.paper};
+    --paper-alt: ${DASH_THEME.paperAlt};
+    --card: ${DASH_THEME.card};
+    --rule: ${DASH_THEME.hair};
+    --hair: ${DASH_THEME.hair};
     --alert: ${DS.alert};
   }
   body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
   .sub { color: var(--ink); opacity: 0.6; font-size: 0.9rem; margin: 0 0 24px 0; }
-  .table-wrap { overflow-x: auto; }
+  /* #2991: "cards" — table-wrap já envolve toda tabela/lista de cada seção em
+     todas as abas (estrutura preexistente, ver #2086) — vira o container de
+     card sem mexer em markup/dados. */
+  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 4px; }
+  table { background: var(--card); }
+  td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
+    font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
   /* #2908: duas tabelas estreitas (Inelegíveis por razão + MillionVerifier bucket)
      lado a lado num flex — economiza a metade direita da tela. Quebra pra
      empilhado em telas estreitas (flex-wrap). min-width:0 deixa o filho encolher

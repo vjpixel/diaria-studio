@@ -19,6 +19,26 @@ export const DS = {
   alert:    "#C00000",  // vermelho de alerta (circuit breaker threshold)
 } as const;
 
+/**
+ * DASH_THEME (#2991) — skin visual da Clarice News Dashboard, aplicado na aba
+ * Agendamento (#2974/#2981) e agora estendido a TODAS as abas via as mesmas
+ * CSS vars globais (`:root` em sections-core.ts). Deliberadamente SEPARADO de
+ * `DS`/`DS_COLORS` (que espelham design-tokens.ts, a marca pública usada nos
+ * e-mails/site — teal #00A0A0) — a dashboard é ferramenta interna e pode ter
+ * paleta própria (paper/cream + verde), sem afetar templates de e-mail. Não
+ * regenerado por generate-worker-tokens.ts (não deriva de design-tokens.ts) e
+ * sem check de drift — é intencionalmente independente da marca pública.
+ */
+export const DASH_THEME = {
+  paper:    "#faf8f3",
+  paperAlt: "#f0ece1",
+  card:     "#ffffff",
+  ink:      "#262019",
+  inkSoft:  "#6b6357",
+  hair:     "#e4ddcf",
+  brand:    "#1f7a5c",
+} as const;
+
 
 /** Exportado para o teste de drift (test/brevo-dashboard-ds-drift.test.ts). */
 export const DS_TOKENS = DS_COLORS;
