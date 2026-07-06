@@ -6,7 +6,10 @@
  * #2618: + `renderStatusline` (composição pura) e `readMostRecentEditionDoc`
  * (lê edição mais recente incluindo encerrada) — barra some após edição concluída.
  * #2760: + guard de staleness (`isStaleEditionDoc`, `EDITION_STALE_THRESHOLD_MS`) —
- * edição com row `running` travada há >24h é tratada como abandonada, não "em curso".
+ * edição com row `running` travada há mais que o threshold é tratada como
+ * abandonada, não "em curso". #3000: threshold revisado 24h → 6h — o guard já
+ * existia e disparava corretamente, mas 24h era grande demais pra cumprir o
+ * propósito (observabilidade em tempo real durante rodadas overnight longas).
  *
  * Coberturas obrigatórias (#633):
  *   - Edição em curso (stage running) → barra com label correto
@@ -962,8 +965,8 @@ describe("integração de disco #2618 — edição encerrada faz a barra sumir (
 // pula (trata como encerrada) qualquer doc stale nesse sentido.
 
 describe("isStaleEditionDoc — função pura (#2760)", () => {
-  it("EDITION_STALE_THRESHOLD_MS é exatamente 24h em ms", () => {
-    assert.equal(EDITION_STALE_THRESHOLD_MS, 24 * 60 * 60 * 1000);
+  it("EDITION_STALE_THRESHOLD_MS é exatamente 6h em ms (#3000 — revisado de 24h)", () => {
+    assert.equal(EDITION_STALE_THRESHOLD_MS, 6 * 60 * 60 * 1000);
   });
 
   it("row running com start >24h atrás → stale (true)", () => {
@@ -1013,6 +1016,90 @@ describe("isStaleEditionDoc — função pura (#2760)", () => {
     };
     assert.equal(isStaleEditionDoc(justUnder, now), false, "1ms sob o limiar não deve ser stale");
     assert.equal(isStaleEditionDoc(justOver, now), true, "1ms sobre o limiar deve ser stale");
+  });
+
+  // #3000: reprodução exata do incidente ao vivo 260705/260706. O guard
+  // isStaleEditionDoc SEMPRE existiu e disparava — o bug era que o threshold
+  // de 24h era grande demais: às 15:41Z (13h após o stall) a edição ainda não
+  // batia 24h, então a barra do Overnight (genuinamente ativa em paralelo)
+  // continuava mascarada. Com o threshold revisado pra 6h, esse caso real
+  // passa a ser detectado como stale bem antes.
+  it("#3000: Stage 5 travado em running há 13h (fixture real 260706) → stale com threshold 6h", () => {
+    const now = new Date("2026-07-06T15:41:00.000Z"); // momento do dispatch, ~13h após o stall
+    const doc: StageStatusDoc = {
+      edition: "260706",
+      generated_at: "2026-07-06T01:42:21.287Z", // nunca atualizado após o stall — igual ao arquivo real
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        // Reproduz exatamente data/editions/260706/_internal/stage-status.json
+        // no momento do incidente: Stage 5 preso em "running" desde 01:42:21Z,
+        // nunca transicionou (integração LinkedIn/Make.com quebrada, #3009).
+        { stage: 5, status: "running", start: "2026-07-06T01:42:21.287Z" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    assert.equal(
+      isStaleEditionDoc(doc, now),
+      true,
+      "13h de stall deve ser stale com o threshold revisado de 6h (era falso-negativo com o antigo 24h)",
+    );
+  });
+
+  it("#3000: mesma fixture, mas Stage 5 iniciado há poucos minutos → NÃO stale (edição genuinamente em curso)", () => {
+    const now = new Date("2026-07-06T02:00:00.000Z"); // ~18min após o start
+    const doc: StageStatusDoc = {
+      edition: "260706",
+      generated_at: "2026-07-06T01:42:21.287Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        { stage: 4, status: "done" },
+        { stage: 5, status: "running", start: "2026-07-06T01:42:21.287Z" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    assert.equal(
+      isStaleEditionDoc(doc, now),
+      false,
+      "Stage 5 iniciado há minutos não deve ser tratado como abandonado — não pode regredir o caso normal",
+    );
+  });
+
+  // #3000: threshold não pode ser tão agressivo a ponto de penalizar o gate humano
+  // do Stage 4, que pode legitimamente rodar várias horas (espera do editor). Caso
+  // real observado: start 21:17, end 01:41 (~4.4h). Esse caso não deve nunca ser
+  // avaliado por isStaleEditionDoc pois Stage 4 termina em "done", não fica preso em
+  // "running" (ver docblock de EDITION_STALE_THRESHOLD_MS) — mas outra edição com um
+  // Stage 4 ainda `running` há ~4.4h (gate ainda sendo apresentado na mesma sessão)
+  // não deve ser marcada como stale pelo threshold revisado de 6h.
+  it("#3000: Stage 4 (gate humano) running há ~4.4h → NÃO stale (tolerância ao caso legítimo de espera de gate)", () => {
+    const now = new Date("2026-07-06T01:41:00.000Z");
+    const doc: StageStatusDoc = {
+      edition: "260706b",
+      generated_at: "2026-07-05T21:17:00.000Z",
+      rows: [
+        { stage: 0, status: "done" },
+        { stage: 1, status: "done" },
+        { stage: 2, status: "done" },
+        { stage: 3, status: "done" },
+        // Gate humano do Stage 4 apresentado há ~4.4h (21:17 → 01:41) — dentro
+        // do threshold revisado de 6h, não deve disparar falso-positivo.
+        { stage: 4, status: "running", start: "2026-07-05T21:17:00.000Z" },
+        { stage: 5, status: "pending" },
+        { stage: 6, status: "pending" },
+      ],
+    };
+    assert.equal(
+      isStaleEditionDoc(doc, now),
+      false,
+      "gate humano de ~4.4h não deve ser marcado como stale com o threshold revisado de 6h",
+    );
   });
 
   it("sem nenhuma row running (ex: pending esperando disparo manual) → NUNCA stale, mesmo muito velha", () => {

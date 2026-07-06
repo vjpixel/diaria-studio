@@ -161,14 +161,31 @@ const TOTAL_STAGES = STAGES.length;
  * (Stage 4) marca a row `running` só ENQUANTO apresenta o gate na MESMA sessão/
  * turno de chat (linha 50→443) — se o editor precisa de uma revisão longa fora
  * do terminal, o fluxo `"editar"` explicitamente devolve o status pra `pending`
- * (não deixa `running` pendurado) — logo `running` genuinamente parado >24h é
- * sempre sessão morta (terminal fechado, crash), nunca gate humano em curso.
+ * (não deixa `running` pendurado) — logo `running` genuinamente parado por
+ * várias horas é sempre sessão morta (terminal fechado, crash), nunca gate
+ * humano em curso.
  *
  * Usa o `start` da própria row (gravado por `update-stage-status.ts` ao marcar
  * `running`); se ausente (runs legadas), cai pro `generated_at` do doc como
  * aproximação — mesmo padrão de fallback usado no backfill de `applyUpdate`.
+ *
+ * Threshold revisado 24h → 6h (#3000): o limiar original de 24h, embora correto
+ * para NUNCA marcar falso-positivo, era grande demais pra cumprir o propósito real
+ * do guard durante rodadas overnight longas — a statusLine é justamente o sinal
+ * rápido de progresso que o editor consulta ao vivo durante essas rodadas. Incidente
+ * real (260705/260706): Stage 5 travou em `running` às 01:42Z e ainda estava
+ * mascarando a barra do Overnight 13h depois (15:41Z) — abaixo do limiar de 24h,
+ * então `isStaleEditionDoc` (corretamente, dado o threshold da época) ainda
+ * classificava a edição como "em curso" e a barra do Overnight, que estava
+ * genuinamente ativa em paralelo, nunca aparecia. O guard em si (o `if
+ * (isStaleEditionDoc(...)) continue;` em `readCurrentEditionDoc`) sempre existiu
+ * e funcionava — o gap era o valor do threshold, não a lógica. 6h dá margem
+ * generosa acima do maior caso legítimo de `running` prolongado observado até
+ * agora — o gate humano do Stage 4 (~4.4h entre `21:17` e `01:41` num run real,
+ * incluindo espera do editor) — sem deixar uma edição abandonada mascarar a
+ * barra do Overnight por mais de meio turno de trabalho.
  */
-export const EDITION_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+export const EDITION_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Retorna true quando `doc` tem pelo menos 1 row `status: "running"` cujo
