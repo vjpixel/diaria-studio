@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { editionDir } from "./lib/edition-paths.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
@@ -246,7 +247,7 @@ export function extractUrlsFromApproved(
   root: string = ROOT,
 ): string[] {
   if (!yymmdd) return [];
-  const path = resolve(root, `data/editions/${yymmdd}/_internal/01-approved.json`);
+  const path = resolve(root, editionDir(yymmdd), "_internal/01-approved.json");
   if (!existsSync(path)) return [];
   let parsed: unknown;
   try {

@@ -48,6 +48,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { editionDir } from "./lib/edition-paths.ts";
 import { CONFIG } from "./lib/config.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
@@ -857,7 +858,7 @@ async function main(): Promise<void> {
   }
   const force = process.argv.includes("--force");
   const outDir =
-    args["out-dir"] ?? resolve(ROOT, `data/editions/${edition}`);
+    args["out-dir"] ?? resolve(ROOT, editionDir(edition));
   const internalDir = resolve(outDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
 

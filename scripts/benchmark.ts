@@ -34,6 +34,7 @@ import { cpSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync as f
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple } from "./lib/cli-args.ts";
+import { editionDir } from "./lib/edition-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -60,7 +61,7 @@ const cliArgs = parseArgsSimple(process.argv.slice(2));
 const fixtureEdition = cliArgs.fixture ?? "260422";
 const numRuns = parseInt(cliArgs.runs ?? "3", 10);
 
-const fixtureDir = resolve(ROOT, "data/editions", fixtureEdition);
+const fixtureDir = resolve(ROOT, editionDir(fixtureEdition));
 if (!existsSync(fixtureDir)) {
   console.error(`Fixture edition not found: ${fixtureDir}`);
   process.exit(1);

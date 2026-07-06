@@ -32,6 +32,7 @@ import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { editionsRoot } from "./lib/edition-paths.ts";
 
 export interface PollResponse {
   choice: string;
@@ -143,7 +144,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const editionsDir = resolve(ROOT, "data/editions");
+  const editionsDir = resolve(ROOT, editionsRoot());
   const prevEdition =
     args["prev-edition"] ?? findPreviousEdition(editionsDir, edition);
   const outPath =

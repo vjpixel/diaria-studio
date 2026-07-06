@@ -18,6 +18,7 @@ import { readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
+import { editionDir as buildEditionDir, editionsRoot } from "./lib/edition-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -161,7 +162,7 @@ function fmtTime(d: Date | null): string {
 }
 
 function detectLatestEdition(): string {
-  const editionsDir = resolve(ROOT, "data/editions");
+  const editionsDir = resolve(ROOT, editionsRoot());
   if (!existsSync(editionsDir)) {
     console.error("data/editions/ not found");
     process.exit(1);
@@ -298,7 +299,7 @@ function main(): void {
 
   if (args.all) {
     // Compare all editions
-    const editionsDir = resolve(ROOT, "data/editions");
+    const editionsDir = resolve(ROOT, editionsRoot());
     const dirs = readdirSync(editionsDir)
       .filter((d) => /^\d{6}$/.test(d))
       .sort();
@@ -322,11 +323,11 @@ function main(): void {
       editionDir = resolve(ROOT, args["edition-dir"] as string);
       label = basename(editionDir);
     } else if (args.edition) {
-      editionDir = resolve(ROOT, "data/editions", args.edition as string);
+      editionDir = resolve(ROOT, buildEditionDir(args.edition as string));
       label = args.edition as string;
     } else {
       const latest = detectLatestEdition();
-      editionDir = resolve(ROOT, "data/editions", latest);
+      editionDir = resolve(ROOT, buildEditionDir(latest));
       label = latest;
     }
 

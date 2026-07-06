@@ -25,6 +25,7 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { editionDir, editionsRoot } from "./lib/edition-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -195,14 +196,14 @@ console.log(`Research window: ${windowStart} → ${editionDate}\n`);
 runStage(1, "Research — dedup + categorize + render", () => {
   // Check if we have raw articles from a real source search, otherwise skip
   // For benchmark purposes, copy from latest real edition if available
-  const latestEdition = readdirSync(resolve(ROOT, "data/editions"))
+  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
     .filter(d => /^\d{6}$/.test(d))
     .sort()
     .reverse()[0];
 
   if (!latestEdition) throw new Error("No existing edition to use as fixture");
 
-  const rawSrc = resolve(ROOT, "data/editions", latestEdition, "01-raw-articles.json");
+  const rawSrc = resolve(ROOT, editionDir(latestEdition), "01-raw-articles.json");
   if (!existsSync(rawSrc)) throw new Error(`No 01-raw-articles.json in ${latestEdition}`);
 
   // Copy raw articles as our starting point
@@ -231,13 +232,13 @@ runStage(1, "Research — dedup + categorize + render", () => {
 // ---- Stage 2: Writing (needs LLM — use fixture) ----
 runStage(2, "Writing — extract + clarice-diff", () => {
   // Copy draft + reviewed from fixture for script benchmarking
-  const latestEdition = readdirSync(resolve(ROOT, "data/editions"))
+  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
     .filter(d => /^\d{6}$/.test(d))
     .sort()
     .reverse()[0];
 
-  const draftSrc = resolve(ROOT, "data/editions", latestEdition, "_internal/02-draft.md");
-  const reviewedSrc = resolve(ROOT, "data/editions", latestEdition, "02-reviewed.md");
+  const draftSrc = resolve(ROOT, editionDir(latestEdition), "_internal/02-draft.md");
+  const reviewedSrc = resolve(ROOT, editionDir(latestEdition), "02-reviewed.md");
 
   if (!existsSync(draftSrc) || !existsSync(reviewedSrc)) {
     throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latestEdition}`);
@@ -264,13 +265,13 @@ runStage(4, "É IA? — external APIs", () => {}, true);
 // ---- Stage 5: Images ----
 runStage(5, "Images — Gemini generation + crop", () => {
   // Copy prompts from fixture
-  const latestEdition = readdirSync(resolve(ROOT, "data/editions"))
+  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
     .filter(d => /^\d{6}$/.test(d))
     .sort()
     .reverse()[0];
 
   for (const d of ["d1", "d2", "d3"]) {
-    const promptSrc = resolve(ROOT, "data/editions", latestEdition, `02-${d}-prompt.md`);
+    const promptSrc = resolve(ROOT, editionDir(latestEdition), `02-${d}-prompt.md`);
     if (existsSync(promptSrc)) {
       writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
     }
