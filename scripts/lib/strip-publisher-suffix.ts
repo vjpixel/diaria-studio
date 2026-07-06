@@ -48,7 +48,7 @@
  *   (#2664) que motivam o sandwich de 3 passos.
  *
  * ## Funções exportadas
- *   - `stripPublisherSuffix(title)` — sufixo ` | ` + ` - ` / ` — ` (lista)
+ *   - `stripPublisherSuffix(title)` — sufixo ` | ` + ` - ` / ` — ` / ` • ` (lista, #2984)
  *   - `stripTrailingPeriod(title)` — ponto final único
  *   - `normalizeItemTitle(title)` — sufixo + ponto, na ordem correta
  *   - `KNOWN_DASH_PUBLISHERS` — set de veículos (lowercase) para traço/travessão
@@ -108,6 +108,9 @@ export const KNOWN_DASH_PUBLISHERS = new Set([
   "meio&mensagem",
   "meio e mensagem",
   "mobile time",
+  // Brasil (#2984)
+  "squadhub",
+  "tecnoblog",
   // Internacional
   "techcrunch",
   "the verge",
@@ -172,7 +175,7 @@ function stripPipeSuffix(title: string): string {
 }
 
 /**
- * Strip sufixo via ` - ` ou ` — ` (traço/travessão — #2664).
+ * Strip sufixo via ` - `, ` — ` (traço/travessão — #2664) ou ` • ` (bullet — #2984).
  * SOMENTE strip se o sufixo bate com KNOWN_DASH_PUBLISHERS (case-insensitive).
  * Verifica a ÚLTIMA ocorrência do separador para handle de "título - sub - Veículo".
  * Anti-FP: prefixo < MIN_PREFIX_LEN → manter.
@@ -180,20 +183,20 @@ function stripPipeSuffix(title: string): string {
 function stripDashSuffix(title: string): string {
   const trimmed = title.trim();
 
-  const dashIdx = trimmed.lastIndexOf(" - ");   // espaço-hífen-espaço
-  const emDashIdx = trimmed.lastIndexOf(" — "); // espaço-travessão-espaço
+  const dashIdx = trimmed.lastIndexOf(" - ");     // espaço-hífen-espaço
+  const emDashIdx = trimmed.lastIndexOf(" — ");   // espaço-travessão-espaço
+  const bulletIdx = trimmed.lastIndexOf(" • ");   // espaço-bullet-espaço (#2984)
 
   // Escolhe o separador mais à direita
   let sepStart = -1;
-  if (dashIdx >= 0 && dashIdx > emDashIdx) {
-    sepStart = dashIdx;
-  } else if (emDashIdx >= 0) {
-    sepStart = emDashIdx;
+  for (const idx of [dashIdx, emDashIdx, bulletIdx]) {
+    if (idx >= 0 && idx > sepStart) sepStart = idx;
   }
 
   if (sepStart === -1) return title;
 
-  // " - " e " — " têm ambos 3 chars (travessão U+2014 é 1 code unit em JS).
+  // " - ", " — " e " • " têm todos 3 chars (travessão U+2014 e bullet U+2022
+  // são 1 code unit cada em JS).
   const SEP_LEN = 3;
   const suffix = trimmed.slice(sepStart + SEP_LEN).trim().toLowerCase();
 
@@ -208,7 +211,7 @@ function stripDashSuffix(title: string): string {
 
 /**
  * Remove o sufixo de atribuição de veículo de um título de artigo.
- * Handles: ` | ` (pipe) + ` - ` / ` — ` (traço/travessão).
+ * Handles: ` | ` (pipe) + ` - ` / ` — ` (traço/travessão) + ` • ` (bullet, #2984).
  *
  * @param title - Título bruto (ex: vindo de og:title / <title>).
  * @returns Título limpo, ou o original se o strip produziria prefixo muito curto

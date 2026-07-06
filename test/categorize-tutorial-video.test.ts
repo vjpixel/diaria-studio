@@ -85,6 +85,26 @@ describe("categorize() — bucket tutorial (#59 slice 2)", () => {
     );
   });
 
+  it("#2985 CASO REAL: latent.space ensaio 'the website of the future...' → noticias (RADAR), não tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.latent.space/p/agent-web",
+        title: "The website of the future may assemble itself for every visitor",
+      }),
+      "noticias",
+    );
+  });
+
+  it("#2985: latent.space tutorial real com how-to no título ainda vai para tutorial (sem regressão)", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.latent.space/p/agent-eng-howto",
+        title: "How to build an agent with tool use",
+      }),
+      "tutorial",
+    );
+  });
+
   it("every.to/chain-of-thought → tutorial", () => {
     assert.equal(
       categorize({ url: "https://every.to/chain-of-thought/my-article" }),

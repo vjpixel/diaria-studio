@@ -689,8 +689,43 @@ export function isNewsNotTutorial(article: Article): boolean {
   // #2448: "New X in Y" release note / feature announcement — não é tutorial acionável.
   // Roda após isTutorialByKeyword (how-to vence) e antes do default.
   if (isDevReleaseNote(article.title ?? "")) return true;
+  // #2985: latent.space é newsletter MISTA (tutoriais reais + ensaio/análise/
+  // entrevista sobre tendências). isTutorialByKeyword já rodou acima e retornou
+  // false (sem how-to) — chegar aqui com linguagem explícita de ensaio/especulação
+  // no título ("the website of the future...", "future of the web") indica análise,
+  // não tutorial hands-on. Caso real 260706: "The website of the future may
+  // assemble itself for every visitor" caiu em USE MELHOR quando deveria ser RADAR.
+  // Restrito a ESSAY_ANALYSIS_TITLE_RE (positivo) em vez de "ausência de how-to"
+  // pura — isso preservaria o teste de regressão existente (latent.space/agent-eng
+  // sem título → continua tutorial, #59 slice 2).
+  if (isMixedTutorialEssayHost(article.url ?? "") && ESSAY_ANALYSIS_TITLE_RE.test(article.title ?? "")) {
+    return true;
+  }
   return isBusinessDeal(article) || isReport(article);
 }
+
+/**
+ * #2985: hosts cadastrados em TUTORIAL_PATTERNS/TUTORIAL_DOMAINS que também
+ * publicam ensaio/análise/entrevista (não são 100% tutorial, ao contrário de
+ * cookbook.openai.com). Combinado com ESSAY_ANALYSIS_TITLE_RE — precisa do
+ * sinal POSITIVO de ensaio, não só ausência de how-to (evita falso-positivo
+ * em posts sem título/slug neutro, ex: latent.space/p/agent-eng).
+ */
+export const MIXED_TUTORIAL_ESSAY_HOSTS = new Set<string>(["latent.space"]);
+
+function isMixedTutorialEssayHost(url: string): boolean {
+  const { host } = hostAndPath(url);
+  return MIXED_TUTORIAL_ESSAY_HOSTS.has(host);
+}
+
+/**
+ * #2985: linguagem de ensaio/especulação sobre tendência — "o futuro de X",
+ * "entrevista com", "explica por que" — sinal positivo de análise, não tutorial.
+ * Deliberadamente restrito (poucos padrões) para minimizar falso-positivo em
+ * tutoriais reais com título neutro.
+ */
+export const ESSAY_ANALYSIS_TITLE_RE =
+  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b)/i;
 
 /**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente

@@ -204,6 +204,52 @@ describe("stripPublisherSuffix — traço ` - ` e travessão ` — ` (#2664)", (
   });
 });
 
+describe("stripPublisherSuffix — bullet ` • ` (#2984)", () => {
+  // Caso real da issue #2984
+  it("CASO REAL #2984: remove ' - SquadHub' do título", () => {
+    assert.equal(
+      stripPublisherSuffix("Como Usar o Copilot em 2026 - SquadHub"),
+      "Como Usar o Copilot em 2026",
+    );
+  });
+
+  it("CASO REAL #2984: remove ' • Tecnoblog' do título", () => {
+    assert.equal(
+      stripPublisherSuffix("Criadores da Luzia lançam assistente de IA no WhatsApp • Tecnoblog"),
+      "Criadores da Luzia lançam assistente de IA no WhatsApp",
+    );
+  });
+
+  it("remove sufixo via bullet ' • Veículo' quando veículo é conhecido (case-insensitive)", () => {
+    assert.equal(
+      stripPublisherSuffix("Google anuncia Gemini 2.5 Pro com melhorias significativas • CANALTECH"),
+      "Google anuncia Gemini 2.5 Pro com melhorias significativas",
+    );
+  });
+
+  it("ANTI-FP: NÃO strip ' • destaque da semana' (não é veículo conhecido)", () => {
+    const input = "OpenAI lança GPT-5 • destaque da semana";
+    assert.equal(stripPublisherSuffix(input), input);
+  });
+
+  it("preserva título quando prefixo antes do bullet tem < MIN_PREFIX_LEN chars", () => {
+    const input = "IA nova • G1"; // "IA nova" = 7 chars < 15
+    assert.equal(stripPublisherSuffix(input), input);
+  });
+
+  it("remove sufixo via ÚLTIMA ocorrência entre traço e bullet misturados", () => {
+    assert.equal(
+      stripPublisherSuffix("Como usar o novo recurso de IA - veja o passo a passo • Tecnoblog"),
+      "Como usar o novo recurso de IA - veja o passo a passo",
+    );
+  });
+
+  it("KNOWN_DASH_PUBLISHERS contém squadhub e tecnoblog (minúsculo)", () => {
+    assert.ok(KNOWN_DASH_PUBLISHERS.has("squadhub"));
+    assert.ok(KNOWN_DASH_PUBLISHERS.has("tecnoblog"));
+  });
+});
+
 // ===========================================================================
 // stripTrailingPeriod (#2672)
 // ===========================================================================
