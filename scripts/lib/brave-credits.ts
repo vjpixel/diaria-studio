@@ -178,11 +178,32 @@ export interface BraveCreditStats {
   // base do alerta: o MAIOR entre contagem local e uso real do header Brave.
   effective_used: number;
   alert_basis: "local" | "brave_header";
+  // (#3002) true quando o header foi descartado por divergência implausível
+  // vs. a contagem local (sinal de ciclo de rate-limit desalinhado do Brave,
+  // não uso real subnotificado).
+  header_discarded?: true;
 }
 
 const FREE_TIER_LIMIT = 2000;
 const WARN_THRESHOLD = 0.8;
 const CRITICAL_THRESHOLD = 0.95;
+
+// (#3002) `X-RateLimit-Remaining` reflete o ciclo interno de rate-limit da Brave,
+// que pode desalinhar do mês-calendário (ex: resquício do ciclo anterior que não
+// zerou junto com o dashboard oficial em 1º/mês). Quando isso acontece, o valor
+// derivado do header (`2000 - remaining`) explode muito além do que a contagem
+// local + Path B plausivelmente explicariam — sinal de ciclo errado, não de
+// subnotificação real. Descartamos o header nesse caso e caímos pra contagem local.
+//
+// Threshold escolhido: header-derived-usage > 10× a contagem local (com piso de 1
+// pra evitar divisão por zero em mês com 0 queries locais ainda). Calibrado contra
+// os dois casos conhecidos:
+//   - Falso positivo (#3002, edição 260706): local=55, header-derived=1951 → ~35×
+//     → descartado corretamente.
+//   - Caso legítimo que motivou #2668 (jun/2026): local=999, header-derived=1951 →
+//     ~2× → NÃO descartado, header continua autoritativo (Path B genuinamente
+//     subnotificado por contagem local incompleta).
+const HEADER_DIVERGENCE_DISCARD_RATIO = 10;
 
 /**
  * Pure: lê o JSONL, filtra por mês corrente (e edição se informada),
@@ -258,23 +279,39 @@ export function computeBraveCreditStats(
       ? Math.max(0, FREE_TIER_LIMIT - quota_remaining_last_seen)
       : undefined;
 
-  // Alerta AUTORITATIVO: o header X-RateLimit-Remaining do Brave é a verdade —
-  // inclui o Path B (WebSearch dos agentes) que NÃO passa pelo counter local.
-  // Dirigir o alerta pelo MAIOR entre contagem local e uso real do header, pra
-  // nunca subnotificar. (Causa do esgotamento de jun/2026: local=999 mas Brave
-  // contava 1951; o alerta confiava nos 999 → "ok" → voamos pelo $5. O contador
-  // local sozinho subnotifica ~metade porque o estimate do Path B nunca dispara.)
+  // (#3002) Descartar o header quando ele diverge implausivelmente da contagem
+  // local — sinal de ciclo de rate-limit desalinhado do Brave, não subnotificação
+  // real. Ver comentário de HEADER_DIVERGENCE_DISCARD_RATIO acima.
+  let header_discarded: true | undefined;
+  let real_used_for_alert = real_used;
+  if (
+    real_used !== undefined &&
+    real_used > Math.max(queries_this_month, 1) * HEADER_DIVERGENCE_DISCARD_RATIO
+  ) {
+    header_discarded = true;
+    real_used_for_alert = undefined;
+  }
+
+  // Alerta: o header X-RateLimit-Remaining do Brave inclui o Path B (WebSearch
+  // dos agentes) que NÃO passa pelo counter local — quando plausível, dirigir o
+  // alerta pelo MAIOR entre contagem local e uso real do header, pra nunca
+  // subnotificar. (Causa original do esgotamento de jun/2026 — #2668: local=999
+  // mas Brave contava 1951; o alerta confiava nos 999 → "ok" → voamos pelo $5.
+  // Esse caso segue coberto: divergência ~2× não é descartada.) Quando o header
+  // foi descartado por divergência implausível (#3002), cair pra contagem local.
   let effective_used = queries_this_month;
   let alert_basis: BraveCreditStats["alert_basis"] = "local";
-  if (real_used !== undefined && real_used > effective_used) {
-    effective_used = real_used;
+  if (real_used_for_alert !== undefined && real_used_for_alert > effective_used) {
+    effective_used = real_used_for_alert;
     alert_basis = "brave_header";
   }
 
   // (#2608 C) delta = queries cobradas pelo Brave − (reais + estimadas locais).
   // delta ≈ 0 → estimativas corretas; delta > 0 → gap não explicado (Path B > estimativa).
+  // (#3002) Quando o header foi descartado, delta_untracked fica ausente — ele
+  // não representa mais um gap real, e mostrá-lo confundiria o relatório.
   const delta_untracked =
-    real_used !== undefined ? real_used - queries_this_month : undefined;
+    real_used_for_alert !== undefined ? real_used_for_alert - queries_this_month : undefined;
 
   // Projeção: extrapolar linear pelo dia do mês. Base = effective_used quando o
   // header é autoritativo (senão a projeção contradiria o alerta: "97% crítico"
@@ -310,5 +347,6 @@ export function computeBraveCreditStats(
     alert_basis,
     ...(typeof quota_remaining_last_seen === "number" ? { quota_remaining_last_seen } : {}),
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
+    ...(header_discarded ? { header_discarded } : {}),
   };
 }

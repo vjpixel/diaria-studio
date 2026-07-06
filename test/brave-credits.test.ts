@@ -300,13 +300,21 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
-  // REGRESSÃO: o bug de jun/2026. Contagem local baixa MAS header Brave alto →
-  // alerta deve ser CRITICAL pelo header, não "ok" pelo local subnotificado.
-  it("alerta dirigido pelo header quando local subnotifica (causa jun/2026)", () => {
+  // REGRESSÃO #3002: este é EXATAMENTE o caso do falso-positivo real (edição
+  // 260706) — local=5 (na prática 55 na edição real, mas a mesma ordem de
+  // grandeza vs. o header), header quota_remaining=49 → real_used=1951. A
+  // divergência (1951 vs 5, ~390×) é implausível: reflete um resquício do ciclo
+  // de rate-limit anterior do Brave (fim de junho) que não zerou junto com o
+  // mês-calendário, não uso real do Path B. O header deve ser DESCARTADO e o
+  // alerta deve refletir a contagem local (~5), não "critical" por 1951/2000.
+  // Este teste ANTES esperava alert_basis="brave_header"/critical — essa era a
+  // manifestação do próprio bug #3002 (ver issue: dashboard oficial Brave
+  // mostrou 55 requests no mês real, não 1951).
+  it("descarta header quando diverge implausivelmente do local (regressão #3002)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-29T12:00:00Z");
     // só 5 entradas locais (Path A), mas o header diz quota_remaining=49 →
-    // real_used = 2000-49 = 1951 (Path B não-contado). Local sozinho = 0,25% = "ok".
+    // real_used = 2000-49 = 1951. Ratio vs. local (5) = 390× >> threshold (10×).
     writeFileSync(
       path,
       [
@@ -319,10 +327,36 @@ describe("computeBraveCreditStats", () => {
     );
     const stats = computeBraveCreditStats(null, path, now);
     assert.equal(stats.queries_this_month, 5, "contagem local permanece 5 (informativa)");
+    assert.equal(stats.effective_used, 5, "base do alerta = contagem local (header descartado)");
+    assert.equal(stats.alert_basis, "local", "header descartado → cai pra local");
+    assert.equal(stats.header_discarded, true, "deve sinalizar que o header foi descartado");
+    assert.equal(stats.alert_level, "ok", "NÃO deve ser critical — 5/2000 é ok");
+    assert.equal(stats.delta_untracked, undefined, "delta não deve refletir o gap implausível");
+    rmSync(path, { force: true });
+  });
+
+  // (#2668, ainda coberto após #3002) Contagem local baixa-mas-plausível MAS header
+  // Brave mais alto, com divergência MODESTA (~2×, não 390×) → o header ainda deve
+  // ser autoritativo. Este é o caso legítimo que motivou #2668 originalmente:
+  // Path B (WebSearch dos agentes) genuinamente subnotificado pela contagem local.
+  it("mantém header quando a divergência é modesta e plausível (#2668 preservado)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-29T12:00:00Z");
+    // 999 entradas locais (Path A), header diz quota_remaining=49 → real_used=1951.
+    // Ratio vs. local (999) = ~1.95× << threshold (10×) → header plausível, mantido.
+    const lines = Array.from({ length: 998 }, (_, i) =>
+      JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: `q${i}`, status: "ok" }),
+    );
+    lines.push(
+      JSON.stringify({ timestamp: "2026-06-29T10:05:00Z", query: "q999", status: "ok", quota_remaining: 49 }),
+    );
+    writeFileSync(path, lines.join("\n"), "utf8");
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month, 999, "contagem local permanece 999");
     assert.equal(stats.effective_used, 1951, "base do alerta = real_used do header (1951)");
     assert.equal(stats.alert_basis, "brave_header");
-    assert.equal(stats.alert_level, "critical", "deve ser critical (1951/2000=97.5%), não 'ok'");
-    // projeção coerente com o header (≈1951/29*30≈2018), NÃO a local ~5
+    assert.equal(stats.header_discarded, undefined, "header plausível não deve ser descartado");
+    assert.equal(stats.alert_level, "critical", "deve ser critical (1951/2000=97.5%)");
     assert.ok(stats.projected_month_end! > 1900, `projeção (${stats.projected_month_end}) deve refletir o header, não a local`);
     rmSync(path, { force: true });
   });
