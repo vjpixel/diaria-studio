@@ -114,14 +114,18 @@ export interface NewsletterContent {
   boxDivulgacao1?: string | null;
   /** URL pública de uma imagem (ex: screenshot da página de livros) pra
    * tornar o box 1 mais proeminente: imagem + texto + botão CTA. Lida de
-   * `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto.
-   * Só o slot 1 suporta imagem (mantém o comportamento legado do antigo
-   * midCallout — o slot 2 nunca teve esse recurso). */
+   * `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
   boxDivulgacao1Image?: string | null;
   /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
    * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
    * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
   boxDivulgacao2?: string | null;
+  /** #2978-slot2-parity: mesmo contrato de `boxDivulgacao1Image`, mas pro slot
+   * 2 (gap D2/D3). O box de livros (📚) pode cair em QUALQUER slot a depender
+   * da ordem de conteúdo da edição — sem este campo, o box de livros no slot 2
+   * degradava pra texto puro (sem imagem/CTA-pill), quebrando paridade com o
+   * slot 1. Ausente → box só-texto. */
+  boxDivulgacao2Image?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -688,14 +692,17 @@ export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean 
 }
 
 /**
- * URL pública da imagem do box de divulgação slot 1 (entry `livros_promo` de
+ * URL pública da imagem do box de divulgação (entry `livros_promo` de
  * `06-public-images.json`), se presente. Lida no momento do render (o cache já
  * existe — upload-images-public roda antes). Graceful: ausente → null.
  *
- * #2136/#2978: só retorna a imagem se o box for o de livros. Box 📣
- * CLARICE (e outros sem link livros.diaria.workers.dev) → null (sem hero).
+ * #2136/#2978/#2978-slot2-parity: só retorna a imagem se o box for o de
+ * livros. Box 📣 CLARICE (e outros sem link livros.diaria.workers.dev) →
+ * null (sem hero). Compartilhado pelos 2 slots — o box de livros pode cair
+ * tanto no slot 1 (gap D1/D2) quanto no slot 2 (gap D2/D3), a depender da
+ * ordem de conteúdo da edição (ver `test/flexible-callout-position.test.ts`).
  */
-export function readBoxDivulgacao1Image(
+function readBoxDivulgacaoImage(
   editionDir: string,
   boxText?: string | null,
 ): string | null {
@@ -718,6 +725,27 @@ export function readBoxDivulgacao1Image(
   } catch {
     return null;
   }
+}
+
+/** Slot 1 (gap D1/D2). Ver `readBoxDivulgacaoImage`. */
+export function readBoxDivulgacao1Image(
+  editionDir: string,
+  boxText?: string | null,
+): string | null {
+  return readBoxDivulgacaoImage(editionDir, boxText);
+}
+
+/**
+ * Slot 2 (gap D2/D3). #2978-slot2-parity: sem paridade até esta função existir
+ * — o box de livros (📚) só ganhava imagem/CTA-pill quando caía no slot 1; no
+ * slot 2 degradava silenciosamente pro box só-texto (renderIntroCallout sem
+ * forceCtaPill). Mesmo contrato do slot 1: imagem só quando o box é de livros.
+ */
+export function readBoxDivulgacao2Image(
+  editionDir: string,
+  boxText?: string | null,
+): string | null {
+  return readBoxDivulgacaoImage(editionDir, boxText);
 }
 
 export function extractContent(editionDir: string): NewsletterContent {
@@ -819,6 +847,9 @@ export function extractContent(editionDir: string): NewsletterContent {
   // suporta imagem (comportamento legado, nunca existiu pro slot 2).
   const boxDivulgacao1Image = readBoxDivulgacao1Image(editionDir, boxDivulgacao1);
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
+  // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só
+  // vai pro box de livros, independente de em qual slot ele caiu.
+  const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -845,6 +876,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao2,
+    boxDivulgacao2Image,
   };
 }
 

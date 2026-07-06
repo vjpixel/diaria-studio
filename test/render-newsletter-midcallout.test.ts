@@ -14,10 +14,14 @@ import {
   extractBoxDivulgacao1,
   stripBoxDivulgacao1,
   renderMidCallout,
+  renderBoxDivulgacao,
+  renderHTML,
   readBoxDivulgacao1Image,
+  readBoxDivulgacao2Image,
   isBoxDivulgacaoLivros,
   renderIntroCallout,
 } from "../scripts/render-newsletter-html.ts";
+import type { NewsletterContent } from "../scripts/render-newsletter-html.ts";
 import { parseDestaques } from "../scripts/extract-destaques.ts";
 
 const MD = `Para esta edição, selecionamos 15 itens.
@@ -465,5 +469,159 @@ Corpo do destaque 2.
     assert.ok(!d[0].why.includes("Clarice.ai"), "callout fora do why do D1 (CRLF)");
     // extractBoxDivulgacao1 ainda acha no original CRLF (render 1×).
     assert.match(extractBoxDivulgacao1(crlf)!, /^📣 Escreva melhor/);
+  });
+});
+
+// ── #2978-slot2-parity — regressão: boxDivulgacao2 (slot 2, gap D2/D3) não ────
+// tinha paridade com boxDivulgacao1: renderHTML nunca passava a imagem pro
+// slot 2 (renderBoxDivulgacao(content.boxDivulgacao2) sem 2º argumento), então
+// o box de livros (📚) que caísse no slot 2 sempre degradava pra
+// renderIntroCallout SEM forceCtaPill — perdia a imagem E o botão pill virava
+// link sublinhado inline. Fix: readBoxDivulgacao2Image (novo) + renderHTML
+// passa content.boxDivulgacao2Image pro dispatcher, igual ao slot 1.
+
+function minimalDestaque(n: 1 | 2 | 3, title: string) {
+  return {
+    n,
+    category: "PESQUISA",
+    title,
+    body: `Corpo do destaque ${n}.`,
+    why: `Por que importa ${n}.`,
+    url: `https://example.com/d${n}`,
+    emoji: "🧪",
+  };
+}
+
+function fixtureWithBoxes(opts: {
+  boxDivulgacao1?: string | null;
+  boxDivulgacao1Image?: string | null;
+  boxDivulgacao2?: string | null;
+  boxDivulgacao2Image?: string | null;
+}): NewsletterContent {
+  return {
+    title: "Título de teste",
+    subtitle: "Subtítulo de teste",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [
+      minimalDestaque(1, "Destaque 1"),
+      minimalDestaque(2, "Destaque 2"),
+      minimalDestaque(3, "Destaque 3"),
+    ],
+    eia: {
+      credit: "",
+      imageA: "01-eia-A.jpg",
+      imageB: "01-eia-B.jpg",
+      edition: "260999",
+    },
+    sections: [],
+    ...opts,
+  } as NewsletterContent;
+}
+
+describe("#2978-slot2-parity — box de livros (📚) no slot 2 recupera separador + imagem + pill", () => {
+  it("readBoxDivulgacao2Image: livros callout (📚 + livros.diaria.workers.dev) → retorna URL da imagem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-slot2-livros-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260703-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      const url = readBoxDivulgacao2Image(dir, LIVROS_CALLOUT);
+      assert.equal(url, cfUrl, "box de livros no slot 2 deve receber a imagem livros_promo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("readBoxDivulgacao2Image: CLARICE callout (📣, link não-livros) → null", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-slot2-clarice-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260703-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      const url = readBoxDivulgacao2Image(dir, CLARICE_CALLOUT);
+      assert.equal(url, null, "box CLARICE no slot 2 não deve receber a imagem livros_promo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renderBoxDivulgacao com imagem (slot 2): emite <img> + botão pill (paridade com slot 1)", () => {
+    const html = renderBoxDivulgacao(LIVROS_CALLOUT, "https://img.example/livros.jpg");
+    assert.ok(html.includes("<img"), "slot 2 com imagem deve emitir <img>");
+    assert.ok(html.includes("https://img.example/livros.jpg"), "src da imagem presente");
+    assert.match(html, /border-radius:999px/, "botão pill presente");
+    assert.ok(html.includes("Confira a nova página"), "label do CTA presente");
+  });
+
+  it("renderHTML e2e: boxDivulgacao2 = 📚 com imagem → separador DIVULGAÇÃO + <img> + pill entre D2 e D3", () => {
+    const content = fixtureWithBoxes({
+      boxDivulgacao2: LIVROS_CALLOUT,
+      boxDivulgacao2Image: "https://img.example/livros-slot2.jpg",
+    });
+    const html = renderHTML(content);
+
+    const d2Idx = html.indexOf("Destaque 2");
+    const d3Idx = html.indexOf("Destaque 3");
+    const divulgacaoIdx = html.indexOf("Divulgação", d2Idx);
+    const imgIdx = html.indexOf("https://img.example/livros-slot2.jpg");
+    const pillIdx = html.indexOf("border-radius:999px", d2Idx);
+
+    assert.ok(d2Idx !== -1 && d3Idx !== -1, "D2 e D3 presentes no HTML");
+    assert.ok(
+      divulgacaoIdx !== -1 && divulgacaoIdx > d2Idx && divulgacaoIdx < d3Idx,
+      "separador ● Divulgação deve aparecer entre D2 e D3",
+    );
+    assert.ok(
+      imgIdx !== -1 && imgIdx > d2Idx && imgIdx < d3Idx,
+      "imagem promo deve aparecer entre D2 e D3",
+    );
+    assert.ok(
+      pillIdx !== -1 && pillIdx < d3Idx,
+      "botão pill deve aparecer entre D2 e D3",
+    );
+    assert.ok(html.includes("Confira a nova página"), "label do CTA (pill) presente");
+  });
+
+  it("renderHTML e2e: slot 1 (🛒 Alexa) permanece intacto quando slot 2 (📚 com imagem) também está presente — sem regressão", () => {
+    const ALEXA_CALLOUT = `🛒 Equipe sua casa com a Alexa+.
+
+Corpo do box de afiliados.
+
+[Ver ofertas](https://amazon.com.br/alexa)`;
+    const content = fixtureWithBoxes({
+      boxDivulgacao1: ALEXA_CALLOUT,
+      boxDivulgacao2: LIVROS_CALLOUT,
+      boxDivulgacao2Image: "https://img.example/livros-slot2.jpg",
+    });
+    const html = renderHTML(content);
+
+    const d1Idx = html.indexOf("Destaque 1");
+    const d2Idx = html.indexOf("Destaque 2");
+    const d3Idx = html.indexOf("Destaque 3");
+
+    // slot 1 (box 🛒) continua sem imagem promo (nunca teve esse recurso —
+    // comportamento legado preservado; a paridade nova é só pro box 📚/📣/🎉
+    // no slot 2). D1 tem sua PRÓPRIA hero image (04-d1-2x1.jpg) — não checar
+    // ausência total de <img> no slice, só que a imagem do box de afiliados
+    // (que não existe pra 🛒) não vaza e o CTA/pill do box seguem intactos.
+    const slot1Html = html.slice(d1Idx, d2Idx);
+    assert.ok(!slot1Html.includes("livros-slot2.jpg"), "slot 1 não deve ter a imagem promo do slot 2");
+    assert.ok(slot1Html.includes("border-radius:999px"), "slot 1 (🛒) mantém botão pill");
+    assert.ok(slot1Html.includes("Ver ofertas"), "slot 1 (🛒) mantém CTA");
+
+    // slot 2 (entre D2 e D3) tem a imagem + pill.
+    const slot2Html = html.slice(d2Idx, d3Idx);
+    assert.ok(slot2Html.includes("<img"), "slot 2 (📚) deve ter <img>");
+    assert.ok(slot2Html.includes("https://img.example/livros-slot2.jpg"), "src correto no slot 2");
+    assert.ok(slot2Html.includes("border-radius:999px"), "slot 2 (📚) mantém botão pill");
+  });
+
+  it("renderBoxDivulgacao sem imagem (slot 2, livros): degrada pra box só-texto (comportamento pré-existente preservado)", () => {
+    const html = renderBoxDivulgacao(LIVROS_CALLOUT, null);
+    assert.ok(!html.includes("<img"), "sem imagem, slot 2 não deve ter <img>");
   });
 });
