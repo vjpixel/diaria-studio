@@ -66,7 +66,14 @@ describe("index.ts re-exporta tokens gerados sem drift (#2107)", () => {
   });
 });
 
-describe("brevo-dashboard CSS aplica tokens DS (#2084)", () => {
+describe("brevo-dashboard CSS aplica tema visual da dashboard (DASH_THEME, #2991)", () => {
+  // #2991: a partir do restyle "Agendamento em todas as abas", o :root da
+  // dashboard passou a usar DASH_THEME (workers/brevo-dashboard/src/render-links.ts)
+  // — um skin INTENCIONALMENTE separado de DS_COLORS/design-tokens.ts (marca
+  // pública teal, usada nos e-mails). Os testes abaixo (que checavam os valores
+  // DS canônicos no HTML renderizado) foram atualizados para os novos valores
+  // de DASH_THEME; os testes de paridade DS_COLORS×design-tokens.ts acima
+  // continuam intactos (essa camada não mudou).
   const baseCampaign = {
     id: 1,
     name: "Test",
@@ -90,26 +97,31 @@ describe("brevo-dashboard CSS aplica tokens DS (#2084)", () => {
 
   const html = renderDashboardHtml([baseCampaign]);
 
-  test("fundo paper DS aplicado ao body (#FBFAF6)", () => {
+  test("fundo paper (cream) aplicado ao body (#faf8f3)", () => {
     assert.match(html, /background: var\(--paper\)/, "body deve ter background: var(--paper)");
-    assert.match(html, /--paper: #FBFAF6/, "CSS custom property --paper deve ser #FBFAF6 canônico");
+    assert.match(html, /--paper: #faf8f3/, "CSS custom property --paper deve ser #faf8f3 (DASH_THEME)");
   });
 
-  test("--brand teal DS aplicado (#00A0A0)", () => {
-    assert.match(html, /--brand: #00A0A0/, "CSS custom property --brand deve ser #00A0A0");
+  test("--brand verde DASH_THEME aplicado (#1f7a5c)", () => {
+    assert.match(html, /--brand: #1f7a5c/, "CSS custom property --brand deve ser #1f7a5c");
   });
 
-  test("--ink DS aplicado (#171411)", () => {
-    assert.match(html, /--ink: #171411/, "CSS custom property --ink deve ser #171411");
+  test("--ink DASH_THEME aplicado (#262019)", () => {
+    assert.match(html, /--ink: #262019/, "CSS custom property --ink deve ser #262019");
   });
 
-  test("--paper-alt bege DS aplicado aos headers (#EBE5D0)", () => {
-    assert.match(html, /--paper-alt: #EBE5D0/, "CSS custom property --paper-alt deve ser #EBE5D0");
+  test("--paper-alt bege DASH_THEME aplicado aos headers (#f0ece1)", () => {
+    assert.match(html, /--paper-alt: #f0ece1/, "CSS custom property --paper-alt deve ser #f0ece1");
     assert.match(html, /background: var\(--paper-alt\)/, "th deve usar var(--paper-alt) como fundo");
   });
 
-  test("--rule bege DS aplicado (#EBE5D0)", () => {
-    assert.match(html, /--rule: #EBE5D0/, "CSS custom property --rule deve ser #EBE5D0");
+  test("--rule/--hair DASH_THEME aplicado (#e4ddcf)", () => {
+    assert.match(html, /--rule: #e4ddcf/, "CSS custom property --rule deve ser #e4ddcf");
+    assert.match(html, /--hair: #e4ddcf/, "CSS custom property --hair deve ser #e4ddcf");
+  });
+
+  test("--card branco DASH_THEME aplicado (#ffffff)", () => {
+    assert.match(html, /--card: #ffffff/, "CSS custom property --card deve ser #ffffff");
   });
 
   test("font-family Geist DS aplicada ao body", () => {
