@@ -244,9 +244,8 @@ export function executeMigration(plan: MigrationEntry[]): {
   for (const e of toMigrate) {
     try {
       const parentDir = join(e.toPath, "..");
-      if (!existsSync(parentDir)) {
-        mkdirSync(parentDir, { recursive: true });
-      }
+      // mkdirSync com recursive:true já é no-op se o dir existir — sem necessidade de existsSync antes.
+      mkdirSync(parentDir, { recursive: true });
       renameSync(e.fromPath, e.toPath);
       console.log(`  ✓ ${e.from}/ → ${e.to}/`);
       ok++;

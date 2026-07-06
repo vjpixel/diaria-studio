@@ -78,14 +78,42 @@ const AAMM_RE = /^\d{4}$/;
  * possíveis (#2463): o FLAT legado `data/editions/{AAMMDD}/` (ainda em uso
  * até a migração real — step 3, gated — rodar) e o NESTED novo
  * `data/editions/{AAMM}/{AAMMDD}/` (o que `editionDir()` já produz a partir
- * deste PR). Coexistem no disco até a migração. Se uma mesma AAMMDD existir
- * nos dois layouts (não deveria acontecer na prática), prefere o NESTED.
+ * deste PR). Coexistem no disco até a migração.
+ *
+ * Ordem de processamento (determinística, NÃO depende da ordem do
+ * `readdirSync`): primeiro registra TODAS as entradas FLAT, depois processa
+ * as NESTED por cima — nested sempre sobrescreve incondicionalmente. Isso
+ * garante "nested vence em caso de conflito" (não deveria acontecer na
+ * prática) independente de como o SO ordena a listagem do diretório.
+ *
+ * Exportado (não só de uso interno) para reuso futuro por outros scripts que
+ * precisam enumerar edições em ambos os layouts (ex: reports/aggregators
+ * hoje ainda fazem `readdirSync(editionsRoot()).filter(/^\d{6}$/)` direto —
+ * candidatos a migrar pra este helper quando tocados).
  */
-function enumerateEditionDirs(editionsRoot: string): Map<string, string> {
+export function enumerateEditionDirs(editionsRoot: string): Map<string, string> {
   const found = new Map<string, string>();
   if (!existsSync(editionsRoot)) return found;
 
-  for (const entry of readdirSync(editionsRoot)) {
+  const entries = readdirSync(editionsRoot);
+
+  // Passo 1: registra todo layout FLAT primeiro.
+  for (const entry of entries) {
+    if (!AAMMDD_RE.test(entry)) continue;
+    const entryPath = join(editionsRoot, entry);
+    let isDir = false;
+    try {
+      isDir = statSync(entryPath).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+    found.set(entry, entryPath);
+  }
+
+  // Passo 2: processa layout NESTED por cima — sempre sobrescreve (nested vence).
+  for (const entry of entries) {
+    if (!AAMM_RE.test(entry)) continue;
     const entryPath = join(editionsRoot, entry);
     let isDir = false;
     try {
@@ -95,34 +123,27 @@ function enumerateEditionDirs(editionsRoot: string): Map<string, string> {
     }
     if (!isDir) continue;
 
-    if (AAMMDD_RE.test(entry)) {
-      // Layout FLAT: data/editions/{AAMMDD}/
-      // Só registra se ainda não tiver entrada nested pra essa AAMMDD (nested tem prioridade,
-      // mas nesta ordem de iteração ainda não sabemos — resolvido no 2º passe abaixo).
-      if (!found.has(entry)) found.set(entry, entryPath);
-      continue;
+    let subEntries: string[];
+    try {
+      subEntries = readdirSync(entryPath);
+    } catch {
+      continue; // dir apagado/inacessível entre o statSync e o readdirSync — não deixa crashar todo o scan
     }
 
-    if (AAMM_RE.test(entry)) {
-      // Layout NESTED: data/editions/{AAMM}/{AAMMDD}/
-      for (const sub of readdirSync(entryPath)) {
-        if (!AAMMDD_RE.test(sub)) continue;
-        // Sanidade: {AAMM} deve ser o prefixo de {AAMMDD}
-        if (!sub.startsWith(entry)) continue;
-        const subPath = join(entryPath, sub);
-        let subIsDir = false;
-        try {
-          subIsDir = statSync(subPath).isDirectory();
-        } catch {
-          continue;
-        }
-        if (!subIsDir) continue;
-        // Nested sempre vence — sobrescreve eventual entrada flat já registrada.
-        found.set(sub, subPath);
+    for (const sub of subEntries) {
+      if (!AAMMDD_RE.test(sub)) continue;
+      // Sanidade: {AAMM} deve ser o prefixo de {AAMMDD}
+      if (!sub.startsWith(entry)) continue;
+      const subPath = join(entryPath, sub);
+      let subIsDir = false;
+      try {
+        subIsDir = statSync(subPath).isDirectory();
+      } catch {
+        continue;
       }
-      continue;
+      if (!subIsDir) continue;
+      found.set(sub, subPath);
     }
-    // Nem AAMMDD nem AAMM — ignora (ruído, ex: .tmp, archive, notes.md).
   }
 
   return found;
