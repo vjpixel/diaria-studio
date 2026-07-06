@@ -63,6 +63,7 @@ export {
   renderCoverage,
   renderBodyParasInner,
   renderWhyBoxInner,
+  renderDestaque,
   renderIntroCallout,
   renderMidCallout,
   renderBoxDivulgacao,

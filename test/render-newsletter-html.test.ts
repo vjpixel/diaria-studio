@@ -13,6 +13,7 @@ import {
   renderHTML,
   renderBodyParasInner,
   renderWhyBoxInner,
+  renderDestaque,
   renderEiaStandalone,
   renderLeaderboardTop1Row,
   extractTemplateBlock,
@@ -2042,6 +2043,35 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
     // o <p> interno do box usa margin:0 (não herda 8px/16px do corpo)
     assert.doesNotMatch(html, /margin:8px 0 0/, "box why não deve emitir a margem de corpo");
     assert.doesNotMatch(html, /margin:16px 0 0/);
+  });
+
+  it("why vazio/whitespace → renderWhyBoxInner retorna string vazia (sem box órfão, #2996)", () => {
+    // Destaques legítimos sem "Por que isso importa" (ex: peça de experiência em
+    // 1ª pessoa) não devem renderizar um box com kicker + <p></p> vazio.
+    assert.equal(renderWhyBoxInner(""), "");
+    assert.equal(renderWhyBoxInner("   "), "");
+    assert.equal(renderWhyBoxInner("\n\n  \n"), "");
+  });
+
+  it("why não-vazio segue renderizando o box normalmente", () => {
+    const html = renderWhyBoxInner("Razão real.");
+    assert.notEqual(html, "");
+    assert.match(html, /Por que isso importa/);
+    assert.match(html, /Razão real\./);
+  });
+
+  it("renderDestaque com why vazio omite o box why inteiro (via filter(Boolean))", () => {
+    const html = renderDestaque({
+      n: 1,
+      category: "LANÇAMENTO",
+      title: "Título",
+      body: "Corpo.",
+      why: "",
+      url: "https://example.com/d1",
+      emoji: "🚀",
+    } as any);
+    assert.doesNotMatch(html, /Por que isso importa/, "sem why, o kicker/box não deve aparecer");
+    assert.doesNotMatch(html, /<p><\/p>/, "sem <p></p> órfão");
   });
 
   it("integração renderHTML: corpo 8px e box why 28px coexistem (sem EIA na fixture)", () => {
