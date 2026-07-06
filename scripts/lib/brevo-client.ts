@@ -337,7 +337,11 @@ export async function brevoGet(
 
 interface BrevoCampaignListRef {
   id?: number;
-  recipients?: { listIds?: number[] };
+  // #2994: campo real da Brevo API é `recipients.lists` (array de list_id),
+  // NÃO `recipients.listIds` — mesmo shape já consumido em
+  // scripts/clarice-engagement-cohorts.ts (`c?.recipients?.lists`). Confirmado
+  // no código existente antes de assumir o nome do campo.
+  recipients?: { lists?: number[] };
 }
 interface BrevoCampaignsResponse {
   campaigns?: BrevoCampaignListRef[];
@@ -370,7 +374,7 @@ export async function fetchQueuedCampaignListIds(apiKey: string): Promise<Set<st
     );
     const campaigns = (body as BrevoCampaignsResponse)?.campaigns ?? [];
     for (const c of campaigns) {
-      for (const listId of c.recipients?.listIds ?? []) {
+      for (const listId of c.recipients?.lists ?? []) {
         out.add(String(listId));
       }
     }
