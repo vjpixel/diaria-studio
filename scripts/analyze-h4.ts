@@ -33,6 +33,7 @@ import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
 import { dateToEdition, type CtrRow, recordToCtrRow } from "./analyze-scorer-impact.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -577,18 +578,6 @@ export function formatH4Trend(trend: H4Trend): string {
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
-
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-      out[key] = val;
-    }
-  }
-  return out;
-}
 
 export function main(): void {
   const args = parseArgs(process.argv.slice(2));

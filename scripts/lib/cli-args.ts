@@ -75,3 +75,23 @@ export function parseArgsSimple(argv: string[]): Record<string, string> {
   }
   return out;
 }
+
+/**
+ * Variante "flag-as-true" — retorna Record<string, string> onde `--key value`
+ * vira values["key"] = valor, e `--key` sem valor seguinte (ou seguido de
+ * outro `--flag`) vira values["key"] = "true" (string, não boolean).
+ *
+ * #2834: era duplicada byte-a-byte em analyze-h4.ts, analyze-scorer-impact.ts,
+ * assemble-scored.ts e split-articles-for-scoring.ts.
+ */
+export function parseArgsWithTrueDefault(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith("--")) {
+      const key = argv[i].slice(2);
+      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+      out[key] = val;
+    }
+  }
+  return out;
+}

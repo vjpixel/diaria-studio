@@ -40,6 +40,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
+import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
 import {
   loadCtrRowsH4,
   loadHistoryEditions,
@@ -459,17 +460,6 @@ export function renderReport(
   return L.join("\n");
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const key = argv[i].slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-      out[key] = val;
-    }
-  }
-  return out;
-}
 
 /**
  * #1619 (self-review): decide se PULA a gravação no history de H4.
