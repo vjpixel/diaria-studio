@@ -410,6 +410,69 @@ describe("renderCouponTabPanel", () => {
       assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem asterisco no legado");
       assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda no legado");
     });
+
+    // #3053: cancelada ANTES do 1º pagamento (trial cancelado) — a previsão
+    // nunca vai se realizar, mostrar um indicador neutro em vez da data com "*".
+    describe("cancelada sem pagamento real (#3053)", () => {
+      it("status='canceled' + payments=[] → mostra '—', NÃO a data prevista com '*'", () => {
+        const h = renderCouponTabPanel(mkUsage({
+          status: "canceled",
+          first_payment_epoch: 1783442446,
+          first_payment_is_forecast: true,
+          payments: [],
+        }));
+        assert.ok(h.includes("—"), "mostra o indicador neutro");
+        assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "NÃO mostra data prevista com asterisco");
+        assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda de previsão (nenhuma linha usa '*')");
+      });
+
+      it("status='canceled' + payments=undefined (KV legado) → mesmo comportamento neutro", () => {
+        const h = renderCouponTabPanel(mkUsage({
+          status: "canceled",
+          first_payment_epoch: 1783442446,
+          first_payment_is_forecast: true,
+          payments: undefined,
+        }));
+        assert.ok(h.includes("—"), "mostra o indicador neutro mesmo sem `payments` explícito");
+        assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "NÃO mostra data prevista com asterisco");
+      });
+
+      it("contraste: status='trialing' nas mesmas condições CONTINUA mostrando a previsão normalmente", () => {
+        const h = renderCouponTabPanel(mkUsage({
+          status: "trialing",
+          first_payment_epoch: 1783442446,
+          first_payment_is_forecast: true,
+          payments: [],
+        }));
+        assert.match(h, /\d{2}\/\d{2}\/\d{4}\*/, "trial ainda ativo deve mostrar a data prevista com asterisco");
+        assert.ok(h.includes("previsão do 1º pagamento"), "legenda deve aparecer para o caso trial");
+      });
+
+      it("status='canceled' MAS payments TEM itens (cancelou depois de já ter pago) → mantém a lista real, sem '—'", () => {
+        const h = renderCouponTabPanel(mkUsage({
+          status: "canceled",
+          first_payment_epoch: 1783442446,
+          first_payment_is_forecast: true,
+          payments: [{ id: "ch_paid_before_cancel", epoch: 1782383062, amount_cents: 44900 }],
+        }));
+        assert.ok(h.includes("1 pagamento"), "lista real de pagamentos continua aparecendo");
+        assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem previsão (já tem pagamento real)");
+      });
+
+      it("status='canceled' + payments=[] MAS SEM first_payment_is_forecast (KV pré-#2749, sem sinal de previsão) → escopo cirúrgico: mantém o fallback antigo pra `created`, sem '*' e sem '—'", () => {
+        // Não há asterisco enganoso pra corrigir aqui — o dado legado já não
+        // promete nada (sem marcador de previsão). O fix é escopado só pro
+        // caso que de fato mostra "previsão*" pra uma assinatura cancelada.
+        const h = renderCouponTabPanel(mkUsage({
+          status: "canceled",
+          payments: [],
+          // first_payment_epoch/first_payment_is_forecast ausentes (undefined)
+        }));
+        assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem asterisco (nenhuma previsão foi feita)");
+        assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda de previsão");
+        assert.ok(!h.includes(">—<"), "não usa o indicador neutro aqui — não há nada enganoso a esconder");
+      });
+    });
   });
 
   describe("generatedAt — última atualização (#2766)", () => {
