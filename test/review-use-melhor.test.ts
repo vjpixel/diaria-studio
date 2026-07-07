@@ -109,6 +109,43 @@ describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
     const { suspicious } = reviewUseMelhor(items);
     assert.equal(suspicious.length, 0, "how-to vence sinal de estudo");
   });
+
+  // #3027 CASO REAL 260707: handit.com.br "IA para Finanças: Como a IA
+  // transforma FP&A e Controladoria" caiu em USE MELHOR. Causa raiz: o bare
+  // "como" em TUTORIAL_SIGNAL_RE (hasTutorialSignal) casava QUALQUER título
+  // contendo "como", inclusive análise de negócio — o que derrubava hasTutorial
+  // para true e mascarava (via `&& !hasTutorial`) o guard isOpinionOrStudy que
+  // corretamente identificaria o título como análise/tendência, não tutorial.
+  it("#3027 CASO REAL: flaga 'Como a IA transforma FP&A e Controladoria' (handit.com.br) como suspeito", () => {
+    const items = [
+      {
+        url: "https://handit.com.br/blog/ia-para-financas-como-a-ia-transforma-fpa-e-controladoria",
+        title: "IA para Finanças: Como a IA transforma FP&A e Controladoria",
+      },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 1, "análise de negócio com 'como' solto deve ser flagada");
+    assert.match(suspicious[0].reasons.join(" "), /ensaio de opinião ou estudo/);
+  });
+
+  it("#3027: 'como' sozinho (sem verbo acionável) NÃO conta mais como sinal de tutorial", () => {
+    // hasTutorialSignal não deve mais retornar true só por causa de "como" —
+    // precisa de "como usar/fazer/criar/..." (verbo acionável).
+    assert.equal(
+      hasTutorialSignal(
+        "https://handit.com.br/blog/x",
+        "Como a IA transforma FP&A e Controladoria",
+      ),
+      false,
+      "'como' sem verbo acionável não deve mais ser sinal de tutorial",
+    );
+  });
+
+  it("#3027: 'como usar/fazer/criar' (com verbo) CONTINUA sendo sinal de tutorial (sem regressão)", () => {
+    assert.equal(hasTutorialSignal("https://x.com/y", "Como usar o ChatGPT no trabalho"), true);
+    assert.equal(hasTutorialSignal("https://x.com/y", "Como criar um agente de IA"), true);
+    assert.equal(hasTutorialSignal("https://x.com/y", "Como fazer um chatbot do zero"), true);
+  });
 });
 
 describe("helpers puros (#1798)", () => {
@@ -305,6 +342,72 @@ describe("reviewUseMelhorComposition (#2339) — guard de composição casual/in
     const result = reviewUseMelhorComposition(items);
     assert.equal(result.casualCount, 1, "sinal casual no título sem anotação = casual");
     assert.equal(result.missingCasual, false);
+  });
+
+  // #3027 item 3: severity endurece o sinal — distingue gap PARCIAL (falta só
+  // uma cota) de gap TOTAL (faltam as duas, caso real 260707: 5/5 dev-avançado).
+  describe("severity (#3027) — endurece missingCasual/missingBeginner", () => {
+    it("CASO REAL 260707: 5/5 itens dev-avançado → severity='critical'", () => {
+      const items = [
+        { url: "https://blog.langchain.dev/x1", title: "Building an End-to-End Sentiment Analysis Pipeline with Scikit-LLM" },
+        { url: "https://blog.langchain.dev/x2", title: "Designing Efficient Verifiers for Legal Agents" },
+        { url: "https://developers.googleblog.com/x3", title: "A Visual Guide to Gemma 4 12B fine-tuning deployment pipeline" },
+        { url: "https://cloud.google.com/blog/x4", title: "Unlocking the Power of the TPU Stack" },
+        { url: "https://blog.langchain.dev/x5", title: "Multi-agent RAG pipeline architecture deep dive" },
+      ];
+      const result = reviewUseMelhorComposition(items);
+      assert.equal(result.advancedCount, 5);
+      assert.equal(result.missingCasual, true);
+      assert.equal(result.missingBeginner, true);
+      assert.equal(result.severity, "critical", "gap total (0 casual E 0 iniciante) deve ser 'critical'");
+    });
+
+    it("gap parcial (só falta 1 cota) → severity='partial'", () => {
+      const items = [
+        {
+          url: "https://canaltech.com.br/ia/como-usar-chatgpt-curriculo",
+          title: "Como usar ChatGPT para criar currículo passo a passo",
+          audience_affinity: { matched: ["howto_br:true"] },
+        },
+        { url: "https://blog.langchain.dev/rag-pipeline", title: "Building RAG Pipeline with LangGraph" },
+      ];
+      const result = reviewUseMelhorComposition(items);
+      assert.equal(result.missingCasual, false);
+      assert.equal(result.missingBeginner, true);
+      assert.equal(result.severity, "partial", "falta só dev-iniciante deve ser 'partial', não 'critical'");
+    });
+
+    it("2 casual + 2 dev-iniciante preenchidos → severity='ok'", () => {
+      const items = [
+        {
+          url: "https://canaltech.com.br/ia/chatgpt-produtividade",
+          title: "ChatGPT para produtividade no trabalho passo a passo",
+          audience_affinity: { matched: ["howto_br:true"] },
+        },
+        {
+          url: "https://exame.com/ia/como-usar-ia-financas",
+          title: "Como usar IA para finanças pessoais guia pratico",
+          audience_affinity: { matched: ["howto_br_source:true"] },
+        },
+        {
+          url: "https://learn.deeplearning.ai/courses/chatgpt-api",
+          title: "ChatGPT API for Developers",
+          audience_affinity: { matched: ["academy:true"] },
+        },
+        {
+          url: "https://huggingface.co/learn/nlp-course",
+          title: "Getting Started with NLP and Transformers",
+          audience_affinity: { matched: ["academy:true"] },
+        },
+      ];
+      const result = reviewUseMelhorComposition(items);
+      assert.equal(result.severity, "ok");
+    });
+
+    it("lista vazia → severity='critical' (0 casual E 0 iniciante, tecnicamente gap total)", () => {
+      const result = reviewUseMelhorComposition([]);
+      assert.equal(result.severity, "critical");
+    });
   });
 });
 

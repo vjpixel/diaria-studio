@@ -130,9 +130,22 @@ export function isNewsletterLike(url: string): boolean {
   return isAggregator(url);
 }
 
-/** Verbo imperativo / padrão how-to no título ou no slug. */
+/**
+ * Verbo imperativo / padrão how-to no título ou no slug.
+ *
+ * #3027: `como` sozinho (sem verbo acionável) foi removido — casava QUALQUER
+ * título contendo a palavra "como" (interrogativo/descritivo em português,
+ * não necessariamente imperativo), incluindo análise de negócio ("Como a IA
+ * transforma FP&A e Controladoria", caso real 260707/#3027 — handit.com.br).
+ * Isso derrubava `hasTutorial` para true e, por causa do `&& !hasTutorial`
+ * em TODOS os branches de `reviewUseMelhor`, mascarava os outros guards
+ * (isNewsletterLike/isCorporateBlog/isOpinionOrStudy) — o item nunca era
+ * flagado. Agora exige "como" + verbo acionável, alinhado com HOW_TO_GUARD_RE
+ * (lib/use-melhor-curation.ts) e RADAR_HOWTO_PROMOTE_RE (mesma família de
+ * verbos, mesma precaução).
+ */
 const TUTORIAL_SIGNAL_RE =
-  /\b(como|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build(?:ing)? (?:your|a|an)|deploy(?:ing) (?:your|a|an|\w+)|creat(?:e|ing) (?:your|a|an|\w+)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
+  /\b(como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)|guia|passo[- ]?a[- ]?passo|tutorial|cookbook|how[- ]?to|walkthrough|hands[- ]?on|step[- ]?by[- ]?step|build(?:ing)? (?:your|a|an)|deploy(?:ing) (?:your|a|an|\w+)|creat(?:e|ing) (?:your|a|an|\w+)|crash course|getting started|comece|aprenda|construa|criando|fa[çc]a)\b/i;
 
 export function hasTutorialSignal(url: string, title: string): boolean {
   const host = hostOf(url);
@@ -189,6 +202,12 @@ export interface ReviewResult {
  * - `advancedCount`  — número de itens classificados como "dev-avancado".
  * - `missingCasual`  — true quando casualCount === 0 (warn: sem tutorial para leigo).
  * - `missingBeginner`— true quando beginnerCount === 0 (warn: sem tutorial para dev iniciante).
+ * - `severity`       — #3027: força do sinal, pra diferenciar gap parcial de gap total:
+ *     - `"ok"`       — casual e dev-iniciante presentes, nada a avisar.
+ *     - `"partial"`  — falta UMA das duas classes (o warn de sempre, #2339).
+ *     - `"critical"` — faltam AMBAS (bucket 100% dev-avançado, ex: caso real 260707
+ *       — 5/5 itens dev-avançado, #3027). Sinal de enviesamento total, não parcial —
+ *       merece destaque mais forte no gate (ainda warn-only, nunca bloqueia).
  * - `breakdown`      — lista de itens com a classificação atribuída (para surfaçar no gate).
  */
 export interface CompositionResult {
@@ -197,6 +216,7 @@ export interface CompositionResult {
   advancedCount: number;
   missingCasual: boolean;
   missingBeginner: boolean;
+  severity: "ok" | "partial" | "critical";
   breakdown: Array<{ url: string; title?: string; class: string }>;
 }
 
@@ -211,6 +231,14 @@ export interface CompositionResult {
  * Analogia com `reviewUseMelhor` (#1798): aquele detecta itens mal-bucketados
  * (newsletter no lugar de tutorial); este detecta desequilíbrio de público-alvo
  * dentro dos tutoriais corretos.
+ *
+ * #3027: `severity` endurece o sinal sem bloquear o pipeline (P2, não P0/P1 —
+ * ver framing da issue). Caso real 260707 teve 5/5 itens dev-avançado (gap
+ * TOTAL, as duas cotas faltando ao mesmo tempo) — distinto de um gap parcial
+ * (ex: 1 casual + 0 dev-iniciante, ainda há alguma diversidade). O gate deve
+ * tratar esses dois casos com urgência diferente; `severity` torna essa
+ * diferença explícita e testável, em vez de depender só de missingCasual/
+ * missingBeginner booleanos lidos separadamente.
  */
 export function reviewUseMelhorComposition(items: UseMelhorItem[]): CompositionResult {
   let casualCount = 0;
@@ -228,12 +256,18 @@ export function reviewUseMelhorComposition(items: UseMelhorItem[]): CompositionR
     breakdown.push({ url, title, class: cls });
   }
 
+  const missingCasual = casualCount === 0;
+  const missingBeginner = beginnerCount === 0;
+  const severity: CompositionResult["severity"] =
+    missingCasual && missingBeginner ? "critical" : missingCasual || missingBeginner ? "partial" : "ok";
+
   return {
     casualCount,
     beginnerCount,
     advancedCount,
-    missingCasual: casualCount === 0,
-    missingBeginner: beginnerCount === 0,
+    missingCasual,
+    missingBeginner,
+    severity,
     breakdown,
   };
 }
@@ -352,19 +386,34 @@ function main(): void {
     );
   }
 
-  // #2339: guard de composição casual/iniciante (warn-only)
-  if (composition.missingCasual || composition.missingBeginner) {
+  // #2339: guard de composição casual/iniciante (warn-only).
+  // #3027: severidade "critical" (gap TOTAL — nenhuma cota preenchida, ex: caso
+  // real 260707 com 5/5 dev-avançado) ganha banner mais visível que "partial"
+  // (falta só uma cota) — ainda warn-only, nunca bloqueia (exit 0 sempre).
+  if (composition.severity !== "ok") {
     const missing: string[] = [];
     if (composition.missingCasual) missing.push("casual (para leigos)");
     if (composition.missingBeginner) missing.push("dev-iniciante");
-    console.error(
-      `\n⚠️ USE MELHOR sem representação de: ${missing.join(", ")} (padrão: 2 casual + 2 dev-iniciante, #2339).`,
-    );
+
+    if (composition.severity === "critical") {
+      console.error(
+        "\n🚨 USE MELHOR: ENVIESAMENTO TOTAL — 0 casual E 0 dev-iniciante (100% dev-avançado, #3027).",
+      );
+      console.error(
+        "   A curadoria automática não encontrou NENHUM item acessível a leigos ou iniciantes.",
+      );
+    } else {
+      console.error(
+        `\n⚠️ USE MELHOR sem representação de: ${missing.join(", ")} (padrão: 2 casual + 2 dev-iniciante, #2339).`,
+      );
+    }
     console.error(
       `   Distribuição atual: ${composition.casualCount} casual / ${composition.beginnerCount} dev-iniciante / ${composition.advancedCount} dev-avançado.`,
     );
     console.error(
-      "   Revise no gate: adicione tutoriais para o público faltante antes de publicar.",
+      composition.severity === "critical"
+        ? "   Revise no gate ANTES de aprovar: adicione ao menos 1 item casual e 1 dev-iniciante (#3027)."
+        : "   Revise no gate: adicione tutoriais para o público faltante antes de publicar.",
     );
   }
   // Warn-only: nunca bloqueia (exit 0).

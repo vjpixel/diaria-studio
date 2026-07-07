@@ -461,8 +461,11 @@ export function classifyAudienceClass(
     return "casual";
   }
 
-  // 4. Casual signal in text
-  if (RE_CASUAL.test(hay)) {
+  // 4. Casual signal in text OR actionable opportunity signal (#3027 — curso
+  //    gratuito/vaga de formação/inscrição é acessível a qualquer leitor, sem
+  //    exigir conhecimento técnico; deve contar como "casual" na composição,
+  //    não cair no default dev-avancado por falta de verbo how-to explícito).
+  if (RE_CASUAL.test(hay) || ACTIONABLE_OPPORTUNITY_RE.test(hay)) {
     return "casual";
   }
 
@@ -891,6 +894,23 @@ const HOW_TO_GUARD_RE =
   /\b(how[- ]?to\b|tutorial\b|guia\b|passo\s+a\s+passo\b|como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar)\b|getting[- ]?started\b|walkthrough\b|hands[- ]?on\b|step[- ]?by[- ]?step\b|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course\b)\b/i;
 
 /**
+ * #3027: "Como X transforma/muda/impacta Y" — descreve uma tendência/mudança de
+ * negócio, não ensina um procedimento. Caso real 260707: "IA para Finanças: Como
+ * a IA transforma FP&A e Controladoria" (handit.com.br) caiu em USE MELHOR — o
+ * "como" leu como sinal how-to em heurísticas mais soltas, mas aqui "como" é
+ * interrogativo-descritivo ("de que forma X afeta Y"), não imperativo ("como
+ * fazer Y"). HOW_TO_GUARD_RE já filtra o caso genuíno (como usar/fazer/criar/...)
+ * antes desta checagem rodar — um tutorial real como "Como usar IA para
+ * transformar sua produtividade" bate em HOW_TO_GUARD_RE ("como usar") e nunca
+ * chega aqui.
+ *
+ * Limite de 60 chars entre "como" e o verbo (não cruza linha, `[^\r\n]`) para
+ * evitar backtracking custoso e falso-positivo cross-line.
+ */
+const BUSINESS_TREND_TITLE_RE =
+  /\bcomo\b[^\r\n]{0,60}?\b(?:transforma(?:m)?|muda(?:m)?|impacta(?:m)?|afeta(?:m)?|revoluciona(?:m)?|redefine(?:m)?|molda(?:m)?|impulsiona(?:m)?|reinventa(?:m)?)\b/i;
+
+/**
  * #2368 item 2: retorna true se o artigo parece ser um ensaio de opinião ou
  * estudo de pesquisa — NÃO um tutorial hands-on acionável.
  *
@@ -899,7 +919,8 @@ const HOW_TO_GUARD_RE =
  *
  * Precedência: sinal how-to explícito (HOW_TO_GUARD_RE) VENCE qualquer sinal de
  * opinião/estudo — um tutorial "Hands-on analysis of X" não é estudo. Depois
- * checamos domínio de opinião → título de opinião → título de estudo.
+ * checamos domínio de opinião → título de tendência de negócio (#3027) → título
+ * de opinião → título de estudo.
  *
  * @param url     URL do artigo.
  * @param title   Título do artigo.
@@ -921,6 +942,13 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
     // URL inválida
   }
   if (OPINION_ESSAY_DOMAINS.has(host)) {
+    return true;
+  }
+
+  // 1.5 (#3027): "Como X transforma/muda/impacta Y" — análise de tendência de
+  // negócio, não tutorial. Roda antes do check genérico de opinião/estudo pois
+  // é um padrão específico de "como" não-imperativo (ver docstring acima).
+  if (BUSINESS_TREND_TITLE_RE.test(hay)) {
     return true;
   }
 
@@ -991,11 +1019,49 @@ const RADAR_HOWTO_PROMOTE_RE =
   /\b(?:como\s+(?:usar|fazer|criar|configurar|implementar|construir|desenvolver|instalar|montar|rodar|executar)\b|how[- ]to\s+(?:build|create|deploy|train|fine[- ]?tune|implement|use|set[\s-]up|configure|run|install|make)\b|passo\s+a\s+passo\b|step[- ]by[- ]step\b|tutorial\s*:|tutorial\s+(?:passo|completo|pr[aá]tico|de\s+\w)|guia\s+(?:pr[áa]tico|completo|passo\s+a\s+passo)\b|(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|[.!?]))|veja\s+o\s+prompt\b|aprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b)/i;
 
 /**
+ * #3027: sinal de oportunidade acionável — curso gratuito, vaga de formação,
+ * guia de inscrição. Distinto de RADAR_HOWTO_PROMOTE_RE (que exige verbo
+ * how-to explícito): aqui o artigo não ENSINA um procedimento, mas aponta uma
+ * ação concreta e de baixo esforço que o leitor pode tomar (se inscrever,
+ * aproveitar uma vaga gratuita) — o mesmo espírito editorial de USE MELHOR
+ * (conteúdo que o leitor USA, não só lê).
+ *
+ * Caso real 260707/#3027: "DF tem mais de mil vagas gratuitas em cursos de
+ * tecnologia" (g1) ficou em RADAR (notícia) quando deveria ser USE MELHOR —
+ * nenhum verbo how-to no título, mas é uma oportunidade concreta pro leitor.
+ *
+ * Escopo deliberadamente apertado (não usar "grátis"/"vagas" soltos, per ask
+ * do editor em #3027 — risco de falso-positivo citado explicitamente):
+ *   - "curso(s)/formação/bootcamp/trilha/workshop/treinamento gratuito(a)(s)"
+ *     — exige o substantivo de curso JUNTO do qualificador gratuito, não só
+ *     "grátis" solto (que apareceria em notícia de produto: "ChatGPT grátis
+ *     ganha novo limite" não é uma oportunidade de curso).
+ *   - "vagas gratuitas/abertas em/para/no/de curso(s)/..." — "vagas" só conta
+ *     quando explicitamente ligado a curso/formação, não vaga de emprego genérica.
+ *   - "como se inscrever" — guia de inscrição explícito.
+ *   - "inscrições abertas/gratuitas para/em/no" — chamada de inscrição explícita.
+ */
+const ACTIONABLE_OPPORTUNITY_RE =
+  /\b(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha|workshop|treinamento)\s+(?:gratuit[oa]s?|de\s+gra[çc]a)\b|\bvagas?\s+(?:gratuitas?|abertas?)\s+(?:em|para|no|de)\s+(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha)\b|\bcomo\s+se\s+inscrever\b|\binscri[çc][õoa]es?\s+(?:abertas?|gratuitas?)\s+(?:para|em|no)\b/i;
+
+/**
+ * #3027: retorna true se título/summary tem sinal de oportunidade acionável
+ * (curso gratuito, vaga de formação, guia de inscrição) — ver
+ * ACTIONABLE_OPPORTUNITY_RE para o detalhe dos padrões e o porquê do escopo
+ * apertado.
+ */
+export function hasActionableOpportunitySignal(title: string, summary = ""): boolean {
+  return ACTIONABLE_OPPORTUNITY_RE.test(title) || ACTIONABLE_OPPORTUNITY_RE.test(summary);
+}
+
+/**
  * #2448: identifica se um artigo do bucket RADAR tem sinal forte de how-to
- * acionável e deve ser promovido ao bucket USE MELHOR.
+ * acionável (ou, desde #3027, de oportunidade concreta pro leitor) e deve
+ * ser promovido ao bucket USE MELHOR.
  *
  * Critérios (todos devem ser atendidos):
- *   1. Título tem sinal RADAR_HOWTO_PROMOTE_RE (how-to explícito).
+ *   1. Título tem sinal RADAR_HOWTO_PROMOTE_RE (how-to explícito) OU sinal
+ *      ACTIONABLE_OPPORTUNITY_RE (curso gratuito/vaga/inscrição, #3027).
  *   2. Título NÃO tem sinal de opinião/estudo (isOpinionOrStudy).
  *   3. Título NÃO é um anúncio de dev/feature ("New X in Y").
  *
@@ -1016,10 +1082,13 @@ export function isRadarHowToEligible(url: string, title: string, summary = ""): 
   const urlSlug = urlSlugText(url);
   if (hasRoundupSignalInUrlOrTitle(url, title)) return false;
 
-  // Sem sinal how-to explícito no título nem no slug PT-BR da URL → não promover.
+  // Sem sinal how-to explícito no título/slug PT-BR da URL, NEM sinal de
+  // oportunidade acionável (#3027) → não promover.
   // #2469 (finding 3): checar também o slug da URL via HOWTO_BR_SIGNAL_RE —
   // conforme prometido no docstring, mas que antes nunca era chamado.
-  if (!RADAR_HOWTO_PROMOTE_RE.test(title) && !HOWTO_BR_SIGNAL_RE.test(urlSlug)) return false;
+  const hasHowTo = RADAR_HOWTO_PROMOTE_RE.test(title) || HOWTO_BR_SIGNAL_RE.test(urlSlug);
+  const hasOpportunity = hasActionableOpportunitySignal(title, summary);
+  if (!hasHowTo && !hasOpportunity) return false;
 
   // Opinião ou estudo → não promover (how-to pode estar no summary, mas o conteúdo não é acionável).
   if (isOpinionOrStudy(url, title, summary)) return false;

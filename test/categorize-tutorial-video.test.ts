@@ -105,6 +105,33 @@ describe("categorize() — bucket tutorial (#59 slice 2)", () => {
     );
   });
 
+  it("#3027 CASO REAL 260707: latent.space entrevista 'X on why Y' → noticias (RADAR), não tutorial", () => {
+    // "Vercel's Andrew Qu on why agents are a new kind of software" caiu em
+    // USE MELHOR na edição 260707 — formato de entrevista ("Pessoa on why X")
+    // não era coberto por ESSAY_ANALYSIS_TITLE_RE antes do #3027 (só cobria
+    // "interview with"/"in conversation with"/"Q&A with"/"explains why").
+    assert.equal(
+      categorize({
+        url: "https://www.latent.space/p/andrew-qu-vercel-agents",
+        title: "Vercel's Andrew Qu on why agents are a new kind of software",
+      }),
+      "noticias",
+    );
+  });
+
+  it("#3027: latent.space tutorial real com 'on why' incidental não é bloqueado se também tiver how-to explícito", () => {
+    // Precedência preservada: se o título também tem sinal how-to explícito,
+    // isNewsNotTutorial roda isTutorialByKeyword ANTES de ESSAY_ANALYSIS_TITLE_RE
+    // (ver ordem em isNewsNotTutorial) — how-to explícito vence.
+    assert.equal(
+      categorize({
+        url: "https://www.latent.space/p/howto-on-why",
+        title: "How to build an agent: on why state matters, step by step",
+      }),
+      "tutorial",
+    );
+  });
+
   it("every.to/chain-of-thought → tutorial", () => {
     assert.equal(
       categorize({ url: "https://every.to/chain-of-thought/my-article" }),
