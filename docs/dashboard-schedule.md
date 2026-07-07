@@ -29,6 +29,22 @@ escreve o CSV com um único `writeFileSync` no final, então uma falha no meio
 não corrompe o arquivo existente — só o deixa tão fresco quanto estava antes.
 O wrapper loga o exit code mas não aborta o push por causa dele.
 
+**#3060: `--full` é sempre manual, nunca agendado.** A task diária SEMPRE roda
+`build-link-ctr.ts` em modo incremental (sem `--full`) — de propósito, reprocessar
+os 200+ posts cacheados toda noite seria caro/lento à toa. Isso significa que
+**qualquer mudança futura na lógica de extração de `build-link-ctr.ts`** (ex: como
+o #3043 corrigiu a extração de `section_title`) só se aplica a posts NOVOS
+processados depois do deploy — os já cacheados ficam com o dado extraído pela
+lógica ANTIGA até alguém rodar o backfill manual:
+```
+npx tsx scripts/build-link-ctr.ts --full
+npx tsx scripts/build-diaria-dashboard-data.ts --push --kv-namespace-id 4610c3016818483cab141f459a963de3
+```
+Sem esse passo manual pós-deploy, o fix "existe no código" mas não se reflete nos
+dados históricos — foi exatamente o que aconteceu no #3037/#3043 (backfill de
+0→60 rows Use Melhor feito manualmente na noite do deploy). Registrar aqui pra
+não repetir o mesmo esquecimento na próxima correção de extração.
+
 O namespace ID do KV (`4610c3016818483cab141f459a963de3`) é o de produção do
 Worker `diaria-dashboard`; está embutido no `.cmd` para não precisar de env var
 adicional (o mesmo valor que o operator usa com `--kv-namespace-id`).
