@@ -207,6 +207,17 @@ export const FOOTER_DOMAINS = [
   "cursos.diaria.workers.dev",
   "livros.diaria.workers.dev",
   "poll.diaria.workers.dev",
+  // #3028: links de afiliado da Amazon nos boxes de divulgação — box Alexa
+  // (link.amazon, gerado pelo SiteStripe) + box de livros (amzn.to shortener).
+  // Bloqueiam crawler por design (anti-bot) mas são promo legítima aprovada
+  // pelo editor, nunca artigos pesquisados — não devem flagar urls_accessible.
+  // NÃO incluir `amazon.com.br` (substring ampla): uma página de produto Amazon
+  // pode ser link oficial legítimo de um LANÇAMENTO (Kindle/Echo/Fire); allowlistá-la
+  // suprimiria esse artigo da contagem e PULARIA a verificação de acessibilidade
+  // dele no gate — falha silenciosa. `amzn.to`/`link.amazon` são específicos de
+  // afiliado, praticamente nunca usados como link de lançamento.
+  "link.amazon",
+  "amzn.to",
   // #2695 self-review: `as const` — agora que o array é exportado e
   // compartilhado por referência entre 3 importers (era privado a este
   // arquivo antes), congela o tipo em readonly pra um `.push`/`.splice`
