@@ -180,6 +180,33 @@ describe("buildOvernightSummary (interno)", () => {
   });
 });
 
+// #3072 (review do #3071): EPIC deliberadamente deferido (status
+// "elegivel_especial") nunca tem timeline preenchido, mas não é trabalho
+// pendente real — sem o fix, o dashboard (fonte autoritativa pra decisões,
+// ver CLAUDE.md) contava a rodada como tendo unidade "in_progress" pra
+// sempre, contradizendo a statusLine (que já trata esse status como
+// terminal desde #3071).
+describe("bucketOvernightIssue — #3072: EPIC deferido não fica preso em 'in_progress'", () => {
+  test("status 'elegivel_especial' sem timeline → bucket 'pulada', não 'in_progress'", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(bucketOvernightIssue({ status: "elegivel_especial" }), "pulada");
+    assert.equal(bucketOvernightIssue({ status: "elegivel_especial", timeline: {} }), "pulada");
+  });
+
+  test("status 'elegivel' comum (não-EPIC) sem timeline → continua 'in_progress' (comportamento pré-existente preservado)", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(bucketOvernightIssue({ status: "elegivel" }), "in_progress");
+  });
+
+  test("timeline com merged tem precedência sobre status, como antes", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(
+      bucketOvernightIssue({ status: "elegivel_especial", timeline: { merged: "2026-07-07T10:00:00Z" } }),
+      "merged",
+    );
+  });
+});
+
 // ─── Shared fixture factory (module scope, used by multiple describe blocks) ──
 
 type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;

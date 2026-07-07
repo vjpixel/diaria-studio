@@ -155,12 +155,35 @@ const BAR_WIDTH = 12;
  * mergear"). Não é trabalho pendente real, então conta como terminal só
  * para fins de contagem/exibição da barra — fora do IssueStatus canônico
  * de propósito (não é um status que a fila principal deveria atribuir).
+ *
+ * Documentado em `.claude/skills/diaria-overnight/SKILL.md` (tabela de
+ * status) como a fonte canônica pro escritor (o coordenador LLM) — exportado
+ * daqui pra evitar reimplementar/duplicar o literal em cada consumidor de
+ * plan.json (`render-overnight-timeline.ts`, `build-diaria-dashboard-data.ts`
+ * também tratam esse status, #3072 review).
  */
-const EPIC_DEFERRED_STATUS = "elegivel_especial";
+export const EPIC_DEFERRED_STATUS = "elegivel_especial";
 
 /** Terminal para fins de barra: status canônico terminal OU EPIC deferido (#3071). */
-function isTerminalForBar(status: string): boolean {
+export function isTerminalForBar(status: string): boolean {
   return TERMINAL_STATUSES.has(status as IssueStatus) || status === EPIC_DEFERRED_STATUS;
+}
+
+/**
+ * Verifica se a ÚLTIMA ocorrência de "(depth N)" em `value` é exatamente
+ * pro `depth` informado — não a primeira, não qualquer ocorrência (revisão
+ * do #3072 ao próprio #3071). Um `includes(\`(depth ${depth})\`)` puro dá
+ * falso positivo se o motivo livre do "skipped:" citar o depth de OUTRA
+ * rodada entre parênteses antes da tag real (ex: "skipped: ainda usando o
+ * resultado de (depth 1) revisado, sem novidade (depth 2)" reportaria depth
+ * 1 como concluído). Mesmo espírito do `startsWith` do branch "done": a tag
+ * canônica é ANCORADA — aqui, ancorada como a ÚLTIMA tag da string, já que
+ * o texto explicativo observado na prática é sempre ANEXADO depois dela.
+ */
+function lastDepthTagMatches(value: string, depth: number): boolean {
+  const matches = [...value.matchAll(/\(depth (\d+)\)/g)];
+  const last = matches.at(-1);
+  return last !== undefined && Number(last[1]) === depth;
 }
 
 /** Stage statuses considered terminal for edition progress (#2250). */
@@ -331,7 +354,7 @@ export function cycleLabel(plan: Plan | null | undefined): string {
     (depth === 0 && reviewValue === "done") // legado: somente depth 0
     || (typeof reviewValue === "string" && (
       reviewValue.startsWith(`done (depth ${depth})`)
-      || (reviewValue.startsWith(`skipped:`) && reviewValue.includes(`(depth ${depth})`))
+      || (reviewValue.startsWith(`skipped:`) && lastDepthTagMatches(reviewValue, depth))
     ));
 
   // Verifica se TODAS as issues relevantes estão em status terminal.

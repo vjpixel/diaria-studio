@@ -31,6 +31,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { fmtTimeBrt } from "./lib/format.ts";
+import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
@@ -114,12 +115,32 @@ function getEnd(tl: IssueTimeline | undefined): string | undefined {
   return tl?.merged ?? tl?.draft ?? tl?.pulada;
 }
 
-/** Label de fim: "mergeado", "draft", "pulada" ou "em andamento". */
-function getEndLabel(tl: IssueTimeline | undefined): string {
+/**
+ * Label de fim: "mergeado", "draft", "pulada", "concluída (fora do timeline)"
+ * ou "em andamento".
+ *
+ * `status` (#3072, review do #3071): issues com status `EPIC_DEFERRED_STATUS`
+ * ("elegivel_especial" — EPIC deliberadamente deferido até a issue-filha
+ * mergear, ver `overnight-statusline.ts`) nunca chegam a ser despachadas
+ * (sem `dispatch`, `timeline` tipicamente `{}`) — sem esse check, a row
+ * ficava presa em "em andamento" pra sempre, contradizendo a statusLine
+ * (que já trata esse status como terminal e mostra "concluída" a 100%)
+ * dentro do MESMO relatório da Fase 2.
+ *
+ * Checagem restrita a ESSE status específico (não ao `isTerminalForBar`
+ * genérico, que também casa `mergeada`/`draft-ci-vermelho`/`pulada`): pra
+ * QUALQUER outro status terminal, `timeline` vazio indica uma rodada
+ * interrompida/legada de verdade (não um EPIC deferido por design) — tratar
+ * como "concluída" nesse caso mascararia um dado real de rodada incompleta.
+ * `!tl?.dispatch` é defesa extra: se um EPIC deferido chegou a ser
+ * despachado por algum motivo, o timeline real tem precedência.
+ */
+function getEndLabel(tl: IssueTimeline | undefined, status?: string): string {
+  if (tl?.merged) return "mergeado";
+  if (tl?.draft) return "draft";
+  if (tl?.pulada) return "pulada";
+  if (!tl?.dispatch && status === EPIC_DEFERRED_STATUS) return "concluída (fora do timeline)";
   if (!tl) return "—";
-  if (tl.merged) return "mergeado";
-  if (tl.draft) return "draft";
-  if (tl.pulada) return "pulada";
   return "em andamento";
 }
 
@@ -169,12 +190,13 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
     unidade: string,
     tl: IssueTimeline | undefined,
     fixIteracoes: number,
+    status?: string,
   ): TimelineRow {
     const startStr = getStart(tl);
     const endStr = getEnd(tl);
     const start = parseISO(startStr);
     const end = parseISO(endStr);
-    const endLabel = getEndLabel(tl);
+    const endLabel = getEndLabel(tl, status);
 
     const durationMs =
       start && end ? Math.max(0, end.getTime() - start.getTime()) : null;
@@ -182,7 +204,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
     return {
       unidade,
       inicio: fmtHHMM(start),
-      fim: end ? fmtHHMM(end) : endLabel === "em andamento" ? "em andamento" : "—",
+      fim: end ? fmtHHMM(end) : endLabel === "—" ? "—" : endLabel,
       duracao: fmtDuration(start, end),
       durationMs,
       fixIteracoes,
@@ -200,7 +222,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
 
     if (!batch || batch === "null") {
       // Solo: emitir imediatamente
-      rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline)));
+      rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline), issue.status));
     } else if (!emittedBatches.has(batch)) {
       // Primeiro aparecimento do lote: emitir a row do lote aqui
       emittedBatches.add(batch);
@@ -218,7 +240,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
         0,
       );
 
-      rows.push(makeRow(label, representative?.timeline, maxFix));
+      rows.push(makeRow(label, representative?.timeline, maxFix, representative?.status));
     }
     // Se batch já foi emitido: ignorar (é uma issue subsequente do mesmo lote)
   }

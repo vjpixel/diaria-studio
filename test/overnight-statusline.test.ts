@@ -747,11 +747,69 @@ describe("cycleLabel — #3071: review com texto explicativo anexado (não é ma
     assert.equal(cycleLabel(plan), "mini-rodada 1");
   });
 
-  it("depth 0, review legado 'done - texto extra' (sem '(depth N)') → segue estrito, NÃO tolera sufixo (só o formato COM depth tolera)", () => {
-    // Formato legado (sem depth) mantém igualdade exata de propósito — só o
-    // formato COM depth ("done (depth N)") ganhou tolerância a sufixo (#3071).
-    const plan = makeDepth0Plan(["mergeada", "pulada"], "done - algum texto extra", 0);
+  it("depth 0, review legado 'done' + sufixo (ex: 'done pronto') → NÃO reconhece — legado exige igualdade EXATA, diferente do formato com depth que agora tolera sufixo (#3071)", () => {
+    // Distingue de fato o comportamento (#3072 review — o teste anterior aqui
+    // usava um input que falhava nos DOIS branches pelo mesmo motivo, sem
+    // provar que o branch legado é estrito por design). "done pronto" é
+    // estruturalmente análogo ao caso que o branch com depth agora tolera
+    // ("done (depth N) - explicação"), mas pro formato legado (sem depth)
+    // a igualdade EXATA `reviewValue === "done"` continua sendo exigida —
+    // só "done" bare aciona o branch legado (ver teste "review:'done' (sem
+    // depth)" mais abaixo).
+    const plan = makeDepth0Plan(["mergeada", "pulada"], "done pronto", 0);
     assert.equal(cycleLabel(plan), "review 1.5");
+  });
+});
+
+// #3072 (review do #3071): `includes` puro no branch "skipped:" era vulnerável
+// a falso positivo quando o motivo livre menciona o depth de OUTRA rodada
+// entre parênteses ANTES da tag real — corrigido pra casar pela ÚLTIMA
+// ocorrência de "(depth N)" na string (`lastDepthTagMatches`), não qualquer uma.
+// Lembrete de semântica (confirmado pelos testes pré-existentes "review skipped
+// → 'fila principal'"/"done (depth 1) → NÃO é review 1.5b"): reviewDone=true
+// (review já rodou/foi pulado pra este depth) NUNCA retorna "review 1.5x" —
+// cai no fallback de fila ativa ("mini-rodada N" / "fila principal").
+// "review 1.5x" só aparece quando reviewDone=false (review AINDA pendente).
+describe("cycleLabel — #3072: 'skipped:' casa pela ÚLTIMA tag de depth, não qualquer ocorrência", () => {
+  it("motivo livre menciona '(depth 1)' de outra rodada ANTES da tag real '(depth 2)' → depth 1 NÃO é dado como concluído (continua sinalizando review 1.5b pendente)", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada", "pulada"],
+      "skipped: revisitando o achado registrado em (depth 1) durante o triage, decidiu-se nao reabrir (depth 2)",
+    );
+    // A tag real (a ÚLTIMA da string) é "(depth 2)" — não "(depth 1)", mesmo
+    // aparecendo mais cedo no texto. Pro depth 1 (o depth desta rodada),
+    // reviewDone deve ser false → allTerminal && !reviewDone → "review 1.5b"
+    // (sinaliza CORRETAMENTE que o review consolidado do depth 1 ainda
+    // precisa rodar). Com o bug antigo (`includes` sem âncora), a menção
+    // incidental a "(depth 1)" no motivo faria reviewDone=true incorretamente,
+    // mascarando essa pendência atrás de "mini-rodada 1".
+    assert.equal(cycleLabel(plan), "review 1.5b");
+  });
+
+  it("última tag da string é a real: motivo menciona '(depth 0)' antes, tag final '(depth 1)' → reconhece review do depth 1 como concluído", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada", "pulada"],
+      "skipped: mesma razao do (depth 0) anterior, sem novidade (depth 1)",
+    );
+    // Última tag = "(depth 1)" = o depth desta rodada → reviewDone=true →
+    // cai no fallback de fila ativa (não "review 1.5b" — review já concluído).
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("caso real de produção (padrão de data/overnight/260623): motivo simples, 1 única tag de depth → continua reconhecendo review concluído", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada"],
+      "skipped: diff trivial mini-rodada 1 (<50 linhas, 2 finding-fixes verdes) (depth 1)",
+    );
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
   });
 });
 
