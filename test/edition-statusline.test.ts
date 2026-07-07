@@ -944,6 +944,59 @@ describe("readMostRecentEditionDoc — lê última edição incluindo encerrada 
   });
 });
 
+// ─── #3066: scanEditionDocs (path PRIMÁRIO) também precisa filtrar isValidEditionDir ──
+//
+// #3054 corrigiu findMostRecentEditionId (usado só como FALLBACK, linha
+// `mostRecentDoc?.edition ?? findMostRecentEditionId(cwd)`), mas o path PRIMÁRIO
+// — scanEditionDocs, consumido por readCurrentEditionDoc E readMostRecentEditionDoc —
+// continuava ordenando `[...editionDirsByAammdd.keys()].sort().reverse()` sem
+// nenhum filtro. Um sentinel calendário-inválido como "260999" (dia 99) COM
+// stage-status.json (mesmo all-pending) "vencia" a ordenação lexicográfica
+// (`"260999" > "260707"`) e era escolhido por readMostRecentEditionDoc, que —
+// diferente de readCurrentEditionDoc — não filtra rows all-pending.
+describe("scanEditionDocs — filtro isValidEditionDir no path primário (#3066)", () => {
+  it("readMostRecentEditionDoc NUNCA escolhe sentinel calendário-inválido (260999) com stage-status.json all-pending", () => {
+    const root = join(tmpdir(), `scan-sentinel-3066-${Date.now()}`);
+    // Edição real, em curso (layout nested #2463/#3025): data/editions/2607/260707/
+    const realEditionDir = join(root, "data", "editions", "2607", "260707");
+    writeStageStatus(realEditionDir, makeDoc("260707", ["done", "running", "pending", "pending", "pending", "pending", "pending"]));
+    // Sentinel calendário-inválido (dia 99) com stage-status.json all-pending — reproduz o
+    // cenário exato da issue (ex: `update-stage-status.ts --init 260999` rodado sem querer).
+    const sentinelDir = join(root, "data", "editions", "2609", "260999");
+    writeStageStatus(sentinelDir, makeDoc("260999", ["pending", "pending", "pending", "pending", "pending", "pending", "pending"]));
+    try {
+      const mostRecentDoc = readMostRecentEditionDoc(root);
+      assert.ok(mostRecentDoc !== null, "deve encontrar a edição real");
+      assert.equal(
+        mostRecentDoc!.edition,
+        "260707",
+        `sentinel 260999 nunca deve ser escolhido por readMostRecentEditionDoc, got ${mostRecentDoc!.edition}`,
+      );
+
+      const currentDoc = readCurrentEditionDoc(root, FIXTURE_NOW);
+      assert.ok(currentDoc !== null, "deve encontrar a edição real em curso");
+      assert.equal(
+        currentDoc!.edition,
+        "260707",
+        `sentinel 260999 nunca deve ser escolhido por readCurrentEditionDoc, got ${currentDoc!.edition}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("readMostRecentEditionDoc ignora sentinel mesmo quando é a ÚNICA edição no disco", () => {
+    const root = join(tmpdir(), `scan-sentinel-only-3066-${Date.now()}`);
+    const sentinelDir = join(root, "data", "editions", "260999");
+    writeStageStatus(sentinelDir, makeDoc("260999", ["pending", "pending", "pending", "pending", "pending", "pending", "pending"]));
+    try {
+      assert.equal(readMostRecentEditionDoc(root), null, "sentinel sozinho não deve ser retornado como edição mais recente");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── #2618: integração de disco — wiring completo do CLI (readers → renderStatusline) ─
 // O bug original (#2618) está no CLI: edição encerrada em disco deve fazer a barra sumir.
 // Este teste exercita a CADEIA real via I/O (não só as funções puras isoladas), espelhando

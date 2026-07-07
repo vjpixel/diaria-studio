@@ -35,6 +35,19 @@ export function isValidEditionDir(name: string): boolean {
 }
 
 /**
+ * Filtra e ordena (mais nova primeiro) as chaves AAMMDD de um mapa já
+ * enumerado (`enumerateEditionDirs`). Extraído pra ser reusado tanto por
+ * `listEditions` (que enumera pra si própria) quanto por
+ * `findLatestEditionEntry` (que reusa um mapa já enumerado pelo caller —
+ * #3067, evita 2 varreduras de disco pra 1 chamada).
+ */
+function sortedValidAammdd(dirs: Map<string, string>): string[] {
+  return [...dirs.keys()]
+    .filter((name) => isValidEditionDir(name))
+    .sort((a, b) => b.localeCompare(a));
+}
+
+/**
  * Lista todas as pastas de edição válidas (AAMMDD), em ordem decrescente
  * (mais nova primeiro). Aceita um diretório alternativo para testes.
  *
@@ -43,9 +56,33 @@ export function isValidEditionDir(name: string): boolean {
  * edições criadas no layout nested pós-#3023.
  */
 export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
-  return [...enumerateEditionDirs(editionsDir).keys()]
-    .filter((name) => isValidEditionDir(name))
-    .sort((a, b) => b.localeCompare(a));
+  return sortedValidAammdd(enumerateEditionDirs(editionsDir));
+}
+
+/**
+ * Pura/testável (#3067): dado um mapa AAMMDD→dir JÁ enumerado, escolhe a
+ * entrada mais recente calendário-válida. Separada de `findLatestEditionEntry`
+ * só pra permitir teste de regressão do guard defensivo abaixo sem precisar
+ * fabricar uma condição de corrida real no filesystem (impraticável de forma
+ * determinística) — um teste pode passar um mapa "dirs-like" mínimo em que
+ * `get(aammdd)` retorna `undefined` mesmo com `aammdd` presente em `keys()`,
+ * exercitando o branch de guarda de verdade.
+ */
+export function pickLatestEditionEntry(
+  dirs: Pick<Map<string, string>, "keys" | "get">,
+): { aammdd: string; dir: string } | null {
+  const aammdd = sortedValidAammdd(dirs as Map<string, string>)[0];
+  if (!aammdd) return null;
+  const dir = dirs.get(aammdd);
+  // Defensivo (#3067): num Map real, uma chave vinda de dirs.keys() sempre
+  // resolve via dirs.get() — este branch é inalcançável na prática desde que
+  // findLatestEditionEntry enumere o disco 1x só e reuse o MESMO mapa (antes,
+  // uma 2ª varredura entre a listagem e a resolução do path podia, em teoria,
+  // encontrar o dir removido no meio do caminho). Guard explícito em vez de
+  // non-null assertion (`!`) — mesmo padrão de `check-highlight-themes.ts`'s
+  // `readPastApprovedSecondary` (PR #3061).
+  if (!dir) return null;
+  return { aammdd, dir };
 }
 
 /**
@@ -54,19 +91,20 @@ export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
  * precisam do diretório, não só do ID — ex: `findLatestEditionDir` em
  * `benchmark-e2e.ts`, que delega pra cá, #3054).
  *
- * #3054: reusa `listEditions` (já filtrado por `isValidEditionDir`) — nunca
- * escolhe sentinels calendário-inválidos como `260999` (dia 99), que batem no
- * regex estrutural `/^\d{6}$/` de `enumerateEditionDirs` mas ordenariam
+ * #3054: filtra por `isValidEditionDir` antes de ordenar — nunca escolhe
+ * sentinels calendário-inválidos como `260999` (dia 99), que batem no regex
+ * estrutural `/^\d{6}$/` de `enumerateEditionDirs` mas ordenariam
  * lexicograficamente acima de qualquer data real de 2026 (`260999` > `260707`)
  * se não filtrados antes de ordenar.
+ *
+ * #3067: enumera `editionsDir` uma ÚNICA vez e reusa o mapa tanto pra achar o
+ * AAMMDD mais recente quanto pra resolver seu path (antes fazia 2 varreduras
+ * de disco por chamada, e resolvia o path com um `!` sem guard).
  */
 export function findLatestEditionEntry(
   editionsDir: string = EDITIONS_DIR,
 ): { aammdd: string; dir: string } | null {
-  const aammdd = listEditions(editionsDir)[0];
-  if (!aammdd) return null;
-  const dir = enumerateEditionDirs(editionsDir).get(aammdd)!;
-  return { aammdd, dir };
+  return pickLatestEditionEntry(enumerateEditionDirs(editionsDir));
 }
 
 /**
