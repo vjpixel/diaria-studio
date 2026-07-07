@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
   readJsonOrNull,
 } from "../scripts/load-carry-over.ts";
 import { getPreviousEditionDate, listEditions } from "../scripts/lib/edition-utils.ts";
+import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("collectApprovedUrls", () => {
   it("coleta URLs de highlights + buckets, suportando flat e nested", () => {
@@ -457,6 +458,74 @@ describe("readJsonOrNull (#867 — defensive JSON read)", () => {
       assert.equal(r, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("main() CLI (#3030) — edição anterior no layout NESTED", () => {
+  it("encontra + carrega _internal/01-categorized.json da edição anterior quando ela mora em data/editions/{AAMM}/{AAMMDD}/", () => {
+    // Antes do fix: getPreviousEditionDate (#3025) já retornava "260706"
+    // corretamente, mas main() montava prevDir = resolve(editionsDir, prev)
+    // — path FLAT à força (data/editions/260706/), que não existe pós-#3024.
+    // Resultado: categorizedPath não existe, readJsonOrNull retorna null,
+    // e o script saía cedo com reason "prev_categorized_missing" — carry-over
+    // silenciosamente vazio mesmo com `prev` correto.
+    const root = mkdtempSync(join(tmpdir(), "carry-e2e-nested-"));
+    try {
+      const editionsDir = join(root, "editions");
+      // Edição anterior 260706, layout NESTED (data/editions/2607/260706/).
+      const prevInternalDir = join(editionsDir, "2607", "260706", "_internal");
+      mkdirSync(prevInternalDir, { recursive: true });
+      writeFileSync(
+        join(prevInternalDir, "01-categorized.json"),
+        JSON.stringify({
+          radar: [
+            {
+              url: "https://example.com/carry-me",
+              score: 80,
+              published_at: "2026-07-06",
+            },
+          ],
+        }),
+      );
+      // Sem 01-approved.json — approvedUrls fica vazio, artigo não é filtrado.
+
+      const poolPath = join(root, "pool.json");
+      writeFileSync(poolPath, "[]");
+
+      const currentEditionDir = join(editionsDir, "260707"); // não precisa existir no disco
+
+      const r = spawnNpx(
+        [
+          "tsx",
+          "scripts/load-carry-over.ts",
+          "--edition-dir",
+          currentEditionDir,
+          "--pool",
+          poolPath,
+          "--window-start",
+          "2026-07-01",
+          "--window-end",
+          "2026-07-07",
+          "--editions-dir",
+          editionsDir,
+        ],
+        { encoding: "utf8" },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(String(r.stdout).trim().split("\n").pop());
+      assert.equal(out.prev, "260706", "deve achar a edição anterior nested");
+      assert.equal(out.candidates_total, 1);
+      assert.equal(out.kept, 1, "artigo da edição anterior nested deve ser carregado como carry-over");
+      assert.equal(out.total_pool_size, 1);
+
+      const pool = JSON.parse(readFileSync(poolPath, "utf8"));
+      assert.equal(pool.length, 1);
+      assert.equal(pool[0].url, "https://example.com/carry-me");
+      assert.equal(pool[0].carry_over_from, "260706");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

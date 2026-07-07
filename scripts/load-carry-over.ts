@@ -34,6 +34,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPreviousEditionDate } from "./lib/edition-utils.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3030: layout flat+nested
 import { parseArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -296,7 +297,11 @@ function main(): void {
     process.exit(0);
   }
 
-  const prevDir = resolve(editionsDir, prev);
+  // #3030: getPreviousEditionDate já enumera flat+nested (#3025) e confirma
+  // que `prev` existe no disco — mas resolve(editionsDir, prev) monta o path
+  // FLAT à força, perdendo edições no layout nested (data/editions/{AAMM}/{AAMMDD}/)
+  // pós-#3023. resolveEditionDir resolve o path REAL (flat ou nested).
+  const prevDir = resolveEditionDir(editionsDir, prev);
   const categorizedPath = resolve(prevDir, "_internal", "01-categorized.json");
   const approvedPath = resolve(prevDir, "_internal", "01-approved.json");
 
