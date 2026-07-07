@@ -23,8 +23,12 @@
  * Exit codes:
  *   0 — resolvido com sucesso (ambos placeholders substituídos, ou já
  *       ausentes no texto original — backward-compat com schema pré-#3052)
- *   1 — erro de uso/estrutura: --edition-dir ausente, 03-social.md ausente,
- *       seção LinkedIn ausente, ou seção `## post_pixel` ausente
+ *   1 — 03-social.md ausente, seção LinkedIn ausente, ou seção `## post_pixel`
+ *       ausente: stdout imprime o literal `(nao encontrado)` (mesma semântica
+ *       do `node -e` que este script substitui) para o gate do Stage 6 exibir
+ *       no lembrete via `POST_PIXEL_TEXT="$(...)"`. `--edition-dir` ausente é
+ *       o único caso de exit 1 sem esse fallback em stdout (erro de uso puro,
+ *       antes de sequer tentar ler a edição).
  *   2 — outros_count não pôde ser resolvido (nenhum approved JSON legível).
  *       `{outros_count}` permanece literal no stdout — NÃO bloqueia o Stage 6
  *       (post_pixel é lembrete não-bloqueante, #2153), mas o caller deve
@@ -84,9 +88,14 @@ function main(): void {
   }
   const editionDir = resolve(ROOT, editionDirRaw);
 
+  // #3052 self-review: exit 1 abaixo ainda imprime '(nao encontrado)' em
+  // stdout — mesma semântica do node -e original que este script substitui.
+  // Sem isso, `POST_PIXEL_TEXT="$(...)"` capturaria string vazia em vez do
+  // fallback literal que o gate do Stage 6 espera exibir (orchestrator-stage-6.md).
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     console.error(`Erro: 03-social.md não encontrado em ${editionDir}. Rode a Etapa 2 primeiro.`);
+    console.log("(nao encontrado)");
     process.exit(1);
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
@@ -97,6 +106,7 @@ function main(): void {
       `Erro: seção '## post_pixel' não encontrada em 03-social.md (${socialMdPath}). ` +
         "Schema pré-#1690 ou seção LinkedIn ausente.",
     );
+    console.log("(nao encontrado)");
     process.exit(1);
   }
 

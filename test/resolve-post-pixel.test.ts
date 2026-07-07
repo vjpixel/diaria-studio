@@ -195,20 +195,24 @@ describe("#3052 CLI resolve-post-pixel.ts", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 1: 03-social.md ausente", () => {
-    const { exitCode, stderr, tmp } = runCli([]);
+  it("exit 1: 03-social.md ausente — stdout ainda traz '(nao encontrado)' pro gate do Stage 6", () => {
+    const { exitCode, stdout, stderr, tmp } = runCli([]);
     assert.equal(exitCode, 1);
     assert.match(stderr, /03-social\.md não encontrado/);
+    // #3052 self-review: sem isso, POST_PIXEL_TEXT="$(...)" capturaria "" em vez
+    // do fallback literal que orchestrator-stage-6.md documenta exibir no lembrete.
+    assert.equal(stdout.trim(), "(nao encontrado)");
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 1: seção ## post_pixel ausente em 03-social.md", () => {
-    const { exitCode, stderr, tmp } = runCli([], {
+  it("exit 1: seção ## post_pixel ausente em 03-social.md — stdout ainda traz '(nao encontrado)'", () => {
+    const { exitCode, stdout, stderr, tmp } = runCli([], {
       "03-social.md": "# LinkedIn\n\n## d1\nSó main, sem post_pixel.\n",
       "_internal/01-approved-capped.json": APPROVED_CAPPED,
     });
     assert.equal(exitCode, 1);
     assert.match(stderr, /post_pixel.*não encontrada/);
+    assert.equal(stdout.trim(), "(nao encontrado)");
     rmSync(tmp, { recursive: true, force: true });
   });
 
