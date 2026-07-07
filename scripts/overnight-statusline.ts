@@ -18,6 +18,10 @@
  *      Um `plan.json` de develop ANTIGO (sessão abandonada, dias atrás) não
  *      sequestra a barra — ver `isStaleDevelopPlan` (reusa o padrão de guard
  *      de zumbi introduzido no #2800: fail-open, threshold de tempo).
+ *      Um `plan.json` de OUTRA MÁQUINA (sync via OneDrive junction `data/`)
+ *      também não sequestra a barra, mesmo fresco/em progresso genuíno — ver
+ *      `isForeignDevelopPlan` (#3033: fail-open, compara `plan.machine_id`
+ *      contra `getMachineId()` desta máquina).
  *
  *   3. Rodada /diaria-overnight (FALLBACK quando não há edição nem develop ativos):
  *      "{branch}  [████████░░░░] 67%  (4/6)"
@@ -68,6 +72,7 @@ import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
 import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
 import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import { getMachineId } from "./lib/machine-id.ts"; // #3033: filtra plan.json de develop de OUTRA máquina
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
 
@@ -110,6 +115,15 @@ export interface Plan {
    * Legado: "done" (sem depth) → tratar como concluído no nível corrente.
    */
   review?: string | null;
+  /**
+   * Hostname da máquina que gravou este `plan.json` (#3033 — `getMachineId()`
+   * de `scripts/lib/machine-id.ts`). Só relevante pra `data/develop/{AAMMDD}/`,
+   * que sincroniza entre máquinas via OneDrive; `readTodayDevelopPlan` usa este
+   * campo (`isForeignDevelopPlan`) pra ignorar sessões de OUTRA máquina.
+   * Ausente em plan.json legado (pré-#3033) ou de overnight (não usado lá) —
+   * tratado como "identidade desconhecida", nunca filtrado (fail-open).
+   */
+  machine_id?: string;
   [key: string]: unknown;
 }
 
@@ -462,6 +476,38 @@ export function isStaleDevelopPlan(
 }
 
 /**
+ * Guard cross-machine (#3033): um `plan.json` de `/diaria-develop` gravado por
+ * OUTRA máquina (sincronizado via OneDrive junction `data/`, ver CLAUDE.md §
+ * Setup) não deve sequestrar a barra desta máquina — mesmo quando está fresco
+ * e em progresso genuíno, só que em OUTRA sessão. Complementar a
+ * `isStaleDevelopPlan` (idade) — este guard é sobre IDENTIDADE, não idade: um
+ * plan.json de outra máquina pode estar sendo reescrito ATIVAMENTE (mtime
+ * recente a cada iteração da sessão remota) e ainda assim ser irrelevante
+ * pra esta máquina.
+ *
+ * Contrato:
+ *   - `plan.machine_id` ausente/vazio → identidade desconhecida (plan.json
+ *     legado, gravado antes do #3033, ou hostname ilegível na origem) →
+ *     fail-open, NUNCA filtra. Evita esconder uma sessão local legítima só
+ *     porque foi criada antes do rollout deste campo.
+ *   - `localMachineId` vazio (hostname ilegível nesta máquina) → não dá pra
+ *     provar "é de outra máquina" → fail-open, NUNCA filtra.
+ *   - Ambos presentes e diferentes → `true` (estrangeiro, deve ser ignorado).
+ *   - Ambos presentes e iguais → `false` (é a própria sessão desta máquina).
+ *
+ * @param plan             Plan.json já parseado.
+ * @param localMachineId   Hostname desta máquina (`getMachineId()`).
+ * @returns                `true` quando o plan é de outra máquina e deve ser pulado.
+ */
+export function isForeignDevelopPlan(plan: Plan, localMachineId: string): boolean {
+  const tag = typeof plan.machine_id === "string" ? plan.machine_id.trim() : "";
+  if (tag === "") return false; // plan.json legado ou sem hostname na origem — fail-open
+  const local = localMachineId.trim();
+  if (local === "") return false; // não dá pra provar identidade local — fail-open
+  return tag !== local;
+}
+
+/**
  * Encontra a sessão `/diaria-develop` corrente escaneando
  * `data/develop/{AAMMDD}/plan.json` (análogo a `readTodayPlan`, #2246 pt2).
  *
@@ -471,15 +517,25 @@ export function isStaleDevelopPlan(
  *   - `plan.json` mais velho que o threshold de staleness (`isStaleDevelopPlan`)
  *     é PULADO — não sequestra a barra; continua procurando em dirs mais antigos
  *     (mesmo comportamento de "cair pro próximo candidato" de `readCurrentEditionDoc`).
+ *   - `plan.json` de OUTRA máquina (`isForeignDevelopPlan`, #3033) é PULADO pelo
+ *     mesmo motivo — `data/` é um junction do OneDrive sincronizado entre
+ *     máquinas; um plan.json fresco e em progresso genuíno, só que de outra
+ *     sessão/computador, não deve aparecer como se fosse desta máquina.
  *   - Não importa se a sessão está em progresso ou encerrada (100% terminal) —
  *     `renderOvernightBar` decide como exibir; mesmo espírito de #2246 pt2.
  *   - Retorna `null` se não houver `data/develop/`, nenhum dir válido, ou todos
- *     os candidatos forem vazios/stale.
+ *     os candidatos forem vazios/stale/estrangeiros.
  *
  * `now` é injetável (default `new Date()`) — mantém a função determinística e
  * testável sem relógio real, mesmo com o guard de staleness dependente de tempo.
+ * `localMachineId` é injetável (default `getMachineId()`) pelo mesmo motivo —
+ * testável sem depender do hostname real da máquina que roda os testes.
  */
-export function readTodayDevelopPlan(cwd: string, now: Date = new Date()): DevelopPlanEntry | null {
+export function readTodayDevelopPlan(
+  cwd: string,
+  now: Date = new Date(),
+  localMachineId: string = getMachineId(),
+): DevelopPlanEntry | null {
   try {
     const developDir = join(cwd, "data", "develop");
     if (!existsSync(developDir)) return null;
@@ -498,6 +554,7 @@ export function readTodayDevelopPlan(cwd: string, now: Date = new Date()): Devel
       if (!plan) continue;
       if (!Array.isArray(plan.issues) || plan.issues.length === 0) continue;
       if (isStaleDevelopPlan(planPath, now)) continue; // #2800/#2803: zumbi — não sequestra a barra
+      if (isForeignDevelopPlan(plan, localMachineId)) continue; // #3033: sessão de OUTRA máquina
       return { id: dirName, plan };
     }
 
