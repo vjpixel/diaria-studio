@@ -25,7 +25,8 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { editionDir, editionsRoot } from "./lib/edition-paths.ts";
+import { editionsRoot } from "./lib/edition-paths.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,6 +93,22 @@ function listFiles(dir: string): string[] {
 
 function filesSince(dir: string, since: string[]): string[] {
   return listFiles(dir).filter(f => !since.includes(f));
+}
+
+/**
+ * Encontra a edição REAL mais recente em data/editions/ (usada como fixture
+ * pelo benchmark, que copia arquivos dela em vez de rodar LLM agents).
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — nunca usar `editionDir(aammdd)` aqui, que sempre
+ * retorna o path NESTED (write-path helper, #2463 step2) mesmo quando a
+ * edição encontrada existe no disco em layout flat.
+ */
+function findLatestEditionDir(): { aammdd: string; dir: string } | null {
+  const editionDirsByAammdd = enumerateEditionDirs(resolve(ROOT, editionsRoot()));
+  const aammdd = [...editionDirsByAammdd.keys()].sort().reverse()[0];
+  if (!aammdd) return null;
+  return { aammdd, dir: editionDirsByAammdd.get(aammdd)! };
 }
 
 // ---- Main ----
@@ -196,15 +213,12 @@ console.log(`Research window: ${windowStart} → ${editionDate}\n`);
 runStage(1, "Research — dedup + categorize + render", () => {
   // Check if we have raw articles from a real source search, otherwise skip
   // For benchmark purposes, copy from latest real edition if available
-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
-    .filter(d => /^\d{6}$/.test(d))
-    .sort()
-    .reverse()[0];
+  const latest = findLatestEditionDir();
 
-  if (!latestEdition) throw new Error("No existing edition to use as fixture");
+  if (!latest) throw new Error("No existing edition to use as fixture");
 
-  const rawSrc = resolve(ROOT, editionDir(latestEdition), "01-raw-articles.json");
-  if (!existsSync(rawSrc)) throw new Error(`No 01-raw-articles.json in ${latestEdition}`);
+  const rawSrc = resolve(latest.dir, "01-raw-articles.json");
+  if (!existsSync(rawSrc)) throw new Error(`No 01-raw-articles.json in ${latest.aammdd}`);
 
   // Copy raw articles as our starting point
   const rawDst = resolve(benchDir, "01-raw-articles.json");
@@ -232,16 +246,14 @@ runStage(1, "Research — dedup + categorize + render", () => {
 // ---- Stage 2: Writing (needs LLM — use fixture) ----
 runStage(2, "Writing — extract + clarice-diff", () => {
   // Copy draft + reviewed from fixture for script benchmarking
-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
-    .filter(d => /^\d{6}$/.test(d))
-    .sort()
-    .reverse()[0];
+  const latest = findLatestEditionDir();
+  if (!latest) throw new Error("No existing edition to use as fixture");
 
-  const draftSrc = resolve(ROOT, editionDir(latestEdition), "_internal/02-draft.md");
-  const reviewedSrc = resolve(ROOT, editionDir(latestEdition), "02-reviewed.md");
+  const draftSrc = resolve(latest.dir, "_internal/02-draft.md");
+  const reviewedSrc = resolve(latest.dir, "02-reviewed.md");
 
   if (!existsSync(draftSrc) || !existsSync(reviewedSrc)) {
-    throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latestEdition}`);
+    throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latest.aammdd}`);
   }
 
   writeFileSync(resolve(benchDir, "_internal/02-draft.md"), readFileSync(draftSrc));
@@ -265,13 +277,14 @@ runStage(4, "É IA? — external APIs", () => {}, true);
 // ---- Stage 5: Images ----
 runStage(5, "Images — Gemini generation + crop", () => {
   // Copy prompts from fixture
-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
-    .filter(d => /^\d{6}$/.test(d))
-    .sort()
-    .reverse()[0];
+  const latest = findLatestEditionDir();
+  // #3025 self-review: falhar alto igual aos Stages 1/2 — silenciar aqui
+  // deixaria o passo seguinte (Generate images) falhar mais tarde com um
+  // erro confuso de arquivo de prompt ausente, em vez do motivo real.
+  if (!latest) throw new Error("No existing edition to use as fixture");
 
   for (const d of ["d1", "d2", "d3"]) {
-    const promptSrc = resolve(ROOT, editionDir(latestEdition), `02-${d}-prompt.md`);
+    const promptSrc = resolve(latest.dir, `02-${d}-prompt.md`);
     if (existsSync(promptSrc)) {
       writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
     }

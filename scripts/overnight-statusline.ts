@@ -67,6 +67,7 @@ import { pathToFileURL } from "node:url";
 import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
 import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
 import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
 
@@ -128,9 +129,6 @@ export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 export const DEVELOP_DIR_RE = /^\d{6}$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
-
-/** Regex for edition AAMMDD directories (exactly 6 digits, no suffixes). */
-const EDITION_DIR_RE = /^\d{6}$/;
 
 /** Stage statuses considered terminal for edition progress (#2250). */
 const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
@@ -776,17 +774,17 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
 function scanEditionDocs(cwd: string): StageStatusDoc[] {
   try {
     const editionsDir = join(cwd, "data", "editions");
-    if (!existsSync(editionsDir)) return [];
-
-    const entries = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
-      .map((e) => e.name)
+    // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) —
+    // antes um `readdirSync(editionsDir)` direto perdia edições no layout
+    // nested pós-#3023.
+    const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+    const entries = [...editionDirsByAammdd.keys()]
       .sort()
       .reverse(); // most recent first (lexicographic desc: 260615 > 260614 > ...)
 
     const docs: StageStatusDoc[] = [];
     for (const dirName of entries) {
-      const editionDir = join(editionsDir, dirName);
+      const editionDir = editionDirsByAammdd.get(dirName)!;
       const doc = readStageStatusFromDir(editionDir);
       if (!doc) continue;
       if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
@@ -849,11 +847,8 @@ export function renderIdleBar(mostRecentEditionId: string | null): string {
 export function findMostRecentEditionId(cwd: string): string | null {
   try {
     const editionsDir = join(cwd, "data", "editions");
-    if (!existsSync(editionsDir)) return null;
-
-    const entries = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
-      .map((e) => e.name)
+    // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
+    const entries = [...enumerateEditionDirs(editionsDir).keys()]
       .sort()
       .reverse(); // most recent first (lexicographic desc)
 

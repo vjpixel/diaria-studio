@@ -19,6 +19,11 @@ Output: `05-published.json` (newsletter draft_url + test_email_sent_at + review 
 
 LinkedIn nao usa Chrome — Cloudflare Worker enfileira em KV e dispara Make webhook no horario agendado (#971).
 
+**`{EDITION_DIR}` (#2463/#3025):** diretorio REAL da edicao no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edicao foi criada. Resolver **uma vez**, logo apos ter `{AAMMDD}`, e usar em todo path abaixo — nunca montar `data/editions/` + `{AAMMDD}` a mao:
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### Pre-condicao: sentinel Stage 4
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-4.md §Escrever sentinel de conclusao do Stage 4 -->
@@ -38,7 +43,7 @@ Exit code handling:
 
 **Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 5 --status running
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status running
 ```
 
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
@@ -69,18 +74,18 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
   ```
 - **Sync pull antes de comecar** (todos os arquivos consumidos por newsletter + social):
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 5 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
   ```
   Editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edicoes antigas pre-#192 usam `01-eia-real.jpg`/`01-eia-ia.jpg`.)
 - **Staleness check (#120) — APOS o pull:**
   ```bash
-  npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
+  npx tsx scripts/check-staleness.ts --edition-dir {EDITION_DIR}/ --stage 6
   ```
   (mantem `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pre-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edicoes pre-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 - **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. `INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN` sao checadas como **warning** (#49 — ausencia pula Instagram, nao bloqueia os demais canais). Falha (error) = abort imediato — evita DLQ recurrence (incident 260508 #999):
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 5 --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/check-invariants.ts --stage 5 --edition-dir {EDITION_DIR}/
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
@@ -143,7 +148,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator -
 **ANTES** do dispatch paralelo, se LinkedIn ou Facebook automatico foram autorizados em 5b, rodar upload-images-public.ts pra popular o cache `06-public-images.json` com URLs Cloudflare KV (d1/d2/d3 vao pro KV desde #2147):
 
 ```bash
-npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
+npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
 ```
 
 **Fail-loud:** se exit != 0, **halt** Stage 5 com banner:
@@ -170,7 +175,7 @@ Playbook ja grava `_internal/05-edition-url.txt` (ver §"Gravar 05-edition-url.t
 
 ```bash
 npx tsx scripts/resolve-edition-url.ts \
-  --edition-dir data/editions/{AAMMDD}/ \
+  --edition-dir {EDITION_DIR}/ \
   --title "{titulo_d1}"
 # Usa seoSlug(titulo) — mesmo algoritmo de 4a-bis do beehiiv-playbook (§"Setar slug SEO").
 # Se o titulo nao estiver disponivel, usar --slug {slug_correto} ou --edition-url {url_literal}.
@@ -184,15 +189,15 @@ npx tsx scripts/resolve-edition-url.ts \
 
 ```bash
 # Se ausente — gravar agora (ver passo 5c-1 acima):
-if [ ! -f data/editions/{AAMMDD}/_internal/05-edition-url.txt ]; then
-  npx tsx scripts/resolve-edition-url.ts --edition-dir data/editions/{AAMMDD}/ --title "{titulo_d1}"
+if [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
+  npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --title "{titulo_d1}"
 fi
 
 # Guard anti-placeholder: aborta (exit 3) se {edition_url}
 # sobreviveu em 03-social.md. Nao dispatchar social se exit != 0.
 # Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
-EDITION_URL="$(cat data/editions/{AAMMDD}/_internal/05-edition-url.txt)"
-npx tsx scripts/resolve-edition-url.ts --edition-dir data/editions/{AAMMDD}/ --edition-url "${EDITION_URL}" --validate-social
+EDITION_URL="$(cat {EDITION_DIR}/_internal/05-edition-url.txt)"
+npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --edition-url "${EDITION_URL}" --validate-social
 ```
 
 Exit code do guard:
@@ -203,10 +208,10 @@ Exit code do guard:
 
 **Em uma unica mensagem, disparar simultaneamente** (so apos passo 5c-2 retornar exit 0):
 
-1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
-2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
-3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
-4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir data/editions/{AAMMDD}/")` — publica imediato no Threads via Threads API oficial da Meta (2 passos: container → threads_publish). **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` no env.** Textos >500 chars sao automaticamente encadeados (thread). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais (#2479).
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
+2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir {EDITION_DIR}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
+3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir {EDITION_DIR}/")` — publica imediato no Instagram via Graph API (2 passos: container → media_publish). **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` no env** e `_internal/06-public-images.json` populado (gerado no 5c-pre). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
+4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/")` — publica imediato no Threads via Threads API oficial da Meta (2 passos: container → threads_publish). **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` no env.** Textos >500 chars sao automaticamente encadeados (thread). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais (#2479).
 
 Aguardar todos retornarem antes de prosseguir.
 
@@ -276,7 +281,7 @@ Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
 **Roda APENAS se houve dispatch de social.**
 
 ```bash
-npx tsx scripts/verify-stage-4-dispatch.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/verify-stage-4-dispatch.ts --edition-dir {EDITION_DIR}/
 ```
 
 O script verifica Facebook via Graph API e LinkedIn via Worker KV. Persiste relatorio em `_internal/06-verify-dispatch.json`.
@@ -290,12 +295,12 @@ Exit codes:
 
 ```bash
 npx tsx scripts/render-social-html.ts \
-  --md data/editions/{AAMMDD}/03-social.md \
-  --out data/editions/{AAMMDD}/_internal/social-preview.html \
-  --images data/editions/{AAMMDD}/06-public-images.json
+  --md {EDITION_DIR}/03-social.md \
+  --out {EDITION_DIR}/_internal/social-preview.html \
+  --images {EDITION_DIR}/06-public-images.json
 
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
-  --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
+  --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
 ```
 
 Falha nao bloqueia — logar warn e prosseguir.
@@ -339,7 +344,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 **Marcar Stage 5 `done` AQUI (#1783).** Este e o mark-done canônico do Stage 5 é o §5i — acontece **antes** do Stage 6. Auto-carimbo de `end` via #1789:
 
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 5 --status done
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status done
 ```
 
 - Sentinel ausente faz Stage 0 da proxima edicao re-investigar publicacao via Beehiiv API.
@@ -350,7 +355,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --s
 Antes de prosseguir pro Stage 6, validar que (a) sentinel `_internal/.step-5-done.json` foi escrito, (b) `_internal/06-social-published.json` tem `posts[]` nao-vazio sem entries `failed`:
 
 ```bash
-npx tsx scripts/check-invariants.ts --stage 5 --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/check-invariants.ts --stage 5 --edition-dir {EDITION_DIR}/
 ```
 
 Exit 1 = logar warn (nao bloquear Stage 6).

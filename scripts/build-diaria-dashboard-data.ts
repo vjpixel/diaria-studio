@@ -55,6 +55,7 @@ import { canonicalize } from "./lib/url-utils.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
 import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import type {
   DashboardData,
@@ -176,17 +177,12 @@ export function buildHighlightTitleIndex(
   const index = new Map<string, string>();
   if (!existsSync(editionsDir)) return index;
 
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
-      .map((d) => d.name);
-  } catch {
-    return index;
-  }
+  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const dirs = [...editionDirsByAammdd.keys()];
 
   for (const edition of dirs) {
-    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
+    const approvedPath = join(editionDirsByAammdd.get(edition)!, "_internal", "01-approved.json");
     if (!existsSync(approvedPath)) continue;
 
     let approved: { highlights?: ApprovedHighlight[] };
@@ -636,15 +632,9 @@ export function buildUseMelhorSummary(
   // Build CTR index já normalizado por URL (canonicalize aplicado no insert).
   const ctrByNormalized = buildCtrIndexByUrl(csvPath);
 
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
-      .map((d) => d.name)
-      .sort();
-  } catch {
-    return null;
-  }
+  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const dirs = [...editionDirsByAammdd.keys()].sort();
 
   const editionEntries: UseMelhorEditionEntry[] = [];
   let totalMatched = 0;
@@ -652,7 +642,8 @@ export function buildUseMelhorSummary(
   const allTopItems: Array<{ edition: string; url: string; title: string; ctr_pct: number; unique_verified_clicks: number }> = [];
 
   for (const edition of dirs) {
-    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
+    const editionDir = editionDirsByAammdd.get(edition)!;
+    const approvedPath = join(editionDir, "_internal", "01-approved.json");
     if (!existsSync(approvedPath)) continue;
 
     let approved: { use_melhor?: ApprovedUseMelhorItem[] };
@@ -665,7 +656,7 @@ export function buildUseMelhorSummary(
     // #2603: usar 02-reviewed.md como filtro de itens publicados (pós-gate).
     // Se o arquivo existe, itens não presentes nele foram dropados no gate e não devem
     // aparecer no dashboard. Se não existe (Stage 2 não rodou), usar todos de 01-approved.json.
-    const reviewedMdPath = join(editionsDir, edition, "02-reviewed.md");
+    const reviewedMdPath = join(editionDir, "02-reviewed.md");
     const publishedUrls = extractPublishedUseMelhorUrls(reviewedMdPath);
 
     const allItems = approved.use_melhor ?? [];

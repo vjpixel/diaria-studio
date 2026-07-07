@@ -28,9 +28,10 @@
  * Stdout: JSON `{ inserted, prev_edition, prev_revealed, current_has_intentional }`.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import {
   loadIntentionalErrors,
   type IntentionalError,
@@ -345,17 +346,15 @@ export function findPreviousIntentionalErrorFromMd(
   currentEdition: string,
 ): { edition: string; detail: string; gabarito: string; narrative: string; correct_value?: string; reveal?: string } | null {
   if (!existsSync(editionsRoot)) return null;
-  let entries: string[];
-  try {
-    entries = readdirSync(editionsRoot);
-  } catch {
-    return null;
-  }
-  const candidates = entries
-    .filter((d) => /^\d{6}$/.test(d) && d < currentEdition)
+  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
+  // um `readdirSync(editionsRoot)` direto perdia edições no layout nested
+  // pós-#3023.
+  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
+  const candidates = [...editionDirsByAammdd.keys()]
+    .filter((d) => d < currentEdition)
     .sort((a, b) => (a < b ? 1 : -1));
-  for (const editionDir of candidates) {
-    const mdPath = join(editionsRoot, editionDir, "02-reviewed.md");
+  for (const editionId of candidates) {
+    const mdPath = join(editionDirsByAammdd.get(editionId)!, "02-reviewed.md");
     if (!existsSync(mdPath)) continue;
     let md: string;
     try {
@@ -366,7 +365,7 @@ export function findPreviousIntentionalErrorFromMd(
     const extracted = extractIntentionalErrorFromMd(md);
     if (extracted) {
       return {
-        edition: editionDir,
+        edition: editionId,
         detail: extracted.detail ?? extracted.narrative,
         gabarito: extracted.gabarito ?? "",
         narrative: extracted.narrative,

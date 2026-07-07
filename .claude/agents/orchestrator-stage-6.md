@@ -13,6 +13,11 @@ Stage 6 e o **gate final do pipeline**. Apresenta ao editor o resumo completo de
 
 Interacao humana SO neste stage (alem do Stage 4).
 
+**`{EDITION_DIR}` (#2463/#3025):** diretorio REAL da edicao no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edicao foi criada. Resolver **uma vez**, logo apos ter `{AAMMDD}`, e usar em todo path abaixo — nunca montar `data/editions/` + `{AAMMDD}` a mao:
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### Pre-condicao: sentinel Stage 5
 
 ```bash
@@ -31,7 +36,7 @@ Exit code handling:
 
 **Marcar Stage 6 `running` no inicio (#1783):**
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 6 --status running
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status running
 ```
 
 - Logar inicio:
@@ -75,7 +80,7 @@ Prosseguir direto para §6d (executar Schedule).
 ```bash
 node -e "
   const fs=require('fs');
-  const md=fs.readFileSync('data/editions/{AAMMDD}/03-social.md','utf8');
+  const md=fs.readFileSync('{EDITION_DIR}/03-social.md','utf8');
   const m=md.match(/^## post_pixel\b[^\n]*\n([\s\S]*?)(?=\n## |\$)/m);
   process.stdout.write(m?m[1].trim():'(nao encontrado)');
 "
@@ -99,7 +104,7 @@ Social agendado:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel
 Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
-  Imagem: data/editions/{AAMMDD}/04-d1-1x1.jpg
+  Imagem: {EDITION_DIR}/04-d1-1x1.jpg
 
 {POST_PIXEL_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -143,7 +148,7 @@ Navegar para `draft_url` no Chrome e executar o passo de Schedule do Beehiiv con
 ```bash
 npx tsx scripts/verify-scheduled-post.ts \
   --post-id {post_id} \
-  --edition-dir data/editions/{AAMMDD}/
+  --edition-dir {EDITION_DIR}/
 ```
 
 | Exit | Estado | Acao |
@@ -198,7 +203,7 @@ Apos schedule confirmado (exit 0 do verify-scheduled-post ou reconciliacao de en
 ```bash
 node -e "
   const fs = require('fs');
-  const path = 'data/editions/{AAMMDD}/_internal/05-published.json';
+  const path = '{EDITION_DIR}/_internal/05-published.json';
   const pub = JSON.parse(fs.readFileSync(path, 'utf8'));
   pub.scheduled_at = '{scheduled_at_iso}';
   pub.status = 'scheduled';
@@ -226,7 +231,7 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 ### 6g. Check invariants Stage 6
 
 ```bash
-npx tsx scripts/check-invariants.ts --stage 6 --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 ```
 
 Exit 1 = logar warn (nao bloquear auto-reporter).
@@ -240,18 +245,18 @@ Auto-reporter roda **no Stage 6** (move do Stage 5). Reflete o estado final agen
 ### 6b-0. Validar social published (#272)
 
 ```bash
-npx tsx scripts/validate-social-published.ts data/editions/{AAMMDD}/
+npx tsx scripts/validate-social-published.ts {EDITION_DIR}/
 ```
 Se exit != 0, incluir no relatorio do gate antes de seguir. Nao bloqueia o pipeline.
 
 ### 6b-1. Coletar sinais
 
 ```bash
-npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/collect-edition-signals.ts --edition-dir {EDITION_DIR}/
 ```
 Script grava `{edition_dir}/_internal/issues-draft.json`.
 
-- **Se `data/editions/{AAMMDD}/error.md` existir (#507):** incluir o conteudo como contexto adicional ao disparar o `auto-reporter`.
+- **Se `{EDITION_DIR}/error.md` existir (#507):** incluir o conteudo como contexto adicional ao disparar o `auto-reporter`.
 
 ### 6b-2. Avaliar output
 
@@ -282,8 +287,8 @@ Ultimo passo do pipeline:
 ```bash
 npx tsx scripts/send-edition-report.ts \
   --edition {AAMMDD} \
-  --edition-dir data/editions/{AAMMDD}/ \
-  --out data/editions/{AAMMDD}/_internal/edition-report.html
+  --edition-dir {EDITION_DIR}/ \
+  --out {EDITION_DIR}/_internal/edition-report.html
 ```
 
 **INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatorio de edicao`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL). **NUNCA construir htmlBody programaticamente.**
@@ -298,7 +303,7 @@ Ultimo passo do pipeline. So agora `_internal/edition-report.html` existe (escri
 e a transicao tem sucesso:
 
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 6 --status done
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status done
 ```
 
 Falha (exit != 0) → logar warn com o motivo impresso pelo script; nao bloquear o resto do

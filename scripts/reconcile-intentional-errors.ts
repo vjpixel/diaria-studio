@@ -23,9 +23,10 @@
  *   2 — erro de I/O
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import {
   loadIntentionalErrors,
   entryDiffersFromFrontmatter,
@@ -80,13 +81,16 @@ function scan(args: CliArgs): {
   }
   const drift: DriftEntry[] = [];
   let totalScanned = 0;
-  const entries = readdirSync(editionsDir).filter((name) => {
-    if (!/^\d{6}/.test(name)) return false;
+  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
+  // um `readdirSync(editionsDir)` direto perdia edições no layout nested
+  // pós-#3023.
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const entries = [...editionDirsByAammdd.keys()].filter((name) => {
     if (args.editionFilter && name !== args.editionFilter) return false;
     return true;
   });
   for (const editionId of entries) {
-    const mdPath = join(editionsDir, editionId, "02-reviewed.md");
+    const mdPath = join(editionDirsByAammdd.get(editionId)!, "02-reviewed.md");
     if (!existsSync(mdPath)) continue;
     totalScanned++;
     const lint = checkIntentionalError(mdPath);

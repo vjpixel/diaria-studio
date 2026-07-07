@@ -62,7 +62,7 @@
  *   0 — sempre (warnings são non-fatal — gate decide)
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { runMain } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
@@ -71,6 +71,7 @@ import {
   jaccardSimilarity,
 } from "./dedup.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 // #2834: CategorizedJson reexportado do reader canônico (consumido por
 // check-intra-themes.ts via `import { CategorizedJson } from "./check-secondary-themes.ts"`).
 import type { CategorizedJson } from "./lib/types/categorized-json.ts";
@@ -151,14 +152,17 @@ interface ApprovedJson {
 }
 
 /**
- * Lê `data/editions/{yymmdd}/_internal/01-approved.json` e extrai títulos
- * dos itens SECUNDÁRIOS (radar/lancamento/use_melhor/video).
+ * Lê `{editionDir}/_internal/01-approved.json` e extrai títulos dos itens
+ * SECUNDÁRIOS (radar/lancamento/use_melhor/video).
+ *
+ * #2463/#3025: recebe o diretório REAL da edição (já resolvido, flat ou
+ * nested) — chamador resolve via `enumerateEditionDirs`.
  */
 function extractSecondaryItemsFromEdition(
   yymmdd: string,
-  editionsDir: string,
+  editionDir: string,
 ): PastSecondaryItem[] {
-  const approvedPath = resolve(editionsDir, yymmdd, "_internal", "01-approved.json");
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJson;
   try {
@@ -185,21 +189,18 @@ function extractSecondaryItemsFromEdition(
 /**
  * Descobre as últimas `window` edições (por data desc) no editions directory,
  * excluindo a edição corrente.
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
+ * edições no layout nested pós-#3023.
  */
 function findRecentEditions(
   editionsDir: string,
   currentEdition: string,
   window: number,
 ): string[] {
-  if (!existsSync(editionsDir)) return [];
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir);
-  } catch {
-    return [];
-  }
-
-  return dirs
+  const found = enumerateEditionDirs(editionsDir);
+  return [...found.keys()]
     .filter((d) => isValidEditionDir(d) && d !== currentEdition)
     .sort()
     .reverse()
@@ -215,9 +216,12 @@ export function extractPastSecondaryItems(
   window: number,
 ): PastSecondaryItem[] {
   const recentEditions = findRecentEditions(editionsDir, currentEdition, window);
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
   const items: PastSecondaryItem[] = [];
   for (const yymmdd of recentEditions) {
-    items.push(...extractSecondaryItemsFromEdition(yymmdd, editionsDir));
+    const editionDir = editionDirsByAammdd.get(yymmdd);
+    if (!editionDir) continue;
+    items.push(...extractSecondaryItemsFromEdition(yymmdd, editionDir));
   }
   return items;
 }
