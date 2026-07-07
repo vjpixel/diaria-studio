@@ -911,11 +911,13 @@ describe("#2442 renderMonthlyTotalsSection novo formato", () => {
     assert.match(html, /class="alert"/, "célula de bounces deve ter class alert quando bounceRate≥3%");
   });
 
-  test("coluna Trackable ainda presente na tabela Envios (não removida desta)", () => {
+  test("#3040: coluna Trackable standalone foi removida da tabela Envios (incorporada ao Opens)", () => {
     const html = renderDashboardHtml(allCampaigns);
-    // Trackable na tabela Envios (id=campaigns-table) — NÃO deve sumir de lá
+    // Header "Trackable 📍" não deve mais existir como <th> separado na tabela Envios.
     const campaignSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
-    assert.match(campaignSection, /Trackable/, "Trackable deve permanecer na tabela Envios");
+    assert.doesNotMatch(campaignSection, /Trackable 📍/, "th 'Trackable 📍' não deve mais existir (#3040)");
+    // A métrica trackable segue viva, só que dentro do tooltip do header Opens.
+    assert.match(campaignSection, /trackable/, "menção a 'trackable' deve seguir presente (agora no tooltip de Opens, #3040)");
   });
 
   test("formato de célula: taxa em cima + count absoluto em <small> (espelha Envios)", () => {
@@ -1089,17 +1091,29 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     },
   };
 
-  test("coluna Trackable aparece no header da tabela principal", () => {
+  test("#3040: header Opens da tabela Envios (não mais Trackable standalone) menciona trackable no tooltip", () => {
     const html = renderDashboardHtml([baseCampaign]);
-    assert.match(html, /Trackable/, "deve ter coluna Trackable no header");
+    // Escopar à tabela Envios (id=campaigns-table) — a aba Engajamento tem OUTRO
+    // header "Opens 👁️" (sections-kv.ts, tabela mensal), que não foi tocado por #3040.
+    const campaignSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.doesNotMatch(campaignSection, />Trackable 📍</, "não deve mais ter <th> 'Trackable 📍' standalone (#3040)");
+    assert.match(campaignSection, /Opens 👁️<\/th>/, "header Opens deve seguir presente");
+    // o tooltip do th Opens agora explica a métrica trackable também.
+    const opensTh = campaignSection.match(/<th title="[^"]*">Opens 👁️<\/th>/)?.[0] ?? "";
+    assert.match(opensTh, /trackable/, "tooltip do header Opens na tabela Envios deve mencionar trackable (#3040)");
   });
 
-  test("coluna Trackable exibe taxa e count na linha de dados", () => {
+  test("#3040: célula Opens combina taxa/count trackable no parêntese (mppOpens>0 + trackableViews presente)", () => {
     const html = renderDashboardHtml([baseCampaign]);
-    // trackableRate = 15/48 = 31.25%
-    assert.match(html, /31\.3%/, "deve exibir taxa trackable correta (15/48 ≈ 31.3%)");
-    // count trackable como <small>
-    assert.match(html, /<small>15<\/small>/, "deve exibir count trackableViews=15");
+    // uniqueViews=20, appleMppOpens=5 (default) → opensNoMpp=15 → 31.3% sem MPP.
+    // trackableViews=15/delivered=48 → 31.3% trackable (coincide com sem-MPP nesta fixture).
+    assert.match(
+      html,
+      /41\.7% <span class="rate-inline">\(31\.3% sem MPP · 31\.3% trackable\)<\/span>/,
+      "célula Opens deve combinar taxa sem-MPP + taxa trackable no parêntese (#3040)",
+    );
+    // count trackable (15) na linha <small>, junto do count sem-MPP (15).
+    assert.match(html, /<small>20 \(15 · 15\)<\/small>/, "count de Opens deve incluir sem-MPP e trackable (#3040)");
   });
 
   test("seção day-summary foi REMOVIDA da aba Engajamento (#2736, supersede #2523)", () => {
@@ -1126,9 +1140,9 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.doesNotMatch(html, /Tend.ncia entre waves/, "título da seção removida não deve aparecer");
   });
 
-  test("colspan da linha 'sem stats' atualizado para 7 (11 colunas - 4 fixas)", () => {
-    // Após adicionar coluna Trackable, tabela tem 11 colunas. colspan deve ser 7 (era 6).
-    // Colunas fixas: ID(1) + Lista(2) + Enviado(3) + "—"(4) = 4. Métricas = 7. Total = 11.
+  test("#3040: colspan da linha 'sem stats' voltou a 6 (10 colunas - 4 fixas, coluna Trackable removida)", () => {
+    // #3040 removeu a coluna Trackable standalone: tabela volta a ter 10 colunas, colspan=6.
+    // Colunas fixas: ID(1) + Lista(2) + Enviado(3) + "—"(4) = 4. Métricas = 6. Total = 10.
     const noStatsCampaign = {
       id: 99,
       name: "No stats",
@@ -1142,16 +1156,17 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
       listSize: 30,
     };
     const html = renderDashboardHtml([noStatsCampaign]);
-    assert.match(html, /colspan="7"/, "linha 'sem stats' deve ter colspan=7 (tabela tem 11 colunas, 4 fixas + 7 de métricas)");
+    assert.match(html, /colspan="6"/, "linha 'sem stats' deve ter colspan=6 (tabela tem 10 colunas, 4 fixas + 6 de métricas, #3040)");
   });
 
-  test("existentes: tabela de campanhas tem 11 colunas no header", () => {
+  test("#3040: tabela de campanhas voltou a ter 10 colunas no header (coluna Trackable removida)", () => {
     const html = renderDashboardHtml([baseCampaign]);
     // Extrair só a seção de campanhas (entre id="campaigns-table" e o próximo <section)
     const tableSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
     const thCount = (tableSection.match(/<th /g) || []).length;
-    // 11 colunas: ID, Lista, Enviado, Sent, Delivered, Opens, Clicks, Trackable, Bounces, Unsub, Spam
-    assert.equal(thCount, 11, `tabela de campanhas deve ter 11 <th> mas encontrou ${thCount}`);
+    // 10 colunas: ID, Lista, Enviado, Sent, Delivered, Opens, Clicks, Bounces, Unsub, Spam
+    // (Trackable removida em #3040 — dado incorporado ao parêntese da célula Opens.)
+    assert.equal(thCount, 10, `tabela de campanhas deve ter 10 <th> mas encontrou ${thCount}`);
   });
 
   test("seção weekday-openrate aparece quando há campanhas Clarice News (#2134)", () => {
