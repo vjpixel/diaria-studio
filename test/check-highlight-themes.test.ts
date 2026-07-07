@@ -1043,4 +1043,45 @@ describe("readPastApprovedSecondary — guard de resume p/ formato antigo/corrom
       rmSync(editionsDir, { recursive: true });
     }
   });
+
+  it("#2463/#3025: enxerga edição anterior no layout NESTED (data/editions/{AAMM}/{AAMMDD}/), misturada com flat legado (#3055)", () => {
+    // Antes do fix, readPastApprovedSecondary montava o path da edição anterior
+    // via `resolve(editionsDir, aammdd, "_internal", "01-approved.json")` — flat
+    // hardcoded. Para uma edição já migrada pro layout nested, esse path não
+    // existe (existsSync falha) e o fallback "skip silencioso" engolia o miss:
+    // a edição contribuía 0 itens secundários pro check de repeat-de-tema,
+    // sem nenhum warning de que a cobertura estava degradada.
+    const editionsDir = makeTempEditionsDir();
+    try {
+      // 260528 — flat legado
+      mkdirSync(resolve(editionsDir, "260528", "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionsDir, "260528", "_internal", "01-approved.json"),
+        JSON.stringify({
+          radar: [{ title: "Item flat legado", url: "https://example.com/flat" }],
+        }),
+        "utf8",
+      );
+
+      // 260529 — nested novo (data/editions/2605/260529/)
+      mkdirSync(resolve(editionsDir, "2605", "260529", "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionsDir, "2605", "260529", "_internal", "01-approved.json"),
+        JSON.stringify({
+          radar: [{ title: "Item nested novo", url: "https://example.com/nested" }],
+        }),
+        "utf8",
+      );
+
+      const items = readPastApprovedSecondary(editionsDir, 10);
+      const titles = items.map((i) => i.title).sort();
+      assert.deepEqual(titles, ["Item flat legado", "Item nested novo"]);
+
+      const nestedItem = items.find((i) => i.title === "Item nested novo");
+      assert.ok(nestedItem, "edição nested deve contribuir itens (não deve ser skip-silencioso)");
+      assert.equal(nestedItem!.edition, "260529");
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
 });
