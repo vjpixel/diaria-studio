@@ -13,6 +13,7 @@ import {
   isCorporateBlog,
   reviewUseMelhorComposition,
   isNewsletterRoundup,
+  formatCriticalCompositionMessage,
 } from "../scripts/review-use-melhor.ts";
 
 describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
@@ -407,6 +408,48 @@ describe("reviewUseMelhorComposition (#2339) — guard de composição casual/in
     it("lista vazia → severity='critical' (0 casual E 0 iniciante, tecnicamente gap total)", () => {
       const result = reviewUseMelhorComposition([]);
       assert.equal(result.severity, "critical");
+    });
+  });
+
+  // #3059: severity='critical' cobre DOIS cenários distintos (bucket vazio vs.
+  // bucket enviesado) — a mensagem não pode alegar "100% dev-avançado" quando
+  // não há NENHUM item. formatCriticalCompositionMessage separa o texto sem
+  // mexer em severity (que continua 'critical' nos dois, por design do #3027).
+  describe("formatCriticalCompositionMessage (#3059) — distingue bucket VAZIO de bucket ENVIESADO", () => {
+    it("bucket genuinamente VAZIO (0 itens) → mensagem NÃO alega '100% dev-avançado'", () => {
+      const composition = reviewUseMelhorComposition([]);
+      assert.equal(composition.severity, "critical");
+      const { header, detail } = formatCriticalCompositionMessage(composition);
+      assert.doesNotMatch(header, /dev-avan[çc]ado/i, "não pode alegar dev-avançado quando não há item nenhum");
+      assert.match(header, /VAZIO/i);
+      assert.match(detail, /não encontrou NENHUM item para o bucket/i);
+    });
+
+    it("bucket ENVIESADO (5/5 dev-avançado, caso real 260707) → mensagem alega '100% dev-avançado'", () => {
+      const items = [
+        { url: "https://blog.langchain.dev/x1", title: "Building an End-to-End Sentiment Analysis Pipeline with Scikit-LLM" },
+        { url: "https://blog.langchain.dev/x2", title: "Designing Efficient Verifiers for Legal Agents" },
+        { url: "https://developers.googleblog.com/x3", title: "A Visual Guide to Gemma 4 12B fine-tuning deployment pipeline" },
+        { url: "https://cloud.google.com/blog/x4", title: "Unlocking the Power of the TPU Stack" },
+        { url: "https://blog.langchain.dev/x5", title: "Multi-agent RAG pipeline architecture deep dive" },
+      ];
+      const composition = reviewUseMelhorComposition(items);
+      assert.equal(composition.severity, "critical");
+      assert.equal(composition.advancedCount, 5);
+      const { header, detail } = formatCriticalCompositionMessage(composition);
+      assert.match(header, /100% dev-avan[çc]ado/i);
+      assert.match(detail, /acess[íi]vel a leigos ou iniciantes/i);
+    });
+
+    it("as duas mensagens (vazio vs. enviesado) têm texto DIFERENTE", () => {
+      const emptyMsg = formatCriticalCompositionMessage(reviewUseMelhorComposition([]));
+      const biasedMsg = formatCriticalCompositionMessage(
+        reviewUseMelhorComposition([
+          { url: "https://blog.langchain.dev/x1", title: "Building an End-to-End Sentiment Analysis Pipeline" },
+        ]),
+      );
+      assert.notEqual(emptyMsg.header, biasedMsg.header);
+      assert.notEqual(emptyMsg.detail, biasedMsg.detail);
     });
   });
 });
