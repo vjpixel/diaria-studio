@@ -56,8 +56,8 @@ export function renderDashboardHtml(
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
         // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
         const linksHtmlNoStats = renderLinksSection(c.id, linksStats);
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
-      <tr class="links-row"><td colspan="11" class="links-cell">${linksHtmlNoStats}</td></tr>`;
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
+      <tr class="links-row"><td colspan="10" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       // CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas (não delivered).
@@ -91,20 +91,34 @@ export function renderDashboardHtml(
       const opensNoMpp = s.uniqueViews - mppOpens;
       const openRateNoMpp = pct(opensNoMpp, s.delivered);
 
+      // #2086 B2 / #3040: trackableViewsRate = trackableViews / delivered.
+      // Indica emails com rastreamento real (exclui MPP/bots que não carregam pixel).
+      // `!= null` (não `??`) porque o campo pode estar AUSENTE no shape real da
+      // Brevo (latente em campaignStats) — precisamos distinguir "sem dado" de
+      // "0 aberturas trackable reais": #3040 só anexa esse dado ao parêntese de
+      // Opens quando ele de fato existe.
+      const hasTrackable = s.trackableViews != null;
+      const trackableRate = pct(s.trackableViews ?? 0, s.delivered);
+
       // Opens cell tem layout duplo quando há MPP (#1153): top mostra
       // "taxa-com-MPP (taxa-sem-MPP)" e bottom mostra "count-total (count-sem-MPP)".
-      // Sem MPP: layout simples (taxa única + count único).
+      // Sem MPP: layout simples (taxa única + count único) — nesse caso não
+      // anexamos trackable (não há parêntese onde encaixar; #3040 só pede pra
+      // incorporar trackable "junto do parêntese no-MPP já existente").
+      // #3040: coluna Trackable 📍 standalone foi removida — quando há MPP E
+      // trackable, o parêntese de Opens ganha um segundo membro ("sem MPP" +
+      // "trackable"); quando há MPP mas trackable está ausente, mantém o
+      // formato antigo (só "sem MPP").
       const opensTopLine = mppOpens > 0
-        ? `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
+        ? hasTrackable
+          ? `${openRate} <span class="rate-inline">(${openRateNoMpp} sem MPP · ${trackableRate} trackable)</span>`
+          : `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
         : openRate;
       const opensBottomLine = mppOpens > 0
-        ? `${s.uniqueViews} (${opensNoMpp})`
+        ? hasTrackable
+          ? `${s.uniqueViews} (${opensNoMpp} · ${s.trackableViews})`
+          : `${s.uniqueViews} (${opensNoMpp})`
         : `${s.uniqueViews}`;
-
-      // #2086 B2: trackableViewsRate = trackableViews / delivered
-      // Indica emails com rastreamento real (exclui MPP/bots que não carregam pixel).
-      // ?? 0 defensivo: campo pode estar ausente no shape real da Brevo (latente em campaignStats).
-      const trackableRate = pct(s.trackableViews ?? 0, s.delivered);
 
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
@@ -123,13 +137,12 @@ export function renderDashboardHtml(
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
         <td${cellClass("metric", openAlert && "alert")}>${opensTopLine}<br><small>${opensBottomLine}</small></td>
-        <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews ?? 0}</small></td>
         <td${cellClass("metric")}>${ctor}<br><small>${s.uniqueClicks}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
       </tr>
-      <tr class="links-row"><td colspan="11" class="links-cell">${linksHtml}</td></tr>`;
+      <tr class="links-row"><td colspan="10" class="links-cell">${linksHtml}</td></tr>`;
     })
     .join("\n");
 
@@ -305,7 +318,6 @@ export function renderDashboardHtml(
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
   td.metric { font-weight: 600; color: var(--brand); }
-  td.trackable { font-size: 0.85em; opacity: 0.85; }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
@@ -438,8 +450,7 @@ ${volumeSection}
 <th title="Data e hora do envio (horário de Brasília).">Enviado</th>
 <th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
-<th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
-<th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
+<th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas. Entre parênteses (quando há dado de MPP): taxa sem Apple MPP e, quando disponível, taxa trackable — trackableViews ÷ delivered, aperturas com pixel rastreável que exclui MPP/bots que não disparam pixel (sinal mais limpo de engajamento real).">Opens 👁️</th>
 <th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Engajamento com o conteúdo entre quem abriu. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
 <th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
 <th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
@@ -447,7 +458,7 @@ ${volumeSection}
 </tr>
 </thead>
 <tbody id="envios-tbody">
-${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
+${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
 </tbody>
 </table>
 </div>
@@ -548,7 +559,7 @@ ${couponTabHtml}
 
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
-Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
+Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses (quando há dado de MPP), a taxa sem Apple MPP (ainda pode incluir outros bots) e, quando disponível, a taxa trackable — aberturas com pixel real (trackableViews ÷ delivered), sinal mais limpo de engajamento real por excluir MPP e outros bots que não disparam pixel. Dados brutos em <code>/api/campaigns</code>.<br>
 Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */

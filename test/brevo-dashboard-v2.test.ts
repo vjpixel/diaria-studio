@@ -259,15 +259,16 @@ describe("#2207-2: colspan no-stats — contagem de <th> só no <thead> da tabel
 
     // Contar <th> SOMENTE no <thead> escopado a campaigns-table — exclui links-tables aninhadas.
     // Usar count exato (não `< totalThInHtml`) para pegar adição/remoção de coluna nesta tabela.
-    // Colunas actuais (11): ID | Lista | Enviado | Sent | Delivered | Opens | Trackable | Clicks | Bounces | Unsub | Spam
+    // Colunas actuais (10): ID | Lista | Enviado | Sent | Delivered | Opens | Clicks | Bounces | Unsub | Spam
+    // #3040: coluna Trackable standalone foi removida (dado incorporado ao parêntese de Opens).
     // Se uma coluna for adicionada ou removida, este teste QUEBRA — atualizar o número e esta lista.
-    const EXPECTED_CAMPAIGNS_TABLE_TH = 11;
+    const EXPECTED_CAMPAIGNS_TABLE_TH = 10;
     const thCount = (thead.match(/<th /g) ?? []).length;
     assert.equal(
       thCount,
       EXPECTED_CAMPAIGNS_TABLE_TH,
       `<thead> da tabela de campanhas deve ter exatamente ${EXPECTED_CAMPAIGNS_TABLE_TH} <th> ` +
-      `(ID | Lista | Enviado | Sent | Delivered | Opens | Trackable | Clicks | Bounces | Unsub | Spam). ` +
+      `(ID | Lista | Enviado | Sent | Delivered | Opens | Clicks | Bounces | Unsub | Spam). ` +
       `Encontrou ${thCount} — se adicionou/removeu coluna, atualizar EXPECTED_CAMPAIGNS_TABLE_TH e esta lista`,
     );
   });
