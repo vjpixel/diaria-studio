@@ -11,6 +11,16 @@ set "NODE_EXE=node"
 if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodejs\node.exe"
 if not exist "data\dashboard-push" mkdir "data\dashboard-push"
 echo [%date% %time%] ^>^>^> iniciando push dashboard>> "data\dashboard-push\task.log"
+REM #3042: regenera data\link-ctr-table.csv ANTES do push — sem isso o CSV fica
+REM stale indefinidamente (nenhuma outra task o reconstrói) e o join de CTR de
+REM Use Melhor/top-links/audience degrada silenciosamente. Fail-soft de propósito:
+REM build-link-ctr.ts escreve o CSV com um único writeFileSync no final (tudo em
+REM memória até lá), então uma falha aqui NÃO corrompe o CSV existente — só o
+REM deixa tão fresco quanto estava. Por isso não abortamos o push se este passo
+REM falhar; só logamos o exit code pra visibilidade.
+echo [%date% %time%] --- rebuild link-ctr-table.csv --->> "data\dashboard-push\task.log"
+"%NODE_EXE%" --import tsx scripts\build-link-ctr.ts >> "data\dashboard-push\task.log" 2>&1
+echo [%date% %time%] link-ctr-table.csv rebuild exit %ERRORLEVEL% (fail-soft, prosseguindo)>> "data\dashboard-push\task.log"
 REM Espaço antes do >> é OBRIGATÓRIO: o namespace ID termina em dígito ("...de3"),
 REM e em CMD "3>>" é redirect do file-descriptor 3 (não append de stdout). Sem o
 REM espaço, stdout/stderr do node sumiriam (iriam pro fd 3, não pro task.log).
