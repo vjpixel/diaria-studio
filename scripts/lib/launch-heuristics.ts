@@ -723,9 +723,19 @@ function isMixedTutorialEssayHost(url: string): boolean {
  * "entrevista com", "explica por que" — sinal positivo de análise, não tutorial.
  * Deliberadamente restrito (poucos padrões) para minimizar falso-positivo em
  * tutoriais reais com título neutro.
+ *
+ * #3027: adicionado `on\s+why\b` — formato de entrevista "Pessoa da Empresa X
+ * on why Y" (ex: "Vercel's Andrew Qu on why agents are a new kind of software",
+ * caso real 260707/#3027). É o mesmo gênero editorial de "interview with"/"Q&A
+ * with" já cobertos acima, só que com a pessoa entrevistada como sujeito da frase
+ * em vez de precedida por "with". Deliberadamente NÃO adicionado `on\s+how\b`:
+ * "on how to build X" é tutorial genuíno (ex: "A dev on how to build agents"),
+ * então incluir esse padrão arriscaria excluir how-to real — "on why" é seguro
+ * porque nenhum tutorial hands-on é titulado "...on why X" (perguntar "por quê"
+ * é sempre reflexão/análise, nunca procedimento).
  */
 export const ESSAY_ANALYSIS_TITLE_RE =
-  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b)/i;
+  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b|on\s+why\b)/i;
 
 /**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente

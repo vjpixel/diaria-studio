@@ -34,6 +34,7 @@ import {
   normalizeDashToParens,
   isRadarHowToEligible,
   promoteHowTosFromRadar,
+  hasActionableOpportunitySignal,
 } from "../scripts/lib/use-melhor-curation.ts";
 
 // ---------------------------------------------------------------------------
@@ -1943,6 +1944,91 @@ describe("isOpinionOrStudy (#2368 item 2)", () => {
     assert.equal(isOpinionOrStudy("not-a-url", "Reflections on AI"), true);
     assert.equal(isOpinionOrStudy("not-a-url", "Build a chatbot tutorial"), false);
   });
+
+  // #3027 CASO REAL 260707: "Como X transforma/muda/impacta Y" — análise de
+  // tendência de negócio, não tutorial. handit.com.br caiu em USE MELHOR porque
+  // heurísticas mais soltas (TUTORIAL_SIGNAL_RE em review-use-melhor.ts) liam
+  // "como" sozinho como sinal how-to — corrigido separadamente (ver
+  // review-use-melhor.test.ts); aqui o guard isOpinionOrStudy correspondente.
+  it("#3027: 'Como a IA transforma FP&A e Controladoria' é análise de negócio, não tutorial", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://handit.com.br/blog/ia-para-financas-como-a-ia-transforma-fpa-e-controladoria",
+        "IA para Finanças: Como a IA transforma FP&A e Controladoria",
+      ),
+      "'Como X transforma Y' deve ser classificado como análise/tendência de negócio",
+    );
+  });
+
+  it("#3027: variações do verbo de tendência (muda, impacta, revoluciona) também são análise", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Como a IA muda o mercado de trabalho"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Como o ChatGPT impacta a educação"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Como a automação revoluciona a indústria"));
+  });
+
+  it("#3027: how-to genuíno com 'como usar/fazer/criar' continua vencendo (HOW_TO_GUARD_RE precedência)", () => {
+    // Mesmo que o resto da frase tenha um verbo de tendência, o guard de how-to
+    // explícito roda ANTES do BUSINESS_TREND_TITLE_RE e vence.
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Como usar IA para transformar sua produtividade no trabalho",
+      ),
+      "'como usar' explícito deve vencer o padrão de tendência de negócio",
+    );
+  });
+
+  it("#3027: 'como' sem verbo de tendência por perto não dispara falso-positivo", () => {
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Como criar um agente de IA do zero"));
+    assert.ok(!isOpinionOrStudy("https://x.com/p", "Veja como funciona o novo modelo da OpenAI"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3027 — hasActionableOpportunitySignal: curso gratuito/vaga/inscrição
+// ---------------------------------------------------------------------------
+
+describe("hasActionableOpportunitySignal (#3027)", () => {
+  it("CASO REAL 260707: 'DF tem mais de mil vagas gratuitas em cursos de tecnologia' (g1) é oportunidade acionável", () => {
+    assert.ok(
+      hasActionableOpportunitySignal("DF tem mais de mil vagas gratuitas em cursos de tecnologia"),
+      "vagas gratuitas em cursos deve ser detectado como oportunidade acionável",
+    );
+  });
+
+  it("detecta 'curso gratuito' / 'formação gratuita' / 'bootcamp gratuito'", () => {
+    assert.ok(hasActionableOpportunitySignal("Empresa X abre curso gratuito de IA para iniciantes"));
+    assert.ok(hasActionableOpportunitySignal("Nova formação gratuita em ciência de dados"));
+    assert.ok(hasActionableOpportunitySignal("Bootcamp gratuito de programação abre inscrições"));
+  });
+
+  it("detecta 'como se inscrever'", () => {
+    assert.ok(hasActionableOpportunitySignal("Google abre vagas em curso de IA; veja como se inscrever"));
+  });
+
+  it("detecta 'inscrições abertas/gratuitas para/em'", () => {
+    assert.ok(hasActionableOpportunitySignal("Inscrições abertas para curso gratuito de programação"));
+  });
+
+  it("NÃO dispara em 'grátis' solto sem contexto de curso/formação (evita falso-positivo, per ask do editor #3027)", () => {
+    assert.ok(
+      !hasActionableOpportunitySignal("ChatGPT grátis ganha novo limite de mensagens"),
+      "'grátis' sem substantivo de curso/formação não deve disparar (risco de FP citado na issue)",
+    );
+  });
+
+  it("NÃO dispara em 'vagas' de emprego genérico sem contexto de curso", () => {
+    assert.ok(
+      !hasActionableOpportunitySignal("Empresa de tecnologia abre 200 vagas de emprego no Brasil"),
+      "vaga de emprego comum (não curso/formação) não deve disparar",
+    );
+  });
+
+  it("verifica também o summary, não só o título", () => {
+    assert.ok(
+      hasActionableOpportunitySignal("Novidades em tecnologia", "Inscrições abertas para curso gratuito de IA"),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2255,6 +2341,49 @@ describe("isRadarHowToEligible (#2448)", () => {
       "'tutorial:' com dois-pontos deve ser elegível",
     );
   });
+
+  // #3027 CASO REAL 260707: g1 "DF tem mais de mil vagas gratuitas em cursos de
+  // tecnologia" ficou em RADAR quando deveria ser promovido — nenhum verbo
+  // how-to no título, mas é uma oportunidade concreta (curso gratuito) pro leitor.
+  it("#3027 CASO REAL: 'vagas gratuitas em cursos de tecnologia' (g1) é elegível via sinal de oportunidade acionável", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://g1.globo.com/df/distrito-federal/noticia/2026/07/06/df-tem-mais-de-mil-vagas-gratuitas-em-cursos-de-tecnologia.ghtml",
+        "DF tem mais de mil vagas gratuitas em cursos de tecnologia",
+      ),
+      "vagas gratuitas em cursos deve ser elegível mesmo sem verbo how-to explícito",
+    );
+  });
+
+  it("#3027: 'curso gratuito de IA' é elegível via sinal de oportunidade acionável", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://canaltech.com.br/ia/empresa-lanca-curso-gratuito-de-ia",
+        "Empresa lança curso gratuito de IA para iniciantes",
+      ),
+    );
+  });
+
+  it("#3027: sinal de oportunidade acionável ainda respeita o guard de opinião/estudo", () => {
+    // Se o título combinar sinal de oportunidade com linguagem de opinião/estudo
+    // explícita, isOpinionOrStudy ainda vence (defesa em profundidade).
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://blog.example.com/reflections-on-free-courses",
+        "Reflections on the rise of curso gratuito programs in Brazil",
+      ),
+      "sinal de opinião explícito ainda deve vencer o sinal de oportunidade",
+    );
+  });
+
+  it("#3027: 'grátis' solto (sem contexto de curso) NÃO é elegível (evita falso-positivo)", () => {
+    assert.ok(
+      !isRadarHowToEligible(
+        "https://techcrunch.com/2026/01/01/chatgpt-gratis-novo-limite",
+        "ChatGPT grátis ganha novo limite de mensagens",
+      ),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2334,6 +2463,21 @@ describe("promoteHowTosFromRadar (#2448)", () => {
     assert.equal(promoted, 1, "casual how-to deve ser promovido");
     assert.equal(newUseMelhor.length, 1);
     assert.equal(newUseMelhor[0].url, casualHowTo.url);
+  });
+
+  it("#3027 CASO REAL 260707: promove 'vagas gratuitas em cursos' (g1) do RADAR pro USE MELHOR e conta como casual", () => {
+    const g1Course = {
+      url: "https://g1.globo.com/df/distrito-federal/noticia/2026/07/06/df-tem-mais-de-mil-vagas-gratuitas-em-cursos-de-tecnologia.ghtml",
+      title: "DF tem mais de mil vagas gratuitas em cursos de tecnologia",
+    };
+    const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar([g1Course, radarNews], []);
+    assert.equal(promoted, 1, "oportunidade acionável (curso gratuito) deve ser promovida");
+    assert.equal(newUseMelhor.length, 1);
+    assert.equal(newUseMelhor[0].url, g1Course.url);
+    assert.ok(newRadar.some((a) => a.url === radarNews.url), "notícia sem oportunidade permanece no RADAR");
+    // #3027 item 3: promovido via oportunidade acionável deve classificar como
+    // "casual" (não dev-avancado default) — contribui pra cota 2 casual + 2 iniciante.
+    assert.equal(classifyAudienceClass(newUseMelhor[0]), "casual");
   });
 });
 
