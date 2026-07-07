@@ -239,6 +239,43 @@ describe("buildTimelineRows — timeline parcial (rodada interrompida)", () => {
   });
 });
 
+// #3072 (review do #3071): EPIC deliberadamente deferido (status
+// "elegivel_especial") nunca tem timeline preenchido (nunca foi de fato
+// despachado), mas isTerminalForBar já o trata como terminal na statusLine
+// desde #3071 — sem esse fix, a linha da timeline ficava presa em "em
+// andamento" pra sempre, contradizendo a statusLine dentro do MESMO relatório.
+describe("buildTimelineRows — #3072: EPIC deferido não fica preso em 'em andamento'", () => {
+  it("status 'elegivel_especial' sem timeline → fim 'concluída (fora do timeline)', não 'em andamento'", () => {
+    const plan = makePlan([
+      {
+        number: 2808,
+        batch: null,
+        status: "elegivel_especial",
+        timeline: {},
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].endLabel, "concluída (fora do timeline)");
+    assert.equal(rows[0].fim, "concluída (fora do timeline)");
+  });
+
+  it("status 'elegivel_especial' SEM campo timeline (undefined, não {}) → mesmo tratamento", () => {
+    const plan = makePlan([
+      { number: 2809, batch: null, status: "elegivel_especial" },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].endLabel, "concluída (fora do timeline)");
+  });
+
+  it("status 'elegivel' comum (não-EPIC) sem timeline → continua 'em andamento' (comportamento pré-existente preservado)", () => {
+    const plan = makePlan([
+      { number: 4003, batch: null, status: "elegivel", timeline: {} },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].endLabel, "em andamento");
+  });
+});
+
 describe("buildTimelineRows — plan sem issues", () => {
   it("retorna array vazio", () => {
     const plan: Plan = { started_at: "2026-06-11T22:00:00.000Z", issues: [] };

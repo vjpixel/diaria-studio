@@ -57,6 +57,7 @@ import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
 import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
+import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
 import type {
   DashboardData,
   SourceHealthEntry,
@@ -368,6 +369,42 @@ interface PlanJson {
   [key: string]: unknown;
 }
 
+/**
+ * Classifica 1 issue do overnight num bucket de resumo do dashboard.
+ * Extraído em função pura testável isoladamente (#3072, review do #3071) —
+ * evita duplicar a lógica de bucket num teste que reimplementa o loop.
+ */
+export function bucketOvernightIssue(
+  issue: { status?: string; timeline?: Record<string, string | undefined> },
+): "merged" | "draft" | "pulada" | "in_progress" {
+  const tl = issue.timeline;
+  // Finding #7: issues without timeline key had no bucket but were counted in total.
+  // Treat missing/empty timeline as in_progress (dispatch not yet recorded) —
+  // EXCETO status "elegivel_especial" (EPIC_DEFERRED_STATUS, #3072 review do
+  // #3071): nunca chega a ter timeline preenchido (nunca foi de fato
+  // despachado) mas não é trabalho pendente real. Sem esse check, o
+  // dashboard (fonte "autoritativa" pra decisões, ver CLAUDE.md) contava a
+  // rodada como tendo unidade em progresso pra sempre, contradizendo a
+  // statusLine (que já trata esse status como terminal). Bucket mais
+  // próximo semanticamente é "pulada" (não requer mais ação do editor).
+  //
+  // Restrito a ESSE status específico, não ao `isTerminalForBar` genérico
+  // (que também casa `mergeada`/`draft-ci-vermelho`/`pulada`): pra qualquer
+  // OUTRO status terminal, timeline vazio indica uma rodada
+  // interrompida/legada de verdade, não um EPIC deferido por design —
+  // tratar como "pulada" nesse caso mascararia um dado real de rodada
+  // incompleta.
+  if (!tl || Object.keys(tl).length === 0) {
+    if (issue.status === EPIC_DEFERRED_STATUS) return "pulada";
+    return "in_progress";
+  }
+  if (tl.merged) return "merged";
+  if (tl.draft) return "draft";
+  if (tl.pulada) return "pulada";
+  if (tl.dispatch) return "in_progress";
+  return "in_progress"; // has timeline keys but none of the known terminal ones
+}
+
 function buildOvernightSummary(): DashboardData["overnight"] {
   const overnightDir = join(DATA_DIR, "overnight");
   if (!existsSync(overnightDir)) {
@@ -404,15 +441,11 @@ function buildOvernightSummary(): DashboardData["overnight"] {
     let in_progress = 0;
 
     for (const issue of issues) {
-      const tl = issue.timeline;
-      // Finding #7: issues without timeline key had no bucket but were counted in total.
-      // Treat missing/empty timeline as in_progress (dispatch not yet recorded).
-      if (!tl || Object.keys(tl).length === 0) { in_progress++; continue; }
-      if (tl.merged) merged++;
-      else if (tl.draft) draft++;
-      else if (tl.pulada) pulada++;
-      else if (tl.dispatch) in_progress++;
-      else in_progress++; // has timeline keys but none of the known terminal ones
+      const bucket = bucketOvernightIssue(issue);
+      if (bucket === "merged") merged++;
+      else if (bucket === "draft") draft++;
+      else if (bucket === "pulada") pulada++;
+      else in_progress++;
     }
 
     // Duraçao total: started_at → ultimo timestamp de fim

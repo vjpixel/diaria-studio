@@ -249,6 +249,25 @@ describe("renderOvernightBar — status terminais reconhecidos", () => {
   });
 });
 
+// #3071: EPIC deliberadamente deferido (fecha só quando a issue-filha mergear)
+// não é trabalho pendente real — deve contar como terminal na barra, senão a
+// rodada nunca bate 100% mesmo com a cadeia genuinamente encerrada (incidente
+// real: data/overnight/260706/plan.json, issue #2808 travando 25/26 pra sempre).
+describe("renderOvernightBar — #3071: EPIC deferido ('elegivel_especial') conta como terminal", () => {
+  it("'elegivel_especial' conta como terminal — rodada com só esse status pendente bate 100%", () => {
+    const plan = makePlan(["mergeada", "pulada", "elegivel_especial"]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("(3/3)"), `elegivel_especial deve contar como terminal: ${result}`);
+    assert.ok(result.includes("100%"), `deve bater 100% com só EPIC deferido pendente: ${result}`);
+  });
+
+  it("issue elegivel comum (não-EPIC) ainda NÃO conta — não confundir com elegivel_especial", () => {
+    const plan = makePlan(["mergeada", "elegivel_especial", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("(2/3)"), `'elegivel' comum não deve contar como terminal: ${result}`);
+  });
+});
+
 // ─── Finding 6: statuses precisa-resposta e bloqueada-externa são não-terminais ───
 
 describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqueada-externa", () => {
@@ -712,6 +731,88 @@ describe("cycleLabel — review 1.5b (depth 1, finding-depth-1 esgotadas, review
   });
 });
 
+// #3071: `plan.review` gravado na prática costuma trazer texto explicativo
+// ANEXADO após a tag canônica "done (depth N)" — igualdade estrita quebrava
+// a detecção e prendia a barra em "review 1.5x" pra sempre mesmo com a rodada
+// genuinamente encerrada (incidente real: data/overnight/260706/plan.json).
+describe("cycleLabel — #3071: review com texto explicativo anexado (não é mais 'preso')", () => {
+  it("depth 1, review 'done (depth 1) - texto explicativo extra' → NÃO é review 1.5b", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada"],
+      "done (depth 1) - depth limit reached, cadeia encerrada. detalhes extras aqui.",
+    );
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("depth 0, review legado 'done' + sufixo (ex: 'done pronto') → NÃO reconhece — legado exige igualdade EXATA, diferente do formato com depth que agora tolera sufixo (#3071)", () => {
+    // Distingue de fato o comportamento (#3072 review — o teste anterior aqui
+    // usava um input que falhava nos DOIS branches pelo mesmo motivo, sem
+    // provar que o branch legado é estrito por design). "done pronto" é
+    // estruturalmente análogo ao caso que o branch com depth agora tolera
+    // ("done (depth N) - explicação"), mas pro formato legado (sem depth)
+    // a igualdade EXATA `reviewValue === "done"` continua sendo exigida —
+    // só "done" bare aciona o branch legado (ver teste "review:'done' (sem
+    // depth)" mais abaixo).
+    const plan = makeDepth0Plan(["mergeada", "pulada"], "done pronto", 0);
+    assert.equal(cycleLabel(plan), "review 1.5");
+  });
+});
+
+// #3072 (review do #3071): `includes` puro no branch "skipped:" era vulnerável
+// a falso positivo quando o motivo livre menciona o depth de OUTRA rodada
+// entre parênteses ANTES da tag real — corrigido pra casar pela ÚLTIMA
+// ocorrência de "(depth N)" na string (`lastDepthTagMatches`), não qualquer uma.
+// Lembrete de semântica (confirmado pelos testes pré-existentes "review skipped
+// → 'fila principal'"/"done (depth 1) → NÃO é review 1.5b"): reviewDone=true
+// (review já rodou/foi pulado pra este depth) NUNCA retorna "review 1.5x" —
+// cai no fallback de fila ativa ("mini-rodada N" / "fila principal").
+// "review 1.5x" só aparece quando reviewDone=false (review AINDA pendente).
+describe("cycleLabel — #3072: 'skipped:' casa pela ÚLTIMA tag de depth, não qualquer ocorrência", () => {
+  it("motivo livre menciona '(depth 1)' de outra rodada ANTES da tag real '(depth 2)' → depth 1 NÃO é dado como concluído (continua sinalizando review 1.5b pendente)", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada", "pulada"],
+      "skipped: revisitando o achado registrado em (depth 1) durante o triage, decidiu-se nao reabrir (depth 2)",
+    );
+    // A tag real (a ÚLTIMA da string) é "(depth 2)" — não "(depth 1)", mesmo
+    // aparecendo mais cedo no texto. Pro depth 1 (o depth desta rodada),
+    // reviewDone deve ser false → allTerminal && !reviewDone → "review 1.5b"
+    // (sinaliza CORRETAMENTE que o review consolidado do depth 1 ainda
+    // precisa rodar). Com o bug antigo (`includes` sem âncora), a menção
+    // incidental a "(depth 1)" no motivo faria reviewDone=true incorretamente,
+    // mascarando essa pendência atrás de "mini-rodada 1".
+    assert.equal(cycleLabel(plan), "review 1.5b");
+  });
+
+  it("última tag da string é a real: motivo menciona '(depth 0)' antes, tag final '(depth 1)' → reconhece review do depth 1 como concluído", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada", "pulada"],
+      "skipped: mesma razao do (depth 0) anterior, sem novidade (depth 1)",
+    );
+    // Última tag = "(depth 1)" = o depth desta rodada → reviewDone=true →
+    // cai no fallback de fila ativa (não "review 1.5b" — review já concluído).
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("caso real de produção (padrão de data/overnight/260623): motivo simples, 1 única tag de depth → continua reconhecendo review concluído", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada"],
+      "skipped: diff trivial mini-rodada 1 (<50 linhas, 2 finding-fixes verdes) (depth 1)",
+    );
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+});
+
 describe("cycleLabel — legado: plan.json sem findings_depth nem review", () => {
   it("plan legado sem findings_depth → treat como 0, issues ativas → 'fila principal'", () => {
     const plan: Plan = {
@@ -856,8 +957,10 @@ describe("renderOvernightBar — plan.json legado sem findings_depth (#2301)", (
     assert.match(bar, /^\[█{12}\] 100%  \(\d+\/\d+\)  · review 1\.5(?!b|c)/);
   });
 
-  it("plan legado com review:'done' (sem depth): cycleLabel retorna 'fila principal' (não review 1.5)", () => {
-    // Plan legado: review 'done' sem indicador de depth → concluído no nível atual → não em review
+  it("plan legado com review:'done' (sem depth), 100%: bar mostra '· concluída' (#3071 — não 'fila principal', nada está ativo)", () => {
+    // Plan legado: review 'done' sem indicador de depth → concluído no nível atual → não em review.
+    // cycleLabel() isolado ainda retorna 'fila principal' (fallback de fila ativa) — mas a 100%,
+    // renderOvernightBar substitui esse fallback por 'concluída' (#3071: nada está rodando).
     const plan: Plan = {
       started_at: "2026-06-01T22:00:00.000Z",
       review: "done",
@@ -866,9 +969,36 @@ describe("renderOvernightBar — plan.json legado sem findings_depth (#2301)", (
         { number: 1002, status: "mergeada" } as Plan["issues"][0],
       ],
     };
+    assert.equal(cycleLabel(plan), "fila principal"); // cycleLabel isolado é inalterado
     const bar = renderOvernightBar(plan);
 
     assert.ok(bar.includes("100%"), `legado com review:done deve mostrar 100%: ${bar}`);
-    assert.ok(bar.includes("· fila principal"), `review:done concluído deve mostrar '· fila principal': ${bar}`);
+    assert.ok(bar.includes("· concluída"), `review:done concluído a 100% deve mostrar '· concluída': ${bar}`);
+  });
+});
+
+// #3071: a 100%, o fallback de "fila ativa" (fila principal/mini-rodada N) nunca é
+// um estado real — substituído por 'concluída'. "review 1.5x" continua intacto
+// (fila esgotada mas review consolidado do depth ainda não rodou é sinal útil).
+describe("renderOvernightBar — #3071: rótulo 'concluída' substitui fallback de fila ativa a 100%", () => {
+  it("100% + review done (com sufixo explicativo) → '· concluída', não '· mini-rodada N'", () => {
+    // Reproduz o incidente real: data/overnight/260706/plan.json
+    const plan = makeMiniRodadaPlan(
+      2,
+      ["mergeada", "mergeada"],
+      ["mergeada", "elegivel_especial"],
+      "done (depth 2) - depth limit reached, cadeia encerrada. texto explicativo extra.",
+    );
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("100%"), `deve bater 100% com EPIC deferido terminal: ${bar}`);
+    assert.ok(bar.includes("· concluída"), `deve mostrar 'concluída', não 'mini-rodada 2': ${bar}`);
+    assert.ok(!bar.includes("mini-rodada"), `não deve mais mostrar 'mini-rodada': ${bar}`);
+  });
+
+  it("100% mas review ainda não rodou → mantém '· review 1.5x' (sinal útil, não vira 'concluída')", () => {
+    const plan = makeDepth0Plan(["mergeada", "mergeada", "pulada"], null, 0);
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("100%"), `deve bater 100%: ${bar}`);
+    assert.match(bar, /· review 1\.5(?!b|c)/, `review pendente deve preservar 'review 1.5': ${bar}`);
   });
 });
