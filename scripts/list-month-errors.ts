@@ -18,6 +18,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 interface MonthError {
   edition: string;
@@ -131,17 +132,13 @@ function formatMarkdown(month: string, errors: MonthError[]): string {
 }
 
 function parseArgs(argv: string[]): { month: string; json: boolean } | null {
-  let month: string | null = null;
-  let json = false;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--month" && i + 1 < argv.length) {
-      month = argv[i + 1];
-      i++;
-    } else if (a === "--json") {
-      json = true;
-    }
-  }
+  // #2834: extração via parseArgs canônico; a validação regex abaixo garante
+  // que qualquer divergência de borda (ex: "--month" sem valor seguido de
+  // "--json") resulta em `month` inválido de qualquer forma → mesmo retorno
+  // `null` do parser manual anterior.
+  const { values, flags } = parseArgsLib(argv);
+  const month = values["month"] ?? null;
+  const json = flags.has("json");
   if (!month || !/^\d{4}$/.test(month)) return null;
   return { month, json };
 }

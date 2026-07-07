@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrls } from "./lib/url-utils.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 // #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
 // de capture-newsletter-urls.ts). Reexportado aqui pra não quebrar imports
 // existentes deste módulo (incl. test/auto-forward-newsletters.test.ts).
@@ -199,23 +200,15 @@ function parseArgs(argv: string[]): {
   inboxMdPath: string;
   cursorPath: string;
 } {
-  let threadsPath = "";
-  let inboxMdPath = resolve(ROOT, "data", "inbox.md");
-  let cursorPath = resolve(ROOT, "data", "newsletter-capture-cursor.json");
-
-  for (let i = 2; i < argv.length; i++) {
-    switch (argv[i]) {
-      case "--threads":
-        threadsPath = argv[++i] ?? "";
-        break;
-      case "--inbox-md":
-        inboxMdPath = argv[++i] ?? inboxMdPath;
-        break;
-      case "--cursor":
-        cursorPath = argv[++i] ?? cursorPath;
-        break;
-    }
-  }
+  // #2834: argv aqui é process.argv completo (loop legado começava em i=2
+  // pra pular node/script path) — parseArgsSimple espera argv já sem esses
+  // 2 primeiros elementos, daí o slice(2). Consumo incondicional do próximo
+  // token (mesmo que comece com "--") é o mesmo comportamento do switch-case
+  // anterior (`argv[++i]`), preservado por parseArgsSimple.
+  const values = parseArgsSimple(argv.slice(2));
+  const threadsPath = values["threads"] ?? "";
+  const inboxMdPath = values["inbox-md"] ?? resolve(ROOT, "data", "inbox.md");
+  const cursorPath = values["cursor"] ?? resolve(ROOT, "data", "newsletter-capture-cursor.json");
 
   if (!threadsPath) {
     console.error("Usage: npx tsx scripts/auto-forward-newsletters.ts --threads <path>");
