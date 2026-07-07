@@ -1040,9 +1040,16 @@ const RADAR_HOWTO_PROMOTE_RE =
  *     quando explicitamente ligado a curso/formação, não vaga de emprego genérica.
  *   - "como se inscrever" — guia de inscrição explícito.
  *   - "inscrições abertas/gratuitas para/em/no" — chamada de inscrição explícita.
+ *
+ * #3058: a classe `[õoa]es?` na alternativa de inscrição só casava o PLURAL
+ * ("inscrições"/"inscricoes" — õ/o seguido de "es"). O SINGULAR ("inscrição"/
+ * "inscricao" — ã/a seguido de "o", sem "e" nenhum) nunca casava. Caso real:
+ * "MEC abre inscrição gratuita para curso de programação" ficava fora do
+ * sinal (falso-negativo) só por usar singular gramatical. Fix: alternativa
+ * explícita `[ãa]o` (singular: ção/cao) vs `[õo]es` (plural: ções/coes).
  */
 const ACTIONABLE_OPPORTUNITY_RE =
-  /\b(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha|workshop|treinamento)\s+(?:gratuit[oa]s?|de\s+gra[çc]a)\b|\bvagas?\s+(?:gratuitas?|abertas?)\s+(?:em|para|no|de)\s+(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha)\b|\bcomo\s+se\s+inscrever\b|\binscri[çc][õoa]es?\s+(?:abertas?|gratuitas?)\s+(?:para|em|no)\b/i;
+  /\b(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha|workshop|treinamento)\s+(?:gratuit[oa]s?|de\s+gra[çc]a)\b|\bvagas?\s+(?:gratuitas?|abertas?)\s+(?:em|para|no|de)\s+(?:curso|cursos|forma[çc][ãa]o|bootcamp|trilha)\b|\bcomo\s+se\s+inscrever\b|\binscri[çc](?:[ãa]o|[õo]es)\s+(?:abertas?|gratuitas?)\s+(?:para|em|no)\b/i;
 
 /**
  * #3027: retorna true se título/summary tem sinal de oportunidade acionável

@@ -273,6 +273,36 @@ export function reviewUseMelhorComposition(items: UseMelhorItem[]): CompositionR
 }
 
 /**
+ * #3059: mensagem de severidade "critical" pro banner do gate. `severity`
+ * é 'critical' em DOIS cenários bem diferentes:
+ *   1. bucket ENVIESADO — há itens (advancedCount > 0), mas nenhum casual/
+ *      iniciante (100% dev-avançado, caso real 260707, #3027).
+ *   2. bucket VAZIO — não há NENHUM item (advancedCount === casualCount ===
+ *      beginnerCount === 0), ou seja não há sequer o que enviesar.
+ * Antes deste fix os dois casos imprimiam a MESMA mensagem ("ENVIESAMENTO
+ * TOTAL... 100% dev-avançado"), o que é uma alegação falsa no cenário 2 (não
+ * há "100% de nada" quando o total é zero) e leva o editor a um diagnóstico
+ * errado no gate. `severity` continua 'critical' nos dois — só o TEXTO muda.
+ * Exportada para teste de regressão (#3059).
+ */
+export function formatCriticalCompositionMessage(
+  composition: CompositionResult,
+): { header: string; detail: string } {
+  const isEmpty =
+    composition.advancedCount === 0 && composition.casualCount === 0 && composition.beginnerCount === 0;
+  if (isEmpty) {
+    return {
+      header: "🚨 USE MELHOR VAZIO — nenhum item qualificado hoje.",
+      detail: "A curadoria automática não encontrou NENHUM item para o bucket USE MELHOR nesta edição.",
+    };
+  }
+  return {
+    header: "🚨 USE MELHOR: ENVIESAMENTO TOTAL — 0 casual E 0 dev-iniciante (100% dev-avançado, #3027).",
+    detail: "A curadoria automática não encontrou NENHUM item acessível a leigos ou iniciantes.",
+  };
+}
+
+/**
  * Flag suspeito = domínio newsletter/agregador **E** sem sinal de tutorial
  * (#1798). O vetor real de mis-bucket é exatamente esse: domínios que o
  * categorize trata como tutorial-pattern mas são primariamente newsletter
@@ -396,12 +426,12 @@ function main(): void {
     if (composition.missingBeginner) missing.push("dev-iniciante");
 
     if (composition.severity === "critical") {
-      console.error(
-        "\n🚨 USE MELHOR: ENVIESAMENTO TOTAL — 0 casual E 0 dev-iniciante (100% dev-avançado, #3027).",
-      );
-      console.error(
-        "   A curadoria automática não encontrou NENHUM item acessível a leigos ou iniciantes.",
-      );
+      // #3059: header/detail distinguem bucket VAZIO (0 itens) de bucket
+      // ENVIESADO (itens existem, mas 0 casual/iniciante) — ver
+      // formatCriticalCompositionMessage acima.
+      const { header, detail } = formatCriticalCompositionMessage(composition);
+      console.error(`\n${header}`);
+      console.error(`   ${detail}`);
     } else {
       console.error(
         `\n⚠️ USE MELHOR sem representação de: ${missing.join(", ")} (padrão: 2 casual + 2 dev-iniciante, #2339).`,

@@ -2029,6 +2029,17 @@ describe("hasActionableOpportunitySignal (#3027)", () => {
       hasActionableOpportunitySignal("Novidades em tecnologia", "Inscrições abertas para curso gratuito de IA"),
     );
   });
+
+  it("#3058: detecta 'inscrição' SINGULAR (não só o plural 'inscrições')", () => {
+    assert.ok(
+      hasActionableOpportunitySignal("MEC abre inscrição gratuita para curso de programação"),
+      "singular 'inscrição gratuita para' deve disparar tanto quanto o plural 'inscrições gratuitas para'",
+    );
+    assert.ok(
+      hasActionableOpportunitySignal("Prefeitura abre inscricao gratuita para curso de tecnologia"),
+      "variante sem acento ('inscricao') também deve disparar",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
