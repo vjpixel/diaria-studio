@@ -10,7 +10,12 @@ import {
   annotateCarryOver,
   readJsonOrNull,
 } from "../scripts/load-carry-over.ts";
-import { getPreviousEditionDate, listEditions, findLatestEditionEntry } from "../scripts/lib/edition-utils.ts";
+import {
+  getPreviousEditionDate,
+  listEditions,
+  findLatestEditionEntry,
+  pickLatestEditionEntry,
+} from "../scripts/lib/edition-utils.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("collectApprovedUrls", () => {
@@ -457,6 +462,56 @@ describe("edition-utils", () => {
     });
     try {
       assert.equal(findLatestEditionEntry(dir), null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // #3067: findLatestEditionEntry chamava enumerateEditionDirs() DUAS vezes (uma via
+  // listEditions(), outra pra resolver o path do aammdd escolhido) e usava um non-null
+  // assertion (`!`) sem guard na 2ª chamada. O fix elimina a 2ª varredura reusando o
+  // MESMO Map (enumerateEditionDirs() chamado 1x só dentro de findLatestEditionEntry,
+  // repassado pra pickLatestEditionEntry) e troca o `!` por um guard explícito
+  // (`if (!dir) return null`) — mesmo padrão de check-highlight-themes.ts's
+  // readPastApprovedSecondary (PR #3061).
+  //
+  // pickLatestEditionEntry é a função pura extraída pra permitir testar o branch de
+  // guarda diretamente: um Map real nunca tem uma chave presente em `.keys()` que falhe
+  // em `.get()`, então a única forma realista de exercitar esse código é passar um objeto
+  // "dirs-like" minimamente compatível (`{ keys, get }`) em que os dois métodos discordam
+  // — o que o guard precisa tolerar sem lançar.
+  it("#3067: pickLatestEditionEntry retorna null quando o dir do aammdd escolhido está ausente do mapa (guard defensivo)", () => {
+    const dirsLike = {
+      keys: () => ["260707"][Symbol.iterator](),
+      get: (_aammdd: string) => undefined, // simula dir ausente mesmo com aammdd válido em keys()
+    };
+    assert.equal(
+      pickLatestEditionEntry(dirsLike),
+      null,
+      "guard deve degradar graciosamente pra null em vez de retornar { aammdd, dir: undefined }",
+    );
+  });
+
+  it("#3067: pickLatestEditionEntry retorna a entrada correta quando o mapa é consistente", () => {
+    const dirs = new Map([
+      ["260707", "/fake/2607/260707"],
+      ["260706", "/fake/2607/260706"],
+    ]);
+    assert.deepEqual(pickLatestEditionEntry(dirs), { aammdd: "260707", dir: "/fake/2607/260707" });
+  });
+
+  it("#3067: findLatestEditionEntry reusa o resultado de uma única enumeração (sem 2ª varredura) — path e aammdd batem", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      mkdirSync(join(d, "2607", "260707"), { recursive: true }); // nested
+    });
+    try {
+      const result = findLatestEditionEntry(dir);
+      assert.ok(result !== null);
+      assert.equal(result!.aammdd, "260707");
+      assert.ok(
+        result!.dir.includes(join("2607", "260707")),
+        `dir deve resolver pro layout nested real, got ${result!.dir}`,
+      );
     } finally {
       cleanup();
     }

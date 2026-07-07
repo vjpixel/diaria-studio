@@ -836,7 +836,15 @@ function scanEditionDocs(cwd: string): StageStatusDoc[] {
     // antes um `readdirSync(editionsDir)` direto perdia edições no layout
     // nested pós-#3023.
     const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+    // #3066: filtra por isValidEditionDir ANTES de ordenar — mesmo guard já
+    // usado por findMostRecentEditionId (#3054). enumerateEditionDirs só
+    // valida estruturalmente (/^\d{6}$/), então um sentinel calendário-inválido
+    // como "260999" (dia 99) ordenaria lexicograficamente acima de qualquer
+    // data real de 2026 e, se tivesse um stage-status.json (mesmo all-pending),
+    // "venceria" aqui — o caminho PRIMÁRIO usado por readCurrentEditionDoc e
+    // readMostRecentEditionDoc, que #3054 não cobriu (só corrigiu o fallback).
     const entries = [...editionDirsByAammdd.keys()]
+      .filter((name) => isValidEditionDir(name))
       .sort()
       .reverse(); // most recent first (lexicographic desc: 260615 > 260614 > ...)
 
