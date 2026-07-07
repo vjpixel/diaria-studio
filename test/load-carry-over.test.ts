@@ -10,7 +10,7 @@ import {
   annotateCarryOver,
   readJsonOrNull,
 } from "../scripts/load-carry-over.ts";
-import { getPreviousEditionDate, listEditions } from "../scripts/lib/edition-utils.ts";
+import { getPreviousEditionDate, listEditions, findLatestEditionEntry } from "../scripts/lib/edition-utils.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("collectApprovedUrls", () => {
@@ -415,6 +415,51 @@ describe("edition-utils", () => {
 
   it("getPreviousEditionDate lança erro para AAMMDD inválido", () => {
     assert.throws(() => getPreviousEditionDate("invalid"), /AAMMDD inválido/);
+  });
+
+  // #3054: enumerateEditionDirs só filtra estruturalmente (/^\d{6}$/) — um
+  // sentinel calendário-inválido como "260999" (dia 99, leftover de teste)
+  // bate no regex mas ordena lexicograficamente ACIMA de qualquer edição real
+  // de 2026 ("260999" > "260707"). findLatestEditionEntry (usada por
+  // findMostRecentEditionId em overnight-statusline.ts e por
+  // findLatestEditionDir em benchmark-e2e.ts, que delega pra cá) precisa
+  // filtrar por isValidEditionDir ANTES de ordenar/escolher o max, senão o
+  // sentinel "vence" e é escolhido como "edição mais recente".
+  it("#3054: findLatestEditionEntry NUNCA escolhe sentinel calendário-inválido (260999) mesmo em layout nested", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      // Edição real, layout nested (#2463/#3025): data/editions/2607/260707/
+      mkdirSync(join(d, "2607", "260707"), { recursive: true });
+      // Sentinel calendário-inválido remanescente de teste, também nested,
+      // reproduzindo o formato exato reportado na issue: data/editions/2609/260999/
+      mkdirSync(join(d, "2609", "260999"), { recursive: true });
+    });
+    try {
+      const result = findLatestEditionEntry(dir);
+      assert.ok(result !== null, "deve encontrar a edição real");
+      assert.equal(
+        result!.aammdd,
+        "260707",
+        `sentinel 260999 nunca deve ser escolhido como mais recente, got ${result!.aammdd}`,
+      );
+      assert.ok(
+        result!.dir.includes(join("2607", "260707")),
+        `dir retornado deve apontar pro layout nested da edição real: ${result!.dir}`,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3054: findLatestEditionEntry retorna null quando só há sentinels calendário-inválidos", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      mkdirSync(join(d, "260999")); // dia 99
+      mkdirSync(join(d, "261301")); // mês 13
+    });
+    try {
+      assert.equal(findLatestEditionEntry(dir), null);
+    } finally {
+      cleanup();
+    }
   });
 });
 
