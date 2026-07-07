@@ -157,9 +157,11 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       /render-newsletter-html\.ts\s+--edition-dir/,
       "render-newsletter-html.ts recebe edition-dir POSICIONAL, não --edition-dir",
     );
+    // #3025: o path da edição agora é {EDITION_DIR}/ (resolvido dinamicamente,
+    // flat legado ou nested #2463), não mais o literal data/editions/{AAMMDD}/.
     assert.match(
       block,
-      /render-newsletter-html\.ts\s+data\/editions\/\{AAMMDD\}\/[^\n]*--out\s+\S*newsletter-draft\.html/,
+      /render-newsletter-html\.ts\s+\{EDITION_DIR\}\/[^\n]*--out\s+\S*newsletter-draft\.html/,
       "render-newsletter-html.ts precisa de --out newsletter-draft.html (senão escreve em stdout)",
     );
 
