@@ -1531,9 +1531,13 @@ describe("regressao #2603: buildCtrIndexByUrl -- Use Melhor por section_title (n
     assert.ok(result !== null, "deve retornar resultado nao-nulo");
     const ed = result!.editions.find((e) => e.edition === "260601");
     assert.ok(ed !== undefined, "deve ter entrada para edicao 260601");
-    // Os 2 itens de Use Melhor devem ter cliques (matched), não zeros
+    // Os 2 itens de Use Melhor devem ter cliques (matched), não zeros.
+    // #3037 self-review: essa asserção era `>= 1`, o que deixava passar mesmo com
+    // o item de section_title="🛠️ USE MELHOR" (com emoji) SEM match — só o item
+    // sem emoji (que não existe nos dados reais, ver teste #3037 abaixo) contava.
+    // Agora exige os 2 (com e sem emoji) matched, cobrindo ambas as variantes.
     const matched = ed!.items.filter((i) => i.unique_verified_clicks !== null && i.unique_verified_clicks > 0);
-    assert.ok(matched.length >= 1, `pelo menos 1 item deve ter cliques (matched=${ed!.ctr_matched}; itens: ${JSON.stringify(ed!.items)})`);
+    assert.equal(matched.length, 2, `os 2 itens devem ter cliques (matched=${ed!.ctr_matched}; itens: ${JSON.stringify(ed!.items)})`);
     assert.equal(result!.coverage.matched, matched.length, "coverage.matched deve refletir os matches");
   });
 
@@ -1563,6 +1567,69 @@ describe("regressao #2603: buildCtrIndexByUrl -- Use Melhor por section_title (n
     const ed = result!.editions.find((e) => e.edition === "260601");
     assert.ok(ed !== undefined, "edicao 260601 deve aparecer no resultado");
     assert.equal(ed!.ctr_matched, 0, "link de Destaque nao deve entrar no indice de Use Melhor");
+  });
+});
+
+describe("regressao #3037: buildCtrIndexByUrl -- match exato falhava contra o header real (com emoji)", () => {
+  test("CSV real só tem section_title com emoji ('🛠️ USE MELHOR', sem variante sem emoji) -- deve dar match", async () => {
+    // Reproduz o formato de fato emitido por renderUseMelhorSection
+    // (stitch-newsletter.ts: `**🛠️ USE MELHOR**`) -- ao contrário do fixture #2603
+    // acima, aqui NÃO há linha "USE MELHOR" sem emoji pra mascarar uma regressão do
+    // match exato. Antes do fix #3037, `/^use melhor$/i` nunca batia nesse dado real
+    // (o índice CTR ficava sempre vazio) e a cobertura caía pra 0/N sempre, não só
+    // em CSVs desatualizados -- ver #3037.
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-3037");
+    mkdirSyncUM(tmpDir, { recursive: true });
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const csv = [
+      header,
+      "2026-06-01,Ed Jun,🛠️ USE MELHOR,Como usar Cursor,https://cursor.com/tutorial,cursor.com,500,45,45,9.00,Treinamento,INT",
+    ].join("\n");
+    writeFileSyncUM(csvPath, csv, "utf8");
+
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    writeFileSyncUM(
+      joinUM(edDir, "01-approved.json"),
+      JSON.stringify({ use_melhor: [{ url: "https://cursor.com/tutorial", title: "Como usar Cursor" }] }),
+      "utf8",
+    );
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.equal(result!.coverage.matched, 1, "o unico item deve dar match mesmo com section_title emoji-prefixado");
+    assert.equal(result!.coverage.coverage_pct, 100, "cobertura deve ser 100% (nao 0%)");
+  });
+
+  test("section_title 'USE MELHOR DO MÊS' (heading mensal) NÃO deve contar como Use Melhor diário", async () => {
+    const { buildUseMelhorSummary } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const tmpDir = joinUM(tmpdirUM(), "diaria-test-um-3037b");
+    mkdirSyncUM(tmpDir, { recursive: true });
+    const csvPath = joinUM(tmpDir, "link-ctr-table.csv");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const csv = [
+      header,
+      "2026-06-01,Digest Jun,USE MELHOR DO MÊS,Como usar Cursor,https://cursor.com/tutorial,cursor.com,500,45,45,9.00,Treinamento,INT",
+    ].join("\n");
+    writeFileSyncUM(csvPath, csv, "utf8");
+
+    const edDir = joinUM(tmpDir, "editions", "260601", "_internal");
+    mkdirSyncUM(edDir, { recursive: true });
+    writeFileSyncUM(
+      joinUM(edDir, "01-approved.json"),
+      JSON.stringify({ use_melhor: [{ url: "https://cursor.com/tutorial", title: "Como usar Cursor" }] }),
+      "utf8",
+    );
+
+    const result = buildUseMelhorSummary(joinUM(tmpDir, "editions"), csvPath);
+    rmSyncUM(tmpDir, { recursive: true, force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    assert.equal(result!.coverage.matched, 0, "heading mensal nao deve alimentar o indice CTR de Use Melhor diario");
   });
 });
 
