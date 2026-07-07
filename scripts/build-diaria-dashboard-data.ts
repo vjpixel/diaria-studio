@@ -504,8 +504,19 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
   // tem categoria editorial (Treinamento, Ferramenta, etc.), não o bucket. O sinal
   // correto é o heading da seção na newsletter ("🛠️ USE MELHOR"). Aceitar também
   // category === "Use Melhor" como fallback forward-compat.
+  //
+  // #3037: o match era EXATO (`/^use melhor$/i`), mas o header real emitido por
+  // `renderUseMelhorSection` (stitch-newsletter.ts) é `**🛠️ USE MELHOR**` — o emoji
+  // prefixado faz o `<b>` extraído em build-link-ctr.ts carregar "🛠️ USE MELHOR" no
+  // section_title, que NUNCA bate no anchor `^...$`. Resultado: buildCtrIndexByUrl
+  // nunca indexava NENHUMA linha de Use Melhor (o índice ficava sempre vazio), e o
+  // join em buildUseMelhorSummary caía pra 0% de cobertura sempre — não só nos casos
+  // de CSV desatualizado. Trocado pra "contains" (como extractPublishedUseMelhorUrls
+  // já fazia pro lado do 02-reviewed.md), com a mesma exclusão de "USE MELHOR DO MÊS"
+  // (heading da edição mensal, não deve contar como Use Melhor diário).
   const sectionTitleIdx = header.indexOf("section_title");
   if (baseUrlIdx < 0 || ctrIdx < 0 || clicksIdx < 0) return index;
+  const USE_MELHOR_SECTION_RE = /use melhor(?! do m)/i;
 
   for (const line of lines.slice(1)) {
     try {
@@ -513,7 +524,7 @@ function buildCtrIndexByUrl(csvPath: string): Map<string, { ctr_pct: number; uni
       // Identifica linhas de Use Melhor por section_title (primário) ou category (fallback).
       const sectionTitle = sectionTitleIdx >= 0 ? (cols[sectionTitleIdx] ?? "").trim() : "";
       const cat = catIdx >= 0 ? (cols[catIdx] ?? "").trim() : "";
-      const isUseMelhor = /^use melhor$/i.test(sectionTitle) || cat === "Use Melhor";
+      const isUseMelhor = USE_MELHOR_SECTION_RE.test(sectionTitle) || cat === "Use Melhor";
       if (!isUseMelhor) continue;
       const url = (cols[baseUrlIdx] ?? "").trim();
       if (!url) continue;
