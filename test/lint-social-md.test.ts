@@ -518,7 +518,9 @@ describe("lintLinkedinSchema (#595)", () => {
     const base = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: fullDestaque() });
     // post_pixel longo (>600) — se vazasse pro comment_pixel do d3, dispararia
     // comment_pixel_chars_out_of_range (false positive).
-    const md = base + `\n\n## post_pixel\n\n${"Y".repeat(1000)}\n`;
+    // #3052: inclui {outros_count} + {edition_url} pra não disparar as novas
+    // regras post_pixel_missing_edition_url / post_pixel_missing_outros_count.
+    const md = base + `\n\n## post_pixel\n\nMais {outros_count} destaques em {edition_url}.\n\n${"Y".repeat(1000)}\n`;
     const r = lintLinkedinSchema(md);
     assert.equal(r.ok, true, "post_pixel não deve quebrar o lint: " + JSON.stringify(r.errors));
     const d3 = r.destaques.find((d) => d.destaque === "d3");
@@ -617,6 +619,63 @@ describe("lintLinkedinSchema (#595)", () => {
       (e) => e.rule === "main_post_mentions_diaria" || e.rule === "main_post_mentions_diaria_url",
     );
     assert.equal(brandErrs.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3052: lintLinkedinSchema — post_pixel deve abrir com {outros_count} +
+// {edition_url}, mesma convenção do comment_diaria (§3b social-linkedin.md)
+// ---------------------------------------------------------------------------
+
+describe("lintLinkedinSchema — post_pixel placeholders (#3052)", () => {
+  function mkMdWithPostPixelBody(postPixelBody: string): string {
+    const d = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nSiga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
+    return `# LinkedIn\n\n## d1${d}\n## d2${d}\n## d3${d}\n## post_pixel\n\n${postPixelBody}\n`;
+  }
+
+  it("ok=false quando post_pixel não contém {edition_url} nem URL resolvida", () => {
+    const md = mkMdWithPostPixelBody(
+      "Mais {outros_count} novidades hoje. Opinião pessoal do Pixel sem link nenhum aqui.",
+    );
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_edition_url");
+    assert.equal(errs.length, 1, JSON.stringify(r.errors));
+  });
+
+  it("ok=false quando post_pixel não contém {outros_count}", () => {
+    const md = mkMdWithPostPixelBody(
+      "Reuni tudo na edição em {edition_url}. Opinião pessoal do Pixel sem contagem aqui.",
+    );
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_outros_count");
+    assert.equal(errs.length, 1, JSON.stringify(r.errors));
+  });
+
+  it("ok=true (pra essas regras) quando post_pixel abre com ambos os placeholders literais", () => {
+    const md = mkMdWithPostPixelBody(
+      "Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto: opinião pessoal do Pixel sobre o D1.",
+    );
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter(
+      (e) => e.destaque === "post_pixel" && (e.rule === "post_pixel_missing_edition_url" || e.rule === "post_pixel_missing_outros_count"),
+    );
+    assert.equal(errs.length, 0, JSON.stringify(r.errors));
+  });
+
+  it("aceita post_pixel com URL diar.ia.br/p/<slug> já resolvida (pós-Stage 6) em vez do placeholder", () => {
+    const md = mkMdWithPostPixelBody(
+      "Hoje saíram mais 9 novidades de IA — reuni tudo na edição em https://diar.ia.br/p/modelos-replicam. Mas o que me fez parar foi isto.",
+    );
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_edition_url");
+    assert.equal(errs.length, 0, JSON.stringify(r.errors));
+  });
+
+  it("post_pixel ausente do md → nenhuma das novas regras dispara (no-op)", () => {
+    const noPixelMd = `# LinkedIn\n\n## d1\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
+    const r = lintLinkedinSchema(noPixelMd);
+    const errs = r.errors.filter((e) => e.rule === "post_pixel_missing_edition_url" || e.rule === "post_pixel_missing_outros_count");
+    assert.equal(errs.length, 0, JSON.stringify(r.errors));
   });
 });
 

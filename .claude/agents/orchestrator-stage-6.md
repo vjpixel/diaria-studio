@@ -75,18 +75,18 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
-**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md`:
+**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md` **com `{outros_count}`/`{edition_url}` já resolvidos (#3052)** — `post_pixel` nunca passa pelo dispatch de `publish-linkedin.ts` (postagem 100% manual, #1690), então Stage 6 é o ponto de resolução equivalente:
 
 ```bash
-node -e "
-  const fs=require('fs');
-  const md=fs.readFileSync('{EDITION_DIR}/03-social.md','utf8');
-  const m=md.match(/^## post_pixel\b[^\n]*\n([\s\S]*?)(?=\n## |\$)/m);
-  process.stdout.write(m?m[1].trim():'(nao encontrado)');
-"
+npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/
 ```
 
-Guardar em `POST_PIXEL_TEXT`.
+Exit code:
+- `0` → texto resolvido normalmente.
+- `1` → estrutura ausente (03-social.md ou seção post_pixel não encontrada) — mostrar `(nao encontrado)` no lembrete, não bloqueia o gate.
+- `2` → `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (mesma regra de #2153 — post_pixel é amplificação opcional).
+
+Guardar stdout em `POST_PIXEL_TEXT`.
 
 **Se modo interativo:** apresentar gate:
 

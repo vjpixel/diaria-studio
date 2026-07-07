@@ -46,8 +46,7 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
-import { applyStage2Caps } from "./lib/apply-stage2-caps.ts";
+import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
@@ -773,48 +772,12 @@ async function main(): Promise<void> {
   // Colocado APÓS o image-cache fail-fast (#999/#1275) para que os guards mais críticos
   // (Worker config e imagens faltando) tenham prioridade no stderr do editor.
   //
-  // #2331 fixes:
-  //   F1: break estava fora do try/catch — JSON corrompido ainda rompia o loop,
-  //       silenciando o fallback para 01-approved.json. Agora: só continua quando
-  //       a leitura/parse succeed (break só no sucesso).
-  //   F2: fallback pro uncapped aplica applyStage2Caps() antes de contar, para
-  //       não inflar o número (uncapped inclui lancamento/radar extras antes do cap).
-  //   F3: se outrosCount ainda é null (nenhum arquivo legível), abortar o script
-  //       — NUNCA despachar literal {outros_count} no LinkedIn.
+  // #2331/F1-F2-F3: lógica de fallback + fail-fast extraída para
+  // resolveOutrosCountFromEditionDir() (#3052) — reusada por resolve-post-pixel.ts,
+  // que precisa da mesma resolução pro `## post_pixel` (nunca dispatchado por
+  // este script, ver scripts/resolve-post-pixel.ts).
   {
-    const cappedPath = resolve(editionDir, "_internal", "01-approved-capped.json");
-    const uncappedPath = resolve(editionDir, "_internal", "01-approved.json");
-
-    // 1ª tentativa: capped (preferencial — estado FINAL)
-    if (existsSync(cappedPath)) {
-      try {
-        const approvedData = JSON.parse(readFileSync(cappedPath, "utf8")) as {
-          lancamento?: unknown[];
-          radar?: unknown[];
-          use_melhor?: unknown[];
-          video?: unknown[];
-        };
-        outrosCount = resolveOutrosCount(approvedData);
-        console.log(`#2319: outros_count resolvido de capped → ${outrosCount}`);
-      } catch (e) {
-        // F1: corrupção no capped NÃO rompe o fluxo — tenta uncapped abaixo
-        console.warn(`#2319: falha ao parsear 01-approved-capped.json (${(e as Error).message}) — tentando 01-approved.json com caps aplicados`);
-      }
-    }
-
-    // 2ª tentativa: uncapped com caps aplicados (F2 — evita contagem inflada)
-    if (outrosCount === null && existsSync(uncappedPath)) {
-      try {
-        const approvedData = JSON.parse(readFileSync(uncappedPath, "utf8")) as Parameters<typeof applyStage2Caps>[0];
-        // Aplicar caps do Stage 2 pro uncapped para que a contagem reflita
-        // o que foi realmente publicado (sem os extras cortados pelo cap).
-        const { approved: cappedData } = applyStage2Caps(approvedData);
-        outrosCount = resolveOutrosCount(cappedData);
-        console.log(`#2319: outros_count resolvido de uncapped+caps → ${outrosCount}`);
-      } catch (e) {
-        console.warn(`#2319: falha ao parsear 01-approved.json — ${(e as Error).message}`);
-      }
-    }
+    outrosCount = resolveOutrosCountFromEditionDir(editionDir);
 
     // F3: se nenhum arquivo foi legível, FAIL LOUD — nunca despachar literal
     if (outrosCount === null) {
