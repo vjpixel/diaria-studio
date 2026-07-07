@@ -19,6 +19,16 @@ que uma rotina em nuvem não teria. Requer a máquina ligada às 21h.
 do PATH (Task Scheduler às vezes tem PATH reduzido). Cria `data/dashboard-push/`
 se preciso e acrescenta stdout/stderr a `data/dashboard-push/task.log`.
 
+**#3042: dois passos, não um.** Antes do push pro KV, o wrapper roda
+`scripts/build-link-ctr.ts` (regenera `data/link-ctr-table.csv` a partir do
+cache local de posts Beehiiv, modo incremental) — sem isso o CSV nunca era
+reconstruído por nenhuma task agendada e ficava stale indefinidamente,
+degradando silenciosamente o join de CTR em várias seções do dashboard (Use
+Melhor, top-links, audience). Esse passo é **fail-soft**: `build-link-ctr.ts`
+escreve o CSV com um único `writeFileSync` no final, então uma falha no meio
+não corrompe o arquivo existente — só o deixa tão fresco quanto estava antes.
+O wrapper loga o exit code mas não aborta o push por causa dele.
+
 O namespace ID do KV (`4610c3016818483cab141f459a963de3`) é o de produção do
 Worker `diaria-dashboard`; está embutido no `.cmd` para não precisar de env var
 adicional (o mesmo valor que o operator usa com `--kv-namespace-id`).
