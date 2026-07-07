@@ -72,6 +72,7 @@ import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
 import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
 import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import { isValidEditionDir } from "./lib/edition-utils.ts"; // #3054: rejeita sentinels calendário-inválidos (ex: 260999)
 import { getMachineId } from "./lib/machine-id.ts"; // #3033: filtra plan.json de develop de OUTRA máquina
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
@@ -905,7 +906,11 @@ export function findMostRecentEditionId(cwd: string): string | null {
   try {
     const editionsDir = join(cwd, "data", "editions");
     // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
+    // #3054: filtra por isValidEditionDir ANTES de ordenar — enumerateEditionDirs só
+    // valida estruturalmente (/^\d{6}$/), então um sentinel calendário-inválido como
+    // "260999" (dia 99) ordena lexicograficamente acima de qualquer data real de 2026.
     const entries = [...enumerateEditionDirs(editionsDir).keys()]
+      .filter((name) => isValidEditionDir(name))
       .sort()
       .reverse(); // most recent first (lexicographic desc)
 

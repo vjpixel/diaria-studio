@@ -49,6 +49,27 @@ export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
 }
 
 /**
+ * Encontra a edição calendário-válida mais recente em `editionsDir`, retornando
+ * tanto o AAMMDD quanto o path resolvido no disco (útil pra consumidores que
+ * precisam do diretório, não só do ID — ex: `findLatestEditionDir` em
+ * `benchmark-e2e.ts`, que delega pra cá, #3054).
+ *
+ * #3054: reusa `listEditions` (já filtrado por `isValidEditionDir`) — nunca
+ * escolhe sentinels calendário-inválidos como `260999` (dia 99), que batem no
+ * regex estrutural `/^\d{6}$/` de `enumerateEditionDirs` mas ordenariam
+ * lexicograficamente acima de qualquer data real de 2026 (`260999` > `260707`)
+ * se não filtrados antes de ordenar.
+ */
+export function findLatestEditionEntry(
+  editionsDir: string = EDITIONS_DIR,
+): { aammdd: string; dir: string } | null {
+  const aammdd = listEditions(editionsDir)[0];
+  if (!aammdd) return null;
+  const dir = enumerateEditionDirs(editionsDir).get(aammdd)!;
+  return { aammdd, dir };
+}
+
+/**
  * Retorna o AAMMDD da edição imediatamente anterior a `currentAammdd`,
  * ou `null` se não houver. Considera apenas edições que existem no
  * filesystem — a comparação é lexicográfica (AAMMDD bate com ordem

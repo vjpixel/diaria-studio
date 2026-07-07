@@ -699,6 +699,39 @@ describe("findMostRecentEditionId — I/O helper (#2255)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // #3054: enumerateEditionDirs só filtra estruturalmente (/^\d{6}$/) — um
+  // sentinel calendário-inválido como "260999" (dia 99, leftover de teste)
+  // bate no regex mas ordena lexicograficamente ACIMA de qualquer edição real
+  // de 2026 ("260999" > "260707"). Sem filtrar por isValidEditionDir antes de
+  // ordenar, findMostRecentEditionId retornaria "260999" em vez da edição
+  // real mais recente.
+  it("#3054: NUNCA escolhe sentinel calendário-inválido (260999) mesmo em layout nested", () => {
+    const root = join(tmpdir(), `idle-test-sentinel-3054-${Date.now()}`);
+    // Edição real, layout nested (#2463/#3025): data/editions/2607/260707/
+    mkdirSync(join(root, "data", "editions", "2607", "260707"), { recursive: true });
+    // Sentinel calendário-inválido remanescente de teste, também nested,
+    // reproduzindo o formato exato reportado na issue: data/editions/2609/260999/
+    mkdirSync(join(root, "data", "editions", "2609", "260999"), { recursive: true });
+    try {
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, "260707", `sentinel 260999 nunca deve ser escolhido como mais recente, got ${id}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#3054: sentinel calendário-inválido em layout flat (260999) também é ignorado", () => {
+    const root = join(tmpdir(), `idle-test-sentinel-flat-3054-${Date.now()}`);
+    mkdirSync(join(root, "data", "editions", "260707"), { recursive: true });
+    mkdirSync(join(root, "data", "editions", "260999"), { recursive: true }); // dia 99
+    try {
+      const id = findMostRecentEditionId(root);
+      assert.equal(id, "260707", `sentinel 260999 nunca deve ser escolhido como mais recente, got ${id}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("precedência completa: edição > overnight > idle (#2255)", () => {

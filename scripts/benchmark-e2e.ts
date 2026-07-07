@@ -26,7 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { editionsRoot } from "./lib/edition-paths.ts";
-import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import { findLatestEditionEntry } from "./lib/edition-utils.ts"; // #3054: filtra sentinels calendário-inválidos (ex: 260999)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -99,16 +99,16 @@ function filesSince(dir: string, since: string[]): string[] {
  * Encontra a edição REAL mais recente em data/editions/ (usada como fixture
  * pelo benchmark, que copia arquivos dela em vez de rodar LLM agents).
  *
- * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
- * `enumerateEditionDirs` — nunca usar `editionDir(aammdd)` aqui, que sempre
- * retorna o path NESTED (write-path helper, #2463 step2) mesmo quando a
- * edição encontrada existe no disco em layout flat.
+ * #3054: delega pra `findLatestEditionEntry` (scripts/lib/edition-utils.ts) —
+ * mesmo helper compartilhado usado por `listEditions`/`findMostRecentEditionId`,
+ * que filtra por `isValidEditionDir` ANTES de ordenar. Sem esse filtro, um
+ * sentinel calendário-inválido como `260999` (dia 99) — que bate no regex
+ * estrutural `/^\d{6}$/` de `enumerateEditionDirs` mas não é uma data real —
+ * ordenaria lexicograficamente acima de qualquer edição real de 2026.
+ * Regressão coberta pelo describe("edition-utils") em `test/load-carry-over.test.ts`.
  */
 function findLatestEditionDir(): { aammdd: string; dir: string } | null {
-  const editionDirsByAammdd = enumerateEditionDirs(resolve(ROOT, editionsRoot()));
-  const aammdd = [...editionDirsByAammdd.keys()].sort().reverse()[0];
-  if (!aammdd) return null;
-  return { aammdd, dir: editionDirsByAammdd.get(aammdd)! };
+  return findLatestEditionEntry(resolve(ROOT, editionsRoot()));
 }
 
 // ---- Main ----
