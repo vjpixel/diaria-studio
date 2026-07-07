@@ -189,6 +189,19 @@ describe("discoverEditions (#2475)", () => {
     const result = discoverEditions(tmp);
     assert.deepEqual(result, ["260501"]);
   });
+
+  test("#2463/#3025: enxerga edições no layout NESTED (data/editions/{AAMM}/{AAMMDD}/) misturadas com flat legado", async () => {
+    // Antes (readdirSync direto no top-level, filtro /^\d{6}$/): uma edição no
+    // layout nested pós-#3023 era invisível — o dashboard/poll summary
+    // silenciosamente não incluía essas edições.
+    const { discoverEditions } = await import("../scripts/build-poll-eia-data.ts");
+    const tmp = mkdtempSync(join(tmpdir(), "poll-eia-disc-nested-"));
+    mkdirSync(join(tmp, "260418")); // flat legado
+    mkdirSync(join(tmp, "2606", "260622"), { recursive: true }); // nested novo
+
+    const result = discoverEditions(tmp);
+    assert.deepEqual(result, ["260418", "260622"]);
+  });
 });
 
 // ─── editionsToMonthSlugs ─────────────────────────────────────────────────────

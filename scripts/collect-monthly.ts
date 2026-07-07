@@ -32,6 +32,7 @@ import {
   parseMonthlyCycleArg,
 } from "./lib/mensal/monthly-paths.ts";
 import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 // Alias para compat com usos internos (path join na MONTHLY_BASE).
 const MONTHLY_DIR = MONTHLY_BASE;
@@ -403,9 +404,13 @@ export function collectMonth(
   const rawFiles = listRawPosts(rawPostsRoot);
   const rawByEdition = new Map(rawFiles.map((f) => [f.edition, f]));
 
+  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
+  // um `readdirSync(editionsRoot)` direto perdia edições no layout nested
+  // pós-#3023.
   const localEditionRe = new RegExp(`^${yymm}\\d{2}$`);
+  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
   const localSet = new Set(
-    existsSync(editionsRoot) ? readdirSync(editionsRoot).filter((n) => localEditionRe.test(n)) : [],
+    [...editionDirsByAammdd.keys()].filter((n) => localEditionRe.test(n)),
   );
 
   const allEditions = [...new Set([...localSet, ...rawByEdition.keys()])].sort();
@@ -414,8 +419,9 @@ export function collectMonth(
   const source_counts = { local: 0, raw: 0, missing: 0 };
 
   for (const edition of allEditions) {
-    const localPath = join(editionsRoot, edition, "02-reviewed.md");
-    if (localSet.has(edition) && existsSync(localPath)) {
+    const localEditionDir = editionDirsByAammdd.get(edition);
+    const localPath = localEditionDir ? join(localEditionDir, "02-reviewed.md") : undefined;
+    if (localSet.has(edition) && localPath && existsSync(localPath)) {
       const md = readFileSync(localPath, "utf8");
       const dest = parseLocalEdition(edition, md);
       // Paridade com parsePost (raw-post): avisa tanto no caso 0 quanto no

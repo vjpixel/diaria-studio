@@ -14,11 +14,12 @@
  * `intentional_error` de cada `02-reviewed.md`, agrega.
  */
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
 import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 interface MonthError {
   edition: string;
@@ -32,13 +33,14 @@ interface MonthError {
   reason?: string; // when declared=false
 }
 
+// #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+// `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
+// edições no layout nested pós-#3023. `enumerateEditionDirs` já garante o
+// formato `/^\d{6}$/`, então só falta o filtro por prefixo do mês.
 function listEditionsForMonth(monthYYMM: string): string[] {
   const editionsDir = resolve(process.cwd(), "data/editions");
-  if (!existsSync(editionsDir)) return [];
-  const all = readdirSync(editionsDir);
-  // Match `YYMMdd` format (6 digits, starts with monthYYMM)
-  return all
-    .filter((name) => /^\d{6}$/.test(name) && name.startsWith(monthYYMM))
+  return [...enumerateEditionDirs(editionsDir).keys()]
+    .filter((name) => name.startsWith(monthYYMM))
     .sort();
 }
 
@@ -163,8 +165,11 @@ function main(): number {
     return 0;
   }
 
+  // #2463/#3025: resolve o path REAL (flat ou nested) de cada edição — nunca
+  // `resolve(process.cwd(), "data/editions", edition)`, que assume flat.
+  const editionDirsByAammdd = enumerateEditionDirs(resolve(process.cwd(), "data/editions"));
   const errors = editions.map((edition) =>
-    extractError(resolve(process.cwd(), "data/editions", edition), edition),
+    extractError(editionDirsByAammdd.get(edition)!, edition),
   );
 
   if (args.json) {

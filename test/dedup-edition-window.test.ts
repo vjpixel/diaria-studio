@@ -217,4 +217,33 @@ describe("recentEditionDirs — janela não é poluída por dir sintético (#156
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#2463/#3025: enxerga edições no layout NESTED (data/editions/{AAMM}/{AAMMDD}/) misturadas com flat legado", () => {
+    // Antes (readdirSync direto no top-level de editionsDir, sem enumerateEditionDirs):
+    // uma edição criada no layout nested pós-#3023 era invisível pro dedup contra
+    // past-editions locais — o destaque publicado nela podia ser re-publicado.
+    const dir = mkdtempSync(join(tmpdir(), "ed-nested-"));
+    try {
+      // 260528 — flat legado
+      mkdirSync(join(dir, "260528", "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "260528", "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ article: { url: "https://x.com/260528-flat" } }] }),
+      );
+      // 260529 — nested novo (data/editions/2605/260529/)
+      mkdirSync(join(dir, "2605", "260529", "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "2605", "260529", "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ article: { url: "https://x.com/260529-nested" } }] }),
+      );
+
+      assert.deepEqual(recentEditionDirs(dir, 3), ["260529", "260528"]);
+
+      const urls = extractPastDestaqueUrls(dir, 3);
+      assert.ok(urls.has(canonicalize("https://x.com/260528-flat")), "edição flat deve estar na janela");
+      assert.ok(urls.has(canonicalize("https://x.com/260529-nested")), "edição nested deve estar na janela");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

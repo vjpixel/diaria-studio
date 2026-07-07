@@ -6,9 +6,9 @@
  * da edição imediatamente anterior.
  */
 
-import { existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enumerateEditionDirs } from "./find-current-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EDITIONS_DIR = resolve(ROOT, "data", "editions");
@@ -37,10 +37,13 @@ export function isValidEditionDir(name: string): boolean {
 /**
  * Lista todas as pastas de edição válidas (AAMMDD), em ordem decrescente
  * (mais nova primeiro). Aceita um diretório alternativo para testes.
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — antes só via `readdirSync` direto, o que perdia
+ * edições criadas no layout nested pós-#3023.
  */
 export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
-  if (!existsSync(editionsDir)) return [];
-  return readdirSync(editionsDir)
+  return [...enumerateEditionDirs(editionsDir).keys()]
     .filter((name) => isValidEditionDir(name))
     .sort((a, b) => b.localeCompare(a));
 }

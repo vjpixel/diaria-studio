@@ -368,6 +368,24 @@ describe("edition-utils", () => {
     }
   });
 
+  it("#2463/#3025: listEditions + getPreviousEditionDate enxergam edições no layout NESTED (data/editions/{AAMM}/{AAMMDD}/)", () => {
+    // Antes (readdirSync direto no top-level de editionsDir): uma edição
+    // criada pelo layout nested pós-#3023 (data/editions/2604/260429/) era
+    // invisível — só o layout flat legado (data/editions/260427/) era
+    // enumerado. Mistura flat + nested no mesmo diretório simula o período
+    // de coexistência entre os dois layouts (#2463 step 3 ainda não rodou).
+    const { dir, cleanup } = withTempEditions((d) => {
+      mkdirSync(join(d, "260427")); // flat legado
+      mkdirSync(join(d, "2604", "260429"), { recursive: true }); // nested novo
+    });
+    try {
+      assert.deepEqual(listEditions(dir), ["260429", "260427"]);
+      assert.equal(getPreviousEditionDate("260429", dir), "260427");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("getPreviousEditionDate retorna a edição imediatamente anterior", () => {
     const { dir, cleanup } = withTempEditions((d) => {
       mkdirSync(join(d, "260427"));

@@ -13,13 +13,18 @@ Antes de publicar, o orchestrator monta um **resumo consolidado da edição fina
 
 **`--no-gates` behavior:** quando `auto_approve = true` (via `--no-gates`), o orchestrator executa o pré-render completo e pula **apenas o gate humano** — o resumo é gerado mas não apresentado. Prossegue automaticamente para Etapa 5.
 
+**`{EDITION_DIR}` (#2463/#3025):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Resolver **uma vez**, logo após ter `{AAMMDD}`, e usar em todo path abaixo — nunca montar `data/editions/` + `{AAMMDD}` à mão:
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### Pré-condição: sentinel Stage 3
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-3.md §Escrever sentinel de conclusão do Stage 3 -->
 
 **#2316: 2-destaque editions** — antes de rodar o sentinel, verificar quantos destaques a edição tem:
 ```bash
-npx tsx scripts/extract-destaques.ts data/editions/{AAMMDD}/02-reviewed.md 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(String(d.destaques.length))"
+npx tsx scripts/extract-destaques.ts {EDITION_DIR}/02-reviewed.md 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(String(d.destaques.length))"
 ```
 Se 2 destaques: usar `--outputs` sem `04-d3-*.jpg` (os arquivos D3 não existem). Se 3 destaques: comando padrão abaixo.
 
@@ -47,7 +52,7 @@ Exit code handling:
 
 **Marcar Stage 4 `running` no início (#1783).** Garante o `start` pra que o `done` do §4i feche a duração no relatório. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status running
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status running
 ```
 
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que um MCP ficou offline, **parar imediatamente**, logar via:
@@ -71,7 +76,7 @@ npx tsx scripts/render-halt-banner.ts \
   ```
 - **Sync pull antes de começar** (todos os arquivos que entram na revisão + pre-render):
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 4 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
   ```
   Editor pode ter refinado texto/imagens no Drive.
 
@@ -81,14 +86,14 @@ npx tsx scripts/render-halt-banner.ts \
 
 0. **capture-livros-promo — ANTES do upload (#2071).** Re-captura o screenshot da página de livros se o conteúdo mudou (md5 diferente):
    ```bash
-   npx tsx scripts/capture-livros-promo.ts --edition-dir data/editions/{AAMMDD}/
+   npx tsx scripts/capture-livros-promo.ts --edition-dir {EDITION_DIR}/
    ```
    Exit code handling: `0` = imagem nova em `04-livros-promo.jpg`; `2` = md5 igual, nada a fazer; `1` = falha — logar warn + continuar (asset opcional).
 
 1. **upload-images-public — TODOS modos** (cobre pre-render completo):
    ```bash
-   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode newsletter
-   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
+   npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode newsletter
+   npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
    ```
 
 2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker. **Capturar a `url` do JSON stdout de `upload-html-public.ts`** — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML). Sem o hash, fetch retorna 404 (review #1612 regression).
@@ -107,9 +112,9 @@ npx tsx scripts/render-halt-banner.ts \
 3. Pre-render do social preview HTML:
    ```bash
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.
-   npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html --images data/editions/{AAMMDD}/06-public-images.json
+   npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
    # #1734: --persist-to grava a URL durável (com hash) em 05-social-preview.json.
-   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
+   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
    ```
 
 4. close-poll (set gabarito — idempotente):
@@ -119,7 +124,7 @@ npx tsx scripts/render-halt-banner.ts \
 
 5. **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` está populado e env vars críticas estão setadas:
    ```bash
-   npx tsx scripts/check-invariants.ts --stage 4 --edition-dir data/editions/{AAMMDD}/
+   npx tsx scripts/check-invariants.ts --stage 4 --edition-dir {EDITION_DIR}/
    ```
    Exit 1 = pausar com violations no stderr. Editor corrige e re-roda.
 
@@ -138,13 +143,13 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 
 **4c.2 — Lints consolidados:**
 ```bash
-npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --md data/editions/{AAMMDD}/02-reviewed.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
-npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md data/editions/{AAMMDD}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md data/editions/{AAMMDD}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md data/editions/{AAMMDD}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check no-trailing-ellipsis --md data/editions/{AAMMDD}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md data/editions/{AAMMDD}/02-reviewed.md
+npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --md {EDITION_DIR}/02-reviewed.md --approved {EDITION_DIR}/_internal/01-approved.json
+npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check no-trailing-ellipsis --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md {EDITION_DIR}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
@@ -158,25 +163,25 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash
-npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
 ```
 Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
 
 **Antítese-revelação social (#2526) — WARN-ONLY:**
 ```bash
-npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
 ```
 Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate.
 
 **Gancho editorial emendado social (#2658) — WARN-ONLY:**
 ```bash
-npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
 ```
 Primo de #2526: detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
 
 **Guard determinístico do humanizador social (#2279, #2529):**
 ```bash
-npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
 ```
 Exit code handling:
 - `0` → humanizador rodou e `03-social.md` não foi editado depois. Continuar.
@@ -187,17 +192,17 @@ Exit code handling:
 
   **Re-humanizar antes de aprovar** (quando exit 2, independente de tics):
   ```
-  Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
+  Skill("humanizador", "Leia {EDITION_DIR}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
   ```
   Após humanização: (a) re-rodar lints do §2c que cobrem qualidade social:
   ```bash
   npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
-    --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
-    --md data/editions/{AAMMDD}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+    --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
+    --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
   ```
-  (b) gravar sentinel: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/`
+  (b) gravar sentinel: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/`
   (c) re-rodar o check; só prosseguir quando exit 0.
 
 **4c.3 — Imagens geradas:**
@@ -218,24 +223,24 @@ Disparar o subagente `fact-checker` em paralelo com (ou logo após) os lints aci
 
 ```bash
 # 1. Validar pré-condições e obter parâmetros para o subagente:
-npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/
 ```
 
 Em seguida, despachar o subagente `fact-checker` via Agent tool com os parâmetros:
 ```
 Agent("fact-checker", {
-  newsletter_path: "data/editions/{AAMMDD}/02-reviewed.md",
-  social_path: "data/editions/{AAMMDD}/03-social.md",
-  approved_json_path: "data/editions/{AAMMDD}/_internal/01-approved.json",
-  out_path: "data/editions/{AAMMDD}/_internal/fact-check.json"
+  newsletter_path: "{EDITION_DIR}/02-reviewed.md",
+  social_path: "{EDITION_DIR}/03-social.md",
+  approved_json_path: "{EDITION_DIR}/_internal/01-approved.json",
+  out_path: "{EDITION_DIR}/_internal/fact-check.json"
 })
 ```
 
 Após o subagente concluir (gravar `_internal/fact-check.json`), formatar o gate summary:
 ```bash
 # 2. Formatar seção para o gate (lê o fact-check.json gravado pelo subagente):
-npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/ \
-  --input-json data/editions/{AAMMDD}/_internal/fact-check.json
+npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ \
+  --input-json {EDITION_DIR}/_internal/fact-check.json
 ```
 
 **Exit code handling:**
@@ -249,7 +254,7 @@ npx tsx scripts/run-fact-checker.ts --edition-dir data/editions/{AAMMDD}/ \
 Após o subagente gravar `_internal/fact-check.json`, aplicar correções automáticas de claims `DIVERGENT` com `suggested_fix` presente — antes de montar o gate:
 
 ```bash
-npx tsx scripts/apply-factcheck-autofix.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/apply-factcheck-autofix.ts --edition-dir {EDITION_DIR}/
 ```
 
 Exit code handling:
@@ -260,17 +265,17 @@ Exit code handling:
 
 ```bash
 # Re-render newsletter HTML com o 02-reviewed.md já corrigido
-npx tsx scripts/render-newsletter-html.ts data/editions/{AAMMDD}/ --format html --out data/editions/{AAMMDD}/_internal/newsletter-draft.html
+npx tsx scripts/render-newsletter-html.ts {EDITION_DIR}/ --format html --out {EDITION_DIR}/_internal/newsletter-draft.html
 npx tsx scripts/substitute-image-urls.ts \
-  --html data/editions/{AAMMDD}/_internal/newsletter-draft.html \
-  --out data/editions/{AAMMDD}/_internal/newsletter-final.html \
-  --images data/editions/{AAMMDD}/06-public-images.json
+  --html {EDITION_DIR}/_internal/newsletter-draft.html \
+  --out {EDITION_DIR}/_internal/newsletter-final.html \
+  --images {EDITION_DIR}/06-public-images.json
 # Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
 # --no-wrap é OBRIGATÓRIO (#2550): sobe o fragmento bruto, igual ao §4b/beehiiv-playbook.md.
 # Sem ele o Worker hospeda o HTML embrulhado no preview-wrapper → paste no Beehiiv quebra.
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
-  --html data/editions/{AAMMDD}/_internal/newsletter-final.html \
-  --persist-to data/editions/{AAMMDD}/_internal/04-newsletter-url.json \
+  --html {EDITION_DIR}/_internal/newsletter-final.html \
+  --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
   --field newsletter_url
 ```
 
@@ -303,7 +308,7 @@ Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b
 
 **Sync push antes do gate (#507):** Subir outputs pra o editor revisar no Drive antes de aprovar:
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 4 --files 02-reviewed.md,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg
 ```
 
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
@@ -400,7 +405,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
    - O orchestrator **avisa** o editor imediatamente: "Reordenação detectada — o `## post_pixel` pode estar referenciando o D1 antigo. Re-verificar e re-sincronizar antes de aprovar."
-   - Re-rodar lint: `npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md data/editions/{AAMMDD}/03-social.md`.
+   - Re-rodar lint: `npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md`.
    - Se falhar (exit 1): o post_pixel precisa ser atualizado manualmente — reescrever o bloco `## post_pixel` em `03-social.md` para refletir o D1 atual, depois re-rodar o lint até exit 0. **Não há modo de re-dispatch parcial** — o `social-linkedin` não aceita `--only post_pixel` e um re-dispatch completo clobberia os posts de d1/d2/d3 já aprovados. Edição manual do bloco é a única via segura.
    - Lint verde (exit 0) = post_pixel já alinhado com o D1 atual → sem bloqueio.
 
@@ -417,20 +422,20 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --write \
         --bypass-reason "humanizador re-rodou após ajuste {descrição} no Stage 4" \
-        --edition-dir data/editions/{AAMMDD}/
+        --edition-dir {EDITION_DIR}/
       ```
       O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar.
    4. Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b):
       ```bash
       npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
-        --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
-        --md data/editions/{AAMMDD}/03-social.md
-      npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
-      npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+        --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
+        --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
       ```
    5. Re-rodar check para confirmar exit 0 antes de voltar ao gate:
       ```bash
-      npx tsx scripts/check-humanizer-social.ts --check --edition-dir data/editions/{AAMMDD}/
+      npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
@@ -452,7 +457,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 
 **Marcar Stage 4 `done` AQUI (#1783):**
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status done
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status done
 ```
 
 - Falha do sentinel → logar warn. Não bloquear.

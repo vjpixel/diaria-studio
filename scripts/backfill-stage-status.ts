@@ -23,7 +23,7 @@
  * estava presente.
  */
 
-import { readdirSync, existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -31,6 +31,7 @@ import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { parseArgsSimple } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -105,17 +106,16 @@ function applyFixes(editionDir: string, editionId: string, fixes: Fix[]): number
  * teriam seu `_internal/stage-status.json` SOBRESCRITO por applyFixes quando
  * rodado sem --dry-run (escrita destrutiva em edições arquivadas). Mesmo guard
  * que dedup.ts adotou no #1567/#1627.
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
+ * edições no layout nested pós-#3023.
  */
 export function listEditionDirs(editionsDir: string, editionFilter?: string): string[] {
-  return readdirSync(editionsDir).filter((name) => {
+  const found = enumerateEditionDirs(editionsDir);
+  return [...found.keys()].filter((name) => {
     if (editionFilter && name !== editionFilter) return false;
-    if (!isValidEditionDir(name)) return false;
-    const p = resolve(editionsDir, name);
-    try {
-      return statSync(p).isDirectory();
-    } catch {
-      return false;
-    }
+    return isValidEditionDir(name);
   });
 }
 
@@ -126,10 +126,11 @@ function main(): void {
     console.error(`Edições dir não encontrado: ${editionsDir}`);
     process.exit(1);
   }
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
   const entries = listEditionDirs(editionsDir, args.editionFilter);
   const allFixes: Fix[] = [];
   for (const editionId of entries) {
-    const editionDir = resolve(editionsDir, editionId);
+    const editionDir = editionDirsByAammdd.get(editionId)!;
     const fixes = scanEdition(editionDir, editionId);
     if (fixes.length === 0) continue;
     allFixes.push(...fixes);

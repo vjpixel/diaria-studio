@@ -47,6 +47,7 @@
 import { existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "../workers/diaria-dashboard/src/types.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
@@ -129,17 +130,14 @@ export function editionToMonthSlug(edition: string): string | null {
 /**
  * Descobre edições disponíveis em data/editions/ (AAMMDD, ordem crescente).
  * Retorna array vazio se diretório não existe.
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — as edições aqui só viram string (AAMMDD) usada como
+ * chave de API (`?edition=AAMMDD`), sem path building local, então não há
+ * mais nada a ajustar downstream.
  */
 export function discoverEditions(editionsDir: string): string[] {
-  if (!existsSync(editionsDir)) return [];
-  try {
-    return readdirSync(editionsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
-      .map((d) => d.name)
-      .sort();
-  } catch {
-    return [];
-  }
+  return [...enumerateEditionDirs(editionsDir).keys()].sort();
 }
 
 /**

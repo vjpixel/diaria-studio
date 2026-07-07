@@ -10,10 +10,11 @@
  * existentes (`./dedup.ts` / `../scripts/dedup.ts`).
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize } from "./url-utils.ts";
 import { isValidEditionDir } from "./edition-utils.ts"; // #1680: validador consolidado
+import { enumerateEditionDirs } from "./find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 export { isValidEditionDir };
 
@@ -364,13 +365,16 @@ function readApprovedTitles(approvedPath: string): string[] {
  * true se o dir contém algum artefato de edição real (não é um marker vazio).
  * Espelha as fontes que extractPastDestaqueUrls/extractPastEditionArticleTitles
  * sabem ler: MD revisado, HTML final publicado, ou approved.json (root/_internal).
+ *
+ * #2463/#3025: recebe o diretório REAL da edição (já resolvido, flat ou nested)
+ * em vez de `editionsDir` + `name` — chamador resolve via `enumerateEditionDirs`.
  */
-function hasEditionArtifact(editionsDir: string, name: string): boolean {
+function hasEditionArtifact(editionDir: string): boolean {
   return [
-    resolve(editionsDir, name, "02-reviewed.md"),
-    resolve(editionsDir, name, "_internal", "newsletter-final.html"),
-    resolve(editionsDir, name, "_internal", "01-approved.json"),
-    resolve(editionsDir, name, "01-approved.json"),
+    resolve(editionDir, "02-reviewed.md"),
+    resolve(editionDir, "_internal", "newsletter-final.html"),
+    resolve(editionDir, "_internal", "01-approved.json"),
+    resolve(editionDir, "01-approved.json"),
   ].some((p) => existsSync(p));
 }
 
@@ -380,20 +384,20 @@ function hasEditionArtifact(editionsDir: string, name: string): boolean {
  * artefato de edição (markers de teste). Centraliza a seleção de janela usada
  * pelo dedup contra past-editions locais — antes o filtro `/^\d{6}$/` sozinho
  * deixava um dir sintético poluir a janela de 3 edições (#1567 audit).
+ *
+ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
+ * `enumerateEditionDirs` — antes `readdirSync(editionsDir)` só via top-level
+ * perdia edições no layout nested pós-#3023.
  */
 export function recentEditionDirs(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
 ): string[] {
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir).filter(
-      (d) => isValidEditionDir(d) && hasEditionArtifact(editionsDir, d),
-    );
-  } catch {
-    return [];
-  }
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  let dirs = [...editionDirsByAammdd.keys()].filter(
+    (d) => isValidEditionDir(d) && hasEditionArtifact(editionDirsByAammdd.get(d)!),
+  );
   dirs.sort().reverse();
   if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
   return dirs.slice(0, window);
@@ -407,11 +411,15 @@ export function recentEditionDirs(
  * Usado pra excluir a edição corrente do dedup subject-level mesmo quando o
  * caller esquece `--current-edition` — senão a edição deduplica contra o próprio
  * `01-approved.json` (self-match) e re-runs/resumes esvaziam a edição (#1856).
+ *
+ * #2463/#3025: aceita tanto `editions/{AAMMDD}/` (flat legado) quanto
+ * `editions/{AAMM}/{AAMMDD}/` (nested novo) — o grupo `{AAMM}/` opcional
+ * absorve o prefixo de mês do layout nested antes do AAMMDD capturado.
  */
 export function deriveCurrentEdition(...paths: Array<string | undefined>): string | undefined {
   for (const p of paths) {
     if (!p) continue;
-    const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(\d{6})(?:\/|$)/);
+    const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(?:\d{4}\/)?(\d{6})(?:\/|$)/);
     // #1875 review: valida o AAMMDD (rejeita 260999/261301 de dirs sintéticos/
     // markers) pra ficar consistente com recentEditionDirs e surfaçar paths
     // malformados em vez de mascará-los.
@@ -438,18 +446,23 @@ export function extractPastDestaqueUrls(
 ): Set<string> {
   if (!existsSync(editionsDir)) return new Set();
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd — nunca
+  // `resolve(editionsDir, aammdd, ...)`, que assume flat.
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
 
   const urls = new Set<string>();
   for (const aammdd of recent) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
     // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
     // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
     // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
     // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
-    const reviewedPath = resolve(editionsDir, aammdd, "02-reviewed.md");
-    const htmlPath = resolve(editionsDir, aammdd, "_internal", "newsletter-final.html");
+    const reviewedPath = resolve(editionDir, "02-reviewed.md");
+    const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
     const approvedCandidates = [
-      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
-      resolve(editionsDir, aammdd, "01-approved.json"),
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
     ];
 
     let sourceUrls: string[] = [];
@@ -482,12 +495,16 @@ export function extractPastEditionArticleTitles(
 ): string[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd.
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
 
   const titles = new Set<string>();
   for (const aammdd of recent) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
     const candidates = [
-      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
-      resolve(editionsDir, aammdd, "01-approved.json"),
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
     ];
     for (const path of candidates) {
       if (!existsSync(path)) continue;
