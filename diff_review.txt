@@ -1,0 +1,755 @@
+diff --git a/scripts/backfill-stage-status.ts b/scripts/backfill-stage-status.ts
+index 57092afe..8be1e633 100644
+--- a/scripts/backfill-stage-status.ts
++++ b/scripts/backfill-stage-status.ts
+@@ -23,7 +23,7 @@
+  * estava presente.
+  */
+ 
+-import { readdirSync, existsSync, statSync } from "node:fs";
++import { existsSync } from "node:fs";
+ import { resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { dirname } from "node:path";
+@@ -31,6 +31,7 @@ import { loadDoc, STAGES } from "./update-stage-status.ts";
+ import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
+ import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
+ import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ import { parseArgsSimple } from "./lib/cli-args.ts";
+ 
+ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+@@ -105,17 +106,16 @@ function applyFixes(editionDir: string, editionId: string, fixes: Fix[]): number
+  * teriam seu `_internal/stage-status.json` SOBRESCRITO por applyFixes quando
+  * rodado sem --dry-run (escrita destrutiva em edições arquivadas). Mesmo guard
+  * que dedup.ts adotou no #1567/#1627.
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
++ * edições no layout nested pós-#3023.
+  */
+ export function listEditionDirs(editionsDir: string, editionFilter?: string): string[] {
+-  return readdirSync(editionsDir).filter((name) => {
++  const found = enumerateEditionDirs(editionsDir);
++  return [...found.keys()].filter((name) => {
+     if (editionFilter && name !== editionFilter) return false;
+-    if (!isValidEditionDir(name)) return false;
+-    const p = resolve(editionsDir, name);
+-    try {
+-      return statSync(p).isDirectory();
+-    } catch {
+-      return false;
+-    }
++    return isValidEditionDir(name);
+   });
+ }
+ 
+@@ -126,10 +126,11 @@ function main(): void {
+     console.error(`Edições dir não encontrado: ${editionsDir}`);
+     process.exit(1);
+   }
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+   const entries = listEditionDirs(editionsDir, args.editionFilter);
+   const allFixes: Fix[] = [];
+   for (const editionId of entries) {
+-    const editionDir = resolve(editionsDir, editionId);
++    const editionDir = editionDirsByAammdd.get(editionId)!;
+     const fixes = scanEdition(editionDir, editionId);
+     if (fixes.length === 0) continue;
+     allFixes.push(...fixes);
+diff --git a/scripts/benchmark-e2e.ts b/scripts/benchmark-e2e.ts
+index d57d105e..bd62ef59 100644
+--- a/scripts/benchmark-e2e.ts
++++ b/scripts/benchmark-e2e.ts
+@@ -25,7 +25,8 @@ import { execSync, execFileSync } from "node:child_process";
+ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+ import { resolve, dirname } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { editionDir, editionsRoot } from "./lib/edition-paths.ts";
++import { editionsRoot } from "./lib/edition-paths.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ 
+ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+ 
+@@ -94,6 +95,22 @@ function filesSince(dir: string, since: string[]): string[] {
+   return listFiles(dir).filter(f => !since.includes(f));
+ }
+ 
++/**
++ * Encontra a edição REAL mais recente em data/editions/ (usada como fixture
++ * pelo benchmark, que copia arquivos dela em vez de rodar LLM agents).
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — nunca usar `editionDir(aammdd)` aqui, que sempre
++ * retorna o path NESTED (write-path helper, #2463 step2) mesmo quando a
++ * edição encontrada existe no disco em layout flat.
++ */
++function findLatestEditionDir(): { aammdd: string; dir: string } | null {
++  const editionDirsByAammdd = enumerateEditionDirs(resolve(ROOT, editionsRoot()));
++  const aammdd = [...editionDirsByAammdd.keys()].sort().reverse()[0];
++  if (!aammdd) return null;
++  return { aammdd, dir: editionDirsByAammdd.get(aammdd)! };
++}
++
+ // ---- Main ----
+ 
+ const args = parseArgs(process.argv.slice(2));
+@@ -196,15 +213,12 @@ console.log(`Research window: ${windowStart} → ${editionDate}\n`);
+ runStage(1, "Research — dedup + categorize + render", () => {
+   // Check if we have raw articles from a real source search, otherwise skip
+   // For benchmark purposes, copy from latest real edition if available
+-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
+-    .filter(d => /^\d{6}$/.test(d))
+-    .sort()
+-    .reverse()[0];
++  const latest = findLatestEditionDir();
+ 
+-  if (!latestEdition) throw new Error("No existing edition to use as fixture");
++  if (!latest) throw new Error("No existing edition to use as fixture");
+ 
+-  const rawSrc = resolve(ROOT, editionDir(latestEdition), "01-raw-articles.json");
+-  if (!existsSync(rawSrc)) throw new Error(`No 01-raw-articles.json in ${latestEdition}`);
++  const rawSrc = resolve(latest.dir, "01-raw-articles.json");
++  if (!existsSync(rawSrc)) throw new Error(`No 01-raw-articles.json in ${latest.aammdd}`);
+ 
+   // Copy raw articles as our starting point
+   const rawDst = resolve(benchDir, "01-raw-articles.json");
+@@ -232,16 +246,14 @@ runStage(1, "Research — dedup + categorize + render", () => {
+ // ---- Stage 2: Writing (needs LLM — use fixture) ----
+ runStage(2, "Writing — extract + clarice-diff", () => {
+   // Copy draft + reviewed from fixture for script benchmarking
+-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
+-    .filter(d => /^\d{6}$/.test(d))
+-    .sort()
+-    .reverse()[0];
++  const latest = findLatestEditionDir();
++  if (!latest) throw new Error("No existing edition to use as fixture");
+ 
+-  const draftSrc = resolve(ROOT, editionDir(latestEdition), "_internal/02-draft.md");
+-  const reviewedSrc = resolve(ROOT, editionDir(latestEdition), "02-reviewed.md");
++  const draftSrc = resolve(latest.dir, "_internal/02-draft.md");
++  const reviewedSrc = resolve(latest.dir, "02-reviewed.md");
+ 
+   if (!existsSync(draftSrc) || !existsSync(reviewedSrc)) {
+-    throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latestEdition}`);
++    throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latest.aammdd}`);
+   }
+ 
+   writeFileSync(resolve(benchDir, "_internal/02-draft.md"), readFileSync(draftSrc));
+@@ -265,15 +277,14 @@ runStage(4, "É IA? — external APIs", () => {}, true);
+ // ---- Stage 5: Images ----
+ runStage(5, "Images — Gemini generation + crop", () => {
+   // Copy prompts from fixture
+-  const latestEdition = readdirSync(resolve(ROOT, editionsRoot()))
+-    .filter(d => /^\d{6}$/.test(d))
+-    .sort()
+-    .reverse()[0];
+-
+-  for (const d of ["d1", "d2", "d3"]) {
+-    const promptSrc = resolve(ROOT, editionDir(latestEdition), `02-${d}-prompt.md`);
+-    if (existsSync(promptSrc)) {
+-      writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
++  const latest = findLatestEditionDir();
++
++  if (latest) {
++    for (const d of ["d1", "d2", "d3"]) {
++      const promptSrc = resolve(latest.dir, `02-${d}-prompt.md`);
++      if (existsSync(promptSrc)) {
++        writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
++      }
+     }
+   }
+ 
+diff --git a/scripts/build-diaria-dashboard-data.ts b/scripts/build-diaria-dashboard-data.ts
+index 9deced66..47412866 100644
+--- a/scripts/build-diaria-dashboard-data.ts
++++ b/scripts/build-diaria-dashboard-data.ts
+@@ -55,6 +55,7 @@ import { canonicalize } from "./lib/url-utils.ts";
+ import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
+ import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+ import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ import { buildTimelineRows } from "./render-overnight-timeline.ts";
+ import type {
+   DashboardData,
+@@ -176,17 +177,12 @@ export function buildHighlightTitleIndex(
+   const index = new Map<string, string>();
+   if (!existsSync(editionsDir)) return index;
+ 
+-  let dirs: string[];
+-  try {
+-    dirs = readdirSync(editionsDir, { withFileTypes: true })
+-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+-      .map((d) => d.name);
+-  } catch {
+-    return index;
+-  }
++  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
++  const dirs = [...editionDirsByAammdd.keys()];
+ 
+   for (const edition of dirs) {
+-    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
++    const approvedPath = join(editionDirsByAammdd.get(edition)!, "_internal", "01-approved.json");
+     if (!existsSync(approvedPath)) continue;
+ 
+     let approved: { highlights?: ApprovedHighlight[] };
+@@ -636,15 +632,9 @@ export function buildUseMelhorSummary(
+   // Build CTR index já normalizado por URL (canonicalize aplicado no insert).
+   const ctrByNormalized = buildCtrIndexByUrl(csvPath);
+ 
+-  let dirs: string[];
+-  try {
+-    dirs = readdirSync(editionsDir, { withFileTypes: true })
+-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+-      .map((d) => d.name)
+-      .sort();
+-  } catch {
+-    return null;
+-  }
++  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
++  const dirs = [...editionDirsByAammdd.keys()].sort();
+ 
+   const editionEntries: UseMelhorEditionEntry[] = [];
+   let totalMatched = 0;
+@@ -652,7 +642,8 @@ export function buildUseMelhorSummary(
+   const allTopItems: Array<{ edition: string; url: string; title: string; ctr_pct: number; unique_verified_clicks: number }> = [];
+ 
+   for (const edition of dirs) {
+-    const approvedPath = join(editionsDir, edition, "_internal", "01-approved.json");
++    const editionDir = editionDirsByAammdd.get(edition)!;
++    const approvedPath = join(editionDir, "_internal", "01-approved.json");
+     if (!existsSync(approvedPath)) continue;
+ 
+     let approved: { use_melhor?: ApprovedUseMelhorItem[] };
+@@ -665,7 +656,7 @@ export function buildUseMelhorSummary(
+     // #2603: usar 02-reviewed.md como filtro de itens publicados (pós-gate).
+     // Se o arquivo existe, itens não presentes nele foram dropados no gate e não devem
+     // aparecer no dashboard. Se não existe (Stage 2 não rodou), usar todos de 01-approved.json.
+-    const reviewedMdPath = join(editionsDir, edition, "02-reviewed.md");
++    const reviewedMdPath = join(editionDir, "02-reviewed.md");
+     const publishedUrls = extractPublishedUseMelhorUrls(reviewedMdPath);
+ 
+     const allItems = approved.use_melhor ?? [];
+diff --git a/scripts/build-poll-eia-data.ts b/scripts/build-poll-eia-data.ts
+index eb672c7a..6eaeef9f 100644
+--- a/scripts/build-poll-eia-data.ts
++++ b/scripts/build-poll-eia-data.ts
+@@ -47,6 +47,7 @@
+ import { existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+ import { resolve, join, dirname } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } from "../workers/diaria-dashboard/src/types.ts";
+ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
+@@ -129,17 +130,14 @@ export function editionToMonthSlug(edition: string): string | null {
+ /**
+  * Descobre edições disponíveis em data/editions/ (AAMMDD, ordem crescente).
+  * Retorna array vazio se diretório não existe.
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — as edições aqui só viram string (AAMMDD) usada como
++ * chave de API (`?edition=AAMMDD`), sem path building local, então não há
++ * mais nada a ajustar downstream.
+  */
+ export function discoverEditions(editionsDir: string): string[] {
+-  if (!existsSync(editionsDir)) return [];
+-  try {
+-    return readdirSync(editionsDir, { withFileTypes: true })
+-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+-      .map((d) => d.name)
+-      .sort();
+-  } catch {
+-    return [];
+-  }
++  return [...enumerateEditionDirs(editionsDir).keys()].sort();
+ }
+ 
+ /**
+diff --git a/scripts/check-secondary-themes.ts b/scripts/check-secondary-themes.ts
+index 99139492..a6b431e6 100644
+--- a/scripts/check-secondary-themes.ts
++++ b/scripts/check-secondary-themes.ts
+@@ -62,7 +62,7 @@
+  *   0 — sempre (warnings são non-fatal — gate decide)
+  */
+ 
+-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
++import { readFileSync, writeFileSync, existsSync } from "node:fs";
+ import { resolve } from "node:path";
+ import { runMain } from "./lib/exit-handler.ts";
+ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+@@ -71,6 +71,7 @@ import {
+   jaccardSimilarity,
+ } from "./dedup.ts";
+ import { isValidEditionDir } from "./lib/edition-utils.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ // #2834: CategorizedJson reexportado do reader canônico (consumido por
+ // check-intra-themes.ts via `import { CategorizedJson } from "./check-secondary-themes.ts"`).
+ import type { CategorizedJson } from "./lib/types/categorized-json.ts";
+@@ -151,14 +152,17 @@ interface ApprovedJson {
+ }
+ 
+ /**
+- * Lê `data/editions/{yymmdd}/_internal/01-approved.json` e extrai títulos
+- * dos itens SECUNDÁRIOS (radar/lancamento/use_melhor/video).
++ * Lê `{editionDir}/_internal/01-approved.json` e extrai títulos dos itens
++ * SECUNDÁRIOS (radar/lancamento/use_melhor/video).
++ *
++ * #2463/#3025: recebe o diretório REAL da edição (já resolvido, flat ou
++ * nested) — chamador resolve via `enumerateEditionDirs`.
+  */
+ function extractSecondaryItemsFromEdition(
+   yymmdd: string,
+-  editionsDir: string,
++  editionDir: string,
+ ): PastSecondaryItem[] {
+-  const approvedPath = resolve(editionsDir, yymmdd, "_internal", "01-approved.json");
++  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+   if (!existsSync(approvedPath)) return [];
+   let parsed: ApprovedJson;
+   try {
+@@ -185,21 +189,18 @@ function extractSecondaryItemsFromEdition(
+ /**
+  * Descobre as últimas `window` edições (por data desc) no editions directory,
+  * excluindo a edição corrente.
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
++ * edições no layout nested pós-#3023.
+  */
+ function findRecentEditions(
+   editionsDir: string,
+   currentEdition: string,
+   window: number,
+ ): string[] {
+-  if (!existsSync(editionsDir)) return [];
+-  let dirs: string[];
+-  try {
+-    dirs = readdirSync(editionsDir);
+-  } catch {
+-    return [];
+-  }
+-
+-  return dirs
++  const found = enumerateEditionDirs(editionsDir);
++  return [...found.keys()]
+     .filter((d) => isValidEditionDir(d) && d !== currentEdition)
+     .sort()
+     .reverse()
+@@ -215,9 +216,12 @@ export function extractPastSecondaryItems(
+   window: number,
+ ): PastSecondaryItem[] {
+   const recentEditions = findRecentEditions(editionsDir, currentEdition, window);
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+   const items: PastSecondaryItem[] = [];
+   for (const yymmdd of recentEditions) {
+-    items.push(...extractSecondaryItemsFromEdition(yymmdd, editionsDir));
++    const editionDir = editionDirsByAammdd.get(yymmdd);
++    if (!editionDir) continue;
++    items.push(...extractSecondaryItemsFromEdition(yymmdd, editionDir));
+   }
+   return items;
+ }
+diff --git a/scripts/collect-monthly.ts b/scripts/collect-monthly.ts
+index 0858db2f..e5c8ee21 100644
+--- a/scripts/collect-monthly.ts
++++ b/scripts/collect-monthly.ts
+@@ -32,6 +32,7 @@ import {
+   parseMonthlyCycleArg,
+ } from "./lib/mensal/monthly-paths.ts";
+ import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ 
+ // Alias para compat com usos internos (path join na MONTHLY_BASE).
+ const MONTHLY_DIR = MONTHLY_BASE;
+@@ -403,9 +404,13 @@ export function collectMonth(
+   const rawFiles = listRawPosts(rawPostsRoot);
+   const rawByEdition = new Map(rawFiles.map((f) => [f.edition, f]));
+ 
++  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
++  // um `readdirSync(editionsRoot)` direto perdia edições no layout nested
++  // pós-#3023.
+   const localEditionRe = new RegExp(`^${yymm}\\d{2}$`);
++  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
+   const localSet = new Set(
+-    existsSync(editionsRoot) ? readdirSync(editionsRoot).filter((n) => localEditionRe.test(n)) : [],
++    [...editionDirsByAammdd.keys()].filter((n) => localEditionRe.test(n)),
+   );
+ 
+   const allEditions = [...new Set([...localSet, ...rawByEdition.keys()])].sort();
+@@ -414,8 +419,9 @@ export function collectMonth(
+   const source_counts = { local: 0, raw: 0, missing: 0 };
+ 
+   for (const edition of allEditions) {
+-    const localPath = join(editionsRoot, edition, "02-reviewed.md");
+-    if (localSet.has(edition) && existsSync(localPath)) {
++    const localEditionDir = editionDirsByAammdd.get(edition);
++    const localPath = localEditionDir ? join(localEditionDir, "02-reviewed.md") : undefined;
++    if (localSet.has(edition) && localPath && existsSync(localPath)) {
+       const md = readFileSync(localPath, "utf8");
+       const dest = parseLocalEdition(edition, md);
+       // Paridade com parsePost (raw-post): avisa tanto no caso 0 quanto no
+diff --git a/scripts/lib/edition-utils.ts b/scripts/lib/edition-utils.ts
+index c1e76370..bac63a84 100644
+--- a/scripts/lib/edition-utils.ts
++++ b/scripts/lib/edition-utils.ts
+@@ -6,9 +6,9 @@
+  * da edição imediatamente anterior.
+  */
+ 
+-import { existsSync, readdirSync } from "node:fs";
+ import { resolve, dirname } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { enumerateEditionDirs } from "./find-current-edition.ts";
+ 
+ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+ const EDITIONS_DIR = resolve(ROOT, "data", "editions");
+@@ -37,10 +37,13 @@ export function isValidEditionDir(name: string): boolean {
+ /**
+  * Lista todas as pastas de edição válidas (AAMMDD), em ordem decrescente
+  * (mais nova primeiro). Aceita um diretório alternativo para testes.
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — antes só via `readdirSync` direto, o que perdia
++ * edições criadas no layout nested pós-#3023.
+  */
+ export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
+-  if (!existsSync(editionsDir)) return [];
+-  return readdirSync(editionsDir)
++  return [...enumerateEditionDirs(editionsDir).keys()]
+     .filter((name) => isValidEditionDir(name))
+     .sort((a, b) => b.localeCompare(a));
+ }
+diff --git a/scripts/lib/past-editions-extract.ts b/scripts/lib/past-editions-extract.ts
+index 70e6edf1..97888e46 100644
+--- a/scripts/lib/past-editions-extract.ts
++++ b/scripts/lib/past-editions-extract.ts
+@@ -10,10 +10,11 @@
+  * existentes (`./dedup.ts` / `../scripts/dedup.ts`).
+  */
+ 
+-import { readFileSync, existsSync, readdirSync } from "node:fs";
++import { readFileSync, existsSync } from "node:fs";
+ import { resolve } from "node:path";
+ import { canonicalize } from "./url-utils.ts";
+ import { isValidEditionDir } from "./edition-utils.ts"; // #1680: validador consolidado
++import { enumerateEditionDirs } from "./find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ 
+ export { isValidEditionDir };
+ 
+@@ -364,13 +365,16 @@ function readApprovedTitles(approvedPath: string): string[] {
+  * true se o dir contém algum artefato de edição real (não é um marker vazio).
+  * Espelha as fontes que extractPastDestaqueUrls/extractPastEditionArticleTitles
+  * sabem ler: MD revisado, HTML final publicado, ou approved.json (root/_internal).
++ *
++ * #2463/#3025: recebe o diretório REAL da edição (já resolvido, flat ou nested)
++ * em vez de `editionsDir` + `name` — chamador resolve via `enumerateEditionDirs`.
+  */
+-function hasEditionArtifact(editionsDir: string, name: string): boolean {
++function hasEditionArtifact(editionDir: string): boolean {
+   return [
+-    resolve(editionsDir, name, "02-reviewed.md"),
+-    resolve(editionsDir, name, "_internal", "newsletter-final.html"),
+-    resolve(editionsDir, name, "_internal", "01-approved.json"),
+-    resolve(editionsDir, name, "01-approved.json"),
++    resolve(editionDir, "02-reviewed.md"),
++    resolve(editionDir, "_internal", "newsletter-final.html"),
++    resolve(editionDir, "_internal", "01-approved.json"),
++    resolve(editionDir, "01-approved.json"),
+   ].some((p) => existsSync(p));
+ }
+ 
+@@ -380,20 +384,20 @@ function hasEditionArtifact(editionsDir: string, name: string): boolean {
+  * artefato de edição (markers de teste). Centraliza a seleção de janela usada
+  * pelo dedup contra past-editions locais — antes o filtro `/^\d{6}$/` sozinho
+  * deixava um dir sintético poluir a janela de 3 edições (#1567 audit).
++ *
++ * #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++ * `enumerateEditionDirs` — antes `readdirSync(editionsDir)` só via top-level
++ * perdia edições no layout nested pós-#3023.
+  */
+ export function recentEditionDirs(
+   editionsDir: string,
+   window: number,
+   currentAammdd?: string,
+ ): string[] {
+-  let dirs: string[];
+-  try {
+-    dirs = readdirSync(editionsDir).filter(
+-      (d) => isValidEditionDir(d) && hasEditionArtifact(editionsDir, d),
+-    );
+-  } catch {
+-    return [];
+-  }
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
++  let dirs = [...editionDirsByAammdd.keys()].filter(
++    (d) => isValidEditionDir(d) && hasEditionArtifact(editionDirsByAammdd.get(d)!),
++  );
+   dirs.sort().reverse();
+   if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
+   return dirs.slice(0, window);
+@@ -407,11 +411,15 @@ export function recentEditionDirs(
+  * Usado pra excluir a edição corrente do dedup subject-level mesmo quando o
+  * caller esquece `--current-edition` — senão a edição deduplica contra o próprio
+  * `01-approved.json` (self-match) e re-runs/resumes esvaziam a edição (#1856).
++ *
++ * #2463/#3025: aceita tanto `editions/{AAMMDD}/` (flat legado) quanto
++ * `editions/{AAMM}/{AAMMDD}/` (nested novo) — o grupo `{AAMM}/` opcional
++ * absorve o prefixo de mês do layout nested antes do AAMMDD capturado.
+  */
+ export function deriveCurrentEdition(...paths: Array<string | undefined>): string | undefined {
+   for (const p of paths) {
+     if (!p) continue;
+-    const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(\d{6})(?:\/|$)/);
++    const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(?:\d{4}\/)?(\d{6})(?:\/|$)/);
+     // #1875 review: valida o AAMMDD (rejeita 260999/261301 de dirs sintéticos/
+     // markers) pra ficar consistente com recentEditionDirs e surfaçar paths
+     // malformados em vez de mascará-los.
+@@ -438,18 +446,23 @@ export function extractPastDestaqueUrls(
+ ): Set<string> {
+   if (!existsSync(editionsDir)) return new Set();
+   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
++  // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd — nunca
++  // `resolve(editionsDir, aammdd, ...)`, que assume flat.
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+ 
+   const urls = new Set<string>();
+   for (const aammdd of recent) {
++    const editionDir = editionDirsByAammdd.get(aammdd);
++    if (!editionDir) continue;
+     // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
+     // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
+     // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
+     // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
+-    const reviewedPath = resolve(editionsDir, aammdd, "02-reviewed.md");
+-    const htmlPath = resolve(editionsDir, aammdd, "_internal", "newsletter-final.html");
++    const reviewedPath = resolve(editionDir, "02-reviewed.md");
++    const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
+     const approvedCandidates = [
+-      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
+-      resolve(editionsDir, aammdd, "01-approved.json"),
++      resolve(editionDir, "_internal", "01-approved.json"),
++      resolve(editionDir, "01-approved.json"),
+     ];
+ 
+     let sourceUrls: string[] = [];
+@@ -482,12 +495,16 @@ export function extractPastEditionArticleTitles(
+ ): string[] {
+   if (!existsSync(editionsDir)) return [];
+   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
++  // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd.
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+ 
+   const titles = new Set<string>();
+   for (const aammdd of recent) {
++    const editionDir = editionDirsByAammdd.get(aammdd);
++    if (!editionDir) continue;
+     const candidates = [
+-      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
+-      resolve(editionsDir, aammdd, "01-approved.json"),
++      resolve(editionDir, "_internal", "01-approved.json"),
++      resolve(editionDir, "01-approved.json"),
+     ];
+     for (const path of candidates) {
+       if (!existsSync(path)) continue;
+diff --git a/scripts/list-month-errors.ts b/scripts/list-month-errors.ts
+index 268cc444..1e196951 100644
+--- a/scripts/list-month-errors.ts
++++ b/scripts/list-month-errors.ts
+@@ -14,11 +14,12 @@
+  * `intentional_error` de cada `02-reviewed.md`, agrega.
+  */
+ 
+-import { readFileSync, readdirSync, existsSync } from "node:fs";
++import { readFileSync, existsSync } from "node:fs";
+ import { resolve, join } from "node:path";
+ import { checkIntentionalError } from "./lint-newsletter-md.ts";
+ import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
+ import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ 
+ interface MonthError {
+   edition: string;
+@@ -32,13 +33,14 @@ interface MonthError {
+   reason?: string; // when declared=false
+ }
+ 
++// #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) via
++// `enumerateEditionDirs` — antes um `readdirSync(editionsDir)` direto perdia
++// edições no layout nested pós-#3023. `enumerateEditionDirs` já garante o
++// formato `/^\d{6}$/`, então só falta o filtro por prefixo do mês.
+ function listEditionsForMonth(monthYYMM: string): string[] {
+   const editionsDir = resolve(process.cwd(), "data/editions");
+-  if (!existsSync(editionsDir)) return [];
+-  const all = readdirSync(editionsDir);
+-  // Match `YYMMdd` format (6 digits, starts with monthYYMM)
+-  return all
+-    .filter((name) => /^\d{6}$/.test(name) && name.startsWith(monthYYMM))
++  return [...enumerateEditionDirs(editionsDir).keys()]
++    .filter((name) => name.startsWith(monthYYMM))
+     .sort();
+ }
+ 
+@@ -163,8 +165,11 @@ function main(): number {
+     return 0;
+   }
+ 
++  // #2463/#3025: resolve o path REAL (flat ou nested) de cada edição — nunca
++  // `resolve(process.cwd(), "data/editions", edition)`, que assume flat.
++  const editionDirsByAammdd = enumerateEditionDirs(resolve(process.cwd(), "data/editions"));
+   const errors = editions.map((edition) =>
+-    extractError(resolve(process.cwd(), "data/editions", edition), edition),
++    extractError(editionDirsByAammdd.get(edition)!, edition),
+   );
+ 
+   if (args.json) {
+diff --git a/scripts/overnight-statusline.ts b/scripts/overnight-statusline.ts
+index 1bc697d0..1f4a8ad9 100644
+--- a/scripts/overnight-statusline.ts
++++ b/scripts/overnight-statusline.ts
+@@ -67,6 +67,7 @@ import { pathToFileURL } from "node:url";
+ import type { StageStatusDoc, StageStatus } from "./update-stage-status.ts";
+ import { STAGE_LABELS, STAGES, loadDoc } from "./update-stage-status.ts";
+ import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ 
+ // ─── tipos ────────────────────────────────────────────────────────────────────
+ 
+@@ -129,9 +130,6 @@ export const DEVELOP_DIR_RE = /^\d{6}$/;
+ const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
+ const BAR_WIDTH = 12;
+ 
+-/** Regex for edition AAMMDD directories (exactly 6 digits, no suffixes). */
+-const EDITION_DIR_RE = /^\d{6}$/;
+-
+ /** Stage statuses considered terminal for edition progress (#2250). */
+ const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
+ 
+@@ -776,17 +774,17 @@ function readStageStatusFromDir(editionDir: string): StageStatusDoc | null {
+ function scanEditionDocs(cwd: string): StageStatusDoc[] {
+   try {
+     const editionsDir = join(cwd, "data", "editions");
+-    if (!existsSync(editionsDir)) return [];
+-
+-    const entries = readdirSync(editionsDir, { withFileTypes: true })
+-      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
+-      .map((e) => e.name)
++    // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) —
++    // antes um `readdirSync(editionsDir)` direto perdia edições no layout
++    // nested pós-#3023.
++    const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
++    const entries = [...editionDirsByAammdd.keys()]
+       .sort()
+       .reverse(); // most recent first (lexicographic desc: 260615 > 260614 > ...)
+ 
+     const docs: StageStatusDoc[] = [];
+     for (const dirName of entries) {
+-      const editionDir = join(editionsDir, dirName);
++      const editionDir = editionDirsByAammdd.get(dirName)!;
+       const doc = readStageStatusFromDir(editionDir);
+       if (!doc) continue;
+       if (!Array.isArray(doc.rows) || doc.rows.length === 0) continue;
+@@ -849,11 +847,8 @@ export function renderIdleBar(mostRecentEditionId: string | null): string {
+ export function findMostRecentEditionId(cwd: string): string | null {
+   try {
+     const editionsDir = join(cwd, "data", "editions");
+-    if (!existsSync(editionsDir)) return null;
+-
+-    const entries = readdirSync(editionsDir, { withFileTypes: true })
+-      .filter((e) => e.isDirectory() && EDITION_DIR_RE.test(e.name))
+-      .map((e) => e.name)
++    // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo).
++    const entries = [...enumerateEditionDirs(editionsDir).keys()]
+       .sort()
+       .reverse(); // most recent first (lexicographic desc)
+ 
+diff --git a/scripts/reconcile-intentional-errors.ts b/scripts/reconcile-intentional-errors.ts
+index d02eaf01..767d1185 100644
+--- a/scripts/reconcile-intentional-errors.ts
++++ b/scripts/reconcile-intentional-errors.ts
+@@ -23,9 +23,10 @@
+  *   2 — erro de I/O
+  */
+ 
+-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
++import { readFileSync, writeFileSync, existsSync } from "node:fs";
+ import { resolve, join, dirname } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ import {
+   loadIntentionalErrors,
+   entryDiffersFromFrontmatter,
+@@ -80,13 +81,16 @@ function scan(args: CliArgs): {
+   }
+   const drift: DriftEntry[] = [];
+   let totalScanned = 0;
+-  const entries = readdirSync(editionsDir).filter((name) => {
+-    if (!/^\d{6}/.test(name)) return false;
++  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
++  // um `readdirSync(editionsDir)` direto perdia edições no layout nested
++  // pós-#3023.
++  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
++  const entries = [...editionDirsByAammdd.keys()].filter((name) => {
+     if (args.editionFilter && name !== args.editionFilter) return false;
+     return true;
+   });
+   for (const editionId of entries) {
+-    const mdPath = join(editionsDir, editionId, "02-reviewed.md");
++    const mdPath = join(editionDirsByAammdd.get(editionId)!, "02-reviewed.md");
+     if (!existsSync(mdPath)) continue;
+     totalScanned++;
+     const lint = checkIntentionalError(mdPath);
+diff --git a/scripts/render-erro-intencional.ts b/scripts/render-erro-intencional.ts
+index e3c72e32..cf9e9aea 100644
+--- a/scripts/render-erro-intencional.ts
++++ b/scripts/render-erro-intencional.ts
+@@ -28,9 +28,10 @@
+  * Stdout: JSON `{ inserted, prev_edition, prev_revealed, current_has_intentional }`.
+  */
+ 
+-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
++import { readFileSync, writeFileSync, existsSync } from "node:fs";
+ import { resolve, dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+ import {
+   loadIntentionalErrors,
+   type IntentionalError,
+@@ -345,17 +346,15 @@ export function findPreviousIntentionalErrorFromMd(
+   currentEdition: string,
+ ): { edition: string; detail: string; gabarito: string; narrative: string; correct_value?: string; reveal?: string } | null {
+   if (!existsSync(editionsRoot)) return null;
+-  let entries: string[];
+-  try {
+-    entries = readdirSync(editionsRoot);
+-  } catch {
+-    return null;
+-  }
+-  const candidates = entries
+-    .filter((d) => /^\d{6}$/.test(d) && d < currentEdition)
++  // #2463/#3025: enumera AMBOS os layouts (flat legado + nested novo) — antes
++  // um `readdirSync(editionsRoot)` direto perdia edições no layout nested
++  // pós-#3023.
++  const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
++  const candidates = [...editionDirsByAammdd.keys()]
++    .filter((d) => d < currentEdition)
+     .sort((a, b) => (a < b ? 1 : -1));
+-  for (const editionDir of candidates) {
+-    const mdPath = join(editionsRoot, editionDir, "02-reviewed.md");
++  for (const editionId of candidates) {
++    const mdPath = join(editionDirsByAammdd.get(editionId)!, "02-reviewed.md");
+     if (!existsSync(mdPath)) continue;
+     let md: string;
+     try {
+@@ -366,7 +365,7 @@ export function findPreviousIntentionalErrorFromMd(
+     const extracted = extractIntentionalErrorFromMd(md);
+     if (extracted) {
+       return {
+-        edition: editionDir,
++        edition: editionId,
+         detail: extracted.detail ?? extracted.narrative,
+         gabarito: extracted.gabarito ?? "",
+         narrative: extracted.narrative,

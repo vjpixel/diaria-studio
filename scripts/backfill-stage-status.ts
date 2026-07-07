@@ -130,7 +130,10 @@ function main(): void {
   const entries = listEditionDirs(editionsDir, args.editionFilter);
   const allFixes: Fix[] = [];
   for (const editionId of entries) {
-    const editionDir = editionDirsByAammdd.get(editionId)!;
+    // #3025 self-review: listEditionDirs() faz seu próprio enumerateEditionDirs
+    // interno — guard contra o dir sumir entre as duas varreduras (TOCTOU raro).
+    const editionDir = editionDirsByAammdd.get(editionId);
+    if (!editionDir) continue;
     const fixes = scanEdition(editionDir, editionId);
     if (fixes.length === 0) continue;
     allFixes.push(...fixes);

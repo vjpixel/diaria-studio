@@ -278,13 +278,15 @@ runStage(4, "É IA? — external APIs", () => {}, true);
 runStage(5, "Images — Gemini generation + crop", () => {
   // Copy prompts from fixture
   const latest = findLatestEditionDir();
+  // #3025 self-review: falhar alto igual aos Stages 1/2 — silenciar aqui
+  // deixaria o passo seguinte (Generate images) falhar mais tarde com um
+  // erro confuso de arquivo de prompt ausente, em vez do motivo real.
+  if (!latest) throw new Error("No existing edition to use as fixture");
 
-  if (latest) {
-    for (const d of ["d1", "d2", "d3"]) {
-      const promptSrc = resolve(latest.dir, `02-${d}-prompt.md`);
-      if (existsSync(promptSrc)) {
-        writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
-      }
+  for (const d of ["d1", "d2", "d3"]) {
+    const promptSrc = resolve(latest.dir, `02-${d}-prompt.md`);
+    if (existsSync(promptSrc)) {
+      writeFileSync(resolve(benchDir, `02-${d}-prompt.md`), readFileSync(promptSrc));
     }
   }
 

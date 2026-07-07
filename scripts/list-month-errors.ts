@@ -169,7 +169,14 @@ function main(): number {
   // `resolve(process.cwd(), "data/editions", edition)`, que assume flat.
   const editionDirsByAammdd = enumerateEditionDirs(resolve(process.cwd(), "data/editions"));
   const errors = editions.map((edition) =>
-    extractError(editionDirsByAammdd.get(edition)!, edition),
+    // #3025 self-review: guard contra o dir sumir entre a varredura de
+    // listEditionsForMonth() e esta (TOCTOU raro) — fallback pro path flat
+    // legado, que extractError trata como "02-reviewed.md ausente" (mesmo
+    // comportamento de uma edição sem artefato, não um crash).
+    extractError(
+      editionDirsByAammdd.get(edition) ?? resolve(process.cwd(), "data/editions", edition),
+      edition,
+    ),
   );
 
   if (args.json) {
