@@ -207,6 +207,13 @@ export const FOOTER_DOMAINS = [
   "cursos.diaria.workers.dev",
   "livros.diaria.workers.dev",
   "poll.diaria.workers.dev",
+  // #3028: links de afiliado da Amazon — box Alexa (link.amazon, gerado pelo
+  // SiteStripe) + box de livros / curadoria (amzn.to shortener, amazon.com.br).
+  // Bloqueiam crawler por design (anti-bot) mas são promo legítima aprovada
+  // pelo editor, nunca artigos pesquisados — não devem flagar urls_accessible.
+  "link.amazon",
+  "amzn.to",
+  "amazon.com.br",
   // #2695 self-review: `as const` — agora que o array é exportado e
   // compartilhado por referência entre 3 importers (era privado a este
   // arquivo antes), congela o tipo em readonly pra um `.push`/`.splice`

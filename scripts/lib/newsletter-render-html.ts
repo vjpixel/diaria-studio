@@ -422,6 +422,15 @@ export function renderBoxDivulgacao(box: string, imageUrl: string | null = null)
     // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
     return renderIntroCallout(box.replace(/^🛒[ \t]*\r?\n?/u, ""), "serif", true);
   }
+  // #3028: box de livros (📚) com MÚLTIPLOS links (ex: 2+ títulos em oferta) →
+  // renderiza texto + um botão CTA por link (via forceCtaPill), SEM a screenshot
+  // da página. O caminho com imagem (`renderMidCallout`) extrai só o 1º link
+  // como botão e descarta os demais — perdendo o 2º livro. Escopado a 📚 com
+  // ≥2 links: o box de livros default (1 link "Confira a página") continua
+  // usando a imagem normalmente.
+  if (/^\s*📚/u.test(box) && findMarkdownLinks(box).length >= 2) {
+    return renderIntroCallout(box, "serif", true);
+  }
   return renderMidCallout(box, imageUrl);
 }
 

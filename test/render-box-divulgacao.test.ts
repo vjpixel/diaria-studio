@@ -60,4 +60,24 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
     assert.match(html, /cdn\.example\.com\/livros\.jpg/);
   });
+
+  it("📚 com 2+ links: renderiza 1 botão por link, SEM a imagem (#3028)", () => {
+    const box =
+      "📚 Livros em oferta.\n\nO primeiro tem 48% de desconto; o segundo, R$ 217 a menos.\n\n" +
+      "[Ver livro A](https://amzn.to/aaa) · [Ver livro B](https://amzn.to/bbb)";
+    const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
+    // Ambos os links viram botão (não some o 2º como no path com imagem).
+    assert.match(html, /amzn\.to\/aaa/, "1º link presente");
+    assert.match(html, /amzn\.to\/bbb/, "2º link presente (o path antigo o descartava)");
+    // A screenshot da página NÃO é usada neste caminho.
+    assert.ok(!html.includes("cdn.example.com"), "imagem não é usada em box multi-link");
+    // As descrições ficam no corpo, não são engolidas.
+    assert.match(html, /48% de desconto/, "descrições preservadas no corpo");
+  });
+
+  it("📚 com 1 link + imagem NÃO muda (regressão #3028): continua no path com imagem", () => {
+    const box = "📚 Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
+    const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
+    assert.match(html, /cdn\.example\.com\/livros\.jpg/, "box de 1 link mantém a imagem");
+  });
 });
