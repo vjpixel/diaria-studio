@@ -1214,6 +1214,20 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
         <ul class="payments-list">${items}</ul>
       </details>`;
     }
+    // #3053: cancelada ANTES do 1º pagamento (ex.: cancelou ainda em trial) —
+    // a previsão de `first_payment_epoch` nunca vai se realizar. Mostrar um
+    // indicador neutro em vez da data prevista com "*" (que sugere "isso vai
+    // acontecer"). Escopo cirúrgico: só troca o caso que é de fato enganoso
+    // (previsão marcada com "*"). Não mexe em:
+    //  - status "canceled" COM `payments` reais → já retornou acima (branch
+    //    da lista), preservando o histórico de cobrança;
+    //  - status "canceled" SEM `first_payment_is_forecast` (KV pré-#2749,
+    //    sem sinal de previsão) → mantém o fallback pra `created`, sem "*",
+    //    igual ao comportamento de qualquer outro status nessa mesma lacuna
+    //    de dado legado (nada de novo sendo prometido, nada enganoso a corrigir).
+    if (r.status === "canceled" && r.first_payment_is_forecast) {
+      return "—";
+    }
     const payEpoch = r.first_payment_epoch ?? r.created;
     const forecastMark = r.first_payment_is_forecast ? "*" : "";
     return escHtml(fmtDate(payEpoch) + forecastMark);
@@ -1233,7 +1247,11 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
   }).join("\n");
   // #2749: legenda do "*" só aparece se há ≥1 pagamento previsto (trial) SEM
   // lista de pagamentos (a lista, quando presente e vazia, já usa a previsão).
-  const hasForecast = allRows.some((r) => (!r.payments || r.payments.length === 0) && r.first_payment_is_forecast);
+  // #3053: exclui `status === "canceled"` — esse caso não renderiza mais o "*"
+  // (vira "—" acima), então não deve contar pra decidir se a legenda aparece.
+  const hasForecast = allRows.some(
+    (r) => (!r.payments || r.payments.length === 0) && r.first_payment_is_forecast && r.status !== "canceled",
+  );
   const forecastLegend = hasForecast
     ? `<p class="coupon-forecast-legend" style="margin-top:8px;font-size:13px;opacity:0.7;">* previsão do 1º pagamento (assinatura em trial — ainda não cobrada)</p>`
     : "";
