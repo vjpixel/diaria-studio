@@ -25,7 +25,19 @@ export function renderDashboardHtml(
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
   planCredits: number | null = null, // #2910: créditos/limite do plano Brevo (denominador dinâmico da seção Volume) — fetch ao vivo feito no call site (index.ts), nunca aqui (função continua pura/sync)
 ): string {
-  const rows = campaigns
+  // #3017: ordena a tabela "Envios" por data de envio, mais recente primeiro.
+  // sentDate é a fonte canônica aqui (campanha já enviada); scheduledAt só
+  // entra como fallback no caso raro de sentDate ausente (nota: ordem de
+  // precedência invertida vs groupMonthlyAbcTests, que prioriza scheduledAt —
+  // lá o dado é "intenção de envio" cobrindo teste ainda-não-disparado; aqui
+  // é a tabela de campanhas já enviadas). A comparação decrescente por string
+  // ISO reusa a mesma técnica lexicográfica de groupMonthlyAbcTests (linha ~883).
+  const sortedCampaigns = [...campaigns].sort((a, b) => {
+    const dateA = a.sentDate ?? a.scheduledAt ?? "";
+    const dateB = b.sentDate ?? b.scheduledAt ?? "";
+    return dateA < dateB ? 1 : dateA > dateB ? -1 : 0;
+  });
+  const rows = sortedCampaigns
     .map((c) => {
       // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
       // Fallback pra campaignStats[0] se globalStats fetch falhou OU veio
