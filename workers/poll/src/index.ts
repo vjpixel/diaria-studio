@@ -711,7 +711,11 @@ export default {
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv, brand);
-    if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
+    // #HEAD: clientes que fazem preflight HEAD antes de baixar a imagem (ex: Make.com/LinkedIn
+    // ao validar a URL antes do upload) recebiam 404 aqui mesmo com o GET retornando 200 —
+    // a rota só aceitava GET. O runtime do Workers descarta o body automaticamente em respostas
+    // a HEAD, então basta aceitar o método na guarda; handleImage não precisa mudar.
+    if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
     return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
