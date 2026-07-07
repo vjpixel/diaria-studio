@@ -22,6 +22,10 @@
  *
  * Se --answer não for passado, lê ai_side de _internal/01-eia-meta.json da edição.
  *
+ * --editions-dir <path>  Override do editions root da diária (default:
+ *                        data/editions/ do repo). Só para testes — produção
+ *                        nunca passa essa flag. (#3031)
+ *
  * Variáveis de ambiente:
  *   ADMIN_SECRET       HMAC key pro endpoint /admin/correct (ver .env). Worker
  *                      valida sig contra ADMIN_SECRET (workers/poll/src/index.ts:325).
@@ -39,6 +43,7 @@ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
 import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts"; // #2009 — marker mensal
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3031: layout flat+nested
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -67,6 +72,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #3031: editions root da diária — testável via --editions-dir (default: o
+  // real data/editions da instalação). Sem override em uso de produção.
+  const editionsRootDir = values["editions-dir"]
+    ? resolve(process.cwd(), values["editions-dir"])
+    : resolve(ROOT, "data", "editions");
+
   // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
   // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
   // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
@@ -80,7 +91,11 @@ async function main(): Promise<void> {
       console.error("[close-poll] --brand clarice requer --answer A|B explícito (fluxo mensal não usa 01-eia-meta.json da edição diária). Use --answer A ou --answer B.");
       process.exit(1);
     }
-    const metaPath = resolve(ROOT, "data", "editions", edition, "_internal", "01-eia-meta.json");
+    // #3031: resolveEditionDir resolve o path REAL da edição (flat ou nested,
+    // #3024) em vez de montar data/editions/{edition} à força — que só existe
+    // no layout flat legado e some pós-migração pro layout nested.
+    const editionDirPath = resolveEditionDir(editionsRootDir, edition);
+    const metaPath = resolve(editionDirPath, "_internal", "01-eia-meta.json");
     if (!existsSync(metaPath)) {
       console.error(`[close-poll] 01-eia-meta.json não encontrado em ${metaPath}. Use --answer A|B.`);
       process.exit(1);
@@ -181,7 +196,11 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ ok: true, brand, edition, answer, updated_votes: data.updated_votes ?? 0 }));
     return;
   }
-  const markerDir = resolve(ROOT, "data", "editions", edition, "_internal");
+  // #3031: mesmo fix do metaPath acima — resolve o path REAL da edição (flat
+  // ou nested) em vez de montar data/editions/{edition} à força. Sem isso, o
+  // marker era gravado num diretório flat órfão que o resume-check e o
+  // Stage 5 §5g (que buscam o marker via resolveEditionDir) nunca encontram.
+  const markerDir = resolve(resolveEditionDir(editionsRootDir, edition), "_internal");
   mkdirSync(markerDir, { recursive: true });
   const markerPath = resolve(markerDir, ".close-poll-done.json");
   writeFileSync(
