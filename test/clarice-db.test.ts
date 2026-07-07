@@ -21,6 +21,14 @@ import {
 // exato NUNCA vira "não está na base" sem antes tentar normalização Gmail.
 // ---------------------------------------------------------------------------
 
+describe("openClariceDb — busy_timeout (#3021)", () => {
+  it("define PRAGMA busy_timeout = 5000 na conexão, evitando SQLITE_BUSY imediato em colisão de leitura/escrita", () => {
+    const db = openClariceDb(":memory:");
+    const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+    assert.equal(row.timeout, 5000);
+  });
+});
+
 describe("findContactByEmail", () => {
   it("match exato (lowercase/trim já embutido no lookup) → matchType exact", () => {
     const db = openClariceDb(":memory:");
