@@ -195,15 +195,22 @@ test("renderDashboardHtml não mostra 'X subs' na coluna Lista", () => {
   assert.ok(!/\d+\s+subs/.test(html), "não deve mostrar 'N subs' em nenhum lugar do HTML");
 });
 
-test("renderDashboardHtml: layout SEM MPP é simples — taxa única + count único, sem parens redundantes", () => {
-  // Quando appleMppOpens=0, não tem sentido mostrar "20 (20)" ou "X% (X%)".
-  // Layout simples: só "X%" no top e só "20" no bottom.
+test("renderDashboardHtml: layout SEM MPP e SEM trackable é simples — taxa única + count único, sem parens redundantes", () => {
+  // Quando appleMppOpens=0 E trackableViews está ausente, não tem sentido
+  // mostrar "20 (20)" ou "X% (X%)". Layout simples: só "X%" no top e só "20"
+  // no bottom. Nota (#3056): quando appleMppOpens=0 mas trackableViews ESTÁ
+  // presente, a célula agora mostra "(X% trackable)" no parêntese — ver teste
+  // "#3056: célula Opens mostra trackable sozinho..." em
+  // brevo-dashboard-fase2.test.ts. Este teste isola o caso genuinamente sem
+  // NENHUM dado extra pra mostrar (trackableViews ausente, mesmo cast usado
+  // no teste "#3040: MPP presente mas trackableViews ausente" logo abaixo).
   const campaigns = [{
     ...baseCampaign,
     statistics: {
       globalStats: {
         sent: 50, delivered: 48, hardBounces: 0, softBounces: 2,
-        uniqueViews: 20, viewed: 22, trackableViews: 20,
+        uniqueViews: 20, viewed: 22,
+        trackableViews: undefined as unknown as number,
         uniqueClicks: 0, clickers: 0, unsubscriptions: 0,
         complaints: 0, appleMppOpens: 0,
       },
@@ -215,12 +222,12 @@ test("renderDashboardHtml: layout SEM MPP é simples — taxa única + count ún
   // Taxa única no topo (20/48 = 41.7%), sem span rate-inline pra parens
   assert.ok(html.includes("41.7%"), "deveria mostrar 41.7% (20/48)");
   assert.ok(!/<span class="rate-inline">/.test(html),
-    "não deve ter span rate-inline (usado pra parens) quando appleMppOpens=0");
+    "não deve ter span rate-inline (usado pra parens) quando appleMppOpens=0 e trackableViews ausente");
 
   // Count único embaixo (20), sem parens
   assert.ok(/<small>20<\/small>/.test(html), "count deve ser '20' puro, sem parens");
   assert.ok(!/<small>20 \(20\)<\/small>/.test(html),
-    "não deve mostrar '20 (20)' — redundante quando appleMppOpens=0");
+    "não deve mostrar '20 (20)' — redundante quando appleMppOpens=0 e trackableViews ausente");
 
   // Nenhuma anotação MPP no row
   assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve ter '+ N MPP' quando appleMppOpens=0");

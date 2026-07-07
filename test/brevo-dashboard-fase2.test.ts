@@ -1116,6 +1116,33 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /<small>20 \(15 · 15\)<\/small>/, "count de Opens deve incluir sem-MPP e trackable (#3040)");
   });
 
+  test("#3056: célula Opens mostra trackable sozinho quando NÃO há MPP mas HÁ trackable (regressão do #3040)", () => {
+    // Terceiro estado, não coberto pelos testes originais do #3040: campanha
+    // sem opens via Apple MPP (comum — nem toda campanha dispara MPP) mas COM
+    // trackableViews válido. Antes do #3040 esse dado tinha coluna própria
+    // (sempre renderizada); o merge do #3040 só anexava trackable DENTRO do
+    // branch `mppOpens > 0`, então o dado sumia por completo quando
+    // mppOpens===0. O fix cobre esse terceiro caso.
+    const noMppTrackableCampaign = {
+      ...baseCampaign,
+      id: 2,
+      statistics: {
+        // appleMppOpens: 0 → mppOpens===0; trackableViews presente → hasTrackable===true.
+        globalStats: makeGlobalStats({ sent: 104, delivered: 100, uniqueViews: 25, trackableViews: 20, appleMppOpens: 0 }),
+      },
+    };
+    const html = renderDashboardHtml([noMppTrackableCampaign]);
+    // openRate = 25/100 = 25.0%; trackableRate = 20/100 = 20.0%. Sem "sem MPP"
+    // no parêntese (mppOpens===0 já significa openRate === openRateNoMpp).
+    assert.match(
+      html,
+      /25\.0% <span class="rate-inline">\(20\.0% trackable\)<\/span>/,
+      "célula Opens deve mostrar a taxa trackable sozinha no parêntese quando não há MPP (#3056)",
+    );
+    // count trackable (20) na linha <small>, sem count "sem MPP" (que não existe nesse caso).
+    assert.match(html, /<small>25 \(20 trackable\)<\/small>/, "count de Opens deve incluir o trackable mesmo sem MPP (#3056)");
+  });
+
   test("seção day-summary foi REMOVIDA da aba Engajamento (#2736, supersede #2523)", () => {
     const html = renderDashboardHtml(cycle2605Campaigns);
     // #2736: "Resumo D1–D5 — S1" removida da aba (ruído, decisão do editor).
