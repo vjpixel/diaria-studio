@@ -143,6 +143,11 @@ CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_poin
 export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
+  // #3021: sem busy_timeout, um reader que colide com a janela de escrita da
+  // task diária (Diaria-Clarice-Sync, 03:40) recebe SQLITE_BUSY imediatamente
+  // em vez de esperar e tentar de novo. 5s cobre folgadamente uma transação
+  // de sync incremental típica sem travar scripts de leitura por muito tempo.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   migrateSchema(db);
   return db;
