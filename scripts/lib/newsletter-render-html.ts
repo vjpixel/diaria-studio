@@ -429,7 +429,10 @@ export function renderBoxDivulgacao(box: string, imageUrl: string | null = null)
   // ≥2 links: o box de livros default (1 link "Confira a página") continua
   // usando a imagem normalmente.
   if (/^\s*📚/u.test(box) && findMarkdownLinks(box).length >= 2) {
-    return renderIntroCallout(box, "serif", true);
+    // Strip do marcador 📚 (igual ao 🛒 acima): sem isso, um box de 1 parágrafo
+    // com 2 links inline cai no path single-para de renderIntroCallout, que NÃO
+    // remove o marcador de box não-📣 — o "📚" vazaria cru no meio do texto.
+    return renderIntroCallout(box.replace(/^\s*📚[ \t]*\r?\n?/u, ""), "serif", true);
   }
   return renderMidCallout(box, imageUrl);
 }

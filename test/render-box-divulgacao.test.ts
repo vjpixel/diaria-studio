@@ -75,6 +75,14 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
     assert.match(html, /48% de desconto/, "descrições preservadas no corpo");
   });
 
+  it("📚 de 1 parágrafo com 2 links inline: não vaza o marcador 📚 no texto (#3028)", () => {
+    const box = "📚 Confira [Livro A](https://amzn.to/aaa) e [Livro B](https://amzn.to/bbb) com desconto.";
+    const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
+    assert.ok(!html.includes("📚"), "marcador 📚 não vaza cru no HTML");
+    assert.match(html, /amzn\.to\/aaa/, "1º link presente");
+    assert.match(html, /amzn\.to\/bbb/, "2º link presente");
+  });
+
   it("📚 com 1 link + imagem NÃO muda (regressão #3028): continua no path com imagem", () => {
     const box = "📚 Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
