@@ -70,6 +70,7 @@ import {
   deriveCurrentEdition,
 } from "./dedup.ts";
 import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-bucket highlight↔secundário
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested (#3055)
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts e check-intra-themes.ts já a consomem do
@@ -601,13 +602,19 @@ export function readPastApprovedSecondary(
 ): PastSecondaryItem[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  // #2463/#3025 (#3055): resolve o path REAL (flat ou nested) de cada aammdd —
+  // nunca `resolve(editionsDir, aammdd, ...)`, que assume flat. Mesmo padrão
+  // de check-secondary-themes.ts (extractSecondaryItemsFromEdition).
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
   const items: PastSecondaryItem[] = [];
 
   for (const aammdd of recent) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
     // Tenta _internal/ primeiro (pós-#574), depois root (legado)
     const candidates = [
-      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
-      resolve(editionsDir, aammdd, "01-approved.json"),
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
     ];
     let parsed: RawBuckets | null = null;
 
