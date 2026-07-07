@@ -3,6 +3,14 @@
  * build-link-ctr.ts
  * Builds a link-level CTR table across all 164 Beehiiv posts.
  * Output: data/link-ctr-table.csv
+ *
+ * Modes:
+ *   (default)  Incremental — only processes posts newer than the last date
+ *              already present in data/link-ctr-table.csv.
+ *   --full     Forces a full reprocess of every cached post (bootstrap
+ *              semantics), rewriting the CSV from scratch. Use after a fix to
+ *              extraction logic (e.g. #3043) to backfill already-cached posts
+ *              that were processed with the old (buggy) logic.
  */
 
 import * as fs from 'fs';
@@ -189,7 +197,7 @@ interface LinkEntry {
   url: string;
   baseUrl: string;
   anchor: string;
-  sectionTitle: string; // nearest <b> heading above the link
+  sectionTitle: string; // nearest section heading above the link (kicker <td> or <b>)
   context: string; // surrounding paragraph text for richer signal
 }
 
@@ -204,10 +212,27 @@ function cleanText(html: string): string {
     .replace(/<[^>]+>/g, '')
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    // renderKicker's bullet (●) is an HTML entity, not meaningful heading text.
+    .replace(/&#9679;/g, '')
     .replace(/\s+/g, ' ').trim();
 }
 
-function extractLinks(html: string): LinkEntry[] {
+// #3043: real section headings across the whole newsletter are rendered by the
+// canonical DS "kicker" component (renderKicker(), scripts/lib/newsletter-render-html.ts
+// ~L145) — a 2-column <table> whose FIRST <td> carries the label, e.g.:
+//   <td style="...font-weight:bold;letter-spacing:2px;text-transform:uppercase;...">
+//     <span style="color:...">&#9679;</span>&nbsp;USE MELHOR
+//   </td>
+// It is NEVER a <b> tag. The old <b>-only scan never matched this shape, so
+// section_title has been blank/wrong for the entire CSV history. The 3-property
+// style signature (bold + 2px letter-spacing + uppercase) is unique to this
+// component in the codebase (other bold/uppercase labels use 1px/1.5px spacing
+// or aren't <td>s at all) — lookaheads keep it order-independent within the
+// style attribute. <b> detection is kept as a secondary/legacy signal in case
+// older cached posts (pre-DS-kicker template) used literal <b> headings.
+const KICKER_TD_OPEN_SRC = String.raw`<td(?=[\s>])(?=[^>]*font-weight:\s*bold)(?=[^>]*letter-spacing:\s*2px)(?=[^>]*text-transform:\s*uppercase)[^>]*>`;
+
+export function extractLinks(html: string): LinkEntry[] {
   const entries: LinkEntry[] = [];
   const seen = new Set<string>();
 
@@ -216,19 +241,26 @@ function extractLinks(html: string): LinkEntry[] {
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<head[\s\S]*?<\/head>/gi, '');
 
-  // Build a token stream: alternating between <b> tags and <a> tags
+  // Build a token stream: alternating between <b> tags, kicker <td> headings,
+  // and <a> tags, in document order (needed for "nearest heading above the link").
   // (?=[\s>\/]) ensures we match <b> and <a> but NOT <base>, <body>, <aside>, etc.
-  const tokenRegex = /<(b|a)(?=[\s>\/])([^>]*)>([\s\S]*?)<\/\1>/gi;
+  // The kicker <td> alternative is built from KICKER_TD_OPEN_SRC so the two can't
+  // drift apart — only the specific DS heading <td> matches, not the many other
+  // <td>s in the layout.
+  const tokenRegex = new RegExp(
+    String.raw`<b(?=[\s>\/])[^>]*>([\s\S]*?)<\/b>` +
+    '|' + KICKER_TD_OPEN_SRC + String.raw`([\s\S]*?)<\/td>` +
+    String.raw`|<a(?=[\s>\/])([^>]*)>([\s\S]*?)<\/a>`,
+    'gi',
+  );
   let currentSection = '';
   let match: RegExpExecArray | null;
 
   while ((match = tokenRegex.exec(bodyHtml)) !== null) {
-    const tag = match[1].toLowerCase();
-    const attrs = match[2];
-    const inner = match[3];
+    const [, bInner, kickerInner, aAttrs, aInner] = match;
 
-    if (tag === 'b') {
-      const text = cleanText(inner);
+    if (bInner !== undefined) {
+      const text = cleanText(bInner);
       const lower = text.toLowerCase();
       // Accept as section title if:
       // - long enough to be a headline (10-150 chars)
@@ -254,8 +286,17 @@ function extractLinks(html: string): LinkEntry[] {
       continue;
     }
 
-    // tag === 'a'
-    const hrefMatch = match[2].match(/href=["']([^"']+)["']/i);
+    if (kickerInner !== undefined) {
+      // Kicker labels are short (e.g. "RADAR", "USE MELHOR") and the style
+      // signature above already disambiguates the match, so no length/heuristic
+      // filtering beyond "non-empty after cleanup" is needed.
+      const text = cleanText(kickerInner);
+      if (text) currentSection = text;
+      continue;
+    }
+
+    // <a> tag
+    const hrefMatch = aAttrs.match(/href=["']([^"']+)["']/i);
     if (!hrefMatch) continue;
     const rawUrl = hrefMatch[1].trim();
     if (!rawUrl || rawUrl.startsWith('mailto:') || rawUrl.startsWith('#')) continue;
@@ -265,7 +306,7 @@ function extractLinks(html: string): LinkEntry[] {
     if (seen.has(bu)) continue;
     seen.add(bu);
 
-    const anchor = cleanText(inner);
+    const anchor = cleanText(aInner);
 
     // Extract surrounding paragraph context (300 chars before link in bodyHtml)
     const linkIdx = match.index!;
@@ -367,7 +408,11 @@ function main() {
   // #1567 finding H: identidade (data,título) dos posts já no CSV — usada pra não
   // pular uma 2ª edição de mesma data que só amadureceu num run posterior.
   const processedKeys = new Set<string>();
-  const isBootstrap = !fs.existsSync(OUT_CSV);
+  // #3043: --full forces bootstrap semantics on an EXISTING csv — isBootstrap
+  // gates both shouldSkipPost (process every post, no incremental skip) and
+  // whether existingLines gets seeded (below, guarded by `!isBootstrap`), so
+  // the CSV is fully rewritten from the cached posts instead of appended to.
+  const isBootstrap = process.argv.includes('--full') || !fs.existsSync(OUT_CSV);
 
   if (!isBootstrap) {
     const rawExisting = fs.readFileSync(OUT_CSV, 'utf8');

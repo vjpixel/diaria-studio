@@ -9,7 +9,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { matchClick, isEditorial, classifyOrigin, postKey, shouldSkipPost } from "../scripts/build-link-ctr.ts";
+import { matchClick, isEditorial, classifyOrigin, postKey, shouldSkipPost, extractLinks } from "../scripts/build-link-ctr.ts";
+import { renderKicker } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("matchClick — soma variantes split do mesmo base_url (#1567 finding C)", () => {
   it("soma unique_verified/verified/unique de todas as rows que colapsam pro mesmo base", () => {
@@ -98,6 +99,61 @@ describe("classifyOrigin — origem por-link, sem vazamento do título (#1567 fi
     assert.equal(classifyOrigin("earn 100 r$ values inside the app", "producthunt.com"), "INT");
     // 'usp' cru não dispara mais BR (colidia com unique selling proposition)
     assert.equal(classifyOrigin("the main usp of this product is speed", "producthunt.com"), "INT");
+  });
+});
+
+describe("extractLinks — sectionTitle reconhece o kicker <td> real do Beehiiv (#3043)", () => {
+  it("captura o label do renderKicker() real (fixture construída com a função canônica, não HTML digitado à mão)", () => {
+    // Espelha como renderKicker() é usado de verdade (ex: renderDivulgacaoSeparator,
+    // renderSectionItem): embrulhado num <tr><td class="pad">...</td></tr>.
+    const html = `
+      <tr><td class="pad">${renderKicker("USE MELHOR")}</td></tr>
+      <table><tr><td><a href="https://example.com/ferramenta-legal">Ferramenta legal</a></td></tr></table>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].sectionTitle, "USE MELHOR");
+  });
+
+  it("reproduz literalmente o HTML capturado no cache real (post_22f25875, edição 260630) — <td> estilizado, não <b>", () => {
+    // String confirmada pelo coordenador contra data/beehiiv-cache/posts/post_22f25875-....json.
+    const realHtml =
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' +
+      '<td style="font-family:sans-serif;font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#00A0A0;white-space:nowrap;padding-right:12px;">' +
+      '<span style="color:#00A0A0;">&#9679;</span>&nbsp;USE MELHOR</td>' +
+      '<td style="width:100%;border-bottom:1px solid #EBE5D0;font-size:0;line-height:0;">&nbsp;</td>' +
+      '</tr></table>' +
+      '<a href="https://tool.example.com/x">link de teste</a>';
+    const links = extractLinks(realHtml);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].sectionTitle, "USE MELHOR");
+  });
+
+  it("não confunde outro <td> em negrito qualquer (sem a assinatura completa) com um heading de seção", () => {
+    const html = `
+      ${renderKicker("LANÇAMENTOS")}
+      <a href="https://x.com/a">primeiro link</a>
+      <table><tr><td style="font-weight:bold;">Texto qualquer em negrito, não é kicker (sem letter-spacing/uppercase)</td></tr></table>
+      <a href="https://y.com/b">segundo link</a>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 2);
+    // O <td> bold genérico (sem a assinatura completa) não deve sobrescrever a seção.
+    assert.equal(links[0].sectionTitle, "LANÇAMENTOS");
+    assert.equal(links[1].sectionTitle, "LANÇAMENTOS");
+  });
+
+  it("heading muda pro link seguinte quando um novo kicker aparece no meio", () => {
+    const html = `
+      ${renderKicker("RADAR")}
+      <a href="https://a.com/1">link A</a>
+      ${renderKicker("NOTÍCIAS")}
+      <a href="https://b.com/2">link B</a>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 2);
+    assert.equal(links[0].sectionTitle, "RADAR");
+    assert.equal(links[1].sectionTitle, "NOTÍCIAS");
   });
 });
 
