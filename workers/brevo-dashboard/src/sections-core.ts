@@ -30,13 +30,21 @@ export function renderDashboardHtml(
   // entra como fallback no caso raro de sentDate ausente (nota: ordem de
   // precedência invertida vs groupMonthlyAbcTests, que prioriza scheduledAt —
   // lá o dado é "intenção de envio" cobrindo teste ainda-não-disparado; aqui
-  // é a tabela de campanhas já enviadas). A comparação decrescente por string
-  // ISO reusa a mesma técnica lexicográfica de groupMonthlyAbcTests (linha ~883).
-  const sortedCampaigns = [...campaigns].sort((a, b) => {
-    const dateA = a.sentDate ?? a.scheduledAt ?? "";
-    const dateB = b.sentDate ?? b.scheduledAt ?? "";
-    return dateA < dateB ? 1 : dateA > dateB ? -1 : 0;
-  });
+  // é a tabela de campanhas já enviadas).
+  // #3057: comparação por TIMESTAMP numérico (Date.parse), não por string ISO
+  // bruta — sentDate tipicamente vem sem milissegundos ("...T09:00:00Z") mas
+  // scheduledAt pode vir com ms e/ou offset explícito ("...T09:00:00.000Z",
+  // "...T09:00:00.000-03:00"); comparação lexicográfica de strings com
+  // formatos diferentes pode ordenar errado (ex: "." ordena abaixo de dígitos
+  // em code-unit compare). Data ausente/não-parseável (NaN) é tratada como a
+  // mais antiga possível (-Infinity) — nunca quebra o sort, só afunda pro fim.
+  const toSortableTime = (c: Pick<BrevoCampaign, "sentDate" | "scheduledAt">): number => {
+    const raw = c.sentDate ?? c.scheduledAt;
+    if (!raw) return -Infinity;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : -Infinity;
+  };
+  const sortedCampaigns = [...campaigns].sort((a, b) => toSortableTime(b) - toSortableTime(a));
   const rows = sortedCampaigns
     .map((c) => {
       // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
@@ -102,23 +110,29 @@ export function renderDashboardHtml(
 
       // Opens cell tem layout duplo quando há MPP (#1153): top mostra
       // "taxa-com-MPP (taxa-sem-MPP)" e bottom mostra "count-total (count-sem-MPP)".
-      // Sem MPP: layout simples (taxa única + count único) — nesse caso não
-      // anexamos trackable (não há parêntese onde encaixar; #3040 só pede pra
-      // incorporar trackable "junto do parêntese no-MPP já existente").
       // #3040: coluna Trackable 📍 standalone foi removida — quando há MPP E
       // trackable, o parêntese de Opens ganha um segundo membro ("sem MPP" +
       // "trackable"); quando há MPP mas trackable está ausente, mantém o
       // formato antigo (só "sem MPP").
+      // #3056 (regressão do #3040): quando NÃO há MPP mas HÁ trackable, o dado
+      // trackable não pode simplesmente desaparecer — antes do #3040 ele tinha
+      // sua própria coluna sempre renderizada. Mostramos o trackable sozinho
+      // no parêntese (sem o membro "sem MPP", que não existe nesse caso —
+      // mppOpens=0 já significa openRate === openRateNoMpp).
       const opensTopLine = mppOpens > 0
         ? hasTrackable
           ? `${openRate} <span class="rate-inline">(${openRateNoMpp} sem MPP · ${trackableRate} trackable)</span>`
           : `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
-        : openRate;
+        : hasTrackable
+          ? `${openRate} <span class="rate-inline">(${trackableRate} trackable)</span>`
+          : openRate;
       const opensBottomLine = mppOpens > 0
         ? hasTrackable
           ? `${s.uniqueViews} (${opensNoMpp} · ${s.trackableViews})`
           : `${s.uniqueViews} (${opensNoMpp})`
-        : `${s.uniqueViews}`;
+        : hasTrackable
+          ? `${s.uniqueViews} (${s.trackableViews} trackable)`
+          : `${s.uniqueViews}`;
 
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
