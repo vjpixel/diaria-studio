@@ -114,6 +114,9 @@ export interface Plan {
    * "done (depth N)" = review concluído no nível N.
    * "skipped: <motivo> (depth N)" = review pulado no nível N.
    * Legado: "done" (sem depth) → tratar como concluído no nível corrente.
+   * Na prática o valor gravado costuma trazer texto explicativo ANEXADO
+   * após a tag canônica (ex: "done (depth 2) - depth limit reached, ...")
+   * — `cycleLabel` casa por prefixo/substring, não igualdade exata (#3071).
    */
   review?: string | null;
   /**
@@ -144,6 +147,21 @@ export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
 export const DEVELOP_DIR_RE = /^\d{6}$/;
 const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
 const BAR_WIDTH = 12;
+
+/**
+ * #3071: status ad-hoc usado pelo overnight pra EPICs deliberadamente
+ * deferidos — fecham só quando a issue-filha mergear, não antes (ver campo
+ * `motivo` da própria issue no plan.json, ex: "epic - fechar se #NNNN
+ * mergear"). Não é trabalho pendente real, então conta como terminal só
+ * para fins de contagem/exibição da barra — fora do IssueStatus canônico
+ * de propósito (não é um status que a fila principal deveria atribuir).
+ */
+const EPIC_DEFERRED_STATUS = "elegivel_especial";
+
+/** Terminal para fins de barra: status canônico terminal OU EPIC deferido (#3071). */
+function isTerminalForBar(status: string): boolean {
+  return TERMINAL_STATUSES.has(status as IssueStatus) || status === EPIC_DEFERRED_STATUS;
+}
 
 /** Stage statuses considered terminal for edition progress (#2250). */
 const STAGE_TERMINAL_STATUSES = new Set<StageStatus>(["done", "failed"]);
@@ -303,21 +321,24 @@ export function cycleLabel(plan: Plan | null | undefined): string {
 
   // Verifica se o review do depth atual já foi concluído.
   // "done (depth N)" | "skipped: ... (depth N)" | legacy "done" (sem depth).
+  // #3071: casamento por prefixo/substring, não igualdade exata — o valor real
+  // gravado costuma trazer texto explicativo ANEXADO após a tag canônica
+  // (ex: "done (depth 2) - depth limit reached, cadeia encerrada..."), o que
+  // quebrava a igualdade estrita e prendia a barra em "review 1.5x" pra sempre
+  // mesmo com a rodada genuinamente encerrada.
   const reviewValue = plan.review ?? null;
   const reviewDone =
     (depth === 0 && reviewValue === "done") // legado: somente depth 0
     || (typeof reviewValue === "string" && (
-      reviewValue === `done (depth ${depth})`
-      || reviewValue.startsWith(`skipped:`) && reviewValue.endsWith(`(depth ${depth})`)
+      reviewValue.startsWith(`done (depth ${depth})`)
+      || (reviewValue.startsWith(`skipped:`) && reviewValue.includes(`(depth ${depth})`))
     ));
 
   // Verifica se TODAS as issues relevantes estão em status terminal.
   // issues vazia → allTerminal = false (bucket não-esgotado → permanece na fase ativa)
   const allTerminal =
     relevantIssues.length > 0
-    && relevantIssues.every((i) =>
-        TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)
-      );
+    && relevantIssues.every((i) => isTerminalForBar(String(i?.status ?? "")));
 
   // Se fila do depth esgotada E review ainda não concluído → estamos no review consolidado.
   if (allTerminal && !reviewDone) {
@@ -355,7 +376,7 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
   if (issues.length === 0) return "";
 
   const total = issues.length;
-  const done = issues.filter((i) => TERMINAL_STATUSES.has(String(i?.status ?? "") as IssueStatus)).length;
+  const done = issues.filter((i) => isTerminalForBar(String(i?.status ?? ""))).length;
 
   // Rótulo do ciclo/fase atual (#2298) — determinístico, sem relógio.
   const label = cycleLabel(plan);
@@ -363,7 +384,12 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
   // Rodada encerrada: todas terminais → barra cheia 100% visível (#2246 pt3)
   if (done >= total) {
     const bar = "█".repeat(BAR_WIDTH);
-    return `[${bar}] 100%  (${done}/${total})  · ${label}`;
+    // #3071: com tudo terminal, "fila principal"/"mini-rodada N" (fallback de
+    // fila ativa) nunca é um estado real — nada está rodando. Só "review
+    // 1.5x" continua sendo sinal útil aqui (fila esgotada mas o review
+    // consolidado do depth ainda não rodou) — preservado como está.
+    const displayLabel = label.startsWith("review 1.5") ? label : "concluída";
+    return `[${bar}] 100%  (${done}/${total})  · ${displayLabel}`;
   }
 
   // Fix #3: use Math.floor instead of Math.round to avoid showing 100% when not all done

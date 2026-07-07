@@ -249,6 +249,25 @@ describe("renderOvernightBar — status terminais reconhecidos", () => {
   });
 });
 
+// #3071: EPIC deliberadamente deferido (fecha só quando a issue-filha mergear)
+// não é trabalho pendente real — deve contar como terminal na barra, senão a
+// rodada nunca bate 100% mesmo com a cadeia genuinamente encerrada (incidente
+// real: data/overnight/260706/plan.json, issue #2808 travando 25/26 pra sempre).
+describe("renderOvernightBar — #3071: EPIC deferido ('elegivel_especial') conta como terminal", () => {
+  it("'elegivel_especial' conta como terminal — rodada com só esse status pendente bate 100%", () => {
+    const plan = makePlan(["mergeada", "pulada", "elegivel_especial"]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("(3/3)"), `elegivel_especial deve contar como terminal: ${result}`);
+    assert.ok(result.includes("100%"), `deve bater 100% com só EPIC deferido pendente: ${result}`);
+  });
+
+  it("issue elegivel comum (não-EPIC) ainda NÃO conta — não confundir com elegivel_especial", () => {
+    const plan = makePlan(["mergeada", "elegivel_especial", "elegivel"]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("(2/3)"), `'elegivel' comum não deve contar como terminal: ${result}`);
+  });
+});
+
 // ─── Finding 6: statuses precisa-resposta e bloqueada-externa são não-terminais ───
 
 describe("renderOvernightBar — status não-terminais: precisa-resposta e bloqueada-externa", () => {
@@ -712,6 +731,30 @@ describe("cycleLabel — review 1.5b (depth 1, finding-depth-1 esgotadas, review
   });
 });
 
+// #3071: `plan.review` gravado na prática costuma trazer texto explicativo
+// ANEXADO após a tag canônica "done (depth N)" — igualdade estrita quebrava
+// a detecção e prendia a barra em "review 1.5x" pra sempre mesmo com a rodada
+// genuinamente encerrada (incidente real: data/overnight/260706/plan.json).
+describe("cycleLabel — #3071: review com texto explicativo anexado (não é mais 'preso')", () => {
+  it("depth 1, review 'done (depth 1) - texto explicativo extra' → NÃO é review 1.5b", () => {
+    const plan = makeMiniRodadaPlan(
+      1,
+      ["mergeada"],
+      ["mergeada"],
+      "done (depth 1) - depth limit reached, cadeia encerrada. detalhes extras aqui.",
+    );
+    assert.notEqual(cycleLabel(plan), "review 1.5b");
+    assert.equal(cycleLabel(plan), "mini-rodada 1");
+  });
+
+  it("depth 0, review legado 'done - texto extra' (sem '(depth N)') → segue estrito, NÃO tolera sufixo (só o formato COM depth tolera)", () => {
+    // Formato legado (sem depth) mantém igualdade exata de propósito — só o
+    // formato COM depth ("done (depth N)") ganhou tolerância a sufixo (#3071).
+    const plan = makeDepth0Plan(["mergeada", "pulada"], "done - algum texto extra", 0);
+    assert.equal(cycleLabel(plan), "review 1.5");
+  });
+});
+
 describe("cycleLabel — legado: plan.json sem findings_depth nem review", () => {
   it("plan legado sem findings_depth → treat como 0, issues ativas → 'fila principal'", () => {
     const plan: Plan = {
@@ -856,8 +899,10 @@ describe("renderOvernightBar — plan.json legado sem findings_depth (#2301)", (
     assert.match(bar, /^\[█{12}\] 100%  \(\d+\/\d+\)  · review 1\.5(?!b|c)/);
   });
 
-  it("plan legado com review:'done' (sem depth): cycleLabel retorna 'fila principal' (não review 1.5)", () => {
-    // Plan legado: review 'done' sem indicador de depth → concluído no nível atual → não em review
+  it("plan legado com review:'done' (sem depth), 100%: bar mostra '· concluída' (#3071 — não 'fila principal', nada está ativo)", () => {
+    // Plan legado: review 'done' sem indicador de depth → concluído no nível atual → não em review.
+    // cycleLabel() isolado ainda retorna 'fila principal' (fallback de fila ativa) — mas a 100%,
+    // renderOvernightBar substitui esse fallback por 'concluída' (#3071: nada está rodando).
     const plan: Plan = {
       started_at: "2026-06-01T22:00:00.000Z",
       review: "done",
@@ -866,9 +911,36 @@ describe("renderOvernightBar — plan.json legado sem findings_depth (#2301)", (
         { number: 1002, status: "mergeada" } as Plan["issues"][0],
       ],
     };
+    assert.equal(cycleLabel(plan), "fila principal"); // cycleLabel isolado é inalterado
     const bar = renderOvernightBar(plan);
 
     assert.ok(bar.includes("100%"), `legado com review:done deve mostrar 100%: ${bar}`);
-    assert.ok(bar.includes("· fila principal"), `review:done concluído deve mostrar '· fila principal': ${bar}`);
+    assert.ok(bar.includes("· concluída"), `review:done concluído a 100% deve mostrar '· concluída': ${bar}`);
+  });
+});
+
+// #3071: a 100%, o fallback de "fila ativa" (fila principal/mini-rodada N) nunca é
+// um estado real — substituído por 'concluída'. "review 1.5x" continua intacto
+// (fila esgotada mas review consolidado do depth ainda não rodou é sinal útil).
+describe("renderOvernightBar — #3071: rótulo 'concluída' substitui fallback de fila ativa a 100%", () => {
+  it("100% + review done (com sufixo explicativo) → '· concluída', não '· mini-rodada N'", () => {
+    // Reproduz o incidente real: data/overnight/260706/plan.json
+    const plan = makeMiniRodadaPlan(
+      2,
+      ["mergeada", "mergeada"],
+      ["mergeada", "elegivel_especial"],
+      "done (depth 2) - depth limit reached, cadeia encerrada. texto explicativo extra.",
+    );
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("100%"), `deve bater 100% com EPIC deferido terminal: ${bar}`);
+    assert.ok(bar.includes("· concluída"), `deve mostrar 'concluída', não 'mini-rodada 2': ${bar}`);
+    assert.ok(!bar.includes("mini-rodada"), `não deve mais mostrar 'mini-rodada': ${bar}`);
+  });
+
+  it("100% mas review ainda não rodou → mantém '· review 1.5x' (sinal útil, não vira 'concluída')", () => {
+    const plan = makeDepth0Plan(["mergeada", "mergeada", "pulada"], null, 0);
+    const bar = renderOvernightBar(plan);
+    assert.ok(bar.includes("100%"), `deve bater 100%: ${bar}`);
+    assert.match(bar, /· review 1\.5(?!b|c)/, `review pendente deve preservar 'review 1.5': ${bar}`);
   });
 });
