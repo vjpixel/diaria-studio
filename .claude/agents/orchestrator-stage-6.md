@@ -236,6 +236,62 @@ npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 
 Exit 1 = logar warn (nao bloquear auto-reporter).
 
+### 6h. Purga automatica de votos do editor no leaderboard (#3032)
+
+Apos o Schedule confirmado (§6d), purgar do leaderboard do "É IA?" os votos das 2
+contas do editor (`pixel@memelab.com.br` + `vjpixel@gmail.com`) — ele vota durante a
+curadoria/teste pra setar/conferir o gabarito, e esses votos NAO devem competir no
+ranking publico. Reusa a mesma logica de `/diaria-remover-votos-pixel`
+(`scripts/purge-leaderboard.ts`), agora automatico e sem gate: acao determinística e
+hardcoded (2 emails fixos → blast radius baixo), idempotente (re-rodar numa conta ja
+limpa e no-op).
+
+**Escopo:** so votos `diaria` (default do script, sem `--brand`). O mensal (Clarice)
+usa `--brand clarice` e fica FORA deste auto-run diario — nao tocar.
+
+**Checar auth wrangler antes de rodar (label `local`, #2643).** Rodar com um timeout
+curto explicito (ex: 15000ms via o parametro de timeout da tool de Bash) — `wrangler
+whoami` so le config local e nao deveria abrir browser, mas o proprio
+`check-cloudflare-token.ts` evita esse comando justamente por risco de side-effect de
+login interativo; o timeout e a rede de seguranca contra qualquer stall:
+```bash
+npx wrangler whoami
+```
+- **Exit 0** (lista a conta logada) → prosseguir com a purga abaixo.
+- **Exit != 0, OU o comando estourar o timeout** (nao logado — tipico de sessao cloud
+  sem OAuth persistido) → **degradar pra warn e SEGUIR sem rodar a purga.** "Degradar
+  pra warn" aqui significa concretamente: nao chamar `purge-leaderboard.ts` (nem
+  tentar de novo), logar o warn abaixo, e passar direto pra Etapa 6b (Auto-reporter)
+  como se este passo nao existisse — o agendamento ja foi confirmado em §6d e NAO deve
+  ser reaberto ou revertido por causa disto. Nao tentar `wrangler login` nem pedir
+  credencial ao editor (Stage 6 nao bloqueia agendamento por causa de auth do KV do
+  leaderboard).
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
+    --message "purga de votos do editor pulada: wrangler nao autenticado" \
+    --details '{"reason":"wrangler_not_authenticated"}'
+  ```
+
+**Se autenticado, rodar a purga (execute direto — mesma justificativa de
+`/diaria-remover-votos-pixel`: sem gate, sem dry-run previo):**
+```bash
+npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute
+npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute
+```
+
+Cada execucao imprime `[purge] done — {N} keys apagadas, {M} snapshots invalidados.`
+(ou `[purge] nada pra apagar` se a conta ja estava limpa — trate como `{N}=0`). Somar
+o `{N}` das 2 chamadas e logar a contagem total pra auditoria:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
+  --message "purga de votos do editor concluida: {total_keys} keys apagadas" \
+  --details '{"emails":["pixel@memelab.com.br","vjpixel@gmail.com"],"keys_deleted":{total_keys}}'
+```
+
+Falha inesperada de um dos 2 comandos (nao relacionada a auth — ex: erro de
+rede/KV) → logar warn com o motivo e seguir; nunca bloquear o restante do Stage 6 por
+causa desta purga.
+
 ---
 
 ## Etapa 6b — Auto-reporter (#57 / #79)
