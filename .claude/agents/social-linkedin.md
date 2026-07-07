@@ -32,7 +32,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved-capped.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
-- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — será substituído em Stage 5 (`publish-linkedin`) a partir do estado FINAL da edição (igual a `{edition_url}`). Escrever o template com `{outros_count}` literal, nunca um número estimado.
+- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — será substituído em Stage 5 (`publish-linkedin`) a partir do estado FINAL da edição (igual a `{edition_url}`). Escrever o template com `{outros_count}` literal, nunca um número estimado. **Exceção (#3052):** o `## post_pixel` (§3d) nunca é dispatchado por `publish-linkedin.ts` (postagem 100% manual) — seus placeholders são resolvidos em Stage 6 via `scripts/resolve-post-pixel.ts`, não em Stage 5.
 
 ## Processo
 
@@ -93,9 +93,10 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    **⚠️ NÃO gerar `### comment_pixel` para o `## post_pixel` (#2453).** O `comment_pixel` existe para ir SOB os posts da company page (d1/d2/d3) — não sob o post pessoal standalone. O `post_pixel` já É a voz pessoal do Pixel; um comment_pixel seria redundante e confuso. A seção termina direto com o corpo do post (+ hashtags + CTA de follow). Zero subseções.
 
    - **Voz pessoal/opinião do Pixel** (reaproveite o tom do `### comment_pixel` como base, mas em formato de POST completo, não comentário). Primeira pessoa, autor curador.
+   - **Abrir com `{outros_count}` + `{edition_url}` (#3052):** a primeira linha do post traz os dois placeholders literais — nunca estimados, nunca substituídos manualmente — na voz pessoal do Pixel (não copiar o CTA formal do `### comment_diaria` §3b verbatim; adaptar o tom). Exemplo: `Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:` (ajustar a frase de transição ao ângulo do D1, mantendo os dois placeholders literais e próximos do início). **Resolvidos em Stage 6** via `scripts/resolve-post-pixel.ts` (não em Stage 2, não em Stage 5 — `post_pixel` nunca passa por `publish-linkedin.ts`, ver nota em "Input" acima).
    - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual da página.
-   - Pode abrir com o fato, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
-   - Hashtags próprias (1-3). URL da edição opcional.
+   - Depois da abertura, pode reforçar o fato do D1, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
+   - Hashtags próprias (1-3).
    - **Incluir link da página** ao final: `Siga a Diar.ia em linkedin.com/company/diar.ia.br` (sem `https://`, sem ponto final).
    - 600–1300 caracteres (post de LinkedIn, não comentário).
    - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da Diar.ia. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.

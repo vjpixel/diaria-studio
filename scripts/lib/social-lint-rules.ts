@@ -457,6 +457,11 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
   // já é a voz do Pixel. Ter um `### comment_pixel` dentro dele seria redundante
   // (comment_pixel é para ir SOB os posts da company page d1/d2/d3, não sob
   // post_pixel). Validar que o bloco post_pixel NÃO contém essa subseção.
+  //
+  // #3052: post_pixel deve abrir com {outros_count} + {edition_url} literais
+  // (mesma convenção do comment_diaria §3b, ver social-linkedin.md §3d) — ambos
+  // resolvidos em Stage 6 (scripts/resolve-post-pixel.ts), nunca estimados ou
+  // omitidos em Stage 2.
   if (linkedinSection) {
     const ppBlockMatch = ("\n" + linkedinSection).match(
       /\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i,
@@ -470,6 +475,29 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
           detail:
             "post_pixel: subseção ### comment_pixel não deve existir aqui " +
             "— comment_pixel é para os posts d1/d2/d3 da company page, não para o post pessoal standalone (#2453).",
+        });
+      }
+
+      const ppText = ppBody.replace(/<!--[\s\S]*?-->/g, "").trim();
+      const hasEditionUrlPlaceholder = /\{edition_url\}/.test(ppText);
+      const hasEditionUrlResolved = /https?:\/\/diar\.ia\.br\/p\//.test(ppText);
+      if (ppText.length > 0 && !hasEditionUrlPlaceholder && !hasEditionUrlResolved) {
+        errors.push({
+          destaque: "post_pixel",
+          rule: "post_pixel_missing_edition_url",
+          detail:
+            "post_pixel: não contém '{edition_url}' (placeholder Stage 2) nem " +
+            "'diar.ia.br/p/<slug>' (resolvido) — abertura deve linkar a edição completa (#3052).",
+        });
+      }
+      const hasOutrosCountPlaceholder = /\{outros_count\}/.test(ppText);
+      if (ppText.length > 0 && !hasOutrosCountPlaceholder) {
+        errors.push({
+          destaque: "post_pixel",
+          rule: "post_pixel_missing_outros_count",
+          detail:
+            "post_pixel: não contém '{outros_count}' — abertura deve citar o total de " +
+            "itens não-destaque da edição (mesma convenção do comment_diaria, #3052).",
         });
       }
     }
@@ -1252,8 +1280,11 @@ const NEWSLETTER_DEIXIS_RE =
 /**
  * Extrai o texto de `## post_pixel` de uma seção LinkedIn.
  * (bloco top-level `## post_pixel`, encerrando no próximo `## ` ou fim)
+ *
+ * Exportado (#3052) para reuso por scripts/resolve-post-pixel.ts (Stage 6 —
+ * resolução de {outros_count}/{edition_url} pro fluxo manual de publicação).
  */
-function extractPostPixelBlock(linkedinSection: string): { text: string; lineOffset: number } | null {
+export function extractPostPixelBlock(linkedinSection: string): { text: string; lineOffset: number } | null {
   const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
   const m = text.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
   if (!m) return null;

@@ -405,7 +405,7 @@ Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/..
 ```bash
 npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
 ```
-Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comment_pixel) ou char count fora do range. Exit 1 = re-disparar `social-linkedin` agent.
+Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comment_pixel) ou char count fora do range. **#3052:** também valida que `## post_pixel` abre com `{outros_count}` + `{edition_url}` literais (post_pixel_missing_outros_count / post_pixel_missing_edition_url) — mesma convenção do comment_diaria, ver §3d de social-linkedin.md. Exit 1 = re-disparar `social-linkedin` agent.
 
 **Lint pergunta-de-encerramento pré-gate (#1762):** posts social não devem fechar com pergunta (CTA-pergunta). Rodar:
 ```bash
