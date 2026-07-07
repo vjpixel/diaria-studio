@@ -27,6 +27,7 @@
  */
 
 import "dotenv/config";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 export interface VoteRecord {
   choice: "A" | "B";
@@ -71,17 +72,12 @@ export function statsEqual(a: StatsRecord, b: StatsRecord): boolean {
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace
 
 function parseArgs(argv: string[]): { edition: string | null; execute: boolean } {
-  let edition: string | null = null;
-  let execute = false;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--edition" && argv[i + 1]) {
-      edition = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--execute") {
-      execute = true;
-    }
-  }
-  return { edition, execute };
+  // #2834: extração via parseArgs canônico; caller (mainCli) valida `edition`
+  // contra /^\d{6}$/ logo em seguida — qualquer divergência de borda (ex:
+  // "--edition" sem valor seguido de "--execute") resulta em `edition`
+  // inválido de qualquer forma, com o mesmo erro de uso do parser anterior.
+  const { values, flags } = parseArgsLib(argv);
+  return { edition: values["edition"] ?? null, execute: flags.has("execute") };
 }
 
 async function mainCli(): Promise<number> {

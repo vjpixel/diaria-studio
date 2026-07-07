@@ -27,28 +27,26 @@ import {
   classifyFetchCompleteness,
   DEFAULT_COMPLETENESS_THRESHOLD,
 } from "./lib/email-fetch-completeness.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 
 export { classifyFetchCompleteness, DEFAULT_COMPLETENESS_THRESHOLD };
 
 function parseArgs(argv: string[]): { emailLen: number; htmlPath: string } | null {
+  // #2834: extração de valores delegada a parseArgsSimple (mesmo gate
+  // `i + 1 < argv.length` do loop manual anterior); validação/coerção
+  // (parseInt + isNaN, campos obrigatórios) preservada como estava.
+  const values = parseArgsSimple(argv);
   let emailLen: number | undefined;
-  let htmlPath: string | undefined;
-
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--email-len" && i + 1 < argv.length) {
-      const raw = argv[i + 1];
-      const parsed = parseInt(raw, 10);
-      if (isNaN(parsed)) {
-        process.stderr.write(`Erro: --email-len requer um inteiro, obtido: '${raw}'\n`);
-        return null;
-      }
-      emailLen = parsed;
-      i++;
-    } else if (argv[i] === "--html-path" && i + 1 < argv.length) {
-      htmlPath = argv[i + 1];
-      i++;
+  const rawEmailLen = values["email-len"];
+  if (rawEmailLen !== undefined) {
+    const parsed = parseInt(rawEmailLen, 10);
+    if (isNaN(parsed)) {
+      process.stderr.write(`Erro: --email-len requer um inteiro, obtido: '${rawEmailLen}'\n`);
+      return null;
     }
+    emailLen = parsed;
   }
+  const htmlPath = values["html-path"];
 
   if (emailLen === undefined) {
     process.stderr.write("Erro: --email-len é obrigatório\n");

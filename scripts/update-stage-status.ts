@@ -36,6 +36,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
+import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -497,17 +498,17 @@ export function saveDoc(editionDir: string, doc: StageStatusDoc): void {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--init") out.init = true;
-    else if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    } else if (a.startsWith("--")) {
-      out[a.slice(2)] = true;
-    }
-  }
+  // #2834: `--key value` (valor condicional, não pode começar com "--") e
+  // flags booleanas sem valor já são o comportamento canônico de parseArgs —
+  // idêntico ao parser manual anterior pra todo flag exceto `--init`.
+  // `--init` era tratado como boolean incondicional (sempre true, mesmo se
+  // seguido por um token que pareceria um valor) — preservado explicitamente
+  // abaixo, mesmo padrão defensivo usado em resolve-edition-url.ts pro
+  // `--validate-social` (#2834).
+  const { values, flags } = parseArgsLib(argv);
+  const out: Record<string, string | boolean> = { ...values };
+  for (const f of flags) out[f] = true;
+  if (argv.includes("--init")) out.init = true;
   return out;
 }
 

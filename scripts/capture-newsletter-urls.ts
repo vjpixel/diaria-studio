@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrls, canonicalize } from "./lib/url-utils.ts";
+import { parseArgsSimple } from "./lib/cli-args.ts";
 import {
   isTrackingUrl,
   decodeTrackerUrl,
@@ -198,23 +199,15 @@ function parseArgs(argv: string[]): {
   outPath: string;
   cursorPath: string;
 } {
-  let threadsPath = "";
-  let outPath = "";
-  let cursorPath = resolve(ROOT, "data", "newsletter-capture-cursor.json");
-
-  for (let i = 2; i < argv.length; i++) {
-    switch (argv[i]) {
-      case "--threads":
-        threadsPath = argv[++i] ?? "";
-        break;
-      case "--out":
-        outPath = argv[++i] ?? "";
-        break;
-      case "--cursor":
-        cursorPath = argv[++i] ?? cursorPath;
-        break;
-    }
-  }
+  // #2834: argv aqui é process.argv completo (loop legado começava em i=2
+  // pra pular node/script path) — parseArgsSimple espera argv já sem esses
+  // 2 primeiros elementos, daí o slice(2). Consumo incondicional do próximo
+  // token (mesmo que comece com "--") é o mesmo comportamento do switch-case
+  // anterior (`argv[++i]`), preservado por parseArgsSimple.
+  const values = parseArgsSimple(argv.slice(2));
+  const threadsPath = values["threads"] ?? "";
+  const outPath = values["out"] ?? "";
+  const cursorPath = values["cursor"] ?? resolve(ROOT, "data", "newsletter-capture-cursor.json");
 
   if (!threadsPath || !outPath) {
     console.error("Usage: npx tsx scripts/capture-newsletter-urls.ts --threads <path> --out <path>");
