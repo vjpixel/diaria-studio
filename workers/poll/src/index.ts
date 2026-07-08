@@ -505,12 +505,19 @@ export function renderResultImagesHtml(resultImages: VoteResultImages | null | u
     const isAi = side === aiSide;
     const isClicked = side === clickedSide;
     const label = isAi ? "🤖 Gerada por IA" : "📷 Foto real";
+    // #3113 (item 7): alt genérico ("Imagem A/B") só faz sentido no PRÉ-voto
+    // (anti-gaming — não revelar a resposta antes do clique). Aqui é o
+    // RESULTADO pós-voto, onde o label visível já revela qual é qual — um
+    // leitor de tela com alt genérico perde essa informação por completo.
+    // Sem emoji no alt (o emoji já é decorativo/visual só no `.label`) —
+    // texto puro é o que um leitor de tela precisa.
+    const altText = isAi ? "Gerada por IA" : "Foto real";
     const youBadge = isClicked
       ? `<span class="you">Você clicou</span>`
       : "";
     const imgUrl = `/img/img-${edition}-01-eia-${side}.jpg`;
     return `<div class="result-image${isClicked ? " clicked" : ""}">
-  <img src="${imgUrl}" alt="Imagem ${side}" loading="lazy">
+  <img src="${imgUrl}" alt="${altText}" loading="lazy">
   <div class="label">${label}${youBadge}</div>
 </div>`;
   };
