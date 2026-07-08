@@ -57,6 +57,15 @@ export interface Env {
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
+  /** #3116: origin da request atual (`request.headers.get("Origin")`),
+   * extraído 1x no entrypoint `fetch()` e propagado via spread de `env` (e
+   * `brandedEnv`, que também espalha `env`) por toda a árvore de handlers que
+   * termina em `corsHeaders()`/`json()` sem precisar re-threadear `request`
+   * por cada assinatura (handleVote, handleStats, handleAdminCorrect, etc.).
+   * Runtime-only — nunca setado por `wrangler secret`/vars; opcional pra não
+   * quebrar fixtures de teste existentes que constroem `Env` sem esse campo
+   * (nesse caso corsHeaders() trata como request sem Origin). */
+  _requestOrigin?: string | null;
 }
 
 // ── Brand namespacing (#1905) ─────────────────────────────────────────────────
@@ -117,12 +126,40 @@ export async function hmacVerify(secret: string, message: string, sig: string): 
 
 // ── CORS helper ───────────────────────────────────────────────────────────────
 
+/**
+ * #3116: `Access-Control-Allow-Origin` só aceita UM valor (ou `*`) pela spec de
+ * CORS — ecoar `ALLOWED_ORIGINS` (`"https://diar.ia.br,https://diaria.beehiiv.com"`,
+ * ver `wrangler.toml`) inteiro como string concatenada por vírgula produz um
+ * header inválido; navegadores tratam isso como mismatch e bloqueiam a resposta,
+ * quebrando CORS exatamente pras origens que deveria permitir.
+ *
+ * Fix: split de `ALLOWED_ORIGINS` por vírgula; se a `Origin` da request
+ * (`env._requestOrigin`, ver `Env`) estiver na lista, ecoa SOMENTE ela + `Vary:
+ * Origin` (evita que caches intermediários sirvam a resposta de uma origem
+ * pra outra). Se não estiver (ou a request não mandar `Origin`), omite o
+ * header por completo — nunca vaza a allowlist nem ecoa uma origem arbitrária.
+ *
+ * `ALLOWED_ORIGINS` vazio ou `"*"` preserva o comportamento anterior de
+ * allow-all (não há allowlist real a validar contra Origin).
+ */
 export function corsHeaders(env: Env): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGINS ?? "*",
+  const base = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
+
+  const configured = (env.ALLOWED_ORIGINS ?? "").trim();
+  if (configured === "" || configured === "*") {
+    return { "Access-Control-Allow-Origin": "*", ...base };
+  }
+
+  const allowed = configured.split(",").map((o) => o.trim()).filter(Boolean);
+  const origin = env._requestOrigin;
+  if (origin && allowed.includes(origin)) {
+    return { "Access-Control-Allow-Origin": origin, "Vary": "Origin", ...base };
+  }
+
+  return base;
 }
 
 export function json(data: unknown, status = 200, env?: Env): Response {
@@ -640,6 +677,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // #3116: extrai a Origin da request 1x aqui e anexa a `env` (spread) —
+    // corsHeaders()/json() downstream (chamados por handleVote, handleStats,
+    // handleAdminCorrect etc., nenhum dos quais recebe `request`) conseguem
+    // ecoar o valor exato sem re-threadear `request` por toda a árvore.
+    env = { ...env, _requestOrigin: request.headers.get("Origin") };
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(env) });
