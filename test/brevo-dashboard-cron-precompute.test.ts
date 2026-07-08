@@ -34,6 +34,7 @@ import worker, {
   runCronRefresh,
   renderDashboardHtml,
   LASTGOOD_CAMPAIGNS_KEY,
+  CAMPAIGNS_FETCH_LIMIT,
 } from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -153,6 +154,10 @@ describe("runCronRefresh (#3079)", () => {
         typeof parsed.generatedAt === "string" && !isNaN(Date.parse(parsed.generatedAt)),
         "generatedAt deve ser um ISO válido — é o que o header honesto da rota / usa",
       );
+      // #3080: payload self-describing — grava o limite pedido junto, pra rota
+      // `/` saber decidir "janela cheia" sem depender de CAMPAIGNS_FETCH_LIMIT
+      // ter ficado igual entre o tick que escreveu e a request que lê.
+      assert.equal(parsed.campaignsLimit, CAMPAIGNS_FETCH_LIMIT, "deve gravar o limite usado neste tick (#3080)");
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -249,6 +254,55 @@ describe("rota / (#3079) — lê o pré-computado por padrão", () => {
     });
   });
 
+  // #3080: quando o payload pré-computado registra que a janela buscada estava
+  // CHEIA (campaigns.length === campaignsLimit gravado), a rota / deve repassar
+  // esse sinal até o HTML — "Totais por mês" avisa que o mês mais antigo pode
+  // estar parcial (defesa em profundidade complementar ao aumento de limite).
+  it("#3080 janela cheia (campaignsLimit === campaigns.length) → HTML mostra aviso de mês parcial", async () => {
+    const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const campaignWithStats = {
+      ...fakeCampaign,
+      statistics: { globalStats: fakeGlobalStats },
+    };
+    const payload = JSON.stringify({
+      campaigns: [campaignWithStats],
+      scheduled: [],
+      generatedAt,
+      campaignsLimit: 1, // janela "pedida" era 1 — bateu exatamente o length ⇒ cheia/truncada
+    });
+    const { kv } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: payload });
+    await withFetchSpy(async (calls) => {
+      const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      assert.match(text, /\(parcial — janela de 1 campanhas?\)/, "deve avisar que o mês mais antigo pode estar parcial");
+      assert.deepEqual(calls, [], "ainda não deve fazer nenhuma chamada à Brevo (caminho pré-computado)");
+    });
+  });
+
+  it("#3080 janela NÃO cheia (campaignsLimit > campaigns.length) → sem aviso de parcial", async () => {
+    const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const campaignWithStats = {
+      ...fakeCampaign,
+      statistics: { globalStats: fakeGlobalStats },
+    };
+    const payload = JSON.stringify({
+      campaigns: [campaignWithStats],
+      scheduled: [],
+      generatedAt,
+      campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // 150 pedidas, só 1 encontrada ⇒ não truncou
+    });
+    const { kv } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: payload });
+    await withFetchSpy(async (_calls) => {
+      const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      assert.doesNotMatch(text, /parcial — janela de/, "janela não-truncada não deve exibir aviso de parcial");
+    });
+  });
+
   it("KV vazio (cold-start, antes do 1º tick do cron) → cai pro fetch ao vivo E semeia o KV", async () => {
     const { kv, store } = makeKvMock();
     const origFetch = globalThis.fetch;
@@ -268,6 +322,9 @@ describe("rota / (#3079) — lê o pré-computado por padrão", () => {
       const parsed = JSON.parse(seeded!);
       assert.equal(parsed.campaigns.length, 1);
       assert.ok(typeof parsed.generatedAt === "string");
+      // #3080: o fallback ao vivo (cold-start) também grava o limite usado, pra
+      // manter o payload self-describing consistente com o caminho do cron.
+      assert.equal(parsed.campaignsLimit, CAMPAIGNS_FETCH_LIMIT);
     } finally {
       globalThis.fetch = origFetch;
     }

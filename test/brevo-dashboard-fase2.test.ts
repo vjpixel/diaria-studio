@@ -823,6 +823,73 @@ describe("#2369 renderMonthlyTotalsSection", () => {
   });
 });
 
+// ─── #3080: aviso de janela parcial em renderMonthlyTotalsSection ────────────
+// Regressão (#633): a rota `/` busca só as N campanhas mais recentes na Brevo
+// (CAMPAIGNS_FETCH_LIMIT). Quando essa janela está CHEIA (campaigns.length ===
+// limit), o mês mais antigo agregado em "Totais por mês" pode estar parcial —
+// sem aviso, o editor lia esse mês como completo silenciosamente (issue #3080).
+
+describe("#3080 renderMonthlyTotalsSection — aviso de janela parcial", () => {
+  test("janela CHEIA (windowLimitWhenFull informado) → mês mais antigo mostra aviso de parcial", () => {
+    const rows = aggregateByMonth(allCampaigns); // 2 meses: 2026-06 (mais recente), 2026-05 (mais antigo)
+    const html = renderMonthlyTotalsSection(rows, 150);
+    assert.match(html, /\(parcial — janela de 150 campanhas\)/, "mês mais antigo deve mostrar o aviso de parcial");
+  });
+
+  test("janela CHEIA: aviso aparece só na linha do mês mais antigo (Mai/2026), não no mais recente (Jun/2026)", () => {
+    // rows vem ordenado do mais recente pro mais antigo (Jun/2026 primeiro, Mai/2026
+    // por último) — o aviso deve grudar no <td> da linha Mai/2026 (a última renderizada),
+    // nunca na linha Jun/2026 (a primeira).
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows, 150);
+    // Extrai o trecho de HTML logo após cada rótulo de mês (até o fechamento do <td>).
+    const afterLabel = (label: string): string => {
+      const idx = html.indexOf(label);
+      assert.ok(idx >= 0, `rótulo ${label} deve estar presente`);
+      return html.slice(idx, idx + label.length + 400);
+    };
+    assert.match(afterLabel("Mai/2026"), /parcial — janela de 150 campanhas/, "linha Mai/2026 (mês mais antigo) deve ter o aviso");
+    assert.doesNotMatch(afterLabel("Jun/2026"), /parcial — janela de/, "linha Jun/2026 (mês mais recente) NÃO deve ter o aviso");
+  });
+
+  test("janela NÃO informada (default, compat pré-#3080) → nenhum aviso de parcial", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.doesNotMatch(html, /parcial — janela de/, "sem o argumento, comportamento idêntico ao pré-#3080 (sem aviso)");
+  });
+
+  test("janela informada como null explícito → nenhum aviso (mesmo default)", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows, null);
+    assert.doesNotMatch(html, /parcial — janela de/);
+  });
+});
+
+// ─── #3080: aviso de possível subcontagem em renderVolumeSection ────────────
+// Regressão (#633): quando a janela de campanhas buscada está cheia E a mais
+// antiga dela é posterior ao início do ciclo de cobrança, "Volume no ciclo"
+// pode estar subcontando (há envios do ciclo fora da janela). Sem aviso, o
+// editor lia o total como definitivo.
+
+describe("#3080 renderVolumeSection — aviso de possível subcontagem", () => {
+  const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z")); // ciclo 04/jun→04/jul
+
+  test("mayUndercount=true → exibe aviso de subcontagem", () => {
+    const html = renderVolumeSection(900, window, 2000, true);
+    assert.match(html, /subcontad/i, "deve avisar que o total pode estar subcontado");
+  });
+
+  test("mayUndercount=false (default, compat pré-#3080) → sem aviso de subcontagem", () => {
+    const html = renderVolumeSection(900, window, 2000);
+    assert.doesNotMatch(html, /subcontad/i, "sem o argumento, comportamento idêntico ao pré-#3080 (sem aviso)");
+  });
+
+  test("mayUndercount=true também aparece no branch sem planCredits (denominador indisponível)", () => {
+    const html = renderVolumeSection(900, window, null, true);
+    assert.match(html, /subcontad/i, "aviso deve aparecer também quando planCredits é null");
+  });
+});
+
 // ─── #2442: aggregateByMonth novos campos + renderMonthlyTotalsSection ────────
 
 describe("#2442 aggregateByMonth novos campos (bounces/unsub/spam/datas)", () => {

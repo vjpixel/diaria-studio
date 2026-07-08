@@ -261,8 +261,17 @@ export function renderVolumeSection(
   cumulativeSent: number,
   window: BillingCycleWindow,
   planCredits: number | null,
+  // #3080: true quando a janela de campanhas buscadas na Brevo (CAMPAIGNS_FETCH_LIMIT)
+  // está "cheia" (truncada) E a campanha mais antiga dentro dela é POSTERIOR ao início
+  // do ciclo de cobrança — sinal de que `cumulativeSent` pode estar SUBCONTANDO (há
+  // envios anteriores, dentro do ciclo, que ficaram fora da janela buscada). Default
+  // `false` preserva o comportamento anterior para callers/testes que não passam o arg.
+  mayUndercount = false,
 ): string {
   const windowLabel = formatBillingWindowLabel(window);
+  const undercountNote = mayUndercount
+    ? `<br><small class="alert">⚠️ a janela de campanhas buscadas na Brevo não cobre todo o ciclo de cobrança — este total pode estar <strong>subcontado</strong>.</small>`
+    : "";
   // #2429: rótulo "E-mails (eventos)" (#2491: renomeado de "Envios (eventos)") deixa explícito
   // que este número conta eventos de envio (uma pessoa em 2 campanhas conta 2 vezes; inclui
   // bounces), não pessoas únicas.
@@ -281,7 +290,7 @@ export function renderVolumeSection(
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
     ${sentLabel} — créditos do plano Brevo indisponíveis (denominador não mostrado).<br>
-    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>
+    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>${undercountNote}
   </p>
 </section>`;
   }
@@ -296,7 +305,7 @@ export function renderVolumeSection(
   <p class="section-note volume-note">
     ${sentLabel} de ${planTotal.toLocaleString("pt-BR")} créditos do plano (${pctLabel}%)<br>
     <span class="spark-bar" title="${pctLabel}% do plano do mês">${bar}</span><br>
-    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>
+    <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>${undercountNote}
   </p>
 </section>`;
 }
@@ -455,7 +464,18 @@ export function aggregateByMonth(
  * #2442: espelha formato da tabela Envios (taxa+count, Bounces/Unsub/Spam, range de datas).
  * Exportado pra teste unitário.
  */
-export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
+export function renderMonthlyTotalsSection(
+  rows: MonthlyTotalRow[],
+  // #3080: quando não-null, a janela de campanhas buscadas na Brevo estava
+  // "cheia" (truncada) neste render — o valor é o limite pedido (ex: 150),
+  // exibido no aviso. `rows` já vem ORDENADO do mês mais recente pro mais
+  // antigo (aggregateByMonth) — o mês mais antigo (última linha) é o único
+  // candidato a estar incompleto (um mês truncado no MEIO da janela sempre
+  // teria a linha mais recente completa por definição de "mais recente
+  // primeiro"). Default `null` preserva o comportamento anterior (sem aviso)
+  // para callers/testes que não passam o argumento.
+  windowLimitWhenFull: number | null = null,
+): string {
   if (rows.length === 0) return "";
 
   // Formata célula com taxa em cima + contagem absoluta embaixo (igual ao row builder de Envios).
@@ -476,7 +496,14 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
     });
   }
 
-  const tableRows = rows.map((r) => {
+  const tableRows = rows.map((r, idx) => {
+    // #3080: só a linha do mês MAIS ANTIGO (última do array — ver comentário na
+    // assinatura) recebe o aviso de janela parcial.
+    const isOldestMonth = idx === rows.length - 1;
+    const partialNote =
+      isOldestMonth && windowLimitWhenFull != null
+        ? ` <span class="alert" title="A janela de campanhas buscadas na Brevo cobre só as últimas ${windowLimitWhenFull} campanhas enviadas — envios deste mês anteriores a essa janela não entram no total.">(parcial — janela de ${windowLimitWhenFull} campanhas)</span>`
+        : "";
     const openRateFmt = r.totalDelivered > 0 ? r.openRate.toFixed(1) + "%" : "—";
     const ctorFmt = r.totalViews > 0 ? r.ctor.toFixed(1) + "%" : "—";
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
@@ -496,7 +523,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
       : `${firstDate} – ${lastDate}`;
 
     return `<tr>
-      <td><strong>${escHtml(r.label)}</strong></td>
+      <td><strong>${escHtml(r.label)}</strong>${partialNote}</td>
       <td>${r.campaignCount}</td>
       <td>${sentRange}</td>
       <td>${r.totalSent.toLocaleString("pt-BR")}</td>
