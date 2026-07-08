@@ -595,8 +595,21 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // Libera o índice do apelido antigo (se houver e for diferente do novo) —
   // senão o apelido anterior fica "preso" pra sempre, impedindo outro leitor
   // de usá-lo mesmo após este usuário trocar de nickname.
+  //
+  // Self-review #3117 (finding #2): checa ownership antes do delete — não
+  // basta "oldNickname != targetNorm", precisa confirmar que o índice antigo
+  // AINDA aponta pro `email` atual. Se entre a leitura do score (linha acima)
+  // e este ponto outro leitor já reivindicou esse mesmo apelido normalizado
+  // (race: outro /set-name concorrente passou pelo dedup-check antes deste
+  // `put` acontecer), o índice já pertence a esse terceiro — deletar às cegas
+  // apagaria a reivindicação legítima dele, reabrindo o apelido pra reuso
+  // indevido. Só deleta se o dono ainda for este mesmo email.
   if (oldNickname && normalizeNickname(oldNickname) !== targetNorm) {
-    await env.POLL.delete(`nickname:${normalizeNickname(oldNickname)}`);
+    const oldIndexKey = `nickname:${normalizeNickname(oldNickname)}`;
+    const oldIndexOwner = await env.POLL.get(oldIndexKey);
+    if (oldIndexOwner === email) {
+      await env.POLL.delete(oldIndexKey);
+    }
   }
   await env.POLL.put(indexKey, email);
 

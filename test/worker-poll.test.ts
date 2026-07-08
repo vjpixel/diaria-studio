@@ -1159,6 +1159,29 @@ describe("validação de apelidos (#1758)", () => {
       assert.equal(await env.POLL.get("nickname:ana nova"), "ana@x.com");
     });
 
+    it("#3117 self-review finding #2: race — índice antigo já reclamado por outro email NÃO é deletado", async () => {
+      // Cenário: ana@x.com tem nickname "Ana" (score.nickname = "Ana"), mas
+      // ENTRE a leitura do score antigo (dentro de handleSetName) e o ponto
+      // onde o delete do índice antigo aconteceria, um segundo /set-name
+      // concorrente (bob@x.com) já ganhou a corrida e reivindicou o índice
+      // `nickname:ana` pra si (ex: bob também escolheu "Ana" — não deveria
+      // ser possível via dedup normal, mas simula a janela de race exigida
+      // pelo review). O env aqui já reflete esse estado PÓS-race: o índice
+      // `nickname:ana` aponta pra bob@x.com, não mais pra ana@x.com — embora
+      // score:ana@x.com ainda tenha nickname "Ana" (desatualizado/stale).
+      const env = memEnv({
+        "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }),
+        "score:bob@x.com": JSON.stringify({ total: 5, nickname: "Ana" }),
+        "nickname:ana": "bob@x.com", // bob venceu a corrida, não ana
+      });
+      const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Nova"), env);
+      assert.equal(res.status, 200);
+      // O índice antigo "nickname:ana" NÃO foi deletado — ainda pertence ao bob.
+      assert.equal(await env.POLL.get("nickname:ana"), "bob@x.com");
+      // E o novo índice da ana aponta pro email dela normalmente.
+      assert.equal(await env.POLL.get("nickname:ana nova"), "ana@x.com");
+    });
+
     it("sig inválido → 403", async () => {
       const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: null }) });
       const u = new URL("https://poll.diaria.workers.dev/set-name");
