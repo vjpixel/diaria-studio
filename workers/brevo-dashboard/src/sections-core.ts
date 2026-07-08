@@ -14,6 +14,7 @@ import {
 } from "./sections-kv.ts";
 import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
 import { renderWeeklyPlanTabPanel } from "./weekly-plan.ts";
+import { isBounceBreach } from "./thresholds.ts";
 
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
@@ -82,6 +83,7 @@ export function renderDashboardHtml(
       // Numeric versions pra comparar contra thresholds dos circuit breakers
       // (CLAUDE.md: doc operacional 2026-05-12). Alerta visual quando crossado.
       const openRateNum = s.delivered > 0 ? (s.uniqueViews / s.delivered) * 100 : 0;
+      const hardBounceRateNum = s.sent > 0 ? (s.hardBounces / s.sent) * 100 : 0;
       const bounceRateNum = s.sent > 0 ? ((s.hardBounces + s.softBounces) / s.sent) * 100 : 0;
       const unsubRateNum = s.sent > 0 ? (s.unsubscriptions / s.sent) * 100 : 0;
       const spamRateNum = s.sent > 0 ? (s.complaints / s.sent) * 100 : 0;
@@ -92,7 +94,11 @@ export function renderDashboardHtml(
       // genuinamente com 0% engajamento permanente NÃO alerta. Em prática raro
       // (Brevo sempre tem MPP). Se virar problema, condicionar a `delivered >= 50`.
       const openAlert = openRateNum > 0 && openRateNum < 15;
-      const bounceAlert = bounceRateNum >= 3;
+      // #3078: alerta quando hard bounce SOZINHO já estoura (≥2%) OU quando o
+      // total hard+soft estoura (≥5%) — mesma regra "OR" da aba Rampa (thresholds.ts),
+      // não mais um único threshold combinado de 3% (que mascarava o caso
+      // hard-alto/total-baixo, ex: hard 2.5%/total 2.8%).
+      const bounceAlert = isBounceBreach(hardBounceRateNum, bounceRateNum);
       const unsubAlert = unsubRateNum >= 3;
       const spamAlert = spamRateNum >= 0.1;
       const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
@@ -466,7 +472,7 @@ ${volumeSection}
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas. Entre parênteses (quando há dado de MPP): taxa sem Apple MPP e, quando disponível, taxa trackable — trackableViews ÷ delivered, aperturas com pixel rastreável que exclui MPP/bots que não disparam pixel (sinal mais limpo de engajamento real).">Opens 👁️</th>
 <th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Engajamento com o conteúdo entre quem abriu. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
-<th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
+<th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
 <th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
 <th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
 </tr>
@@ -574,7 +580,7 @@ ${couponTabHtml}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses (quando há dado de MPP), a taxa sem Apple MPP (ainda pode incluir outros bots) e, quando disponível, a taxa trackable — aberturas com pixel real (trackableViews ÷ delivered), sinal mais limpo de engajamento real por excluir MPP e outros bots que não disparam pixel. Dados brutos em <code>/api/campaigns</code>.<br>
-Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
+Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
 (function () {

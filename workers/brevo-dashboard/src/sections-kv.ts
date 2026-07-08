@@ -9,6 +9,7 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT, cellClass } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import { isBounceBreach } from "./thresholds.ts";
 // #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
 // pré-computado (KV) diverge do timestamp do cabeçalho da dashboard.
 import { shouldShowStalenessNote } from "./staleness.ts";
@@ -330,6 +331,10 @@ export interface MonthlyTotalRow {
   totalBounces: number;
   /** #2442: Bounce rate agregado = totalBounces / totalSent (0 quando sent=0) */
   bounceRate: number;
+  /** #3078: Soma de hard bounces (subconjunto de totalBounces) — permite avaliar o breaker de hard isoladamente do total. */
+  totalHardBounces: number;
+  /** #3078: Hard bounce rate agregado = totalHardBounces / totalSent (0 quando sent=0) */
+  hardBounceRate: number;
   /** #2442: Soma de descadastros no mês */
   totalUnsub: number;
   /** #2442: Unsub rate = totalUnsub / totalSent (0 quando sent=0) */
@@ -364,6 +369,8 @@ export function aggregateByMonth(
     totalBounces: number;
     totalUnsub: number;
     totalSpam: number;
+    // #3078: hard bounces isolado (subconjunto de totalBounces)
+    totalHardBounces: number;
     firstSentDate: string | null;
     lastSentDate: string | null;
   };
@@ -384,7 +391,7 @@ export function aggregateByMonth(
     if (!acc.has(month)) {
       acc.set(month, {
         campaignCount: 0, totalSent: 0, totalDelivered: 0, totalViews: 0, totalClicks: 0,
-        totalBounces: 0, totalUnsub: 0, totalSpam: 0,
+        totalBounces: 0, totalUnsub: 0, totalSpam: 0, totalHardBounces: 0,
         firstSentDate: null, lastSentDate: null,
       });
     }
@@ -398,6 +405,8 @@ export function aggregateByMonth(
     row.totalBounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     row.totalUnsub += s.unsubscriptions ?? 0;
     row.totalSpam += s.complaints ?? 0;
+    // #3078: hard bounces isolado, pra avaliar o breaker de hard (≥2%) separado do total (≥5%)
+    row.totalHardBounces += s.hardBounces ?? 0;
     // #2442: rastrear min/max sentDate do mês (1º e último envio).
     // c.sentDate é garantido truthy pelo `if (!c.sentDate) continue` no topo do loop.
     if (row.firstSentDate === null || c.sentDate < row.firstSentDate) row.firstSentDate = c.sentDate;
@@ -426,6 +435,9 @@ export function aggregateByMonth(
         // #2442
         totalBounces: d.totalBounces,
         bounceRate: d.totalSent > 0 ? (d.totalBounces / d.totalSent) * 100 : 0,
+        // #3078
+        totalHardBounces: d.totalHardBounces,
+        hardBounceRate: d.totalSent > 0 ? (d.totalHardBounces / d.totalSent) * 100 : 0,
         totalUnsub: d.totalUnsub,
         unsubRate: d.totalSent > 0 ? (d.totalUnsub / d.totalSent) * 100 : 0,
         totalSpam: d.totalSpam,
@@ -470,8 +482,8 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
     const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
     const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(1) + "%" : "—";
-    // Circuit breaker alerts (mesmos thresholds da tabela Envios)
-    const bounceAlert = r.totalSent > 0 && r.bounceRate >= 3;
+    // Circuit breaker alerts (mesmos thresholds da tabela Envios, #3078: hard ≥2% OU total ≥5%)
+    const bounceAlert = r.totalSent > 0 && isBounceBreach(r.hardBounceRate, r.bounceRate);
     const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;
     const spamAlert = r.totalSent > 0 && r.spamRate >= 0.1;
 
@@ -512,7 +524,7 @@ export function renderMonthlyTotalsSection(rows: MonthlyTotalRow[]): string {
         <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
         <th title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
         <th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
-        <th title="Hard bounces + soft bounces. Bench: &lt;2% saudável. ≥3% pausa o ramp.">Bounces</th>
+        <th title="Hard bounces + soft bounces. Bench: &lt;2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
         <th title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
         <th title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
       </tr>
