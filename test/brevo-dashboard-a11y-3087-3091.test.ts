@@ -207,7 +207,7 @@ test("#3090: a tabela Envios (Visão Geral) tem um glossário gerado de ENVIOS_C
   }
   // Sanity: o header <th> continua presente (title= como conveniência desktop).
   // #3081: tooltip atualizado — ID agora é link (brevoReportLink) pro relatório da Brevo.
-  assert.match(html, /<th title="ID do envio no Brevo — link direto pro relatório da campanha na UI da Brevo\.">ID<\/th>/);
+  assert.match(html, /<th scope="col" title="ID do envio no Brevo — link direto pro relatório da campanha na UI da Brevo\.">ID<\/th>/);
 });
 
 test("#3090: a tabela Cohorts tem um glossário gerado de COHORTS_COLUMNS", () => {

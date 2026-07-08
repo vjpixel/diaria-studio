@@ -624,7 +624,7 @@ ${renderColumnGlossary("envios", ENVIOS_COLUMNS)}
 <table id="envios-table">
 <thead>
 <tr>
-${ENVIOS_COLUMNS.map((c) => `<th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
+${ENVIOS_COLUMNS.map((c) => `<th scope="col" title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
 </tr>
 </thead>
 <tbody id="envios-tbody">
@@ -1482,15 +1482,15 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
   <table>
     <thead>
       <tr>
-        <th title="Célula do teste A/B/C">Célula</th>
-        <th title="Dias/envios contabilizados">Envios</th>
-        <th title="Total entregue">Delivered</th>
-        <th title="Aberturas únicas ÷ delivered">Open rate</th>
-        <th title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura">CTOR</th>
-        <th title="Cliques únicos ÷ delivered — o &quot;fundo do poço&quot; do engajamento, decide o vencedor real">Click rate</th>
-        <th title="Total de cliques únicos">Cliques</th>
-        <th title="Descadastros ÷ sent">Unsub</th>
-        <th title="Bounce (hard+soft) ÷ sent / Spam ÷ sent">Bounce / Spam</th>
+        <th scope="col" title="Célula do teste A/B/C">Célula</th>
+        <th scope="col" title="Dias/envios contabilizados">Envios</th>
+        <th scope="col" title="Total entregue">Delivered</th>
+        <th scope="col" title="Aberturas únicas ÷ delivered">Open rate</th>
+        <th scope="col" title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura">CTOR</th>
+        <th scope="col" title="Cliques únicos ÷ delivered — o &quot;fundo do poço&quot; do engajamento, decide o vencedor real">Click rate</th>
+        <th scope="col" title="Total de cliques únicos">Cliques</th>
+        <th scope="col" title="Descadastros ÷ sent">Unsub</th>
+        <th scope="col" title="Bounce (hard+soft) ÷ sent / Spam ÷ sent">Bounce / Spam</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -1845,7 +1845,7 @@ export function renderWeekdaySection(
   <table>
     <thead>
       <tr>
-        ${WEEKDAY_COLUMNS.map((c) => `<th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
+        ${WEEKDAY_COLUMNS.map((c) => `<th scope="col" title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -1945,11 +1945,11 @@ export function renderAbcSection(
   <table>
     <thead>
       <tr>
-        <th title="Célula do teste A/B/C">Célula</th>
-        <th title="Soma de entregues dos dias enviados">Delivered (total)</th>
-        <th title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
-        <th title="Open rate agregado com Apple MPP (opens ÷ delivered) — base do vencedor; entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
-        <th title="Dias enviados contabilizados">Dias</th>
+        <th scope="col" title="Célula do teste A/B/C">Célula</th>
+        <th scope="col" title="Soma de entregues dos dias enviados">Delivered (total)</th>
+        <th scope="col" title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
+        <th scope="col" title="Open rate agregado com Apple MPP (opens ÷ delivered) — base do vencedor; entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
+        <th scope="col" title="Dias enviados contabilizados">Dias</th>
       </tr>
     </thead>
     <tbody>${cellRows}</tbody>

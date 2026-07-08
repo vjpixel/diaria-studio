@@ -124,7 +124,7 @@ test("renderContactsSummarySection: coluna 'verified' quando o KV traz os campos
     priority_points_histogram_verified: { "0": 81000, "15": 7 },
   };
   const html = renderContactsSummarySection(withVerified);
-  assert.match(html, /<th style="text-align:right">verified<\/th>/, "header da coluna presente");
+  assert.match(html, /<th scope="col" style="text-align:right">verified<\/th>/, "header da coluna presente");
   // linha 0: contatos e verified lado a lado
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>81[.,]?000<\/td>/);
   // linha 15
@@ -203,7 +203,7 @@ test("renderContactsSummarySection: coluna 'Brevo' aparece quando priority_point
     priority_points_histogram_brevo: { "0": 29000, "15": 12 },
   };
   const html = renderContactsSummarySection(withBrevo);
-  assert.match(html, /<th style="text-align:right">Brevo<\/th>/, "header da coluna Brevo presente");
+  assert.match(html, /<th scope="col" style="text-align:right">Brevo<\/th>/, "header da coluna Brevo presente");
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>29[.,]?000<\/td>/, "linha 0 com valor Brevo");
   assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>12<\/td>/, "linha 15 com valor Brevo");
 });
@@ -239,7 +239,7 @@ test("renderContactsSummarySection: coluna 'elegíveis' aparece quando priority_
     priority_points_histogram_eligible: { "0": 422000, "15": 38 },
   };
   const html = renderContactsSummarySection(withEligible);
-  assert.match(html, /<th style="text-align:right">elegíveis<\/th>/, "header da coluna elegíveis presente");
+  assert.match(html, /<th scope="col" style="text-align:right">elegíveis<\/th>/, "header da coluna elegíveis presente");
   // ordem: contatos | elegíveis → linha 0 com contatos e elegíveis lado a lado
   assert.match(html, /<td>0<\/td><td[^>]*>427[.,]?520<\/td><td[^>]*>422[.,]?000<\/td>/, "linha 0 com valor elegíveis");
   assert.match(html, /<td>15<\/td><td[^>]*>40<\/td><td[^>]*>38<\/td>/, "linha 15 com valor elegíveis");

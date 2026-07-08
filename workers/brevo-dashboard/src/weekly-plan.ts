@@ -389,7 +389,7 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
   <p class="section-note">Melhores dias: <strong style="color:var(--ink)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Dia</th><th>Envios</th><th title="Open rate agregado (histórico completo)">Open rate agr.</th></tr></thead>
+    <thead><tr><th scope="col">Dia</th><th scope="col">Envios</th><th scope="col" title="Open rate agregado (histórico completo)">Open rate agr.</th></tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>
   </div>`;
@@ -454,7 +454,7 @@ ${scheduledSection}`;
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${immature.length} envio(s) aguardando maturar:</p>
   <div class="table-wrap">
-  <table><thead><tr><th>Campanha</th><th>Enviado</th></tr></thead><tbody>
+  <table><thead><tr><th scope="col">Campanha</th><th scope="col">Enviado</th></tr></thead><tbody>
 ${waitRows}
 </tbody></table>
   </div>
@@ -501,7 +501,7 @@ ${scheduledSection}`;
   <h3>Recomendação — próximos 3 envios</h3>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Envio</th><th>Volume recomendado</th></tr></thead>
+    <thead><tr><th scope="col">Envio</th><th scope="col">Volume recomendado</th></tr></thead>
     <tbody>
       <tr><td>Próximo envio</td><td>${plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
       <tr><td>2º envio</td><td>${plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
@@ -571,7 +571,7 @@ ${scheduledSection}`;
   <p class="section-note">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${includedDetails.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo 🟢</th><th>Alvo 🟡</th></tr></thead>
+    <thead><tr><th scope="col">Métrica</th><th scope="col">Valor</th><th scope="col">Alvo <span role="img" aria-label="verde">🟢</span></th><th scope="col">Alvo <span role="img" aria-label="amarelo">🟡</span></th></tr></thead>
     <tbody>
 ${metricRows}
     </tbody>
@@ -582,13 +582,13 @@ ${metricRows}
   ${renderTopWeekdaysSection(campaigns, now)}
   <details>
     <summary class="links-summary">Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
-    <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th scope="col">Edição</th><th scope="col">Data</th><th scope="col" title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
     ${includedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
   </details>
   <details>
     <summary class="links-summary">Excluídos por imaturidade (&lt;48h) (${excludedDetails.dayCount})</summary>
-    <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th scope="col">Edição</th><th scope="col">Data</th><th scope="col" title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
     ${excludedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
   </details>
