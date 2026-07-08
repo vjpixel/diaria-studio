@@ -29,7 +29,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
-import { DS_STYLE_BLOCK, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
+import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -1042,6 +1042,49 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.ok(emailMatches.length >= 2, `{{email}} deve aparecer em ambos os links (encontrado ${emailMatches.length}x)`);
     // A antes de B
     assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");
+  });
+
+  it("#3101: imagens A/B do É IA? têm width=\"480\" em pixels (Outlook desktop não honra width percentual)", () => {
+    // Outlook desktop (motor Word) renderiza <img> no tamanho intrínseco quando
+    // só há width percentual — o painel do É IA? é 600 (container) − 32×2
+    // (padding da seção) − 28×2 (padding do painel bege) = 480px.
+    const html = renderHTML(fixtureComEia);
+    const imgA = html.match(/<img src="\{\{IMG:01-eia-A\.jpg\}\}"[^>]*>/);
+    const imgB = html.match(/<img src="\{\{IMG:01-eia-B\.jpg\}\}"[^>]*>/);
+    assert.ok(imgA, "tag <img> da imagem A deve existir");
+    assert.ok(imgB, "tag <img> da imagem B deve existir");
+    assert.match(imgA![0], /width="480"/, "imagem A deve ter width=480 em pixels");
+    assert.match(imgB![0], /width="480"/, "imagem B deve ter width=480 em pixels");
+    // style width:100% preservado pra clientes modernos continuarem responsivos
+    assert.match(imgA![0], /style="[^"]*width:100%/, "style width:100% deve ser preservado na imagem A");
+  });
+
+  it("#3101: renderEiaStandalone também emite width=\"480\" pixel nas imagens A/B", () => {
+    const html = renderEiaStandalone(fixtureComEia)!;
+    assert.match(html, /<img src="\{\{IMG:01-eia-A\.jpg\}\}"[^>]*width="480"/);
+    assert.match(html, /<img src="\{\{IMG:01-eia-B\.jpg\}\}"[^>]*width="480"/);
+  });
+});
+
+describe("renderHeroImageInner — #3101 width em pixels (Outlook desktop)", () => {
+  it("hero emite width=\"536\" em pixels além do style width:100%", () => {
+    // Container 600px − 32px×2 de padding lateral da seção (PAD_LEAD/PAD_SECTION) = 536.
+    const html = renderHeroImageInner("04-d1-2x1.jpg", "Título do destaque");
+    assert.match(html, /<img class="hero"[^>]*width="536"/, "hero deve ter width=536 em pixels");
+    assert.match(html, /style="[^"]*width:100%;height:auto/, "style width:100%;height:auto deve ser preservado");
+  });
+
+  it("renderDestaque propaga o hero com width=\"536\" em pixels", () => {
+    const html = renderDestaque({
+      n: 1,
+      category: "LANÇAMENTO",
+      title: "Título",
+      body: "Corpo.",
+      why: "Razão.",
+      url: "https://example.com/d1",
+      emoji: "🚀",
+    } as any);
+    assert.match(html, /<img class="hero"[^>]*width="536"/, "hero dentro de renderDestaque deve ter width=536");
   });
 });
 
