@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { type Brand, editionToMonthSlug, BRAND_INFO } from "./lib";
+import { type Brand, editionToMonthSlug } from "./lib";
 import {
   formatEditionDateForBrand,
   parseValidEditions,
@@ -248,12 +248,6 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     // sem o binding DO (testes Node sem miniflare). Em produção, VOTE_DEDUP sempre presente.
     if (existingFromKv) {
       const prev = JSON.parse(existingFromKv);
-      // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
-      // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
-      // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
-      // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
-      // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
-      // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
       // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
       // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
       // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
