@@ -552,15 +552,19 @@ export function renderDestaque(d: RenderDestaque): string {
 export function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
-  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};`;
+  // #3103: 12px → 14px. Resultado da última edição + CTA pro leaderboard são a
+  // mecânica central de engajamento recorrente (loop resultado→ranking), não um
+  // rodapé qualquer — mereciam mais peso visual que o crédito da imagem (que
+  // continua 12px, ver abaixo).
+  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:14px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
-  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 12px bold
-  // uppercase teal, no rodapé do painel.
+  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 14px (#3103,
+  // era 12px) bold uppercase teal, no rodapé do painel.
   const prevResultHtml = eia.prevResultLine
-    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:14px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
@@ -590,6 +594,8 @@ export function renderEIA(eia: EIA): string {
         ${eiaChoice("B", eia.imageB, "16px")}
       </table>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
+        <!-- #3103: crédito da imagem continua 12px (linha secundária, não faz
+             parte do loop de engajamento resultado→leaderboard). -->
         <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
       </td></tr>${prevResultHtml}
 ${leaderboardRow}
@@ -670,7 +676,9 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
  */
 export function renderLeaderboardLinkRow(paragraphStyle: string): string {
   const url = `${POLL_WORKER_URL}/leaderboard`;
-  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
+  // #3103: `display:inline-block;padding:4px 0` engorda a área de toque do CTA
+  // (era só o texto do link, sem padding — alvo de toque apertado em mobile).
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
         <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">leaderboard</a></p>
       </td></tr>`;
@@ -743,9 +751,13 @@ export function mdInlineToHtml(s: string): string {
     // label nem no href) — simétrico com processInlineLinks. Aplicado ANTES do
     // passo de `**` abaixo, então `**Diar.ia**` → `**{wordmark}**` → `<b>{wordmark}</b>`.
     parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start))));
-    parts.push(
-      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
-    );
+    // #3102: reusa inlineLinkHtml (mesmo tratamento de `processInlineLinks`/
+    // `renderBodyInline` — underline teal via text-decoration-color). Antes,
+    // mdInlineToHtml tinha seu PRÓPRIO estilo de link (border-bottom teal), que
+    // degrada de forma diferente no Outlook (mantém a linha teal) vs o resto do
+    // e-mail (degrada pra sublinhado cor-do-texto) — 2 tratamentos sem motivo
+    // funcional no mesmo email.
+    parts.push(inlineLinkHtml(label, url));
     lastIdx = end;
   }
   parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
