@@ -626,7 +626,7 @@ export function renderEngagementCohortsSection(
   const sumMismatchTitle = sumMismatch
     ? escHtml(`Atenção: soma das coortes (${cohorteSum.toLocaleString("pt-BR")}) ≠ universo (${u.toLocaleString("pt-BR")}) — verifique dados`)
     : "";
-  const tfootRow = `<tr style="font-weight:700;border-top:2px solid var(--rule);">
+  const tfootRow = `<tr class="total-row">
       <td>Total${sumMismatch ? ` <span style="color:var(--alert)" title="${sumMismatchTitle}">⚠️</span>` : ""}</td>
       <td class="metric">${u.toLocaleString("pt-BR")}</td>
       <td>100%</td>
@@ -695,15 +695,22 @@ export function renderContactsSummarySection(
   // tabelinha {rótulo → contagem}, ordenada por contagem desc. #2880 E: com
   // linha "Total" ao fim (só quando há ≥1 linha). Usada por "Inelegíveis por
   // razão" e "MillionVerifier (bucket)".
+  // #3092: `emptyKeyLabel` — a query de origem do mapa `mv` (COALESCE em
+  // mv_bucket) só normaliza NULL, não string vazia (mv_bucket='' é um estado
+  // válido e distinto, ver scripts/lib/clarice-db.ts MV_NEVER_VERIFIED_SQL).
+  // Sem isso, a chave "" renderizava uma linha com rótulo em branco — dado
+  // real, mas ilegível pro editor. Default undefined preserva o comportamento
+  // anterior para chamadas (ex: "Inelegíveis por razão") sem chave vazia.
   const kvTable = (
     title: string,
     map: Record<string, number> | undefined,
+    emptyKeyLabel?: string,
   ): string => {
     const entries = Object.entries(map ?? {}).sort((a, b) => b[1] - a[1]);
     const rows = entries
       .map(
         ([k, v]) =>
-          `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
+          `<tr><td>${escHtml(k === "" && emptyKeyLabel ? emptyKeyLabel : k)}</td><td style="text-align:right">${n(v)}</td></tr>`,
       )
       .join("\n");
     // #2880 E: linha Total (soma das contagens). Só quando há ≥1 linha — tabela
@@ -805,7 +812,7 @@ ${totalRow}</tbody></table></div>`;
   <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
   <div class="side-by-side">
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
-  ${kvTable("MillionVerifier (bucket)", s.mv)}
+  ${kvTable("MillionVerifier (bucket)", s.mv, "não verificado (sem bucket)")}
   </div>
   <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
 </section>`;
@@ -1306,9 +1313,9 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
   // #3011: nota só aparece quando o dado pré-computado diverge do cabeçalho
   // (ou quando o timestamp está simplesmente ausente — KV antigo, aviso mantido).
   const generatedAtNote = !generatedAt
-    ? `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Data de atualização indisponível (KV antigo — aguarde o próximo refresh, #2750).</p>`
+    ? `<p class="section-note coupon-generated-at">Data de atualização indisponível (KV antigo — aguarde o próximo refresh).</p>`
     : shouldShowStalenessNote(generatedAt, headerNow)
-    ? `<p class="coupon-generated-at" style="opacity:0.6;font-size:13px;margin:0 0 12px 0;">Atualizado ${escHtml(fmtTimeBRT(generatedAt))} BRT.</p>`
+    ? `<p class="section-note coupon-generated-at">Atualizado ${escHtml(fmtTimeBRT(generatedAt))} BRT.</p>`
     : "";
 
   // #2749: data em BRT (America/Sao_Paulo), consistente com fmtDateBRT do resto
@@ -1433,11 +1440,11 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
     .filter((r) => (!r.payments || r.payments.length === 0) && (r.paid_cents ?? 0) > 0)
     .reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
   const legacyNote = legacyPaidCents > 0
-    ? `<p class="coupon-monthly-legacy-note" style="opacity:0.6;font-size:13px;margin-top:6px;">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh (#2750). Ver "Detalhe por assinatura" abaixo pro total real.</p>`
+    ? `<p class="section-note coupon-monthly-legacy-note">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh. Ver "Detalhe por assinatura" abaixo pro total real.</p>`
     : "";
 
   const monthlySectionBody = monthKeysDesc.length === 0
-    ? `<p class="coupon-monthly-empty" style="opacity:0.6;font-size:14px;">Nenhum pagamento registrado ainda (assinaturas em trial, ou KV aguardando refresh — ver #2750).</p>`
+    ? `<p class="section-note coupon-monthly-empty">Nenhum pagamento registrado ainda (assinaturas em trial, ou KV aguardando refresh).</p>`
     : monthKeysDesc.map((key) => {
         const bucket = monthly.get(key)!;
         const itemsSorted = [...bucket.items].sort((a, b) => a.epoch - b.epoch);

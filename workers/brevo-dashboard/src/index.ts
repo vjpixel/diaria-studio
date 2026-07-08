@@ -45,6 +45,9 @@ export * from "./weekly-plan.ts";
 // #3078: DEFAULT_HEALTH_THRESHOLDS/HealthThresholds já chegam via weekly-plan.ts
 // (reexportados lá) — export nomeado aqui evita ambiguidade de `export *` duplicado.
 export { isBounceBreach } from "./thresholds.ts";
+// #3092: tokens do DS — loginPage() usava cores Cloudflare hardcoded
+// (#f6821f/#f5f6f7/#dc2626) que nenhuma outra superfície do dashboard usa.
+import { DS, DS_FONTS as DSF } from "./render-links.ts";
 
 import {
   fetchRecentCampaigns,
@@ -113,14 +116,14 @@ export function loginPage(error = false): Response {
 <title>clarice dashboard — login</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;height:100dvh;align-items:center;justify-content:center;background:#f5f6f7}
-form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12);display:flex;flex-direction:column;gap:.75rem;width:min(340px,90vw)}
-h1{font-size:1.1rem;font-weight:600;color:#111}
-input[type=password]{padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:6px;font-size:.9rem;width:100%}
-input[type=password]:focus{outline:none;border-color:#f6821f;box-shadow:0 0 0 3px rgba(246,130,31,.15)}
-button{padding:.5rem 1rem;background:#f6821f;color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;font-weight:500}
-button:hover{background:#e07010}
-.err{color:#dc2626;font-size:.82rem}
+body{font-family:${DSF.sans};display:flex;height:100dvh;align-items:center;justify-content:center;background:${DS.paper}}
+form{background:${DS.paperEmail};padding:2rem;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12);display:flex;flex-direction:column;gap:.75rem;width:min(340px,90vw)}
+h1{font-size:1.1rem;font-weight:600;color:${DS.ink}}
+input[type=password]{padding:.5rem .75rem;border:1px solid ${DS.rule};border-radius:6px;font-size:.9rem;width:100%}
+input[type=password]:focus{outline:2px solid ${DS.brand};outline-offset:1px;border-color:${DS.brand}}
+button{padding:.5rem 1rem;background:${DS.brand};color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;font-weight:500}
+button:hover{filter:brightness(0.9)}
+.err{color:${DS.alert};font-size:.82rem}
 </style></head>
 <body>
 <form method="POST" action="/login">

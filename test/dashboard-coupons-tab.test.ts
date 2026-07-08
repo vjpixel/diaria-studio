@@ -499,7 +499,10 @@ describe("renderCouponTabPanel", () => {
     it("sem generatedAt (KV pré-#2766): fallback gracioso, sem crash", () => {
       const h = renderCouponTabPanel(mkUsage(undefined));
       assert.ok(h.includes("indisponível"), "mensagem de fallback presente");
-      assert.ok(h.includes("#2750"), "aponta pro refresh que vai popular o campo");
+      // #3092: nota não deve mais expor número de issue interna (#2750) pro
+      // editor — o texto aponta pro refresh sem o jargão de tracking.
+      assert.ok(h.includes("próximo refresh"), "aponta pro refresh que vai popular o campo");
+      assert.ok(!/#2750/.test(h), "não deve mais vazar número de issue interna pro leitor");
     });
   });
 
