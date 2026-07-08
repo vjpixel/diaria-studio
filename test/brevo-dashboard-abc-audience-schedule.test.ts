@@ -44,7 +44,13 @@ function makeGlobalStats(overrides: Partial<{
   };
 }
 
-function makeCampaign(id: number, name: string, sentDate: string, gsOverrides: Parameters<typeof makeGlobalStats>[0] = {}) {
+function makeCampaign(
+  id: number,
+  name: string,
+  sentDate: string,
+  gsOverrides: Parameters<typeof makeGlobalStats>[0] = {},
+  listName: string = `List ${id}`,
+) {
   return {
     id,
     name,
@@ -54,7 +60,7 @@ function makeCampaign(id: number, name: string, sentDate: string, gsOverrides: P
     scheduledAt: sentDate,
     createdAt: sentDate,
     recipients: { lists: [id + 100] },
-    listName: `List ${id}`,
+    listName,
     listSize: 100,
     statistics: {
       globalStats: makeGlobalStats(gsOverrides),
@@ -96,6 +102,58 @@ describe("parseAbcAudienceCampaign", () => {
 
   test("naming não reconhecido → null", () => {
     assert.equal(parseAbcAudienceCampaign("Newsletter aleatória"), null);
+  });
+});
+
+// ─── #3128: classificação por listName quando o nome da CAMPANHA não basta ───
+//
+// Regressão do bug real do ciclo 2606-07: 3 dos 4 envios reais foram pra
+// audiência FRIA, mas a campanha em si foi nomeada IDÊNTICO ao padrão quente
+// ("Clarice News 2606-07 — X · dia"), sem nenhum "cold" no nome da campanha.
+// Só o nome da LISTA de destinatários sinalizava frio. Nomes/listas abaixo
+// são os REAIS do ciclo (não inventados), confirmados via Brevo API.
+describe("parseAbcAudienceCampaign — classificação por listName (#3128)", () => {
+  test("campanha com naming quente + lista fria 'cold {ciclo} {dia}-{cell}' → audience cold", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — A · sab", "cold 2606-07 sab-A");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "A", audience: "cold" });
+  });
+
+  test("campanha com naming quente + lista fria '{ciclo} cold {dN}' (sem célula na lista) → audience cold", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — B · ter", "2606-07 cold d1");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "cold" });
+  });
+
+  test("campanha com naming quente + lista genuinamente quente → audience warm (inalterado)", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice News 2606-07 — C: Notícias do mês sobre IA: Soberania, seg…",
+      "Clarice News 2606-07 C (A/B/C assunto)",
+    );
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "C", audience: "warm" });
+  });
+
+  test("listName omitido → warm (comportamento antigo preservado, backward-compatible)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — A · sab");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "A", audience: "warm" });
+  });
+
+  test("listName undefined explícito → mesmo resultado que omitido (warm)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — A · sab", undefined);
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "A", audience: "warm" });
+  });
+
+  test("listName string vazia → warm (falsy, não quebra)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — A · sab", "");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "A", audience: "warm" });
+  });
+
+  test("'cold' como substring de outra palavra na lista NÃO deve disparar falso positivo (word-boundary safe)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — A · sab", "Recoldar 2606-07 sab-A");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "A", audience: "warm" });
+  });
+
+  test("naming cold-por-campanha (branch legado) continua funcionando mesmo passando listName", () => {
+    const parsed = parseAbcAudienceCampaign("cold 2606-07 — B: subject B", "qualquer lista");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "cold" });
   });
 });
 
@@ -211,6 +269,86 @@ describe("aggregateAbcByAudience", () => {
     assert.match(html, />Click rate</);
     assert.match(html, /▲ ABERTURA/);
     assert.match(html, /▲ CLIQUE/);
+  });
+});
+
+// ─── #3128: aggregateAbcByAudience com o naming REAL do ciclo 2606-07 ────────
+//
+// Diferente do describe acima (que usa o naming "cold {ciclo} — {cell}: ..."
+// — cold sinalizado no NOME DA CAMPANHA), este bloco reproduz o naming que
+// REALMENTE causou o bug: campanha nomeada IGUAL ao padrão quente pras 2
+// audiências — só a lista de destinatários distingue. Antes do fix (#3128),
+// TODOS esses envios (cold e warm) caíam no branch "warm" de
+// `parseAbcAudienceCampaign`, e a tabela "Fria" ficava com `campaignCount: 0`
+// em todas as células enquanto "Quente" replicava os números da "Agregada".
+describe("aggregateAbcByAudience — naming real do ciclo 2606-07, cold só na lista (#3128)", () => {
+  const cycle = "2606-07";
+  // 3 dos 4 envios reais do ciclo foram frios — campanha "Clarice News
+  // 2606-07 — X · dia", lista "cold 2606-07 {dia}-{X}" (nomes reais, via API).
+  const coldRealNaming = [
+    makeCampaign(21, "Clarice News 2606-07 — A · sab", "2026-07-05T09:00:00Z", {
+      sent: 2000, delivered: 1980, uniqueViews: 300, uniqueClicks: 20,
+    }, "cold 2606-07 sab-A"),
+    makeCampaign(22, "Clarice News 2606-07 — B · sab", "2026-07-05T09:01:00Z", {
+      sent: 2000, delivered: 1980, uniqueViews: 250, uniqueClicks: 60,
+    }, "cold 2606-07 sab-B"),
+    makeCampaign(23, "Clarice News 2606-07 — C · sab", "2026-07-05T09:02:00Z", {
+      sent: 2000, delivered: 1980, uniqueViews: 200, uniqueClicks: 15,
+    }, "cold 2606-07 sab-C"),
+  ];
+  // O 4º envio real (o teste A/B/C de assunto) foi genuinamente quente —
+  // campanha E lista seguem "Clarice News 2606-07 ... (A/B/C assunto)".
+  const warmRealNaming = [
+    makeCampaign(24, "Clarice News 2606-07 — A: Notícias do mês sobre IA: Brasil, Anthro…", "2026-07-03T06:00:00Z", {
+      sent: 1500, delivered: 1490, uniqueViews: 900, uniqueClicks: 150,
+    }, "Clarice News 2606-07 A (A/B/C assunto)"),
+    makeCampaign(25, "Clarice News 2606-07 — B: Notícias do mês sobre IA: O mês em que o…", "2026-07-03T06:01:00Z", {
+      sent: 1500, delivered: 1490, uniqueViews: 850, uniqueClicks: 100,
+    }, "Clarice News 2606-07 B (A/B/C assunto)"),
+    makeCampaign(26, "Clarice News 2606-07 — C: Notícias do mês sobre IA: Soberania, seg…", "2026-07-03T06:02:00Z", {
+      sent: 1500, delivered: 1490, uniqueViews: 800, uniqueClicks: 90,
+    }, "Clarice News 2606-07 C (A/B/C assunto)"),
+  ];
+
+  test("Fria captura os 3 envios reais frios (antes do fix: ficava vazia)", () => {
+    const result = aggregateAbcByAudience([...coldRealNaming, ...warmRealNaming], cycle);
+    assert.ok(result.cold.cells.some((c) => c.campaignCount > 0), "Fria não deveria estar vazia");
+    const coldA = result.cold.cells.find((c) => c.cell === "A")!;
+    const coldB = result.cold.cells.find((c) => c.cell === "B")!;
+    const coldC = result.cold.cells.find((c) => c.cell === "C")!;
+    assert.equal(coldA.delivered, 1980);
+    assert.equal(coldA.clicks, 20);
+    assert.equal(coldB.delivered, 1980);
+    assert.equal(coldB.clicks, 60);
+    assert.equal(coldC.delivered, 1980);
+    assert.equal(coldC.clicks, 15);
+  });
+
+  test("Quente contém só os envios genuinamente quentes (antes do fix: igual à Agregada)", () => {
+    const result = aggregateAbcByAudience([...coldRealNaming, ...warmRealNaming], cycle);
+    const warmA = result.warm.cells.find((c) => c.cell === "A")!;
+    assert.equal(warmA.delivered, 1490);
+    assert.equal(warmA.clicks, 150);
+    // Quente NUNCA deve somar os 2000/1980 dos envios frios reais.
+    const warmTotalDelivered = result.warm.cells.reduce((sum, c) => sum + c.delivered, 0);
+    assert.equal(warmTotalDelivered, 1490 * 3);
+  });
+
+  test("Fria e Quente não têm os mesmos números — o sintoma central do bug (#3128)", () => {
+    const result = aggregateAbcByAudience([...coldRealNaming, ...warmRealNaming], cycle);
+    const coldDelivered = result.cold.cells.map((c) => c.delivered);
+    const warmDelivered = result.warm.cells.map((c) => c.delivered);
+    assert.notDeepEqual(coldDelivered, warmDelivered);
+    // Quente não pode ser igual à Agregada quando existem envios frios reais.
+    const aggDelivered = result.aggregate.cells.map((c) => c.delivered);
+    assert.notDeepEqual(warmDelivered, aggDelivered);
+  });
+
+  test("Agregada soma fria + quente corretamente", () => {
+    const result = aggregateAbcByAudience([...coldRealNaming, ...warmRealNaming], cycle);
+    const aggA = result.aggregate.cells.find((c) => c.cell === "A")!;
+    assert.equal(aggA.delivered, 1980 + 1490);
+    assert.equal(aggA.clicks, 20 + 150);
   });
 });
 

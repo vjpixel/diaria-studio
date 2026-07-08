@@ -988,6 +988,16 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
  * Mensal" de um ciclo só-cold renderizava vazia (`renderAbcSection` retorna
  * "" quando `every(r => r.campaignCount === 0)`), o mesmo sintoma que o fix
  * do `groupMonthlyAbcTests` deveria ter resolvido (achado no self-review).
+ *
+ * #3128: este call site NÃO passa `listName` pro `parseAbcAudienceCampaign`
+ * abaixo — e não precisa. `warm` já veio de `parseClariceCampaignKey(c.name)`
+ * diretamente 2 linhas acima; o fallback só roda quando `warm` é null
+ * (`warm ? null : ...`), o que garante que o MESMO `parseClariceCampaignKey`
+ * chamado de novo dentro de `parseAbcAudienceCampaign` também retorna null
+ * pra este `c.name` — o branch "warm" (o único que consulta `listName`)
+ * nunca é alcançado aqui. Além disso, só o resultado com `audience==="cold"`
+ * é usado (linha abaixo), então mesmo se o branch warm fosse alcançável o
+ * `listName` não mudaria o resultado consumido.
  */
 export function aggregateAbcSummary(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -1148,6 +1158,12 @@ export function detectActiveCycle(
  * no `cycle` mantém só ciclos MENSAIS (formato "AAMM-MM", com hífen) — testes
  * A/B/C DIÁRIOS ("Clarice News AAMM dNN-X", cycle sem hífen) continuam fora
  * (cobertos por `aggregateAbcSummary`/`abcSection` acima, não aqui).
+ *
+ * #3128: este call site NÃO passa `listName` pro `parseAbcAudienceCampaign`
+ * abaixo — comportamento idêntico com ou sem, porque esta função só lê
+ * `parsed.cycle` (pro agrupamento por ciclo+data); `parsed.audience` (o único
+ * campo afetado por `listName`) nunca é consumido aqui. Passar `listName`
+ * seria inofensivo mas não muda nada — deixado de fora por minimalismo.
  */
 export function groupMonthlyAbcTests(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -1247,14 +1263,35 @@ export function classifyClariceAudience(campaignName: string): ClariceAudience |
  * paralelo pro caso frio ("cold AAMM-MM — X" ou "cold AAMM-MM X"). Só campanhas
  * com célula A/B/C explícita participam do Resumo por Audiência — envios
  * únicos (sem A/B/C) são ignorados aqui (mesma convenção do #2360).
+ *
+ * #3128: o nome da CAMPANHA sozinho nem sempre distingue audiência. No ciclo
+ * 2606-07, os 3 envios frios reais foram nomeados exatamente como os quentes
+ * ("Clarice News 2606-07 — A · sab", "— B · sab", "— C · sab", e variantes
+ * ter/dom) — sem NENHUM prefixo "cold" na campanha. Só a LISTA de
+ * destinatários carregava o sinal frio ("cold 2606-07 sab-A", "2606-07 cold
+ * d1"); as listas quentes desse ciclo seguem "Clarice News 2606-07 A (A/B/C
+ * assunto)", sem a palavra "cold". Como `parseClariceCampaignKey` batia nesses
+ * nomes de campanha e o branch abaixo retornava "warm" incondicionalmente,
+ * TODO envio do ciclo virava "quente" e a tabela "Fria" ficava sempre vazia.
+ * O parâmetro opcional `listName` (já disponível no call site via
+ * `BrevoCampaign & { listName?: string }`, ver brevo-api.ts) permite checar o
+ * nome da LISTA quando o nome da CAMPANHA bate o regex quente: se a lista
+ * sinalizar "cold" como palavra isolada (`\bcold\b`, case-insensitive, pra não
+ * casar substring dentro de outra palavra), a audiência correta é "cold"
+ * mesmo com campanha "Clarice News ...". Omitir `listName` preserva o
+ * comportamento antigo (sempre "warm" nesse branch) — backward-compatible
+ * pros call sites que não precisam da distinção (aggregateAbcSummary,
+ * groupMonthlyAbcTests só consomem `.cycle`/`.cell`, nunca `.audience`).
  * Exportado pra teste unitário.
  */
 export function parseAbcAudienceCampaign(
   campaignName: string,
+  listName?: string,
 ): { cycle: string; cell: "A" | "B" | "C"; audience: ClariceAudience } | null {
   const warm = parseClariceCampaignKey(campaignName);
   if (warm && warm.cell) {
-    return { cycle: warm.cycle, cell: warm.cell, audience: "warm" };
+    const audience: ClariceAudience = listName && /\bcold\b/i.test(listName) ? "cold" : "warm";
+    return { cycle: warm.cycle, cell: warm.cell, audience };
   }
   const cold = campaignName.match(/^cold\s+(\d{4}-\d{2})(?:\s*[—–-]\s*|\s+)([ABC])\b/i);
   if (cold) {
@@ -1379,7 +1416,10 @@ function aggregateCellsV2(
     C: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
   };
   for (const c of campaigns) {
-    const parsed = parseAbcAudienceCampaign(c.name);
+    // #3128: passa listName — é o único sinal que distingue cold/warm quando
+    // o nome da CAMPANHA bate o regex quente mas foi enviado a uma lista fria
+    // (ver JSDoc de parseAbcAudienceCampaign).
+    const parsed = parseAbcAudienceCampaign(c.name, c.listName);
     if (!parsed || parsed.cycle !== cycle) continue;
     if (audienceFilter !== "any" && parsed.audience !== audienceFilter) continue;
     const picked = pickStats(c);
