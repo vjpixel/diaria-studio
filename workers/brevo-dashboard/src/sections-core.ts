@@ -304,7 +304,7 @@ export function renderDashboardHtml(
   // pela data). Sem reset placeholder (o #2871 é do diário); sem teste mensal
   // → nada. Mais recente primeiro.
   const monthlyAbcGroups = groupMonthlyAbcTests(campaigns);
-  const monthlyAbcSection = monthlyAbcGroups
+  const monthlyAbcSectionsByDate = monthlyAbcGroups
     .map((g) =>
       renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
         title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
@@ -314,6 +314,25 @@ export function renderDashboardHtml(
       }),
     )
     .join("\n");
+  // #3129: a quebra por data é ruído pro editor (decisão já tomada via issue —
+  // a leitura primária pra decidir o teste é o consolidado por audiência em
+  // `abcAudienceSection` logo abaixo, que continua SEMPRE visível, sem
+  // mudança nenhuma aqui). Em vez de remover o detalhe por-data (ainda útil
+  // pra acompanhar um teste em andamento dia-a-dia), colapsa por padrão num
+  // único <details>, reusando .links-ctr/.links-summary/.links-count-badge
+  // (mesmo padrão de render-links.ts) em vez de CSS novo. As âncoras
+  // `#abc-summary-monthly-{cycle}-{dateKey}` de cada seção ficam DENTRO do
+  // <details> (nunca no próprio <details>), então um deep-link pra uma delas
+  // segue auto-expandindo via reveal algorithm nativo do HTML (ancestor
+  // <details> sem `open` é aberto automaticamente pelo browser quando o
+  // :target é um descendente) — sem precisar de JS extra. Sem grupos → ""
+  // (mesma convenção de renderAbcSection: nunca um <details> vazio).
+  const monthlyAbcSection = monthlyAbcSectionsByDate
+    ? `<details class="links-ctr abc-summary-monthly-group" id="abc-summary-monthly-collapsible">
+  <summary class="links-summary">Resumo A/B/C — Mensal por data <span class="links-count-badge">${monthlyAbcGroups.length}</span> teste${monthlyAbcGroups.length === 1 ? "" : "s"}</summary>
+${monthlyAbcSectionsByDate}
+</details>`
+    : "";
   // #2976: Resumo A/B/C por AUDIÊNCIA (Agregada/Fria/Quente) — aditivo, um bloco
   // por ciclo mensal distinto (agrupa TODAS as datas de teste do ciclo, ao
   // contrário de `monthlyAbcSection` acima que separa por data). Vem ANTES do
@@ -527,6 +546,12 @@ export function renderDashboardHtml(
      pra dar borda, diferente do "Resumo por cupom" removido). */
   details.coupon-month { border-bottom: 1px solid var(--rule); }
   details.coupon-month summary.links-summary { padding: 8px; }
+  /* #3129: Resumo A/B/C mensal por data — colapsado por padrão (details.links-ctr
+     reusado). Ganha margin-top próprio porque, ao virar filho do <details> em vez
+     de sibling direto, o 1º <section class="phase2-section"> lá dentro deixa de
+     casar com a regra .phase2-section + .phase2-section (linha acima) — perderia a
+     régua/respiro que separa das seções anteriores (abcSection/abcAudienceSection). */
+  details.abc-summary-monthly-group { margin-top: 32px; }
   /* #2542: tab navigation — CSS-only via radio+label+:checked (sem JS externo) */
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */

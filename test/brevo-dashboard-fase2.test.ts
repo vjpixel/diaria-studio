@@ -251,7 +251,10 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
 
   test("sem teste ABC mensal → nenhuma seção mensal", () => {
     const html = renderDashboardHtml(allCampaigns);
-    assert.doesNotMatch(html, /abc-summary-monthly/);
+    // #3129: a regra CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style>, independente dos dados — checar o id do <details> (só
+    // emitido quando há grupos) em vez da substring da classe.
+    assert.doesNotMatch(html, /abc-summary-monthly-collapsible/);
   });
 
   test("campo-misto na mesma data: irmão só com sentDate (sem scheduledAt) cai no MESMO grupo (review #2905)", () => {
@@ -313,6 +316,48 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
       makeCampaign(302, "Clarice News 2605 d02-B (qui)", "2026-06-11T06:00:00.000-03:00"),
     ];
     assert.equal(groupMonthlyAbcTests(daily).length, 0, "teste diário não é mensal — fora do grupo mensal");
+  });
+
+  // #3129: editor achou a quebra por-data ruído (issue #3129) — decisão foi
+  // colapsar por padrão (não deletar, ainda serve pra acompanhar um teste em
+  // andamento dia-a-dia). As 3 asserções abaixo cobrem o contrato do PR.
+  test("#3129: com testes mensais, as seções por-data ficam dentro de um <details> SEM open (colapsado por padrão) — conteúdo preservado", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    const detailsOpenTag = html.match(/<details class="links-ctr abc-summary-monthly-group"[^>]*>/)?.[0];
+    assert.ok(detailsOpenTag, "deve existir um <details> agrupando as seções mensais por data");
+    assert.doesNotMatch(detailsOpenTag!, /\bopen\b/, "sem atributo open — colapsado por padrão");
+    const detailsStart = html.indexOf(detailsOpenTag!);
+    const detailsEnd = html.indexOf("</details>", detailsStart);
+    assert.ok(detailsEnd > detailsStart, "deve fechar com </details>");
+    // Conteúdo por-data NÃO foi deletado — só ficou colapsado (dentro do <details>).
+    const inner = html.slice(detailsStart, detailsEnd);
+    assert.match(inner, /Resumo A\/B\/C — Mensal \(2606-07 · 03\/07\/2026\)/, "seção de 03/07 continua presente");
+    assert.match(inner, /Resumo A\/B\/C — Mensal \(2606-07 · 05\/07\/2026\)/, "seção de 05/07 continua presente");
+    assert.match(inner, /id="abc-summary-monthly-2606-07-2026-07-03"/);
+    assert.match(inner, /id="abc-summary-monthly-2606-07-2026-07-05"/);
+  });
+
+  test("#3129: 'Resumo A/B/C por Audiência' (consolidado) permanece FORA do <details> — sempre visível, sem mudança", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    const audienceIdx = html.indexOf('id="abc-audience-2606-07"');
+    assert.ok(audienceIdx > -1, "seção consolidada por audiência deve existir (pré-condição)");
+    const detailsStart = html.indexOf('<details class="links-ctr abc-summary-monthly-group"');
+    const detailsEnd = html.indexOf("</details>", detailsStart);
+    assert.ok(detailsStart > -1 && detailsEnd > detailsStart, "pré-condição: <details> do detalhe por-data existe");
+    assert.ok(
+      audienceIdx < detailsStart,
+      "seção por audiência deve continuar vindo ANTES do <details> (mesma posição de hoje) — nunca aninhada dentro dele",
+    );
+  });
+
+  test("#3129: sem nenhum teste mensal, o <details> colapsável não renderiza (nunca um shell vazio)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    // Nota: a REGRA CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style> (não é condicional aos dados) — checar a substring da classe
+    // sozinha daria falso-positivo. O sinal correto é o id do próprio <details>
+    // (só emitido quando há grupos) e a ausência de qualquer seção por-data.
+    assert.doesNotMatch(html, /abc-summary-monthly-collapsible/, "sem grupos mensais, o <details> wrapper não deve aparecer");
+    assert.doesNotMatch(html, /Resumo A\/B\/C — Mensal \(/, "comportamento preexistente preservado: sem seção mensal alguma");
   });
 });
 
