@@ -73,6 +73,31 @@ function fmtTimeBRT(iso: string | null): string {
   }
 }
 
+/**
+ * #3075 (achado Fable #2): versão curta de fmtTimeBRT sem ano — dd/mm hh:mm.
+ * Usada nas colunas de maior densidade (Último ok/Última falha da Saúde das
+ * Fontes, Início do Overnight); o ano some do texto mas não da informação —
+ * o chamador deve colocar fmtTimeBRT (com ano) no atributo title= do <td>.
+ */
+function fmtTimeBRTShort(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  try {
+    return d.toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    const brt = new Date(d.getTime() - 3 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(brt.getUTCDate())}/${pad(brt.getUTCMonth() + 1)} ${pad(brt.getUTCHours())}:${pad(brt.getUTCMinutes())}`;
+  }
+}
+
 function fmtDuration(ms: number | null): string {
   if (ms === null || ms < 0) return "—";
   const totalMin = Math.round(ms / 60_000);
@@ -125,8 +150,8 @@ export function renderSourceHealthSection(data: DashboardData): string {
         <td>${e.success_rate_pct.toFixed(0)}%</td>
         <td>${e.timeouts}</td>
         <td>${dur}</td>
-        <td>${fmtTimeBRT(e.last_success_iso)}</td>
-        <td>${fmtTimeBRT(e.last_failure_iso)}</td>
+        <td title="${escHtml(fmtTimeBRT(e.last_success_iso))}">${fmtTimeBRTShort(e.last_success_iso)}</td>
+        <td title="${escHtml(fmtTimeBRT(e.last_failure_iso))}">${fmtTimeBRTShort(e.last_failure_iso)}</td>
       </tr>`;
     })
     .join("\n");
@@ -136,7 +161,7 @@ export function renderSourceHealthSection(data: DashboardData): string {
   return `<section class="dash-section" id="source-health">
   <h2 class="section-title">Saúde das fontes</h2>
   <p class="section-note">${sh.total} fontes — <span style="color:#2d8a4e">${sh.verde} verde</span> · <span style="color:#c07800">${sh.amarelo} amarelo</span> · <span style="color:#C00000">${sh.vermelho} vermelho</span> · ${pctVerde}% OK</p>
-  <div class="table-wrap">
+  <div class="table-wrap table-wrap-scroll">
   <table>
     <thead>
       <tr>
@@ -267,7 +292,7 @@ export function renderOvernightSection(data: DashboardData): string {
         : "—";
       return `<tr>
         <td>${escHtml(r.edition)}</td>
-        <td>${fmtTimeBRT(r.started_at)}</td>
+        <td title="${escHtml(fmtTimeBRT(r.started_at))}">${fmtTimeBRTShort(r.started_at)}</td>
         <td>${r.total_issues}</td>
         <td>${progress}</td>
         <td>${fmtDuration(r.duration_ms)}</td>
@@ -711,6 +736,11 @@ export function renderDashboardHtml(data: DashboardData): string {
      que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
   .alert-text { color: #C00000; opacity: 1; font-weight: 600; }
   .table-wrap { overflow-x: auto; }
+  /* #3075: Saúde das fontes é a tabela mais longa do dashboard — o th
+     position:sticky (acima) só funciona com um scroll container vertical de
+     verdade. table-wrap sozinho só rola no eixo X; esta variante dá um
+     max-height + overflow-y:auto pra fazer o sticky funcionar de fato. */
+  .table-wrap-scroll { max-height: 60vh; overflow-y: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
@@ -751,6 +781,7 @@ export function renderDashboardHtml(data: DashboardData): string {
   }
   .tab-label:hover { opacity: 1; background: var(--paper-alt); }
   #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-saude:checked ~ .tab-bar label[for="tab-saude"],
   #tab-ctr:checked ~ .tab-bar label[for="tab-ctr"],
   #tab-toplinks:checked ~ .tab-bar label[for="tab-toplinks"],
   #tab-usemelhor:checked ~ .tab-bar label[for="tab-usemelhor"],
@@ -761,6 +792,7 @@ export function renderDashboardHtml(data: DashboardData): string {
   }
   /* Foco de teclado: o radio focado projeta um contorno no seu label irmão. */
   #tab-visaogeral:focus-visible ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-saude:focus-visible ~ .tab-bar label[for="tab-saude"],
   #tab-ctr:focus-visible ~ .tab-bar label[for="tab-ctr"],
   #tab-toplinks:focus-visible ~ .tab-bar label[for="tab-toplinks"],
   #tab-usemelhor:focus-visible ~ .tab-bar label[for="tab-usemelhor"],
@@ -770,6 +802,7 @@ export function renderDashboardHtml(data: DashboardData): string {
   }
   .tab-panel { display: none; padding-top: 8px; }
   #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
+  #tab-saude:checked ~ .tab-panels #panel-saude,
   #tab-ctr:checked ~ .tab-panels #panel-ctr,
   #tab-toplinks:checked ~ .tab-panels #panel-toplinks,
   #tab-usemelhor:checked ~ .tab-panels #panel-usemelhor,
@@ -792,6 +825,7 @@ export function renderDashboardHtml(data: DashboardData): string {
 
 <!-- #2602: tab state inputs (hidden, CSS-only — mesmo padrão do brevo-dashboard #2542) -->
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-saude">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-ctr">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-toplinks">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-usemelhor">
@@ -802,6 +836,7 @@ export function renderDashboardHtml(data: DashboardData): string {
 <div class="tab-bar-wrap">
 <div class="tab-bar" role="tablist" aria-label="Seções do dashboard">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
+  <label class="tab-label" id="tablabel-saude" for="tab-saude" role="tab" aria-controls="panel-saude">Saúde das fontes</label>
   <label class="tab-label" id="tablabel-ctr" for="tab-ctr" role="tab" aria-controls="panel-ctr">CTR</label>
   <label class="tab-label" id="tablabel-toplinks" for="tab-toplinks" role="tab" aria-controls="panel-toplinks">Top links</label>
   <label class="tab-label" id="tablabel-usemelhor" for="tab-usemelhor" role="tab" aria-controls="panel-usemelhor">Use Melhor</label>
@@ -813,34 +848,38 @@ export function renderDashboardHtml(data: DashboardData): string {
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 1: Visão geral — overnight + saúde das fontes + em breve -->
+  <!-- Aba 1: Visão geral — overnight + em breve -->
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
 ${overnightSection}
-${sourceSection}
 ${stubsSection}
   </div><!-- /panel-visaogeral -->
 
-  <!-- Aba 2: CTR por categoria de link -->
+  <!-- Aba 2: Saúde das fontes (#3075: era sub-seção de Visão geral, virou aba própria) -->
+  <div class="tab-panel" id="panel-saude" role="tabpanel" aria-labelledby="tablabel-saude">
+${sourceSection}
+  </div><!-- /panel-saude -->
+
+  <!-- Aba 3: CTR por categoria de link -->
   <div class="tab-panel" id="panel-ctr" role="tabpanel" aria-labelledby="tablabel-ctr">
 ${ctrSection}
   </div><!-- /panel-ctr -->
 
-  <!-- Aba 3: Top links por cliques absolutos -->
+  <!-- Aba 4: Top links por cliques absolutos -->
   <div class="tab-panel" id="panel-toplinks" role="tabpanel" aria-labelledby="tablabel-toplinks">
 ${topClickedRecentSection}
   </div><!-- /panel-toplinks -->
 
-  <!-- Aba 4: Use Melhor -->
+  <!-- Aba 5: Use Melhor -->
   <div class="tab-panel" id="panel-usemelhor" role="tabpanel" aria-labelledby="tablabel-usemelhor">
 ${useMelhorSection}
   </div><!-- /panel-usemelhor -->
 
-  <!-- Aba 5: É IA? (poll) -->
+  <!-- Aba 6: É IA? (poll) -->
   <div class="tab-panel" id="panel-eia" role="tabpanel" aria-labelledby="tablabel-eia">
 ${pollEiaSection}
   </div><!-- /panel-eia -->
 
-  <!-- Aba 6: Perfil de audiência -->
+  <!-- Aba 7: Perfil de audiência -->
   <div class="tab-panel" id="panel-audiencia" role="tabpanel" aria-labelledby="tablabel-audiencia">
 ${audienceSection}
   </div><!-- /panel-audiencia -->
