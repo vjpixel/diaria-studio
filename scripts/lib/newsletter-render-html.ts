@@ -142,13 +142,28 @@ export function renderDivulgacaoSeparator(): string {
 }
 
 /**
- * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
- * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
+ * #3104: marcador ● teal reutilizável — a "assinatura de cor" do DS pros
+ * labels uppercase deste padrão (kicker de seção, "Por que isso importa",
+ * resultado do É IA?). Isolado em helper porque teal 12/16px bold mede
+ * ~3.2:1 de contraste sobre papel/branco — abaixo de AA (4.5:1) pra texto
+ * normal (16px bold não qualifica como "large text" do WCAG, que exige
+ * ≥18.66px bold). Fix sem mexer na paleta: o PONTO continua teal (identidade
+ * visual preservada), o TEXTO do label vira ink (contraste ~14:1) em cada
+ * caller — este helper só emite o ponto.
+ */
+function tealDot(): string {
+  return `<span style="color:${TEAL};">&#9679;</span>`;
+}
+
+/**
+ * Kicker de seção do DS: ponto ● teal + label ink uppercase (#3104 — era
+ * label teal, ~3.2:1 de contraste, abaixo de AA) + régua bege preenchendo o
+ * resto da linha. Retorna HTML interno (sem `<tr>`).
  */
 export function renderKicker(label: string): string {
   const clean = esc(stripKickerEmoji(label));
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};white-space:nowrap;padding-right:12px;"><span style="color:${TEAL};">&#9679;</span>&nbsp;${clean}</td>
+    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEXT_COLOR};white-space:nowrap;padding-right:12px;">${tealDot()}&nbsp;${clean}</td>
     <td style="width:100%;border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td>
   </tr></table>`;
 }
@@ -210,13 +225,14 @@ export function renderBodyParasInner(text: string): string {
     .join("\n  ");
 }
 
-/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker teal). HTML interno. */
+/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker
+ * ponto teal / label ink, #3104 — era label teal, ~3.2:1, abaixo de AA). HTML interno. */
 export function renderWhyBoxInner(text: string): string {
   if (!text || !text.trim()) return "";
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
-      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>
+      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;Por que isso importa</p>
       ${bodyP("0", body)}
     </td>
   </tr></table>`;
@@ -568,10 +584,11 @@ export function renderEIA(eia: EIA): string {
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
   // #1630: "Resultado da última edição: X% acertaram" — DS: sans 16px (#3103,
-  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase teal,
-  // no rodapé do painel.
+  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase, no
+  // rodapé do painel. #3104: era teal (~3.2:1, abaixo de AA) — ponto teal +
+  // label ink, mesmo padrão do kicker/whyBox.
   const prevResultHtml = eia.prevResultLine
-    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>

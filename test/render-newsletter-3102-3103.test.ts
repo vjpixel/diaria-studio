@@ -75,7 +75,10 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 16px, crédito
 
   it("prevResultLine ('Resultado da última edição') sobe para font-size:16px", () => {
     const html = renderEIA({ ...baseEia, prevResultLine: "Resultado da última edição: 67% das pessoas acertaram." });
-    const match = html.match(/<p style="([^"]+)">Resultado da última edição[^<]*<\/p>/);
+    // #3104: o <p> agora abre com o marcador ●&nbsp; (dot teal / label ink,
+    // a11y) antes do texto — o grupo opcional casa o `<span>` do ponto sem
+    // deixar o wildcard vazar pra OUTRO <p> anterior (ex: título do É IA?).
+    const match = html.match(/<p style="([^"]+)">(?:<span[^>]*>&#9679;<\/span>&nbsp;)?Resultado da última edição[^<]*<\/p>/);
     assert.ok(match, `prevResultLine <p> não encontrado: ${html}`);
     assert.match(match![1], /font-size:16px/, "prevResultLine deve subir para 16px");
     assert.doesNotMatch(match![1], /font-size:12px/, "prevResultLine não deve mais ser 12px");
