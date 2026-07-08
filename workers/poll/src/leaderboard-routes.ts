@@ -741,23 +741,74 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
 // em massa).
 
 /**
+ * Pure (#3113 item 9): "hoje" em AAMMDD (BRT) — mesmo offset fixo de -3h usado
+ * em toda formatação de data deste worker (ver `currentMonthSlugBrt`/
+ * `archiveKeyForReset` em lib.ts). Usado só pra comparação lexicográfica
+ * contra edições AAMMDD (strings zero-padded de mesmo tamanho comparam igual
+ * a números).
+ */
+function todayAammddBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(brt.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
  * Pure (#2867): extrai as edições AAMMDD de um ano a partir dos nomes das
  * chaves KV `correct:{edition}` (gabarito definido = edição realmente
  * publicada com poll fechado — ver `close-poll.ts`). Filtra pelo ano exato
  * (2 dígitos AA do AAMMDD) e ordena DESC (mais recente primeiro). Chaves com
  * formato diferente de AAMMDD (ex: ciclo mensal Clarice `2605-06`) são
  * ignoradas — só interessam edições diárias aqui.
+ *
+ * #3113 (item 9): também exclui edições com data > hoje (BRT). O gabarito
+ * (`correct:{edition}`) pode ser definido ANTES do e-mail de fato sair (ex:
+ * durante a preparação de imagens/revisão) — sem este filtro, o arquivo
+ * expunha uma edição futura como votável antes da newsletter ser publicada.
+ * `now` opcional (default `new Date()`) — pra determinismo em teste.
  */
-export function extractEditionsForYear(correctKeyNames: string[], year: string): string[] {
+export function extractEditionsForYear(correctKeyNames: string[], year: string, now: Date = new Date()): string[] {
   const yy = year.slice(2);
+  const today = todayAammddBrt(now);
   const set = new Set<string>();
   for (const k of correctKeyNames) {
     const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
     if (!/^\d{6}$/.test(edition)) continue;
     if (edition.slice(0, 2) !== yy) continue;
+    if (edition > today) continue; // #3113 item 9: ainda não chegou a data
     set.add(edition);
   }
   return [...set].sort().reverse();
+}
+
+/**
+ * Pure (#3113 item 10): agrupa edições AAMMDD (já ordenadas DESC) por mês,
+ * preservando a ordem de entrada — uma lista flat de edições diárias passa de
+ * 200 itens/ano sem agrupamento. Assume todas as edições do MESMO ano (o
+ * caller já filtra por ano em `extractEditionsForYear`) — o heading mostra só
+ * o nome do mês (o ano já aparece no `<h1>` da página).
+ */
+export interface EditionMonthGroup {
+  monthLabel: string;
+  editions: string[];
+}
+
+export function groupEditionsByMonth(editions: string[]): EditionMonthGroup[] {
+  const groups: EditionMonthGroup[] = [];
+  let currentMonth: string | null = null;
+  for (const ed of editions) {
+    const mm = ed.slice(2, 4);
+    if (mm !== currentMonth) {
+      const monthName = MONTH_NAMES_PT[parseInt(mm, 10) - 1] ?? mm;
+      const monthLabel = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      groups.push({ monthLabel, editions: [] });
+      currentMonth = mm;
+    }
+    groups[groups.length - 1].editions.push(ed);
+  }
+  return groups;
 }
 
 /** Pure (#2867): href do arquivo — lista do ano (sem `edition`) ou voto de 1
@@ -775,9 +826,17 @@ export function renderArchiveListHtml(
   brand: Brand = "diaria",
 ): Response {
   const info = BRAND_INFO[brand];
-  const rows = editions
-    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
+  // #3113 (item 10): agrupado por mês (heading + <ul> próprio) em vez de uma
+  // única lista flat — evita >200 itens/ano sem estrutura.
+  const sections = groupEditionsByMonth(editions)
+    .map((g) => {
+      const items = g.editions
+        .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
+        .join("\n");
+      return `<h2 class="month-heading">${htmlEscape(g.monthLabel)}</h2>\n<ul>${items}</ul>`;
+    })
     .join("\n");
+  const rows = sections || "<ul><li>Nenhuma edição disponível ainda.</li></ul>";
   const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
     title: pageTitle,
@@ -802,6 +861,11 @@ ${seoMeta}
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  /* #3113 (item 10): heading de mês — agrupa a lista flat que passaria de
+     200 itens/ano. Reusa a mesma convenção visual do .kicker (sans, uppercase,
+     letter-spacing), em teal (acento reservado a links/kickers no DS). */
+  .month-heading { font-family: ${DS_FONTS.sans}; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 28px 0 0; }
+  .month-heading + ul { margin-top: 8px; }
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -810,7 +874,7 @@ ${renderBrandShellStyles()}
 <hr class="rule">
 <h1>Arquivo de ${htmlEscape(year)}</h1>
 <p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
-<ul>${rows || "<li>Nenhuma edição disponível ainda.</li>"}</ul>
+${rows}
 ${renderBrandFooter(brand)}
 </body>
 </html>`;
@@ -941,7 +1005,12 @@ export async function handleArchiveVotePage(
     });
   }
   const correctRaw = await env.POLL.get(`correct:${edition}`);
-  if (!correctRaw) {
+  // #3113 (item 9): mesma checagem de `extractEditionsForYear` — sem ela, a
+  // página de voto do arquivo continuaria acessível via URL direta (mesmo
+  // AAMMDD, adivinhado ou incrementado a partir de uma edição já pública)
+  // mesmo depois da LISTA parar de mostrar a edição futura. Mesma mensagem
+  // do "sem gabarito" — o assinante não precisa saber o motivo específico.
+  if (!correctRaw || edition > todayAammddBrt(new Date())) {
     return new Response(
       votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
       { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },
