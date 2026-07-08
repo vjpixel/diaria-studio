@@ -24,8 +24,16 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
-import { COLORS, FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
+import { FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
 import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
+import {
+  renderCuradoriaRootStyles,
+  renderCuradoriaHeaderStyles,
+  renderCuradoriaFiltersBaseStyles,
+  renderCuradoriaGridCardStyles,
+  renderCuradoriaFooterStyles,
+  renderCuradoriaFooter,
+} from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-livros-page.ts
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
@@ -40,12 +48,10 @@ const PAGE_DESCRIPTION =
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
 // antigo) — agora os MESMOS tokens da diária/mensal/É IA?: teal #00A0A0,
 // Georgia, papel #FBFAF6, tinta #171411, molduras bege #EBE5D0.
-const TEAL = COLORS.brand; // #00A0A0
-const INK = COLORS.ink; // #171411
-const PAPER = COLORS.paper; // #FBFAF6
-const CARD_BG = COLORS.paper; // card = papel (sem off-white ad-hoc)
-const RULE = COLORS.rule; // #EBE5D0 — molduras/bordas hairline
-const SERIF = FONTS.serif; // Georgia (email-safe + canônico)
+// #3113: a maior parte do CSS (root/header/filtros-base/grid/card/footer) foi
+// extraída pra scripts/lib/shared/curadoria-page.ts — só SANS segue local,
+// usado no bloco de filtros mobile (#3107) e em `.platform`, que continuam
+// inline aqui por serem específicos de cursos.
 const SANS = FONTS.sans; // Geist → cai pra system sans
 
 export type Language = "pt-br" | "en";
@@ -294,40 +300,14 @@ export function renderCursosPage(courses: Course[]): string {
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
 <style>
-  :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; --rule: ${RULE}; }
-  * { box-sizing: border-box; }
-  body { font-family: ${SANS}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
-    -webkit-font-smoothing: antialiased; }
-  a { color: inherit; }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+${renderCuradoriaRootStyles()}
 
-  header { padding: 56px 0 0; }
-  .eyebrow { font-family: ${SANS}; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--teal); font-weight: 600; margin: 0 0 18px; }
-  .rule { height: 2px; background: var(--teal); border: 0; margin: 0 0 22px; }
-  h1 { font-family: ${SERIF}; font-weight: 700; font-size: clamp(40px, 7vw, 72px); line-height: 0.98;
-    letter-spacing: -0.02em; margin: 0; }
-  h1 .dot { color: var(--teal); }
-  .tagline { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
-    color: var(--ink); margin: 18px 0 0; }
-  .lede { font-size: 19px; line-height: 1.5; color: var(--ink); margin: 16px 0 0; }
-  .lede + .lede { margin-top: 10px; font-size: 16px; color: var(--ink); }
+${renderCuradoriaHeaderStyles()}
 
-  .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
-    border-bottom: 1px solid var(--rule); margin-top: 40px; }
+${renderCuradoriaFiltersBaseStyles()}
   .filters .wrap { padding-top: 0; padding-bottom: 0; }
   .filters-summary { display: none; }
   .filters-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
-  .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--ink); display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
-  .filters select { font-family: ${SANS}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
-    border: 0; border-bottom: 1px solid var(--rule); background: transparent; min-width: 130px; cursor: pointer;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 4px center; }
-  .filters select:focus { outline: none; border-bottom-color: var(--teal); }
-  .count { margin-left: auto; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.16em;
-    text-transform: uppercase; color: var(--ink); align-self: flex-end; }
 
   /* #3107: abaixo de ~700px os 8 dropdowns empilhavam em 5-6 linhas (~330px)
      sticky permanentemente no topo — ~40% da tela do mobile durante todo o
@@ -347,32 +327,11 @@ ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_UR
     .filters-body .count { display: none; } /* contagem já aparece no botão "Filtrar (N cursos)" */
   }
 
-  main { padding: 40px 0 64px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
-    background: var(--rule); border: 1px solid var(--rule); }
-  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px 28px; }
-  .title-row { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; }
-  .title-row h2 { font-family: ${SERIF}; font-size: 22px; font-weight: 600; line-height: 1.14;
-    letter-spacing: -0.01em; margin: 0; }
-  .title-row h2 a { text-decoration: none; }
-  .title-row h2 a:hover { color: var(--teal); }
-  .note { font-family: ${SANS}; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
+${renderCuradoriaGridCardStyles()}
   .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
-  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
-  .badge { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--ink); border: 1px solid var(--rule); padding: 4px 9px; border-radius: 2px; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
-  .summary { font-size: 16px; line-height: 1.5; color: var(--ink); margin: 14px 0 18px; flex: 1; }
-  .cta { font-family: ${SANS}; font-size: 16px;
-    font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
-    border-bottom: 1px solid transparent; padding-bottom: 2px; }
-  .cta:hover { border-bottom-color: var(--teal); }
-  .cta--off { color: var(--ink); font-weight: 600; }
-  .empty { grid-column: 1 / -1; text-align: center; color: var(--ink); padding: 64px 20px;
-    font-size: 18px; background: var(--card); }
-  footer { border-top: 1px solid var(--rule); }
-  footer .wrap { padding: 24px 28px; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--ink); }
+
+${renderCuradoriaFooterStyles()}
 </style>
 </head>
 <body>
@@ -407,7 +366,7 @@ ${cards}
       </div>
     </div>
   </main>
-  <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
+  ${renderCuradoriaFooter("diar.ia.br — curadoria de cursos sobre IA")}
 <script>
   (function () {
     var THEME_LABELS = ${themeLabelJson};
