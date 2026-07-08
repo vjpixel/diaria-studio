@@ -32,6 +32,7 @@ import {
   DEFAULT_INTRA_DESTAQUE_COUNT,
   extractNamedEntitiesIntra,
   extractProductEntitiesIntra,
+  extractCompanyMentionsIntra,
   stripVehicleSuffix,
 } from "../scripts/dedup-intra-edition.ts";
 
@@ -1205,5 +1206,126 @@ describe("dedup-intra-edition — #2587 domain-match exige segundo sinal", () =>
 
   it("INTRA_DOMAIN_JACCARD_MIN exportado é 0.2", () => {
     assert.equal(INTRA_DOMAIN_JACCARD_MIN, 0.2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3099 CASO REAL 260708: cross-vehicle same-company (DeepSeek chip)
+//
+// D2 "DeepSeek prepara chip de IA para reduzir dependência da NVIDIA, revela
+// portal" (canaltech) + RADAR "Chinesa DeepSeek está desenvolvendo o próprio
+// chip de IA, dizem fontes" (CNN Brasil) — mesmo evento (chip da DeepSeek),
+// mas nenhum guard existente pegava: Jaccard ≈ 0.14 (abaixo de 0.45);
+// entity-match geral = 0 (DeepSeek/NVIDIA são stopword de empresa); domain-
+// match (#2548/#2587) não se aplica porque NENHUM dos dois lados é a página
+// oficial (ambos são cobertura de imprensa, sem suggested_primary_domain
+// batendo a URL do destaque). Fix: cross-vehicle same-company match — mesma
+// empresa citada nos dois títulos + ≥1 token de tópico compartilhado além
+// da empresa (aqui, "chip").
+// ---------------------------------------------------------------------------
+
+describe("extractCompanyMentionsIntra (#3099)", () => {
+  it("detecta 'DeepSeek' e 'NVIDIA' no título (empresa É o sinal aqui, ao contrário do entity-match geral)", () => {
+    const companies = extractCompanyMentionsIntra(
+      "DeepSeek prepara chip de IA para reduzir dependência da NVIDIA, revela portal",
+    );
+    assert.ok(companies.has("deepseek"));
+    assert.ok(companies.has("nvidia"));
+  });
+
+  it("detecta empresa mencionada no meio da frase (não só index-0)", () => {
+    const companies = extractCompanyMentionsIntra(
+      "Chinesa DeepSeek está desenvolvendo o próprio chip de IA, dizem fontes",
+    );
+    assert.ok(companies.has("deepseek"));
+  });
+
+  it("não detecta empresa ausente do título", () => {
+    const companies = extractCompanyMentionsIntra("Anthropic lança novo modelo Claude");
+    assert.ok(!companies.has("openai"));
+  });
+});
+
+describe("dedup-intra-edition — regressão #3099 CASO REAL 260708: DeepSeek chip cross-vehicle", () => {
+  it("remove RADAR CNN Brasil que cobre o mesmo chip DeepSeek que o destaque canaltech (Jaccard baixo, sem domain-match)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 2,
+          url: "https://canaltech.com.br/inteligencia-artificial/deepseek-prepara-chip-de-ia-para-reduzir-dependencia-da-nvidia-revela-portal/",
+          title: "DeepSeek prepara chip de IA para reduzir dependência da NVIDIA, revela portal",
+        },
+      ],
+      radar: [
+        {
+          url: "https://www.cnnbrasil.com.br/economia/negocios/chinesa-deepseek-esta-desenvolvendo-o-proprio-chip-de-ia-dizem-fontes/",
+          title: "Chinesa DeepSeek está desenvolvendo o próprio chip de IA, dizem fontes",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "RADAR CNN Brasil deve ser removido como cobertura do mesmo evento");
+    assert.equal(removed[0].match_type, "cross_vehicle");
+    assert.equal(kept.radar?.length, 0);
+  });
+
+  it("NÃO remove notícia de empresa diferente que só compartilha token genérico (sem falso-positivo)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://canaltech.com.br/x/deepseek-chip-nvidia",
+          title: "DeepSeek prepara chip de IA para reduzir dependência da NVIDIA, revela portal",
+        },
+      ],
+      radar: [
+        {
+          // Empresa diferente (Anthropic) — não deve colidir mesmo compartilhando "ia"/"nova".
+          url: "https://exame.com/x/anthropic-novo-modelo",
+          title: "Anthropic lança nova versão do Claude para empresas",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { removed } = dedupIntraEdition(input);
+    assert.equal(removed.length, 0, "empresas diferentes não devem colidir via cross-vehicle match");
+  });
+
+  it("NÃO remove segunda notícia da MESMA empresa sobre tópico diferente (só termos genéricos em comum)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://canaltech.com.br/x/deepseek-chip-nvidia",
+          title: "DeepSeek prepara chip de IA para reduzir dependência da NVIDIA, revela portal",
+        },
+      ],
+      radar: [
+        {
+          // Mesma empresa (DeepSeek), tópico DIFERENTE (modelo de codificação, não chip).
+          // Só compartilha "deepseek" (empresa) — sem token de tópico específico.
+          url: "https://www.cnnbrasil.com.br/x/deepseek-lancara-novo-modelo-de-ia-focado-em-codificacao",
+          title: "DeepSeek lançará novo modelo de IA focado em codificação",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { removed } = dedupIntraEdition(input);
+    assert.equal(
+      removed.length,
+      0,
+      "segunda história da mesma empresa sobre tópico diferente não deve ser removida",
+    );
   });
 });

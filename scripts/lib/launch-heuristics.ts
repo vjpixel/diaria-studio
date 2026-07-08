@@ -662,6 +662,27 @@ export { isDevReleaseNote };
  *     frequentemente tutoriais ("Building an LLM from scratch", "Evaluating
  *     LLMs: a reference"); ejetá-los esvaziaria use_melhor.
  */
+/**
+ * #3099: "Visual/Illustrated Guide to X" — gênero canônico de explainer
+ * conceitual (Jay Alammar / Maarten Grootendorst-style: diagrama + explicação
+ * de arquitetura), não hands-on. Roda ANTES do isTutorialByKeyword short-
+ * circuit dentro de isNewsNotTutorial — sem essa precedência, o próprio
+ * "guide to" já dispara isTutorialByKeyword=true, e isNewsNotTutorial retorna
+ * false antes de qualquer outra checagem (mesmo padrão de precedência de
+ * isLaunchSlug/isRoundupSlug, que também rodam antes do how-to).
+ *
+ * Caso real 260708: "A Visual Guide to Gemma 4 12B"
+ * (newsletter.maartengrootendorst.com, fonte cadastrada use_melhor=1) virou
+ * tutorial indevidamente — é leitura conceitual sobre a arquitetura do
+ * modelo, não um passo-a-passo acionável (USE MELHOR exige hands-on ≤2h).
+ *
+ * Deliberadamente universal (não gated por host): a própria palavra
+ * "visual"/"illustrated" já é o sinal de formato explainer/infográfico,
+ * independente do domínio. Não colide com "New Guide to X in Y" (#2469) —
+ * aquele padrão não tem "visual"/"illustrated".
+ */
+const VISUAL_GUIDE_EXPLAINER_RE = /\b(visual|illustrated)\s+guide\s+to\b/i;
+
 export function isNewsNotTutorial(article: Article): boolean {
   // #2313: slug de lançamento no path → anúncio, mesmo que título diga "How to use X".
   // Vendor blogs frequentemente publicam anúncios com wording de tutorial no título
@@ -682,7 +703,13 @@ export function isNewsNotTutorial(article: Article): boolean {
   // o bloco de LANÇAMENTO (#160), não para USE MELHOR. type_hint="noticia"/"opiniao"
   // (abaixo) continua DEPOIS do how-to, preservando o reclassify de #2666.
   if (article.type_hint === "lancamento") return true;
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup e lançamento)
+  // #3099: explainer visual/ilustrado de modelo/tópico — vence o sinal de
+  // how-to genérico de "guide to" (ver comentário do regex acima). Roda
+  // ANTES de isTutorialByKeyword pelo mesmo motivo do launch slug/roundup:
+  // "guide to" já dispara isTutorialByKeyword=true, então sem essa
+  // precedência a checagem abaixo nunca seria alcançada.
+  if (VISUAL_GUIDE_EXPLAINER_RE.test(article.title ?? "")) return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento e visual-guide-explainer)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
@@ -710,8 +737,19 @@ export function isNewsNotTutorial(article: Article): boolean {
  * cookbook.openai.com). Combinado com ESSAY_ANALYSIS_TITLE_RE — precisa do
  * sinal POSITIVO de ensaio, não só ausência de how-to (evita falso-positivo
  * em posts sem título/slug neutro, ex: latent.space/p/agent-eng).
+ *
+ * #3099: adicionados os hosts do LangChain Blog ("blog.langchain.dev" —
+ * TUTORIAL_DOMAINS — e "langchain.com" — TUTORIAL_PATTERNS via
+ * `^(www\.)?langchain\.com\/blog`). Caso real 260708: "Improving Agents is a
+ * Data Mining Problem" (ensaio sobre a filosofia de melhoria de agentes, não
+ * hands-on) caiu em USE MELHOR só por estar no domínio cadastrado. Mesmo
+ * gênero misto de latent.space — tutoriais reais convivem com ensaios/opinião.
  */
-export const MIXED_TUTORIAL_ESSAY_HOSTS = new Set<string>(["latent.space"]);
+export const MIXED_TUTORIAL_ESSAY_HOSTS = new Set<string>([
+  "latent.space",
+  "blog.langchain.dev",
+  "langchain.com",
+]);
 
 function isMixedTutorialEssayHost(url: string): boolean {
   const { host } = hostAndPath(url);
@@ -733,9 +771,18 @@ function isMixedTutorialEssayHost(url: string): boolean {
  * então incluir esse padrão arriscaria excluir how-to real — "on why" é seguro
  * porque nenhum tutorial hands-on é titulado "...on why X" (perguntar "por quê"
  * é sempre reflexão/análise, nunca procedimento).
+ *
+ * #3099: dois padrões adicionados, ambos casos reais da 260708:
+ *   - "X vs. Y: Z" — framing de comparação/ensaio no início do título (ex:
+ *     "Tools vs. Subagents: Building Effective AI Agents..."). Um tutorial
+ *     hands-on raramente abre com uma comparação categórica seguida de
+ *     dois-pontos; esse formato é análise/opinião sobre trade-offs.
+ *   - "X is a ... problem" — reframing conceitual de um tema (ex:
+ *     "Improving Agents is a Data Mining Problem", ensaio LangChain). Também
+ *     não é procedimento — é uma tese sobre COMO pensar o problema.
  */
 export const ESSAY_ANALYSIS_TITLE_RE =
-  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b|on\s+why\b)/i;
+  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b|on\s+why\b|\w+(?:\s+\w+){0,2}\s+vs\.?\s+\w+(?:\s+\w+){0,2}\s*:|is\s+a\s+[\w\s]{0,25}?\bproblem\b)/i;
 
 /**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente
@@ -1127,8 +1174,20 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // adição (a família "veja como/veja o prompt/aprenda a" já era duplicada entre
 // os dois arquivos antes deste PR — fora do escopo #2691 item 1 consolidar,
 // que tratou só dos 3 regexes de ROUNDUP).
+//
+// #3099: dois padrões PT-BR de "guia de uso de ferramenta" adicionados —
+// casos reais 260708 que caíam em RADAR (`noticias`) quando deveriam ser
+// USE MELHOR:
+//   - "O que é o NotebookLM e 8 maneiras de usar a ferramenta" (exame.com)
+//   - "Quais são os modelos do ChatGPT? Entenda as diferenças entre eles" (exame.com)
+// Padrão 1: "o que é X e N maneiras/formas/jeitos de usar/utilizar" — a
+// manchete explicitamente promete instrução de uso, não é só definição.
+// Padrão 2: "entenda as diferenças entre" — comparação com fim prático
+// (qual usar/quando usar), padrão comum em guias de ferramenta PT-BR.
+// Ambos conservadores — exigem a frase completa, não só "o que é" ou
+// "diferenças" isolados (que apareceriam em cobertura jornalística comum).
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b|\bo\s+que\s+[ée]\s+.{0,60}?\be\s+\d+\s+(maneiras|formas|jeitos)\s+de\s+(usar|utilizar)\b|\bentenda\s+as\s+diferen[çc]as\s+entre\b|\bquando\s+usar\s+cada\s+um\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
@@ -1283,10 +1342,19 @@ export function categorize(article: Article): Category {
   //    - Anúncios de programa/bolsa/grant/fellowship → noticias.
   //    - Customer stories / case studies / parcerias-com-cliente → noticias (#898).
   //    - Updates incrementais / changelogs → noticias (#318).
-  //    - URLs em `/research/` de blogs de ML → pesquisa (papers, não produto).
+  //    - URLs em `/research/` ou `/google-research/` de blogs de ML → pesquisa
+  //      (papers/iniciativas de pesquisa, não produto que o leitor usa).
   //    - SEM verbo de anúncio no título → noticias (#898). Defensive final.
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
-    if (/\/research\//.test(full)) return "pesquisa";
+    // #3099: "/google-research/" adicionado — caso real 260708:
+    // blog.google/innovation-and-ai/models-and-research/google-research/firesat-satellites/
+    // ("Three new satellites join the fight against wildfires") não batia
+    // `/\/research\//` (o path tem "models-and-research" e "google-research"
+    // como segmentos compostos, nenhum é o segmento exato "research"). É
+    // iniciativa de pesquisa/deployment (Google Research + Earth Fire
+    // Alliance), não produto — caiu em LANÇAMENTO indevidamente por domínio
+    // oficial + verbo ("join").
+    if (/\/(research|google-research)\//.test(full)) return "pesquisa";
     // #1852: sigla de conferência no slug (cvpr/neurips/...) → pesquisa, mesmo
     // que o agent rotule launch. Caso 260605: blogs.nvidia.com/blog/cvpr-research-…
     if (isResearchBySlug(article.url)) return "pesquisa";

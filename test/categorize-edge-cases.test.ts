@@ -754,3 +754,92 @@ describe("categorizeArticles() — gate de relevância-IA em buckets secundário
     assert.equal(result.lancamento.length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3099 — fixtures de regressão da auditoria 260708 (6 casos reais)
+// ---------------------------------------------------------------------------
+
+describe("categorize() — #3099 auditoria 260708: guias-de-uso, explainer/ensaio, iniciativa de pesquisa", () => {
+  it("caso 1: 'A Visual Guide to Gemma 4 12B' (explainer conceitual) → noticias, não tutorial", () => {
+    // newsletter.maartengrootendorst.com é fonte cadastrada use_melhor=1 no
+    // seed, e o título bate `\bguide\s+(to|for)\b` (TUTORIAL_KEYWORDS_RE) —
+    // sem o override, os dois sinais combinados classificavam como tutorial.
+    // É leitura conceitual sobre arquitetura de modelo, não hands-on ≤2h.
+    const art: Article = {
+      url: "https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4-12b",
+      title: "A Visual Guide to Gemma 4 12B",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("caso 2: 'Tools vs. Subagents: Building Effective AI Agents...' (ensaio) → noticias, não tutorial", () => {
+    // latent.space é host misto (tutoriais reais + ensaio/opinião, #2985).
+    // Framing de comparação "X vs. Y:" no início do título é ensaio, não
+    // passo-a-passo hands-on.
+    const art: Article = {
+      url: "https://www.latent.space/p/tools-vs-subagents",
+      title: "Tools vs. Subagents: Building Effective AI Agents at Scale",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("caso 3: 'Improving Agents is a Data Mining Problem' (ensaio LangChain) → noticias, não tutorial", () => {
+    // blog.langchain.dev agora está em MIXED_TUTORIAL_ESSAY_HOSTS — o LangChain
+    // Blog também publica ensaio/opinião, não só cookbook/how-to.
+    const art: Article = {
+      url: "https://blog.langchain.dev/improving-agents-is-a-data-mining-problem/",
+      title: "Improving Agents is a Data Mining Problem",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("caso 4: 'O que é o NotebookLM e 8 maneiras de usar a ferramenta' → tutorial (USE MELHOR), não noticias", () => {
+    // exame.com é veículo jornalístico (NOTICIAS_DOMAINS) — mas o título é
+    // claramente guia-de-uso prático, não cobertura de notícia.
+    const art: Article = {
+      url: "https://exame.com/inteligencia-artificial/o-que-e-o-notebooklm-e-8-maneiras-de-usar-a-ferramenta-de-inteligencia-artificial/",
+      title: "O que é o NotebookLM e 8 maneiras de usar a ferramenta de inteligência artificial",
+      type_hint: "noticia",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("caso 5: 'Quais são os modelos do ChatGPT? Entenda as diferenças entre eles' → tutorial (USE MELHOR), não noticias", () => {
+    const art: Article = {
+      url: "https://exame.com/inteligencia-artificial/quais-sao-os-modelos-do-chatgpt-entenda-as-diferencas-entre-eles/",
+      title: "Quais são os modelos do ChatGPT? Entenda as diferenças entre eles",
+      type_hint: "noticia",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("caso 6: 'Three new satellites join the fight against wildfires' (google-research) → pesquisa, não lancamento", () => {
+    // blog.google/innovation-and-ai/.../google-research/... bate o path
+    // pattern oficial do Google (LANÇAMENTO), mas é iniciativa de
+    // pesquisa/deployment (Google Research + Earth Fire Alliance), não
+    // produto que o leitor usa. O path tem "models-and-research" e
+    // "google-research" como segmentos compostos — nenhum bate o antigo
+    // `/\/research\//` exato.
+    const art: Article = {
+      url: "https://blog.google/innovation-and-ai/models-and-research/google-research/firesat-satellites/",
+      title: "Three new satellites join the fight against wildfires",
+    };
+    assert.equal(categorize(art), "pesquisa");
+  });
+
+  it("sem-regressão: 'New Guide to Prompt Engineering in LangChain' (sem 'visual'/'illustrated') continua tutorial (#2469)", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/new-guide-to-prompt-engineering-in-langchain/",
+      title: "New Guide to Prompt Engineering in LangChain",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("sem-regressão: latent.space tutorial real com how-to explícito continua tutorial mesmo com 'vs' incidental", () => {
+    const art: Article = {
+      url: "https://www.latent.space/p/agent-eng-howto-vs",
+      title: "How to build an agent: RAG vs fine-tuning, step by step",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+});
