@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow } from "./types.ts";
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
@@ -445,14 +445,128 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
 }
 
 /**
+ * #3077: normaliza o payload de `EngagementCohorts` (chave KV `cohorts:engagement`)
+ * NO BOUNDARY — mesmo choke point/critério de `normalizeContactsSummary` (#2875).
+ * `renderEngagementCohortsSection` acessa `cohorts.universe.toLocaleString(...)` e
+ * `cohorts.exitsBreakdown.bounced.toLocaleString(...)` SEM guard — um payload
+ * parcial/corrompido (ex: `{}`) fazia esses acessos lançar TypeError → 502 no
+ * dashboard inteiro, não só na seção. Retorna `null` (shape mínimo ausente) quando
+ * `universe` não é number — mesmo critério que o render já usava implicitamente
+ * (precisa de `universe` pra tudo). Campos numéricos ausentes/não-finitos degradam
+ * pra 0 (mesmo padrão de `sanitizeNumRecord`); `generatedAt` ausente vira "".
+ */
+export function normalizeEngagementCohorts(raw: unknown): EngagementCohorts | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<EngagementCohorts> & Record<string, unknown>;
+  if (typeof s.universe !== "number") return null;
+
+  const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const rawExits = (s.exitsBreakdown && typeof s.exitsBreakdown === "object" ? s.exitsBreakdown : {}) as Record<
+    string,
+    unknown
+  >;
+
+  return {
+    generatedAt: typeof s.generatedAt === "string" ? s.generatedAt : "",
+    universe: numOr0(s.universe),
+    opened2plus: numOr0(s.opened2plus),
+    opened1: numOr0(s.opened1),
+    received1_opened0: numOr0(s.received1_opened0),
+    received2_opened0: numOr0(s.received2_opened0),
+    exits: numOr0(s.exits),
+    exitsBreakdown: {
+      bounced: numOr0(rawExits.bounced),
+      optedOut: numOr0(rawExits.optedOut),
+    },
+    maxReceived: numOr0(s.maxReceived),
+  };
+}
+
+/**
+ * #3077: normaliza o payload de `MvStatus` (chave KV `mv:status`) NO BOUNDARY —
+ * mesmo padrão de `normalizeContactsSummary`/`normalizeEngagementCohorts`.
+ * `renderMvStatusSection` acessa `mvStatus.groups.length` e depois
+ * `.map((g) => ...)` — um payload sem `groups` (ou com `groups` não-array)
+ * lançava TypeError → 502. Retorna `null` quando `groups` não é um array (shape
+ * mínimo ausente); cada grupo dentro do array é sanitizado campo-a-campo (o
+ * render já trata `groups: []` como "dados ainda não gerados", então uma vez
+ * que o array existe, filtrar entradas totalmente inválidas é suficiente —
+ * não precisa rejeitar o payload inteiro por causa de UM grupo malformado).
+ */
+export function normalizeMvStatus(raw: unknown): MvStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<MvStatus> & Record<string, unknown>;
+  if (!Array.isArray(s.groups)) return null;
+
+  const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const validStatuses = new Set(["verified", "t01", "pending"]);
+
+  const groups: MvGroupStatus[] = s.groups
+    .filter((g): g is Record<string, unknown> => !!g && typeof g === "object")
+    .map((g) => ({
+      group: typeof g.group === "string" ? g.group : "",
+      cycle: typeof g.cycle === "string" ? g.cycle : "",
+      status: (typeof g.status === "string" && validStatuses.has(g.status) ? g.status : "pending") as MvGroupStatus["status"],
+      verifiedAt: typeof g.verifiedAt === "string" ? g.verifiedAt : null,
+      verified: numOr0(g.verified),
+      rejected: numOr0(g.rejected),
+      unknown: numOr0(g.unknown),
+    }));
+
+  return {
+    generatedAt: typeof s.generatedAt === "string" ? s.generatedAt : "",
+    groups,
+  };
+}
+
+/**
+ * #3077: normaliza o payload de `EiaEngagementSummary` (chave KV `eia:engagement`)
+ * NO BOUNDARY — mesmo padrão dos demais normalizadores desta seção. Diferente
+ * de `cohort_stats`/`priority_points_histogram*` (guards por CAMPO já presentes
+ * em `renderEiaEngagementSection` via `countOrDash`/`pctOrDash`), o problema aqui
+ * é estrutural: `.filter(...)` em `eiaEngagement.editions` pressupõe array —
+ * um payload com `editions` ausente/não-array lançava TypeError → 502 antes de
+ * qualquer guard por campo entrar em ação. Retorna `null` quando `editions` não
+ * é um array; entradas sem `edition` (string) são descartadas (o render já
+ * filtra por regex de formato, mas essa filtragem roda DEPOIS — sem o guard
+ * aqui, uma entrada com `edition` não-string quebraria o `.test()` do regex).
+ */
+export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<EiaEngagementSummary> & Record<string, unknown>;
+  if (!Array.isArray(s.editions)) return null;
+
+  const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+  const editions: EiaEngagementEdition[] = s.editions
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && typeof e.edition === "string")
+    .map((e) => ({
+      edition: e.edition as string,
+      total_votes: numOr0(e.total_votes),
+      voted_a: numOr0(e.voted_a),
+      voted_b: numOr0(e.voted_b),
+      pct_correct: typeof e.pct_correct === "number" && Number.isFinite(e.pct_correct) ? e.pct_correct : null,
+      correct_choice: typeof e.correct_choice === "string" ? e.correct_choice : null,
+      ...(typeof e.correct_count === "number" && Number.isFinite(e.correct_count)
+        ? { correct_count: e.correct_count }
+        : {}),
+    }));
+
+  return {
+    editions,
+    updated_at: typeof s.updated_at === "string" ? s.updated_at : null,
+  };
+}
+
+/**
  * #2733: lê as seções KV-independentes do dashboard (coortes, status MV, sumário
  * de contatos, cupons). Extraída para ser usada tanto no render saudável quanto
  * no fallback de rate-limit do Brevo — assim as abas de Cupons/Contatos, que vêm
  * do KV e não do Brevo, nunca congelam junto com a seção de campanhas.
  *
- * #2875 item 1: `contactsSummary` passa por `normalizeContactsSummary` aqui —
- * o ÚNICO choke point de leitura do KV — em vez de cada render defender
- * campo-a-campo contra payload parcial/antigo.
+ * #2875 item 1 / #3077: `contactsSummary`/`cohorts`/`mvStatus`/`eiaEngagement`
+ * passam por um normalizador dedicado aqui — o ÚNICO choke point de leitura do
+ * KV — em vez de cada render defender campo-a-campo contra payload parcial/antigo.
  *
  * Exported for unit tests (#2733).
  */
@@ -471,14 +585,17 @@ export async function readKvTabs(
   // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 4
   // seções sempre leem o KV direto, sem noção de fresh/kv-only.
   const kv = env.STATS_CACHE;
-  const [cohorts, mvStatus, rawContactsSummary, couponUsage, eiaEngagement] = await Promise.all([
-    kv ? (kv.get(COHORTS_KV_KEY, "json").catch(() => null) as Promise<EngagementCohorts | null>) : Promise.resolve(null),
-    kv ? (kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) as Promise<MvStatus | null>) : Promise.resolve(null),
+  const [rawCohorts, rawMvStatus, rawContactsSummary, couponUsage, rawEiaEngagement] = await Promise.all([
+    kv ? kv.get(COHORTS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
+    kv ? kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     getCouponUsage(env, mode),
-    kv ? (kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) as Promise<EiaEngagementSummary | null>) : Promise.resolve(null),
+    kv ? kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
   ]);
+  const cohorts = normalizeEngagementCohorts(rawCohorts);
+  const mvStatus = normalizeMvStatus(rawMvStatus);
   const contactsSummary = normalizeContactsSummary(rawContactsSummary);
+  const eiaEngagement = normalizeEiaEngagement(rawEiaEngagement);
   return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
 }
 

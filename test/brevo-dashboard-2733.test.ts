@@ -27,6 +27,12 @@ import {
   buildStaleResponse,
   buildRateLimitFallback,
   normalizeContactsSummary,
+  normalizeEngagementCohorts,
+  normalizeMvStatus,
+  normalizeEiaEngagement,
+  renderEngagementCohortsSection,
+  renderMvStatusSection,
+  renderEiaEngagementSection,
   COUPONS_KV_KEY,
   COHORTS_KV_KEY,
   MV_STATUS_KV_KEY,
@@ -93,8 +99,12 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     const kv = makeKv({
       [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
       [CONTACTS_SUMMARY_KV_KEY]: JSON.stringify(syntheticContacts),
-      [COHORTS_KV_KEY]: JSON.stringify({ marker: "cohorts-fixture" }),
-      [MV_STATUS_KV_KEY]: JSON.stringify({ marker: "mv-fixture" }),
+      // #3077: precisa do shape mínimo (universe/groups) — os normalizadores
+      // dedicados agora rejeitam payload sem o campo mínimo, então um fixture
+      // `{ marker: ... }` puro passaria a normalizar pra null (quebrando este
+      // teste, que só quer verificar que o dado VEM do KV).
+      [COHORTS_KV_KEY]: JSON.stringify({ marker: "cohorts-fixture", universe: 10, opened2plus: 3, opened1: 2, received1_opened0: 1, received2_opened0: 1, exits: 3, exitsBreakdown: { bounced: 1, optedOut: 2 } }),
+      [MV_STATUS_KV_KEY]: JSON.stringify({ marker: "mv-fixture", groups: [{ group: "t01-assinantes-ativos", cycle: "2606-07", status: "pending", verifiedAt: null, verified: 0, rejected: 0, unknown: 0 }] }),
       [EIA_ENGAGEMENT_KV_KEY]: JSON.stringify({ editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100, correct_choice: "A" }], updated_at: "2026-07-01T09:00:00.000Z" }),
     });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
@@ -387,5 +397,195 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
     // Todo valor sobrevivente é finito — nunca lança em `.toLocaleString()`.
     for (const v of Object.values(s?.mv ?? {})) assert.equal(Number.isFinite(v), true);
     for (const v of Object.values(s?.eligibility.by_reason ?? {})) assert.equal(Number.isFinite(v), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3077: a normalização anti-502 do #2919/#2875 cobria só `contacts:summary`.
+// As outras 3 chaves de KV (`cohorts:engagement`, `mv:status`, `eia:engagement`)
+// eram castadas sem validação em readKvTabs — payload parcial/corrompido
+// chegava direto nos renders, que acessam `.toLocaleString`/`.length`/`.filter`
+// sem guard. Cada bloco abaixo cobre: (a) o cenário real que quebraria o
+// acesso downstream específico, com o RENDER de fato chamado (não só o
+// normalizador isoladamente) pra provar que nunca lança; (b) payload válido
+// continuando a passar normalmente (não regredir o caminho feliz).
+// ---------------------------------------------------------------------------
+
+describe("normalizeEngagementCohorts (#3077 — cohorts:engagement)", () => {
+  it("raw não-objeto (null/string/number) → null", () => {
+    assert.equal(normalizeEngagementCohorts(null), null);
+    assert.equal(normalizeEngagementCohorts(undefined), null);
+    assert.equal(normalizeEngagementCohorts("garbage"), null);
+    assert.equal(normalizeEngagementCohorts(42), null);
+  });
+
+  it("payload {} (universe ausente) → null, e o RENDER cai no stub gracioso sem lançar", () => {
+    assert.equal(normalizeEngagementCohorts({}), null);
+    // Antes do #3077: `cohorts.universe.toLocaleString` num objeto sem
+    // `universe` lançava TypeError → 502. Agora normalizeEngagementCohorts({})
+    // já é null, e o render recebe null (nunca o payload cru).
+    const html = renderEngagementCohortsSection(normalizeEngagementCohorts({}));
+    assert.ok(html.includes("Dados ainda não gerados"), "stub gracioso, não throw");
+  });
+
+  it("universe presente mas exitsBreakdown ausente → normaliza pra {bounced:0,optedOut:0}, render não lança", () => {
+    // Cenário real que quebraria `cohorts.exitsBreakdown.bounced.toLocaleString`
+    // (sections-kv.ts:566) se o payload cru fosse repassado direto.
+    const s = normalizeEngagementCohorts({ universe: 10, opened2plus: 4, exits: 2 });
+    assert.ok(s);
+    assert.deepEqual(s?.exitsBreakdown, { bounced: 0, optedOut: 0 });
+    const html = renderEngagementCohortsSection(s);
+    assert.ok(html.includes("Coortes de engajamento"));
+    assert.ok(!html.includes("Dados ainda não gerados"), "payload minimamente válido → seção real, não stub");
+  });
+
+  it("valores internos malformados (null/string/NaN) → sanitizados pra 0, nunca propagados crus", () => {
+    const s = normalizeEngagementCohorts({
+      universe: 100,
+      opened2plus: null,
+      opened1: "30",
+      received1_opened0: NaN,
+      received2_opened0: 10,
+      exits: 5,
+      exitsBreakdown: { bounced: "3", optedOut: undefined },
+      maxReceived: Infinity,
+    });
+    assert.ok(s);
+    assert.equal(s?.opened2plus, 0);
+    assert.equal(s?.opened1, 0);
+    assert.equal(s?.received1_opened0, 0);
+    assert.equal(s?.received2_opened0, 10);
+    assert.deepEqual(s?.exitsBreakdown, { bounced: 0, optedOut: 0 });
+    assert.equal(s?.maxReceived, 0);
+    // Não lança ao renderizar.
+    assert.doesNotThrow(() => renderEngagementCohortsSection(s));
+  });
+
+  it("payload bem-formado passa por praticamente inalterado (caminho feliz preservado)", () => {
+    const raw = {
+      generatedAt: "2026-07-01T00:00:00.000Z",
+      universe: 100,
+      opened2plus: 40,
+      opened1: 30,
+      received1_opened0: 15,
+      received2_opened0: 10,
+      exits: 5,
+      exitsBreakdown: { bounced: 3, optedOut: 2 },
+      maxReceived: 12,
+    };
+    const s = normalizeEngagementCohorts(raw);
+    assert.deepEqual(s, raw);
+    const html = renderEngagementCohortsSection(s);
+    assert.ok(html.includes("100"), "universo renderizado");
+  });
+});
+
+describe("normalizeMvStatus (#3077 — mv:status)", () => {
+  it("raw não-objeto (null/string/number) → null", () => {
+    assert.equal(normalizeMvStatus(null), null);
+    assert.equal(normalizeMvStatus(undefined), null);
+    assert.equal(normalizeMvStatus("garbage"), null);
+    assert.equal(normalizeMvStatus(42), null);
+  });
+
+  it("payload {} (groups ausente) → null, render cai no stub sem lançar", () => {
+    // Antes do #3077: `mvStatus.groups.length` num objeto sem `groups` lançava
+    // TypeError → 502.
+    assert.equal(normalizeMvStatus({}), null);
+    const html = renderMvStatusSection(normalizeMvStatus({}));
+    assert.ok(html.includes("Dados ainda não gerados"), "stub gracioso, não throw");
+  });
+
+  it("groups não-array (corrompido) → null, nunca propagado cru", () => {
+    assert.equal(normalizeMvStatus({ groups: "corrompido" }), null);
+    assert.equal(normalizeMvStatus({ groups: { foo: "bar" } }), null);
+  });
+
+  it("grupo malformado dentro do array → descartado; grupo válido sobrevive; render não lança", () => {
+    const s = normalizeMvStatus({
+      groups: [
+        "não é um objeto",
+        null,
+        { group: "t02-ex-assinantes", cycle: "2606-07", status: "bogus-status", verifiedAt: 12345, verified: "40", rejected: null, unknown: NaN },
+      ],
+    });
+    assert.ok(s);
+    assert.equal(s?.groups.length, 1, "entradas não-objeto descartadas");
+    assert.equal(s?.groups[0]?.status, "pending", "status inválido degrada pro default seguro");
+    assert.equal(s?.groups[0]?.verifiedAt, null, "verifiedAt não-string vira null");
+    assert.equal(s?.groups[0]?.verified, 0);
+    assert.equal(s?.groups[0]?.rejected, 0);
+    assert.equal(s?.groups[0]?.unknown, 0);
+    assert.doesNotThrow(() => renderMvStatusSection(s));
+  });
+
+  it("payload bem-formado passa por praticamente inalterado (caminho feliz preservado)", () => {
+    const raw = {
+      generatedAt: "2026-07-01T00:00:00.000Z",
+      groups: [
+        { group: "t01-assinantes-ativos", cycle: "2606-07", status: "t01" as const, verifiedAt: null, verified: 0, rejected: 0, unknown: 0 },
+        { group: "t02-ex-assinantes", cycle: "2606-07", status: "verified" as const, verifiedAt: "2026-06-30T00:00:00.000Z", verified: 40, rejected: 5, unknown: 1 },
+      ],
+    };
+    const s = normalizeMvStatus(raw);
+    assert.deepEqual(s, raw);
+    const html = renderMvStatusSection(s);
+    assert.ok(html.includes("t02-ex-assinantes"), "grupo renderizado");
+    assert.ok(!html.includes("Dados ainda não gerados"));
+  });
+});
+
+describe("normalizeEiaEngagement (#3077 — eia:engagement)", () => {
+  it("raw não-objeto (null/string/number) → null", () => {
+    assert.equal(normalizeEiaEngagement(null), null);
+    assert.equal(normalizeEiaEngagement(undefined), null);
+    assert.equal(normalizeEiaEngagement("garbage"), null);
+    assert.equal(normalizeEiaEngagement(42), null);
+  });
+
+  it("payload {} (editions ausente) → null, render cai no stub sem lançar", () => {
+    // Antes do #3077: `eiaEngagement.editions.length`/`.filter(...)` num objeto
+    // sem `editions` lançava TypeError → 502.
+    assert.equal(normalizeEiaEngagement({}), null);
+    const html = renderEiaEngagementSection(normalizeEiaEngagement({}));
+    assert.ok(html.includes("Dados ainda não gerados"), "stub gracioso, não throw");
+  });
+
+  it("editions não-array (corrompido) → null, nunca propagado cru", () => {
+    assert.equal(normalizeEiaEngagement({ editions: "corrompido" }), null);
+    assert.equal(normalizeEiaEngagement({ editions: { foo: "bar" } }), null);
+  });
+
+  it("entrada sem `edition` (string) é descartada; entrada válida sobrevive; render não lança", () => {
+    const s = normalizeEiaEngagement({
+      editions: [
+        { total_votes: 10 }, // sem `edition` — descartada (quebraria o regex .test() no render)
+        null,
+        { edition: "260418", total_votes: "5", voted_a: null, voted_b: 3, pct_correct: "80", correct_choice: 42 },
+      ],
+    });
+    assert.ok(s);
+    assert.equal(s?.editions.length, 1, "entrada sem edition descartada");
+    assert.equal(s?.editions[0]?.edition, "260418");
+    assert.equal(s?.editions[0]?.total_votes, 0, "string não-number → 0");
+    assert.equal(s?.editions[0]?.voted_a, 0);
+    assert.equal(s?.editions[0]?.voted_b, 3);
+    assert.equal(s?.editions[0]?.pct_correct, null, "string não-number → null (não 0 — é uma taxa, não contagem)");
+    assert.equal(s?.editions[0]?.correct_choice, null, "number onde esperava string → null");
+    assert.doesNotThrow(() => renderEiaEngagementSection(s));
+  });
+
+  it("payload bem-formado passa por praticamente inalterado (caminho feliz preservado)", () => {
+    const raw = {
+      editions: [
+        { edition: "260418", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A" },
+      ],
+      updated_at: "2026-07-01T00:00:00.000Z",
+    };
+    const s = normalizeEiaEngagement(raw);
+    assert.deepEqual(s, raw);
+    const html = renderEiaEngagementSection(s);
+    assert.ok(html.includes("260418"), "edição renderizada");
+    assert.ok(!html.includes("Dados ainda não gerados"));
   });
 });
