@@ -5,6 +5,7 @@
  * fetch). Extraído de `index.ts` pra permitir testes Node sem mock do
  * Worker runtime (#1083).
  */
+import { DS_COLORS } from "./ds-tokens.generated"; // #3113: régua teal + rodapé de marca
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -309,6 +310,34 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
     : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
+// ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────
+//
+// leaderboard/arquivo (renderLeaderboardHtml, renderArchiveListHtml) e a
+// página de voto do arquivo (renderArchiveVoteHtml) não tinham identidade
+// visual nenhuma além do `<title>` — só texto cru sobre o kicker "É IA?".
+// Duplicado aqui (não importado de scripts/lib/shared/curadoria-page.ts, que
+// tem o rodapé equivalente de Cursos/Livros) pelo mesmo motivo já documentado
+// em design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
+// Cloudflare separado.
+
+/** CSS da régua teal — usada abaixo do kicker no leaderboard e no arquivo (lista). */
+export function renderRuleStyles(): string {
+  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 6px 0 16px; }`;
+}
+
+/** CSS do rodapé de marca — usada em toda página que chama `renderBrandFooter`. */
+export function renderFooterStyles(): string {
+  return `  footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
+  footer a { font-weight: 600; }`;
+}
+
+/** Rodapé mínimo de marca — link pro site principal do brand (Diar.ia/Clarice News). */
+export function renderBrandFooter(brand: Brand): string {
+  const info = BRAND_INFO[brand];
+  const label = info.shortName ?? info.name;
+  return `<footer><a href="${htmlEscape(info.siteUrl)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────

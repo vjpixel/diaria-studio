@@ -11,6 +11,7 @@ import {
   formatEditionDateForBrand,
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
+import { renderRuleStyles, renderFooterStyles, renderBrandFooter } from "./lib"; // #3113: régua teal + rodapé de marca
 import { corsHeaders, json, votePageHtml } from "./index";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -685,10 +686,13 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
+${renderRuleStyles()}
+${renderFooterStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA?</p>
+<hr class="rule">
 <h1>${heading}</h1>
 ${subCopy}
 <p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
@@ -698,6 +702,7 @@ ${subCopy}
 </table>
 <p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
 
@@ -797,13 +802,17 @@ ${seoMeta}
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+${renderRuleStyles()}
+${renderFooterStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA? — arquivo</p>
+<hr class="rule">
 <h1>Arquivo de ${htmlEscape(year)}</h1>
 <p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
 <ul>${rows || "<li>Nenhuma edição disponível ainda.</li>"}</ul>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
@@ -858,9 +867,17 @@ ${seoMeta}
      contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  /* #3113 (item 8): abaixo de 600px, o layout ANTERIOR empilhava as escolhas em
+     largura total (flex-basis: 100%) — a imagem A + botão preenchiam a tela
+     inteira, permitindo votar em A sem nunca rolar até ver a imagem B. Mantém
+     as 2 escolhas lado a lado (cada uma dividindo o espaço disponível) em vez
+     de empilhar — as duas imagens ficam visíveis ao mesmo tempo, sem precisar
+     de scroll nem de JS pra gatear o botão. */
   @media (max-width: 600px) {
-    .choice { flex-basis: 100%; max-width: 100%; }
+    .choices { gap: 8px; }
+    .choice { flex: 1 1 0; max-width: none; }
   }
+${renderFooterStyles()}
 </style>
 </head>
 <body>
@@ -878,6 +895,7 @@ ${seoMeta}
   </div>
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
