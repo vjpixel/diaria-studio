@@ -328,9 +328,14 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
 // design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
 // Cloudflare separado dos scripts Node.
 
-/** CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca. */
+/**
+ * CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca.
+ * margin da régua: 22px, igual à `.rule` de Cursos/Livros (renderCuradoriaHeaderStyles
+ * em scripts/lib/shared/curadoria-page.ts) — evitar reintroduzir aqui o mesmo tipo
+ * de micro-drift de espaçamento que o #3113 existe pra eliminar.
+ */
 export function renderBrandShellStyles(): string {
-  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 20px; }
+  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 22px; }
   footer.brand-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
   footer.brand-footer a { font-weight: 600; }`;
 }
