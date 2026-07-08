@@ -791,6 +791,7 @@ ${totalRow}</tbody></table></div>`;
   <h2 class="section-title">Banco de contatos (store)</h2>
   <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
   ${priorityPointsSection}
+  <p class="section-note">Score = <code>priority_points</code> (engajamento), aditivo (sem corte duro): parte de 0 · <strong>+40</strong> optin (pediu prioridade) · <strong>+20</strong> por e-mail aberto · <strong>−10</strong> por e-mail recebido e não aberto. Ex.: optin que ignora 4 e-mails decai pra 0 (40 − 10×4). Fila de re-envio: maior Score primeiro.</p>
   <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
   <div class="side-by-side">
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
