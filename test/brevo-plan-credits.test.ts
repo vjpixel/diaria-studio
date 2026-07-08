@@ -75,6 +75,23 @@ function makeKv(initial: { credits?: number } | null = null) {
   };
 }
 
+// #3081 (review): variante instrumentada de makeKv que conta chamadas a
+// `get()` — usada especificamente pra provar a garantia "no máximo 1 read de
+// PLAN_CREDITS_KV_KEY por chamada" (o bug original: mode="cached" com miss +
+// fetch ao vivo também falho relia a MESMA chave 2x no fallback final).
+function makeCountingKv(initial: { credits?: number } | null = null) {
+  const kv = makeKv(initial);
+  let getCalls = 0;
+  return {
+    ...kv,
+    get: async (key: string, type?: string) => {
+      getCalls++;
+      return kv.get(key, type);
+    },
+    getCallCount: () => getCalls,
+  };
+}
+
 describe("fetchPlanCredits (#2910)", () => {
   it("fetch ao vivo com sucesso → retorna créditos E grava no KV (cache 24h)", async () => {
     const origFetch = globalThis.fetch;
@@ -133,6 +150,36 @@ describe("fetchPlanCredits (#2910)", () => {
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  // #3081 (review): regressão pro double-KV-read fixado neste PR — mode="cached"
+  // com KV miss + fetch ao vivo também falho não pode reler PLAN_CREDITS_KV_KEY
+  // uma 2ª vez (nada escreveu nele entre as duas leituras, miss garantido).
+  // Testes de retorno (acima) passariam igual com ou sem o bug — só a contagem
+  // de chamadas ao KV prova a garantia "no máximo 1 read por chamada".
+  it("mode=cached, KV MISS + fetch ao vivo também falha → lê o KV UMA vez só (#3081, regressão double-read)", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("erro", { status: 500 })) as unknown as typeof globalThis.fetch;
+    try {
+      const kv = makeCountingKv(null); // sem cache — miss garantido nas 2 leituras se o bug reaparecer
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, null);
+      assert.equal(kv.getCallCount(), 1, "deve ler PLAN_CREDITS_KV_KEY no máximo 1x, não 2x (bug original)");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("mode=cached, KV HIT → lê o KV UMA vez só (nunca tenta fetch)", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeCountingKv({ credits: 33000 });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 33000);
+      assert.equal(kv.getCallCount(), 1, "1 read (hit) — não deve reler nem tentar fetch");
+      assert.deepEqual(calls, []);
+    });
   });
 
   it("fetch falha E sem KV/cache → null (nunca inventa 40k)", async () => {
