@@ -92,6 +92,21 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
   });
 
+  it("#3101: imagem do box de divulgação tem width=\"536\" em pixels (Outlook desktop)", () => {
+    // Outlook desktop (motor Word) não honra width percentual em <img> — renderiza
+    // no tamanho intrínseco (800×450). Container 600px − 32px×2 padding lateral
+    // do `<td class="pad" style="padding:8px 32px 0">` = 536.
+    const url = "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg";
+    const html = renderMidCallout(
+      "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
+      url,
+    );
+    const imgTag = html.match(/<img[^>]+src="https:\/\/poll[^"]*"[^>]*>/);
+    assert.ok(imgTag, "tag <img> deve existir");
+    assert.match(imgTag![0], /width="536"/, "imagem do box de divulgação deve ter width=536 em pixels");
+    assert.match(imgTag![0], /style="[^"]*width:100%;height:auto/, "style width:100%;height:auto deve ser preservado");
+  });
+
   it("single-parágrafo COM imagem: marcador 📚 removido e corpo em peso normal/1.62 (DS body, 260611)", () => {
     const html = renderMidCallout(
       "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",

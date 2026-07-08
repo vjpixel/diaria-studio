@@ -178,9 +178,18 @@ export function imageGeneratorCredit(): string {
   }
 }
 
-/** Imagem hero (só D1) + legenda sans 12px uppercase ink (DS). HTML interno. */
+/**
+ * Imagem hero (só D1) + legenda sans 12px uppercase ink (DS). HTML interno.
+ *
+ * #3101: `width="536"` em pixels absolutos (600px do container − 32px×2 do
+ * padding lateral da seção, PAD_LEAD/PAD_SECTION) além do `style width:100%`.
+ * O Outlook desktop (motor Word) não honra `width` percentual em `<img>` —
+ * renderiza no tamanho intrínseco do arquivo (hero é 1600×800), estourando o
+ * wrapper de 600px mesmo com o `<!--[if mso]-->` da tabela externa. Clientes
+ * modernos continuam responsivos via `style="width:100%;height:auto"`.
+ */
 export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
+  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
   <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
 }
 
@@ -475,7 +484,11 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   // #2136: sem seta no ctaLabel (decisão do editor 260612).
   const ctaLabel = firstLinkLabel ? esc(firstLinkLabel) : "Acesse";
   const imgAlt = firstLinkLabel ? esc(firstLinkLabel) : "";
-  const imgTag = `<img src="${safeImg}" width="100%" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  // #3101: width="536" em pixels (600px container − 32px×2 padding lateral do
+  // `<td class="pad" style="padding:8px 32px 0">` que envolve este box — sem
+  // padding adicional na table interna antes da imagem). Outlook desktop
+  // ignora width percentual em <img> e renderia no tamanho intrínseco.
+  const imgTag = `<img src="${safeImg}" width="536" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
   const cta = safeLink
     ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${ctaLabel}</a>`
@@ -554,7 +567,11 @@ export function renderEIA(eia: EIA): string {
     `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
-    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
+    // #3101: width="480" em pixels (600px container − 32px×2 padding da seção
+    // − 28px×2 padding do painel `background:${SURFACE}...padding:24px 28px`
+    // em que o É IA? é envolvido). Sem isso, Outlook desktop renderiza no
+    // tamanho intrínseco (800×450) e estoura o wrapper de 600px.
+    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="480" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
     const inner = eia.edition
       ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${img}</a>`
       : img;
