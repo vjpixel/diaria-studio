@@ -7,7 +7,7 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
-import { DS, pct, fmtTimeBRT, cellClass, renderColumnGlossary } from "./render-links.ts";
+import { DS, pct, fmtSpamPct, fmtTimeBRT, cellClass, renderColumnGlossary } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP, renderMixedAudienceNote } from "./sections-core.ts";
 import { isBounceBreach } from "./thresholds.ts";
 // #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
@@ -509,11 +509,13 @@ export function renderMonthlyTotalsSection(
     const ctorFmt = r.totalViews > 0 ? r.ctor.toFixed(1) + "%" : "—";
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
     const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
-    // #3081: 3 casas decimais (mesma precisão de fmtSpamPct/Envios/Resumo A/B/C
-    // por Audiência) — 1 casa não distingue 0.05% de 0.15% (o circuit breaker
-    // dispara em ≥0.1%). Esta tabela ("Totais por mês") era a 3ª ficando pra
-    // trás com 1 casa quando o #3081 unificou as outras duas.
-    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(3) + "%" : "—";
+    // #3081: usa fmtSpamPct (3 casas — mesma precisão de Envios/Resumo A/B/C
+    // por Audiência; 1 casa não distingue 0.05% de 0.15%, e o circuit breaker
+    // dispara em ≥0.1%). Antes reimplementava o guard+toFixed(3) inline
+    // (achado no self-review — 3ª cópia da mesma lógica que o helper existe
+    // pra centralizar); agora chama o helper com os counts brutos já
+    // disponíveis na row.
+    const spamRateFmt = fmtSpamPct(r.totalSpam, r.totalSent);
     // Circuit breaker alerts (mesmos thresholds da tabela Envios, #3078: hard ≥2% OU total ≥5%)
     const bounceAlert = r.totalSent > 0 && isBounceBreach(r.hardBounceRate, r.bounceRate);
     const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;
