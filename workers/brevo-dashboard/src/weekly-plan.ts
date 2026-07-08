@@ -24,7 +24,7 @@
  */
 import type { BrevoCampaign } from "./types.ts";
 import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS, renderMixedAudienceNote } from "./sections-core.ts";
-import { fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
+import { DS, fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
 // #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
 // import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
 // acima (uso só dentro de corpo de função, em request-time).
@@ -528,31 +528,39 @@ ${scheduledSection}`;
   // #3087: STATUS_COLOR consolidado em render-links.ts (ao lado de DS.alert) —
   // não mais declarado localmente (evita drift entre o vermelho daqui e o
   // vermelho de alerta usado no resto do dashboard).
+  // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
+  // é por MÉTRICA, não hardcoded pro rótulo "Spam" — Abertura usa `delivered`
+  // como denominador (as demais 4 usam `sent`), então cada metricDef carrega
+  // o próprio flag `noData` computado a partir do denominador real que
+  // alimenta `value`. Antes disso, "—" era aplicado só a Spam (m.label ===
+  // "Spam") mesmo Hard bounce/Bounce total/Unsub compartilhando o MESMO
+  // `health.sent === 0` — inconsistência visível na mesma tabela.
+  const noDataBySent = health.sent === 0;
+  const noDataByDelivered = health.delivered === 0;
   const metricDefs = [
-    { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const },
-    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const },
-    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const },
+    { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const, noData: noDataByDelivered },
+    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const, noData: noDataBySent },
+    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const, noData: noDataBySent },
     // #3081: 3 casas (não 2) — mesma precisão de fmtSpamPct/Envios/"Totais por
     // mês"/Resumo A/B/C por Audiência (o breaker dispara em ≥0.1%, 2 casas
     // ainda arredondam 0.049%→"0.05%" perto do limiar).
-    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3 },
-    { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const },
+    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3, noData: noDataBySent },
+    { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const, noData: noDataBySent },
   ];
   const metricRows = metricDefs
     .map((m) => {
-      const s = classifyMetric(m.value, m.t, m.dir);
       const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
       const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
-      // #3081 (mesma classe do fix de pct() denom-0 → "—" em render-links.ts):
-      // Spam cai em 0 (não "—") quando `health.sent === 0` — sem envios com
-      // stats válidas ainda, "0.000%" afirma falsamente "spam zero confirmado"
-      // em vez de "sem dado". Só Spam aqui porque foi o caso relatado
-      // (#3081); as outras 3 métricas sent-based têm o mesmo padrão mas não
-      // foram reportadas — fora do escopo deste fix pontual.
-      const valueFmt = m.label === "Spam" && health.sent === 0
-        ? "—"
-        : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
-      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
+      // #3081: quando não há dado real (denominador 0), "0.000%" afirmaria
+      // falsamente "confirmado zero" — mostra "—" em vez de calcular
+      // `classifyMetric`/colorir como se fosse um valor real. Sem isso, a
+      // célula dizia "sem dado" mas continuava colorida de verde ("saudável"),
+      // uma contradição interna entre texto e cor.
+      const valueFmt = m.noData ? "—" : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
+      const valueStyle = m.noData
+        ? `color:${DS.ink};opacity:0.6;font-style:italic;`
+        : `color:${STATUS_COLOR[classifyMetric(m.value, m.t, m.dir)]};font-weight:600`;
+      return `<tr><td>${m.label}</td><td style="${valueStyle}">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
     })
     .join("\n");
 

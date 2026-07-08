@@ -271,7 +271,7 @@ test("#3081: tabela de saúde mostra spam rate com 3 casas decimais (não 2)", (
 // SEM stats reais — `pickStats` retorna null (sent=0 tanto em globalStats
 // quanto sem campaignStats), então `aggregateHealth` pula a campanha e todos
 // os agregados (incluindo `sent`) ficam em 0.
-test("#3081: Spam mostra '—' (não '0.000%') quando há envio maduro mas sem stats válidas (sent=0)", () => {
+test("#3081: Hard bounce/Bounce total/Spam/Unsub mostram '—' (não '0.0%'/'0.000%') quando há envio maduro mas sem stats válidas (sent=0)", () => {
   const noStatsMature = campaignSentHoursAgo(72, {
     id: 1,
     statistics: statsFor({ sent: 0, delivered: 0, uniqueViews: 0 }),
@@ -280,10 +280,20 @@ test("#3081: Spam mostra '—' (não '0.000%') quando há envio maduro mas sem s
   // Confirma que passamos pelo branch da tabela de métricas, não pelo stub
   // "nenhum envio maduro" (que teria mature.length === 0).
   assert.doesNotMatch(html, /Nenhum envio.*maduro/, "deve ter mature.length > 0 (o próprio sentDate já garante isso)");
-  const spamRow = html.match(/<tr><td>Spam<\/td>[\s\S]*?<\/tr>/)?.[0];
-  assert.ok(spamRow, "deve haver linha 'Spam' na tabela de métricas de saúde");
-  assert.match(spamRow!, /—/, "Spam deve mostrar '—' (sem dado) quando sent=0, não '0.000%'");
-  assert.doesNotMatch(spamRow!, /0\.000%/, "não deve afirmar falsamente 'spam zero confirmado' quando não há stats");
+
+  // #3081 (achado do code-review low no PR #3166): a checagem de "sem dado"
+  // é POR MÉTRICA (todas as 4 que dividem por `sent`), não só Spam — Hard
+  // bounce/Bounce total/Unsub compartilham o MESMO health.sent === 0.
+  for (const label of ["Hard bounce", "Bounce total", "Spam", "Unsub"]) {
+    const row = html.match(new RegExp(`<tr><td>${label}</td>[\\s\\S]*?</tr>`))?.[0];
+    assert.ok(row, `deve haver linha '${label}' na tabela de métricas de saúde`);
+    assert.match(row!, /—/, `${label} deve mostrar '—' (sem dado) quando sent=0`);
+    assert.doesNotMatch(row!, /0\.0{1,3}%/, `${label} não deve afirmar falsamente uma taxa zero confirmada quando não há stats`);
+    // #3081 (achado do code-review low): "—" não deve ficar colorido como um
+    // valor de status real (verde/amarelo/vermelho) — sem dado não é "saudável".
+    assert.doesNotMatch(row!, /color:#(0E6B39|8A6100|C00000)/i,
+      `${label} com '—' não deve usar as cores de status (green/yellow/red) — contradiria o texto 'sem dado'`);
+  }
 });
 
 test("classifyMetric — fronteiras (higher=abertura; lower=bounce/spam/unsub)", () => {
