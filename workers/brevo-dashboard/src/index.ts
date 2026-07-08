@@ -65,7 +65,32 @@ import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 
 const AUTH_COOKIE = 'cf-dash-auth'
 
-export function isAuthenticated(request: Request, env: Env): boolean {
+/**
+ * #3081: comparação timing-safe entre 2 strings — Workers-compatible (o
+ * runtime de Cloudflare Workers não expõe `crypto.subtle.timingSafeEqual`,
+ * que é uma API Node-only, não parte da SubtleCrypto padrão). Estratégia:
+ * hash SHA-256 de ambos os valores (normaliza pra um tamanho FIXO de 32 bytes,
+ * removendo a dependência de tamanho de string original) e compara os
+ * digests com um loop XOR de tempo constante — sem early-return no primeiro
+ * byte diferente (`indexOf`/`===` de string vazam timing proporcional ao
+ * prefixo em comum, permitindo um ataque de timing byte-a-byte contra o
+ * token). Endurecimento leve (#3081) — o vetor prático é de baixo risco (rede
+ * já introduz jitter maior que a diferença de timing), mas a defesa é barata.
+ */
+async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [digestA, digestB] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const viewA = new Uint8Array(digestA);
+  const viewB = new Uint8Array(digestB);
+  let diff = 0;
+  for (let i = 0; i < viewA.length; i++) diff |= viewA[i] ^ viewB[i];
+  return diff === 0;
+}
+
+export async function isAuthenticated(request: Request, env: Env): Promise<boolean> {
   // #2748: fail-CLOSED — sem AUTH_TOKEN configurado, nega acesso (nunca libera
   // tudo). O dashboard está num URL público e carrega PII (e-mail de
   // assinantes nas abas Cupons/Contatos); um secret esquecido no deploy não
@@ -76,7 +101,9 @@ export function isAuthenticated(request: Request, env: Env): boolean {
     .map(c => c.trim())
     .find(c => c.startsWith(`${AUTH_COOKIE}=`))
     ?.slice(`${AUTH_COOKIE}=`.length)
-  return val === env.AUTH_TOKEN
+  // #3081: comparação timing-safe (era `===`, timing-leaky) — ver timingSafeEqualStr.
+  if (val === undefined) return false
+  return timingSafeEqualStr(val, env.AUTH_TOKEN)
 }
 
 export function loginPage(error = false): Response {
@@ -151,7 +178,7 @@ export default {
         return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, POST' } })
       }
 
-      if (!isAuthenticated(request, env)) {
+      if (!(await isAuthenticated(request, env))) {
         return loginPage()
       }
     }
@@ -167,6 +194,17 @@ export default {
       if (cached) return cached;
     }
 
+    // #3081: decisão explícita, registrada aqui — `/api/campaigns` permanece
+    // PÚBLICA (sem auth), por design, não por descuido. Motivo: consumidores de
+    // automação interna (ex: lookup de próxima lista da migração Clarice, ver
+    // CLAUDE.md — `fetch https://clarice-dashboard.diaria.workers.dev/api/campaigns?limit=5`
+    // chamado pelo orchestrator/skills SEM cookie de sessão) dependem deste
+    // endpoint hoje. Adicionar auth aqui quebraria essa automação sem aviso.
+    // O payload já é considerado aceitável sem PII (stats agregadas de
+    // campanha — não confundir com `/api/coupons`, que EXIGE auth por conter
+    // e-mail de clientes, ver bloco acima). Se blindar esta rota no futuro,
+    // precisa vir acompanhado de migração dos consumidores internos pra um
+    // método de auth compatível com automação (ex: header de service token).
     if (path === "/api/campaigns") {
       try {
         // #3080: clamp mantido em 50 (não CAMPAIGNS_FETCH_LIMIT) — esta rota, ao
@@ -203,7 +241,7 @@ export default {
     // #2718: rota de cupons — requer auth explícita (PII: emails de clientes).
     // Não está inclusa na isenção /api/* (que é para automação interna sem cookie).
     if (path === "/api/coupons") {
-      if (!isAuthenticated(request, env)) return loginPage();
+      if (!(await isAuthenticated(request, env))) return loginPage();
       const data = await getCouponUsage(env, isFresh ? "fresh" : "cached");
       if (!data) return new Response("Not found", { status: 404 });
       return new Response(JSON.stringify(data, null, 2), {

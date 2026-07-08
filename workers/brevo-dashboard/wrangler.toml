@@ -16,7 +16,7 @@ workers_dev = true
 [vars]
 # AUTH_TOKEN: set as a Worker secret (not a var) — wrangler secret put AUTH_TOKEN
 # Generate a strong token: openssl rand -hex 32
-# If unset, the dashboard is open (dev mode only — always set in production)
+# If unset, access is fail-CLOSED (#2748): the dashboard denies everyone — never bypassed/open.
 # Tab de uso de cupons Stripe (#2718). Dados populados via MCP externo → KV
 # (coupons:usage). STRIPE_API_KEY é opcional — KV tem prioridade.
 # Ver docs/clarice-dashboard-access-setup.md para refresh dos dados.
