@@ -113,9 +113,9 @@
         "diaria_linkedin_page_url": "https://www.linkedin.com/company/diar.ia.br/"
       },
       "fallback_schedule": {
-        "d1_time": "09:00",
+        "d1_time": "10:00",
         "d2_time": "12:30",
-        "d3_time": "17:00",
+        "d3_time": "17:30",
         "day_offset": 0
       },
       "timezone": "America/Sao_Paulo"
