@@ -162,9 +162,12 @@ export function renderDashboardHtml(
       // sua própria coluna sempre renderizada. Mostramos o trackable sozinho
       // no parêntese (sem o membro "sem MPP", que não existe nesse caso —
       // mppOpens=0 já significa openRate === openRateNoMpp).
+      // #3084: o membro "· Z% trackable" vai num <span class="trackable-clause">
+      // pra poder ser escondido em mobile (media query acima) sem perder o
+      // "X% (Y% sem MPP)" — que sozinho já cabe numa linha.
       const opensTopLine = mppOpens > 0
         ? hasTrackable
-          ? `${openRate} <span class="rate-inline">(${openRateNoMpp} sem MPP · ${trackableRate} trackable)</span>`
+          ? `${openRate} <span class="rate-inline">(${openRateNoMpp} sem MPP<span class="trackable-clause"> · ${trackableRate} trackable</span>)</span>`
           : `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
         : hasTrackable
           ? `${openRate} <span class="rate-inline">(${trackableRate} trackable)</span>`
@@ -415,7 +418,16 @@ export function renderDashboardHtml(
   details.never-sent > summary { cursor: pointer; font-size: 0.85rem; color: var(--ink); opacity: 0.75; padding: 6px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: var(--paper-alt); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
+  th { background: var(--paper-alt); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; z-index: 2; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
+  /* #3085: 1ª coluna (rótulo da linha) fica sticky ao rolar horizontalmente
+     tabelas largas (Envios, Totais por mês, Cohorts) dentro de .table-wrap —
+     mesmo mecanismo do sticky de header (eixo Y) acima. z-index em camadas
+     pra o canto superior-esquerdo (th:first-child, sticky NOS DOIS eixos ao
+     mesmo tempo — herda top:0 do seletor th genérico acima e ganha left:0
+     aqui) ficar por cima tanto das linhas do corpo quanto do restante do
+     header ao rolar nas duas direções simultaneamente. */
+  .table-wrap td:first-child { position: sticky; left: 0; z-index: 1; background: var(--card); }
+  .table-wrap th:first-child { position: sticky; left: 0; z-index: 3; background: var(--paper-alt); }
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
   td.metric { font-weight: 600; color: var(--brand); }
@@ -424,7 +436,12 @@ export function renderDashboardHtml(
   .alert-label { font-weight: 600; color: var(--alert); }
   /* #2880: linha Total das tabelas do store — destacada, borda superior. */
   tr.total-row td { font-weight: 700; border-top: 2px solid var(--rule); }
-  td .rate-inline { font-weight: normal; color: var(--ink); }
+  /* #3084: célula Opens quebrava em até 4 linhas em mobile (ex: "27.4%
+     (20.6% sem MPP · 17.1% trackable)") esticando as linhas da tabela Envios.
+     nowrap mantém o parêntese inteiro numa linha; em telas estreitas o
+     .trackable-clause (membro "· Z% trackable") é escondido — ver media query
+     abaixo — deixando só "X% (Y% sem MPP)". */
+  td .rate-inline { font-weight: normal; color: var(--ink); white-space: nowrap; }
   td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
   .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 24px; text-align: center; }
   .footer code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
@@ -469,13 +486,27 @@ export function renderDashboardHtml(
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
   .tab-radios { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; }
+  /* #3083: em mobile (~400-560px) os labels quebravam em 2 linhas dentro do
+     flex ("Cupons" cortado) e o overflow do tab-bar esticava o body inteiro
+     (scroll horizontal indesejado da página). Fix: o tab-bar vira sua PRÓPRIA
+     área de scroll horizontal (overflow-x auto + flex-wrap nowrap), scrollbar
+     escondida (scrollbar-width none — Firefox; -ms-overflow-style idem —
+     Edge legado) já que o fade nas bordas já sinaliza "tem mais abas". Labels
+     ganham white-space:nowrap (nunca quebram) + flex-shrink:0 (nunca encolhem
+     a ponto de cortar texto). */
+  .tab-bar {
+    display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0;
+    overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -ms-overflow-style: none;
+    position: relative;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
   .tab-label {
     display: inline-block; padding: 8px 18px; font-size: 0.85rem; font-weight: 600;
     cursor: pointer; border: 1px solid transparent; border-bottom: 2px solid transparent;
     border-radius: 4px 4px 0 0; color: var(--ink); opacity: 0.65;
     margin-bottom: -2px; user-select: none;
     transition: opacity 0.1s;
+    white-space: nowrap; flex-shrink: 0;
   }
   .tab-label:hover { opacity: 1; background: var(--paper-alt); }
   #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
@@ -508,6 +539,9 @@ export function renderDashboardHtml(
     table { font-size: 0.8rem; }
     th, td { padding: 6px 4px; }
     .tab-label { padding: 6px 10px; font-size: 0.8rem; }
+    /* #3084: esconde o membro "· Z% trackable" da célula Opens em mobile —
+       deixa só "X% (Y% sem MPP)" pra caber numa linha. */
+    .trackable-clause { display: none; }
   }
 </style>
 </head>

@@ -447,9 +447,11 @@ ${scheduledSection}`;
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${immature.length} envio(s) aguardando maturar:</p>
+  <div class="table-wrap">
   <table><thead><tr><th>Campanha</th><th>Enviado</th></tr></thead><tbody>
 ${waitRows}
 </tbody></table>
+  </div>
   <p class="section-note"><small>Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.</small></p>
 </section>
 ${scheduledSection}`;
@@ -491,6 +493,7 @@ ${scheduledSection}`;
   const planSection = plan
     ? `
   <h3>Recomendação — próximos 3 envios</h3>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Envio</th><th>Volume recomendado</th></tr></thead>
     <tbody>
@@ -504,6 +507,7 @@ ${scheduledSection}`;
         .toLocaleString("pt-BR")}</td></tr>
     </tfoot>
   </table>
+  </div>
   <p class="section-note">Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.${
       plan.flagged
         ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
@@ -553,13 +557,13 @@ ${metricRows}
   ${scheduledSection}
   ${renderTopWeekdaysSection(campaigns, now)}
   <details>
-    <summary>Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
+    <summary class="links-summary">Dias de envio incluídos no agregado (${includedDetails.dayCount})</summary>
     <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
     ${includedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
   </details>
   <details>
-    <summary>Excluídos por imaturidade (&lt;48h) (${excludedDetails.dayCount})</summary>
+    <summary class="links-summary">Excluídos por imaturidade (&lt;48h) (${excludedDetails.dayCount})</summary>
     <div class="table-wrap"><table><thead><tr><th>Edição</th><th>Data</th><th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th></tr></thead><tbody>
     ${excludedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
