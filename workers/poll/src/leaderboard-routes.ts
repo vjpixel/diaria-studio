@@ -745,8 +745,14 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
  * `archiveKeyForReset` em lib.ts). Usado só pra comparação lexicográfica
  * contra edições AAMMDD (strings zero-padded de mesmo tamanho comparam igual
  * a números).
+ *
+ * Exportada (self-review #3113): `handleArchiveVotePage` e `handleVote`
+ * (vote.ts) também precisam do mesmo gate de "edição futura" — sem isso, o
+ * item 9 só escondia a edição futura da LISTAGEM do arquivo, mas a página de
+ * voto e o endpoint /vote continuavam aceitando (e pontuando) votos nela,
+ * já que `correct:{edition}` pode existir antes do e-mail sair.
  */
-function todayAammddBrt(now: Date): string {
+export function todayAammddBrt(now: Date): string {
   const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
   const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
   const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
@@ -1006,6 +1012,18 @@ export async function handleArchiveVotePage(
     return new Response(votePageHtml("Link inválido.", false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
+  }
+  // #3113 (item 9, self-review): sem este gate, uma edição futura (gabarito
+  // já definido em prep, mas AAMMDD > hoje) ficava invisível na LISTAGEM
+  // (`extractEditionsForYear` já filtra) mas a própria página de voto
+  // continuava respondendo 200 pra quem adivinhasse/conhecesse a URL — link
+  // sequencial e sem assinatura, diferente do `/vote?sig=` normal. Bloqueia
+  // aqui, na origem, antes mesmo de checar o gabarito.
+  if (edition > todayAammddBrt(new Date())) {
+    return new Response(
+      votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
+      { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },
+    );
   }
   const correctRaw = await env.POLL.get(`correct:${edition}`);
   if (!correctRaw) {

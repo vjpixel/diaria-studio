@@ -18,6 +18,16 @@
  *   gabarito já definido mas cuja data ainda não chegou aparecia como
  *   votável no arquivo antes do e-mail sair.
  *
+ *   Item 9 (self-review — gap real encontrado por review independente): o
+ *   filtro acima só escondia a edição futura da LISTAGEM
+ *   (`renderArchiveListHtml`) — a página de voto (`handleArchiveVotePage`) e
+ *   o endpoint `/vote` direto (`handleVote`, sem passar pela listagem)
+ *   continuavam aceitando e PONTUANDO voto numa edição futura, já que
+ *   `correct:{edition}` pode existir antes do e-mail sair. Fix: mesmo gate
+ *   (`edition > todayAammddBrt(now)`) aplicado também nesses 2 pontos —
+ *   `todayAammddBrt` exportada de `leaderboard-routes.ts` especificamente
+ *   pra isso.
+ *
  *   Item 10 — `renderArchiveListHtml` renderizava lista flat sem
  *   agrupamento (>200 itens/ano sem estrutura). Fix: `groupEditionsByMonth`.
  *
@@ -33,7 +43,9 @@ import {
   groupEditionsByMonth,
   renderArchiveListHtml,
   renderArchiveVoteHtml,
+  handleArchiveVotePage,
 } from "../workers/poll/src/leaderboard-routes.ts";
+import { handleVote } from "../workers/poll/src/vote.ts";
 import workerDefault from "../workers/poll/src/index.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 
@@ -158,6 +170,62 @@ describe("extractEditionsForYear — filtra edições futuras (#3113 item 9)", (
   it("considera o offset BRT na fronteira da meia-noite", () => {
     const now = new Date("2026-06-16T02:00:00Z"); // == 2026-06-15T23:00 BRT
     assert.deepEqual(extractEditionsForYear(["correct:260615", "correct:260616"], "2026", now), ["260615"]);
+  });
+});
+
+describe("#3113 item 9 (self-review) — handleArchiveVotePage também bloqueia edição futura", () => {
+  it("edição futura com gabarito definido → 404, não 200 (antes só a LISTAGEM escondia)", async () => {
+    const env = makeEnv({ "correct:991231": "A" }); // ano 2099, bem no futuro
+    const res = await handleArchiveVotePage("2099", "991231", env, "diaria");
+    assert.equal(res.status, 404, "página de voto deve bloquear edição futura, não só a listagem");
+  });
+
+  it("edição de HOJE ou passada com gabarito definido continua 200 (não regride o caso normal)", async () => {
+    const env = makeEnv({ "correct:260101": "A" }); // ano passado — nunca é "futuro"
+    const res = await handleArchiveVotePage("2026", "260101", env, "diaria");
+    assert.equal(res.status, 200);
+  });
+});
+
+describe("#3113 item 9 (self-review) — handleVote bloqueia edição futura mesmo via /vote direto", () => {
+  it("edição futura com gabarito já definido → 410, mesmo pulando a página de arquivo (bypass direto)", async () => {
+    const env = makeEnv({ "correct:991231": "A" });
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "future-voter@x.com");
+    url.searchParams.set("edition", "991231");
+    url.searchParams.set("choice", "A");
+    const res = await handleVote(url, env, "diaria");
+    assert.equal(res.status, 410, "voto em edição futura deve ser rejeitado mesmo direto no /vote");
+    const html = await res.text();
+    assert.match(html, /não aceita mais votos/i);
+    const voteRaw = await env.POLL.get("vote:991231:future-voter@x.com");
+    assert.equal(voteRaw, null, "voto NÃO deve ser gravado no KV");
+  });
+
+  it("edição passada com gabarito definido continua aceita (não regride o arquivo retroativo, #2867)", async () => {
+    const env = makeEnv({ "correct:260101": "A" });
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "past-voter@x.com");
+    url.searchParams.set("edition", "260101");
+    url.searchParams.set("choice", "A");
+    const res = await handleVote(url, env, "diaria");
+    assert.equal(res.status, 200);
+    const voteRaw = await env.POLL.get("vote:260101:past-voter@x.com");
+    assert.ok(voteRaw !== null, "voto retroativo em edição PASSADA continua sendo gravado normalmente");
+  });
+
+  it("formato de ciclo mensal Clarice (YYMM-MM) não é afetado pelo gate de data (não é AAMMDD)", async () => {
+    // Chamando handleVote diretamente (sem o wrapper brandedEnv do dispatcher
+    // em index.ts) — chaves NÃO prefixadas por brand aqui de propósito, só
+    // testando que o novo gate (regex /^\d{6}$/) não trata "2605-06" como
+    // AAMMDD comparável, independente de namespacing por brand.
+    const env = makeEnv({ "correct:2605-06": "A", "valid_editions": JSON.stringify(["2605-06"]) });
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "clarice-voter@x.com");
+    url.searchParams.set("edition", "2605-06");
+    url.searchParams.set("choice", "A");
+    const res = await handleVote(url, env, "clarice");
+    assert.equal(res.status, 200, "ciclo mensal Clarice não deve ser bloqueado pelo gate de data diário");
   });
 });
 

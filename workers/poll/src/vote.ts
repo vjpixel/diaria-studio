@@ -8,7 +8,7 @@ import {
   classify403Reason,
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
-import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
+import { upsertOwnEntryInSnapshot, todayAammddBrt } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 
 export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
@@ -60,6 +60,18 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // sem isso, votos em edições fora da janela de 7 dias voltariam 410 mesmo
   // quando a edição foi de fato publicada e tem poll fechado.
   const correctRaw = await env.POLL.get(`correct:${edition}`);
+  // #3113 (item 9, self-review): edição com gabarito definido mas cuja data
+  // ainda não chegou (AAMMDD > hoje BRT) nunca deve ser votável — o gabarito
+  // pode ser setado ANTES do e-mail sair (durante prep de imagens/revisão).
+  // Sem este gate, `/leaderboard/{ano}/arquivo` já escondia a edição da
+  // LISTAGEM (#3113 item 9), mas o /vote direto (bypass da página de
+  // arquivo — link sequencial, sem assinatura, ao contrário do /vote?sig=
+  // normal) continuava aceitando e pontuando o voto. Só se aplica ao formato
+  // AAMMDD diário — o ciclo mensal Clarice (`YYMM-MM`) não tem noção de "dia"
+  // e nunca cai neste formato.
+  if (/^\d{6}$/.test(edition) && edition > todayAammddBrt(new Date())) {
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
+  }
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition) && correctRaw === null) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
