@@ -7,7 +7,7 @@
  */
 // #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
 // index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
-import { DS_COLORS } from "./ds-tokens.generated";
+import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -328,9 +328,15 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
 // design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
 // Cloudflare separado dos scripts Node.
 
-/** CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca. */
+/**
+ * CSS do kicker "É IA?" + régua teal (abaixo do kicker, acima do h1) + rodapé
+ * mínimo de marca. `.kicker` estava duplicado verbatim nas 3 páginas (self-review
+ * #3113: adicionar régua/rodapé sem dobrar o kicker junto seria repetir a
+ * exata duplicação que este PR existe pra eliminar) — centralizado aqui.
+ */
 export function renderBrandShellStyles(): string {
-  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 22px; }
+  return `  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 22px; }
   footer.brand-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
   footer.brand-footer a { font-weight: 600; }`;
 }

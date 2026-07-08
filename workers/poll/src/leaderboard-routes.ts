@@ -684,7 +684,6 @@ ${seoMeta}
   td { padding: 10px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; }
   tr.leader td { font-weight: 600; color: ${DS_COLORS.brand}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
 ${renderBrandShellStyles()}
@@ -860,7 +859,6 @@ ${seoMeta}
   ul { list-style: none; padding: 0; margin-top: 20px; }
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   /* #3113 (item 10): heading de mês — agrupa a lista flat que passaria de
      200 itens/ano. Reusa a mesma convenção visual do .kicker (sans, uppercase,
      letter-spacing), em teal (acento reservado a links/kickers no DS). */
@@ -921,7 +919,6 @@ ${seoMeta}
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
   p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   .email-row { margin: 20px 0; }
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
