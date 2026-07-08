@@ -339,10 +339,15 @@ export function renderUseMelhorSection(data: DashboardData): string {
   // Coverage note
   const cov = um.coverage;
   const coveragePct = cov.coverage_pct;
+  // #3098: "N sem match" descreve uma condição ESPERADA (join lossy por URL
+  // de pesquisa ≠ URL publicada), não um alerta — não usar .alert-text aqui
+  // (essa classe fica reservada a condições que pedem ação real, ex: streak
+  // de falhas na Saúde das fontes). "#CTR" também virou link de verdade para
+  // a aba CTR (deep-link já suportado desde #2622), não mais texto solto.
   const coverageNote = cov.total_items > 0
     ? `Cobertura do join CTR: <strong>${cov.matched}/${cov.total_items} itens (${coveragePct}%)</strong>` +
       (cov.unmatched > 0
-        ? ` — <span class="alert-text">${cov.unmatched} sem match</span> (URL de pesquisa ≠ URL publicada — join lossy esperado, ver #CTR)`
+        ? ` — ${cov.unmatched} sem match (URL de pesquisa ≠ URL publicada — join lossy esperado, ver aba <a href="#panel-ctr" style="color:var(--brand)">CTR</a>)`
         : "")
     : "Sem dados de CTR disponíveis";
 
@@ -421,7 +426,7 @@ export function renderUseMelhorSection(data: DashboardData): string {
     <tbody>${editionRows}</tbody>
   </table>
   </div>
-  <p class="section-note muted">Dados de <code>data/editions/*/  _internal/01-approved.json</code> + <code>data/link-ctr-table.csv</code>. Join por URL pode ser lossy (~22% gap esperado — #CTR).</p>
+  <p class="section-note muted">Dados de <code>data/editions/*/  _internal/01-approved.json</code> + <code>data/link-ctr-table.csv</code>. Join por URL pode ser lossy (~22% gap esperado — ver aba <a href="#panel-ctr" style="color:var(--brand)">CTR</a>).</p>
 </section>`;
 }
 
@@ -843,7 +848,7 @@ export function renderDashboardHtml(data: DashboardData): string {
 </head>
 <body>
 <h1>Diar.ia — Dashboard Operacional</h1>
-<p class="sub">Dados locais (last push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
+<p class="sub">Dados locais (último push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
 
 <!-- #2602: tab state inputs (hidden, CSS-only — mesmo padrão do brevo-dashboard #2542) -->
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
