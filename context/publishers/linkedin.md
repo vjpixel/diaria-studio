@@ -192,7 +192,7 @@ Além dos 3 posts da página, o `03-social.md` traz um `## post_pixel`: um **pos
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 
-- Agendar/postar no **MESMO horário do D1 da página** (09:00 BRT) — os dois saem juntos.
+- Agendar/postar no **MESMO horário do D1 da página** (10:00 BRT) — os dois saem juntos.
 - **⚠️ GUARD INVERTIDO (espelho do Passo 3):** o post da página exige `has_company_name===true` e aborta se cair no perfil pessoal. O `post_pixel` exige o **inverso** — confirmar que o composer está no **perfil pessoal (vjpixel)**, e abortar se cair na página Diar.ia:
   ```javascript
   const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();
