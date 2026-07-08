@@ -10,6 +10,11 @@
  *   1. Edição em curso (PRIORIDADE MÁXIMA — #2250):
  *      "{branch}  edição 260615  [██████░░░░░░] 3/7  Imagens"
  *      Encerrada: "{branch}  edição 260615  [████████████] 7/7  Agendamento"
+ *      Um `stage-status.json` gravado por OUTRA MÁQUINA (sync via OneDrive
+ *      junction `data/`, mesmo mecanismo do #3033 abaixo) também não sequestra
+ *      a barra — ver `isForeignStageStatusDoc` (#3119: fail-open, compara
+ *      `doc.machine_id` contra `getMachineId()` desta máquina, mesmo padrão
+ *      de `isForeignDevelopPlan`).
  *
  *   2. Sessão /diaria-develop ativa (#2803 — abaixo da edição, acima do overnight):
  *      "{branch}  develop 260702  [████░░░░░░░░] 3/8  · desbloqueando"
@@ -558,6 +563,35 @@ export function isForeignDevelopPlan(plan: Plan, localMachineId: string): boolea
 }
 
 /**
+ * Guard cross-machine (#3119) — réplica exata de `isForeignDevelopPlan` (#3033),
+ * só que para `StageStatusDoc` (edição em curso) em vez de `Plan` (develop).
+ * `data/editions/{AAMMDD}/_internal/stage-status.json` sincroniza entre
+ * máquinas via a mesma OneDrive junction `data/` — sem este guard, uma edição
+ * rodando em OUTRA máquina sequestra a barra de "edição em curso" (prioridade
+ * MÁXIMA, ver docblock do arquivo) desta máquina.
+ *
+ * Contrato (idêntico ao de `isForeignDevelopPlan`):
+ *   - `doc.machine_id` ausente/vazio → identidade desconhecida (doc legado,
+ *     gravado antes do #3119, ou hostname ilegível na origem) → fail-open,
+ *     NUNCA filtra.
+ *   - `localMachineId` vazio (hostname ilegível nesta máquina) → não dá pra
+ *     provar "é de outra máquina" → fail-open, NUNCA filtra.
+ *   - Ambos presentes e diferentes → `true` (estrangeiro, deve ser ignorado).
+ *   - Ambos presentes e iguais → `false` (é a própria sessão desta máquina).
+ *
+ * @param doc              StageStatusDoc já parseado.
+ * @param localMachineId   Hostname desta máquina (`getMachineId()`).
+ * @returns                `true` quando o doc é de outra máquina e deve ser pulado.
+ */
+export function isForeignStageStatusDoc(doc: StageStatusDoc, localMachineId: string): boolean {
+  const tag = typeof doc.machine_id === "string" ? doc.machine_id.trim() : "";
+  if (tag === "") return false; // doc legado ou sem hostname na origem — fail-open
+  const local = localMachineId.trim();
+  if (local === "") return false; // não dá pra provar identidade local — fail-open
+  return tag !== local;
+}
+
+/**
  * Encontra a sessão `/diaria-develop` corrente escaneando
  * `data/develop/{AAMMDD}/plan.json` (análogo a `readTodayPlan`, #2246 pt2).
  *
@@ -911,7 +945,11 @@ function scanEditionDocs(cwd: string): StageStatusDoc[] {
   }
 }
 
-export function readCurrentEditionDoc(cwd: string, now: Date = new Date()): StageStatusDoc | null {
+export function readCurrentEditionDoc(
+  cwd: string,
+  now: Date = new Date(),
+  localMachineId: string = getMachineId(),
+): StageStatusDoc | null {
   for (const doc of scanEditionDocs(cwd)) {
     // Skip all-pending editions (--init'd but not yet running).
     const hasStarted = doc.rows.some((r) => r.status !== "pending");
@@ -922,6 +960,10 @@ export function readCurrentEditionDoc(cwd: string, now: Date = new Date()): Stag
     // #2760: skip editions with a "running" row stuck past the staleness threshold —
     // treated as abandoned, same as encerrada, so the bar doesn't lie about "em curso".
     if (isStaleEditionDoc(doc, now)) continue;
+    // #3119: skip stage-status.json written by ANOTHER machine (synced via the
+    // OneDrive `data/` junction) — same guard as `isForeignDevelopPlan` (#3033),
+    // falls through to the next candidate (mirrors readTodayDevelopPlan).
+    if (isForeignStageStatusDoc(doc, localMachineId)) continue;
     // First in-progress edition → return it.
     return doc;
   }

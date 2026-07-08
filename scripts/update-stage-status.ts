@@ -37,6 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
 import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { getMachineId } from "./lib/machine-id.ts"; // #3119: tageia o doc com a máquina que iniciou a run
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -68,6 +69,20 @@ export interface StageStatusDoc {
    * Opcional pra back-compat — docs pré-#1304 não tinham esse campo.
    */
   run_started_at?: string;
+  /**
+   * Hostname da máquina que iniciou esta run (#3119 — `getMachineId()` de
+   * `scripts/lib/machine-id.ts`, mesmo padrão de `Plan.machine_id` do
+   * `/diaria-develop`, #3033). `data/editions/{AAMMDD}/_internal/stage-status.json`
+   * sincroniza entre máquinas via OneDrive junction `data/` (ver CLAUDE.md §
+   * Setup) — sem este campo, a statusLine de uma máquina não tem como saber
+   * se uma edição "em curso" no disco é da PRÓPRIA sessão ou de uma rodada
+   * concorrente em outra máquina. Setado em `makeInitialDoc()` e preservado
+   * em todo `applyUpdate` subsequente (mesmo tratamento do `run_started_at`).
+   * Ausente em docs legados pré-#3119 → tratar como "identidade desconhecida",
+   * nunca filtrar (fail-open) — ver `isForeignStageStatusDoc` em
+   * `overnight-statusline.ts`.
+   */
+  machine_id?: string;
 }
 
 export const STAGES = [0, 1, 2, 3, 4, 5, 6] as const;
@@ -314,6 +329,9 @@ export function makeInitialDoc(edition: string, runStartedAt?: string): StageSta
     rows: STAGES.map((s) => ({ stage: s, status: "pending" as StageStatus })),
     generated_at: new Date().toISOString(),
     run_started_at: runStartedAt ?? new Date().toISOString(),
+    // #3119: tageia a run com o hostname local — `applyUpdate` preserva o campo
+    // em updates subsequentes via `{ ...doc, ... }` (mesmo padrão de `run_started_at`).
+    machine_id: getMachineId(),
   };
 }
 
