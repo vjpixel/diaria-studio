@@ -347,9 +347,9 @@ describe("renderCouponTabPanel", () => {
 
     it("cabeçalho 'Pagamentos' substitui 'Criada' e '1º pagamento' (#2758)", () => {
       const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
-      assert.ok(h.includes("<th>Pagamentos</th>"), "novo cabeçalho presente");
-      assert.ok(!h.includes("<th>Criada</th>"), "cabeçalho antigo (#2743) removido");
-      assert.ok(!h.includes("<th>1º pagamento</th>"), "cabeçalho intermediário (#2749) removido");
+      assert.ok(h.includes('<th scope="col">Pagamentos</th>'), "novo cabeçalho presente");
+      assert.ok(!h.includes("<th>Criada</th>") && !h.includes('<th scope="col">Criada</th>'), "cabeçalho antigo (#2743) removido");
+      assert.ok(!h.includes("<th>1º pagamento</th>") && !h.includes('<th scope="col">1º pagamento</th>'), "cabeçalho intermediário (#2749) removido");
     });
 
     it("previsão (trial) → data com '*' + legenda", () => {

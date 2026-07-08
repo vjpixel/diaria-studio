@@ -1433,7 +1433,7 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.doesNotMatch(campaignSection, />Trackable 📍</, "não deve mais ter <th> 'Trackable 📍' standalone (#3040)");
     assert.match(campaignSection, /Opens 👁️<\/th>/, "header Opens deve seguir presente");
     // o tooltip do th Opens agora explica a métrica trackable também.
-    const opensTh = campaignSection.match(/<th title="[^"]*">Opens 👁️<\/th>/)?.[0] ?? "";
+    const opensTh = campaignSection.match(/<th scope="col" title="[^"]*">Opens 👁️<\/th>/)?.[0] ?? "";
     assert.match(opensTh, /trackable/, "tooltip do header Opens na tabela Envios deve mencionar trackable (#3040)");
   });
 
@@ -2069,7 +2069,7 @@ describe("renderWeekdaySection (#2134)", () => {
     for (const c of WEEKDAY_COLUMNS) {
       const escaped = escHtml(c.tooltip);
       assert.ok(html.includes(escaped), `glossário deve conter o tooltip de '${c.label}'`);
-      assert.ok(html.includes(`<th title="${escaped}"`), `<th> de '${c.label}' deve usar o mesmo tooltip do glossário`);
+      assert.ok(html.includes(`<th scope="col" title="${escaped}"`), `<th> de '${c.label}' deve usar o mesmo tooltip do glossário`);
     }
   });
 

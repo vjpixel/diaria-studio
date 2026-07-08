@@ -178,11 +178,11 @@ export function renderDaySummarySection(rows: DaySummary[]): string {
   <table>
     <thead>
       <tr>
-        <th title="Dia da S1 (D1 = d01, D2 = d02, … D5 = d05)">Dia</th>
-        <th title="Soma de entregues de todas as células enviadas no dia">Delivered (total)</th>
-        <th title="Soma de aberturas únicas (com Apple MPP) de todas as células do dia">Opens (total)</th>
-        <th title="Open rate agregado com Apple MPP — entre parênteses, taxa sem MPP quando disponível">Open rate agr.</th>
-        <th title="Número de campanhas (células) enviadas neste dia">Campanhas</th>
+        <th scope="col" title="Dia da S1 (D1 = d01, D2 = d02, … D5 = d05)">Dia</th>
+        <th scope="col" title="Soma de entregues de todas as células enviadas no dia">Delivered (total)</th>
+        <th scope="col" title="Soma de aberturas únicas (com Apple MPP) de todas as células do dia">Opens (total)</th>
+        <th scope="col" title="Open rate agregado com Apple MPP — entre parênteses, taxa sem MPP quando disponível">Open rate agr.</th>
+        <th scope="col" title="Número de campanhas (células) enviadas neste dia">Campanhas</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -231,9 +231,9 @@ export function renderScheduledSection(
   <table>
     <thead>
       <tr>
-        <th title="Nome do envio no Brevo">Envio</th>
-        <th title="Horário agendado (horário de Brasília)">Agendado (BRT)</th>
-        <th title="Tamanho atual da lista (destinatários esperados)">Tamanho</th>
+        <th scope="col" title="Nome do envio no Brevo">Envio</th>
+        <th scope="col" title="Horário agendado (horário de Brasília)">Agendado (BRT)</th>
+        <th scope="col" title="Tamanho atual da lista (destinatários esperados)">Tamanho</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -305,7 +305,7 @@ export function renderVolumeSection(
   <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
     ${sentLabel} de ${planTotal.toLocaleString("pt-BR")} créditos do plano (${pctLabel}%)<br>
-    <span class="spark-bar" title="${pctLabel}% do plano do mês">${bar}</span><br>
+    <span class="spark-bar" aria-hidden="true" title="${pctLabel}% do plano do mês">${bar}</span><br>
     <small>Ciclo de cobrança Brevo: ${windowLabel} (renova dia ${BILLING_CYCLE_DAY} às ${String(BILLING_CYCLE_HOUR).padStart(2, "0")}:${String(BILLING_CYCLE_MINUTE).padStart(2, "0")} BRT)</small>${undercountNote}
   </p>
 </section>`;
@@ -555,16 +555,16 @@ export function renderMonthlyTotalsSection(
   <table>
     <thead>
       <tr>
-        <th title="Mês do envio">Mês</th>
-        <th title="Número de envios realizados no mês">Envios</th>
-        <th title="Intervalo de datas: 1º envio – último envio do mês (horário de Brasília)">Enviado (1º – último)</th>
-        <th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
-        <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
-        <th title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
-        <th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
-        <th title="Hard bounces + soft bounces. Bench: &lt;2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
-        <th title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
-        <th title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
+        <th scope="col" title="Mês do envio">Mês</th>
+        <th scope="col" title="Número de envios realizados no mês">Envios</th>
+        <th scope="col" title="Intervalo de datas: 1º envio – último envio do mês (horário de Brasília)">Enviado (1º – último)</th>
+        <th scope="col" title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
+        <th scope="col" title="Emails entregues nas caixas dos leitores.">Delivered</th>
+        <th scope="col" title="Aberturas únicas (MPP-inclusivo). Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
+        <th scope="col" title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
+        <th scope="col" title="Hard bounces + soft bounces. Bench: &lt;2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
+        <th scope="col" title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
+        <th scope="col" title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -650,9 +650,9 @@ export function renderEngagementCohortsSection(
   <table>
     <thead>
       <tr>
-        <th title="Coorte de engajamento (mutuamente exclusivas).">Coorte</th>
-        <th title="Número de pessoas únicas nesta coorte.">Pessoas únicas</th>
-        <th title="Participação no universo de pessoas únicas alcançadas.">% do universo</th>
+        <th scope="col" title="Coorte de engajamento (mutuamente exclusivas).">Coorte</th>
+        <th scope="col" title="Número de pessoas únicas nesta coorte.">Pessoas únicas</th>
+        <th scope="col" title="Participação no universo de pessoas únicas alcançadas.">% do universo</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -730,7 +730,7 @@ export function renderContactsSummarySection(
       ? `\n<tr class="total-row"><td>Total</td><td style="text-align:right">${n(total)}</td></tr>`
       : "";
     return `<div class="table-wrap"><table>
-      <thead><tr><th>${escHtml(title)}</th><th style="text-align:right">contatos</th></tr></thead>
+      <thead><tr><th scope="col">${escHtml(title)}</th><th scope="col" style="text-align:right">contatos</th></tr></thead>
       <tbody>${rows}${totalRow}</tbody></table></div>`;
   };
 
@@ -784,7 +784,7 @@ export function renderContactsSummarySection(
     const totContatos = sorted.reduce((a, [, v]) => a + v, 0);
     const totalRow = `<tr class="total-row"><td>Total</td><td style="text-align:right">${n(totContatos)}</td>${withEligible ? `<td style="text-align:right">${n(sumMap(eHist))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumMap(vHist))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumMap(bHist))}</td>` : ""}</tr>`;
     return `<div class="table-wrap"><table>
-      <thead><tr><th title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th style="text-align:right">contatos</th>${withEligible ? '<th style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th style="text-align:right">verified</th>' : ""}${withBrevo ? '<th style="text-align:right">Brevo</th>' : ""}</tr></thead>
+      <thead><tr><th scope="col" title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th scope="col" style="text-align:right">contatos</th>${withEligible ? '<th scope="col" style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th scope="col" style="text-align:right">verified</th>' : ""}${withBrevo ? '<th scope="col" style="text-align:right">Brevo</th>' : ""}</tr></thead>
       <tbody>${rows}
 ${totalRow}</tbody></table></div>`;
   };
@@ -797,7 +797,7 @@ ${totalRow}</tbody></table></div>`;
       .map(([k, v]) => `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`)
       .join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh #2731)</th><th style="text-align:right">contatos</th></tr></thead>
+      <thead><tr><th scope="col" title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh #2731)</th><th scope="col" style="text-align:right">contatos</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
@@ -1071,7 +1071,7 @@ export function renderCohortsTabPanel(
   // #3090: gerado de COHORTS_COLUMNS (mesma fonte do glossário abaixo) — sem
   // duplicar texto entre o title= (hover) e o glossário (sempre visível).
   const headerRow = `<tr>
-${COHORTS_COLUMNS.map((c) => `        <th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
+${COHORTS_COLUMNS.map((c) => `        <th scope="col" title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
       </tr>`;
 
   // #2908: nunca-enviados (received=0) num <details> recolhível abaixo das
@@ -1168,9 +1168,9 @@ export function renderMvStatusSection(
   <table>
     <thead>
       <tr>
-        <th title="Grupo de contatos (tier ou cohort)">Grupo</th>
-        <th title="Ciclo do disparo (conteúdo-envio)">Ciclo</th>
-        <th title="Status da verificação MillionVerifier">Status MV</th>
+        <th scope="col" title="Grupo de contatos (tier ou cohort)">Grupo</th>
+        <th scope="col" title="Ciclo do disparo (conteúdo-envio)">Ciclo</th>
+        <th scope="col" title="Status da verificação MillionVerifier">Status MV</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -1290,9 +1290,9 @@ export function renderEiaEngagementSection(
   <table>
     <thead>
       <tr>
-        <th title="Edição da Clarice News: AAMMDD (diária) ou AAMM-MM (ciclo mensal)">Edição</th>
-        <th title="Total de votos registrados na edição">Votos</th>
-        <th title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
+        <th scope="col" title="Edição da Clarice News: AAMMDD (diária) ou AAMM-MM (ciclo mensal)">Edição</th>
+        <th scope="col" title="Total de votos registrados na edição">Votos</th>
+        <th scope="col" title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -1477,7 +1477,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
   <summary class="links-summary">${escHtml(monthKeyToLabel(key))} <span class="links-count-badge">${bucket.items.length}</span> — pago ${escHtml(fmtBRL(bucket.totalCents))} · comissão ${escHtml(fmtBRL(commissionCents(bucket.totalCents)))}</summary>
   <div class="links-table-wrap">
   <table class="links-table">
-    <thead><tr><th>Cupom</th><th>Email</th><th>Plano</th><th>Valor</th><th>Comissão (40%)</th><th>Data</th></tr></thead>
+    <thead><tr><th scope="col">Cupom</th><th scope="col">Email</th><th scope="col">Plano</th><th scope="col">Valor</th><th scope="col">Comissão (40%)</th><th scope="col">Data</th></tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
   </div>
@@ -1497,13 +1497,13 @@ ${generatedAtNote}
   <table>
     <thead>
       <tr>
-        <th>Cupom</th>
-        <th>Email</th>
-        <th>Plano</th>
-        <th>Pago (12m)</th>
-        <th>Comissão (40%)</th>
-        <th>Status</th>
-        <th>Pagamentos</th>
+        <th scope="col">Cupom</th>
+        <th scope="col">Email</th>
+        <th scope="col">Plano</th>
+        <th scope="col">Pago (12m)</th>
+        <th scope="col">Comissão (40%)</th>
+        <th scope="col">Status</th>
+        <th scope="col">Pagamentos</th>
       </tr>
     </thead>
     <tbody>${detailRows}</tbody>
