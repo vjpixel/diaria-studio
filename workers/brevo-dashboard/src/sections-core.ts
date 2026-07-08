@@ -14,8 +14,28 @@ import {
   COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
 import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
-import { renderWeeklyPlanTabPanel } from "./weekly-plan.ts";
+import { renderWeeklyPlanTabPanel, deriveEditionName } from "./weekly-plan.ts";
 import { isBounceBreach } from "./thresholds.ts";
+
+/**
+ * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
+ * identifica qual campanha (edição + célula) corresponde a cada linha. Sem
+ * isso, 3 linhas do mesmo dia de teste A/B/C ficam indistinguíveis exceto
+ * pelas estatísticas (mesmo ID de lista/nome de lista genérico).
+ *
+ * Reusa `deriveEditionName` (weekly-plan.ts, já usado na aba Agendamento) pro
+ * nome de edição limpo (sem sufixo de célula) e `parseClariceCampaignKey` pro
+ * cell isolado — remonta "{edição} — {cell}" (ex: "Clarice News 2606-07 — B")
+ * só quando a campanha É de fato uma célula de teste A/B/C. Envio único (sem
+ * célula) ou nome que não segue o padrão Clarice News (parsed null) → `null`,
+ * sem linha extra — não há célula pra desambiguar, e mostrar o nome de
+ * qualquer forma só duplicaria informação já visível (coluna "Enviado").
+ */
+function deriveCampaignEditionLabel(name: string): string | null {
+  const parsed = parseClariceCampaignKey(name);
+  if (!parsed || !parsed.cell) return null;
+  return `${deriveEditionName(name)} — ${parsed.cell}`;
+}
 
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
@@ -79,7 +99,10 @@ export function renderDashboardHtml(
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
         // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
         const linksHtmlNoStats = renderLinksSection(c.id, linksStats);
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
+        // #3082: mesmo rótulo de edição/célula das rows com stats — uma célula
+        // A/B/C sem stats ainda pode aparecer na tabela (ex: envio recentíssimo).
+        const editionLabelNoStats = deriveCampaignEditionLabel(c.name ?? "");
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}${editionLabelNoStats ? `<br><small>${escHtml(editionLabelNoStats)}</small>` : ""}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
       <tr class="links-row"><td colspan="10" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
@@ -158,6 +181,10 @@ export function renderDashboardHtml(
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
       const cleanListName = (c.listName ?? "?").replace(/\s*\([^)]*\)\s*/g, "").trim();
+      // #3082: 2ª linha <small> na célula Lista com edição + célula (A/B/C) —
+      // desambigua rows do mesmo dia de teste A/B/C, que hoje só diferem pelas
+      // métricas. `null` (envio único, sem célula) → sem linha extra.
+      const editionLabel = deriveCampaignEditionLabel(c.name ?? "");
       // #2177: links section colapsável por campanha
       const linksHtml = renderLinksSection(
         c.id,
@@ -166,7 +193,7 @@ export function renderDashboardHtml(
       );
       return `<tr>
         <td>${c.id}</td>
-        <td><strong>${escHtml(cleanListName)}</strong></td>
+        <td><strong>${escHtml(cleanListName)}</strong>${editionLabel ? `<br><small>${escHtml(editionLabel)}</small>` : ""}</td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
