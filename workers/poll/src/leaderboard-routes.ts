@@ -653,6 +653,12 @@ function renderLeaderboardHtml(
     description: `Quem mais acertou ${periodNoun} qual imagem foi gerada por IA no jogo "É IA?" da ${info.name}. Veja o ranking dos leitores.`,
     path,
   });
+  // #3108: sub-copy com 2 links (diar.ia.br + Clarice) é EXCLUSIVA do brand
+  // clarice — cross-promoção só faz sentido pra quem está na newsletter mensal.
+  // Brand diaria mantém o texto original inalterado.
+  const subCopy = brand === "clarice"
+    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="https://diaria.beehiiv.com">diar.ia.br</a> na newsletter da <a href="${info.siteUrl}">${info.shortName ?? info.name}</a>.</p>`
+    : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>`;
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -673,12 +679,15 @@ ${seoMeta}
   tr.leader td { font-weight: 600; color: #00A0A0; }
   a { color: #171411; text-decoration: underline; }
   .kicker { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
+  p.nav a { font-weight: 600; }
 </style>
 </head>
 <body>
-<h1>${heading}</h1>
 <p class="kicker">É IA?</p>
-<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>
+<h1>${heading}</h1>
+${subCopy}
+<p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
