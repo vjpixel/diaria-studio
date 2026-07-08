@@ -372,12 +372,24 @@ export function renderUseMelhorSection(data: DashboardData): string {
   // #3098: link real pra aba CTR (antes texto solto "#CTR", não navegável)
   // — deep-link já suportado desde #2622. Definido uma vez e reusado nas 2
   // notas que citam a aba CTR (achado de self-review: estava duplicado
-  // verbatim nas duas). opacity:1 explícito contraria a opacity herdada do
-  // `<p class="... muted">` ao redor (0.65): --brand sobre --paper já mede
-  // só ~3.08:1 em opacidade plena (ver comentário de td.metric abaixo) —
-  // dentro de um parágrafo muted ficaria ainda mais apagado, abaixo até do
-  // piso de 3:1 aceito pra elementos gráficos/links (achado de self-review).
-  const ctrTabLink = `<a href="#panel-ctr" style="color:var(--brand);opacity:1">CTR</a>`;
+  // verbatim nas duas).
+  // #3098 (2ª rodada de self-review — achado CONFIRMADO, corrige a 1ª):
+  // a 1ª rodada tinha adicionado `opacity:1` aqui tentando contrariar a
+  // opacity herdada do `<p class="... muted">` ao redor — mas opacity NÃO
+  // é como color: um valor <1 no ancestral compõe TODO o subtree num
+  // grupo semi-transparente antes de desenhar na página; opacity:1 num
+  // descendente só afasta esse descendente ficar MAIS opaco que os
+  // irmãos DENTRO do grupo, não o restaura à opacidade real da página. E
+  // `.section-note` (a outra classe do `<p>`, sempre presente) já define
+  // opacity:0.75 por si só, então nem removendo `.muted` do `<p>` isso se
+  // resolveria sem tocar em ~15 outras notas que usam a mesma classe.
+  // Consertar de verdade exigiria trocar `.muted`/`.section-note` de
+  // opacity pra color (refactor maior, fora do escopo de um cleanup P3) —
+  // então o link fica com o mesmo contraste reduzido do parágrafo ao
+  // redor, igual ao link pré-existente do footer (`/api/data`, também
+  // dentro de `.footer` com opacity:0.6). Não é regressão nova, é o
+  // mesmo tradeoff que o resto do dashboard já aceita.
+  const ctrTabLink = `<a href="#panel-ctr" style="color:var(--brand)">CTR</a>`;
   // #3098: "N sem match" descreve uma condição ESPERADA (join lossy por URL
   // de pesquisa ≠ URL publicada), não um alerta — não usar .alert-text aqui
   // (essa classe fica reservada a condições que pedem ação real, ex: streak
@@ -605,19 +617,11 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
-    // #3098: cliques absolutos usam <small> via clicksCell() (não
-    // td.metric) — mesma convenção da aba CTR (Top 10) e do Use Melhor.
-    // Nesta tabela especificamente cliques É a chave de ordenação (o
-    // subtítulo abaixo diz "por cliques absolutos"), então td.metric seria
-    // defensável aqui — mas a consistência visual entre as 3 abas pra esse
-    // dado foi a troca explicitamente pedida na issue #3098, priorizada
-    // sobre a ênfase específica desta tabela (tradeoff reconhecido, não
-    // um descuido).
-    // #3098 (self-review follow-up): mesma fusão mobile Categoria→Âncora
-    // da aba CTR (Top 10) acima — reusa as classes cat-col/cat-inline já
-    // definidas no <style> global (nenhum CSS novo aqui, mesma estrutura
-    // de 6 colunas com Categoria curta ao lado de um texto livre longo —
-    // o mesmo risco de wrap existia aqui e não estava coberto).
+    // #3098: clicksCell() (não td.metric) por consistência entre abas —
+    // aqui cliques é a chave de ordenação da tabela, td.metric seria
+    // defensável, mas a issue pediu convenção única entre CTR/Top links/
+    // Use Melhor. Categoria→Âncora reusa cat-col/cat-inline (já definidos
+    // globalmente pra aba CTR acima), mesmo risco de wrap em 6 colunas.
     const categoryEsc = escHtml(r.category);
     return `<tr>
     <td>${i + 1}</td>
