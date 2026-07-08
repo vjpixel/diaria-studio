@@ -288,6 +288,46 @@ describe("buildRateLimitFallback (#2733 — fallback de 429 não congela abas KV
     const body = await resp.text();
     assert.ok(body.includes("tablabel-cupons") || resp.status === 503, "cupons ainda frescos no 200");
   });
+
+  // #3080: o payload stale (LASTGOOD_CAMPAIGNS_KEY) agora carrega `campaignsLimit`
+  // self-describing — o fallback de rate-limit deve repassar esse sinal pro render,
+  // igual ao caminho saudável ("/"), pra que o aviso de janela parcial não desapareça
+  // justamente durante uma janela de rate-limit (quando o editor mais precisa de
+  // contexto sobre a confiabilidade do dado).
+  it("#3080 payload stale com campaignsLimit === campaigns.length → aviso de janela parcial sobrevive ao fallback de 429", async () => {
+    const staleCampaign = {
+      id: 1,
+      name: "Clarice News 2605 d01-A (qua)",
+      subject: "Assunto",
+      status: "sent",
+      sentDate: "2026-06-10T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-06-10T09:00:00Z",
+      recipients: { lists: [] as number[] },
+      statistics: {
+        globalStats: {
+          sent: 100, delivered: 98, hardBounces: 1, softBounces: 1,
+          uniqueViews: 25, viewed: 30, trackableViews: 18,
+          uniqueClicks: 3, clickers: 3, unsubscriptions: 0, complaints: 0,
+          appleMppOpens: 5,
+        },
+      },
+    };
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleCampaign],
+        scheduled: [],
+        generatedAt: "2026-06-10T10:00:00.000Z",
+        campaignsLimit: 1, // janela "pedida" era 1 — bateu o length ⇒ cheia
+      }),
+    });
+    const env = { COUPONS_TAB_ENABLED: "false", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildRateLimitFallback(env as any, 60);
+    assert.strictEqual(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /\(parcial — janela de 1 campanhas?\)/, "aviso de janela parcial deve sobreviver ao fallback de rate-limit");
+  });
 });
 
 describe("normalizeContactsSummary (#2875 item 1 — validação única no boundary do KV)", () => {

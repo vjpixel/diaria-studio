@@ -32,6 +32,13 @@ export function renderDashboardHtml(
   // callers/testes que não passam este argumento — tratado como "agora" (fetch
   // ao vivo), nunca como pré-computado.
   dataGeneratedAt: string | null = null,
+  // #3080: limite de campanhas pedido ao Brevo pra montar `campaigns` (ex:
+  // CAMPAIGNS_FETCH_LIMIT=150) — usado só pra decidir se a janela está "cheia"
+  // (`campaigns.length >= campaignsWindowLimit`), habilitando os avisos de
+  // "janela parcial" em "Totais por mês"/"Volume no ciclo" (defesa em
+  // profundidade — o limite real pode subir de novo no futuro e cruzar de
+  // novo). `null` (default) = desconhecido/não informado → nenhum aviso.
+  campaignsWindowLimit: number | null = null,
 ): string {
   // #3017: ordena a tabela "Envios" por data de envio, mais recente primeiro.
   // sentDate é a fonte canônica aqui (campanha já enviada); scheduledAt só
@@ -211,7 +218,28 @@ export function renderDashboardHtml(
   // nunca fica congelado numa rampa antiga sem novo envio.
   const billingWindow = billingCycleWindow();
   const cumSentBilling = calcCumulativeSentInBillingWindow(campaigns, billingWindow);
-  const volumeSection = renderVolumeSection(cumSentBilling, billingWindow, planCredits);
+  // #3080: a janela de campanhas buscadas está "cheia" (potencialmente truncada)
+  // quando o número de campanhas retornadas bate o limite pedido — nesse caso não
+  // sabemos se há envios mais antigos (fora da janela) que deveriam entrar nas
+  // agregações abaixo. `campaignsWindowLimit == null` (desconhecido) nunca aciona
+  // o aviso — fail-quiet, não fail-alarming.
+  const isCampaignsWindowFull =
+    campaignsWindowLimit != null && campaigns.length >= campaignsWindowLimit;
+  // Campanha mais antiga (por sentDate) dentro da janela buscada — usada só pro
+  // aviso de subcontagem de "Volume no ciclo" abaixo (comparação com o início do
+  // ciclo de cobrança, não com nenhum filtro de audiência Clarice).
+  const oldestSentMs = campaigns.reduce<number | null>((min, c) => {
+    if (!c.sentDate) return min;
+    const t = Date.parse(c.sentDate);
+    if (!Number.isFinite(t)) return min;
+    return min === null || t < min ? t : min;
+  }, null);
+  // #3080: janela cheia E a campanha mais antiga nela é POSTERIOR ao início do
+  // ciclo de cobrança → há um "buraco" entre o início do ciclo e o começo da
+  // janela buscada — `cumSentBilling` pode estar subcontando envios do ciclo.
+  const volumeMayUndercount =
+    isCampaignsWindowFull && oldestSentMs != null && oldestSentMs > billingWindow.start.getTime();
+  const volumeSection = renderVolumeSection(cumSentBilling, billingWindow, planCredits, volumeMayUndercount);
   // `activeCycle` segue servindo só o Resumo A/B/C abaixo (naming de campanha,
   // ex: "2605") — `calcCumulativeSent`/`CLARICE_PLAN_TOTAL` (cycle-naming)
   // pararam de alimentar a seção Volume (agora billing-window-based acima),
@@ -281,7 +309,12 @@ export function renderDashboardHtml(
   // não é mais injetada no panel-visaogeral aqui (#3010).
   // #2369: tabela de totais por mês — à parte da lista detalhada de campanhas.
   const monthlyTotalsRows = aggregateByMonth(campaigns);
-  const monthlyTotalsSection = renderMonthlyTotalsSection(monthlyTotalsRows);
+  // #3080: só passa o limite (habilitando o aviso "(parcial — janela de N campanhas)"
+  // no mês mais antigo) quando a janela buscada estava de fato cheia.
+  const monthlyTotalsSection = renderMonthlyTotalsSection(
+    monthlyTotalsRows,
+    isCampaignsWindowFull ? campaignsWindowLimit : null,
+  );
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
   const cohortsSection = renderEngagementCohortsSection(cohorts, nowDate);
   // #2736: "Status MillionVerifier por grupo" removida da aba Engajamento

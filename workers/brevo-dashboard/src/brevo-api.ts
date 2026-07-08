@@ -311,6 +311,29 @@ export async function fetchPlanCredits(
 export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 
 /**
+ * #3080: janela de campanhas ENVIADAS buscada nas agregações do dashboard
+ * ("Totais por mês", "Volume no ciclo", "Open rate por dia da semana", saúde
+ * da Rampa). Pré-#3079 este fetch era SÍNCRONO na rota `/` — 50 mantinha a
+ * latência do request baixa. #3079 moveu o fetch pesado pro Cron Trigger
+ * (roda a cada 10min, fora do request-time): o custo de uma janela maior
+ * agora é absorvido pelo cron, não pelo usuário que carrega a página.
+ *
+ * Subimos de 50 → 150 (3x): com cadência de até 3 campanhas/dia (células
+ * A/B/C em teste), 150 cobre ~1-1.5 ciclo de cobrança completo (~30 dias),
+ * reduzindo bastante a chance de "Totais por mês"/"Volume no ciclo" ficarem
+ * parciais silenciosamente (#3080). Campanhas imutáveis (>7d) ficam
+ * cacheadas no KV SEM TTL (`isImmutableCampaign`) — o custo extra de GETs só
+ * se paga 1x por campanha nova que entra na janela, não a cada tick.
+ *
+ * NÃO usado pelo clamp de `/api/campaigns` (`index.ts`) — essa rota ainda
+ * busca SÍNCRONO em request-time (não passou pelo #3079), então seu limite
+ * permanece conservador (50) para não reintroduzir a latência que o #2144
+ * já havia mitigado. Ver defesa em profundidade complementar (aviso de
+ * "janela parcial") em `renderMonthlyTotalsSection`/`renderVolumeSection`.
+ */
+export const CAMPAIGNS_FETCH_LIMIT = 150;
+
+/**
  * #2875 item 1: normaliza UMA linha de `cohort_stats` lida do KV. Payload
  * antigo/parcial pode ter os campos opcionais (`brevo`/`opened`/`clicked`/
  * `unsub`/`hard_bounce`) ausentes, ou (pré-#2880) o par legado `unsub_bounce`
@@ -620,7 +643,12 @@ export async function buildRateLimitFallback(
   if (!env.STATS_CACHE) return rateLimitResponse(retryAfterSecs, true);
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
-    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
+    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[]; campaignsLimit?: unknown } | null;
+  // #3080: repassa o limite gravado junto com o payload stale (self-describing,
+  // ver LastGoodCampaignsPayload) — habilita o aviso de "janela parcial" mesmo
+  // no render de fallback de rate-limit. Ausente (KV pré-#3080) → null (sem aviso).
+  const staleCampaignsLimit =
+    typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
   const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
   // Créditos do plano: o render principal busca /v3/account ANTES das campanhas
   // (janela de rate-limit fresca) e passa o valor em memória aqui. Sem isso o
@@ -649,6 +677,8 @@ export async function buildRateLimitFallback(
       couponUsage,
       eiaEngagement,
       planCredits,
+      null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
+      staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1140,6 +1170,16 @@ export interface LastGoodCampaignsPayload {
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
   generatedAt: string;
+  /**
+   * #3080: limite pedido ao Brevo para `campaigns` (não `scheduled`) neste
+   * tick — self-describing, pra não depender de `CAMPAIGNS_FETCH_LIMIT` ter
+   * ficado idêntico entre o momento em que este payload foi gravado e o
+   * momento em que é lido (o valor pode mudar entre deploys). Optional: KV
+   * gravado por versões anteriores do worker (pré-#3080) não tem este campo
+   * — os leitores tratam ausência como "desconhecido" (não afirmam janela
+   * parcial sem essa informação).
+   */
+  campaignsLimit?: number;
 }
 
 /**
@@ -1184,11 +1224,14 @@ export async function runCronRefresh(
       return { ok: false, error: "fetchScheduledCampaigns falhou — KV não atualizado neste tick (mantém último valor bom)" };
     }
 
-    const campaigns = await fetchRecentCampaigns(env, 50, false);
+    // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (150) — absorvida pelo
+    // cron (fora do request-time), não pelo usuário.
+    const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false);
     const payload: LastGoodCampaignsPayload = {
       campaigns,
       scheduled,
       generatedAt: new Date().toISOString(),
+      campaignsLimit: CAMPAIGNS_FETCH_LIMIT,
     };
     await env.STATS_CACHE.put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), {
       expirationTtl: LASTGOOD_TTL,
