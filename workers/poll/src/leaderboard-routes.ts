@@ -11,6 +11,7 @@ import {
   formatEditionDateForBrand,
   renderBrandShellStyles, // #3113: régua teal + rodapé de marca
   renderBrandFooter, // #3113: régua teal + rodapé de marca
+  todayAammddBrt, // #3113 item 9: também usado por handleVote (vote.ts)
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -739,21 +740,6 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
 // (c) escopo restrito às edições do ano pedido na URL (só listamos/aceitamos
 // edições que já têm gabarito fechado — sem geração de links por-assinante
 // em massa).
-
-/**
- * Pure (#3113 item 9): "hoje" em AAMMDD (BRT) — mesmo offset fixo de -3h usado
- * em toda formatação de data deste worker (ver `currentMonthSlugBrt`/
- * `archiveKeyForReset` em lib.ts). Usado só pra comparação lexicográfica
- * contra edições AAMMDD (strings zero-padded de mesmo tamanho comparam igual
- * a números).
- */
-function todayAammddBrt(now: Date): string {
-  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
-  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(brt.getUTCDate()).padStart(2, "0");
-  return `${yy}${mm}${dd}`;
-}
 
 /**
  * Pure (#2867): extrai as edições AAMMDD de um ano a partir dos nomes das

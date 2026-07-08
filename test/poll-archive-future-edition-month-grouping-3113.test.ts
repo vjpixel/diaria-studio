@@ -6,9 +6,12 @@
  *   Item 9 — `extractEditionsForYear` não filtrava por data: uma edição com
  *   gabarito já definido (`correct:{edition}`) mas cuja data ainda não
  *   chegou aparecia como votável no arquivo do brand `diaria` antes do
- *   e-mail sair. Fix: exclui edições com AAMMDD > hoje (BRT) — tanto na
- *   listagem (`extractEditionsForYear`) quanto no acesso direto por URL
- *   (`handleArchiveVotePage`), fechando a mesma brecha nos 2 pontos.
+ *   e-mail sair. Fix: exclui edições com AAMMDD > hoje (BRT) em 3 pontos —
+ *   listagem (`extractEditionsForYear`), página de voto do arquivo
+ *   (`handleArchiveVotePage`), E o endpoint que de fato REGISTRA o voto
+ *   (`handleVote`, em vote.ts) — sem o 3º ponto, a brecha continuava aberta
+ *   via URL direta pro `/vote` (email+edition+choice montados manualmente,
+ *   sem nunca passar pela página do arquivo).
  *
  *   Item 10 — `renderArchiveListHtml` renderizava uma lista `<ul>` flat sem
  *   agrupamento — cresce sem limite (>200 itens/ano). Fix: `groupEditionsByMonth`
@@ -24,6 +27,8 @@ import {
   renderArchiveListHtml,
   handleArchiveVotePage,
 } from "../workers/poll/src/leaderboard-routes.ts";
+import { handleVote } from "../workers/poll/src/vote.ts";
+import { todayAammddBrt } from "../workers/poll/src/lib.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 
 /** "Amanhã" em AAMMDD/YYYY, calculado a partir do relógio real — evita a
@@ -119,17 +124,56 @@ describe("handleArchiveVotePage — bloqueia edição futura por URL direta (#31
   });
 
   it("edição de HOJE com gabarito → continua acessível (200) — só o FUTURO é bloqueado", async () => {
-    const now = new Date();
-    const yyyy = String(now.getUTCFullYear());
-    // #3113: usa a mesma janela BRT do fix — helper local só pra montar o
-    // AAMMDD de "hoje" sem depender de todayAammddBrt (não exportado).
-    const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-    const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
-    const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(brt.getUTCDate()).padStart(2, "0");
-    const edition = `${yy}${mm}${dd}`;
+    const edition = todayAammddBrt(new Date());
+    const yyyy = `20${edition.slice(0, 2)}`;
     const env = makeEnv({ [`correct:${edition}`]: "A" });
     const res = await handleArchiveVotePage(yyyy, edition, env, "diaria");
+    assert.equal(res.status, 200);
+  });
+});
+
+describe("handleVote — bloqueia edição futura mesmo via URL direta pro /vote (#3113 item 9)", () => {
+  function makeVoteEnv(seed: Record<string, string>): Env {
+    return {
+      POLL: {
+        get: async (key: string) => seed[key] ?? null,
+        put: async () => {},
+      } as unknown as Env["POLL"],
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin",
+      ALLOWED_ORIGINS: "*",
+    };
+  }
+
+  it("edição de amanhã com gabarito já definido → 410, mesmo batendo direto no /vote (bypassa a página do arquivo)", async () => {
+    const { edition } = tomorrowParts();
+    const env = makeVoteEnv({ [`correct:${edition}`]: "A" });
+    const url = new URL(`https://poll.diaria.workers.dev/vote?email=leitor@x.com&edition=${edition}&choice=A`);
+    const res = await handleVote(url, env, "diaria");
+    assert.equal(res.status, 410);
+    const html = await res.text();
+    assert.match(html, /não aceita mais votos/);
+  });
+
+  it("edição de HOJE com gabarito → continua votável (200) via /vote — só o FUTURO é bloqueado", async () => {
+    const edition = todayAammddBrt(new Date());
+    const env = makeVoteEnv({ [`correct:${edition}`]: "A" });
+    const url = new URL(`https://poll.diaria.workers.dev/vote?email=leitor2@x.com&edition=${edition}&choice=A`);
+    const res = await handleVote(url, env, "diaria");
+    assert.equal(res.status, 200);
+  });
+
+  it("ciclo mensal da Clarice (formato YYMM-MM, não AAMMDD) não é afetado pelo filtro de data futura", async () => {
+    // Chamada direta a handleVote (sem o brandedEnv do dispatcher top-level em
+    // index.ts) — chave sem prefixo de brand, mesmo padrão de #2018:
+    // clarice:valid_editions nunca é populada (fail-open permanente); o filtro
+    // de data futura (item 9) também não deve se aplicar a esse formato, que
+    // não representa um "dia" real pra comparar (guarda: regex /^\d{6}$/).
+    const env = makeVoteEnv({ "correct:9912-01": "A" });
+    const url = new URL(
+      "https://poll.diaria.workers.dev/vote?email=leitor3@x.com&edition=9912-01&choice=A",
+    );
+    const res = await handleVote(url, env, "clarice");
     assert.equal(res.status, 200);
   });
 });

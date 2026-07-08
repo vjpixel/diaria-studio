@@ -152,6 +152,29 @@ export function currentMonthSlugBrt(now: Date): string {
 }
 
 /**
+ * Pure (#3113 item 9): "hoje" em AAMMDD (BRT) — mesmo offset fixo de -3h usado
+ * em toda formatação de data deste worker. Usado só pra comparação
+ * lexicográfica contra edições AAMMDD (strings zero-padded de mesmo tamanho
+ * comparam igual a números).
+ *
+ * Movido pra cá (era privado em leaderboard-routes.ts) pra ser reusado
+ * também por `handleVote` em vote.ts — sem isso, o gate de "edição futura"
+ * só existia na LISTAGEM do arquivo (`extractEditionsForYear`) e na página de
+ * voto do arquivo (`handleArchiveVotePage`), mas o endpoint `/vote` que de
+ * fato REGISTRA o voto continuava aceitando uma edição futura via URL direta
+ * (email+edition+choice montados manualmente), já que seu gate original só
+ * checava `correctRaw === null` — e `correct:{edition}` já está setado antes
+ * do e-mail sair (durante prep de imagens/revisão).
+ */
+export function todayAammddBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(brt.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
  * Pure: -1 se a<b, 0 se igual, 1 se a>b. Slugs "YYYY-MM" zero-padded
  * comparam lexicograficamente bem — string compare basta.
  */
