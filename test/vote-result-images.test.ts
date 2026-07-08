@@ -85,13 +85,39 @@ describe("renderResultImagesHtml (#1351)", () => {
     assert.equal(lazyCount, 2);
   });
 
-  it("alt text 'Imagem A' / 'Imagem B' (accessibility)", () => {
+  it("#3113 (item 7): alt text reflete qual lado é IA/real — não é mais genérico 'Imagem A/B'", () => {
+    // Antes do #3113, alt="Imagem A"/"Imagem B" não revelava o resultado pra
+    // quem usa leitor de tela, mesmo esta sendo a página de RESULTADO (onde
+    // o label visível já mostra qual é qual). Isso é intencionalmente
+    // DIFERENTE do pré-voto (renderArchiveVoteHtml), que mantém alt genérico
+    // de propósito (anti-gaming — ver poll-leaderboard-archive-2867.test.ts).
     const html = renderResultImagesHtml({
       edition: "260519",
       aiSide: "A",
       clickedSide: "B",
     });
-    assert.match(html, /alt="Imagem A"/);
-    assert.match(html, /alt="Imagem B"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" alt="Gerada por IA"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" alt="Foto real"/);
+    assert.doesNotMatch(html, /alt="Imagem [AB]"/, "alt genérico antigo não deve mais aparecer no resultado");
+  });
+
+  it("#3113 (item 7): alt text acompanha aiSide (não é sempre A=IA) — troca de gabarito troca o alt junto", () => {
+    const html = renderResultImagesHtml({
+      edition: "260519",
+      aiSide: "B",
+      clickedSide: "A",
+    });
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" alt="Foto real"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" alt="Gerada por IA"/);
+  });
+
+  it("#3113 (item 7): alt text NÃO inclui o emoji (emoji é só decorativo, no .label visível)", () => {
+    const html = renderResultImagesHtml({
+      edition: "260519",
+      aiSide: "A",
+      clickedSide: "A",
+    });
+    assert.doesNotMatch(html, /alt="[^"]*🤖/);
+    assert.doesNotMatch(html, /alt="[^"]*📷/);
   });
 });

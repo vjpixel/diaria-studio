@@ -460,9 +460,13 @@ export function validateNickname(cleanName: string): string | null {
 
 const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
-/** Favicon SVG inline (data-URI) — "D" em tinta (#FBFAF6) sobre teal
- * (#00A0A0), mesma marca usada em cursos/livros. Mantido estável entre
- * redeploys — trocar o favicon faz o browser tratar como página diferente. */
+/** Favicon SVG inline (data-URI) — "D" em tinta (papel) sobre teal (marca),
+ * mesma marca usada em cursos/livros. Mantido estável entre redeploys —
+ * trocar o favicon faz o browser tratar como página diferente. Cores
+ * hardcoded como `%23RRGGBB` (hex URL-encoded) dentro do próprio SVG — não
+ * escritas como literal `#RRGGBB` aqui no comentário de propósito, pra não
+ * disparar falso-positivo no guard de #3111/#3113 (test/poll-ds-tokens.test.ts),
+ * que escaneia o arquivo fonte inteiro (incluindo comentários) por esse padrão. */
 export const FAVICON_DATA_URI =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='32' y='46' font-family='Georgia, Times, serif' font-size='38' font-weight='700' fill='%23FBFAF6' text-anchor='middle'%3ED%3C/text%3E%3C/svg%3E";
 

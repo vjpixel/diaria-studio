@@ -38,19 +38,19 @@
 
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
     border-bottom: 1px solid var(--rule); margin-top: 40px; }
-  .filters .wrap { padding-top: 0; padding-bottom: 0; }
-  .filters-summary { display: none; }
-  .filters-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
     color: var(--ink); display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
   .filters select { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
-    border: 0; border-bottom: 1px solid var(--rule); background: transparent; min-width: 130px; cursor: pointer;
+    border: 0; border-bottom: 1px solid var(--rule); background: transparent; min-width: 140px; cursor: pointer;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 4px center; }
   .filters select:focus { outline: none; border-bottom-color: var(--teal); }
   .count { margin-left: auto; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 11px; letter-spacing: 0.16em;
     text-transform: uppercase; color: var(--ink); align-self: flex-end; }
+  .filters .wrap { padding-top: 0; padding-bottom: 0; }
+  .filters-summary { display: none; }
+  .filters-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
 
   /* #3107: abaixo de ~700px os 8 dropdowns empilhavam em 5-6 linhas (~330px)
      sticky permanentemente no topo — ~40% da tela do mobile durante todo o
@@ -80,11 +80,9 @@
   .title-row h2 a { text-decoration: none; }
   .title-row h2 a:hover { color: var(--teal); }
   .note { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
-  .platform { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
   .badge { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
     color: var(--ink); border: 1px solid var(--rule); padding: 4px 9px; border-radius: 2px; }
-  .badge--cert { border-color: var(--ink); color: var(--ink); }
   .summary { font-size: 16px; line-height: 1.5; color: var(--ink); margin: 14px 0 18px; flex: 1; }
   .cta { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 16px;
     font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
@@ -93,9 +91,16 @@
   .cta--off { color: var(--ink); font-weight: 600; }
   .empty { grid-column: 1 / -1; text-align: center; color: var(--ink); padding: 64px 20px;
     font-size: 18px; background: var(--card); }
+  .platform { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
+  .badge--cert { border-color: var(--ink); color: var(--ink); }
+
   footer { border-top: 1px solid var(--rule); }
   footer .wrap { padding: 24px 28px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 11px; letter-spacing: 0.1em;
     text-transform: uppercase; color: var(--ink); }
+  footer .foot-nav a { color: var(--teal); text-decoration: none; }
+  footer .foot-nav a:hover { text-decoration: underline; }
+  footer .foot-nav a + a { margin-left: 10px; }
+  footer .foot-credit { margin: 6px 0 0; }
 </style>
 </head>
 <body>
@@ -510,7 +515,7 @@
       </div>
     </div>
   </main>
-  <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
+  <footer><div class="wrap"><p class="foot-nav"><a href="https://diar.ia.br">Diar.ia</a> · <a href="https://cursos.diaria.workers.dev/">Cursos</a> · <a href="https://livros.diaria.workers.dev/">Livros</a> · <a href="https://poll.diaria.workers.dev/leaderboard">É IA?</a></p><p class="foot-credit">diar.ia.br — curadoria de cursos sobre IA</p></div></footer>
 <script>
   (function () {
     var THEME_LABELS = {"cloud":"Cloud","deep-learning":"Deep Learning","direito":"Direito","estrategia":"Estratégia","etica":"Ética","fundamentos":"Fundamentos","ia-aplicada":"IA Aplicada","ia-generativa":"IA Generativa","machine-learning":"Machine Learning","negocios":"Negócios","nlp":"NLP","produtividade":"Produtividade","prompt-engineering":"Prompt Engineering","redes-neurais":"Redes Neurais","reinforcement-learning":"Reinforcement Learning","setor-social":"Setor Social","visao-computacional":"Visão Computacional"};
