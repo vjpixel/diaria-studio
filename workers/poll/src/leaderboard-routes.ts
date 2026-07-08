@@ -678,15 +678,19 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113: texto secundário em ink sólido — hierarquia por tamanho/peso, não
+     opacity (rgba abolido pelo DS canônico, ver design-tokens.ts). */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: ${DS_COLORS.ink}; text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
   td { padding: 10px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; }
   tr.leader td { font-weight: 600; color: ${DS_COLORS.brand}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
+  .footnote { margin-top: 8px; font-size: 0.8rem; color: ${DS_COLORS.ink}; }
+  .empty-state { color: ${DS_COLORS.ink}; font-size: 0.9rem; text-align: center; padding: 20px; }
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -698,10 +702,10 @@ ${subCopy}
 <p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<tbody>${rows || "<tr><td colspan=3 class='empty-state'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
-<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p class="footnote" style="margin-top:30px">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p class="footnote">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 ${renderBrandFooter(brand)}
 </body>
 </html>`;
@@ -741,23 +745,76 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
 // em massa).
 
 /**
+ * Pure (#3113): AAMMDD "de hoje" em BRT (UTC-3) — mesma técnica de
+ * `currentMonthSlugBrt` (subtrai 3h e lê os getters UTC do resultado).
+ * Comparação lexicográfica de strings zero-padded == comparação numérica.
+ */
+export function todayAammddBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(brt.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
  * Pure (#2867): extrai as edições AAMMDD de um ano a partir dos nomes das
  * chaves KV `correct:{edition}` (gabarito definido = edição realmente
  * publicada com poll fechado — ver `close-poll.ts`). Filtra pelo ano exato
  * (2 dígitos AA do AAMMDD) e ordena DESC (mais recente primeiro). Chaves com
  * formato diferente de AAMMDD (ex: ciclo mensal Clarice `2605-06`) são
  * ignoradas — só interessam edições diárias aqui.
+ *
+ * #3113: também filtra edições FUTURAS (`edition > hoje` em BRT). O gabarito
+ * (`correct:{edition}`) pode ser gravado antes do e-mail efetivamente sair
+ * (ex: durante a preparação da imagem/poll), então uma edição de amanhã podia
+ * aparecer votável no arquivo hoje — mesmo sem ninguém ainda ter recebido o
+ * e-mail. `now` é parâmetro (não `new Date()` interno) pra manter a função
+ * pura/testável; o caller de produção (`handleLeaderboardArchive`) passa
+ * `new Date()` explicitamente.
  */
-export function extractEditionsForYear(correctKeyNames: string[], year: string): string[] {
+export function extractEditionsForYear(
+  correctKeyNames: string[],
+  year: string,
+  now: Date = new Date(),
+): string[] {
   const yy = year.slice(2);
+  const today = todayAammddBrt(now);
   const set = new Set<string>();
   for (const k of correctKeyNames) {
     const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
     if (!/^\d{6}$/.test(edition)) continue;
     if (edition.slice(0, 2) !== yy) continue;
+    if (edition > today) continue; // #3113: edição futura — gabarito existe, mas ainda não foi publicada
     set.add(edition);
   }
   return [...set].sort().reverse();
+}
+
+/**
+ * Pure (#3113): agrupa edições (já ordenadas DESC) por mês (2 dígitos MM do
+ * AAMMDD), preservando a ordem de PRIMEIRA aparição — como o input já vem
+ * ordenado DESC, os grupos saem naturalmente em ordem de mês mais recente
+ * primeiro, sem precisar reordenar.
+ */
+export function groupEditionsByMonth(editions: string[]): Array<{ month: string; editions: string[] }> {
+  const order: string[] = [];
+  const byMonth = new Map<string, string[]>();
+  for (const ed of editions) {
+    const mm = ed.slice(2, 4);
+    if (!byMonth.has(mm)) {
+      byMonth.set(mm, []);
+      order.push(mm);
+    }
+    byMonth.get(mm)!.push(ed);
+  }
+  return order.map((mm) => ({ month: mm, editions: byMonth.get(mm)! }));
+}
+
+/** Pure (#3113): "07" → "Julho" (nome do mês em pt-BR capitalizado). */
+export function monthHeadingLabel(mm: string): string {
+  const name = MONTH_NAMES_PT[parseInt(mm, 10) - 1];
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 /** Pure (#2867): href do arquivo — lista do ano (sem `edition`) ou voto de 1
@@ -775,8 +832,16 @@ export function renderArchiveListHtml(
   brand: Brand = "diaria",
 ): Response {
   const info = BRAND_INFO[brand];
-  const rows = editions
-    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
+  // #3113: agrupado por mês (heading não-clicável intercalado) — a lista
+  // flat passaria de 200 itens/ano; grupos tornam o arquivo navegável.
+  const rows = groupEditionsByMonth(editions)
+    .flatMap(({ month, editions: eds }) => [
+      // role="heading" (#3113): é um <li> pra ficar na mesma <ul> sem reestruturar
+      // em <ul> aninhadas por mês, mas ARIA-role força leitor de tela a tratar
+      // como heading de verdade — navegação por heading (tecla H) pula entre meses.
+      `<li class="month-heading" role="heading" aria-level="2">${htmlEscape(monthHeadingLabel(month))}</li>`,
+      ...eds.map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`),
+    ])
     .join("\n");
   const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
@@ -797,11 +862,16 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113: texto secundário em ink sólido — hierarquia por tamanho/peso, não opacity. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   ul { list-style: none; padding: 0; margin-top: 20px; }
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  /* #3113: heading de mês intercalado na mesma <ul> — sem borda (não é item
+     clicável), serif pra ler como divisor de seção (mesma família do h1). */
+  li.month-heading { border-bottom: none; padding: 20px 8px 4px; font-family: ${DS_FONTS.serif}; font-size: 1.05rem; font-weight: 600; }
+  li.month-heading:first-child { padding-top: 0; }
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -856,8 +926,9 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
-  p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  /* #3113: texto secundário em ink sólido — hierarquia por tamanho/peso, não opacity. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .email-row { margin: 20px 0; }
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
@@ -922,7 +993,7 @@ export async function handleLeaderboardArchive(
   const yy = yearStr.slice(2);
   const keys: string[] = [];
   for await (const k of listAllKeys(env, `correct:${yy}`)) keys.push(k);
-  const editions = extractEditionsForYear(keys, yearStr);
+  const editions = extractEditionsForYear(keys, yearStr, new Date());
   return renderArchiveListHtml(editions, yearStr, brand);
 }
 
