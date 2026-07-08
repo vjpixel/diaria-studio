@@ -94,6 +94,15 @@ export interface EngagementCohorts {
   received2_opened0: number;
   exits: number;
   exitsBreakdown: { bounced: number; optedOut: number };
+  // #3081: DEAD CODE de exibição — computado por
+  // `scripts/clarice-engagement-cohorts.ts` (valida o rótulo fixo "2+" nos
+  // buckets de abertura/recebimento internamente) e normalizado aqui em
+  // `brevo-api.ts`, mas nenhum render (`renderEngagementCohortsSection`)
+  // consome este campo pra exibição — o rótulo "2+" é hardcoded (ver comentário
+  // em `renderEngagementCohortsSection`: os buckets são definidos como ≥2, então
+  // "2+" é sempre exato e não precisa se acoplar a este valor). Mantido no
+  // payload/tipo por ora — não remover nem adicionar exibição sem pedido do
+  // editor (decisão de produto, fora de escopo do #3081).
   maxReceived: number;
 }
 
@@ -164,6 +173,12 @@ export interface ContactsSummary {
     p41_80: number;
     gt80: number;
     optin: number;
+    // #3081: quantos emails internos (INTERNAL_EMAILS) foram EXCLUÍDOS deste
+    // bloco + do histograma (script `clarice-db-summary.ts`, calculado desde
+    // #2809 mas nunca propagado até aqui). Opcional — KV pré-#3081 não tem o
+    // campo; render trata ausência como "—" (não 0 — 0 excluídos e "dado
+    // ausente" não são a mesma coisa).
+    internal_excluded?: number;
   };
   // #2731: distribuição por valor exato (opcional — KV pré-#2731 não tem).
   priority_points_histogram?: Record<string, number>;

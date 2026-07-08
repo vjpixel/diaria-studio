@@ -270,6 +270,9 @@ export function renderDashboardHtml(
   const volumeMayUndercount =
     isCampaignsWindowFull && oldestSentMs != null && oldestSentMs > billingWindow.start.getTime();
   const volumeSection = renderVolumeSection(cumSentBilling, billingWindow, planCredits, volumeMayUndercount);
+  // #3081: nota diagnóstica de campanhas com naming não reconhecido por
+  // NENHUM classificador Clarice — sinaliza sem quebrar o render.
+  const unclassifiedNote = renderUnclassifiedCampaignsNote(findUnclassifiedCampaignNames(campaigns));
   // `activeCycle` segue servindo só o Resumo A/B/C abaixo (naming de campanha,
   // ex: "2605") — `calcCumulativeSent`/`CLARICE_PLAN_TOTAL` (cycle-naming)
   // pararam de alimentar a seção Volume (agora billing-window-based acima),
@@ -594,6 +597,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
 ${monthlyTotalsSection}
 ${volumeSection}
+${unclassifiedNote}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
 ${renderColumnGlossary("envios", ENVIOS_COLUMNS)}
@@ -1059,6 +1063,15 @@ export function detectActiveCycle(
  * pela data de envio, pra nunca misturar públicos diferentes numa comparação
  * única. Cada grupo vira uma seção A/B/C própria; ordenados do mais recente
  * pro mais antigo. Exportado pra teste unitário.
+ *
+ * #3081: deriva de `parseAbcAudienceCampaign` (não `parseClariceCampaignKey`)
+ * — o parser antigo só reconhece o naming warm "Clarice News AAMM-MM — X",
+ * então um ciclo SÓ-COLD (naming "cold AAMM-MM — X") nunca gerava grupo aqui,
+ * mesmo a seção "Resumo A/B/C por Audiência" logo abaixo já suportando cold.
+ * `parseAbcAudienceCampaign` cobre warm E cold; o filtro `/^\d{4}-\d{2}$/`
+ * no `cycle` mantém só ciclos MENSAIS (formato "AAMM-MM", com hífen) — testes
+ * A/B/C DIÁRIOS ("Clarice News AAMM dNN-X", cycle sem hífen) continuam fora
+ * (cobertos por `aggregateAbcSummary`/`abcSection` acima, não aqui).
  */
 export function groupMonthlyAbcTests(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -1073,8 +1086,8 @@ export function groupMonthlyAbcTests(
     { cycle: string; dateKey: string; campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }> }
   >();
   for (const c of campaigns) {
-    const parsed = parseClariceCampaignKey(c.name);
-    if (!parsed || !parsed.monthly || parsed.cell === null) continue;
+    const parsed = parseAbcAudienceCampaign(c.name);
+    if (!parsed || !/^\d{4}-\d{2}$/.test(parsed.cycle)) continue;
     // Data do envio: scheduledAt (intenção) com fallback sentDate. As 3
     // campanhas de um teste são disparadas JUNTAS no mesmo horário (Clarice
     // News sai ~06:00 BRT, nunca perto da meia-noite), então mesmo que uma
@@ -1093,6 +1106,38 @@ export function groupMonthlyAbcTests(
   return [...groups.values()]
     .map((g) => ({ ...g, dateLabel: g.dateKey.split("-").reverse().join("/") }))
     .sort((a, b) => (a.dateKey < b.dateKey ? 1 : a.dateKey > b.dateKey ? -1 : 0));
+}
+
+/**
+ * #3081: nomes de campanha que NÃO batem com nenhum classificador de naming
+ * Clarice conhecido — nem `parseClariceCampaignKey` (warm diário/mensal) nem
+ * `parseAbcAudienceCampaign` (warm/cold com célula A/B/C). Uma campanha nesta
+ * lista fica invisível a TODAS as seções A/B/C do dashboard (Resumo A/B/C,
+ * Resumo por Audiência, Resumo Mensal) — a nota diagnóstica na Visão Geral
+ * sinaliza isso em vez de deixar a lacuna passar silenciosamente. Exportado
+ * pra teste unitário.
+ */
+export function findUnclassifiedCampaignNames(
+  campaigns: Array<Pick<BrevoCampaign, "name">>,
+): string[] {
+  const names: string[] = [];
+  for (const c of campaigns) {
+    if (parseClariceCampaignKey(c.name)) continue;
+    if (parseAbcAudienceCampaign(c.name)) continue;
+    names.push(c.name);
+  }
+  return names;
+}
+
+/**
+ * Renderiza a nota diagnóstica de campanhas não classificadas (vazia quando
+ * a lista está vazia — nenhuma seção extra quando tudo está OK). Exportado
+ * pra teste unitário.
+ */
+export function renderUnclassifiedCampaignsNote(names: string[]): string {
+  if (names.length === 0) return "";
+  const plural = names.length === 1 ? "" : "s";
+  return `<p class="section-note"><small>⚠️ ${names.length} campanha${plural} não classificada${plural} (naming fora do padrão Clarice News/cold): ${names.map((n) => escHtml(n)).join(", ")}.</small></p>`;
 }
 
 // ─── #2976: Resumo A/B/C por AUDIÊNCIA (Agregada / Fria / Quente) ────────────

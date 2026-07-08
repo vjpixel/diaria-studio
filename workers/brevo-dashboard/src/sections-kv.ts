@@ -673,6 +673,11 @@ export function renderContactsSummarySection(
   const brevo = s.brevo ?? { synced_rows: 0, has_signal: false };
   const elig = s.eligibility ?? { eligible: 0, ineligible: 0, by_reason: {} };
   const pp = s.priority_points ?? { lt0: 0, eq0: 0, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 };
+  // #3081: dado já computado pelo script (#2809) mas nunca exposto na dashboard —
+  // "—" (não 0) quando o KV é anterior a este campo (undefined), distinguindo
+  // "0 excluídos" de "dado ausente". `fmtCount` direto (não o alias `n`,
+  // declarado mais abaixo nesta função).
+  const internalExcludedFmt = pp.internal_excluded != null ? fmtCount(pp.internal_excluded) : "—";
   const eng = s.engagement ?? { with_opens: 0, with_clicks: 0 };
 
   const n = fmtCount; // #2875: dedup — ver fmtCount module-level
@@ -789,7 +794,7 @@ ${totalRow}</tbody></table></div>`;
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
-  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
+  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · internos excluídos: <strong>${internalExcludedFmt}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
   ${priorityPointsSection}
   <p class="section-note">Score = <code>priority_points</code> (engajamento), aditivo (sem corte duro): parte de 0 · <strong>+40</strong> optin (pediu prioridade) · <strong>+20</strong> por e-mail aberto · <strong>−10</strong> por e-mail recebido e não aberto. Ex.: optin que ignora 4 e-mails decai pra 0 (40 − 10×4). Fila de re-envio: maior Score primeiro.</p>
   <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
@@ -1151,6 +1156,39 @@ export function renderMvStatusSection(
 export const EIA_ENGAGEMENT_MAX_EDITIONS = 30;
 
 /**
+ * #3081: normaliza uma string de edição (AAMMDD diário OU AAMM-MM mensal)
+ * pra uma chave numérica cronologicamente comparável (~AAMMDD — ano com 2
+ * dígitos, mesmo formato do naming; dia=0 quando desconhecido — caso mensal,
+ * que só tem granularidade de mês). Sem
+ * isso, comparar as duas strings diretamente (`localeCompare`) mistura os
+ * formatos incorretamente — tamanhos/alfabetos diferentes ("260702" vs
+ * "2606-07") não ordenam cronologicamente por comparação lexicográfica pura.
+ *
+ * Mensal: o naming é "{conteúdo AAMM}-{envio MM}" (CLAUDE.md — envio é
+ * sempre o mês seguinte ao conteúdo). A chave usa o ANO/MÊS de ENVIO (quando
+ * a edição de fato circula) — detecta virada de ano quando o mês de envio é
+ * NUMERICAMENTE menor que o mês de conteúdo (dezembro → janeiro).
+ *
+ * Retorna `-Infinity` pra formato inesperado (não deveria ocorrer — os
+ * callers já filtram por `/^\d{6}$|^\d{4}-\d{2}$/` antes de chamar isto).
+ * Exportado pra teste unitário.
+ */
+export function editionSortKey(edition: string): number {
+  const daily = edition.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (daily) {
+    const [, yy, mm, dd] = daily;
+    return Number(yy) * 10000 + Number(mm) * 100 + Number(dd);
+  }
+  const monthly = edition.match(/^(\d{2})(\d{2})-(\d{2})$/);
+  if (monthly) {
+    const [, yy, contentMM, sendMM] = monthly;
+    const sendYear = Number(sendMM) < Number(contentMM) ? Number(yy) + 1 : Number(yy);
+    return sendYear * 10000 + Number(sendMM) * 100; // dia desconhecido — só mês
+  }
+  return -Infinity;
+}
+
+/**
  * #2860 (pedido do editor 260702): renderiza a tabela de engajamento do poll
  * "É IA?" — voltou a ser 1 linha por EDIÇÃO (AAMMDD, header "Edição"), mais
  * recente primeiro. Reverte a agregação mensal do #2773 (que era feita por
@@ -1188,8 +1226,13 @@ export function renderEiaEngagementSection(
   // produzir um bucket/label "NaN" na tabela. Aceita AAMMDD (diária, 6 dígitos)
   // OU o ciclo mensal YYMM-MM (#2903 — a dashboard mensal mostra as edições MENSAIS).
   const validEditions = eiaEngagement.editions.filter((e) => /^\d{6}$|^\d{4}-\d{2}$/.test(e.edition));
-  // Mais recente primeiro — AAMMDD e YYMM-MM ordenam lexicograficamente = cronologicamente.
-  const sorted = [...validEditions].sort((a, b) => b.edition.localeCompare(a.edition));
+  // #3081: mais recente primeiro — ordenação por chave cronológica NUMÉRICA
+  // (`editionSortKey`), não mais lexicográfica pura. AAMMDD e YYMM-MM têm
+  // tamanhos/formatos diferentes ("260702" vs "2606-07") — comparar como
+  // string mistura os dois incorretamente (ex: "-" ordena antes de "0" em
+  // code-unit compare, então "2606-07" < "260702" mesmo quando a data real
+  // aponta o contrário).
+  const sorted = [...validEditions].sort((a, b) => editionSortKey(b.edition) - editionSortKey(a.edition));
   const totalCount = sorted.length;
   const shown = sorted.slice(0, EIA_ENGAGEMENT_MAX_EDITIONS);
   const capNote = totalCount > EIA_ENGAGEMENT_MAX_EDITIONS
@@ -1218,7 +1261,7 @@ export function renderEiaEngagementSection(
   <table>
     <thead>
       <tr>
-        <th title="Ciclo mensal da Clarice News (YYMM-MM)">Edição</th>
+        <th title="Edição da Clarice News: AAMMDD (diária) ou AAMM-MM (ciclo mensal)">Edição</th>
         <th title="Total de votos registrados na edição">Votos</th>
         <th title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
       </tr>

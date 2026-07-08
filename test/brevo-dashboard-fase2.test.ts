@@ -62,6 +62,9 @@ import {
   MV_STATUS_KV_KEY,
   renderEiaEngagementSection,
   EIA_ENGAGEMENT_KV_KEY,
+  editionSortKey,
+  findUnclassifiedCampaignNames,
+  renderUnclassifiedCampaignsNote,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -257,6 +260,147 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
     const groups = groupMonthlyAbcTests(mixed);
     assert.equal(groups.length, 1, "1 só grupo mesmo com campo misto na mesma data");
     assert.equal(groups[0].campaigns.length, 3);
+  });
+
+  // #3081: bug — um ciclo SÓ-COLD nunca gerava grupo, porque a função dependia
+  // de parseClariceCampaignKey (só reconhece o naming warm "Clarice News...").
+  test("#3081: ciclo SÓ-COLD (sem nenhuma campanha warm) gera grupo — regressão", () => {
+    const coldOnly = [
+      { ...makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }) },
+      { ...makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }) },
+      { ...makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }) },
+    ];
+    const groups = groupMonthlyAbcTests(coldOnly);
+    assert.equal(groups.length, 1, "ciclo só-cold deve gerar 1 grupo (antes: 0, bug)");
+    assert.equal(groups[0].cycle, "2607-08");
+    assert.equal(groups[0].campaigns.length, 3);
+  });
+
+  test("#3081: NÃO agrupa teste A/B/C DIÁRIO (cycle sem hífen, ex: 'Clarice News 2605 d02-A')", () => {
+    const daily = [
+      makeCampaign(301, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
+      makeCampaign(302, "Clarice News 2605 d02-B (qui)", "2026-06-11T06:00:00.000-03:00"),
+    ];
+    assert.equal(groupMonthlyAbcTests(daily).length, 0, "teste diário não é mensal — fora do grupo mensal");
+  });
+});
+
+// ─── findUnclassifiedCampaignNames / renderUnclassifiedCampaignsNote (#3081) ──
+
+describe("findUnclassifiedCampaignNames (#3081)", () => {
+  test("campanha com naming reconhecido (warm diário) → não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  test("campanha cold com célula → reconhecida via parseAbcAudienceCampaign, não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "cold 2607-08 — A: subject", "2026-08-02T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  test("naming fora do padrão (ex: legado 'T1-W1 digest') → entra na lista", () => {
+    const campaigns = [
+      makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
+      makeCampaign(2, "T1-W1 digest", "2026-06-11T06:00:00.000-03:00"),
+    ];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), ["T1-W1 digest"]);
+  });
+});
+
+describe("renderUnclassifiedCampaignsNote (#3081)", () => {
+  test("lista vazia → string vazia (sem seção extra)", () => {
+    assert.equal(renderUnclassifiedCampaignsNote([]), "");
+  });
+
+  test("1 nome → singular, sem 's'", () => {
+    const html = renderUnclassifiedCampaignsNote(["T1-W1 digest"]);
+    assert.match(html, /1 campanha não classificada/);
+    assert.match(html, /T1-W1 digest/);
+  });
+
+  test("N nomes → plural + todos os nomes listados", () => {
+    const html = renderUnclassifiedCampaignsNote(["Foo", "Bar"]);
+    assert.match(html, /2 campanhas não classificadas/);
+    assert.match(html, /Foo/);
+    assert.match(html, /Bar/);
+  });
+
+  test("renderDashboardHtml inclui a nota na Visão Geral quando há campanha não classificada", () => {
+    const html = renderDashboardHtml([
+      ...cycle2605Campaigns,
+      makeCampaign(999, "T1-W1 digest", "2026-06-11T06:00:00.000-03:00"),
+    ]);
+    assert.match(html, /campanhas? não classificadas?/);
+    assert.match(html, /T1-W1 digest/);
+  });
+
+  test("renderDashboardHtml NÃO mostra a nota quando tudo está classificado", () => {
+    // cycle2605Campaigns (sem os t1Campaigns de allCampaigns) é 100% naming
+    // "Clarice News AAMM dNN-X" — todas reconhecidas por parseClariceCampaignKey.
+    const html = renderDashboardHtml(cycle2605Campaigns);
+    assert.doesNotMatch(html, /não classificada/);
+  });
+});
+
+// ─── editionSortKey (#3081) — ordenação cronológica mista AAMMDD/AAMM-MM ──────
+
+describe("editionSortKey (#3081)", () => {
+  test("AAMMDD diário: mais recente > mais antigo", () => {
+    assert.ok(editionSortKey("260702") > editionSortKey("260701"));
+    assert.ok(editionSortKey("260801") > editionSortKey("260731"));
+  });
+
+  test("AAMM-MM mensal: detecta virada de ano (dezembro → janeiro)", () => {
+    // conteúdo dez/26, envio jan/27 — sendMM(01) < contentMM(12) → vira ano
+    // (yy é o ano de 2 dígitos, mesmo formato do naming "AAMM-MM").
+    const key = editionSortKey("2612-01");
+    assert.equal(key, 27 * 10000 + 1 * 100);
+  });
+
+  test("mistura de formatos ordena CRONOLOGICAMENTE, não lexicograficamente", () => {
+    // Bug antigo: localeCompare("2606-07", "260702") ordenava errado por
+    // comparar caractere-a-caractere entre formatos de tamanho diferente.
+    // "260702" = 02/jul/2026. "2606-07" = conteúdo jun, envio jul/2026 (dia
+    // desconhecido) — o mensal é tratado como o 1º dia do mês de envio, então
+    // fica ANTES de qualquer dia > 1 do mesmo mês.
+    const daily = editionSortKey("260702");
+    const monthly = editionSortKey("2606-07");
+    assert.ok(daily > monthly, "260702 (dia 2) deve ficar depois de 2606-07 (dia 1 implícito, mesmo mês)");
+  });
+
+  test("formato inesperado → -Infinity (nunca quebra o sort)", () => {
+    assert.equal(editionSortKey("not-an-edition"), -Infinity);
+  });
+});
+
+describe("renderEiaEngagementSection: ordenação cronológica mista (#3081)", () => {
+  const mkEdition = (edition: string): EiaEngagementEdition => ({
+    edition,
+    total_votes: 10,
+    voted_a: 5,
+    voted_b: 5,
+    pct_correct: 50,
+    correct_choice: "A",
+  });
+
+  test("tooltip da coluna Edição não afirma 'Ciclo mensal' só (aceita diário AAMMDD também)", () => {
+    const summary: EiaEngagementSummary = { editions: [mkEdition("260702")], updated_at: null };
+    const html = renderEiaEngagementSection(summary);
+    assert.doesNotMatch(html, /title="Ciclo mensal da Clarice News/);
+  });
+
+  test("mistura AAMMDD + AAMM-MM ordena cronologicamente (mais recente primeiro)", () => {
+    // 2607-08 (envio ago/2026) é mais recente que 260702 (02/jul/2026).
+    const summary: EiaEngagementSummary = {
+      editions: [mkEdition("260702"), mkEdition("2607-08"), mkEdition("260601")],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(summary);
+    const i2607_08 = html.indexOf("2607-08");
+    const i260702 = html.indexOf("260702");
+    const i260601 = html.indexOf("260601");
+    assert.ok(i2607_08 < i260702, "2607-08 (envio ago) deve vir antes de 260702 (jul)");
+    assert.ok(i260702 < i260601, "260702 (jul) deve vir antes de 260601 (jun)");
   });
 });
 
