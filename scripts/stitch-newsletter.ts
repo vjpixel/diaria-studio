@@ -431,15 +431,17 @@ export function stitchNewsletter(input: StitchInput): string {
     parts.push("---");
     parts.push("");
   }
-  // #1569: PESQUISAS + OUTRAS NOTÍCIAS combinadas em RADAR.
-  if (radar) {
-    parts.push(radar);
+  // #3100: VÍDEO antes de RADAR (ordem canônica permanente, decisão editorial
+  // do gate 260708 — antes o VÍDEO vinha depois do RADAR).
+  if (videos) {
+    parts.push(videos);
     parts.push("");
     parts.push("---");
     parts.push("");
   }
-  if (videos) {
-    parts.push(videos);
+  // #1569: PESQUISAS + OUTRAS NOTÍCIAS combinadas em RADAR.
+  if (radar) {
+    parts.push(radar);
     parts.push("");
     parts.push("---");
     parts.push("");
