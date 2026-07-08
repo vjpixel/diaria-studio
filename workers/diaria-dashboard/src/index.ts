@@ -107,10 +107,14 @@ function fmtDuration(ms: number | null): string {
   return `${h}h${String(m).padStart(2, "0")}m`;
 }
 
+// #3098: status codificado só por cor falha WCAG 1.4.1 (Use of Color) — o
+// title= dá o rótulo textual pra qualquer leitor de tela/tooltip, e o glyph
+// varia (● cheio / ◐ meio / ○ vazio) como segundo sinal visual independente
+// de cor, pra quem enxerga cor mas com dificuldade de distinguir tons.
 function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
-  if (status === "verde") return `<span style="color:#2d8a4e">●</span>`;
-  if (status === "amarelo") return `<span style="color:#c07800">●</span>`;
-  return `<span style="color:#C00000">●</span>`;
+  if (status === "verde") return `<span style="color:#2d8a4e" title="verde">●</span>`;
+  if (status === "amarelo") return `<span style="color:#c07800" title="amarelo">◐</span>`;
+  return `<span style="color:#C00000" title="vermelho">○</span>`;
 }
 
 /**
@@ -748,7 +752,9 @@ export function renderDashboardHtml(data: DashboardData): string {
   .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
   .subsection-title { font-size: 0.95rem; font-weight: 700; margin: 12px 0 4px 0; color: var(--ink); }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
-  .muted { color: var(--ink); opacity: 0.55; }
+  /* #3098: 0.55 media ~4.03:1 sobre --paper em 0.85rem — abaixo de AA (4.5:1).
+     0.65 dá margem (~4.7:1) sem escurecer demais o efeito "secundário". */
+  .muted { color: var(--ink); opacity: 0.65; }
   /* #3097: opacity explícita (não herdada de small, que é 0.6, ~3.40:1) —
      alerta de ação (streak de falhas, "sem match") precisa ser MAIS legível
      que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
