@@ -5,6 +5,9 @@
  * fetch). Extraído de `index.ts` pra permitir testes Node sem mock do
  * Worker runtime (#1083).
  */
+// #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
+// index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
+import { DS_COLORS } from "./ds-tokens.generated";
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -309,6 +312,39 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
     : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
+// ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────
+//
+// As páginas leaderboard/arquivo (renderLeaderboardHtml, renderArchiveListHtml)
+// e a página de voto do arquivo (renderArchiveVoteHtml) não tinham identidade
+// visual nenhuma além do `<title>` + o kicker de texto "É IA?" — sem a régua
+// teal (mesmo elemento `<hr class="rule">` de Cursos/Livros) nem rodapé de
+// marca. Estes 2 helpers dão o mínimo de shell editorial consistente com as
+// outras 2 páginas públicas da Diar.ia.
+//
+// Duplicado (não importado de scripts/lib/shared/curadoria-page.ts, que tem o
+// equivalente pra Cursos/Livros) pelo mesmo motivo já documentado em
+// design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
+// Cloudflare separado dos scripts Node.
+
+/** CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca. */
+export function renderBrandShellStyles(): string {
+  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 20px; }
+  footer.brand-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
+  footer.brand-footer a { font-weight: 600; }`;
+}
+
+/**
+ * Rodapé mínimo de marca — link pro site principal do brand (diar.ia.br /
+ * clarice.ai). Não é a nav cruzada de 4 links de Cursos/Livros (#3113 Bloco A)
+ * — "É IA?" linkando pra si mesmo na própria página não faz sentido; aqui só
+ * precisa dar identidade (rodapé não-vazio), não navegação cruzada completa.
+ */
+export function renderBrandFooter(brand: Brand): string {
+  const info = BRAND_INFO[brand];
+  const label = info.shortName ?? info.name;
+  return `<footer class="brand-footer"><a href="${htmlEscape(info.siteUrl)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────

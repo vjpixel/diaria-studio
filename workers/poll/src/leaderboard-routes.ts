@@ -9,6 +9,8 @@ import {
   BRAND_INFO,
   leaderboardHref,
   formatEditionDateForBrand,
+  renderBrandShellStyles, // #3113: régua teal + rodapé de marca
+  renderBrandFooter, // #3113: régua teal + rodapé de marca
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -685,10 +687,12 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA?</p>
+<hr class="rule">
 <h1>${heading}</h1>
 ${subCopy}
 <p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
@@ -698,6 +702,7 @@ ${subCopy}
 </table>
 <p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
 
@@ -797,13 +802,16 @@ ${seoMeta}
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA? — arquivo</p>
+<hr class="rule">
 <h1>Arquivo de ${htmlEscape(year)}</h1>
 <p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
 <ul>${rows || "<li>Nenhuma edição disponível ainda.</li>"}</ul>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
@@ -849,6 +857,7 @@ ${seoMeta}
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
   p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   .email-row { margin: 20px 0; }
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
@@ -858,12 +867,22 @@ ${seoMeta}
      contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  /* #3113: hint "role pra ver B" — invisível no desktop (as 2 imagens já
+     aparecem lado a lado ali, ver .choices acima) e visível só na pilha
+     mobile abaixo, onde a imagem A + botão sozinhos já preenchem a tela e
+     dava pra votar em A sem nunca ver a imagem B. Elemento HTML real (não
+     CSS ::after) — leitor de tela também anuncia. */
+  .scroll-hint { display: none; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
+    .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
   }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+<p class="kicker">É IA?</p>
+<hr class="rule">
 <h1>Qual imagem foi gerada por IA?</h1>
 <p class="sub">Edição de ${dateLabel} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
 <form action="/vote" method="GET">
@@ -874,10 +893,12 @@ ${seoMeta}
   </div>
   <div class="choices">
     <div class="choice"><img src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>
     <div class="choice"><img src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
