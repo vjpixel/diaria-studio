@@ -75,7 +75,11 @@ describe("workers/poll/src/ds-tokens.generated.ts: sync gerado×fonte (#3111, me
 describe("workers/poll/src — nenhum literal de cor hex hardcoded (#3111, trava contra divergência)", () => {
   const HEX_COLOR = /#[0-9A-Fa-f]{6}\b/g;
 
-  for (const file of ["index.ts", "leaderboard-routes.ts"]) {
+  // #3113: lib.ts entrou nesta lista quando ganhou seu primeiro uso de
+  // DS_COLORS (renderBrandShellStyles/renderBrandFooter) — antes disso o
+  // arquivo não tinha cor nenhuma pra travar. Sem incluí-lo aqui, um hex
+  // hardcoded futuro em lib.ts passaria batido por este guard.
+  for (const file of ["index.ts", "leaderboard-routes.ts", "lib.ts"]) {
     test(`${file} não contém literais #RRGGBB — cores devem vir de DS_COLORS (ds-tokens.generated.ts)`, () => {
       const src = readFileSync(resolve(POLL_SRC, file), "utf8");
       const matches = src.match(HEX_COLOR) ?? [];
