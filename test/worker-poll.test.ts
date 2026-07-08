@@ -46,9 +46,11 @@ import {
   recordVoteLog,
   buildVoteLogEntry,
   handleSetName,
+  handleImage,
   hmacSign,
   type Env,
 } from "../workers/poll/src/index.ts";
+import poll from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -1163,5 +1165,48 @@ describe("isUnsubstitutedMergeTag (#2262)", () => {
   it("email real NÃO é flagado", () => {
     assert.equal(isUnsubstitutedMergeTag("rejane.emilio@gmail.com"), false);
     assert.equal(isUnsubstitutedMergeTag("a+tag@dominio.com.br"), false);
+  });
+});
+
+describe("/img/{key} aceita HEAD além de GET (regressão)", () => {
+  function imgEnv(store: Map<string, ArrayBuffer>): Env {
+    return {
+      POLL_SECRET: "",
+      ADMIN_SECRET: "",
+      ALLOWED_ORIGINS: "",
+      POLL: {
+        get: async (k: string) => store.get(k) ?? null,
+      },
+    } as unknown as Env;
+  }
+
+  it("handleImage retorna 200 com Content-Type image/jpeg quando a key existe", async () => {
+    const store = new Map<string, ArrayBuffer>([["img-260707-04-d3-1x1-abc.jpg", new Uint8Array([1, 2, 3]).buffer]]);
+    const res = await handleImage("/img/img-260707-04-d3-1x1-abc.jpg", imgEnv(store));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "image/jpeg");
+  });
+
+  it("dispatcher principal roteia GET /img/{key} pra handleImage (200)", async () => {
+    const store = new Map<string, ArrayBuffer>([["img-260707-04-d3-1x1-abc.jpg", new Uint8Array([1, 2, 3]).buffer]]);
+    const req = new Request("https://poll.diaria.workers.dev/img/img-260707-04-d3-1x1-abc.jpg", { method: "GET" });
+    const res = await poll.fetch(req, imgEnv(store));
+    assert.equal(res.status, 200);
+  });
+
+  it("dispatcher principal roteia HEAD /img/{key} pra handleImage (200, não 404) — #3009", async () => {
+    // Clientes que fazem preflight HEAD antes de baixar a imagem (ex: Make.com/LinkedIn
+    // validando a URL antes do upload) recebiam 404 aqui mesmo com o GET retornando 200,
+    // porque a rota só aceitava request.method === "GET".
+    const store = new Map<string, ArrayBuffer>([["img-260707-04-d3-1x1-abc.jpg", new Uint8Array([1, 2, 3]).buffer]]);
+    const req = new Request("https://poll.diaria.workers.dev/img/img-260707-04-d3-1x1-abc.jpg", { method: "HEAD" });
+    const res = await poll.fetch(req, imgEnv(store));
+    assert.equal(res.status, 200);
+  });
+
+  it("HEAD /img/{key} inexistente continua 404", async () => {
+    const req = new Request("https://poll.diaria.workers.dev/img/nao-existe.jpg", { method: "HEAD" });
+    const res = await poll.fetch(req, imgEnv(new Map()));
+    assert.equal(res.status, 404);
   });
 });
