@@ -271,8 +271,8 @@ test("render — mostra coluna de Alvo + colore o valor (verde/vermelho) por mé
   assert.match(html, /Alvo 🟢/); // coluna de alvo verde presente
   assert.match(html, /Alvo 🟡/); // coluna de alvo amarelo presente
   assert.doesNotMatch(html, /<th>Status<\/th>/); // coluna Status removida
-  assert.match(html, /#158a4a/); // valor verde (abertura 27%)
-  assert.match(html, /#c0392b/); // valor vermelho (unsub 3,1% ≥ breaker 3%)
+  assert.match(html, /#0E6B39/); // valor verde (abertura 27%) — #3087: consolidado com STATUS_COLOR
+  assert.match(html, /#C00000/); // valor vermelho (unsub 3,1% ≥ breaker 3%) — #3087: agora = DS.alert
   assert.match(html, /PIOR métrica/); // explica o critério do semáforo
 });
 

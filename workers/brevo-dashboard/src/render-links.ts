@@ -23,6 +23,27 @@ export const DS = {
 export const DS_TOKENS = DS_COLORS;
 export const DS_FONTS = DSF;
 
+/**
+ * #3087: cores semânticas de status (verde/amarelo/vermelho), consolidadas
+ * NUM ÚNICO lugar ao lado de `DS.alert` — antes `weekly-plan.ts` declarava seu
+ * próprio `STATUS_COLOR` com um vermelho (#c0392b) que divergia do vermelho de
+ * alerta usado no resto do dashboard (`DS.alert`, #C00000), e um amarelo
+ * (#b07a00) abaixo do mínimo AA (~3.7:1 sobre --card). Correção (não é
+ * proposta de paleta nova — consolidação):
+ *   - red: reusa `DS.alert` direto (mesmo vermelho do resto da dashboard).
+ *   - yellow/green: escurecidos até cruzar 4.5:1 (WCAG AA, texto normal) sobre
+ *     `--card` (#FFFFFF, o fundo mais claro onde estas cores aparecem —
+ *     `.table-wrap`/`table` usam `--card`). Luminância relativa calculada via
+ *     fórmula WCAG (sRGB linearizado): amarelo `#8A6100` ≈ 5.5:1 sobre --card
+ *     (era ~3.7:1); verde `#0E6B39` ≈ 6.6:1 sobre --card (era ~4.4:1, já
+ *     passava mas sem folga). Detalhe do cálculo no corpo do PR #3087.
+ */
+export const STATUS_COLOR: Record<"green" | "yellow" | "red", string> = {
+  green: "#0E6B39",
+  yellow: "#8A6100",
+  red: DS.alert,
+};
+
 
 export function pct(n: number, total: number): string {
   if (!total) return "0.0%";
@@ -332,6 +353,18 @@ export function deriveLinksSectionTitle(
  * @param rows - resultado de aggregateLinksAcrossCampaigns()
  * @param edicaoLabel - label da edição ex: "2605-06"; se null, usa "do período"
  */
+/**
+ * #3090: definição canônica das colunas da tabela "Links mais clicados"
+ * (label + tooltip) — fonte única usada tanto no `title=` de cada `<th>`
+ * quanto no `<details>` "Glossário das colunas". Exportado pra teste unitário.
+ */
+export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "Link", tooltip: "URL do link (links de sistema e descadastramento excluídos)" },
+  { label: "Clicks", tooltip: "Total de cliques somados entre todos os envios do período" },
+  { label: "%", tooltip: "Participação percentual no total de clicks editoriais do período" },
+  { label: "Envios", tooltip: "Número de envios onde este link apareceu" },
+];
+
 export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLabel?: string | null): string {
   const sectionTitle = edicaoLabel
     ? `Links mais clicados da edição ${edicaoLabel}`
@@ -365,14 +398,15 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLa
 <section class="phase2-section" id="links-agregados">
   <h2 class="section-title">${sectionTitle}</h2>
   <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across envios). Links de sistema excluídos.</p>
+  ${renderColumnGlossary("links-agregados", AGGREGATED_LINKS_COLUMNS)}
   <div class="table-wrap">
   <table class="links-table">
     <thead>
       <tr>
-        <th class="link-url-th" title="URL do link (links de sistema e descadastramento excluídos)">Link</th>
-        <th title="Total de cliques somados entre todos os envios do período">Clicks</th>
-        <th title="Participação percentual no total de clicks editoriais do período">%</th>
-        <th title="Número de envios onde este link apareceu">Envios</th>
+        <th class="link-url-th" title="${escHtml(AGGREGATED_LINKS_COLUMNS[0].tooltip)}">${AGGREGATED_LINKS_COLUMNS[0].label}</th>
+        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[1].tooltip)}">${AGGREGATED_LINKS_COLUMNS[1].label}</th>
+        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[2].tooltip)}">${AGGREGATED_LINKS_COLUMNS[2].label}</th>
+        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[3].tooltip)}">${AGGREGATED_LINKS_COLUMNS[3].label}</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -380,6 +414,38 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLa
   </div>
   <p class="links-note">Clicks totais por link — unique-clicks por link não disponível na API Brevo v3.</p>
 </section>`;
+}
+
+// ─── #3090: glossário de colunas (sempre visível, não hover-only) ───────────
+
+/**
+ * #3090: a semântica de uma tabela vivia só em `title=` (hover-only,
+ * inacessível em touch/mobile — o fluxo real do editor é celular). Renderiza
+ * um `<details>` "Glossário das colunas" reusando as classes já usadas nos
+ * outros colapsáveis do dashboard (`.links-ctr`/`.links-summary`), a partir
+ * das MESMAS entradas `{label, tooltip}` já usadas nos `title=` de cada `<th>`
+ * — sem duplicar texto. Os `title=` permanecem como conveniência extra
+ * desktop (hover). Vazio (`""`) quando `columns` está vazio.
+ *
+ * @param id - sufixo do id do `<details>` (único por tabela/aba)
+ * @param columns - mesmas entradas usadas nos `title=` dos `<th>` da tabela
+ */
+export function renderColumnGlossary(
+  id: string,
+  columns: ReadonlyArray<{ label: string; tooltip: string }>,
+): string {
+  if (columns.length === 0) return "";
+  const items = columns
+    .map((c) => `<dt>${escHtml(c.label)}</dt><dd>${escHtml(c.tooltip)}</dd>`)
+    .join("\n");
+  return `<details class="links-ctr" id="glossary-${escHtml(id)}">
+  <summary class="links-summary">Glossário das colunas</summary>
+  <div class="links-table-wrap">
+  <dl class="glossary-list">
+${items}
+  </dl>
+  </div>
+</details>`;
 }
 
 export function hoursSince(iso: string | null): string {

@@ -24,7 +24,7 @@
  */
 import type { BrevoCampaign } from "./types.ts";
 import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS } from "./sections-core.ts";
-import { fmtTimeBRT } from "./render-links.ts";
+import { fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
 // #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
 // import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
 // acima (uso só dentro de corpo de função, em request-time).
@@ -380,7 +380,7 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
     .join("\n");
   return `
   <h3>Melhores dias da semana (abertura) — sugestão mensal</h3>
-  <p class="section-note">Melhores dias: <strong style="color:var(--brand)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
+  <p class="section-note">Melhores dias: <strong style="color:var(--ink)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>Dia</th><th>Envios</th><th title="Open rate agregado (histórico completo)">Open rate agr.</th></tr></thead>
@@ -519,11 +519,9 @@ ${scheduledSection}`;
   // Tabela de métricas: valor colorido pelo status + coluna de alvo (limiares) +
   // status por métrica — o editor vê na hora QUAL métrica segura o semáforo.
   const T = DEFAULT_HEALTH_THRESHOLDS;
-  const STATUS_COLOR: Record<Semaphore, string> = {
-    green: "#158a4a",
-    yellow: "#b07a00",
-    red: "#c0392b",
-  };
+  // #3087: STATUS_COLOR consolidado em render-links.ts (ao lado de DS.alert) —
+  // não mais declarado localmente (evita drift entre o vermelho daqui e o
+  // vermelho de alerta usado no resto do dashboard).
   const metricDefs = [
     { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const },
     { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const },

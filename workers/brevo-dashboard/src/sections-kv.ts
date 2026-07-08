@@ -7,7 +7,7 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
-import { DS, pct, fmtTimeBRT, cellClass } from "./render-links.ts";
+import { DS, pct, fmtTimeBRT, cellClass, renderColumnGlossary } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP } from "./sections-core.ts";
 import { isBounceBreach } from "./thresholds.ts";
 // #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
@@ -146,13 +146,14 @@ export function renderDaySummarySection(rows: DaySummary[]): string {
     : isTied
     ? `Empate entre dias com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
     : sampledRows.length >= 2 && winnerDay
-    ? `Melhor dia provisório: <strong style="color:${DS.brand}">D${winnerDay}</strong> — aguardar conclusão da S1 para decisão final.`
+    ? `Melhor dia provisório: <strong style="color:${DS.ink}">D${winnerDay}</strong> — aguardar conclusão da S1 para decisão final.`
     : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
 
   const tableRows = rows
     .map((r) => {
       const isWinner = r.dayNum === winnerDay && r.campaignCount > 0;
-      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
+      // #3088: teal falha AA em texto pequeno — tag volta a --ink.
+      const winnerTag = isWinner ? ` <strong style="color:${DS.ink}">▲ LÍDER</strong>` : "";
       const organicInline =
         r.campaignCount > 0 && r.organicOpenRate != null
           ? ` <span class="rate-inline">(${r.organicOpenRate.toFixed(1)}% s/ MPP)</span>`
@@ -776,8 +777,10 @@ ${totalRow}</tbody></table></div>`;
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
     : renderPriorityPointsFallback(ppMap);
+  // #3088: teal falha AA em texto pequeno — badge de status volta a --ink
+  // (o vermelho de alerta do outro branch é DS.alert, que já passa AA).
   const brevoBadge = brevo.has_signal
-    ? `<span style="color:${DS.brand}">${n(brevo.synced_rows)} sincronizados</span>`
+    ? `<span style="color:${DS.ink}">${n(brevo.synced_rows)} sincronizados</span>`
     : `<span style="color:var(--alert)">sem sinal Brevo ainda — rode clarice-sync-brevo.ts</span>`;
 
   // #2880: a tabela "Por safra (cohort)" foi REMOVIDA — o eixo cohort vive
@@ -822,6 +825,32 @@ ${totalRow}</tbody></table></div>`;
  * Exportado pra teste unitário.
  */
 export const COHORT_DEVIATION_THRESHOLD_PP = 20;
+
+/**
+ * #3090: definição canônica das colunas da tabela Cohorts (label + tooltip) —
+ * fonte única usada tanto no `title=` de cada `<th>` quanto no `<details>`
+ * "Glossário das colunas" (sempre visível, funciona em touch/mobile). Exportado
+ * pra teste unitário.
+ */
+export const COHORTS_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "Cohort", tooltip: "Cohort (taxonomia #2857)" },
+  { label: "Contatos", tooltip: "Total de contatos no cohort (exclui internos)" },
+  { label: "Na Brevo", tooltip: "Contatos do cohort sincronizados na Brevo (brevo_list_ids preenchido)" },
+  { label: "Elegíveis", tooltip: "Contatos elegíveis para envio (send_eligible=1)" },
+  { label: "Recebeu ≥1", tooltip: "Contatos que já receberam ao menos 1 envio (sends_count>0)" },
+  {
+    label: "Recebeu neste ciclo",
+    tooltip: "Contatos do cohort que receberam no ciclo atual (last_sent_at ≥ início do ciclo)",
+  },
+  {
+    label: "Falta enviar",
+    tooltip: "Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo, mínimo 0)",
+  },
+  { label: "Abertura", tooltip: "% de quem recebeu que abriu ao menos 1 envio" },
+  { label: "Clique", tooltip: "% de quem recebeu que clicou ao menos 1 envio" },
+  { label: "Unsub", tooltip: "% de quem recebeu que descadastrou" },
+  { label: "Bounce", tooltip: "% de quem recebeu que deu hard bounce" },
+];
 
 export function renderCohortsTabPanel(
   cohortStats: Record<string, CohortStatsRow> | undefined,
@@ -921,10 +950,35 @@ export function renderCohortsTabPanel(
   const avgUnsub = colAvg(rows.map((r) => r.unsubRate));
   const avgBounce = colAvg(rows.map((r) => r.bounceRate));
 
-  // #2875: reusa cellClass (render-links.ts) em vez de reinventar a montagem
-  // do atributo class="..." — mesmo helper usado nas demais tabelas do dashboard.
-  const cellAttr = (v: number | null, avg: number | null): string =>
-    cellClass(v != null && avg != null && Math.abs(v - avg) > COHORT_DEVIATION_THRESHOLD_PP && "alert");
+  // #3091: antes, QUALQUER desvio >COHORT_DEVIATION_THRESHOLD_PP virava
+  // class="alert" (vermelho) — inclusive um desvio POSITIVO em abertura/clique
+  // (a MELHOR linha da coluna), colidindo com a convenção do resto do
+  // dashboard (vermelho = circuit breaker = "ruim"). Agora a direção do
+  // desvio é avaliada por métrica: abertura/clique são "higher-is-better"
+  // (desvio ACIMA da média é favorável); unsub/bounce são "lower-is-better"
+  // (desvio ABAIXO da média é favorável). Desvio desfavorável → ▼ + vermelho
+  // (alert, "ruim", igual ao resto da página); desvio favorável → ▲ + negrito
+  // em --ink (destaque neutro, sem alarme — teal não é usado aqui por ser
+  // texto pequeno, ver #3088). Dentro do threshold → sem marcação.
+  type RateDirection = "higher" | "lower";
+  const classifyDeviation = (
+    v: number | null,
+    avg: number | null,
+    dir: RateDirection,
+  ): "favorable" | "unfavorable" | "none" => {
+    if (v == null || avg == null || !Number.isFinite(v) || !Number.isFinite(avg)) return "none";
+    const diff = v - avg;
+    if (Math.abs(diff) <= COHORT_DEVIATION_THRESHOLD_PP) return "none";
+    const favorable = dir === "higher" ? diff > 0 : diff < 0;
+    return favorable ? "favorable" : "unfavorable";
+  };
+  const renderRateCell = (v: number | null, avg: number | null, dir: RateDirection): string => {
+    const status = classifyDeviation(v, avg, dir);
+    const text = pctOrDash(v);
+    if (status === "unfavorable") return `<td${cellClass("alert")}>▼ ${text}</td>`;
+    if (status === "favorable") return `<td><strong>▲ ${text}</strong></td>`;
+    return `<td>${text}</td>`;
+  };
 
   // #2909: célula "recebeu neste ciclo"/"falta enviar" — número quando há ciclo,
   // "—" quando não (null-safe). "falta enviar" = elegíveis − recebeu no ciclo.
@@ -939,10 +993,10 @@ export function renderCohortsTabPanel(
       <td>${n(r.received)}</td>
       <td>${cycleCell(r.receivedThisCycle)}</td>
       <td>${cycleCell(Math.max(0, r.eligible - r.receivedThisCycle))}</td>
-      <td${cellAttr(r.openRate, avgOpen)}>${pctOrDash(r.openRate)}</td>
-      <td${cellAttr(r.clickRate, avgClick)}>${pctOrDash(r.clickRate)}</td>
-      <td${cellAttr(r.unsubRate, avgUnsub)}>${pctOrDash(r.unsubRate)}</td>
-      <td${cellAttr(r.bounceRate, avgBounce)}>${pctOrDash(r.bounceRate)}</td>
+      ${renderRateCell(r.openRate, avgOpen, "higher")}
+      ${renderRateCell(r.clickRate, avgClick, "higher")}
+      ${renderRateCell(r.unsubRate, avgUnsub, "lower")}
+      ${renderRateCell(r.bounceRate, avgBounce, "lower")}
     </tr>`;
 
   const activeTableRows = activeRows.map(renderCohortRow).join("\n");
@@ -986,18 +1040,10 @@ export function renderCohortsTabPanel(
   // #2908: header compartilhado entre a tabela ativa e o <details> de
   // nunca-enviados (mesmas colunas). 11 colunas (#2909: −Envios(Σ)/−MV verified,
   // +Recebeu neste ciclo/+Falta enviar).
+  // #3090: gerado de COHORTS_COLUMNS (mesma fonte do glossário abaixo) — sem
+  // duplicar texto entre o title= (hover) e o glossário (sempre visível).
   const headerRow = `<tr>
-        <th title="Cohort (taxonomia #2857)">Cohort</th>
-        <th title="Total de contatos no cohort (exclui internos)">Contatos</th>
-        <th title="Contatos do cohort sincronizados na Brevo (brevo_list_ids preenchido)">Na Brevo</th>
-        <th title="Contatos elegíveis para envio (send_eligible=1)">Elegíveis</th>
-        <th title="Contatos que já receberam ao menos 1 envio (sends_count>0)">Recebeu ≥1</th>
-        <th title="Contatos do cohort que receberam no ciclo atual (last_sent_at ≥ início do ciclo)">Recebeu neste ciclo</th>
-        <th title="Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo, mínimo 0)">Falta enviar</th>
-        <th title="% de quem recebeu que abriu ao menos 1 envio">Abertura</th>
-        <th title="% de quem recebeu que clicou ao menos 1 envio">Clique</th>
-        <th title="% de quem recebeu que descadastrou">Unsub</th>
-        <th title="% de quem recebeu que deu hard bounce">Bounce</th>
+${COHORTS_COLUMNS.map((c) => `        <th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
       </tr>`;
 
   // #2908: nunca-enviados (received=0) num <details> recolhível abaixo das
@@ -1023,7 +1069,8 @@ export function renderCohortsTabPanel(
   return `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células de taxa em <span class="alert-label">vermelho</span> desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna. A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas. Cohorts que nunca receberam envio ficam recolhidos abaixo (#2908).</p>
+  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard, #3091). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo (#2908).</p>
+  ${renderColumnGlossary("cohorts", COHORTS_COLUMNS)}
   <div class="table-wrap">
   <table>
     <thead>
@@ -1067,7 +1114,7 @@ export function renderMvStatusSection(
       badge = `<span style="color:${DS.ink};opacity:0.6">N/A — validado por pagamento Stripe</span>`;
     } else if (g.status === "verified" && g.verifiedAt) {
       const dateFmt = new Date(g.verifiedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
-      badge = `<span style="color:${DS.brand}">✓ MV ${dateFmt} — ${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos</span>`;
+      badge = `<span style="color:${DS.ink}">✓ MV ${dateFmt} — ${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos</span>`;
     } else {
       badge = `<span style="color:var(--alert)">MV pendente</span>`;
     }

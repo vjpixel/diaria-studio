@@ -138,16 +138,36 @@ test("renderCohortsTabPanel: ordena por cohortSendRank (assinantes-ativos < ex-a
   assert.ok(idxCaudao < idxNull, "leads-caudao antes de null (sem cohort)");
 });
 
-test("renderCohortsTabPanel: célula com desvio >20pp da média da coluna ganha class=\"alert\"", () => {
+test("renderCohortsTabPanel: desvio >20pp da média — direção importa (#3091: vermelho só pra desvio desfavorável)", () => {
   // 2 cohorts: A com abertura 90%, B com abertura 10% → média = 50%; ambos
-  // desviam 40pp (>20pp) → ambos devem ganhar destaque.
+  // desviam 40pp (>20pp), mas abertura é "higher-is-better": 90% (acima da
+  // média) é FAVORÁVEL → ▲ destacado sem alarme; 10% (abaixo da média) é
+  // DESFAVORÁVEL → ▼ + class="alert" (vermelho = "ruim", igual ao resto do
+  // dashboard). Antes do #3091, AMBOS ganhavam class="alert" — pintando de
+  // vermelho a MELHOR linha.
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": mk({ contacts: 100, eligible: 100, received: 100, opened: 90 }),
     "ex-assinantes": mk({ contacts: 100, eligible: 100, received: 100, opened: 10 }),
   };
   const html = renderCohortsTabPanel(stats);
-  assert.match(html, /<td class="alert">90\.0%<\/td>/, "90% (desvio +40pp) destacado");
-  assert.match(html, /<td class="alert">10\.0%<\/td>/, "10% (desvio -40pp) destacado");
+  assert.match(html, /<td><strong>▲ 90\.0%<\/strong><\/td>/, "90% (desvio favorável, acima da média) ganha ▲, SEM class=alert");
+  assert.doesNotMatch(html, /<td class="alert">90\.0%<\/td>/, "90% NÃO deve mais ser vermelho (era o bug do #3091)");
+  assert.match(html, /<td class="alert">▼ 10\.0%<\/td>/, "10% (desvio desfavorável, abaixo da média) ganha ▼ + class=alert (vermelho)");
+});
+
+test("renderCohortsTabPanel: unsub/bounce são 'lower-is-better' — desvio ABAIXO da média é favorável (▲), ACIMA é desfavorável (▼ vermelho)", () => {
+  // 2 cohorts: A com unsub 1%, B com unsub 41% → média = 21%; ambos desviam
+  // 20pp (não passa o threshold de >20pp)... usar valores que desviem >20pp.
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 100, received: 100, unsub: 1 }), // 1% unsub
+    "ex-assinantes": mk({ contacts: 100, eligible: 100, received: 100, unsub: 50 }), // 50% unsub
+  };
+  const html = renderCohortsTabPanel(stats);
+  // média = 25.5%; 1% desvia -24.5pp (abaixo da média = favorável, unsub é
+  // lower-is-better) → ▲ sem alerta. 50% desvia +24.5pp (acima da média =
+  // desfavorável) → ▼ + class="alert".
+  assert.match(html, /<td><strong>▲ 1\.0%<\/strong><\/td>/, "unsub baixo (abaixo da média) é favorável → ▲, sem vermelho");
+  assert.match(html, /<td class="alert">▼ 50\.0%<\/td>/, "unsub alto (acima da média) é desfavorável → ▼ + vermelho");
 });
 
 test("renderCohortsTabPanel: cohorts próximos da média (desvio <=20pp) NÃO ganham destaque", () => {
@@ -285,7 +305,10 @@ test("renderCohortsTabPanel: nunca-enviados (received=0) vão pro <details>; ati
   const html = renderCohortsTabPanel(stats);
   assert.match(html, /<details class="never-sent">/, "container <details> presente");
   assert.match(html, /Cohorts sem envio \(1\)/, "summary conta os nunca-enviados");
-  const detailsIdx = html.indexOf("<details");
+  // #3090: o glossário das colunas também é um <details> (class="links-ctr"),
+  // renderizado ANTES da tabela — usar o seletor específico do never-sent
+  // (class="never-sent"), não o primeiro <details> genérico da página.
+  const detailsIdx = html.indexOf('<details class="never-sent">');
   const ativosIdx = html.indexOf("Assinantes ativos");
   const exIdx = html.indexOf("Ex-assinantes");
   assert.ok(ativosIdx !== -1 && ativosIdx < detailsIdx, "ativo na tabela principal (antes do <details>)");
@@ -364,11 +387,18 @@ test("renderDashboardHtml: cycle_start do summary flui até a tabela Cohorts (#2
   assert.match(html, />25</, "received_this_cycle exibido quando cycle_start flui pelo dashboard");
 });
 
-test("renderDashboardHtml: legenda do footer avisa que vermelho na aba Cohorts NÃO é circuit breaker (#2875 item 6)", () => {
+test("renderDashboardHtml: legenda do footer diz que vermelho SEMPRE significa 'ruim' — inclusive na aba Cohorts (#3091, reverte #2875 item 6)", () => {
+  // #3091: antes, o footer avisava que vermelho na tabela Cohorts tinha "outro
+  // significado" (podia pintar a MELHOR linha de vermelho). Com a direção do
+  // desvio agora considerada (favorável → ▲, desfavorável → ▼ vermelho),
+  // vermelho volta a significar só "ruim" em toda a página — a exceção
+  // desapareceu, só o CRITÉRIO (desvio vs. circuit breaker) continua distinto.
   const html = renderDashboardHtml([], [], null, null, null);
   assert.match(html, /class="footer"/);
   const footer = html.match(/<p class="footer">[\s\S]*?<\/p>/)?.[0] ?? "";
   assert.match(footer, /circuit breaker/, "legenda global de circuit breaker segue presente");
-  assert.match(footer, /Cohorts/, "footer referencia a exceção da tabela Cohorts");
+  assert.match(footer, /Vermelho sempre significa ["“]ruim["”]/, "footer afirma que vermelho é sempre 'ruim' em toda a página (#3091)");
+  assert.match(footer, /Cohorts/, "footer ainda referencia o critério distinto da tabela Cohorts");
   assert.match(footer, new RegExp(`${COHORT_DEVIATION_THRESHOLD_PP}pp`), "footer cita o threshold real de desvio da tabela Cohorts");
+  assert.doesNotMatch(footer, /outro significado/, "disclaimer antigo ('outro significado') removido — vermelho não diverge mais em significado (#3091)");
 });
