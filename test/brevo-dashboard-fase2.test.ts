@@ -276,6 +276,32 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
     assert.equal(groups[0].campaigns.length, 3);
   });
 
+  // #3081 (review): teste de INTEGRAÇÃO ponta-a-ponta — o teste acima só prova
+  // que `groupMonthlyAbcTests` forma o grupo; sozinho isso não garante que a
+  // seção realmente aparece com dados no HTML final (o bug real: o grupo era
+  // formado, mas `aggregateAbcSummary` zerava as 3 células, e `renderAbcSection`
+  // retorna "" quando todas as células têm campaignCount 0 — a seção sumia de
+  // qualquer forma). Roda o pipeline completo `renderDashboardHtml`.
+  test("#3081: renderDashboardHtml mostra dados reais (não seção vazia) pra ciclo mensal SÓ-COLD", () => {
+    const coldOnly = [
+      makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }),
+      makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }),
+      makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }),
+    ];
+    const html = renderDashboardHtml(coldOnly);
+    assert.match(html, /id="abc-summary-monthly-2607-08-2026-08-02"/, "seção mensal deve existir");
+    assert.match(html, /Resumo A\/B\/C — Mensal \(2607-08/);
+    // A seção precisa conter as 3 células com CONTAGEM real (Envios=1), não
+    // "—" (stub de sem-dados) nem ausente — prova que aggregateAbcSummary não
+    // zerou as células cold.
+    const sectionStart = html.indexOf('id="abc-summary-monthly-2607-08-2026-08-02"');
+    const sectionHtml = html.slice(sectionStart, sectionStart + 3000);
+    assert.match(sectionHtml, /Célula A/);
+    assert.match(sectionHtml, /Célula B/);
+    assert.match(sectionHtml, /Célula C/);
+    assert.doesNotMatch(sectionHtml, /Dados insuficientes/, "não deve cair no caminho 'sem dados' — há 3 campanhas com stats reais");
+  });
+
   test("#3081: NÃO agrupa teste A/B/C DIÁRIO (cycle sem hífen, ex: 'Clarice News 2605 d02-A')", () => {
     const daily = [
       makeCampaign(301, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
@@ -293,9 +319,18 @@ describe("findUnclassifiedCampaignNames (#3081)", () => {
     assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
   });
 
-  test("campanha cold com célula → reconhecida via parseAbcAudienceCampaign, não entra na lista", () => {
+  test("campanha cold com célula → reconhecida via classifyClariceAudience, não entra na lista", () => {
     const campaigns = [makeCampaign(1, "cold 2607-08 — A: subject", "2026-08-02T06:00:00.000-03:00")];
     assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  // #3081 (review): bug — a versão original checava só parseClariceCampaignKey
+  // (warm) + parseAbcAudienceCampaign (exige célula A/B/C mesmo pra cold), então
+  // um envio cold SEM célula (ex: envio único pós-teste, mesmo padrão que envios
+  // warm sem célula já recebem sem serem sinalizados) virava falso positivo.
+  test("campanha cold SEM célula (envio único pós-teste) → reconhecida, não entra na lista (falso positivo corrigido)", () => {
+    const campaigns = [makeCampaign(1, "cold 2607-08 envio único", "2026-08-10T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), [], "cold sem célula é naming válido — mesmo tratamento que warm sem célula");
   });
 
   test("naming fora do padrão (ex: legado 'T1-W1 digest') → entra na lista", () => {
@@ -436,6 +471,38 @@ describe("aggregateAbcSummary", () => {
     // A orgânico = (20−8)+(35−7) = 40 / 297
     assert.ok(a.organicOpenRate !== null && Math.abs(a.organicOpenRate - (40 / 297) * 100) < 0.01,
       `A organicOpenRate deve ser ~13.5% mas foi ${a.organicOpenRate}`);
+  });
+
+  // #3081 (review): sem o fallback pro parser cold, `aggregateAbcSummary`
+  // zerava as 3 células de um ciclo mensal SÓ-COLD (parseClariceCampaignKey
+  // não reconhece "cold ..."), fazendo `renderAbcSection` retornar "" mesmo
+  // com `groupMonthlyAbcTests` já formando o grupo corretamente — o mesmo
+  // sintoma de invisibilidade que o fix original deveria ter resolvido.
+  test("#3081: agrega ciclo mensal SÓ-COLD (naming 'cold AAMM-MM — X'), sem corte de dia", () => {
+    const coldOnly = [
+      makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }),
+      makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }),
+      makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }),
+    ];
+    const result = aggregateAbcSummary(coldOnly, "2607-08");
+    const a = result.find((r) => r.cell === "A")!;
+    const b = result.find((r) => r.cell === "B")!;
+    const c = result.find((r) => r.cell === "C")!;
+    assert.equal(a.campaignCount, 1, "cold NÃO deve ficar zerado (bug antigo: parseClariceCampaignKey não reconhece 'cold ...')");
+    assert.equal(a.totalViews, 130);
+    assert.equal(a.totalDelivered, 895);
+    assert.equal(b.campaignCount, 1);
+    assert.equal(b.totalViews, 140);
+    assert.equal(c.campaignCount, 1);
+    assert.equal(c.totalViews, 125);
+  });
+
+  test("#3081: warm continua tendo precedência sobre cold quando parseClariceCampaignKey reconhece o nome", () => {
+    // Regressão de não-regressão: garante que o fallback cold não interfere
+    // no caminho warm já testado acima (mesmo cycle "2605" das fixtures).
+    const result = aggregateAbcSummary(allCampaigns, "2605");
+    const a = result.find((r) => r.cell === "A")!;
+    assert.equal(a.campaignCount, 2, "comportamento warm idêntico ao teste MPP-inclusivo acima");
   });
 
   test("retorna sempre as 3 células mesmo com ciclo sem dados", () => {

@@ -456,6 +456,13 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
       p41_80: numOr0(rawPp.p41_80),
       gt80: numOr0(rawPp.gt80),
       optin: numOr0(rawPp.optin),
+      // #3081 (review): opcional por SCHEMA EVOLUTION (mesmo critério de
+      // `cycle_start` acima) — OMITIDO quando ausente no KV cru (payload
+      // pré-#3081), nunca defaultado a 0 (0 excluídos e "dado ausente" não
+      // são a mesma coisa). Sem este passthrough, o campo nunca chegava ao
+      // render em produção — este normalizador reconstrói `priority_points`
+      // como literal fixo e descartava qualquer chave extra do KV cru.
+      ...(typeof rawPp.internal_excluded === "number" ? { internal_excluded: numOr0(rawPp.internal_excluded) } : {}),
     },
     ...histFields,
     ...(cohort_stats ? { cohort_stats } : {}),

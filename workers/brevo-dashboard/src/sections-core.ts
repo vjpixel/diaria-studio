@@ -918,6 +918,18 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
  * Agrega resumo A/B/C das campanhas S1 (d01–d07) de um ciclo Clarice.
  * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
  * Exportado pra teste unitário.
+ *
+ * #3081 (review): `parseClariceCampaignKey` é tentado primeiro — preserva
+ * 100% do comportamento anterior pro caso warm (diário E mensal, idêntico ao
+ * código antigo). SÓ quando ele não reconhece o nome, cai pro fallback
+ * `parseAbcAudienceCampaign` restrito a `audience === "cold"` — cobre o teste
+ * mensal COLD (naming "cold AAMM-MM — X"), tratado como `monthly:true` (sem
+ * corte de dia, mesmo tratamento que o mensal warm já recebia). Sem este
+ * fallback, `groupMonthlyAbcTests` (que já reconhece cold) formava o grupo
+ * mas esta função zerava todas as células dele — a seção "Resumo A/B/C —
+ * Mensal" de um ciclo só-cold renderizava vazia (`renderAbcSection` retorna
+ * "" quando `every(r => r.campaignCount === 0)`), o mesmo sintoma que o fix
+ * do `groupMonthlyAbcTests` deveria ter resolvido (achado no self-review).
  */
 export function aggregateAbcSummary(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -933,7 +945,13 @@ export function aggregateAbcSummary(
   };
 
   for (const c of campaigns) {
-    const parsed = parseClariceCampaignKey(c.name);
+    const warm = parseClariceCampaignKey(c.name);
+    const cold = warm ? null : parseAbcAudienceCampaign(c.name);
+    const parsed =
+      warm ??
+      (cold && cold.audience === "cold"
+        ? { cycle: cold.cycle, dayNum: 0, cell: cold.cell as "A" | "B" | "C" | null, monthly: true }
+        : null);
     if (!parsed || parsed.cycle !== cycle) continue;
     // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
     if (parsed.cell === null) continue;
@@ -1109,21 +1127,27 @@ export function groupMonthlyAbcTests(
 }
 
 /**
- * #3081: nomes de campanha que NÃO batem com nenhum classificador de naming
- * Clarice conhecido — nem `parseClariceCampaignKey` (warm diário/mensal) nem
- * `parseAbcAudienceCampaign` (warm/cold com célula A/B/C). Uma campanha nesta
- * lista fica invisível a TODAS as seções A/B/C do dashboard (Resumo A/B/C,
- * Resumo por Audiência, Resumo Mensal) — a nota diagnóstica na Visão Geral
+ * #3081: nomes de campanha que NÃO batem com nenhum naming Clarice conhecido
+ * — nem warm (`Clarice News ...`, com ou sem célula) nem cold (`cold ...`,
+ * com ou sem célula). Uma campanha nesta lista não é reconhecida por
+ * NENHUMA agregação do dashboard — a nota diagnóstica na Visão Geral
  * sinaliza isso em vez de deixar a lacuna passar silenciosamente. Exportado
  * pra teste unitário.
+ *
+ * #3081 (review): usa `classifyClariceAudience` (não `parseAbcAudienceCampaign`
+ * diretamente) — este último exige célula A/B/C explícita pra reconhecer
+ * cold, então um envio cold LEGÍTIMO sem célula (ex: envio único pós-teste,
+ * mesmo padrão que envios warm sem célula já recebem) caía aqui como falso
+ * positivo. `classifyClariceAudience` é estritamente mais permissivo (aceita
+ * qualquer prefixo `cold` OU naming `parseClariceCampaignKey`), sem perder
+ * nenhum caso que `parseAbcAudienceCampaign` reconheceria.
  */
 export function findUnclassifiedCampaignNames(
   campaigns: Array<Pick<BrevoCampaign, "name">>,
 ): string[] {
   const names: string[] = [];
   for (const c of campaigns) {
-    if (parseClariceCampaignKey(c.name)) continue;
-    if (parseAbcAudienceCampaign(c.name)) continue;
+    if (classifyClariceAudience(c.name)) continue;
     names.push(c.name);
   }
   return names;
