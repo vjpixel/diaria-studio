@@ -2,12 +2,23 @@
  * newsletter-styles.ts (#2635) — fonte única do CSS de email Diar.ia: o bloco
  * <style> de cada renderer (diário e mensal) é construído por funções deste módulo.
  *
- * Arquitetura de dois níveis:
+ * Arquitetura de três níveis (3º nível adicionado em #3104):
  *   1. BASE (emailBaseRules) — reset body/img/table. Hoje consumido pelo renderer
  *      DIÁRIO (tratado como canônico pela issue). Ver nota de escopo abaixo.
- *   2. OVERRIDES por renderer:
+ *   2. OVERRIDES por renderer — consumidos incondicionalmente pelo `<style>`
+ *      principal de cada um:
  *      - Diária: a.headline:hover + @media .container/.pad/.hero
  *      - Mensal:  @media .mob-stack (imagens A/B do É IA? em telas estreitas, #1918)
+ *   3. STANDALONE, invocado condicionalmente por UM call site específico (não
+ *      por um `<style>` principal inteiro): `darkCanvasMediaRule` (a regra crua
+ *      `@media (prefers-color-scheme: dark)`, fonte única compartilhada entre
+ *      `buildMensalStyleBlock` — que a embute no seu `<style>` principal — e
+ *      `buildDarkCanvasStyleBlock` — um `<style>` À PARTE que só o caminho
+ *      `fullDocument` da diária injeta, #3104). Este nível existe porque a
+ *      diária tem 2 saídas (fragmento pro Beehiiv vs documento completo) e só
+ *      uma delas deve ganhar a regra — dobrá-la em `buildDiariaStyleBlock`
+ *      vazaria pro fragmento também. Ver o docstring de `buildDarkCanvasStyleBlock`
+ *      abaixo para o raciocínio completo.
  *
  * Design-tokens (cores/fontes) já são compartilhados via ./design-tokens.ts — ambos
  * os renderers importam COLORS/FONTS de lá (fonte única de tokens). Este módulo NÃO
