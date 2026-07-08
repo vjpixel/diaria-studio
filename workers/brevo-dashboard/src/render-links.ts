@@ -45,9 +45,20 @@ export const STATUS_COLOR: Record<"green" | "yellow" | "red", string> = {
 };
 
 
-export function pct(n: number, total: number): string {
-  if (!total) return "0.0%";
-  return ((n / total) * 100).toFixed(1) + "%";
+/**
+ * #3081 (formatação/UX): denominador 0 retorna "—" (não "0.0%") — "0.0%"
+ * afirma um dado real (taxa medida e igual a zero), enquanto "—" comunica
+ * "sem dado" (nenhum evento pra calcular a taxa). Consistente com o
+ * `pctOrDash`/`numOrDash` já usados em `sections-kv.ts` para o mesmo caso.
+ *
+ * `decimals` (default 1, preserva o comportamento de todos os callers
+ * existentes) — os call sites de Spam usam 3 casas explicitamente
+ * (`pct(n, total, 3)`), pois o circuit breaker dispara em ≥0.1% e 1 casa
+ * arredondaria 0.049%→"0.0%", mascarando o cruzamento do limiar.
+ */
+export function pct(n: number, total: number, decimals = 1): string {
+  if (!total) return "—";
+  return ((n / total) * 100).toFixed(decimals) + "%";
 }
 
 /**
@@ -476,6 +487,17 @@ ${items}
   </dl>
   </div>
 </details>`;
+}
+
+/**
+ * #3081 (formatação/UX): link pra abrir o relatório da campanha direto na
+ * Brevo, a partir do ID exibido na coluna "ID" da tabela Envios. Antes o ID
+ * era texto puro — sem valor acionável e context-free pra screen readers
+ * (um número isolado não diz o que é). `aria-label` explícito cobre o
+ * achado de acessibilidade do review.
+ */
+export function brevoReportLink(id: number): string {
+  return `<a href="https://app.brevo.com/camp/report/${id}" target="_blank" rel="noopener noreferrer" aria-label="Ver relatório da campanha ${id} na Brevo">${id}</a>`;
 }
 
 export function hoursSince(iso: string | null): string {

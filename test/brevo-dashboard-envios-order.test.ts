@@ -34,9 +34,11 @@ test("renderDashboardHtml ordena a tabela Envios por sentDate decrescente (#3017
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos30 = html.indexOf("<td>30</td>");
-  const pos10 = html.indexOf("<td>10</td>");
-  const pos20 = html.indexOf("<td>20</td>");
+  // #3081: coluna ID agora é um link (brevoReportLink) — o ID aparece como
+  // texto do <a>, não mais como <td> puro.
+  const pos30 = html.indexOf(">30</a>");
+  const pos10 = html.indexOf(">10</a>");
+  const pos20 = html.indexOf(">20</a>");
 
   assert.ok(pos30 !== -1 && pos10 !== -1 && pos20 !== -1, "todas as 3 campaigns devem renderizar uma row");
   assert.ok(pos30 < pos10, "campaign mais recente (id 30, 30/05) deve vir ANTES da do meio (id 10, 10/05)");
@@ -54,8 +56,8 @@ test("renderDashboardHtml usa scheduledAt como fallback quando sentDate é null 
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos2 = html.indexOf("<td>2</td>");
-  const pos1 = html.indexOf("<td>1</td>");
+  const pos2 = html.indexOf(">2</a>");
+  const pos1 = html.indexOf(">1</a>");
 
   assert.ok(pos2 !== -1 && pos1 !== -1, "ambas as campaigns devem renderizar uma row");
   assert.ok(pos2 < pos1, "campaign com scheduledAt mais recente (id 2, fallback de sentDate null) deve vir ANTES de sentDate=01/06 (id 1)");
@@ -85,10 +87,10 @@ test("renderDashboardHtml ordena corretamente mesmo com formatos de data MISTOS 
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos300 = html.indexOf("<td>300</td>");
-  const pos100 = html.indexOf("<td>100</td>");
-  const pos200 = html.indexOf("<td>200</td>");
-  const pos400 = html.indexOf("<td>400</td>");
+  const pos300 = html.indexOf(">300</a>");
+  const pos100 = html.indexOf(">100</a>");
+  const pos200 = html.indexOf(">200</a>");
+  const pos400 = html.indexOf(">400</a>");
 
   assert.ok(
     [pos300, pos100, pos200, pos400].every((p) => p !== -1),

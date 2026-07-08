@@ -206,7 +206,8 @@ test("#3090: a tabela Envios (Visão Geral) tem um glossário gerado de ENVIOS_C
     assert.ok(html.includes(`<dt>${col.label}</dt>`), `glossário deve listar a coluna ${col.label}`);
   }
   // Sanity: o header <th> continua presente (title= como conveniência desktop).
-  assert.match(html, /<th title="ID do envio no Brevo\.">ID<\/th>/);
+  // #3081: tooltip atualizado — ID agora é link (brevoReportLink) pro relatório da Brevo.
+  assert.match(html, /<th title="ID do envio no Brevo — link direto pro relatório da campanha na UI da Brevo\.">ID<\/th>/);
 });
 
 test("#3090: a tabela Cohorts tem um glossário gerado de COHORTS_COLUMNS", () => {

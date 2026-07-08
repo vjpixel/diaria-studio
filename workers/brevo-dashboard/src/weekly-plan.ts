@@ -543,7 +543,16 @@ ${scheduledSection}`;
       const s = classifyMetric(m.value, m.t, m.dir);
       const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
       const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
-      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value, "decimals" in m ? m.decimals : undefined)}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
+      // #3081 (mesma classe do fix de pct() denom-0 → "—" em render-links.ts):
+      // Spam cai em 0 (não "—") quando `health.sent === 0` — sem envios com
+      // stats válidas ainda, "0.000%" afirma falsamente "spam zero confirmado"
+      // em vez de "sem dado". Só Spam aqui porque foi o caso relatado
+      // (#3081); as outras 3 métricas sent-based têm o mesmo padrão mas não
+      // foram reportadas — fora do escopo deste fix pontual.
+      const valueFmt = m.label === "Spam" && health.sent === 0
+        ? "—"
+        : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
+      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
     })
     .join("\n");
 

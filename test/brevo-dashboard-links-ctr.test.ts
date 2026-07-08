@@ -173,6 +173,27 @@ describe("parseLinksStats (#2177)", () => {
     const rows = parseLinksStats({ [shortUrl]: 5 });
     assert.equal(rows[0].displayUrl, shortUrl, "URL curta não deve ser truncada");
   });
+
+  // #3081 (achado b do review): pct() agora retorna "—" quando o denominador
+  // é 0 — se algum dia isso acontecesse aqui, `parseFloat("—")` viraria NaN e
+  // os testes acima ("soma ~100%", "maior clicks → maior %") comparariam
+  // contra NaN silenciosamente (NaN em qualquer comparação numérica é sempre
+  // false, então o assert.ok poderia mascarar uma regressão real).
+  //
+  // Na prática esse cenário é ESTRUTURALMENTE inalcançável aqui: o filtro
+  // acima (`clicks > 0`) garante que, se `entries.length > 0` (rows não
+  // vazio), `totalClicks` é a soma de N≥1 valores estritamente positivos —
+  // portanto nunca 0. Guard defensivo simples abaixo, pra não regressão
+  // silenciosa se essa invariante mudar no futuro (ex: o filtro de
+  // clicks>0 for relaxado).
+  test("regressão defensiva (#3081): pctOfTotal nunca é '—' quando parseLinksStats retorna rows não-vazio", () => {
+    const rows = parseLinksStats(fixtureLinksStats);
+    assert.ok(rows.length > 0, "fixture deve gerar rows (pré-condição do guard)");
+    for (const r of rows) {
+      assert.notEqual(r.pctOfTotal, "—",
+        `pctOfTotal de ${r.url} não deveria ser '—' — totalClicks é estruturalmente >0 quando há rows`);
+    }
+  });
 });
 
 // ─── renderLinksSection ───────────────────────────────────────────────────────

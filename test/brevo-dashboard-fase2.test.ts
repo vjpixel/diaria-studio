@@ -65,6 +65,11 @@ import {
   editionSortKey,
   findUnclassifiedCampaignNames,
   renderUnclassifiedCampaignsNote,
+  pct,
+  brevoReportLink,
+  WEEKDAY_COLUMNS,
+  renderEngagementCohortsSection,
+  escHtml,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -2044,6 +2049,34 @@ describe("renderWeekdaySection (#2134)", () => {
     assert.match(html, /<td>0<\/td>/, "deve renderizar 0 sem crash");
     assert.doesNotMatch(html, /undefined/, "não deve exibir 'undefined'");
   });
+
+  // ─── #3081: glossário de colunas (mesmo padrão de ENVIOS_COLUMNS/#3090) ───
+
+  test("#3081 WEEKDAY_COLUMNS: 5 colunas com os mesmos labels dos headers da tabela", () => {
+    assert.deepEqual(
+      WEEKDAY_COLUMNS.map((c) => c.label),
+      ["Dia", "Envios", "Delivered", "Opens", "Open rate agr."],
+    );
+  });
+
+  test("#3081 renderWeekdaySection: inclui o glossário 'Glossário das colunas' (sempre visível, não só hover)", () => {
+    const html = renderWeekdaySection(makeRows(), "ciclo 2605");
+    assert.match(html, /Glossário das colunas/);
+    // Cada tooltip do glossário deve ser o MESMO texto usado no title= dos <th>
+    // (fonte única WEEKDAY_COLUMNS — sem duplicar conteúdo). Comparado via
+    // escHtml (mesmo escape aplicado no render) — os tooltips têm "<" literal
+    // ("< 2 campanhas"), que vira "&lt;" no HTML.
+    for (const c of WEEKDAY_COLUMNS) {
+      const escaped = escHtml(c.tooltip);
+      assert.ok(html.includes(escaped), `glossário deve conter o tooltip de '${c.label}'`);
+      assert.ok(html.includes(`<th title="${escaped}"`), `<th> de '${c.label}' deve usar o mesmo tooltip do glossário`);
+    }
+  });
+
+  test("#3081 renderWeekdaySection: glossário some no stub (rows vazio, sem tabela)", () => {
+    const html = renderWeekdaySection([], "ciclo 2605", [{ name: "d05-A", sentDate: "2026-06-11T09:00:00Z" }]);
+    assert.doesNotMatch(html, /Glossário das colunas/, "sem tabela, não há colunas a documentar");
+  });
 });
 
 // ─── Regressão #2198 Bug 2: sent undefined não deve produzir NaN em weekday ───
@@ -3271,5 +3304,129 @@ describe("renderEiaEngagementSection — aceita ciclo MENSAL YYMM-MM (#2903)", (
     };
     const html = renderEiaEngagementSection(summary);
     assert.doesNotMatch(html, /lixo/, "edição malformada ainda é pulada");
+  });
+});
+
+// ─── #3081: pct() denominador 0 → "—" (não "0.0%") ───────────────────────────
+//
+// Antes, denominador 0 retornava "0.0%" — afirma um dado real (taxa medida
+// igual a zero) quando na verdade não há evento nenhum pra calcular a taxa
+// ("sem dado"). Fix alinha `pct()` com o `pctOrDash`/`numOrDash` já usados em
+// sections-kv.ts pro mesmo caso. `decimals` (novo 3º parâmetro, default 1)
+// permite os call sites de Spam pedirem 3 casas (o breaker dispara em
+// ≥0.1%, 1 casa arredondaria 0.049%→"0.0%" e mascararia o cruzamento).
+
+describe("#3081 pct(): denominador 0 → '—'", () => {
+  test("pct(n, 0) retorna '—' (não '0.0%')", () => {
+    assert.equal(pct(5, 0), "—");
+    assert.equal(pct(0, 0), "—");
+  });
+
+  test("pct(n, 0, decimals) retorna '—' independente de decimals (não '0.000%')", () => {
+    assert.equal(pct(2, 0, 3), "—");
+  });
+
+  test("pct(n, total, 3) formata com 3 casas quando total > 0 (uso: Spam)", () => {
+    assert.equal(pct(2, 1000, 3), "0.200%");
+    assert.equal(pct(1, 1000, 3), "0.100%");
+  });
+
+  test("pct(n, total) sem decimals preserva 1 casa (default, compat retroativa)", () => {
+    assert.equal(pct(25, 100), "25.0%");
+  });
+
+  // Achado (a) do review: os demais callers de pct() em renderDashboardHtml
+  // (openRate, ctor, bounceRate, unsubRate, openRateNoMpp, trackableRate e a
+  // coluna Delivered) também herdam o novo contrato "—" quando o denominador
+  // é 0. Isso é alcançável quando `globalStats.sent` é 0 (gsIsReal falso) MAS
+  // existe um `campaignStats[0]` truthy com sent/delivered também 0 — o
+  // branch `if (!s) return ...` (sem stats) só checa truthiness do objeto,
+  // não `sent > 0` (essa checagem é feita só pra decidir globalStats vs
+  // campaignStats, não pra decidir se há stats).
+  test("renderDashboardHtml: Delivered e as demais taxas mostram '—' (não '0.0%') quando sent/delivered=0 via fallback campaignStats", () => {
+    const zeroCampaignStats = {
+      listId: 1, sent: 0, delivered: 0, hardBounces: 0, softBounces: 0, deferred: 0,
+      uniqueViews: 0, viewed: 0, trackableViews: 0, uniqueClicks: 0, clickers: 0,
+      unsubscriptions: 0, complaints: 0,
+    };
+    const campaign = {
+      id: 500,
+      name: "Clarice News 2607 d01-A (qua)",
+      subject: "Test",
+      status: "sent",
+      sentDate: "2026-07-01T09:00:00Z",
+      scheduledAt: null,
+      createdAt: "2026-07-01T09:00:00Z",
+      recipients: { lists: [600] },
+      listName: "List 500",
+      listSize: 100,
+      statistics: {
+        // globalStats.sent=0 → gsIsReal=false → cai no fallback campaignStats,
+        // que é truthy (então NÃO cai no branch "sem stats") mas também zerado.
+        globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0, uniqueClicks: 0, appleMppOpens: 0 }),
+        campaignStats: [zeroCampaignStats],
+      },
+    };
+    const html = renderDashboardHtml([campaign]);
+    assert.doesNotMatch(html, /sem stats/, "branch 'sem stats' não deveria ativar (campaignStats é truthy)");
+
+    // Escopo à linha da campanha 500 (entre o <tr> dela e o próximo </tr>).
+    const idIdx = html.indexOf(">500</a>");
+    assert.ok(idIdx !== -1, "linha da campanha 500 deve renderizar");
+    const rowEnd = html.indexOf("</tr>", idIdx);
+    const row = html.slice(idIdx, rowEnd);
+
+    assert.doesNotMatch(row, /0\.0%/, "linha com sent=0 não deve mostrar '0.0%' (denom-0 vira '—')");
+    assert.match(row, /—/, "linha deve conter '—' para as taxas com denominador 0 (Delivered, Opens, CTOR, etc.)");
+  });
+
+  // Achado (a): pct(d.n, u) em renderEngagementCohortsSection quando
+  // cohorts.universe === 0.
+  test("renderEngagementCohortsSection: coluna '%' mostra '—' (não '0.0%') quando universe=0", () => {
+    const zeroCohorts = {
+      generatedAt: "2026-07-01T09:00:00Z",
+      universe: 0,
+      opened2plus: 0,
+      opened1: 0,
+      received1_opened0: 0,
+      received2_opened0: 0,
+      exits: 0,
+      exitsBreakdown: { bounced: 0, optedOut: 0 },
+      maxReceived: 0,
+    };
+    const html = renderEngagementCohortsSection(zeroCohorts);
+    assert.doesNotMatch(html, /<td>0\.0%<\/td>/, "coluna % não deve mostrar '0.0%' quando universe=0");
+    assert.match(html, /<td>—<\/td>/, "coluna % deve mostrar '—' quando universe=0 (denominador 0)");
+  });
+});
+
+// ─── #3081: brevoReportLink() — coluna ID da tabela Envios vira link ─────────
+
+describe("#3081 brevoReportLink()", () => {
+  test("gera link pro relatório da campanha na Brevo com aria-label acessível", () => {
+    const html = brevoReportLink(38);
+    assert.match(html, /href="https:\/\/app\.brevo\.com\/camp\/report\/38"/);
+    assert.match(html, /target="_blank"/);
+    assert.match(html, /rel="noopener noreferrer"/);
+    assert.match(html, /aria-label="Ver relatório da campanha 38 na Brevo"/,
+      "link cujo único texto visível é um ID precisa de aria-label — context-free pra screen readers");
+    assert.match(html, />38<\/a>/, "texto visível do link deve ser o ID");
+  });
+
+  test("coluna ID da tabela Envios (linha COM stats) usa brevoReportLink", () => {
+    const campaign = makeCampaign(38, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z");
+    const html = renderDashboardHtml([campaign]);
+    // Composição via chamada direta — não duplica o template da URL no teste.
+    assert.ok(html.includes(brevoReportLink(38)), "a linha da campanha deve conter exatamente o output de brevoReportLink(38)");
+  });
+
+  test("coluna ID da tabela Envios (linha SEM stats) também usa brevoReportLink", () => {
+    const noStats = {
+      ...makeCampaign(77, "Clarice News 2605 d02-A (qui)", "2026-06-11T09:00:00Z"),
+      statistics: { globalStats: makeGlobalStats({ sent: 0 }) }, // gsIsReal falso E sem campaignStats → branch "sem stats"
+    };
+    const html = renderDashboardHtml([noStats]);
+    assert.match(html, /sem stats/, "branch 'sem stats' deve ativar (sem campaignStats de fallback)");
+    assert.ok(html.includes(brevoReportLink(77)), "linha 'sem stats' também deve usar brevoReportLink na coluna ID");
   });
 });
