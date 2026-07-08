@@ -320,9 +320,11 @@ test("renderDashboardHtml: Unsub e Spam têm taxa em cima + count embaixo (como 
   assert.ok(/<td>0\.5%<br><small>5<\/small><\/td>/.test(html),
     "Unsub deve mostrar '0.5%' em cima e '5' embaixo (sem class alert)");
 
-  // Spam: 0/1000 = 0.0% em cima, "0" embaixo
-  assert.ok(/<td>0\.0%<br><small>0<\/small><\/td>/.test(html),
-    "Spam deve mostrar '0.0%' em cima e '0' embaixo (sem class alert)");
+  // Spam: 0/1000 = 0.000% em cima (#3081: 3 casas — fmtSpamPct — não mais 1
+  // via pct(); threshold do circuit breaker é 0.1%, 1 casa não distingue
+  // 0.05% de 0.15%), "0" embaixo.
+  assert.ok(/<td>0\.000%<br><small>0<\/small><\/td>/.test(html),
+    "Spam deve mostrar '0.000%' (3 casas) em cima e '0' embaixo (sem class alert)");
 });
 
 test("renderDashboardHtml: alerta visual quando métrica cruza circuit breaker threshold", () => {
@@ -357,7 +359,8 @@ test("renderDashboardHtml: alerta visual quando métrica cruza circuit breaker t
     "Bounces deve ter class alert quando hard ≥2% ou total ≥5%");
   assert.ok(/<td class="alert">4\.0%<br><small>40<\/small><\/td>/.test(html),
     "Unsub deve ter class alert quando rate ≥ 3%");
-  assert.ok(/<td class="alert">0\.2%<br><small>2<\/small><\/td>/.test(html),
+  // #3081: spam agora com 3 casas (fmtSpamPct), não 1 (pct).
+  assert.ok(/<td class="alert">0\.200%<br><small>2<\/small><\/td>/.test(html),
     "Spam deve ter class alert quando rate ≥ 0.1%");
 });
 
@@ -388,7 +391,8 @@ test("renderDashboardHtml: alerta no boundary exato dos thresholds (bounce hard 
   // Bounce, Unsub, Spam: EXATO no threshold → alerta ON (≥)
   assert.ok(/<td class="alert">5\.0%<br><small>50<\/small><\/td>/.test(html),
     "Bounce hard 2.0%/total 5.0% (exato nos thresholds) deve acionar alerta");
-  assert.ok(/<td class="alert">0\.1%<br><small>1<\/small><\/td>/.test(html),
+  // #3081: spam agora com 3 casas (fmtSpamPct), não 1 (pct).
+  assert.ok(/<td class="alert">0\.100%<br><small>1<\/small><\/td>/.test(html),
     "Spam 0.1% (exato no threshold) deve acionar alerta");
 
   // Open: EXATO em 15.0% → alerta OFF (< 15, não ≤)

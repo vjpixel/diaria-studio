@@ -23,6 +23,13 @@ const baseCampaign = {
   listSize: 50,
 };
 
+// #3081: a coluna ID agora renderiza um link (`brevoReportLink`) em vez de
+// texto puro — `<td>${id}</td>` não bate mais; o id continua único como
+// TEXTO do link (`>{id}</a>`), o que basta pra localizar a row.
+function idCellPos(html: string, id: number): number {
+  return html.indexOf(`>${id}</a>`);
+}
+
 test("renderDashboardHtml ordena a tabela Envios por sentDate decrescente (#3017)", () => {
   // Entrada deliberadamente embaralhada (nem crescente nem decrescente) —
   // a ordem de chegada da API não deve influenciar a ordem de exibição.
@@ -34,9 +41,9 @@ test("renderDashboardHtml ordena a tabela Envios por sentDate decrescente (#3017
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos30 = html.indexOf("<td>30</td>");
-  const pos10 = html.indexOf("<td>10</td>");
-  const pos20 = html.indexOf("<td>20</td>");
+  const pos30 = idCellPos(html, 30);
+  const pos10 = idCellPos(html, 10);
+  const pos20 = idCellPos(html, 20);
 
   assert.ok(pos30 !== -1 && pos10 !== -1 && pos20 !== -1, "todas as 3 campaigns devem renderizar uma row");
   assert.ok(pos30 < pos10, "campaign mais recente (id 30, 30/05) deve vir ANTES da do meio (id 10, 10/05)");
@@ -54,8 +61,8 @@ test("renderDashboardHtml usa scheduledAt como fallback quando sentDate é null 
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos2 = html.indexOf("<td>2</td>");
-  const pos1 = html.indexOf("<td>1</td>");
+  const pos2 = idCellPos(html, 2);
+  const pos1 = idCellPos(html, 1);
 
   assert.ok(pos2 !== -1 && pos1 !== -1, "ambas as campaigns devem renderizar uma row");
   assert.ok(pos2 < pos1, "campaign com scheduledAt mais recente (id 2, fallback de sentDate null) deve vir ANTES de sentDate=01/06 (id 1)");
@@ -85,10 +92,10 @@ test("renderDashboardHtml ordena corretamente mesmo com formatos de data MISTOS 
 
   const html = renderDashboardHtml(campaigns);
 
-  const pos300 = html.indexOf("<td>300</td>");
-  const pos100 = html.indexOf("<td>100</td>");
-  const pos200 = html.indexOf("<td>200</td>");
-  const pos400 = html.indexOf("<td>400</td>");
+  const pos300 = idCellPos(html, 300);
+  const pos100 = idCellPos(html, 100);
+  const pos200 = idCellPos(html, 200);
+  const pos400 = idCellPos(html, 400);
 
   assert.ok(
     [pos300, pos100, pos200, pos400].every((p) => p !== -1),

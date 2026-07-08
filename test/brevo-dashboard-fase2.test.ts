@@ -65,6 +65,8 @@ import {
   editionSortKey,
   findUnclassifiedCampaignNames,
   renderUnclassifiedCampaignsNote,
+  brevoReportLink,
+  WEEKDAY_COLUMNS,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -378,6 +380,18 @@ describe("renderUnclassifiedCampaignsNote (#3081)", () => {
 });
 
 // ─── editionSortKey (#3081) — ordenação cronológica mista AAMMDD/AAMM-MM ──────
+
+describe("brevoReportLink (#3081)", () => {
+  test("gera link pro report da campanha na UI da Brevo", () => {
+    const html = brevoReportLink(12345);
+    assert.equal(html, '<a href="https://app.brevo.com/camp/report/12345" target="_blank" rel="noopener noreferrer">12345</a>');
+  });
+
+  test("renderDashboardHtml: coluna ID da tabela Envios é um link pro report Brevo", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    assert.match(html, /<td><a href="https:\/\/app\.brevo\.com\/camp\/report\/38" target="_blank" rel="noopener noreferrer">38<\/a><\/td>/);
+  });
+});
 
 describe("editionSortKey (#3081)", () => {
   test("AAMMDD diário: mais recente > mais antigo", () => {
@@ -1922,6 +1936,16 @@ describe("renderWeekdaySection (#2134)", () => {
     const rows = makeRows();
     const html = renderWeekdaySection(rows, "ciclo 2605");
     assert.match(html, /id="weekday-openrate"/);
+  });
+
+  // #3081: "Como ler esta tabela" — mesmo padrão #3090 de ENVIOS_COLUMNS.
+  test("#3081: tem glossário 'Como ler esta tabela' gerado de WEEKDAY_COLUMNS", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /<details class="links-ctr" id="glossary-weekday-openrate">/, "glossário presente");
+    for (const col of WEEKDAY_COLUMNS) {
+      assert.ok(html.includes(`<dt>${col.label}</dt>`), `glossário deve listar a coluna ${col.label}`);
+    }
   });
 
   test("contém labels Qua e Qui no HTML (dias das fixtures)", () => {

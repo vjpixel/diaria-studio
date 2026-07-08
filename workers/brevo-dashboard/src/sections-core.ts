@@ -1,6 +1,6 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary } from "./render-links.ts";
+import { DS, DS_FONTS as DSF, pct, fmtSpamPct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary } from "./render-links.ts";
 import { shouldShowStalenessNote } from "./staleness.ts";
 import {
   renderVolumeSection,
@@ -102,7 +102,7 @@ export function renderDashboardHtml(
         // #3082: mesmo rótulo de edição/célula das rows com stats — uma célula
         // A/B/C sem stats ainda pode aparecer na tabela (ex: envio recentíssimo).
         const editionLabelNoStats = deriveCampaignEditionLabel(c.name ?? "");
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}${editionLabelNoStats ? `<br><small>${escHtml(editionLabelNoStats)}</small>` : ""}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
+        return `<tr><td>${brevoReportLink(c.id)}</td><td>${escHtml(c.listName ?? "?")}${editionLabelNoStats ? `<br><small>${escHtml(editionLabelNoStats)}</small>` : ""}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>
       <tr class="links-row"><td colspan="10" class="links-cell">${linksHtmlNoStats}</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
@@ -115,7 +115,9 @@ export function renderDashboardHtml(
       // (não `delivered`). Pequena diferença na prática (sent ≈ delivered +
       // bounces), mas mantém consistência com a doc operacional.
       const unsubRate = pct(s.unsubscriptions, s.sent);
-      const spamRate = pct(s.complaints, s.sent);
+      // #3081: 3 casas decimais (fmtSpamPct), não 1 (pct) — consistente com o
+      // Resumo A/B/C por Audiência, que já usava 3 casas pra spam.
+      const spamRate = fmtSpamPct(s.complaints, s.sent);
 
       // Numeric versions pra comparar contra thresholds dos circuit breakers
       // (CLAUDE.md: doc operacional 2026-05-12). Alerta visual quando crossado.
@@ -195,7 +197,7 @@ export function renderDashboardHtml(
         s.uniqueClicks,
       );
       return `<tr>
-        <td>${c.id}</td>
+        <td>${brevoReportLink(c.id)}</td>
         <td><strong>${escHtml(cleanListName)}</strong>${editionLabel ? `<br><small>${escHtml(editionLabel)}</small>` : ""}</td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
@@ -761,6 +763,17 @@ export function escHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * #3081: link estático da coluna ID da tabela Envios pro report da campanha
+ * na UI da Brevo — antes o ID era só texto, sem atalho pra investigar a
+ * campanha direto na origem (era preciso navegar manualmente pela Brevo).
+ * Exportado pra teste unitário.
+ */
+export function brevoReportLink(id: number): string {
+  const href = `https://app.brevo.com/camp/report/${id}`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${id}</a>`;
+}
+
 // ─── #2086 Fase 2: helpers de agregação ──────────────────────────────────────
 
 /**
@@ -793,7 +806,7 @@ export const ENVIOS_TOOLTIP =
  * só no `title=`, inacessível sem hover. Exportado pra teste unitário.
  */
 export const ENVIOS_COLUMNS: Array<{ label: string; tooltip: string }> = [
-  { label: "ID", tooltip: "ID do envio no Brevo." },
+  { label: "ID", tooltip: "ID do envio no Brevo — link direto pro report da campanha na UI da Brevo." },
   { label: "Lista", tooltip: "Lista de destinatários no Brevo." },
   { label: "Enviado", tooltip: "Data e hora do envio (horário de Brasília)." },
   { label: "E-mails (eventos)", tooltip: ENVIOS_TOOLTIP },
@@ -1432,6 +1445,8 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
       // voltam a --ink (negrito + ▲ já diferenciam visualmente).
       const openTag = c.cell === leaderOpenRate ? ` <strong style="color:${DS.ink}">▲ ABERTURA</strong>` : "";
       const clickTag = c.cell === leaderClickRate ? ` <strong style="color:${DS.ink}">▲ CLIQUE</strong>` : "";
+      // #3081: spam com 3 casas — mesma precisão de fmtSpamPct (a tabela Envios
+      // agora usa a mesma função, antes usava pct() com 1 casa só lá).
       return `<tr>
         <td><strong>Célula ${c.cell}</strong></td>
         <td>${c.campaignCount}</td>
@@ -1723,6 +1738,21 @@ export function renderMixedAudienceNote(): string {
 }
 
 /**
+ * #3081: definição canônica das colunas da tabela "Open rate por dia da
+ * semana" (label + tooltip) — mesmo padrão #3090 de `ENVIOS_COLUMNS`/
+ * `AGGREGATED_LINKS_COLUMNS`: fonte única usada tanto no `title=` de cada
+ * `<th>` quanto no `<details>` "Como ler esta tabela" (sempre visível,
+ * funciona em touch/mobile). Exportado pra teste unitário.
+ */
+export const WEEKDAY_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "Dia", tooltip: "Dia da semana do envio (horário de Brasília)" },
+  { label: "Envios", tooltip: "Número de envios realizados neste dia" },
+  { label: "Delivered", tooltip: "Total entregue" },
+  { label: "Opens", tooltip: "Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia." },
+  { label: "Open rate agr.", tooltip: "Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena." },
+];
+
+/**
  * Renderiza a seção de open rate por dia da semana.
  * Melhor dia destacado com ▲ MELHOR DIA (mesmo padrão visual do LÍDER A/B/C).
  * Empate → mesmo tratamento do #2118/#2124 (nenhuma linha recebe tag).
@@ -1803,15 +1833,12 @@ export function renderWeekdaySection(
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
   ${renderMixedAudienceNote()}
   <p class="section-note">${statusNote}</p>${excludedNote}
+  ${renderColumnGlossary("weekday-openrate", WEEKDAY_COLUMNS)}
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th title="Dia da semana do envio (horário de Brasília)">Dia</th>
-        <th title="Número de envios realizados neste dia">Envios</th>
-        <th title="Total entregue">Delivered</th>
-        <th title="Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia.">Opens</th>
-        <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
+        ${WEEKDAY_COLUMNS.map((c) => `<th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

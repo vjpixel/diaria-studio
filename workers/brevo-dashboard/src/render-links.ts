@@ -45,9 +45,32 @@ export const STATUS_COLOR: Record<"green" | "yellow" | "red", string> = {
 };
 
 
+/**
+ * #3081: denominador 0/ausente → "—" (indefinido), não mais "0.0%" — a taxa
+ * literalmente não existe quando não há base pra calculá-la (ex: open rate
+ * sem nenhum email entregue), diferente de "0.0%" (que significa "a taxa É
+ * zero", um dado real). Inconsistência sinalizada na revisão: outras funções
+ * do dashboard já usam "—" pra denominador 0 (`pctOrDash` em sections-kv.ts);
+ * esta era a exceção. `n` (numerador) não é usado no caso `!total` — a
+ * ausência de base já basta pra retornar indefinido.
+ */
 export function pct(n: number, total: number): string {
-  if (!total) return "0.0%";
+  if (!total) return "—";
   return ((n / total) * 100).toFixed(1) + "%";
+}
+
+/**
+ * #3081: taxa de SPAM com 3 casas decimais — o circuit breaker dispara em
+ * ≥0.1% (ver `thresholds.ts`/CLAUDE.md), então 1 casa (o padrão de `pct`) não
+ * distingue 0.05% de 0.15% (ambas arredondam pra "0.1%"/"0.0%" de forma
+ * ambígua). Antes, a tabela Envios usava `pct` (1 casa) enquanto o Resumo
+ * A/B/C por Audiência usava `.toFixed(3)` hardcoded — inconsistente entre as
+ * duas telas que mostram a mesma métrica. Denominador 0 → "—" (mesma
+ * semântica de `pct`).
+ */
+export function fmtSpamPct(n: number, total: number): string {
+  if (!total) return "—";
+  return ((n / total) * 100).toFixed(3) + "%";
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   aggregateLinksAcrossCampaigns,
   renderAggregatedLinksSection,
   isSystemLink,
+  pct,
   type BrevoLinksStats,
 } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -667,5 +668,23 @@ describe("#2212: renderDashboardHtml — integração seção links-agregados", 
     const html = renderDashboardHtml([campaign1, campaign2]);
     // Total = 35 clicks
     assert.match(html, /35/, "soma de 20+15=35 clicks deve aparecer na seção agregada");
+  });
+});
+
+// ─── pct() — denominador 0 (#3081) ───────────────────────────────────────────
+
+describe("pct (#3081)", () => {
+  test("total > 0: calcula a taxa normalmente", () => {
+    assert.equal(pct(25, 100), "25.0%");
+    assert.equal(pct(0, 100), "0.0%", "numerador 0 com denominador real é uma taxa real de 0%");
+  });
+
+  test("total = 0 → '—' (indefinido), NÃO '0.0%' (regressão)", () => {
+    // Bug antigo: denominador 0 retornava '0.0%', indistinguível de uma taxa
+    // que É zero de verdade (ex: n=0, total=100). '—' deixa claro que a taxa
+    // não pôde ser calculada (sem base), consistente com pctOrDash em
+    // sections-kv.ts (que já usava '—' pra este caso).
+    assert.equal(pct(0, 0), "—");
+    assert.equal(pct(5, 0), "—", "numerador não-zero com denominador 0 também é indefinido, não um erro numérico");
   });
 });
