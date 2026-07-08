@@ -9,6 +9,7 @@ import {
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
+import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 
 export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
@@ -494,13 +495,19 @@ async function updateStatsCounter(
     // Caminho serializado via DO (#2223)
     const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
     const doStub = env.STATS_COUNTER.get(doId);
+    // #3115: lê o espelho KV para servir de seed baseline caso o DO nunca tenha
+    // sido inicializado (edição com votos anteriores ao deploy do DO, #2223).
+    // O DO só usa este valor quando seu próprio storage está `undefined` — nunca
+    // sobrescreve um estado real já gravado nele (mesmo que zerado).
+    const kvBaselineRaw = await env.POLL.get(statsKey);
+    const kvBaseline = kvBaselineRaw ? JSON.parse(kvBaselineRaw) as StatsCounterData : null;
     const doResp = await doStub.fetch("https://internal/increment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ choice, correct }),
+      body: JSON.stringify({ choice, correct, kvBaseline }),
     });
     if (doResp.ok) {
-      const { stats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+      const { stats } = await doResp.json() as { ok: true; stats: StatsCounterData };
       // Espelha no KV para compat com leitores externos (não-autoritativo).
       // Falha do espelho não propaga — o DO é a fonte de verdade.
       try {
@@ -817,7 +824,11 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
   // Fix #4: correctRaw é independente dos stats — paralela as duas leituras.
   // Antes: correctRaw era lido APÓS a lógica de DO/fallback (sequencial).
   // Agora: a leitura do DO/KV e a leitura de correct:${edition} correm em paralelo.
-  const [doStatsResult, correctRaw] = await Promise.all([
+  //
+  // #3115: o espelho KV `stats:{edition}` agora é SEMPRE lido em paralelo (não só
+  // no branch de erro do DO) — precisamos dele mesmo quando o DO responde ok,
+  // para o merge de mergeStatsWithKvFallback abaixo (DO all-zero ambíguo).
+  const [doStatsResult, correctRaw, kvStatsRaw] = await Promise.all([
     // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
     (async () => {
       if (env.STATS_COUNTER) {
@@ -826,7 +837,7 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
           const doStub = env.STATS_COUNTER.get(doId);
           const doResp = await doStub.fetch("https://internal/stats", { method: "GET" });
           if (doResp.ok) {
-            const { stats: doStats } = await doResp.json() as { ok: true; stats: { total: number; voted_a: number; voted_b: number; correct_count: number } };
+            const { stats: doStats } = await doResp.json() as { ok: true; stats: StatsCounterData };
             return doStats;
           }
         } catch (e) {
@@ -836,16 +847,17 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
       return null;
     })(),
     env.POLL.get(`correct:${edition}`),
+    env.POLL.get(`stats:${edition}`),
   ]);
 
-  // Fallback: KV counter (pode estar ligeiramente stale sob burst, mas é melhor que erro)
-  let stats: { total: number; voted_a: number; voted_b: number; correct_count: number };
-  if (doStatsResult !== null) {
-    stats = doStatsResult;
-  } else {
-    const statsRaw = await env.POLL.get(`stats:${edition}`);
-    stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
-  }
+  const kvStatsResult: StatsCounterData | null = kvStatsRaw ? JSON.parse(kvStatsRaw) : null;
+
+  // #3115: DO nunca-inicializado responde `{total:0,...}` (ver stats-counter.ts) —
+  // indistinguível de uma edição real com zero votos. mergeStatsWithKvFallback
+  // compara o `total` do DO com o do KV e usa o de maior valor (nunca per-field),
+  // preservando o caso "zero real" (ambos concordam em 0 → resultado 0) sem virar
+  // falso-positivo. doStatsResult === null (DO indisponível/erro) cai no KV puro.
+  const stats: StatsCounterData = mergeStatsWithKvFallback(doStatsResult, kvStatsResult);
 
   const total = stats.total;
 

@@ -28,7 +28,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { StatsCounter, type IncrementPayload, type StatsCounterData } from "../workers/poll/src/stats-counter.ts";
+import { StatsCounter, mergeStatsWithKvFallback, type IncrementPayload, type StatsCounterData } from "../workers/poll/src/stats-counter.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 import { makeMockDoState } from "./_helpers/make-mock-do-state.ts";
 import type { Env } from "../workers/poll/src/index.ts";
@@ -687,6 +687,219 @@ describe("Fix #2293 — DO /increment 400 → warn+skip (não throw, não RMW); 
       initialStats.total,
       `KV stats NÃO deve ser modificado via RMW fallback quando DO retorna 400 — got total=${String(stats?.total)} (esperado ${initialStats.total})`,
     );
+  });
+});
+
+// ── 9. #3115 — DO nunca-seedado retorna zeros mesmo com KV histórico ────────
+
+describe("Fix #3115 — mergeStatsWithKvFallback: DO all-zero ambíguo vs KV histórico", () => {
+  it("REGRESSÃO EXATA do bug: DO vazio (never seeded) + KV com total real → retorna o valor do KV", () => {
+    /**
+     * Cenário reportado ao vivo (260707): /stats?edition=260601 e /stats?edition=260520
+     * retornavam total:0 com leaderboard mostrando 32/36 votos. O DO nunca foi
+     * seedado a partir do KV pré-existente (edições anteriores ao deploy do
+     * StatsCounter DO, #2223) — `stored ?? {total:0,...}` tornava um DO nunca
+     * inicializado indistinguível de um DO com zero votos reais.
+     *
+     * Este é exatamente o teste que faltava (citado na issue #3115): a suíte
+     * anterior só cobria DO-vazio+KV-vazio e DO-5xx→KV — nunca DO-ok-mas-zerado
+     * com KV populado.
+     */
+    const doStats: StatsCounterData = { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+    const kvStats: StatsCounterData = { total: 8, voted_a: 5, voted_b: 3, correct_count: 4 };
+    const result = mergeStatsWithKvFallback(doStats, kvStats);
+    assert.equal(result.total, 8, "deve retornar o total do KV (8), não o zero ambíguo do DO — got: " + String(result.total));
+    assert.deepEqual(result, kvStats, "deve retornar o objeto KV inteiro (campos correlacionados, não mistura per-field)");
+  });
+
+  it("caso 'zero real': DO=0 E KV=0 (ou ausente) → permanece 0, NUNCA vira falso-positivo de fallback", () => {
+    const doStats: StatsCounterData = { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+
+    // KV também zero
+    const kvZero: StatsCounterData = { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+    const resultZero = mergeStatsWithKvFallback(doStats, kvZero);
+    assert.equal(resultZero.total, 0, "DO=0 e KV=0: deve permanecer 0 — got: " + String(resultZero.total));
+
+    // KV ausente (edição nova, nunca teve espelho gravado)
+    const resultNull = mergeStatsWithKvFallback(doStats, null);
+    assert.equal(resultNull.total, 0, "DO=0 e KV ausente: deve permanecer 0 — got: " + String(resultNull.total));
+  });
+
+  it("DO com votos reais > KV (KV stale/desatualizado) → mantém o DO (fonte autoritativa pós-deploy)", () => {
+    const doStats: StatsCounterData = { total: 10, voted_a: 6, voted_b: 4, correct_count: 7 };
+    const kvStatsStale: StatsCounterData = { total: 3, voted_a: 2, voted_b: 1, correct_count: 1 };
+    const result = mergeStatsWithKvFallback(doStats, kvStatsStale);
+    assert.equal(result.total, 10, "DO à frente do KV: deve manter o DO (autoritativo) — got: " + String(result.total));
+    assert.deepEqual(result, doStats);
+  });
+
+  it("DO indisponível (null) → usa KV puro; sem KV → zero", () => {
+    const kvStats: StatsCounterData = { total: 5, voted_a: 3, voted_b: 2, correct_count: 1 };
+    const resultWithKv = mergeStatsWithKvFallback(null, kvStats);
+    assert.deepEqual(resultWithKv, kvStats, "DO null: deve retornar KV puro");
+
+    const resultNoKv = mergeStatsWithKvFallback(null, null);
+    assert.deepEqual(resultNoKv, { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 }, "DO null e KV ausente: zero");
+  });
+});
+
+describe("Fix #3115 — /stats (handleStats): DO nunca-seedado + KV histórico → retorna KV (integração)", () => {
+  it("edição pré-#2223 (DO nunca incrementado) com KV histórico populado → /stats retorna o valor do KV, não zero", async () => {
+    /**
+     * Reproduz o bug end-to-end: uma edição publicada ANTES do deploy do
+     * StatsCounter DO (#2223) tem votos históricos só no KV `stats:{edition}`.
+     * Como ninguém votou de novo nesta edição desde o deploy, o DO para
+     * `diaria:260601` nunca foi tocado — GET /stats nele responde zeros
+     * (storage nunca inicializado). Antes do fix, handleStats confiava cegamente
+     * nesse zero (só caía no KV em erro/5xx do DO). Depois do fix, o merge
+     * detecta que o KV tem mais votos e usa o KV.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      "stats:260601": JSON.stringify({ total: 32, voted_a: 18, voted_b: 14, correct_count: 20 }),
+    });
+    const { ns: statsNs } = makeStatsCounterNs();
+    // Nota: NENHUM /increment é chamado no DO — simula "DO nunca seedado".
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      STATS_COUNTER: statsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const statsUrl = new URL("https://poll.diaria.workers.dev/stats");
+    statsUrl.searchParams.set("edition", "260601");
+
+    const res = await worker.fetch(new Request(statsUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { total: number; voted_a: number; voted_b: number; correct_count: number };
+    assert.equal(body.total, 32, "/stats deve retornar 32 (KV histórico), não 0 (DO nunca seedado) — got: " + String(body.total));
+    assert.equal(body.voted_a, 18, "/stats: voted_a deve vir do KV — got: " + String(body.voted_a));
+    assert.equal(body.correct_count, 20, "/stats: correct_count deve vir do KV — got: " + String(body.correct_count));
+  });
+
+  it("edição realmente sem votos (DO=0 E KV ausente) → /stats retorna 0 (não é falso-positivo)", async () => {
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv(); // sem stats:{edition} — edição nunca teve voto algum
+    const { ns: statsNs } = makeStatsCounterNs();
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      STATS_COUNTER: statsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const statsUrl = new URL("https://poll.diaria.workers.dev/stats");
+    statsUrl.searchParams.set("edition", "260707");
+
+    const res = await worker.fetch(new Request(statsUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { total: number };
+    assert.equal(body.total, 0, "edição genuinamente sem votos: /stats deve retornar 0 — got: " + String(body.total));
+  });
+});
+
+describe("Fix #3115 — updateStatsCounter: seed do DO a partir do KV (voto retroativo não corrompe histórico)", () => {
+  it("StatsCounter.handleIncrement: DO nunca inicializado + kvBaseline → seeda do baseline antes de incrementar", async () => {
+    const counter = makeStatsCounter();
+    const kvBaseline: StatsCounterData = { total: 8, voted_a: 5, voted_b: 3, correct_count: 4 };
+
+    const { stats } = await callIncrement(counter, { choice: "A", correct: true, kvBaseline });
+    assert.equal(stats.total, 9, "deve seedar do baseline (8) + 1 = 9 — got: " + String(stats.total));
+    assert.equal(stats.voted_a, 6, "voted_a deve ser 6 (5 + 1) — got: " + String(stats.voted_a));
+    assert.equal(stats.voted_b, 3, "voted_b deve permanecer 3 (baseline) — got: " + String(stats.voted_b));
+    assert.equal(stats.correct_count, 5, "correct_count deve ser 5 (4 + 1) — got: " + String(stats.correct_count));
+  });
+
+  it("DO já com estado real (mesmo zerado) → kvBaseline é IGNORADO (nunca sobrescreve estado real do DO)", async () => {
+    const counter = makeStatsCounter();
+    // Primeiro increment sem baseline — DO passa a ter estado real {total:1,...}.
+    await callIncrement(counter, { choice: "B", correct: false });
+
+    // Segundo increment chega com um kvBaseline diferente — deve ser ignorado,
+    // pois o DO já tem `stored !== undefined`.
+    const { stats } = await callIncrement(counter, {
+      choice: "A",
+      correct: true,
+      kvBaseline: { total: 999, voted_a: 999, voted_b: 999, correct_count: 999 },
+    });
+    assert.equal(stats.total, 2, "kvBaseline deve ser ignorado quando DO já tem estado real — got: " + String(stats.total));
+    assert.equal(stats.voted_b, 1, "voted_b do 1º increment preservado — got: " + String(stats.voted_b));
+    assert.equal(stats.voted_a, 1, "voted_a do 2º increment — got: " + String(stats.voted_a));
+  });
+
+  it("kvBaseline malformado (shape inválido) → ignora e usa zero (não corrompe estado)", async () => {
+    const counter = makeStatsCounter();
+    const badBaseline = { total: "oito", voted_a: 5 } as unknown as StatsCounterData;
+
+    const { stats } = await callIncrement(counter, { choice: "A", correct: true, kvBaseline: badBaseline });
+    assert.equal(stats.total, 1, "baseline inválido: deve cair em zero + 1 = 1 — got: " + String(stats.total));
+  });
+
+  it("INTEGRAÇÃO — voto retroativo (#2867) em edição pré-#2223: DO seeda do KV, espelho não é corrompido", async () => {
+    /**
+     * Reproduz o "agravante" da issue #3115: o arquivo retroativo (#2867) torna
+     * edições antigas votáveis de novo. Um voto em 260601 hoje (DO nunca
+     * inicializado, KV com total=32 histórico) NÃO deve fazer o DO "nascer" do
+     * zero (0→1) e sobrescrever o KV `stats:260601` com {total:1,...} — isso
+     * destruiria o registro histórico correto.
+     *
+     * Com o fix: updateStatsCounter lê o KV (32) e passa como kvBaseline; o DO
+     * seeda a partir dele → total final = 33 (32 + 1 novo voto), espelhado
+     * corretamente no KV.
+     */
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({
+      // Gabarito definido (close-poll já rodou) — torna a edição votável mesmo
+      // fora da janela recente (ver comentário #2867 em handleVote).
+      "correct:260601": "A",
+      "stats:260601": JSON.stringify({ total: 32, voted_a: 18, voted_b: 14, correct_count: 20 }),
+    });
+    const { ns: statsNs, getInstance } = makeStatsCounterNs();
+    // DO nunca tocado para esta edição — simula "nunca seedado" (pré-#2223).
+
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: makeVoteDedupNs(), // autoriza firstVote:true
+      STATS_COUNTER: statsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "retroativo@x.com");
+    url.searchParams.set("edition", "260601");
+    url.searchParams.set("choice", "A");
+
+    const res = await worker.fetch(new Request(url.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    assert.equal(res.status, 200, "voto retroativo deve retornar 200 — got: " + String(res.status));
+
+    // DO deve ter sido seedado do KV (32) + 1 = 33 — não 1.
+    const doInst = getInstance("diaria:260601");
+    assert.ok(doInst, "instância DO deve ter sido criada");
+    const doStats = await (await doInst!.fetch(new Request("https://internal/stats"))).json() as { stats: StatsCounterData };
+    assert.equal(doStats.stats.total, 33, "DO deve seedar do KV (32) e incrementar para 33 — got: " + String(doStats.stats.total));
+
+    // KV espelho NÃO deve ter sido corrompido para {total:1,...} — deve refletir 33.
+    const kvStatsRaw = await kv.get("stats:260601");
+    const kvStatsAfter = JSON.parse(kvStatsRaw!) as StatsCounterData;
+    assert.equal(
+      kvStatsAfter.total,
+      33,
+      "KV espelho NÃO deve ser corrompido para 1 — deve refletir o seed (32) + voto novo = 33 — got: " + String(kvStatsAfter.total),
+    );
+
+    // /stats também deve refletir 33 (via DO, já corretamente seedado agora).
+    const statsUrl = new URL("https://poll.diaria.workers.dev/stats");
+    statsUrl.searchParams.set("edition", "260601");
+    const statsRes = await worker.fetch(new Request(statsUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+    const statsBody = await statsRes.json() as { total: number };
+    assert.equal(statsBody.total, 33, "/stats pós-voto retroativo deve retornar 33 — got: " + String(statsBody.total));
   });
 });
 
