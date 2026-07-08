@@ -122,8 +122,8 @@ export function renderCuradoriaFooterStyles(): string {
 }
 
 export interface CuradoriaNavLink {
-  label: string;
-  url: string;
+  readonly label: string;
+  readonly url: string;
 }
 
 /**
@@ -132,8 +132,15 @@ export interface CuradoriaNavLink {
  * diar.ia.br"). É IA? aponta pro leaderboard público (`poll` worker) — não há
  * uma homepage estática dedicada à feature, o leaderboard é a superfície
  * pública mais representativa dela.
+ *
+ * `readonly` (interface + array): singleton compartilhado por 2 módulos
+ * consumidores (build-cursos-page.ts + build-livros-page.ts) e por testes que
+ * rodam no mesmo processo `node --test` — sem isso, uma mutação acidental
+ * num consumer corromperia o footer de AMBAS as páginas silenciosamente
+ * (mesma instância de módulo, importada por referência). `.map()` (o único
+ * uso real) funciona igual sobre um array readonly.
  */
-export const CURADORIA_NAV_LINKS: CuradoriaNavLink[] = [
+export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "Diar.ia", url: "https://diar.ia.br" },
   { label: "Cursos", url: "https://cursos.diaria.workers.dev/" },
   { label: "Livros", url: "https://livros.diaria.workers.dev/" },
