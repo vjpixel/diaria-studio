@@ -34,7 +34,15 @@ export const DS_COLORS = {
   paperEmail: "#FFFFFF",
 } as const;
 
-/** Tokens de fonte do DS (espelho de FONTS em design-tokens.ts). */
+/**
+ * Tokens de fonte do DS (espelho de FONTS em design-tokens.ts).
+ *
+ * mono não é gerado — nenhum worker o usa hoje (mesma política de exclusão
+ * intencional acima: adicione ao template quando um worker precisar).
+ * serif (Georgia) incluído a partir do worker poll (#3111), que usa a fonte
+ * de manchete/título nos templates HTML do jogo "É IA?".
+ */
 export const DS_FONTS = {
+  serif: "Georgia, 'Times New Roman', serif",
   sans: "'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
 } as const;
