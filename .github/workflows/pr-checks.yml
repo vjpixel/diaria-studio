@@ -3,6 +3,8 @@ name: PR Checks (#970)
 # Guards adicionais pra PRs que CI principal não cobre:
 # 1. check-invariants --static: regras estruturais do repo (ex: drive-sync nunca push _internal/_forensic, #959)
 # 2. Regression test gate: PR de bugfix exige teste novo (ou label `no-regression-test` + justificativa)
+# 3. Seed/HTML sync: seed de página estática (cursos/livros) mudou sem o HTML
+#    gerado correspondente no mesmo PR — sinal de que o build step não rodou (#3105)
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -65,3 +67,21 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npx tsx scripts/check-pr-bugfix.ts
+
+  seed-html-sync:
+    name: Seed/HTML sync (cursos/livros, #3105)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Detect seed changed without corresponding built HTML
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-seed-html-sync.ts
