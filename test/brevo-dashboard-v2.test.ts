@@ -132,7 +132,17 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
         },
       },
     };
-    const campaigns = [partialGsCampaign, ...cycle2605Campaigns];
+    // #3123: aggregateAbcSummary agora deriva a JANELA de dias dos dados — um
+    // dia só entra na agregação quando ≥2 células distintas têm campanha com
+    // stats reais naquele dia (evita viés de dias solo pós-drop/consolidação,
+    // ver test/brevo-dashboard-fase2.test.ts). d03 aqui só teria a célula A
+    // (partialGsCampaign) — pra não disparar essa exclusão incidentalmente
+    // (o alvo deste teste é o guard de NaN, não a janela), adiciona uma
+    // companheira de célula B no mesmo dia com stats reais quaisquer.
+    const day3CompanionB = makeCampaign(97, "Clarice News 2605 d03-B (sex)", "2026-06-13T09:01:00Z", {
+      sent: 120, delivered: 118, uniqueViews: 25,
+    });
+    const campaigns = [partialGsCampaign, day3CompanionB, ...cycle2605Campaigns];
     const result = aggregateAbcSummary(campaigns, "2605");
 
     // Nenhuma célula deve ter openRate NaN
