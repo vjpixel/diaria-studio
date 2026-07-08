@@ -152,6 +152,11 @@ const GENERIC_STOPWORDS_INTRA = new Set([
  * exatamente o que deve discriminar o evento.
  */
 const TOPIC_TOKEN_STOPWORDS_INTRA = new Set([
+  // #3099 review: GENERIC_STOPWORDS_INTRA (ia/ai/ml/llm, dias/meses, etc.)
+  // precisa entrar aqui também — sem isso, "llm" (>=3 chars, sobrevive ao
+  // tokenizeForJaccard) ou um dia-da-semana poderiam contar como token de
+  // tópico compartilhado entre 2 histórias DIFERENTES da mesma empresa.
+  ...GENERIC_STOPWORDS_INTRA,
   "novo", "nova", "novos", "novas",
   "modelo", "modelos",
   "empresa", "empresas",
