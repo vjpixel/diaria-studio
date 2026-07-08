@@ -35,7 +35,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 // #3106: URL pública canônica — Worker de assets estáticos em livros.diaria.workers.dev.
-const PAGE_URL = "https://livros.diaria.workers.dev/";
+// Exportado (não só usado localmente) pra permitir o teste de acoplamento
+// contra CURADORIA_NAV_LINKS em scripts/lib/shared/curadoria-page.ts (#3113)
+// — sem isso, mudar este domínio no futuro e esquecer o footer causaria
+// exatamente o tipo de drift silencioso que essa issue existe pra eliminar.
+export const PAGE_URL = "https://livros.diaria.workers.dev/";
 const PAGE_TITLE = "Livros sobre IA · Diar.ia";
 const PAGE_DESCRIPTION =
   "Livros sobre inteligência artificial recomendados pela Diar.ia — filtre por idioma, nível e tema, com links diretos para a Amazon.";

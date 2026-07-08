@@ -26,8 +26,8 @@ import {
   renderCuradoriaFooter,
   CURADORIA_NAV_LINKS,
 } from "../scripts/lib/shared/curadoria-page.ts";
-import { renderCursosPage } from "../scripts/build-cursos-page.ts";
-import { renderLivrosPage } from "../scripts/build-livros-page.ts";
+import { renderCursosPage, PAGE_URL as CURSOS_PAGE_URL } from "../scripts/build-cursos-page.ts";
+import { renderLivrosPage, PAGE_URL as LIVROS_PAGE_URL } from "../scripts/build-livros-page.ts";
 
 const course = (over: Partial<Parameters<typeof renderCursosPage>[0][number]> = {}) => ({
   id: "c1",
@@ -90,6 +90,18 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard">É IA\?<\/a>/);
     assert.doesNotMatch(html, /<script>/, "texto de crédito deve ser escapado");
     assert.match(html, /&lt;script&gt;/);
+  });
+
+  it("renderCuradoriaFooter escapa apóstrofo (usa escHtml canônico, não um esc() local mais fraco)", () => {
+    const html = renderCuradoriaFooter("é d'ele");
+    assert.doesNotMatch(html, /d'ele/);
+    assert.match(html, /d&#39;ele/);
+  });
+
+  it("URLs de Cursos/Livros na nav batem com o PAGE_URL exportado de cada builder — sem isso, mudar o domínio num builder e esquecer aqui reintroduz o drift silencioso que o #3113 elimina", () => {
+    const byLabel = Object.fromEntries(CURADORIA_NAV_LINKS.map((l) => [l.label, l.url]));
+    assert.equal(byLabel["Cursos"], CURSOS_PAGE_URL);
+    assert.equal(byLabel["Livros"], LIVROS_PAGE_URL);
   });
 });
 

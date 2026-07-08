@@ -30,6 +30,7 @@
  * em cursos; `.highlight` em livros).
  */
 import { COLORS, FONTS } from "./design-tokens.ts";
+import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
 
 const TEAL = COLORS.brand;
 const INK = COLORS.ink;
@@ -120,10 +121,6 @@ export function renderCuradoriaFooterStyles(): string {
   footer .foot-credit { margin: 6px 0 0; }`;
 }
 
-function esc(s: string): string {
-  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-}
-
 export interface CuradoriaNavLink {
   label: string;
   url: string;
@@ -148,6 +145,6 @@ export const CURADORIA_NAV_LINKS: CuradoriaNavLink[] = [
  * crédito específica da página (ex: "diar.ia.br — curadoria de cursos sobre IA").
  */
 export function renderCuradoriaFooter(creditText: string): string {
-  const nav = CURADORIA_NAV_LINKS.map((l) => `<a href="${esc(l.url)}">${esc(l.label)}</a>`).join(" · ");
-  return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${esc(creditText)}</p></div></footer>`;
+  const nav = CURADORIA_NAV_LINKS.map((l) => `<a href="${escHtml(l.url)}">${escHtml(l.label)}</a>`).join(" · ");
+  return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${escHtml(creditText)}</p></div></footer>`;
 }
