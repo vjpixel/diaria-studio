@@ -569,27 +569,36 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
     });
   }
 
-  // #1758: sem apelidos duplicados — outro email já usando o mesmo apelido
-  // (comparação normalizada, case/acento-insensitive) → rejeita. Scan de score:*
-  // (volume baixo, ~centenas de subs; mesmo padrão de propagateNicknameByMonth).
+  // #1758/#3117: sem apelidos duplicados — outro email já usando o mesmo
+  // apelido (comparação normalizada, case/acento-insensitive) → rejeita.
+  // Dedup via índice `nickname:{normalizado}` → email (1 get), NÃO mais um
+  // scan de score:* (era O(N) sobre todo votante all-time — já ~60+ hoje,
+  // na zona de estouro do teto de 50 subrequests/request do Workers free
+  // plan; ver #3117). O índice precisa ser populado 1x via
+  // scripts/migrate-nickname-index.ts antes deste código ir ao ar — sem
+  // isso o dedup fica cego pros nicknames já existentes (índice vazio).
   const targetNorm = normalizeNickname(cleanName);
-  for await (const keyName of listAllKeys(env, "score:")) {
-    if (keyName === scoreKey) continue; // pula o próprio
-    const otherRaw = await env.POLL.get(keyName);
-    if (!otherRaw) continue;
-    let other: { nickname?: string | null };
-    try { other = JSON.parse(otherRaw); } catch { continue; }
-    if (other.nickname && normalizeNickname(other.nickname) === targetNorm) {
-      return new Response(
-        votePageHtml("Esse apelido já está em uso. Escolha outro.", false, retryForm, null, null, brand),
-        { status: 409, headers: { "Content-Type": "text/html;charset=utf-8" } },
-      );
-    }
+  const indexKey = `nickname:${targetNorm}`;
+  const existingOwner = await env.POLL.get(indexKey);
+  if (existingOwner && existingOwner !== email) {
+    return new Response(
+      votePageHtml("Esse apelido já está em uso. Escolha outro.", false, retryForm, null, null, brand),
+      { status: 409, headers: { "Content-Type": "text/html;charset=utf-8" } },
+    );
   }
 
   const score = JSON.parse(raw);
+  const oldNickname: string | null | undefined = score.nickname;
   score.nickname = cleanName;
   await env.POLL.put(scoreKey, JSON.stringify(score));
+
+  // Libera o índice do apelido antigo (se houver e for diferente do novo) —
+  // senão o apelido anterior fica "preso" pra sempre, impedindo outro leitor
+  // de usá-lo mesmo após este usuário trocar de nickname.
+  if (oldNickname && normalizeNickname(oldNickname) !== targetNorm) {
+    await env.POLL.delete(`nickname:${normalizeNickname(oldNickname)}`);
+  }
+  await env.POLL.put(indexKey, email);
 
   // #1345: propaga nickname em todas as `score-by-month:*:{email}` keys.
   // Sem isso, leaderboard mensal mostra nickname antigo (ou null) até nova

@@ -1070,7 +1070,7 @@ describe("validação de apelidos (#1758)", () => {
   describe("handleSetName e2e (#1758)", () => {
     const SECRET = "test-secret";
 
-    // KV em memória — get/put/list (paginação trivial: tudo de uma vez).
+    // KV em memória — get/put/delete/list (paginação trivial: tudo de uma vez).
     function memEnv(seed: Record<string, string>): Env {
       const store = new Map<string, string>(Object.entries(seed));
       return {
@@ -1078,6 +1078,7 @@ describe("validação de apelidos (#1758)", () => {
         POLL: {
           get: async (k: string) => store.get(k) ?? null,
           put: async (k: string, v: string) => { store.set(k, v); },
+          delete: async (k: string) => { store.delete(k); },
           list: async ({ prefix }: { prefix: string }) => ({
             keys: [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })),
             list_complete: true,
@@ -1112,9 +1113,13 @@ describe("validação de apelidos (#1758)", () => {
       assert.match(body, /name="name"/);
     });
 
-    it("apelido já usado por outro email → 409, não persiste", async () => {
+    it("apelido já usado por outro email (índice pré-populado) → 409, não persiste", async () => {
+      // #3117: dedup agora via índice `nickname:{normalizado}` → email, não
+      // mais scan de score:*. Índice pré-populado simula o estado pós-migração
+      // (scripts/migrate-nickname-index.ts).
       const env = memEnv({
         "score:bruna@x.com": JSON.stringify({ total: 5, nickname: "Bruna Quevedo" }),
+        "nickname:bruna quevedo": "bruna@x.com",
         "score:novo@x.com": JSON.stringify({ total: 1, nickname: null }),
       });
       const res = await handleSetName(await setNameUrl("novo@x.com", "bruna  quevedo"), env);
@@ -1123,18 +1128,35 @@ describe("validação de apelidos (#1758)", () => {
       assert.equal(after.nickname, null);
     });
 
-    it("apelido único e válido → 200, persiste", async () => {
+    it("apelido único e válido → 200, persiste + grava no índice", async () => {
       const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: null }) });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Cândida"), env);
       assert.equal(res.status, 200);
       const after = JSON.parse(await env.POLL.get("score:ana@x.com") as string);
       assert.equal(after.nickname, "Ana Cândida");
+      assert.equal(await env.POLL.get("nickname:ana candida"), "ana@x.com");
     });
 
     it("re-setar o PRÓPRIO apelido (mesmo email) não colide consigo → 200", async () => {
-      const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }) });
+      const env = memEnv({
+        "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }),
+        "nickname:ana": "ana@x.com",
+      });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana"), env);
       assert.equal(res.status, 200);
+    });
+
+    it("trocar de apelido libera o índice antigo pra outro leitor usar", async () => {
+      const env = memEnv({
+        "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }),
+        "nickname:ana": "ana@x.com",
+      });
+      const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Nova"), env);
+      assert.equal(res.status, 200);
+      // índice do apelido antigo foi removido...
+      assert.equal(await env.POLL.get("nickname:ana"), null);
+      // ...e o novo aponta pro mesmo email.
+      assert.equal(await env.POLL.get("nickname:ana nova"), "ana@x.com");
     });
 
     it("sig inválido → 403", async () => {
@@ -1145,6 +1167,33 @@ describe("validação de apelidos (#1758)", () => {
       u.searchParams.set("sig", "deadbeef");
       const res = await handleSetName(u, env);
       assert.equal(res.status, 403);
+    });
+
+    it("#3117: não faz mais list() de score:* pro dedup (só get do índice)", async () => {
+      let listCalls = 0;
+      const store = new Map<string, string>([
+        ["score:ana@x.com", JSON.stringify({ total: 3, nickname: null })],
+      ]);
+      const env = {
+        POLL_SECRET: SECRET,
+        POLL: {
+          get: async (k: string) => store.get(k) ?? null,
+          put: async (k: string, v: string) => { store.set(k, v); },
+          delete: async (k: string) => { store.delete(k); },
+          list: async ({ prefix }: { prefix: string }) => {
+            listCalls++;
+            return {
+              keys: [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })),
+              list_complete: true,
+            };
+          },
+        },
+      } as unknown as Env;
+      const res = await handleSetName(await setNameUrl("ana@x.com", "Ana"), env);
+      assert.equal(res.status, 200);
+      // A única list() remanescente é propagateNicknameByMonth (score-by-month:*,
+      // bounded pelos meses do PRÓPRIO usuário) — não mais o scan O(N-votantes) de score:*.
+      assert.equal(listCalls, 1, "dedup não deveria chamar list() de score:*");
     });
   });
 });
