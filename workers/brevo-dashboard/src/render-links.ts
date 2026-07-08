@@ -365,8 +365,28 @@ export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }>
   { label: "Envios", tooltip: "Número de envios onde este link apareceu" },
 ];
 
-export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLabel?: string | null): string {
-  const sectionTitle = edicaoLabel
+/**
+ * #3081: `campaignCount` (opcional) é o tamanho da JANELA de campanhas que
+ * alimentou `rows` (via `aggregateLinksAcrossCampaigns`) — normalmente
+ * `campaigns.length` no call site (`renderDashboardHtml`), até
+ * `CAMPAIGNS_FETCH_LIMIT`. Quando presente, o título passa a refletir a
+ * REALIDADE da agregação ("janela de N campanhas") em vez de implicar
+ * (incorretamente) que os dados são de UMA edição só — o bug relatado:
+ * `deriveLinksSectionTitle` rotulava "Links mais clicados da edição X" com o
+ * ciclo mais recente, mas a soma por trás cobre as ~150 campanhas da janela
+ * (múltiplos ciclos). `edicaoLabel` (quando disponível) vira contexto
+ * SECUNDÁRIO de recência, não mais a alegação principal do título. Sem
+ * `campaignCount` (omitido — retrocompat com callers/testes existentes),
+ * preserva o título antigo.
+ */
+export function renderAggregatedLinksSection(
+  rows: AggregatedLinkRow[],
+  edicaoLabel?: string | null,
+  campaignCount?: number | null,
+): string {
+  const sectionTitle = campaignCount != null
+    ? `Links mais clicados (janela de ${campaignCount} campanhas)${edicaoLabel ? ` — mais recente: edição ${edicaoLabel}` : ""}`
+    : edicaoLabel
     ? `Links mais clicados da edição ${edicaoLabel}`
     : "Links mais clicados do período";
 

@@ -335,7 +335,9 @@ export function renderDashboardHtml(
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
   const edicaoLabel = deriveLinksSectionTitle(campaigns);
-  const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks, edicaoLabel);
+  // #3081: campaignCount = tamanho da janela agregada (campaigns.length) — o
+  // título reflete a janela real, não implica que os dados são de 1 edição só.
+  const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks, edicaoLabel, campaigns.length);
   // #2251/#3010: seção de campanhas agendadas (status queued) — só sobre
   // `scheduled`, nunca polui os agregadores de enviadas (A/B/C, volume,
   // weekday). Movida pra aba Agendamento (renderWeeklyPlanTabPanel abaixo) —
@@ -1704,6 +1706,19 @@ export function pickTopWeekdays(rows: WeekdaySummary[], n = 3): WeekdaySummary[]
  * Semana completa seg→dom; dias sem campanha são omitidos.
  * Exportado pra teste unitário.
  */
+/**
+ * #3081: a agregação de open rate por dia da semana mistura audiência FRIA
+ * (cold, nunca recebeu) e QUENTE (já engajada) — o comportamento entre elas
+ * diverge o suficiente (abertura ~15% fria vs ~60% quente, ver
+ * `renderAbcAudienceSection`) pra dispersar o sinal se lido sem essa ressalva.
+ * Decisão do editor (#3081): nota explícita é suficiente aqui — segmentar a
+ * agregação por audiência seria decisão de produto fora de escopo do cleanup.
+ * Reusada tanto em `renderWeekdaySection` (aba Engajamento) quanto em
+ * `renderTopWeekdaysSection` (aba Rampa, weekly-plan.ts).
+ */
+export const WEEKDAY_MIXED_AUDIENCE_NOTE =
+  "Agrega audiência fria e quente juntas — a abertura diverge bastante entre elas (~15% fria vs ~60% quente); leia como sinal agregado, não segmentado por audiência.";
+
 export function renderWeekdaySection(
   rows: WeekdaySummary[],
   scopeLabel: string,
@@ -1715,6 +1730,7 @@ export function renderWeekdaySection(
     return `
 <section class="phase2-section" id="weekday-openrate">
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
+  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
   <p class="section-note">Envios ainda não computados (open rate &lt; ${WEEKDAY_MIN_AGE_HOURS}h, estabilizando): ${excList}.</p>
 </section>`;
   }
@@ -1775,6 +1791,7 @@ export function renderWeekdaySection(
   return `
 <section class="phase2-section" id="weekday-openrate">
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
+  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
   <p class="section-note">${statusNote}</p>${excludedNote}
   <div class="table-wrap">
   <table>

@@ -23,7 +23,7 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS, WEEKDAY_MIXED_AUDIENCE_NOTE } from "./sections-core.ts";
 import { fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
 // #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
 // import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
@@ -380,6 +380,7 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
     .join("\n");
   return `
   <h3>Melhores dias da semana (abertura) — sugestão mensal</h3>
+  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
   <p class="section-note">Melhores dias: <strong style="color:var(--ink)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
   <div class="table-wrap">
   <table>
