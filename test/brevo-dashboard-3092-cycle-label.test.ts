@@ -39,6 +39,33 @@ test("#3092: formatCycleEnvioLabel retorna null pra formato não reconhecido (t�
   assert.equal(formatCycleEnvioLabel(""), null);
 });
 
+// #3092 — achado do /code-review max (PR #3171): a versão original só
+// validava que cada parte estava em 1-12, sem checar o invariante real do
+// ciclo (envio = conteúdo+1 mod 12, mesma regra de isValidCycle em
+// scripts/lib/clarice-paths.ts). Um `cycle` malformado (vem de regex sobre
+// nome de campanha Brevo, não validado na origem) produzia um sufixo
+// confiante mas ERRADO em vez de cair pro fallback sem sufixo.
+test("#3092: formatCycleEnvioLabel retorna null quando o ciclo viola o invariante conteúdo+1 (envio = mesmo mês do conteúdo)", () => {
+  // "2607-07": conteúdo=julho, envio=julho (mesmo mês) — nunca acontece na
+  // prática (envio é sempre o mês SEGUINTE), mas um nome de campanha mal
+  // formatado podia gerar essa string e antes produzia "envios de jul/2026"
+  // (errado — devia ser ago/2026 ou nada).
+  assert.equal(formatCycleEnvioLabel("2607-07"), null);
+});
+
+test("#3092: formatCycleEnvioLabel retorna null quando o envio vem ANTES do conteúdo (não é um wrap de ano legítimo)", () => {
+  // "2612-11": conteúdo=dezembro, envio=novembro — envio ANTES do conteúdo no
+  // calendário, não o wrap dez→jan que o formato realmente permite. Antes
+  // isso produzia "envios de nov/2027" (ano seguinte, enganoso) em vez de null.
+  assert.equal(formatCycleEnvioLabel("2612-11"), null);
+});
+
+test("#3092: formatCycleEnvioLabel retorna null quando o envio está a mais de 1 mês do conteúdo", () => {
+  // "2601-06": conteúdo=janeiro, envio=junho — 5 meses de distância, nunca
+  // acontece no ciclo real (sempre conteúdo+1).
+  assert.equal(formatCycleEnvioLabel("2601-06"), null);
+});
+
 // ---------------------------------------------------------------------------
 // integração — título da seção "Resumo A/B/C por Audiência"
 // ---------------------------------------------------------------------------
