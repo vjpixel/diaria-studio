@@ -122,6 +122,19 @@ function safeHttpHref(url: string): string {
   return /^https?:\/\//i.test(url) ? escHtml(url) : "";
 }
 
+/**
+ * #3098 (code-review self-review, angle Reuse): consolida a célula de
+ * cliques absolutos — as 3 abas que exibem esse dado (CTR Top 10, Top
+ * links, Use Melhor) tinham cada uma sua própria variação (`td.metric` vs
+ * `<small>`, com/sem fallback pra null). Convenção única: <small>, com "—"
+ * pra schema drift do KV (mesmo padrão de safeHttpHref acima, cujo
+ * comentário já registra a lição de consolidar cópias quase-idênticas).
+ */
+function clicksCell(n: number | null | undefined): string {
+  const label = n === null || n === undefined ? "—" : String(n);
+  return `<td><small>${label}</small></td>`;
+}
+
 // ─── Render sections ──────────────────────────────────────────────────────────
 
 export function renderSourceHealthSection(data: DashboardData): string {
@@ -214,13 +227,22 @@ export function renderCtrSection(data: DashboardData): string {
     // #3098: em mobile a coluna Categoria isolada (cat-col) some via media
     // query e o mesmo valor reaparece fundido sob o Tema (cat-inline,
     // display:none por padrão / display:block só em @media max-width:700px)
-    // — evita que "Tema" quebre em até 6 linhas por falta de largura.
+    // — evita que "Tema" quebre em até 6 linhas por falta de largura. Sem
+    // <br>: cat-inline já é display:block na media query, e um bloco
+    // sempre quebra linha antes de si mesmo — um <br> irmão solto
+    // renderizaria incondicionalmente (inclusive em telas largas, onde
+    // cat-inline é display:none), forçando uma linha em branco indesejada
+    // em todo desktop/tablet (achado de self-review, angle A). "Categoria: "
+    // como prefixo textual (não só posicional) preserva contexto pra
+    // leitor de tela em mobile — a célula cat-col original tem <th>
+    // associado; o texto fundido sob o Tema não tem esse vínculo de tabela.
+    const categoryEsc = escHtml(r.category);
     return `<tr>
     <td>${escHtml(r.date)}</td>
-    <td class="cat-col"><small>${escHtml(r.category)}</small></td>
-    <td>${temaCell}<br><small class="cat-inline muted">${escHtml(r.category)}</small></td>
+    <td class="cat-col"><small>${categoryEsc}</small></td>
+    <td>${temaCell}<small class="cat-inline muted">Categoria: ${categoryEsc}</small></td>
     <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
-    <td><small>${r.unique_verified_clicks}</small></td>
+    ${clicksCell(r.unique_verified_clicks)}
     <td>${linkCell}</td>
   </tr>`;
   }).join("\n");
@@ -356,11 +378,14 @@ export function renderUseMelhorSection(data: DashboardData): string {
     // #2511 self-review (Angle A): ctr_pct é `number | null` no tipo — guarda contra
     // null (schema drift / JSON hand-crafted) p/ não crashar o render inteiro.
     const ctrCell = r.ctr_pct !== null ? `${r.ctr_pct.toFixed(2)}%` : "—";
+    // #3098: clicksCell() consolida a mesma célula que CTR Top 10 e Top
+    // links (ver comentário na definição de clicksCell) — comportamento
+    // idêntico ao `?? "—"` anterior, só sem repetir a lógica de fallback.
     return `<tr>
       <td>${escHtml(r.edition)}</td>
       <td>${escHtml(r.title || "—")}</td>
       <td class="metric">${ctrCell}</td>
-      <td><small>${r.unique_verified_clicks ?? "—"}</small></td>
+      ${clicksCell(r.unique_verified_clicks)}
       <td>${linkCell}</td>
     </tr>`;
   }).join("\n");
@@ -530,10 +555,21 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
 
   // #3098: janela compactada (oldest → newest + contagem) em vez da lista
   // inline dos 20 códigos de edição, que quebrava em 2 linhas de ruído.
-  // Lista completa preservada no title= para quem quiser conferir.
-  const windowEditions = tcr.window_editions ?? [];
+  // Lista completa preservada no title=, na MESMA ordem (ascendente) do
+  // rótulo visível — evita divergência entre o que o rótulo diz e o que o
+  // tooltip lista (achado de self-review, angle A/D). Reordena aqui em vez
+  // de confiar na ordem de produção do KV — mesmo padrão defensivo de
+  // renderOvernightSection acima, que também reordena `ov.runs` antes de
+  // exibir em vez de assumir a ordem do array. String() por elemento
+  // protege escHtml() de um elemento não-string por schema drift (dado vem
+  // de `JSON.parse(raw) as DashboardData` sem validação de schema); o
+  // .join() antigo tolerava isso implicitamente (stringifica), chamar
+  // escHtml direto num elemento não-string quebraria a página inteira.
+  const windowEditions = (tcr.window_editions ?? [])
+    .map((e) => String(e))
+    .sort((a, b) => (a > b ? 1 : -1)); // ascendente: mais antiga primeiro
   const windowLabel = windowEditions.length > 1
-    ? `<span title="${escHtml(windowEditions.join(", "))}">Janela: ${escHtml(windowEditions[windowEditions.length - 1])} → ${escHtml(windowEditions[0])} (${windowEditions.length} edições)</span>`
+    ? `<span title="${escHtml(windowEditions.join(", "))}">Janela: ${escHtml(windowEditions[0])} → ${escHtml(windowEditions[windowEditions.length - 1])} (${windowEditions.length} edições)</span>`
     : windowEditions.length === 1
       ? `Janela: ${escHtml(windowEditions[0])}`
       : "Janela: —";
@@ -543,15 +579,25 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
-    // #3098: cliques absolutos usam <small> (não mais td.metric) — mesma
-    // convenção da aba CTR (Top 10) e do Use Melhor, onde td.metric fica
-    // reservado ao dado central de cada tabela (aqui, nenhum — ver nota).
+    // #3098: cliques absolutos usam <small> via clicksCell() (não
+    // td.metric) — mesma convenção da aba CTR (Top 10) e do Use Melhor.
+    // Nesta tabela especificamente cliques É a chave de ordenação (o
+    // subtítulo abaixo diz "por cliques absolutos"), então td.metric seria
+    // defensável aqui — mas a consistência visual entre as 3 abas pra esse
+    // dado foi a troca explicitamente pedida na issue #3098, priorizada
+    // sobre a ênfase específica desta tabela (tradeoff reconhecido, não
+    // um descuido — ver também self-review desta PR).
+    // Mesma fusão mobile Categoria→Âncora da aba CTR (Top 10) logo acima —
+    // reusa as classes cat-col/cat-inline já definidas no <style> global
+    // (nenhum CSS novo aqui, mesma estrutura de 6 colunas com Categoria
+    // curta ao lado de um texto livre longo).
+    const categoryEsc = escHtml(r.category);
     return `<tr>
     <td>${i + 1}</td>
     <td>${escHtml(r.edition)}</td>
-    <td><small>${escHtml(r.category)}</small></td>
-    <td>${escHtml(r.anchor)}</td>
-    <td><small>${r.unique_verified_clicks}</small></td>
+    <td class="cat-col"><small>${categoryEsc}</small></td>
+    <td>${escHtml(r.anchor)}<small class="cat-inline muted">Categoria: ${categoryEsc}</small></td>
+    ${clicksCell(r.unique_verified_clicks)}
     <td>${linkCell}</td>
   </tr>`;
   }).join("\n");
@@ -565,7 +611,7 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
       <tr>
         <th title="Posição">#</th>
         <th title="Edição com mais cliques do link na janela de 20 edições">Edição</th>
-        <th title="Categoria do link">Categoria</th>
+        <th class="cat-col" title="Categoria do link">Categoria</th>
         <th title="Âncora do link (título ou label)">Âncora</th>
         <th title="Cliques únicos verificados (soma da janela de 20 edições)">Cliques</th>
         <th>Link</th>
