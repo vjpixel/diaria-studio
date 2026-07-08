@@ -62,6 +62,9 @@ import {
   MV_STATUS_KV_KEY,
   renderEiaEngagementSection,
   EIA_ENGAGEMENT_KV_KEY,
+  editionSortKey,
+  findUnclassifiedCampaignNames,
+  renderUnclassifiedCampaignsNote,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -258,6 +261,182 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
     assert.equal(groups.length, 1, "1 só grupo mesmo com campo misto na mesma data");
     assert.equal(groups[0].campaigns.length, 3);
   });
+
+  // #3081: bug — um ciclo SÓ-COLD nunca gerava grupo, porque a função dependia
+  // de parseClariceCampaignKey (só reconhece o naming warm "Clarice News...").
+  test("#3081: ciclo SÓ-COLD (sem nenhuma campanha warm) gera grupo — regressão", () => {
+    const coldOnly = [
+      { ...makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }) },
+      { ...makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }) },
+      { ...makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }) },
+    ];
+    const groups = groupMonthlyAbcTests(coldOnly);
+    assert.equal(groups.length, 1, "ciclo só-cold deve gerar 1 grupo (antes: 0, bug)");
+    assert.equal(groups[0].cycle, "2607-08");
+    assert.equal(groups[0].campaigns.length, 3);
+  });
+
+  // #3081 (review): teste de INTEGRAÇÃO ponta-a-ponta — o teste acima só prova
+  // que `groupMonthlyAbcTests` forma o grupo; sozinho isso não garante que a
+  // seção realmente aparece com dados no HTML final (o bug real: o grupo era
+  // formado, mas `aggregateAbcSummary` zerava as 3 células, e `renderAbcSection`
+  // retorna "" quando todas as células têm campaignCount 0 — a seção sumia de
+  // qualquer forma). Roda o pipeline completo `renderDashboardHtml`.
+  test("#3081: renderDashboardHtml mostra dados reais (não seção vazia) pra ciclo mensal SÓ-COLD", () => {
+    const coldOnly = [
+      makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }),
+      makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }),
+      makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }),
+    ];
+    const html = renderDashboardHtml(coldOnly);
+    assert.match(html, /id="abc-summary-monthly-2607-08-2026-08-02"/, "seção mensal deve existir");
+    assert.match(html, /Resumo A\/B\/C — Mensal \(2607-08/);
+    // A seção precisa conter as 3 células com CONTAGEM real (Envios=1), não
+    // "—" (stub de sem-dados) nem ausente — prova que aggregateAbcSummary não
+    // zerou as células cold.
+    const sectionStart = html.indexOf('id="abc-summary-monthly-2607-08-2026-08-02"');
+    const sectionHtml = html.slice(sectionStart, sectionStart + 3000);
+    assert.match(sectionHtml, /Célula A/);
+    assert.match(sectionHtml, /Célula B/);
+    assert.match(sectionHtml, /Célula C/);
+    assert.doesNotMatch(sectionHtml, /Dados insuficientes/, "não deve cair no caminho 'sem dados' — há 3 campanhas com stats reais");
+  });
+
+  test("#3081: NÃO agrupa teste A/B/C DIÁRIO (cycle sem hífen, ex: 'Clarice News 2605 d02-A')", () => {
+    const daily = [
+      makeCampaign(301, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
+      makeCampaign(302, "Clarice News 2605 d02-B (qui)", "2026-06-11T06:00:00.000-03:00"),
+    ];
+    assert.equal(groupMonthlyAbcTests(daily).length, 0, "teste diário não é mensal — fora do grupo mensal");
+  });
+});
+
+// ─── findUnclassifiedCampaignNames / renderUnclassifiedCampaignsNote (#3081) ──
+
+describe("findUnclassifiedCampaignNames (#3081)", () => {
+  test("campanha com naming reconhecido (warm diário) → não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  test("campanha cold com célula → reconhecida via classifyClariceAudience, não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "cold 2607-08 — A: subject", "2026-08-02T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  // #3081 (review): bug — a versão original checava só parseClariceCampaignKey
+  // (warm) + parseAbcAudienceCampaign (exige célula A/B/C mesmo pra cold), então
+  // um envio cold SEM célula (ex: envio único pós-teste, mesmo padrão que envios
+  // warm sem célula já recebem sem serem sinalizados) virava falso positivo.
+  test("campanha cold SEM célula (envio único pós-teste) → reconhecida, não entra na lista (falso positivo corrigido)", () => {
+    const campaigns = [makeCampaign(1, "cold 2607-08 envio único", "2026-08-10T06:00:00.000-03:00")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), [], "cold sem célula é naming válido — mesmo tratamento que warm sem célula");
+  });
+
+  test("naming fora do padrão (ex: legado 'T1-W1 digest') → entra na lista", () => {
+    const campaigns = [
+      makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
+      makeCampaign(2, "T1-W1 digest", "2026-06-11T06:00:00.000-03:00"),
+    ];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), ["T1-W1 digest"]);
+  });
+});
+
+describe("renderUnclassifiedCampaignsNote (#3081)", () => {
+  test("lista vazia → string vazia (sem seção extra)", () => {
+    assert.equal(renderUnclassifiedCampaignsNote([]), "");
+  });
+
+  test("1 nome → singular, sem 's'", () => {
+    const html = renderUnclassifiedCampaignsNote(["T1-W1 digest"]);
+    assert.match(html, /1 campanha não classificada/);
+    assert.match(html, /T1-W1 digest/);
+  });
+
+  test("N nomes → plural + todos os nomes listados", () => {
+    const html = renderUnclassifiedCampaignsNote(["Foo", "Bar"]);
+    assert.match(html, /2 campanhas não classificadas/);
+    assert.match(html, /Foo/);
+    assert.match(html, /Bar/);
+  });
+
+  test("renderDashboardHtml inclui a nota na Visão Geral quando há campanha não classificada", () => {
+    const html = renderDashboardHtml([
+      ...cycle2605Campaigns,
+      makeCampaign(999, "T1-W1 digest", "2026-06-11T06:00:00.000-03:00"),
+    ]);
+    assert.match(html, /campanhas? não classificadas?/);
+    assert.match(html, /T1-W1 digest/);
+  });
+
+  test("renderDashboardHtml NÃO mostra a nota quando tudo está classificado", () => {
+    // cycle2605Campaigns (sem os t1Campaigns de allCampaigns) é 100% naming
+    // "Clarice News AAMM dNN-X" — todas reconhecidas por parseClariceCampaignKey.
+    const html = renderDashboardHtml(cycle2605Campaigns);
+    assert.doesNotMatch(html, /não classificada/);
+  });
+});
+
+// ─── editionSortKey (#3081) — ordenação cronológica mista AAMMDD/AAMM-MM ──────
+
+describe("editionSortKey (#3081)", () => {
+  test("AAMMDD diário: mais recente > mais antigo", () => {
+    assert.ok(editionSortKey("260702") > editionSortKey("260701"));
+    assert.ok(editionSortKey("260801") > editionSortKey("260731"));
+  });
+
+  test("AAMM-MM mensal: detecta virada de ano (dezembro → janeiro)", () => {
+    // conteúdo dez/26, envio jan/27 — sendMM(01) < contentMM(12) → vira ano
+    // (yy é o ano de 2 dígitos, mesmo formato do naming "AAMM-MM").
+    const key = editionSortKey("2612-01");
+    assert.equal(key, 27 * 10000 + 1 * 100);
+  });
+
+  test("mistura de formatos ordena CRONOLOGICAMENTE, não lexicograficamente", () => {
+    // Bug antigo: localeCompare("2606-07", "260702") ordenava errado por
+    // comparar caractere-a-caractere entre formatos de tamanho diferente.
+    // "260702" = 02/jul/2026. "2606-07" = conteúdo jun, envio jul/2026 (dia
+    // desconhecido) — o mensal é tratado como o 1º dia do mês de envio, então
+    // fica ANTES de qualquer dia > 1 do mesmo mês.
+    const daily = editionSortKey("260702");
+    const monthly = editionSortKey("2606-07");
+    assert.ok(daily > monthly, "260702 (dia 2) deve ficar depois de 2606-07 (dia 1 implícito, mesmo mês)");
+  });
+
+  test("formato inesperado → -Infinity (nunca quebra o sort)", () => {
+    assert.equal(editionSortKey("not-an-edition"), -Infinity);
+  });
+});
+
+describe("renderEiaEngagementSection: ordenação cronológica mista (#3081)", () => {
+  const mkEdition = (edition: string): EiaEngagementEdition => ({
+    edition,
+    total_votes: 10,
+    voted_a: 5,
+    voted_b: 5,
+    pct_correct: 50,
+    correct_choice: "A",
+  });
+
+  test("tooltip da coluna Edição não afirma 'Ciclo mensal' só (aceita diário AAMMDD também)", () => {
+    const summary: EiaEngagementSummary = { editions: [mkEdition("260702")], updated_at: null };
+    const html = renderEiaEngagementSection(summary);
+    assert.doesNotMatch(html, /title="Ciclo mensal da Clarice News/);
+  });
+
+  test("mistura AAMMDD + AAMM-MM ordena cronologicamente (mais recente primeiro)", () => {
+    // 2607-08 (envio ago/2026) é mais recente que 260702 (02/jul/2026).
+    const summary: EiaEngagementSummary = {
+      editions: [mkEdition("260702"), mkEdition("2607-08"), mkEdition("260601")],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(summary);
+    const i2607_08 = html.indexOf("2607-08");
+    const i260702 = html.indexOf("260702");
+    const i260601 = html.indexOf("260601");
+    assert.ok(i2607_08 < i260702, "2607-08 (envio ago) deve vir antes de 260702 (jul)");
+    assert.ok(i260702 < i260601, "260702 (jul) deve vir antes de 260601 (jun)");
+  });
 });
 
 // ─── aggregateAbcSummary ──────────────────────────────────────────────────────
@@ -292,6 +471,38 @@ describe("aggregateAbcSummary", () => {
     // A orgânico = (20−8)+(35−7) = 40 / 297
     assert.ok(a.organicOpenRate !== null && Math.abs(a.organicOpenRate - (40 / 297) * 100) < 0.01,
       `A organicOpenRate deve ser ~13.5% mas foi ${a.organicOpenRate}`);
+  });
+
+  // #3081 (review): sem o fallback pro parser cold, `aggregateAbcSummary`
+  // zerava as 3 células de um ciclo mensal SÓ-COLD (parseClariceCampaignKey
+  // não reconhece "cold ..."), fazendo `renderAbcSection` retornar "" mesmo
+  // com `groupMonthlyAbcTests` já formando o grupo corretamente — o mesmo
+  // sintoma de invisibilidade que o fix original deveria ter resolvido.
+  test("#3081: agrega ciclo mensal SÓ-COLD (naming 'cold AAMM-MM — X'), sem corte de dia", () => {
+    const coldOnly = [
+      makeCampaign(275, "cold 2607-08 — A: subject A", "2026-08-02T06:00:00.000-03:00", { sent: 900, delivered: 895, uniqueViews: 130 }),
+      makeCampaign(276, "cold 2607-08 — B: subject B", "2026-08-02T06:00:00.000-03:00", { sent: 902, delivered: 897, uniqueViews: 140 }),
+      makeCampaign(277, "cold 2607-08 — C: subject C", "2026-08-02T06:00:00.000-03:00", { sent: 901, delivered: 896, uniqueViews: 125 }),
+    ];
+    const result = aggregateAbcSummary(coldOnly, "2607-08");
+    const a = result.find((r) => r.cell === "A")!;
+    const b = result.find((r) => r.cell === "B")!;
+    const c = result.find((r) => r.cell === "C")!;
+    assert.equal(a.campaignCount, 1, "cold NÃO deve ficar zerado (bug antigo: parseClariceCampaignKey não reconhece 'cold ...')");
+    assert.equal(a.totalViews, 130);
+    assert.equal(a.totalDelivered, 895);
+    assert.equal(b.campaignCount, 1);
+    assert.equal(b.totalViews, 140);
+    assert.equal(c.campaignCount, 1);
+    assert.equal(c.totalViews, 125);
+  });
+
+  test("#3081: warm continua tendo precedência sobre cold quando parseClariceCampaignKey reconhece o nome", () => {
+    // Regressão de não-regressão: garante que o fallback cold não interfere
+    // no caminho warm já testado acima (mesmo cycle "2605" das fixtures).
+    const result = aggregateAbcSummary(allCampaigns, "2605");
+    const a = result.find((r) => r.cell === "A")!;
+    assert.equal(a.campaignCount, 2, "comportamento warm idêntico ao teste MPP-inclusivo acima");
   });
 
   test("retorna sempre as 3 células mesmo com ciclo sem dados", () => {

@@ -122,7 +122,12 @@ export interface EngagementCohorts {
   exits: number;
   /** breakdown DISJUNTO das saídas (bounced + optedOut = exits) */
   exitsBreakdown: { bounced: number; optedOut: number };
-  /** maior nº de e-mails recebidos por um único contato (valida o rótulo "2+") */
+  /**
+   * maior nº de e-mails recebidos por um único contato (valida o rótulo "2+").
+   * #3081: DEAD CODE de exibição — nenhum render do worker consome este campo
+   * (o rótulo "2+" nos buckets ≥2 é hardcoded, sempre exato por definição).
+   * Mantido no payload por ora — não remover sem pedido do editor.
+   */
   maxReceived: number;
 }
 

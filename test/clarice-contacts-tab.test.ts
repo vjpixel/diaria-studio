@@ -57,6 +57,24 @@ test("renderContactsSummarySection: renderiza razões/pontos/mv/engajamento", ()
   assert.match(html, /2[.,]?219/); // engajamento with_opens
 });
 
+// #3081: priority_points.internal_excluded já era computado por
+// clarice-db-summary.ts (#2809) mas nunca propagado ao tipo do worker nem
+// exibido no render — cobertura da propagação + exibição.
+test("renderContactsSummarySection: exibe 'internos excluídos' quando o campo está presente (#3081)", () => {
+  const withInternal: ContactsSummary = {
+    ...sample,
+    priority_points: { ...sample.priority_points, internal_excluded: 7 },
+  };
+  const html = renderContactsSummarySection(withInternal);
+  assert.match(html, /internos excluídos/);
+  assert.match(html, /<strong>7<\/strong>/);
+});
+
+test("renderContactsSummarySection: sem internal_excluded (KV pré-#3081) → mostra '—', não 0 (#3081)", () => {
+  const html = renderContactsSummarySection(sample); // sample não tem o campo
+  assert.match(html, /internos excluídos: <strong>—<\/strong>/);
+});
+
 test("renderContactsSummarySection: sem priority_points_histogram (KV pré-#2731) → cai pras faixas antigas", () => {
   // `sample` não tem priority_points_histogram — confirma o fallback gracioso.
   const html = renderContactsSummarySection(sample);

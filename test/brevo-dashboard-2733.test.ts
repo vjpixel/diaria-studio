@@ -363,6 +363,25 @@ describe("normalizeContactsSummary (#2875 item 1 — validação única no bound
     assert.deepEqual(s?.mv, {});
   });
 
+  // #3081 (review): normalizeContactsSummary reconstruía `priority_points`
+  // como literal fixo de 6 chaves e descartava `internal_excluded` do KV cru
+  // — o campo nunca chegava ao render em produção (só o passthrough direto
+  // via renderContactsSummarySection, sem passar pelo normalizador, era
+  // testado). Cobertura pelo boundary real.
+  it("priority_points.internal_excluded ausente → chave OMITIDA em priority_points (#3081)", () => {
+    const s = normalizeContactsSummary({ total: 10, priority_points: { lt0: 1, eq0: 9, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 } });
+    assert.ok(s);
+    assert.equal(Object.prototype.hasOwnProperty.call(s!.priority_points, "internal_excluded"), false);
+  });
+
+  it("priority_points.internal_excluded presente no KV cru → passthrough até o payload normalizado (#3081)", () => {
+    const s = normalizeContactsSummary({
+      total: 10,
+      priority_points: { lt0: 1, eq0: 9, p1_40: 0, p41_80: 0, gt80: 0, optin: 0, internal_excluded: 4 },
+    });
+    assert.equal(s?.priority_points.internal_excluded, 4);
+  });
+
   it("histogramas opcionais ausentes → chave OMITIDA (não `undefined` explícito) — schema evolution, não corrupção", () => {
     const s = normalizeContactsSummary({ total: 10 });
     assert.ok(s);
