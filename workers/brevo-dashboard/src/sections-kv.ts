@@ -797,7 +797,7 @@ ${totalRow}</tbody></table></div>`;
       .map(([k, v]) => `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`)
       .join("\n");
     return `<div class="table-wrap"><table>
-      <thead><tr><th scope="col" title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh #2731)</th><th scope="col" style="text-align:right">contatos</th></tr></thead>
+      <thead><tr><th scope="col" title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh)</th><th scope="col" style="text-align:right">contatos</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
@@ -816,7 +816,7 @@ ${totalRow}</tbody></table></div>`;
   return `
 <section class="phase2-section" id="contacts-summary">
   <h2 class="section-title">Banco de contatos (store)</h2>
-  <p class="section-note">Sumário agregado do store único (#2647). Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · internos excluídos: <strong>${internalExcludedFmt}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
+  <p class="section-note">Sumário agregado do store único. Total: <strong>${n(s.total)}</strong> · elegíveis: <strong>${n(elig.eligible)}</strong> · inelegíveis: <strong>${n(elig.ineligible)}</strong> · optin: <strong>${n(pp.optin)}</strong> · internos excluídos: <strong>${internalExcludedFmt}</strong> · Brevo: ${brevoBadge}.${staleNote}</p>
   ${priorityPointsSection}
   <p class="section-note">Score = <code>priority_points</code> (engajamento), aditivo (sem corte duro): parte de 0 · <strong>+40</strong> optin (pediu prioridade) · <strong>+20</strong> por e-mail aberto · <strong>−10</strong> por e-mail recebido e não aberto. Ex.: optin que ignora 4 e-mails decai pra 0 (40 − 10×4). Fila de re-envio: maior Score primeiro.</p>
   <p class="section-note">A distribuição por cohort (safra/tipo) está na tabela <strong>Cohorts</strong> abaixo — a linha "sem pontuação" concentra o universo de 1º envio, detalhado lá por cohort. "Score" acima = <code>priority_points</code> (engajamento), <strong>não</strong> o "score" legado (desacreditado, já morto no código).</p>
@@ -861,7 +861,7 @@ export const COHORT_DEVIATION_THRESHOLD_PP = 20;
  * pra teste unitário.
  */
 export const COHORTS_COLUMNS: Array<{ label: string; tooltip: string }> = [
-  { label: "Cohort", tooltip: "Cohort (taxonomia #2857)" },
+  { label: "Cohort", tooltip: "Cohort (taxonomia nomeada de segmentação)" },
   { label: "Contatos", tooltip: "Total de contatos no cohort (exclui internos)" },
   { label: "Na Brevo", tooltip: "Contatos do cohort sincronizados na Brevo (brevo_list_ids preenchido)" },
   { label: "Elegíveis", tooltip: "Contatos elegíveis para envio (send_eligible=1)" },
