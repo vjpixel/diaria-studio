@@ -270,22 +270,37 @@ export function brandKvPrefix(brand: Brand): string {
 /**
  * #3112: variante de `formatEditionDate` ciente de `BRAND_INFO[brand].leaderboardPeriod`.
  *
- * Mesmo racional do #2006 (vote.ts:227-229/254-255, mensagem "já votou"): pra
- * um brand com leaderboard ANUAL (`"year"` — hoje só `clarice`), a publicação
- * é MENSAL — o "dia" do AAMMDD é só artefato do formato do código da edição,
- * não um dado real (a Clarice News não sai num dia específico do mês). Exibir
+ * Mesmo racional do #2006 (vote.ts, mensagem "já votou"): pra um brand com
+ * leaderboard ANUAL (`"year"` — hoje só `clarice`), a publicação é MENSAL —
+ * o "dia" do AAMMDD é só artefato do formato do código da edição, não um
+ * dado real (a Clarice News não sai num dia específico do mês). Exibir
  * "31 de maio de 2026" para um digest mensal é enganoso.
  *
  *   - `leaderboardPeriod === "year"` → formata só "Mês de AAAA" (sem dia).
  *   - `leaderboardPeriod === "month"` (diária) → mantém `formatEditionDate`
  *     completo ("DD de mês de AAAA") — comportamento inalterado.
  *
- * NÃO altera o código AAMMDD interno usado em hrefs/gabarito/dedup — só a
+ * #3113 (item 13, self-review): também aceita o ciclo Clarice `YYMM-MM` (ex:
+ * `2605-06` — ver `editionToMonthSlug`, #2115). `handleVote` (vote.ts) passa
+ * o `edition` cru da URL de voto pra esta função na mensagem "já votou", e
+ * pro brand `clarice` esse `edition` É o ciclo, não AAMMDD (ver
+ * `close-poll.ts --brand clarice --edition 2605-06`) — sem este ramo, a
+ * mensagem mostraria o slug interno cru ("2605-06") em vez de um mês
+ * legível. Usa o mês do CONTEÚDO (mesmo bucket de `editionToMonthSlug`).
+ *
+ * NÃO altera o código da edição interno usado em hrefs/gabarito/dedup — só a
  * STRING exibida ao leitor. Input malformado → retorna o input cru (mesmo
  * fallback de `formatEditionDate`).
  */
 export function formatEditionDateForBrand(edition: string, brand: Brand): string {
   if (BRAND_INFO[brand].leaderboardPeriod !== "year") return formatEditionDate(edition);
+  if (/^\d{4}-\d{2}$/.test(edition)) {
+    const monthSlug = editionToMonthSlug(edition); // ciclo → "YYYY-MM" do mês de CONTEÚDO
+    if (!monthSlug) return edition;
+    const [yearStr, mmStr] = monthSlug.split("-");
+    const mmNum = parseInt(mmStr, 10);
+    return `${MONTH_NAMES_PT[mmNum - 1]} de ${yearStr}`;
+  }
   if (!/^\d{6}$/.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
   const mm = parseInt(edition.slice(2, 4), 10);
