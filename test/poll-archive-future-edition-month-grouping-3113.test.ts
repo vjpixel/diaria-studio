@@ -20,7 +20,20 @@ import {
   extractEditionsForYear,
   groupEditionsByMonth,
   renderArchiveListHtml,
+  handleArchiveVotePage,
 } from "../workers/poll/src/leaderboard-routes.ts";
+import type { Env } from "../workers/poll/src/index.ts";
+
+/** "Amanhã" em AAMMDD/YYYY, calculado a partir do relógio real — evita a
+ * armadilha clássica de data futura hardcoded que vira passado com o tempo. */
+function tomorrowParts(): { edition: string; year: string } {
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const yyyy = String(tomorrow.getUTCFullYear());
+  const yy = yyyy.slice(2);
+  const mm = String(tomorrow.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(tomorrow.getUTCDate()).padStart(2, "0");
+  return { edition: `${yy}${mm}${dd}`, year: yyyy };
+}
 
 describe("extractEditionsForYear — filtra edições futuras (#3113 item 9)", () => {
   it("exclui edição com data > hoje (BRT), mesmo com gabarito definido", () => {
@@ -79,6 +92,43 @@ describe("groupEditionsByMonth (#3113 item 10)", () => {
   it("nome do mês capitalizado (Janeiro, não janeiro)", () => {
     const groups = groupEditionsByMonth(["260105"]);
     assert.equal(groups[0].monthLabel, "Janeiro");
+  });
+});
+
+describe("handleArchiveVotePage — bloqueia edição futura por URL direta (#3113 item 9)", () => {
+  function makeEnv(seed: Record<string, string>): Env {
+    return {
+      POLL: {
+        get: async (key: string) => seed[key] ?? null,
+      } as unknown as Env["POLL"],
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin",
+      ALLOWED_ORIGINS: "*",
+    };
+  }
+
+  it("edição de amanhã com gabarito já definido → 404 (não só a LISTA esconde, a página de voto direta também bloqueia)", async () => {
+    const { edition, year } = tomorrowParts();
+    const env = makeEnv({ [`correct:${edition}`]: "A" });
+    const res = await handleArchiveVotePage(year, edition, env, "diaria");
+    assert.equal(res.status, 404);
+    const html = await res.text();
+    assert.match(html, /não está disponível para votação retroativa/);
+  });
+
+  it("edição de HOJE com gabarito → continua acessível (200) — só o FUTURO é bloqueado", async () => {
+    const now = new Date();
+    const yyyy = String(now.getUTCFullYear());
+    // #3113: usa a mesma janela BRT do fix — helper local só pra montar o
+    // AAMMDD de "hoje" sem depender de todayAammddBrt (não exportado).
+    const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+    const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+    const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(brt.getUTCDate()).padStart(2, "0");
+    const edition = `${yy}${mm}${dd}`;
+    const env = makeEnv({ [`correct:${edition}`]: "A" });
+    const res = await handleArchiveVotePage(yyyy, edition, env, "diaria");
+    assert.equal(res.status, 200);
   });
 });
 

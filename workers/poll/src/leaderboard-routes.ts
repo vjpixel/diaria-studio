@@ -1002,7 +1002,12 @@ export async function handleArchiveVotePage(
     });
   }
   const correctRaw = await env.POLL.get(`correct:${edition}`);
-  if (!correctRaw) {
+  // #3113 (item 9): mesma checagem de `extractEditionsForYear` — sem ela, a
+  // página de voto do arquivo continuaria acessível via URL direta (mesmo
+  // AAMMDD, adivinhado ou incrementado a partir de uma edição já pública)
+  // mesmo depois da LISTA parar de mostrar a edição futura. Mesma mensagem
+  // do "sem gabarito" — o assinante não precisa saber o motivo específico.
+  if (!correctRaw || edition > todayAammddBrt(new Date())) {
     return new Response(
       votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
       { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },
