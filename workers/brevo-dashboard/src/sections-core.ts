@@ -1,6 +1,6 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
+import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary } from "./render-links.ts";
 import { shouldShowStalenessNote } from "./staleness.ts";
 import {
   renderVolumeSection,
@@ -397,7 +397,9 @@ export function renderDashboardHtml(
   }
   body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
-  .sub { color: var(--ink); opacity: 0.6; font-size: 0.9rem; margin: 0 0 24px 0; }
+  /* #3089: opacity 0.6 mede ~4.7-4.8:1 sobre --paper/--card (passa AA, mas sem
+     folga — cai a ~4.4:1 sobre --paper-alt). 0.65 dá margem (~5.6-5.7:1). */
+  .sub { color: var(--ink); opacity: 0.65; font-size: 0.9rem; margin: 0 0 24px 0; }
   /* #2991: "cards" — table-wrap já envolve toda tabela/lista de cada seção em
      todas as abas (estrutura preexistente, ver #2086) — vira o container de
      card sem mexer em markup/dados. */
@@ -430,7 +432,14 @@ export function renderDashboardHtml(
   .table-wrap th:first-child { position: sticky; left: 0; z-index: 3; background: var(--paper-alt); }
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
-  td.metric { font-weight: 600; color: var(--brand); }
+  /* #3088: valores numéricos de destaque (td.metric) voltam a --ink — teal
+     (--brand, #00A0A0) mede ~3.2:1 sobre --card, abaixo do mínimo AA (4.5:1)
+     pra texto normal nesse tamanho (14.4px/600, não é "large text"). O
+     negrito + mono/tabular-nums (ver regra acima) já diferencia visualmente
+     do texto comum sem depender de cor. Teal fica reservado a elementos
+     GRÁFICOS (links, barra de progresso, estado ativo de abas — 3:1 é
+     aceitável pra esses por SC 1.4.11, não pra texto). */
+  td.metric { font-weight: 600; color: var(--ink); }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
@@ -442,7 +451,8 @@ export function renderDashboardHtml(
      .trackable-clause (membro "· Z% trackable") é escondido — ver media query
      abaixo — deixando só "X% (Y% sem MPP)". */
   td .rate-inline { font-weight: normal; color: var(--ink); white-space: nowrap; }
-  td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
+  /* #3089: mesmo ajuste de folga de contraste do .sub acima (0.6 → 0.65). */
+  td small { color: var(--ink); opacity: 0.65; font-weight: normal; }
   .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 24px; text-align: center; }
   .footer code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   /* #2086: seções de fase 2 */
@@ -460,7 +470,8 @@ export function renderDashboardHtml(
   summary.links-summary::before { content: "▶ "; font-size: 0.65rem; }
   details[open] > summary.links-summary::before { content: "▼ "; }
   .links-count-badge { background: var(--paper-alt); border-radius: 8px; padding: 1px 6px; font-size: 0.75rem; margin-left: 4px; }
-  .links-empty { padding: 4px 12px 6px; font-size: 0.8rem; color: var(--ink); opacity: 0.5; margin: 0; }
+  /* #3089: mesmo fix de contraste do .links-note (0.5 → 0.7 opacity, ~3.5:1 → ~5.6+:1). */
+  .links-empty { padding: 4px 12px 6px; font-size: 0.8rem; color: var(--ink); opacity: 0.7; margin: 0; }
   .links-table-wrap { overflow-x: auto; padding: 0 8px 8px; }
   .links-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   .links-table th, .links-table td { padding: 4px 6px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
@@ -468,9 +479,18 @@ export function renderDashboardHtml(
   .links-table td.link-url { max-width: 420px; word-break: break-all; }
   .links-table td.link-url a { color: var(--brand); text-decoration: none; }
   .links-table td.link-url a:hover { text-decoration: underline; }
-  .links-table td.link-clicks { font-weight: 600; color: var(--brand); }
+  /* #3088: contagens de link (13px/600) — mesmo motivo do td.metric acima. */
+  .links-table td.link-clicks { font-weight: 600; color: var(--ink); }
   .links-table td.link-pct { opacity: 0.75; }
-  .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.5; padding: 2px 12px 6px; margin: 0; }
+  /* #3089: opacity 0.5 a 11.5px media ~3.5:1 (abaixo de AA 4.5:1). 0.7 sobe pra
+     ~5.6-6.8:1 (WCAG relative luminance, ink #171411 sobre --paper/--card/--paper-alt). */
+  .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.7; padding: 2px 12px 6px; margin: 0; }
+  /* #3090: "Glossário das colunas" — reusa .links-ctr/.links-summary (mesmo
+     colapsável dos outros usos), conteúdo em <dl> (termo/definição). */
+  dl.glossary-list { margin: 0; padding: 0 12px 10px; font-size: 0.82rem; }
+  dl.glossary-list dt { font-weight: 700; color: var(--ink); margin-top: 8px; }
+  dl.glossary-list dt:first-child { margin-top: 0; }
+  dl.glossary-list dd { margin: 2px 0 0; color: var(--ink); opacity: 0.85; }
   /* #2758: lista de pagamentos individuais na célula "Pagamentos" (detalhe por assinatura) */
   .payments-list { margin: 4px 0 6px; padding-left: 20px; font-size: 0.8rem; }
   .payments-list li { padding: 1px 0; }
@@ -576,20 +596,12 @@ ${monthlyTotalsSection}
 ${volumeSection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
+${renderColumnGlossary("envios", ENVIOS_COLUMNS)}
 <div class="table-wrap">
 <table id="envios-table">
 <thead>
 <tr>
-<th title="ID do envio no Brevo.">ID</th>
-<th title="Lista de destinatários no Brevo.">Lista</th>
-<th title="Data e hora do envio (horário de Brasília).">Enviado</th>
-<th title="${escHtml(ENVIOS_TOOLTIP)}">E-mails (eventos)</th>
-<th title="Emails entregues nas caixas dos leitores.">Delivered</th>
-<th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas. Entre parênteses (quando há dado de MPP): taxa sem Apple MPP e, quando disponível, taxa trackable — trackableViews ÷ delivered, aperturas com pixel rastreável que exclui MPP/bots que não disparam pixel (sinal mais limpo de engajamento real).">Opens 👁️</th>
-<th title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Engajamento com o conteúdo entre quem abriu. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
-<th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
-<th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
-<th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
+${ENVIOS_COLUMNS.map((c) => `<th title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
 </tr>
 </thead>
 <tbody id="envios-tbody">
@@ -695,7 +707,7 @@ ${couponTabHtml}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses (quando há dado de MPP), a taxa sem Apple MPP (ainda pode incluir outros bots) e, quando disponível, a taxa trackable — aberturas com pixel real (trackableViews ÷ delivered), sinal mais limpo de engajamento real por excluir MPP e outros bots que não disparam pixel. Dados brutos em <code>/api/campaigns</code>.<br>
-Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%, spam ≥0.1%) — <strong>exceção: na aba Contatos, tabela Cohorts</strong>, vermelho tem outro significado (desvio de >${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna, sem relação com circuit breaker; ver nota da própria tabela).</p>
+Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%, spam ≥0.1%). <strong>Vermelho sempre significa "ruim"</strong> em toda a página — inclusive na aba Contatos, tabela Cohorts, onde o critério é desvio desfavorável de mais de ${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna em vez de circuit breaker (#3091; ver nota da própria tabela).</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
 (function () {
@@ -766,6 +778,38 @@ export const CLARICE_PLAN_S1 = 5_600;
  */
 export const ENVIOS_TOOLTIP =
   "Eventos de envio acumulados; uma pessoa em N campanhas conta N vezes; inclui bounces.";
+
+/**
+ * #3090: definição CANÔNICA das colunas da tabela "Envios" (label + tooltip) —
+ * fonte única usada tanto no `title=` de cada `<th>` (hover, desktop) QUANTO no
+ * `<details>` "Glossário das colunas" (sempre visível, funciona em touch/mobile
+ * — o fluxo real do editor é celular). Antes a semântica das métricas vivia
+ * só no `title=`, inacessível sem hover. Exportado pra teste unitário.
+ */
+export const ENVIOS_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "ID", tooltip: "ID do envio no Brevo." },
+  { label: "Lista", tooltip: "Lista de destinatários no Brevo." },
+  { label: "Enviado", tooltip: "Data e hora do envio (horário de Brasília)." },
+  { label: "E-mails (eventos)", tooltip: ENVIOS_TOOLTIP },
+  { label: "Delivered", tooltip: "Emails entregues nas caixas dos leitores." },
+  {
+    label: "Opens 👁️",
+    tooltip:
+      "Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas. Entre parênteses (quando há dado de MPP): taxa sem Apple MPP e, quando disponível, taxa trackable — trackableViews ÷ delivered, aperturas com pixel rastreável que exclui MPP/bots que não disparam pixel (sinal mais limpo de engajamento real).",
+  },
+  {
+    label: "CTOR 🖱️",
+    tooltip:
+      "CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Engajamento com o conteúdo entre quem abriu. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).",
+  },
+  {
+    label: "Bounces",
+    tooltip:
+      "Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.",
+  },
+  { label: "Unsub", tooltip: "Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp." },
+  { label: "Spam", tooltip: "Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp." },
+];
 
 /**
  * Extrai o ciclo e o número do dia de uma campanha Clarice News.
@@ -1313,8 +1357,10 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
       if (c.campaignCount === 0) {
         return `<tr><td><strong>Célula ${c.cell}</strong></td><td colspan="8" style="opacity:0.5;">— sem envios —</td></tr>`;
       }
-      const openTag = c.cell === leaderOpenRate ? ` <strong style="color:${DS.brand}">▲ ABERTURA</strong>` : "";
-      const clickTag = c.cell === leaderClickRate ? ` <strong style="color:${DS.brand}">▲ CLIQUE</strong>` : "";
+      // #3088: teal (--brand) falha AA em texto pequeno — tags de destaque
+      // voltam a --ink (negrito + ▲ já diferenciam visualmente).
+      const openTag = c.cell === leaderOpenRate ? ` <strong style="color:${DS.ink}">▲ ABERTURA</strong>` : "";
+      const clickTag = c.cell === leaderClickRate ? ` <strong style="color:${DS.ink}">▲ CLIQUE</strong>` : "";
       return `<tr>
         <td><strong>Célula ${c.cell}</strong></td>
         <td>${c.campaignCount}</td>
@@ -1336,8 +1382,8 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
       : !leaderClickRate
       ? "Empate no clique — aguardar mais dados."
       : significantClick
-      ? `Vencedor por CLIQUE: <strong style="color:${DS.brand}">Célula ${leaderClickRate}</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}). Já dá pra concluir.`
-      : `Vencedor provisório por clique: <strong style="color:${DS.brand}">Célula ${leaderClickRate}</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
+      ? `Vencedor por CLIQUE: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}). Já dá pra concluir.`
+      : `Vencedor provisório por clique: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
 
   return `
   <h4 style="margin:16px 0 4px 0;">${escHtml(title)}</h4>
@@ -1625,7 +1671,8 @@ export function renderWeekdaySection(
   const tableRows = orderedRows
     .map((r) => {
       const isWinner = r.weekday === winnerWk;
-      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ MELHOR DIA</strong>` : "";
+      // #3088: teal falha AA em texto pequeno — tag volta a --ink.
+      const winnerTag = isWinner ? ` <strong style="color:${DS.ink}">▲ MELHOR DIA</strong>` : "";
       const smallSampleNote = r.smallSample
         ? ` <span style="color:${DS.ink};opacity:0.6;font-size:0.8em;">(amostra pequena)</span>`
         : "";
@@ -1648,7 +1695,7 @@ export function renderWeekdaySection(
     : validRows.length < 2
     ? `Dados insuficientes — aguardar mais dias de envio.`
     : winnerWk !== null
-    ? `Melhor dia provisório: <strong style="color:${DS.brand}">${WEEKDAY_LABELS[winnerWk]}</strong> — aguardar mais dados para conclusão.`
+    ? `Melhor dia provisório: <strong style="color:${DS.ink}">${WEEKDAY_LABELS[winnerWk]}</strong> — aguardar mais dados para conclusão.`
     : `Dados insuficientes para comparação.`;
 
   const excludedNote =
@@ -1729,7 +1776,8 @@ export function renderAbcSection(
   const cellRows = orderedRows
     .map((r) => {
       const isWinner = r.cell === winnerCell && r.campaignCount > 0;
-      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
+      // #3088: teal falha AA em texto pequeno — tag volta a --ink.
+      const winnerTag = isWinner ? ` <strong style="color:${DS.ink}">▲ LÍDER</strong>` : "";
       // #2257: taxa MPP-inclusiva (primária, bate com a Brevo UI) + orgânica em
       // parênteses quando disponível — mesmo padrão da tabela de campanhas (#1153).
       const organicInline =
@@ -1755,7 +1803,7 @@ export function renderAbcSection(
     : isTied
     ? `Empate entre células com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
     : allSampled && winnerCell
-    ? `Vencedor provisório: <strong style="color:${DS.brand}">Célula ${winnerCell}</strong> — aguardar checkpoint de análise para decisão final.`
+    ? `Vencedor provisório: <strong style="color:${DS.ink}">Célula ${winnerCell}</strong> — aguardar checkpoint de análise para decisão final.`
     : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
 
   return `
