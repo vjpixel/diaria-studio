@@ -48,9 +48,15 @@ const FIXTURE: NewsletterContent = {
 };
 
 describe("#3104 — dark mode: fullDocument ganha paridade com o mensal (#2645)", () => {
-  it("fullDocument: true emite meta color-scheme=light no <head>", () => {
+  it("fullDocument: true emite meta color-scheme + supported-color-schemes com 'light dark' (não só 'light')", () => {
+    // #3104 self-review: "light" sozinho faz o Apple Mail tratar o e-mail como
+    // "só suporta claro" e IGNORAR a regra @media (prefers-color-scheme: dark)
+    // autoral abaixo — teria zerado a paridade que esta issue pede. "light dark"
+    // (igual ao mensal, #2645) é o que garante que a regra realmente é honrada.
     const full = renderHTML(FIXTURE, { fullDocument: true });
-    assert.match(full, /<meta name="color-scheme" content="light" \/>/);
+    assert.match(full, /<meta name="color-scheme" content="light dark" \/>/);
+    assert.match(full, /<meta name="supported-color-schemes" content="light dark" \/>/);
+    assert.doesNotMatch(full, /content="light" \/>/, "não deve regredir pro valor single-scheme");
   });
 
   it("fullDocument: true emite a regra de dark-canvas (@media prefers-color-scheme: dark)", () => {

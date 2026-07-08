@@ -1020,20 +1020,24 @@ ${container}
     content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
   );
   // #3104: paridade de dark mode com o mensal (#2645) — só neste caminho
-  // (fullDocument), não no fragmento colado no Beehiiv. `color-scheme:light`
-  // pede aos clientes que suportam a meta que NÃO façam auto-dark-mode-invert
-  // das cores explícitas do template (risco prático baixo hoje porque toda
-  // cor do e-mail já é setada inline); o <style> de dark-canvas ao lado
-  // continua author-controlled via media query independente da meta —
-  // escurece só o canvas externo (`.ds-canvas`), o card/conteúdo internos
-  // seguem inalterados, mesma decisão de escopo do #2645 mensal.
+  // (fullDocument), não no fragmento colado no Beehiiv. `content="light dark"`
+  // (não só "light") nos DOIS metas — igual ao mensal — porque Apple Mail
+  // trata um `color-scheme`/`supported-color-schemes` de valor único como "este
+  // e-mail só suporta claro" e some com a regra de dark-canvas abaixo (não a
+  // aplica de qualquer jeito); "light dark" é o que faz o Apple Mail de fato
+  // honrar o `@media (prefers-color-scheme: dark)` autoral que segue no
+  // <style> — sem isso a paridade com o mensal seria só de papel (self-review:
+  // achado real, confirmado contra a documentação de dark mode em e-mail).
+  // Risco prático de deixar o auto-dark-mode ligado é baixo hoje porque toda
+  // cor do e-mail já é setada inline (nunca texto sem cor sobre fundo sem cor).
   return `<!doctype html>
 <html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="x-apple-disable-message-reformatting" />
-<meta name="color-scheme" content="light" />
+<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
 ${DARK_CANVAS_STYLE_BLOCK}
