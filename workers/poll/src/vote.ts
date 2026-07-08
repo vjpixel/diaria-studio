@@ -6,6 +6,7 @@ import {
   isValidEdition,
   isUnsubstitutedMergeTag,
   classify403Reason,
+  todayAammddBrt, // #3113 item 9: fecha a mesma brecha de edição futura no /vote direto
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
@@ -62,6 +63,20 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   const correctRaw = await env.POLL.get(`correct:${edition}`);
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition) && correctRaw === null) {
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
+  }
+
+  // #3113 (item 9): o gate acima só rejeita quando `correctRaw` é null — mas
+  // `correct:{edition}` é setado ANTES do e-mail sair (prep de imagens/revisão,
+  // #2867), então uma edição AAMMDD futura com gabarito já definido passava
+  // aqui direto. `extractEditionsForYear` (listagem do arquivo) e
+  // `handleArchiveVotePage` (página de voto do arquivo) já fecham essa brecha
+  // pra LEITURA — mas o `/vote` que de fato REGISTRA o voto continuava aberto
+  // via URL direta (email+edition+choice montados manualmente, sem passar
+  // pela página do arquivo). Só se aplica ao formato diário AAMMDD — o ciclo
+  // mensal da Clarice (`YYMM-MM`) não tem um "dia" real pra comparar (mesma
+  // exceção documentada acima pra `clarice:valid_editions`).
+  if (/^\d{6}$/.test(edition) && edition > todayAammddBrt(new Date())) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
