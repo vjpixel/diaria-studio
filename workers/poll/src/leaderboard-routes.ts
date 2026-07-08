@@ -8,7 +8,7 @@ import {
   MONTH_NAMES_PT,
   BRAND_INFO,
   leaderboardHref,
-  formatEditionDate,
+  formatEditionDateForBrand,
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -767,7 +767,7 @@ export function renderArchiveListHtml(
 ): Response {
   const info = BRAND_INFO[brand];
   const rows = editions
-    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
+    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
     .join("\n");
   const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
@@ -824,7 +824,7 @@ export function renderArchiveVoteHtml(
   const brandHidden = brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`;
   const imgA = `/img/img-${edition}-01-eia-A.jpg`;
   const imgB = `/img/img-${edition}-01-eia-B.jpg`;
-  const dateLabel = htmlEscape(formatEditionDate(edition));
+  const dateLabel = htmlEscape(formatEditionDateForBrand(edition, brand));
   const pageTitle = `É IA? — ${dateLabel} | ${info.name}`;
   const seoMeta = renderSeoMeta({
     title: pageTitle,
@@ -850,7 +850,9 @@ ${seoMeta}
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
   .choice img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: #00A0A0; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  /* #3110: fundo ink (#171411), não teal — botão cheio em teal reprovava
+     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk (#FBFAF6) dá ~15:1. */
+  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: #171411; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   a { color: #171411; text-decoration: underline; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
