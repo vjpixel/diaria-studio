@@ -25,9 +25,15 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
 import { datePartsInTz, zonedTimeToUtc, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
-// Namespace KV do dashboard: fonte única em clarice-mv-status.ts (já exportado) —
-// reusar evita drift se o namespace for rotacionado.
-import { DASHBOARD_KV_NAMESPACE_ID } from "./clarice-mv-status.ts";
+// #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
+// vinha indireto via clarice-mv-status.ts (que só re-exporta a MESMA constante
+// de lib/dashboard-kv.ts pra compat; sem motivo pra passar por esse hop extra).
+import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
+// #3081: CohortStatsRow fonte única em lib/dashboard-kv-types.ts (dependency-free)
+// — antes era uma cópia manualmente sincronizada com a interface homônima em
+// workers/brevo-dashboard/src/types.ts.
+import type { CohortStatsRow } from "./lib/dashboard-kv-types.ts";
+export type { CohortStatsRow };
 
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
@@ -102,36 +108,6 @@ export interface StoreSummary {
  * brutas (não percentuais) — o render calcula as taxas (opened/received,
  * clicked/received, etc.) e trata denominador 0 como "—", nunca NaN/Infinity.
  */
-export interface CohortStatsRow {
-  /** COUNT(*) do cohort (menos internos). */
-  contacts: number;
-  /** send_eligible=1. */
-  eligible: number;
-  /** sends_count>0 — "já recebeu ao menos 1 envio". */
-  received: number;
-  /** #2909: last_sent_at >= cycle_start — recebeu no CICLO corrente (não "ever").
-   * 0 quando não há cycle_start (o render suprime pra "—" via cycle_start
-   * top-level). Opcional (`?`): payload KV pré-#2909 não tem o campo — render
-   * degrada pra 0. Insumo de "falta enviar" = eligible − received_this_cycle. */
-  received_this_cycle?: number;
-  /** sends_count>0 AND opens_count>0 — abriu ≥1, dentre quem recebeu. */
-  opened: number;
-  /** sends_count>0 AND clicks_count>0 — clicou ≥1, dentre quem recebeu. */
-  clicked: number;
-  /** #2880: sends_count>0 AND unsubscribed=1 — descadastrou, dentre quem recebeu.
-   * (separado de bounce a pedido do editor — antes era o par unsub_bounce.) */
-  unsub: number;
-  /** #2880: sends_count>0 AND hard_bounced=1 — deu hard bounce, dentre quem recebeu. */
-  hard_bounce: number;
-  /** #2880: brevo_list_ids IS NOT NULL — quantos do cohort estão na Brevo (sobre o
-   * TOTAL de contatos do cohort). Absorve a coluna Brevo das tabelas removidas. */
-  brevo: number;
-  // #2909: `sends_sum` (SUM de eventos de envio de todo-o-sempre) e `mv_verified`
-  // (contagem MV do cohort) REMOVIDOS — não serviam ao objetivo de planejar o
-  // envio do mês. `mv_verified` já estava embutido em `eligible` pós-#2888; a
-  // visão do ciclo é `received_this_cycle`/"falta enviar".
-}
-
 function count(db: DatabaseSync, sql: string, params: string[] = []): number {
   return (db.prepare(sql).get(...params) as { n: number }).n;
 }

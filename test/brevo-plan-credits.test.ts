@@ -147,6 +147,41 @@ describe("fetchPlanCredits (#2910)", () => {
     }
   });
 
+  // #3081: bug — mode="cached" se comportava IDÊNTICO a "fresh" (sempre buscava
+  // ao vivo primeiro, KV só entrava em erro), então nunca honrava o KV como
+  // cache de fato — o nome do modo mentia sobre o comportamento. Este teste
+  // prova a semântica correta: KV populado → ZERO chamadas de fetch.
+  it("mode=cached com KV JÁ populado → NÃO chama fetch (usa o KV como cache de verdade, #3081)", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeKv({ credits: 33000 });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 33000, "deve servir do KV sem tentar fetch ao vivo");
+      assert.deepEqual(calls, [], "mode=cached com KV hit não deve chamar a Brevo");
+    });
+  });
+
+  it("mode=fresh com KV JÁ populado → bypassa o KV e busca ao vivo (comportamento distinto de 'cached', #3081)", async () => {
+    const origFetch = globalThis.fetch;
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response(JSON.stringify({ plan: [{ credits: 41000, creditsType: "sendLimit" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const kv = makeKv({ credits: 33000 });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await fetchPlanCredits({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "fresh");
+      assert.equal(result, 41000, "fresh deve preferir o valor ao vivo, não o KV");
+      assert.ok(called, "fresh deve chamar fetch mesmo com KV populado");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it("mode=kv-only → NUNCA chama fetch (caminho de fallback de 429 do Brevo, #2733/#2779)", async () => {
     await withFetchSpy(async (calls) => {
       const kv = makeKv({ credits: 22000 });
