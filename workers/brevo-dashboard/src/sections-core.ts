@@ -837,13 +837,23 @@ export function calcCumulativeSent(
 /**
  * #2910: volume enviado cumulativo dentro da JANELA do ciclo de COBRANÇA
  * Brevo (`billingCycleWindow`) — soma "sent" de TODAS as campanhas Clarice
- * News (diária + mensal + ABC, `parseClariceCampaignKey` não-null) cujo
+ * (diária + mensal + ABC + cold, `classifyClariceAudience` não-null) cujo
  * `sentDate` cai na janela. Filtra por DATA de envio, não por naming de
  * ciclo — diferente de `calcCumulativeSent` (que soma por `cycle` de
  * naming, ex: "2605", usado só pelo Resumo A/B/C). Sem isso, o envio de um
  * mês sem novo naming de ciclo diário (ex: digest mensal/ABC) ficava fora
- * da contagem e a seção Volume travava na última rampa. Exportado pra
- * teste unitário.
+ * da contagem e a seção Volume travava na última rampa.
+ *
+ * #3076: `classifyClariceAudience` (não `parseClariceCampaignKey`) é o
+ * classificador certo aqui — este Brevo account só serve Clarice News
+ * (premissa documentada em `weekly-plan.ts`), então toda campanha `sent`
+ * é candidata, e isso inclui o naming `cold AAMM-MM — X` (oficial desde
+ * #2976, com envios reais). `parseClariceCampaignKey` só reconhece o
+ * naming "Clarice News ..." e por isso subcontava os cold, o que também
+ * distorcia o denominador `planTotal` (planCredits + cumulativeSent, ver
+ * `sections-kv.ts`) e divergia de `aggregateByMonth` (que soma sem filtro
+ * de naming, só por `sentDate` — mesmo dado, duas histórias diferentes).
+ * Exportado pra teste unitário.
  */
 export function calcCumulativeSentInBillingWindow(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -851,7 +861,7 @@ export function calcCumulativeSentInBillingWindow(
 ): number {
   let total = 0;
   for (const c of campaigns) {
-    if (!parseClariceCampaignKey(c.name)) continue; // só campanhas Clarice News
+    if (!classifyClariceAudience(c.name)) continue; // só campanhas Clarice (warm ou cold)
     if (!isInBillingWindow(c.sentDate, window)) continue;
     const picked = pickStats(c); // #2254: fonte única (globalStats → campaignStats)
     if (!picked) continue;
