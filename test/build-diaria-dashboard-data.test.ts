@@ -613,11 +613,12 @@ describe("ordem das seções (#2193)", () => {
     };
   }
 
-  test("#2602: dentro do panel Visão geral, ordem Overnight < Saúde < Em breve", async () => {
-    // #2602: reorg em abas — overnight, source-health e stubs vivem todos no
-    // panel-visaogeral. CTR migrou para seu próprio panel (panel-ctr), então a
-    // ordem global CTR < Overnight não vale mais (panel-visaogeral vem antes de
-    // panel-ctr). Checamos a ordem intra-panel das 3 seções da Visão geral.
+  test("#2602/#3075: dentro do panel Visão geral, ordem Overnight < Em breve (Saúde virou aba própria)", async () => {
+    // #2602: reorg em abas — overnight e stubs vivem no panel-visaogeral.
+    // #3075: source-health saiu do panel-visaogeral para seu próprio panel-saude,
+    // então não faz mais sentido comparar sua posição relativa dentro do panel
+    // Visão geral. Checamos a ordem intra-panel das 2 seções que sobraram e
+    // confirmamos que source-health de fato NÃO está mais no panel Visão geral.
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeFullData());
 
@@ -628,26 +629,30 @@ describe("ordem das seções (#2193)", () => {
 
     assert.ok(idxCtr > -1, "secao #ctr deve estar presente");
     assert.ok(idxOvernight > -1, "secao #overnight deve estar presente");
-    assert.ok(idxSourceHealth > -1, "secao #source-health deve estar presente");
+    assert.ok(idxSourceHealth > -1, "secao #source-health deve estar presente (em outro panel)");
     assert.ok(idxStubs > -1, "secao #stubs deve estar presente");
 
-    assert.ok(idxOvernight < idxSourceHealth, `Overnight (${idxOvernight}) deve aparecer antes de Saúde (${idxSourceHealth})`);
-    assert.ok(idxSourceHealth < idxStubs, `Saúde (${idxSourceHealth}) deve aparecer antes de Em breve (${idxStubs})`);
+    assert.ok(idxOvernight < idxStubs, `Overnight (${idxOvernight}) deve aparecer antes de Em breve (${idxStubs})`);
+
+    const panelVisaoGeral = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-saude")/)?.[0] ?? "";
+    assert.ok(!panelVisaoGeral.includes('id="source-health"'), "#3075: source-health não deve mais estar no panel Visão geral");
   });
 
-  test("#2602: navegação por abas substituiu o nav — 6 labels de aba presentes", async () => {
+  test("#2602/#3075: navegação por abas substituiu o nav — 7 labels de aba presentes", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeFullData());
 
     // O <nav class="nav"> com âncoras foi substituído por abas CSS-only (#2602).
     assert.ok(!html.includes('<nav class="nav">'), "nav antigo não deve mais existir");
 
-    // tab-bar com 6 labels, na ordem editorial confirmada. Escopar à tab-bar do
-    // body: for="tab-X" também aparece no CSS (label[for="tab-X"]) no <head>, então
-    // indexOf contra o html inteiro pegaria a posição no CSS (falso-positivo).
+    // tab-bar com 7 labels, na ordem editorial confirmada (#3075 adicionou Saúde
+    // das fontes logo após Visão geral). Escopar à tab-bar do body: for="tab-X"
+    // também aparece no CSS (label[for="tab-X"]) no <head>, então indexOf contra
+    // o html inteiro pegaria a posição no CSS (falso-positivo).
     const tabBar = html.match(/<div class="tab-bar"[\s\S]*?<\/div>/)?.[0] ?? "";
     assert.ok(tabBar.length > 0, "tab-bar deve existir no body");
     const idxVisaoGeral = tabBar.indexOf('for="tab-visaogeral"');
+    const idxSaude = tabBar.indexOf('for="tab-saude"');
     const idxCtr = tabBar.indexOf('for="tab-ctr"');
     const idxTopLinks = tabBar.indexOf('for="tab-toplinks"');
     const idxUseMelhor = tabBar.indexOf('for="tab-usemelhor"');
@@ -655,13 +660,15 @@ describe("ordem das seções (#2193)", () => {
     const idxAudiencia = tabBar.indexOf('for="tab-audiencia"');
 
     assert.ok(idxVisaoGeral > -1, "label aba Visão geral deve existir");
+    assert.ok(idxSaude > -1, "label aba Saúde das fontes deve existir");
     assert.ok(idxCtr > -1, "label aba CTR deve existir");
     assert.ok(idxTopLinks > -1, "label aba Top links deve existir");
     assert.ok(idxUseMelhor > -1, "label aba Use Melhor deve existir");
     assert.ok(idxEia > -1, "label aba É IA? deve existir");
     assert.ok(idxAudiencia > -1, "label aba Audiência deve existir");
 
-    assert.ok(idxVisaoGeral < idxCtr, "Visão geral antes de CTR");
+    assert.ok(idxVisaoGeral < idxSaude, "Visão geral antes de Saúde das fontes");
+    assert.ok(idxSaude < idxCtr, "Saúde das fontes antes de CTR");
     assert.ok(idxCtr < idxTopLinks, "CTR antes de Top links");
     assert.ok(idxTopLinks < idxUseMelhor, "Top links antes de Use Melhor");
     assert.ok(idxUseMelhor < idxEia, "Use Melhor antes de É IA?");

@@ -642,9 +642,9 @@ describe("renderDashboardHtml com use_melhor e poll_eia (#2474, #2475)", () => {
   });
 });
 
-// ─── #2602: tab navigation — estrutura HTML das 6 abas ───────────────────────
+// ─── #2602/#3075: tab navigation — estrutura HTML das 7 abas ─────────────────
 
-describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
+describe("#2602/#3075: tab navigation — 7 abas na diaria-dashboard", () => {
   function makeMinimalData(): import("../workers/diaria-dashboard/src/types.ts").DashboardData {
     return {
       generated_at: "2026-06-26T00:00:00Z",
@@ -660,14 +660,14 @@ describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
     };
   }
 
-  test("HTML contém 6 inputs radio para as abas (tab state)", async () => {
+  test("HTML contém 7 inputs radio para as abas (tab state)", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData());
     const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
-    assert.equal(radioMatches.length, 6, "deve ter exatamente 6 radio inputs para as 6 abas");
+    assert.equal(radioMatches.length, 7, "deve ter exatamente 7 radio inputs para as 7 abas (#3075: Saúde das fontes virou aba própria)");
   });
 
-  test("HTML contém 6 labels de aba com textos corretos e na ordem certa", async () => {
+  test("HTML contém 7 labels de aba com textos corretos e na ordem certa", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData());
     // IMPORTANTE: escopar à <div class="tab-bar"> do body. O atributo for="tab-X"
@@ -678,6 +678,7 @@ describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
     assert.ok(tabBar.length > 0, "tab-bar deve existir no body");
     // Verificar presença de todos os labels (texto) dentro da tab-bar
     assert.match(tabBar, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(tabBar, /Saúde das fontes/, "deve ter label 'Saúde das fontes' (#3075)");
     assert.match(tabBar, /\bCTR\b/, "deve ter label 'CTR'");
     assert.match(tabBar, /Top links/, "deve ter label 'Top links'");
     assert.match(tabBar, /Use Melhor/, "deve ter label 'Use Melhor'");
@@ -685,13 +686,15 @@ describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
     assert.match(tabBar, /Audiência/, "deve ter label 'Audiência'");
     // Verificar ordem: posição de cada label DENTRO da tab-bar (não no CSS)
     const posVisaoGeral = tabBar.indexOf('for="tab-visaogeral"');
+    const posSaude = tabBar.indexOf('for="tab-saude"');
     const posCtr = tabBar.indexOf('for="tab-ctr"');
     const posTopLinks = tabBar.indexOf('for="tab-toplinks"');
     const posUseMelhor = tabBar.indexOf('for="tab-usemelhor"');
     const posEia = tabBar.indexOf('for="tab-eia"');
     const posAudiencia = tabBar.indexOf('for="tab-audiencia"');
-    assert.ok(posVisaoGeral > -1 && posCtr > -1 && posTopLinks > -1 && posUseMelhor > -1 && posEia > -1 && posAudiencia > -1, "todos os 6 labels devem existir na tab-bar");
-    assert.ok(posVisaoGeral < posCtr, "Visão geral deve vir antes de CTR");
+    assert.ok(posVisaoGeral > -1 && posSaude > -1 && posCtr > -1 && posTopLinks > -1 && posUseMelhor > -1 && posEia > -1 && posAudiencia > -1, "todos os 7 labels devem existir na tab-bar");
+    assert.ok(posVisaoGeral < posSaude, "Visão geral deve vir antes de Saúde das fontes");
+    assert.ok(posSaude < posCtr, "Saúde das fontes deve vir antes de CTR");
     assert.ok(posCtr < posTopLinks, "CTR deve vir antes de Top links");
     assert.ok(posTopLinks < posUseMelhor, "Top links deve vir antes de Use Melhor");
     assert.ok(posUseMelhor < posEia, "Use Melhor deve vir antes de É IA?");
@@ -704,13 +707,21 @@ describe("#2602: tab navigation — 6 abas na diaria-dashboard", () => {
     assert.match(html, /id="tab-visaogeral"[^>]*checked/, "aba Visão geral deve estar checked por default");
   });
 
-  test("panel-visaogeral contém overnight e source-health", async () => {
+  test("panel-visaogeral contém overnight mas NÃO source-health (#3075: virou aba própria)", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData());
-    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-ctr")/)?.[0] ?? "";
+    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-saude")/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-visaogeral deve existir");
     assert.ok(panel.includes('id="overnight"'), "overnight deve estar no panel Visão geral");
-    assert.ok(panel.includes('id="source-health"'), "source-health deve estar no panel Visão geral");
+    assert.ok(!panel.includes('id="source-health"'), "#3075: source-health NÃO deve mais estar no panel Visão geral");
+  });
+
+  test("panel-saude contém source-health (#3075: nova aba própria)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    const panel = html.match(/id="panel-saude"[\s\S]*?(?=id="panel-ctr")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-saude deve existir");
+    assert.ok(panel.includes('id="source-health"'), "source-health deve estar no panel Saúde das fontes");
   });
 
   test("panel-ctr contém seção ctr", async () => {
