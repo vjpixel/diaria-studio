@@ -502,7 +502,9 @@ ${items}
  *
  * @param id - sufixo do id do `<details>` (único por tabela/aba)
  * @param takeawayHtml - 1 frase sempre visível (o que o editor precisa saber de cara)
- * @param detailsHtml - metodologia completa, recolhida (sem números de issue — ver CLAUDE.md)
+ * @param detailsHtml - metodologia completa, recolhida (sem números de issue —
+ *   convenção estabelecida por este PR, mesmo espírito do fix das notas de
+ *   Cupons que removeu "#2750" do texto visível, ver test/brevo-dashboard-3092-consistency.test.ts)
  */
 export function renderMethodologyNote(id: string, takeawayHtml: string, detailsHtml: string): string {
   return `<p class="section-note">${takeawayHtml}</p>
