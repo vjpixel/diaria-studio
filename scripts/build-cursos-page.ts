@@ -315,7 +315,9 @@ ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_UR
 
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
     border-bottom: 1px solid var(--rule); margin-top: 40px; }
-  .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
+  .filters .wrap { padding-top: 0; padding-bottom: 0; }
+  .filters-summary { display: none; }
+  .filters-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
     color: var(--ink); display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
   .filters select { font-family: ${SANS}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
@@ -326,6 +328,24 @@ ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_UR
   .filters select:focus { outline: none; border-bottom-color: var(--teal); }
   .count { margin-left: auto; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.16em;
     text-transform: uppercase; color: var(--ink); align-self: flex-end; }
+
+  /* #3107: abaixo de ~700px os 8 dropdowns empilhavam em 5-6 linhas (~330px)
+     sticky permanentemente no topo — ~40% da tela do mobile durante todo o
+     scroll da lista. Colapsa num <details>/botão "Filtrar (N cursos)" de 1
+     linha, sticky, expandindo só ao toque. Acima de 700px (desktop),
+     comportamento inalterado — .filters-body sempre visível via a regra base
+     acima, a media query abaixo só se aplica no recorte mobile. */
+  @media (max-width: 700px) {
+    .filters-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      cursor: pointer; list-style: none; padding: 14px 0;
+      font-family: ${SANS}; font-size: 13px; font-weight: 700; letter-spacing: 0.04em; color: var(--ink); }
+    .filters-summary::-webkit-details-marker { display: none; }
+    .filters-summary::after { content: '\\25BE'; color: var(--teal); font-size: 12px; }
+    .filters-details[open] .filters-summary::after { content: '\\25B4'; }
+    .filters-body { display: none; flex-direction: column; align-items: stretch; gap: 16px; padding: 4px 0 16px; }
+    .filters-details[open] .filters-body { display: flex; }
+    .filters-body .count { display: none; } /* contagem já aparece no botão "Filtrar (N cursos)" */
+  }
 
   main { padding: 40px 0 64px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
@@ -368,8 +388,15 @@ ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_UR
   </header>
   <div class="filters">
     <div class="wrap">
+      <details class="filters-details" id="filters-details">
+        <summary class="filters-summary"><span id="filters-summary-label">Filtrar (${courses.length}${
+          courses.length === 1 ? " curso" : " cursos"
+        })</span></summary>
+        <div class="filters-body">
 ${filters}
-      <span class="count" id="count"></span>
+          <span class="count" id="count"></span>
+        </div>
+      </details>
     </div>
   </div>
   <main>
@@ -387,6 +414,9 @@ ${cards}
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
     var countEl = document.getElementById('count');
     var emptyEl = document.getElementById('empty');
+    // #3107: label do botão mobile "Filtrar (N cursos)" — mesma contagem
+    // filtrada de countEl, reusada abaixo em apply().
+    var summaryLabelEl = document.getElementById('filters-summary-label');
     // Filtros simples (1 valor por card): id do select → dataset key.
     var SIMPLE = { 'f-lang': 'lang', 'f-level': 'level', 'f-cost': 'cost', 'f-format': 'format', 'f-duration': 'duration', 'f-platform': 'platform', 'f-cert': 'cert' };
     function el(id) { return document.getElementById(id); }
@@ -425,6 +455,7 @@ ${cards}
       });
       countEl.textContent = visible + (visible === 1 ? ' curso' : ' cursos');
       emptyEl.style.display = visible === 0 ? '' : 'none';
+      if (summaryLabelEl) summaryLabelEl.textContent = 'Filtrar (' + visible + (visible === 1 ? ' curso)' : ' cursos)');
     }
     Object.keys(SIMPLE).forEach(function (id) {
       var sel = el(id);

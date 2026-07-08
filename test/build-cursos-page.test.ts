@@ -211,6 +211,74 @@ describe("renderCursosPage (#1745)", () => {
   });
 });
 
+describe("filtros colapsam em mobile (#3107)", () => {
+  const courses = [
+    course({ id: "a", title: "Curso A", language: "pt-br", level: "iniciante", duration_hours: 2, certificate: true, themes: ["Fundamentos"], platform: "IBM SkillsBuild" }),
+    course({ id: "b", title: "Curso B", language: "en", level: "avancado", duration_hours: 40, duration_estimated: true, certificate: false, cost: "free", format: "hands-on", themes: ["Deep Learning"], platform: "Coursera" }),
+  ];
+  const html = renderCursosPage(courses);
+
+  it("filtros ficam dentro de um <details> com botão (summary) sticky de 1 linha", () => {
+    assert.match(html, /<details class="filters-details" id="filters-details">/);
+    assert.match(html, /<summary class="filters-summary">/);
+    // .filters (o wrapper sticky) não muda — segue sticky pro botão colapsado herdar o comportamento.
+    assert.match(html, /\.filters\s*\{[^}]*position:\s*sticky/);
+  });
+
+  it('botão mostra "Filtrar (N cursos)" com a contagem TOTAL no primeiro paint (SSR, sem JS)', () => {
+    assert.ok(
+      html.includes(`Filtrar (${courses.length} cursos)`),
+      "label inicial deve refletir o total de cursos renderizados",
+    );
+  });
+
+  it("singular correto quando só 1 curso (\"Filtrar (1 curso)\", sem 's')", () => {
+    const single = renderCursosPage([course({ id: "solo" })]);
+    assert.ok(single.includes("Filtrar (1 curso)"));
+    assert.ok(!single.includes("Filtrar (1 cursos)"));
+  });
+
+  it("abaixo de 700px o corpo dos filtros fica oculto por padrão e só abre com [open]", () => {
+    assert.match(html, /@media \(max-width:\s*700px\)/);
+    // dentro da media query mobile: corpo escondido por padrão, mostrado só quando o <details> está aberto.
+    const mobileBlockMatch = html.match(/@media \(max-width: 700px\) \{([\s\S]*?)\n  \}/);
+    assert.ok(mobileBlockMatch, "deve haver um bloco de media query mobile");
+    const mobileBlock = mobileBlockMatch![1];
+    assert.match(mobileBlock, /\.filters-body\s*\{[^}]*display:\s*none/, "corpo dos filtros começa oculto no mobile");
+    assert.match(
+      mobileBlock,
+      /\.filters-details\[open\]\s*\.filters-body\s*\{[^}]*display:\s*flex/,
+      "abre ao tocar (details[open])",
+    );
+  });
+
+  it("acima de 700px (desktop) o corpo dos filtros permanece SEMPRE visível — sem regra que o esconda fora da media query mobile", () => {
+    // Fora do bloco @media (max-width:700px), .filters-body deve ficar display:flex incondicionalmente —
+    // ou seja, o desktop não depende do atributo [open] do <details> (comportamento atual preservado).
+    const beforeMobileQuery = html.slice(0, html.indexOf("@media (max-width: 700px)"));
+    assert.match(beforeMobileQuery, /\.filters-body\s*\{[^}]*display:\s*flex/, "regra base (desktop) mantém display:flex sem depender de [open]");
+  });
+
+  it("summary/botão fica escondido no desktop (display:none fora da media query mobile)", () => {
+    const beforeMobileQuery = html.slice(0, html.indexOf("@media (max-width: 700px)"));
+    assert.match(beforeMobileQuery, /\.filters-summary\s*\{\s*display:\s*none/, "botão só aparece em mobile");
+  });
+
+  it("JS: apply() atualiza o label do botão mobile com a contagem FILTRADA (dinâmica), reusando a mesma variável 'visible' do #count", () => {
+    assert.match(html, /var summaryLabelEl = document\.getElementById\('filters-summary-label'\);/);
+    assert.match(
+      html,
+      /if \(summaryLabelEl\) summaryLabelEl\.textContent = 'Filtrar \(' \+ visible \+ \(visible === 1 \? ' curso\)' : ' cursos\)'\);/,
+    );
+  });
+
+  it("count (#count) some no mobile — a contagem já está no botão \"Filtrar (N cursos)\"", () => {
+    const mobileBlockMatch = html.match(/@media \(max-width: 700px\) \{([\s\S]*?)\n  \}/);
+    assert.match(mobileBlockMatch![1], /\.filters-body \.count\s*\{[^}]*display:\s*none/);
+  });
+
+});
+
 describe("SEO/compartilhamento — meta tags (#3106)", () => {
   const html = renderCursosPage([course()]);
 
