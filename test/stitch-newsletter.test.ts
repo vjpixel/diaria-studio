@@ -156,7 +156,8 @@ describe("stitchNewsletter (#1463)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
       });
-      // Ordem canonical (#2546): coverage > D1 > D2 > D3 > É IA? > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
+      // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100): coverage > D1 > D2 > D3 >
+      // É IA? > USE MELHOR > LANÇAMENTOS > VÍDEO > RADAR > ERRO > SORTEIO > PARA ENCERRAR
       // RADAR mergea radar + radar em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
       const d2Pos = result.indexOf("DESTAQUE 2");
@@ -625,6 +626,94 @@ Foto descrição.
       // 260611: páginas Beehiiv extintas → links fixos apontam pros Workers
       assert.match(result, /cursos\.diaria\.workers\.dev/);
       assert.match(result, /livros\.diaria\.workers\.dev/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 260708)", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-video-radar-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("com RADAR e VÍDEO presentes, VÍDEO aparece antes de RADAR no MD final", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          radar: [{ title: "R1", url: "https://r.com/1", summary: "rdesc" }],
+          video: [{ title: "V1", url: "https://v.com/1", summary: "vdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      const videoPos = result.indexOf("📺 VÍDEO");
+      const radarPos = result.indexOf("📡 RADAR");
+      assert.ok(videoPos > 0, "seção VÍDEO deve aparecer");
+      assert.ok(radarPos > 0, "seção RADAR deve aparecer");
+      assert.ok(videoPos < radarPos, `VÍDEO deve vir antes de RADAR (video=${videoPos} radar=${radarPos})`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("só RADAR presente (sem VÍDEO) — renderiza normalmente, sem quebrar", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          radar: [{ title: "R1", url: "https://r.com/1", summary: "rdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      assert.match(result, /📡 RADAR/);
+      assert.doesNotMatch(result, /📺 VÍDEO/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("só VÍDEO presente (sem RADAR) — renderiza normalmente, sem quebrar", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          video: [{ title: "V1", url: "https://v.com/1", summary: "vdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      assert.match(result, /📺 VÍDEO/);
+      assert.doesNotMatch(result, /📡 RADAR/);
     } finally {
       cleanup();
     }
