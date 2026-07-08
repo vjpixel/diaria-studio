@@ -82,50 +82,18 @@ export interface BrevoList {
  * renderiza — nunca recomputa no render. As 5 coortes são mutuamente exclusivas
  * (cada contato em exatamente uma); "saídas" (bounce/unsub) têm precedência.
  *
- * Mantido em sincronia com a interface homônima em
- * scripts/clarice-engagement-cohorts.ts (bundles separados não compartilham tipos).
+ * #3081: fonte única em `scripts/lib/dashboard-kv-types.ts` (dependency-free,
+ * mesmo padrão de `CouponUsageReport` acima) — antes era uma cópia manualmente
+ * sincronizada com a interface homônima em scripts/clarice-engagement-cohorts.ts.
  */
-export interface EngagementCohorts {
-  generatedAt: string;
-  universe: number;
-  opened2plus: number;
-  opened1: number;
-  received1_opened0: number;
-  received2_opened0: number;
-  exits: number;
-  exitsBreakdown: { bounced: number; optedOut: number };
-  // #3081: DEAD CODE de exibição — computado por
-  // `scripts/clarice-engagement-cohorts.ts` (valida o rótulo fixo "2+" nos
-  // buckets de abertura/recebimento internamente) e normalizado aqui em
-  // `brevo-api.ts`, mas nenhum render (`renderEngagementCohortsSection`)
-  // consome este campo pra exibição — o rótulo "2+" é hardcoded (ver comentário
-  // em `renderEngagementCohortsSection`: os buckets são definidos como ≥2, então
-  // "2+" é sempre exato e não precisa se acoplar a este valor). Mantido no
-  // payload/tipo por ora — não remover nem adicionar exibição sem pedido do
-  // editor (decisão de produto, fora de escopo do #3081).
-  maxReceived: number;
-}
-
-
-// #2609: status MillionVerifier por grupo de contatos.
-export interface MvGroupStatus {
-  /** Identificador do grupo (ex: "t01-assinantes-ativos", "t02-ex-assinantes"). */
-  group: string;
-  /** Ciclo em que a verificação foi feita (ex: "2605-06"). */
-  cycle: string;
-  /** "verified" = tem mv-export-*-verified.csv; "t01" = N/A por pagamento Stripe; "pending" = sem arquivo. */
-  status: "verified" | "t01" | "pending";
-  /** ISO date do mtime do arquivo verified.csv (ou null). */
-  verifiedAt: string | null;
-  verified: number;
-  rejected: number;
-  unknown: number;
-}
-
-export interface MvStatus {
-  generatedAt: string;
-  groups: MvGroupStatus[];
-}
+export type {
+  EngagementCohorts,
+  MvGroupStatus,
+  MvStatus,
+  ContactsSummary,
+  CohortStatsRow,
+} from "../../../scripts/lib/dashboard-kv-types.ts";
+// #2609: status MillionVerifier por grupo de contatos (tipo em dashboard-kv-types.ts).
 
 // ─── #2144: helpers de controle de concorrência e cache ──────────────────────
 
@@ -145,88 +113,11 @@ export const COHORTS_KV_KEY = "cohorts:engagement";
 export const MV_STATUS_KV_KEY = "mv:status";
 
 // #2653: sumário do store único de contatos (#2647), gravado por
-// scripts/clarice-db-summary.ts. Tipo DUPLICADO do script (mesmo padrão de
-// MvStatus): não importado porque o script puxa node:sqlite, indisponível no
-// runtime do Worker. MANTER EM SINCRONIA com StoreSummary do script (este = o
-// payload do KV = StoreSummary + generated_at).
+// scripts/clarice-db-summary.ts. #3081: `ContactsSummary`/`CohortStatsRow`
+// (tipos do payload) vêm de scripts/lib/dashboard-kv-types.ts (fonte única,
+// ver re-export acima) — antes eram cópias manualmente sincronizadas com
+// `StoreSummary` do script.
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
-
-export interface ContactsSummary {
-  generated_at: string;
-  total: number;
-  // #2909: início do ciclo de envio corrente (menor scheduledAt do send-plan do
-  // ciclo mais recente), ou null se não há ciclo com plano legível. A tabela
-  // Cohorts usa isto pra decidir se exibe "recebeu neste ciclo"/"falta enviar"
-  // (número) ou "—" (sem ciclo). Opcional (`?`): KV pré-#2909 não tem o campo —
-  // ausente é tratado como "sem ciclo" (mesmo que null).
-  cycle_start?: string | null;
-  brevo: { synced_rows: number; has_signal: boolean };
-  eligibility: {
-    eligible: number;
-    ineligible: number;
-    by_reason: Record<string, number>;
-  };
-  priority_points: {
-    lt0: number;
-    eq0: number;
-    p1_40: number;
-    p41_80: number;
-    gt80: number;
-    optin: number;
-    // #3081: quantos emails internos (INTERNAL_EMAILS) foram EXCLUÍDOS deste
-    // bloco + do histograma (script `clarice-db-summary.ts`, calculado desde
-    // #2809 mas nunca propagado até aqui). Opcional — KV pré-#3081 não tem o
-    // campo; render trata ausência como "—" (não 0 — 0 excluídos e "dado
-    // ausente" não são a mesma coisa).
-    internal_excluded?: number;
-  };
-  // #2731: distribuição por valor exato (opcional — KV pré-#2731 não tem).
-  priority_points_histogram?: Record<string, number>;
-  // 260702: coluna "verified" (mv_bucket='verified') por valor exato e por
-  // cohort firstSend (opcionais — KV antigo não tem; render degrada sem coluna).
-  priority_points_histogram_verified?: Record<string, number>;
-  // #2880: coluna "elegíveis" (send_eligible=1) do histograma — par opcional,
-  // degrade gracioso (KV antigo sem o campo → sem a coluna). Isola, por faixa de
-  // pontos, o subconjunto de fato enviável (o histograma inteiro inclui inelegíveis).
-  priority_points_histogram_eligible?: Record<string, number>;
-  // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) do histograma — par
-  // opcional, degrade gracioso (KV antigo sem o campo → sem a coluna).
-  // #2880: `by_cohort`/`by_cohort_first_send*` REMOVIDOS — a tabela "Por safra"
-  // e as sub-linhas "1º envio" saíram do dashboard, consolidadas em cohort_stats.
-  priority_points_histogram_brevo?: Record<string, number>;
-  // #2864: comparativo de envio/engajamento por cohort.
-  // Opcional — KV antigo sem o campo faz a aba renderizar o stub "dados ainda
-  // não gerados" (mesmo padrão de degrade gracioso das demais seções KV).
-  cohort_stats?: Record<string, CohortStatsRow>;
-  mv: Record<string, number>;
-  engagement: { with_opens: number; with_clicks: number };
-}
-
-/**
- * #2864: tipo DUPLICADO de `CohortStatsRow` (scripts/clarice-db-summary.ts) —
- * mesmo padrão de `ContactsSummary`/`StoreSummary` (o script puxa node:sqlite,
- * indisponível no runtime do Worker). MANTER EM SINCRONIA.
- */
-export interface CohortStatsRow {
-  contacts: number;
-  eligible: number;
-  received: number;
-  /** #2909: last_sent_at >= cycle_start — recebeu no CICLO corrente. Opcional
-   * (`?`): KV pré-#2909 não tem o campo — render degrada pra 0 (e só o usa
-   * quando `ContactsSummary.cycle_start` está presente). */
-  received_this_cycle?: number;
-  opened: number;
-  clicked: number;
-  /** #2880: separados a pedido do editor (antes: par unsub_bounce). */
-  unsub: number;
-  hard_bounce: number;
-  /** #2880: brevo_list_ids IS NOT NULL sobre o total do cohort. Opcional (`?`)
-   * pra degradar em KV antigo sem o campo — render trata ausência como 0. */
-  brevo?: number;
-  // #2909: `sends_sum`/`mv_verified` REMOVIDOS (colunas "Envios (Σ)"/"MV verified"
-  // saíram da tabela Cohorts — ver renderCohortsTabPanel). KV antigo ainda os
-  // carrega; o normalizador (brevo-api.ts) simplesmente os ignora.
-}
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por
 // scripts/build-poll-eia-data.ts --push (reusa buildPollEiaSummaryFromApi,

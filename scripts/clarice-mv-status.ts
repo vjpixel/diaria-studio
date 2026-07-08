@@ -76,29 +76,16 @@ import { hasFlag, getArg } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS } from "./lib/cohorts.ts";
+// #3081: MvGroupStatus/MvStatus fonte única em lib/dashboard-kv-types.ts
+// (dependency-free, mesmo padrão de lib/dashboard-kv.ts) — antes eram cópias
+// manualmente sincronizadas com as interfaces homônimas em
+// workers/brevo-dashboard/src/types.ts (importar do worker arrastaria
+// KVNamespace/CacheStorage de @cloudflare/workers-types pro tsc deste bundle,
+// que só inclui scripts/**/*.ts).
+import type { MvGroupStatus, MvStatus } from "./lib/dashboard-kv-types.ts";
+export type { MvGroupStatus, MvStatus };
 
 loadProjectEnv();
-
-// NOTA: tipos e KV key são DUPLICADOS do worker (workers/brevo-dashboard/src/index.ts),
-// NÃO importados. Importar do worker arrastaria index.ts (que usa KVNamespace/CacheStorage de
-// @cloudflare/workers-types) pro programa tsc deste bundle — cujo tsconfig só inclui
-// scripts/**/*.ts e não carrega os types do Worker —, quebrando o typecheck do CI. Mesmo padrão
-// de scripts/clarice-engagement-cohorts.ts: bundles separados não compartilham tipos. O worker
-// (reader) mantém as defs canônicas; aqui (writer) é cópia sincronizada à mão.
-export interface MvGroupStatus {
-  group: string;
-  cycle: string;
-  status: "verified" | "t01" | "pending";
-  verifiedAt: string | null;
-  verified: number;
-  rejected: number;
-  unknown: number;
-}
-
-export interface MvStatus {
-  generatedAt: string;
-  groups: MvGroupStatus[];
-}
 
 // Re-export p/ compat: DASHBOARD_KV_NAMESPACE_ID mora agora em lib/dashboard-kv.ts
 // (módulo sem side-effect), pra que importar a constante não dispare o

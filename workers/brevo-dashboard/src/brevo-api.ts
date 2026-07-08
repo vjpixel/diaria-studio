@@ -268,16 +268,30 @@ export function extractPlanCredits(account: BrevoAccountResponse | null | undefi
  * seção "Volume enviado no ciclo" (nunca hardcoded 40k). Fetch ao vivo
  * (`GET /v3/account`, cacheado 24h no KV) com fallback pro último valor bom
  * conhecido em erro/rate-limit — mesmo padrão de `getCouponUsage`/
- * `LASTGOOD_CAMPAIGNS_KEY`. `mode="kv-only"` pula o fetch ao vivo (caminho
- * de fallback de 429 do Brevo, que já evita chamadas extra). `null` quando
- * não há fetch bem-sucedido NEM cache KV — o render degrada pra "créditos
- * indisponíveis", nunca inventa um número.
+ * `LASTGOOD_CAMPAIGNS_KEY`. `null` quando não há fetch bem-sucedido NEM
+ * cache KV — o render degrada pra "créditos indisponíveis", nunca inventa
+ * um número.
+ *
+ * #3081 (review): `mode` agora segue a MESMA semântica documentada em
+ * `CouponUsageMode`/`getCouponUsage` — "cached" honra o KV como fonte
+ * PRIMÁRIA (só busca ao vivo em MISS). Antes, "cached" se comportava
+ * IDÊNTICO a "fresh" (sempre buscava ao vivo primeiro); o KV só entrava
+ * como fallback de ERRO, nunca como cache de fato — nome e comportamento
+ * divergiam. `mode="fresh"` continua buscando ao vivo primeiro (bypassa o
+ * KV quando o Brevo está disponível); `mode="kv-only"` continua nunca
+ * buscando ao vivo.
  */
 export async function fetchPlanCredits(
   env: Pick<Env, "BREVO_API_KEY" | "STATS_CACHE">,
   mode: CouponUsageMode = "cached",
 ): Promise<number | null> {
   const kv = env.STATS_CACHE;
+
+  if (mode === "cached" && kv) {
+    const cached = (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as { credits?: number } | null;
+    if (typeof cached?.credits === "number") return cached.credits;
+  }
+
   if (mode !== "kv-only") {
     try {
       // brevoFetch monta `https://api.brevo.com${path}` SEM prefixar /v3 — o path

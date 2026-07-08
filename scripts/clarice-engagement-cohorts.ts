@@ -58,6 +58,15 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg } from "./lib/cli-args.ts";
+// #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
+// declarava sua PRÓPRIA cópia hardcoded, triplicando a constante (junto com
+// clarice-mv-status.ts e o próprio lib/dashboard-kv.ts).
+import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
+// #3081: EngagementCohorts fonte única em lib/dashboard-kv-types.ts
+// (dependency-free) — antes era uma cópia manualmente sincronizada com a
+// interface homônima em workers/brevo-dashboard/src/types.ts.
+import type { EngagementCohorts } from "./lib/dashboard-kv-types.ts";
+export type { EngagementCohorts };
 
 loadProjectEnv();
 
@@ -71,8 +80,9 @@ export const MAX_RESUME_AGE_H = 18;
 /** A cada N contatos buscados, persiste o checkpoint (resiliência a rate-limit). */
 const CHECKPOINT_FLUSH_EVERY = 500;
 
-/** Namespace KV do worker clarice-dashboard (workers/brevo-dashboard/wrangler.toml). */
-export const DASHBOARD_KV_NAMESPACE_ID = "2f87d65d735c499ab8f465774d0167e2";
+// #3081: re-export p/ compat — DASHBOARD_KV_NAMESPACE_ID mora agora em
+// lib/dashboard-kv.ts; consumidores que já importavam daqui seguem funcionando.
+export { DASHBOARD_KV_NAMESPACE_ID };
 /** Chave KV lida pelo worker no render (`env.STATS_CACHE.get(COHORTS_KV_KEY, "json")`). */
 export const COHORTS_KV_KEY = "cohorts:engagement";
 
@@ -98,37 +108,6 @@ export interface ContactEngagement {
   bounced: boolean;
   /** descadastrou / está suprimido (blacklist), excluindo suppressão por bounce */
   optedOut: boolean;
-}
-
-/**
- * Resultado das coortes — shape gravado no KV e lido pelo worker.
- * Mantido em sincronia com a interface homônima em
- * workers/brevo-dashboard/src/index.ts (bundles separados não compartilham tipos).
- */
-export interface EngagementCohorts {
-  /** ISO timestamp da geração (dado é pré-computado, não live) */
-  generatedAt: string;
-  /** total de pessoas únicas alcançadas (recebeu ≥1 OU teve saída) — cada contato conta 1× (≠ eventos de envio) */
-  universe: number;
-  /** abriu 2+ e-mails (sem saída) */
-  opened2plus: number;
-  /** abriu exatamente 1 e-mail (sem saída) */
-  opened1: number;
-  /** recebeu 1, não abriu nenhum (sem saída) */
-  received1_opened0: number;
-  /** recebeu 2+, não abriu nenhum (sem saída) */
-  received2_opened0: number;
-  /** saídas: bounce OU descadastro (precedência sobre tudo) */
-  exits: number;
-  /** breakdown DISJUNTO das saídas (bounced + optedOut = exits) */
-  exitsBreakdown: { bounced: number; optedOut: number };
-  /**
-   * maior nº de e-mails recebidos por um único contato (valida o rótulo "2+").
-   * #3081: DEAD CODE de exibição — nenhum render do worker consome este campo
-   * (o rótulo "2+" nos buckets ≥2 é hardcoded, sempre exato por definição).
-   * Mantido no payload por ora — não remover sem pedido do editor.
-   */
-  maxReceived: number;
 }
 
 /**

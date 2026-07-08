@@ -1896,11 +1896,3 @@ export function renderAbcSection(
   </div>
 </section>`;
 }
-
-// ─── #2492: breakdown por dia (D1–D5) ────────────────────────────────────────
-
-/**
- * Resumo de um dia de envio do ciclo Clarice (agrega todas as células A/B/C do dia).
- * Substituição do Resumo A/B/C (por célula) por um breakdown por dia.
- * Exportado pra teste unitário.
- */
