@@ -509,7 +509,11 @@ export function renderMonthlyTotalsSection(
     const ctorFmt = r.totalViews > 0 ? r.ctor.toFixed(1) + "%" : "—";
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
     const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
-    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(1) + "%" : "—";
+    // #3081: 3 casas decimais (mesma precisão de fmtSpamPct/Envios/Resumo A/B/C
+    // por Audiência) — 1 casa não distingue 0.05% de 0.15% (o circuit breaker
+    // dispara em ≥0.1%). Esta tabela ("Totais por mês") era a 3ª ficando pra
+    // trás com 1 casa quando o #3081 unificou as outras duas.
+    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(3) + "%" : "—";
     // Circuit breaker alerts (mesmos thresholds da tabela Envios, #3078: hard ≥2% OU total ≥5%)
     const bounceAlert = r.totalSent > 0 && isBounceBreach(r.hardBounceRate, r.bounceRate);
     const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;

@@ -1162,6 +1162,17 @@ describe("#2442 aggregateByMonth novos campos (bounces/unsub/spam/datas)", () =>
     assert.ok(Math.abs(jun.spamRate - (1 / 300) * 100) < 0.01, `spamRate esperado ~0.33% mas foi ${jun.spamRate}`);
   });
 
+  // #3081: "Totais por mês" era a 3ª tabela mostrando spam rate com precisão
+  // diferente das outras duas (Envios e Resumo A/B/C por Audiência, já
+  // unificadas em 3 casas) — achado no self-review, corrigido junto.
+  test("#3081: renderMonthlyTotalsSection exibe spam rate com 3 casas decimais", () => {
+    const rows = aggregateByMonth([bounceUnsub, spamLater]);
+    const html = renderMonthlyTotalsSection(rows);
+    // spamRate = 1/300 = 0.333% — a célula Spam (última coluna) deve mostrar
+    // 3 casas, não mais "0.3%" (1 casa, que era a formatação antiga daqui).
+    assert.match(html, /<td class="alert">0\.333%<br>/, "célula Spam deve mostrar 0.333% (3 casas)");
+  });
+
   test("firstSentDate = min(sentDate) e lastSentDate = max(sentDate) do mês", () => {
     const rows = aggregateByMonth([bounceUnsub, spamLater]);
     const jun = rows[0];
