@@ -1520,6 +1520,17 @@ describe("calcCumulativeSentInBillingWindow (#2910)", () => {
     assert.equal(total, 450, "soma as 3 campanhas Clarice pelo sentDate, independente do naming de ciclo/tipo");
   });
 
+  test("#3076: soma também campanhas cold (naming 'cold AAMM-MM — X' oficial desde #2976)", () => {
+    const warm = makeCampaign(1, "Clarice News 2606-07 — A: assunto teste", "2026-06-20T09:00:00Z", { sent: 588 });
+    const cold = makeCampaign(2, "cold 2606-07 — B: assunto teste", "2026-06-22T09:00:00Z", { sent: 5292 });
+    const total = calcCumulativeSentInBillingWindow([warm, cold], window);
+    assert.equal(
+      total,
+      588 + 5292,
+      "cold precisa contar no volume do ciclo — Brevo debita créditos independente do naming",
+    );
+  });
+
   test("exclui campanhas fora da janela (antes do início ou depois do fim)", () => {
     const before = makeCampaign(1, "Clarice News 2605 d08 (qua)", "2026-06-01T00:00:00Z", { sent: 100 });
     const after = makeCampaign(2, "Clarice News 2606-07 — A: assunto teste", "2026-07-10T09:00:00Z", { sent: 300 });
@@ -1528,7 +1539,7 @@ describe("calcCumulativeSentInBillingWindow (#2910)", () => {
     assert.equal(total, 77, "só a campanha dentro da janela conta");
   });
 
-  test("exclui campanhas não-Clarice (parseClariceCampaignKey null)", () => {
+  test("exclui campanhas não-Clarice (classifyClariceAudience null)", () => {
     const notClarice = makeCampaign(1, "Outra campanha qualquer", "2026-06-20T09:00:00Z", { sent: 999 });
     const total = calcCumulativeSentInBillingWindow([notClarice], window);
     assert.equal(total, 0);
