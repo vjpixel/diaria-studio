@@ -1,5 +1,5 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow } from "./types.ts";
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, RECENT_STATS_TTL, LASTGOOD_TTL } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 
@@ -1127,4 +1127,76 @@ export async function fetchScheduledCampaigns(
     const list = listId ? listMap.get(listId) : undefined;
     return { ...c, listName: list?.name, listSize: list?.totalSubscribers };
   });
+}
+
+/**
+ * #3079: shape gravado em `dash:lastgood:campaigns`. A chave já existia
+ * (#2733, fallback de rate-limit) — `generatedAt` é o campo NOVO: timestamp
+ * de quando o payload foi de fato computado (cron tick, ou "agora" em fetch
+ * ao vivo/`?fresh=1`/cold-start). Sem ele, o header "Dados em tempo real" da
+ * rota `/` mentiria para dado pré-computado até ~10min velho.
+ */
+export interface LastGoodCampaignsPayload {
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
+  scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
+  generatedAt: string;
+}
+
+/**
+ * #3079: roda no Cron Trigger (a cada 10min — ver `crons` em wrangler.toml) — faz o
+ * fetch pesado de campanhas Brevo (agendadas + enviadas, ~100+ chamadas com
+ * cache frio) FORA do request-time, e grava o resultado em
+ * `dash:lastgood:campaigns`. A rota `/` passa a ler dessa chave por padrão
+ * (sem `?fresh=1`) — decisão do editor: dado ~10min stale é aceitável, com
+ * escape hatch `?fresh=1` pra debug ao vivo.
+ *
+ * Mesma ordem de fetch que a rota `/` já usava (créditos → agendadas →
+ * enviadas, #2268/#2910): os 2 primeiros são baratos e pegam a janela de
+ * rate-limit fresca antes do fetch pesado de enviadas.
+ *
+ * Fail-soft (mesmo espírito do #2733/#573 — nunca esconder dado bom atrás de
+ * uma falha transitória): se `fetchScheduledCampaigns` ou `fetchRecentCampaigns`
+ * lançarem (rate-limit esgotado, erro de rede), a função retorna `{ ok: false }`
+ * SEM escrever no KV — o último valor bom (do tick anterior, ou de um render
+ * `?fresh=1`) permanece servível até o próximo tick. Nunca lança pro caller
+ * (`scheduled()` só precisa decidir se loga sucesso ou erro).
+ */
+export async function runCronRefresh(
+  env: Env,
+): Promise<{ ok: boolean; campaignCount?: number; scheduledCount?: number; error?: string }> {
+  if (!env.STATS_CACHE) {
+    return { ok: false, error: "STATS_CACHE ausente — cron não tem onde gravar dash:lastgood:campaigns" };
+  }
+  try {
+    // Créditos do plano primeiro (1 chamada barata, janela de rate-limit fresca).
+    // fetchPlanCredits já grava seu próprio KV (PLAN_CREDITS_KV_KEY) internamente.
+    await fetchPlanCredits(env, "cached").catch(() => null);
+
+    let scheduledOk = true;
+    const scheduled = await fetchScheduledCampaigns(env, 50, false).catch((e) => {
+      scheduledOk = false;
+      console.error("[#3079] runCronRefresh: fetchScheduledCampaigns falhou:", e instanceof Error ? e.message : e);
+      return [];
+    });
+    if (!scheduledOk) {
+      // Mesma regra da rota / (pré-#3079): não persiste payload parcial — o
+      // KV mantém o valor do tick anterior até uma tentativa completa suceder.
+      return { ok: false, error: "fetchScheduledCampaigns falhou — KV não atualizado neste tick (mantém último valor bom)" };
+    }
+
+    const campaigns = await fetchRecentCampaigns(env, 50, false);
+    const payload: LastGoodCampaignsPayload = {
+      campaigns,
+      scheduled,
+      generatedAt: new Date().toISOString(),
+    };
+    await env.STATS_CACHE.put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), {
+      expirationTtl: LASTGOOD_TTL,
+    });
+    return { ok: true, campaignCount: campaigns.length, scheduledCount: scheduled.length };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.error("[#3079] runCronRefresh falhou — KV mantém o último valor bom:", error);
+    return { ok: false, error };
+  }
 }

@@ -35,3 +35,13 @@ preview_id = "2f87d65d735c499ab8f465774d0167e2" # mesma namespace -- ok para dev
 # repo raiz e escreve src/ds-tokens.generated.ts aqui no worker.
 [build]
 command = "npx tsx ../../scripts/generate-worker-tokens.ts"
+
+# #3079: Cron Trigger — roda scheduled() a cada 10min pra pré-computar o fetch
+# pesado de campanhas Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+
+# chamadas com cache frio) FORA do request-time, gravando em
+# `dash:lastgood:campaigns` (KV). A rota `/` passa a ler dessa chave por padrão;
+# `?fresh=1` bypassa e mantém o fetch ao vivo (debug). Decisão do editor #3079:
+# dado ~10min stale é aceitável, dado o padrão já usado por cohorts/contatos/MV/
+# cupons/É IA? (todos pré-computados via KV). Free tier Cloudflare (até 3 crons).
+[triggers]
+crons = ["*/10 * * * *"]

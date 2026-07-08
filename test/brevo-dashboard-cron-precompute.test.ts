@@ -1,0 +1,350 @@
+/**
+ * test/brevo-dashboard-cron-precompute.test.ts (#3079)
+ *
+ * Regressão: `clarice-dashboard` deixa de fazer o fetch pesado de campanhas
+ * Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+ chamadas com
+ * cache frio) em REQUEST-TIME. Um Cron Trigger (`scheduled()`, a cada 10min)
+ * roda `runCronRefresh` fora do request e grava o resultado em
+ * `dash:lastgood:campaigns` (KV) — a rota `/` passa a ler dessa chave por
+ * padrão. `?fresh=1` continua fazendo o fetch ao vivo (debug/urgência,
+ * decisão do editor #3079).
+ *
+ * Cobertura:
+ *   (a) runCronRefresh: sucesso grava { campaigns, scheduled, generatedAt };
+ *       STATS_CACHE ausente → ok:false; falha parcial (agendadas) → ok:false
+ *       SEM sobrescrever o KV (mantém o último valor bom).
+ *   (b) renderDashboardHtml: cabeçalho honesto — "Dados em tempo real" quando
+ *       dataGeneratedAt é recente/ausente (compat pré-#3079), "Dados
+ *       pré-computados" quando diverge de "agora" (via shouldShowStalenessNote,
+ *       #3011) — nunca alega "tempo real" pra dado potencialmente stale.
+ *   (c) rota `/`: KV populado → ZERO chamadas à Brevo (withFetchSpy); KV
+ *       vazio (cold-start pré-1º-tick) → cai pro fetch ao vivo E semeia o KV
+ *       (senão toda request antes do 1º tick pagaria o fetch pesado de novo);
+ *       KV corrompido → mesmo fallback, nunca quebra; `?fresh=1` sempre faz
+ *       fetch ao vivo e NUNCA sobrescreve `dash:lastgood:campaigns` (mesmo
+ *       comportamento pré-#3079).
+ *   (d) scheduled(): chama runCronRefresh via ctx.waitUntil.
+ *
+ * Fixtures 100% sintéticas — nenhum id/email real.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import worker, {
+  runCronRefresh,
+  renderDashboardHtml,
+  LASTGOOD_CAMPAIGNS_KEY,
+} from "../workers/brevo-dashboard/src/index.ts";
+import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+
+// Cache API (usada por /) — mesmo polyfill de test/dashboard-auth.test.ts.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(globalThis as any).caches = {
+  default: {
+    match: async (_req: unknown) => null,
+    put: async (_req: unknown, _res: unknown) => {},
+  },
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeKvMock(initial: Record<string, string> = {}) {
+  const store = new Map(Object.entries(initial));
+  const putCalls: Array<{ key: string; value: string }> = [];
+  return {
+    store,
+    putCalls,
+    kv: {
+      get: async (key: string, type?: string) => {
+        const v = store.get(key);
+        if (v == null) return null;
+        return type === "json" ? JSON.parse(v) : v;
+      },
+      put: async (key: string, value: string) => {
+        putCalls.push({ key, value });
+        store.set(key, value);
+      },
+      delete: async () => {},
+      list: async () => ({ keys: [], cursor: "", list_complete: true }),
+      getWithMetadata: async () => ({ value: null, metadata: null }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
+  };
+}
+
+const sentDateOld = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+const fakeCampaign = {
+  id: 1,
+  name: "Camp Teste",
+  subject: "Assunto",
+  status: "sent",
+  sentDate: sentDateOld,
+  scheduledAt: null,
+  createdAt: sentDateOld,
+  recipients: { lists: [] as number[] },
+};
+const fakeGlobalStats = {
+  sent: 100,
+  delivered: 95,
+  hardBounces: 1,
+  softBounces: 1,
+  uniqueViews: 40,
+  viewed: 42,
+  trackableViews: 35,
+  uniqueClicks: 8,
+  clickers: 7,
+  unsubscriptions: 1,
+  complaints: 0,
+  appleMppOpens: 3,
+};
+
+function mockBrevoFetch() {
+  return (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("emailCampaigns?status=sent")) {
+      return new Response(JSON.stringify({ campaigns: [fakeCampaign] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("emailCampaigns?status=queued")) {
+      return new Response(JSON.stringify({ campaigns: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/v3/account")) {
+      return new Response(JSON.stringify({ plan: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("emailCampaigns/1")) {
+      return new Response(
+        JSON.stringify({ ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any;
+}
+
+// ---------------------------------------------------------------------------
+// (a) runCronRefresh
+// ---------------------------------------------------------------------------
+
+describe("runCronRefresh (#3079)", () => {
+  it("sucesso: grava dash:lastgood:campaigns com { campaigns, scheduled, generatedAt }", async () => {
+    const { kv, store } = makeKvMock();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockBrevoFetch();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await runCronRefresh({ BREVO_API_KEY: "k", STATS_CACHE: kv } as any);
+      assert.equal(result.ok, true, "deve reportar sucesso");
+      assert.equal(result.campaignCount, 1);
+      assert.equal(result.scheduledCount, 0);
+      const raw = store.get(LASTGOOD_CAMPAIGNS_KEY);
+      assert.ok(raw, "deve gravar a chave dash:lastgood:campaigns");
+      const parsed = JSON.parse(raw!);
+      assert.equal(parsed.campaigns.length, 1);
+      assert.ok(Array.isArray(parsed.scheduled));
+      assert.ok(
+        typeof parsed.generatedAt === "string" && !isNaN(Date.parse(parsed.generatedAt)),
+        "generatedAt deve ser um ISO válido — é o que o header honesto da rota / usa",
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("STATS_CACHE ausente → ok:false, nunca lança (nada pra gravar)", async () => {
+    const result = await runCronRefresh({
+      BREVO_API_KEY: "k",
+      STATS_CACHE: undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    assert.equal(result.ok, false);
+    assert.ok(result.error);
+  });
+
+  it("fetchScheduledCampaigns falha → ok:false, KV NÃO sobrescrito (mantém o último valor bom)", async () => {
+    const oldPayload = JSON.stringify({
+      campaigns: [{ marker: "valor-antigo" }],
+      scheduled: [],
+      generatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const { kv, store } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: oldPayload });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("emailCampaigns?status=queued")) return new Response("erro", { status: 500 });
+      if (u.includes("/v3/account")) return new Response(JSON.stringify({ plan: [] }), { status: 200 });
+      return new Response("{}", { status: 200 });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await runCronRefresh({ BREVO_API_KEY: "k", STATS_CACHE: kv } as any);
+      assert.equal(result.ok, false, "falha parcial deve reportar ok:false");
+      const raw = store.get(LASTGOOD_CAMPAIGNS_KEY)!;
+      assert.equal(raw, oldPayload, "KV preserva o payload do tick anterior — nunca grava parcial/vazio");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b) renderDashboardHtml — cabeçalho de frescor honesto
+// ---------------------------------------------------------------------------
+
+describe("renderDashboardHtml — cabeçalho de frescor (#3079)", () => {
+  it("dataGeneratedAt omitido (null, default) → 'Dados em tempo real' (compat pré-#3079 para callers/testes antigos)", () => {
+    const html = renderDashboardHtml([]);
+    assert.ok(html.includes("Dados em tempo real"), "sem o novo argumento, preserva o texto antigo");
+    assert.ok(!html.includes("pré-computados"));
+  });
+
+  it("dataGeneratedAt recente (<5min) → ainda 'Dados em tempo real' (dentro da tolerância de jitter do #3011)", () => {
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const html = renderDashboardHtml([], [], null, null, null, null, null, null, recent);
+    assert.ok(html.includes("Dados em tempo real"));
+    assert.ok(!html.includes("pré-computados"));
+  });
+
+  it("dataGeneratedAt antigo (10min — tick típico do cron) → 'Dados pré-computados', com o horário do CRON, nunca 'agora'", () => {
+    const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const html = renderDashboardHtml([], [], null, null, null, null, null, null, generatedAt);
+    assert.ok(html.includes("Dados pré-computados"), "wording honesto — não é fetch ao vivo desta request");
+    assert.ok(!html.includes("Dados em tempo real"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (c) rota / — precomputado por padrão, cold-start e ?fresh=1
+// ---------------------------------------------------------------------------
+
+const TOKEN = "cron-precompute-test-token";
+const COOKIE = `cf-dash-auth=${TOKEN}`;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeEnv(kv: any) {
+  return { BREVO_API_KEY: "k", STATS_CACHE: kv, AUTH_TOKEN: TOKEN };
+}
+
+describe("rota / (#3079) — lê o pré-computado por padrão", () => {
+  it("KV populado (dash:lastgood:campaigns) → ZERO chamadas à Brevo, header reflete o timestamp do cron", async () => {
+    const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const payload = JSON.stringify({ campaigns: [fakeCampaign], scheduled: [], generatedAt });
+    const { kv, store } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: payload });
+    await withFetchSpy(async (calls) => {
+      const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      assert.ok(text.includes("Clarice News Dashboard"));
+      assert.ok(text.includes("Dados pré-computados"), "usa o timestamp do cron — nunca 'tempo real' pra dado de até 10min");
+      assert.deepEqual(calls, [], "rota / com KV populado não deve fazer NENHUMA chamada externa à Brevo");
+    });
+  });
+
+  it("KV vazio (cold-start, antes do 1º tick do cron) → cai pro fetch ao vivo E semeia o KV", async () => {
+    const { kv, store } = makeKvMock();
+    const origFetch = globalThis.fetch;
+    let brevoCalls = 0;
+    globalThis.fetch = (async (url: unknown) => {
+      brevoCalls++;
+      return mockBrevoFetch()(url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    try {
+      const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200, "cold-start não pode quebrar o dashboard");
+      assert.ok(brevoCalls > 0, "sem KV populado, deve cair pro fetch ao vivo (senão o dashboard ficaria vazio até o 1º tick)");
+      const seeded = store.get(LASTGOOD_CAMPAIGNS_KEY);
+      assert.ok(seeded, "cold-start deve semear dash:lastgood:campaigns pra requests seguintes já lerem do KV");
+      const parsed = JSON.parse(seeded!);
+      assert.equal(parsed.campaigns.length, 1);
+      assert.ok(typeof parsed.generatedAt === "string");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("KV corrompido (campaigns não é array) → mesmo fallback ao vivo, nunca quebra", async () => {
+    const { kv, store } = makeKvMock({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: "corrompido", scheduled: 0 }),
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockBrevoFetch();
+    try {
+      const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200, "KV corrompido nunca deve derrubar a rota — degrada pro fetch ao vivo");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("?fresh=1 SEMPRE faz fetch ao vivo (bypassa o KV) e NUNCA sobrescreve dash:lastgood:campaigns", async () => {
+    const oldPayload = JSON.stringify({
+      campaigns: [{ ...fakeCampaign, id: 999 }],
+      scheduled: [],
+      generatedAt: "2020-01-01T00:00:00.000Z",
+    });
+    const { kv, store } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: oldPayload });
+    const origFetch = globalThis.fetch;
+    let brevoCalls = 0;
+    globalThis.fetch = (async (url: unknown) => {
+      brevoCalls++;
+      return mockBrevoFetch()(url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    try {
+      const req = new Request("http://localhost/?fresh=1", { headers: { Cookie: COOKIE } });
+      const res = await worker.fetch(req, makeEnv(kv));
+      assert.equal(res.status, 200);
+      assert.ok(brevoCalls > 0, "?fresh=1 deve ignorar o KV e buscar ao vivo");
+      const text = await res.text();
+      assert.ok(text.includes("Dados em tempo real"), "fetch ao vivo desta request → wording 'tempo real', nunca 'pré-computado'");
+      assert.equal(store.get(LASTGOOD_CAMPAIGNS_KEY), oldPayload, "?fresh=1 não deve escrever em dash:lastgood:campaigns (mesmo comportamento pré-#3079)");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (d) scheduled() — Cron Trigger
+// ---------------------------------------------------------------------------
+
+describe("scheduled() — Cron Trigger (#3079)", () => {
+  it("chama runCronRefresh via ctx.waitUntil e popula dash:lastgood:campaigns", async () => {
+    const { kv, store } = makeKvMock();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockBrevoFetch();
+    try {
+      let waited: Promise<unknown> | null = null;
+      const ctx = {
+        waitUntil: (p: Promise<unknown>) => {
+          waited = p;
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+      await worker.scheduled(
+        {} as ScheduledEvent,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { BREVO_API_KEY: "k", STATS_CACHE: kv } as any,
+        ctx,
+      );
+      assert.ok(waited, "scheduled() deve registrar o trabalho via ctx.waitUntil (não deixar o Worker reciclar antes de terminar)");
+      await waited;
+      const seeded = store.get(LASTGOOD_CAMPAIGNS_KEY);
+      assert.ok(seeded, "scheduled() deve ter populado dash:lastgood:campaigns");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});

@@ -1,6 +1,7 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT } from "./render-links.ts";
+import { shouldShowStalenessNote } from "./staleness.ts";
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -25,6 +26,12 @@ export function renderDashboardHtml(
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
   planCredits: number | null = null, // #2910: créditos/limite do plano Brevo (denominador dinâmico da seção Volume) — fetch ao vivo feito no call site (index.ts), nunca aqui (função continua pura/sync)
+  // #3079: ISO de quando `campaigns`/`scheduled` foram DE FATO buscados na Brevo
+  // (cron tick pré-computado, ou "agora" em fetch ao vivo — `?fresh=1`/cold-start
+  // antes do 1º tick). `null` (default) preserva o comportamento pré-#3079 para
+  // callers/testes que não passam este argumento — tratado como "agora" (fetch
+  // ao vivo), nunca como pré-computado.
+  dataGeneratedAt: string | null = null,
 ): string {
   // #3017: ordena a tabela "Envios" por data de envio, mais recente primeiro.
   // sentDate é a fonte canônica aqui (campanha já enviada); scheduledAt só
@@ -180,6 +187,20 @@ export function renderDashboardHtml(
     minute: "2-digit",
     second: "2-digit",
   });
+
+  // #3079: o header antigo ("Dados em tempo real — carregado às {now} BRT")
+  // sempre usava `new Date()` — mentiroso para o payload PRÉ-COMPUTADO pelo
+  // Cron Trigger (dash:lastgood:campaigns, até ~10min velho). Reusa o mesmo
+  // helper de staleness do #3011 (shouldShowStalenessNote) que já decide,
+  // pras outras seções KV, se `sectionIso` diverge o bastante de `nowDate`
+  // pra merecer nota — aqui a "seção" é o payload de campanhas em si.
+  // `dataGeneratedAt == null` (callers/testes pré-#3079) nunca mostra a nota
+  // pré-computada — degrada pro texto/formato antigo, idêntico ao pré-#3079.
+  const dataIsPrecomputed = dataGeneratedAt != null && shouldShowStalenessNote(dataGeneratedAt, nowDate);
+  const dataFreshnessTimeLabel = dataGeneratedAt != null ? fmtTimeBRT(dataGeneratedAt) : now;
+  const dataFreshnessLine = dataIsPrecomputed
+    ? `Dados pré-computados a cada ~10min (Cron Trigger) — atualizado às ${dataFreshnessTimeLabel} BRT.`
+    : `Dados em tempo real — carregado às ${dataFreshnessTimeLabel} BRT.`;
 
   // #2086 Fase 2: seções adicionais
   // #2910: "Volume enviado no ciclo" usa o ciclo de COBRANÇA Brevo (dia 4,
@@ -432,7 +453,7 @@ export function renderDashboardHtml(
 </head>
 <body>
 <h1>📧 Clarice News Dashboard</h1>
-<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+<p class="sub">Últimas ${campaigns.length} campaigns. ${dataFreshnessLine}</p>
 
 <!-- #2542: tab state inputs (hidden, CSS-only — sem JS externo) -->
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
