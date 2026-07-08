@@ -42,6 +42,73 @@ export interface IncrementPayload {
   choice: "A" | "B";
   /** true se o votante acertou, false se errou, null se gabarito ainda não definido */
   correct: boolean | null;
+  /**
+   * #3115: snapshot do espelho KV `stats:{edition}` no momento da chamada, usado
+   * SOMENTE quando o storage do DO nunca foi inicializado (`stored === undefined`).
+   *
+   * Contexto: `StatsCounter` respondia `stored ?? {total:0,...}` — um DO nunca
+   * inicializado (ex: edição publicada antes do deploy do DO, #2223) é
+   * indistinguível de um DO com zero votos de verdade. Isso já corrompia leitura
+   * (/stats, corrigido em handleStats via mergeStatsWithKvFallback) — mas também
+   * corrompia ESCRITA: um voto retroativo (#2867) numa edição pré-#2223 faria o
+   * DO "nascer" do zero (0→1) e espelhar {total:1} de volta no KV, sobrescrevendo
+   * o registro histórico correto que só existia no KV.
+   *
+   * Fix: o caller (updateStatsCounter em vote.ts) lê o espelho KV ANTES de
+   * chamar /increment e passa aqui. Se o DO nunca foi inicializado, usa este
+   * valor como baseline em vez de {0,0,0,0} — preserva o histórico pré-DO.
+   * Se o DO JÁ tem estado (mesmo que zerado por votos reais), este campo é
+   * ignorado — nunca sobrescreve um estado real já gravado no DO.
+   */
+  kvBaseline?: StatsCounterData | null;
+}
+
+/**
+ * #3115: valida shape de um possível baseline vindo do KV — todos os campos
+ * devem ser inteiros não-negativos. Protege contra um `stats:{edition}` KV
+ * corrompido/malformado virar seed inválido do DO.
+ */
+export function isValidStatsCounterData(data: unknown): data is StatsCounterData {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  return (
+    Number.isInteger(d.total) && (d.total as number) >= 0 &&
+    Number.isInteger(d.voted_a) && (d.voted_a as number) >= 0 &&
+    Number.isInteger(d.voted_b) && (d.voted_b as number) >= 0 &&
+    Number.isInteger(d.correct_count) && (d.correct_count as number) >= 0
+  );
+}
+
+/**
+ * #3115: resolve o valor "melhor" entre o que o DO StatsCounter responde e o
+ * espelho KV `stats:{edition}` — usado em `/stats` (handleStats).
+ *
+ * Problema: um DO respondendo `{total:0,...}` é ambíguo — pode ser (a) um DO
+ * nunca inicializado (edição pré-deploy do DO, #2223) OU (b) uma edição real
+ * com zero votos. `handleStats` só caía no fallback KV quando o DO ERRAVA
+ * (exception/5xx) — uma resposta all-zero "válida" nunca disparava o fallback,
+ * então toda edição com votos anteriores ao deploy do DO ficava permanentemente
+ * reportando zero, mesmo com o KV tendo o valor histórico correto.
+ *
+ * Fix: comparar o `total` de ambas as fontes e usar a de maior valor (nunca
+ * per-field — os 4 campos são correlacionados, então tomamos o objeto inteiro
+ * de uma fonte, não uma mistura). Preserva o caso "zero real" (DO=0 E KV=0 ou
+ * ausente) sem virar falso-positivo de "precisa fallback": nesse caso ambos
+ * concordam em 0, o resultado permanece 0.
+ *
+ * `doStats === null` (DO indisponível/erro) → usa KV puro (ou zero se ausente).
+ */
+export function mergeStatsWithKvFallback(
+  doStats: StatsCounterData | null,
+  kvStats: StatsCounterData | null,
+): StatsCounterData {
+  if (doStats === null) {
+    return kvStats ?? { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  }
+  if (kvStats && kvStats.total > doStats.total) {
+    return kvStats;
+  }
+  return doStats;
 }
 
 /** Payload do request interno de ajuste de correct_count (admin-correct). */
@@ -125,7 +192,7 @@ export class StatsCounter {
   private async handleIncrement(request: Request): Promise<Response> {
     return await this.state.blockConcurrencyWhile(async () => {
       const payload = await request.json() as IncrementPayload;
-      const { choice, correct } = payload;
+      const { choice, correct, kvBaseline } = payload;
 
       // Validação de choice: só "A" ou "B" são valores legítimos.
       // Rejeita qualquer outro valor com 400 sem alterar o estado do contador.
@@ -139,7 +206,19 @@ export class StatsCounter {
       }
 
       const stored = await this.state.storage.get<StatsCounterData>("stats");
-      const stats: StatsCounterData = stored ?? { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+      // #3115: `stored === undefined` significa "este DO nunca foi inicializado"
+      // — distinto de um DO com estado real zerado (que teria sido explicitamente
+      // gravado por um increment anterior, mesmo que resultasse em zeros). Só neste
+      // caso (nunca inicializado) usamos o baseline do KV como seed — nunca
+      // sobrescreve um `stored` já existente, mesmo que seja {0,0,0,0} real.
+      let stats: StatsCounterData;
+      if (stored !== undefined) {
+        stats = stored;
+      } else if (kvBaseline && isValidStatsCounterData(kvBaseline)) {
+        stats = { ...kvBaseline };
+      } else {
+        stats = { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+      }
 
       stats.total += 1;
       if (choice === "A") stats.voted_a += 1;
