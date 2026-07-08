@@ -162,7 +162,14 @@ export default {
           // é uma negação de acesso deliberada.
           if (!env.AUTH_TOKEN) return new Response('Acesso negado.', { status: 403 })
           if (/[;\r\n]/.test(env.AUTH_TOKEN)) return new Response('Invalid AUTH_TOKEN configuration', { status: 500 })
-          if (token && token === env.AUTH_TOKEN) {
+          // #3081 (achado no /code-review max): comparação timing-safe aqui
+          // também — antes só o cookie-check (isAuthenticated) tinha sido
+          // endurecido, deixando este outro comparador do MESMO segredo
+          // (AUTH_TOKEN) exposto ao mesmo timing leak que a PR se propôs a
+          // eliminar. `/login` é o alvo mais natural de brute-force (aceita
+          // tentativas repetidas não-autenticadas), então esta era a lacuna
+          // mais importante a fechar, não a menos.
+          if (token && (await timingSafeEqualStr(token, env.AUTH_TOKEN))) {
             const maxAge = 30 * 24 * 60 * 60  // 30 days
             return new Response(null, {
               status: 302,

@@ -177,6 +177,19 @@ describe("Worker fetch — auth routes", () => {
     assert.ok(text.includes("inválido"), "deve exibir mensagem de token inválido");
   });
 
+  // #3081 (achado no /code-review max, PR3162): a comparação de /login POST
+  // também virou timing-safe (hash+XOR, mesmo helper de isAuthenticated) —
+  // antes só o cookie-check tinha sido endurecido. Regressão: token de
+  // tamanho MUITO diferente do real não pode nem lançar nem autenticar
+  // (mesma classe de bug que os testes de cookie curto/longo já cobrem).
+  it("/login POST token de tamanho muito diferente do real: 401, não lança", async () => {
+    const form = new FormData();
+    form.append("token", "x");
+    const req = new Request("http://localhost/login", { method: "POST", body: form });
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    assert.equal(res.status, 401);
+  });
+
   it("/login POST token correto: 302 para /, Set-Cookie com valor correto", async () => {
     const form = new FormData();
     form.append("token", TOKEN);
