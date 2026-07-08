@@ -1,5 +1,8 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
+// #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
+// cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
+import { PT_MONTHS_ABBR } from "../../../scripts/lib/cohorts.ts";
 import { DS, DS_FONTS as DSF, pct, cellClass, isSystemLink, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink } from "./render-links.ts";
 import { shouldShowStalenessNote } from "./staleness.ts";
 import {
@@ -869,16 +872,22 @@ export function parseClariceCampaignKey(campaignName: string): {
   return null;
 }
 
-const CYCLE_MONTH_ABBR_PTBR = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
-
 /**
  * #3092: um ciclo mensal "AAMM-MM" (conteúdo-envio, ver CLAUDE.md — os 4
  * primeiros dígitos são ano+mês de CONTEÚDO, os 2 últimos são só o MÊS de
  * ENVIO) é opaco pro editor à primeira vista ("edição 2607-07" não comunica
  * nada de imediato). Formata o sufixo legível do mês/ano de ENVIO — a janela
  * que de fato aparece nas linhas da tabela — ex: "envios de jul/2026". `null`
- * quando `cycle` não bate o formato esperado (título permanece funcional sem
- * o sufixo).
+ * quando `cycle` não bate o formato esperado, OU quando viola o invariante
+ * real do ciclo (achado do /code-review max no PR #3171: a versão anterior só
+ * validava que cada parte estava em 1-12, sem checar que envio É o mês
+ * seguinte ao conteúdo — um "2607-07" (mesmo mês) ou "2612-11" (envio ANTES
+ * do conteúdo) produzia um sufixo confiante mas ERRADO em vez de cair pro
+ * fallback sem sufixo). `cycle` vem de regex sobre nome de campanha Brevo
+ * (`parseAbcAudienceCampaign`), não validado na origem — mesmo invariante de
+ * `isValidCycle` em scripts/lib/clarice-paths.ts (`sendMonth === (contentMonth
+ * % 12) + 1`), não importável aqui (usa node:fs, não é Workers-safe) —
+ * reimplementado inline.
  */
 export function formatCycleEnvioLabel(cycle: string): string | null {
   const m = /^(\d{2})(\d{2})-(\d{2})$/.exec(cycle);
@@ -887,11 +896,14 @@ export function formatCycleEnvioLabel(cycle: string): string | null {
   const contentMM = Number(m[2]);
   const envioMM = Number(m[3]);
   if (contentMM < 1 || contentMM > 12 || envioMM < 1 || envioMM > 12) return null;
-  // Envio é o mês seguinte ao conteúdo (regra do ciclo) — se o número do mês
-  // "voltar" (ex: conteúdo=dez, envio=jan), o ano do envio vira o próximo.
-  const envioYearOffset = envioMM < contentMM ? 1 : 0;
+  // Invariante real do ciclo: envio é SEMPRE o mês imediatamente seguinte ao
+  // conteúdo (mod 12) — qualquer outra relação é um ciclo malformado.
+  if (envioMM !== (contentMM % 12) + 1) return null;
+  // Só vira o mês seguinte (dez → jan) quando o conteúdo é dezembro — a
+  // igualdade acima já garante que não há outro caso de wrap possível.
+  const envioYearOffset = contentMM === 12 ? 1 : 0;
   const envioFullYear = 2000 + contentYY + envioYearOffset;
-  return `envios de ${CYCLE_MONTH_ABBR_PTBR[envioMM - 1]}/${envioFullYear}`;
+  return `envios de ${PT_MONTHS_ABBR[envioMM - 1]}/${envioFullYear}`;
 }
 
 /**

@@ -314,7 +314,11 @@ export function cohortSendRank(cohort: string | null | undefined): number {
 // cohortDisplayLabel — rótulo pt-BR pro dashboard
 // ---------------------------------------------------------------------------
 
-const PT_MONTHS_ABBR = [
+// #3092: exportado — reusado por workers/brevo-dashboard/src/sections-core.ts
+// (formatCycleEnvioLabel) pra não duplicar o mesmo array de abreviações
+// pt-BR. cohorts.ts é dependency-free/Workers-safe (mesmo padrão documentado
+// em sections-kv.ts) — importar direto daqui não introduz node:fs/sqlite.
+export const PT_MONTHS_ABBR = [
   "jan", "fev", "mar", "abr", "mai", "jun",
   "jul", "ago", "set", "out", "nov", "dez",
 ];
