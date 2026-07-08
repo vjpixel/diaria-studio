@@ -25,10 +25,16 @@ import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
+import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/cursos/index.html");
+// #3106: URL pública canônica — Worker de assets estáticos em cursos.diaria.workers.dev.
+const PAGE_URL = "https://cursos.diaria.workers.dev/";
+const PAGE_TITLE = "Cursos sobre IA · Diar.ia";
+const PAGE_DESCRIPTION =
+  "Cursos gratuitos e pagos sobre inteligência artificial, com filtros por idioma, nível, formato, duração e plataforma — curadoria da Diar.ia.";
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -285,7 +291,8 @@ export function renderCursosPage(courses: Course[]): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cursos sobre IA · Diar.ia</title>
+<title>${PAGE_TITLE}</title>
+${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
 <style>
   :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; --rule: ${RULE}; }
   * { box-sizing: border-box; }

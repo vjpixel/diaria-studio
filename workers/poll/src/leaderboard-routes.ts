@@ -10,7 +10,7 @@ import {
   leaderboardHref,
   formatEditionDate,
 } from "./lib";
-import { htmlEscape } from "./lib";
+import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
 
 export interface LeaderTop1Entry {
@@ -416,6 +416,7 @@ export async function handleLeaderboardByMonth(
   monthSlug: string,
   env: Env,
   brand: Brand = "diaria",
+  canonicalPath?: string, // #3106: override usado por handleLeaderboard() — canonical de "/leaderboard", não "/leaderboard/{slug}"
 ): Promise<Response> {
   const parsed = parseMonthSlug(monthSlug);
   if (!parsed) {
@@ -452,7 +453,10 @@ export async function handleLeaderboardByMonth(
     ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
     : "public, max-age=60"; // 60s pro mês corrente
 
-  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, brand);
+  return renderLeaderboardHtml(
+    scores, periodLabel, parsed.year, cacheControl, brand, "month",
+    canonicalPath ?? leaderboardHref(brand, monthSlug),
+  );
 }
 
 // ── /leaderboard/{YYYY-MM}.json (#2475 — endpoint JSON com métricas completas) ─
@@ -608,7 +612,7 @@ export async function handleLeaderboardByYear(
   const cacheControl = year < currentYear
     ? "public, max-age=2592000, immutable" // ano fechado nunca muda
     : "public, max-age=60"; // corrente: real-time-ish (igual ao mensal)
-  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year");
+  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr));
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -619,6 +623,7 @@ function renderLeaderboardHtml(
   cacheControl: string,
   brand: Brand = "diaria",
   periodKind: "month" | "year" = "month", // #2006: visão anual (Clarice News)
+  canonicalPath?: string, // #3106: path canônico da view atual (default = /leaderboard)
 ): Response {
   // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
@@ -641,12 +646,20 @@ function renderLeaderboardHtml(
     </tr>`;
   }).join("\n");
 
+  const pageTitle = `${heading} | ${info.name}`;
+  const path = canonicalPath ?? "/leaderboard";
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `Quem mais acertou ${periodNoun} qual imagem foi gerada por IA no jogo "É IA?" da ${info.name}. Veja o ranking dos leitores.`,
+    path,
+  });
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${heading} | ${info.name}</title>
+<title>${pageTitle}</title>
+${seoMeta}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
@@ -686,7 +699,10 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
   // #1345: /leaderboard agora delega pro slug do mês corrente. Schema único
   // (`score-by-month:*`) — `score:*` global continua mantido pra all-time
   // potencial mas não é mais lido pelo leaderboard.
-  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand);
+  // #3106: canonical explícito de "/leaderboard" (self) — sem isso o override
+  // default de handleLeaderboardByMonth apontaria canonical pro slug do mês
+  // corrente, e o crawler indexaria a URL errada pra quem chegou via "/leaderboard".
+  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand, leaderboardHref(brand));
 }
 
 // ── /leaderboard/{YYYY}/arquivo — arquivo retroativo (#2867) ────────────────
@@ -744,12 +760,19 @@ export function renderArchiveListHtml(
   const rows = editions
     .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
     .join("\n");
+  const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `Vote retroativamente nas edições de ${year} do jogo "É IA?" e concorra no leaderboard anual da ${info.name}.`,
+    path: archiveHref(brand, year),
+  });
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Arquivo ${htmlEscape(year)} — É IA? | ${info.name}</title>
+<title>${pageTitle}</title>
+${seoMeta}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
@@ -793,12 +816,19 @@ export function renderArchiveVoteHtml(
   const imgA = `/img/img-${edition}-01-eia-A.jpg`;
   const imgB = `/img/img-${edition}-01-eia-B.jpg`;
   const dateLabel = htmlEscape(formatEditionDate(edition));
+  const pageTitle = `É IA? — ${dateLabel} | ${info.name}`;
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel} e valha ponto no leaderboard anual de ${year} da ${info.name}.`,
+    path: archiveHref(brand, year, edition),
+  });
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>É IA? — ${dateLabel} | ${info.name}</title>
+<title>${pageTitle}</title>
+${seoMeta}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
