@@ -1054,36 +1054,61 @@ export function aggregateAbcSummary(
     if (!parsed || parsed.cycle !== cycle) continue;
     // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
     if (parsed.cell === null) continue;
-    // #2254/#2252: só campanhas com stats reais contam pra janela E pro total.
-    if (!pickStats(c)) continue;
+    // S1 é uma janela de NEGÓCIO real (7 dias — ver CLARICE_PLAN_S1 acima,
+    // "Volume do bloco S1 (d01–d07 A/B/C)"), não um artefato só pra evitar
+    // dias solo. Achado do /code-review (angle "wrapper/proxy correctness"):
+    // sem este cap, um dNN>7 com ≥2 células ainda ativas seria absorvido
+    // silenciosamente na seção "Resumo A/B/C — S1", misturando S2/S3 (fases
+    // distintas da rampa, população diferente) com o teste S1. Mantido do
+    // código original — só o corte DENTRO da janela (dias solo por drop/
+    // consolidação) é que agora é derivado, não o teto da janela em si.
+    if (!parsed.monthly && parsed.dayNum > 7) continue;
     entries.push({ cell: parsed.cell, dayNum: parsed.dayNum, monthly: parsed.monthly, c });
   }
 
-  // #3123: janela derivada — mapeia dayNum → Set de células com stats reais
-  // naquele dia (só entre entradas DIÁRIAS; mensal não tem corte de dia).
+  // #3123: dentro da janela S1 (d01–d07), o corte de dias SOLO (drop de
+  // célula / consolidação no vencedor) é derivado dos dados. Mapeia dayNum →
+  // Set de células com CAMPANHA naquele dia (só entradas DIÁRIAS; mensal não
+  // tem corte de dia).
+  //
+  // Self-review (achado do angle "language-pitfall" no /code-review do PR):
+  // este mapa é construído a partir de `entries` ANTES do filtro de
+  // `pickStats` — de propósito. Se computássemos a validade do dia só sobre
+  // campanhas com stats REAIS, uma falha transiente de fetch de stats de UMA
+  // célula (ex: 429 da Brevo) faria aquele dia parecer "solo" e derrubaria
+  // também o dado perfeitamente válido da célula IRMÃ no mesmo dia. A
+  // presença de uma CAMPANHA (independente de stats terem chegado) já basta
+  // pra provar que o dia foi um dia de teste multi-célula de verdade.
   const cellsByDay = new Map<number, Set<"A" | "B" | "C">>();
-  const distinctCellsOverall = new Set<"A" | "B" | "C">();
   for (const e of entries) {
     if (e.monthly) continue;
-    distinctCellsOverall.add(e.cell);
     if (!cellsByDay.has(e.dayNum)) cellsByDay.set(e.dayNum, new Set());
     cellsByDay.get(e.dayNum)!.add(e.cell);
   }
-  // O filtro por dia só faz sentido quando o ciclo de fato tem ≥2 células
-  // distintas correndo (um teste A/B/C real). Um ciclo com só 1 célula no
-  // total (ex: S2/S3 sem teste, ou envio isolado) não tem "dia solo" a
-  // excluir — todos os dias entram, como antes (#3123 self-review: sem este
-  // guard, o filtro por dia derrubava a zero qualquer cenário de 1 célula só,
-  // incluindo o caso legítimo de uma célula única rodando vários dias).
-  const validDays =
-    distinctCellsOverall.size >= 2
-      ? new Set([...cellsByDay.entries()].filter(([, s]) => s.size >= 2).map(([day]) => day))
-      : new Set(cellsByDay.keys());
+  // Achado do angle "altitude" no /code-review: gatear em "≥2 letras de
+  // célula distintas apareceram EM QUALQUER LUGAR do ciclo" (checagem antiga)
+  // é mais fraco do que o que o próprio filtro por dia já mede — um ciclo
+  // genuinamente solo (1 célula só, #2360) com UMA campanha isolada mal-
+  // rotulada (typo de nome, resend manual) já dispararia o filtro cycle-wide
+  // mesmo sem nenhum dia real de co-ocorrência. O gate certo é perguntar
+  // exatamente a mesma coisa que o filtro por dia mede: existe ALGUM dia com
+  // ≥2 células reais co-ocorrendo? Se não (ciclo solo, OU handoff sequencial
+  // tipo célula A só d01 trocada pela B a partir de d02 sem nunca coexistir —
+  // diferente do padrão drop/consolidação que este fix mira), zerar tudo via
+  // `validDays` vazio seria pior que não filtrar — cai pro fallback de
+  // incluir todos os dias.
+  const anyDayHasMultipleCells = [...cellsByDay.values()].some((s) => s.size >= 2);
+  const validDays = anyDayHasMultipleCells
+    ? new Set([...cellsByDay.entries()].filter(([, s]) => s.size >= 2).map(([day]) => day))
+    : new Set(cellsByDay.keys());
 
   for (const e of entries) {
     if (!e.monthly && !validDays.has(e.dayNum)) continue; // dia solo (drop/consolidação) — fora
 
-    const picked = pickStats(e.c)!; // já validado ao construir `entries`
+    // #2254/#2252: só campanhas com stats reais contam pro total (a janela
+    // acima já não depende mais disso — ver comentário de cellsByDay).
+    const picked = pickStats(e.c);
+    if (!picked) continue;
     const { stats: s, isGlobal } = picked;
 
     // #2258: base canônica = uniqueViews (MPP-INCLUSIVO). campaignStats.uniqueViews

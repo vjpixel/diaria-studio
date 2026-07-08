@@ -192,11 +192,22 @@ describe("#2207-1: aggregateAbcSummary NaN guard com ?? 0", () => {
         },
       },
     };
-    const result = aggregateAbcSummary([partialDelivered, ...cycle2605Campaigns], "2605");
+    // #3123 self-review (mesmo motivo do teste irmão acima): sem uma 2ª célula
+    // no mesmo dia (d03), a janela derivada trataria d03 como "dia solo" e
+    // excluiria `partialDelivered` do agregado ANTES do guard de NaN rodar —
+    // o teste passaria vazio (sem nunca exercitar `delivered ?? 0`).
+    const day3CompanionC = makeCampaign(98, "Clarice News 2605 d03-C (sex)", "2026-06-13T09:02:00Z", {
+      sent: 100, delivered: 98, uniqueViews: 22,
+    });
+    const result = aggregateAbcSummary([partialDelivered, day3CompanionC, ...cycle2605Campaigns], "2605");
     for (const row of result) {
       assert.ok(!isNaN(row.openRate),
         `openRate da célula ${row.cell} não deve ser NaN (foi ${row.openRate})`);
     }
+    // Confirma que partialDelivered de fato entrou no agregado (não foi excluído
+    // pela janela) — célula B deve ter 3 campanhas (d01, d02, d03), não 2.
+    const cellB = result.find((r) => r.cell === "B")!;
+    assert.equal(cellB.campaignCount, 3, "d03-B (partialDelivered) deve contar — não é mais dia solo");
   });
 });
 
