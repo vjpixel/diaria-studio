@@ -509,7 +509,11 @@ export function renderMonthlyTotalsSection(
     const ctorFmt = r.totalViews > 0 ? r.ctor.toFixed(1) + "%" : "—";
     const bounceRateFmt = r.totalSent > 0 ? r.bounceRate.toFixed(1) + "%" : "—";
     const unsubRateFmt = r.totalSent > 0 ? r.unsubRate.toFixed(1) + "%" : "—";
-    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(1) + "%" : "—";
+    // #3081: 3 casas (não 1) — mesma precisão da tabela Envios (sections-core.ts)
+    // e do fix de `pct()` (denominador 0 → "—"). `r.spamRate` já vem
+    // pré-computado por `aggregateByMonth` — reformatar aqui, não recomputar a
+    // partir de r.totalSpam/r.totalSent (2ª fonte de verdade).
+    const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(3) + "%" : "—";
     // Circuit breaker alerts (mesmos thresholds da tabela Envios, #3078: hard ≥2% OU total ≥5%)
     const bounceAlert = r.totalSent > 0 && isBounceBreach(r.hardBounceRate, r.bounceRate);
     const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;
