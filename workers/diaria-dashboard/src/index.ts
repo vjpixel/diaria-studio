@@ -294,6 +294,7 @@ export function renderOvernightSection(data: DashboardData): string {
     <tbody>${rows}</tbody>
   </table>
   </div>
+  <p class="section-note muted">✓ mergeada · ↩ draft · ⊘ pulada · ⏳ em andamento</p>
 </section>`;
 }
 
@@ -705,12 +706,19 @@ export function renderDashboardHtml(data: DashboardData): string {
   .subsection-title { font-size: 0.95rem; font-weight: 700; margin: 12px 0 4px 0; color: var(--ink); }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
   .muted { color: var(--ink); opacity: 0.55; }
-  .alert-text { color: #C00000; }
+  /* #3097: opacity explícita (não herdada de small, que é 0.6, ~3.40:1) —
+     alerta de ação (streak de falhas, "sem match") precisa ser MAIS legível
+     que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
+  .alert-text { color: #C00000; opacity: 1; font-weight: 600; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
-  td.metric { font-weight: 600; color: var(--brand); }
+  /* #3096: teal (--brand, #00A0A0) mede ~3.08:1 sobre --paper — abaixo de AA
+     (4.5:1) para texto. td.metric é o dado central de todas as tabelas, então
+     volta a --ink (peso 600 mantém a ênfase); teal fica reservado a
+     links/estado ativo de aba (elementos gráficos, 3:1 é aceitável). */
+  td.metric { font-weight: 600; color: var(--ink); }
   ul { padding-left: 20px; }
   li { margin: 6px 0; font-size: 0.9rem; }
   code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
@@ -721,12 +729,24 @@ export function renderDashboardHtml(data: DashboardData): string {
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
   .tab-radios { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
   /* flex-wrap: nowrap + overflow-x: auto evita que a borda da aba ativa quebre ao mudar de linha em telas estreitas */
-  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; flex-wrap: nowrap; overflow-x: auto; }
+  /* #3093: overflow-y: hidden — .tab-label tem margin-bottom: -2px (sobrepõe a borda
+     ativa) que estoura o container em 2px verticalmente; sem isso, overflow-x: auto
+     computa overflow-y para auto também e renderiza uma scrollbar vertical fantasma
+     (o conteúdo nunca precisa rolar verticalmente, só horizontalmente). */
+  .tab-bar { display: flex; gap: 4px; margin: 16px 0 0 0; border-bottom: 2px solid var(--rule); padding-bottom: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; }
+  /* #3094: wrapper só para ancorar o fade de overflow (::after) fora da área que
+     rola — se o fade ficasse dentro de .tab-bar ele rolaria junto com as abas. */
+  .tab-bar-wrap { position: relative; }
+  .tab-bar-wrap::after {
+    content: ""; position: absolute; top: 0; right: 0; bottom: 2px; width: 20px;
+    background: linear-gradient(to right, transparent, var(--paper));
+    pointer-events: none;
+  }
   .tab-label {
     display: inline-block; padding: 8px 18px; font-size: 0.85rem; font-weight: 600;
     cursor: pointer; border: 1px solid transparent; border-bottom: 2px solid transparent;
     border-radius: 4px 4px 0 0; color: var(--ink); opacity: 0.65;
-    margin-bottom: -2px; user-select: none;
+    margin-bottom: -2px; user-select: none; white-space: nowrap;
     transition: opacity 0.1s;
   }
   .tab-label:hover { opacity: 1; background: var(--paper-alt); }
@@ -759,7 +779,10 @@ export function renderDashboardHtml(data: DashboardData): string {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
     th, td { padding: 6px 4px; }
-    .tab-label { padding: 6px 10px; font-size: 0.8rem; }
+    /* #3094: em 390px as 6 abas não cabiam (scrollWidth 348 vs clientWidth 336,
+       déficit ~12px) — gap 4px→2px e padding 6px 10px→6px 8px liberam ~34px. */
+    .tab-bar { gap: 2px; }
+    .tab-label { padding: 6px 8px; font-size: 0.8rem; }
   }
 </style>
 </head>
@@ -776,6 +799,7 @@ export function renderDashboardHtml(data: DashboardData): string {
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-audiencia">
 
 <!-- tab bar -->
+<div class="tab-bar-wrap">
 <div class="tab-bar" role="tablist" aria-label="Seções do dashboard">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
   <label class="tab-label" id="tablabel-ctr" for="tab-ctr" role="tab" aria-controls="panel-ctr">CTR</label>
@@ -784,6 +808,7 @@ export function renderDashboardHtml(data: DashboardData): string {
   <label class="tab-label" id="tablabel-eia" for="tab-eia" role="tab" aria-controls="panel-eia">É IA?</label>
   <label class="tab-label" id="tablabel-audiencia" for="tab-audiencia" role="tab" aria-controls="panel-audiencia">Audiência</label>
 </div>
+</div><!-- /tab-bar-wrap -->
 
 <!-- tab panels -->
 <div class="tab-panels">
