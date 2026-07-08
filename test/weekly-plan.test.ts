@@ -249,6 +249,20 @@ test("render — envio maduro (>48h) → semáforo + plano aparecem (sem diferen
   assert.match(html, /Verde|Amarelo|Vermelho/);
 });
 
+// #3081 (achado no self-review): a tabela de saúde da Rampa mostrava spam
+// rate com 2 casas decimais — 4ª tabela do dashboard com uma precisão
+// diferente das outras 3 (Envios/Totais por mês/Resumo A/B/C, já em 3 casas).
+test("#3081: tabela de saúde mostra spam rate com 3 casas decimais (não 2)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 1 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  // spamRate = 1/3000 = 0.033%
+  assert.match(html, />0\.033%</, "spam deve aparecer com 3 casas decimais");
+});
+
 test("classifyMetric — fronteiras (higher=abertura; lower=bounce/spam/unsub)", () => {
   // higher: maior é melhor
   assert.equal(classifyMetric(14, { green: 14, yellow: 11 }, "higher"), "green");

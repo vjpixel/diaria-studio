@@ -265,6 +265,8 @@ describe("renderTopWeekdaysSection", () => {
     const html = renderTopWeekdaysSection(campaigns as unknown as BrevoCampaign[], now);
     assert.match(html, /Melhores dias da semana/);
     assert.match(html, /sugestão mensal/);
+    // #3081: mesma nota de mistura fria/quente do renderWeekdaySection (Engajamento).
+    assert.match(html, /Agrega audiência fria e quente/);
   });
 
   test("dados insuficientes (< 2 dias) → string vazia", () => {

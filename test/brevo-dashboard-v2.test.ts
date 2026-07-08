@@ -647,7 +647,11 @@ describe("#2212: renderDashboardHtml — integração seção links-agregados", 
     };
     const html = renderDashboardHtml([campaignWithLinks]);
     assert.match(html, /id="links-agregados"/, "seção deve aparecer");
-    assert.match(html, /Links mais clicados do período/, "título deve aparecer");
+    // #3081: renderDashboardHtml agora passa campaignCount (campaigns.length) —
+    // título reflete a janela agregada, não mais "do período" (que exigia
+    // edicaoLabel null E campaignCount omitido; aqui campaignCount=1 sempre).
+    // #3081 (self-review): pluralização — "1 campanha" no singular.
+    assert.match(html, /Links mais clicados \(janela de 1 campanha\)/, "título deve refletir a janela agregada, no singular");
     assert.match(html, /diar\.ia\/edicao\/260613/, "link editorial deve aparecer na seção agregada");
   });
 

@@ -972,6 +972,15 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.match(html, /id="monthly-totals"/, "deve ter âncora monthly-totals");
   });
 
+  // #3081 (achado no self-review — Altitude): "Totais por mês" agrega
+  // audiência fria+quente sem diferenciar, mesmo caso das tabelas de weekday
+  // que já ganharam a nota — estava faltando aqui.
+  test("#3081: inclui nota sobre mistura de audiência fria/quente", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /Agrega audiência fria e quente/);
+  });
+
   test("contém 1 linha por mês (2 linhas para allCampaigns)", () => {
     const rows = aggregateByMonth(allCampaigns);
     const html = renderMonthlyTotalsSection(rows);
@@ -1883,6 +1892,19 @@ describe("renderWeekdaySection (#2134)", () => {
     assert.equal(renderWeekdaySection([], "ciclo 2605", []), "");
   });
 
+  // #3081: a agregação mistura audiência fria+quente (comportamento MUITO
+  // diferente entre elas) — nota explícita evita leitura enganosa do sinal.
+  test("#3081: inclui nota sobre mistura de audiência fria/quente", () => {
+    const html = renderWeekdaySection(makeRows(), "ciclo 2605");
+    assert.match(html, /Agrega audiência fria e quente/);
+    assert.match(html, /~15% fria vs ~60% quente/);
+  });
+
+  test("#3081: nota de audiência mista aparece mesmo no stub (rows vazio, com excluídos)", () => {
+    const html = renderWeekdaySection([], "ciclo 2605", [{ name: "d05-A", sentDate: "2026-06-11T09:00:00Z" }]);
+    assert.match(html, /Agrega audiência fria e quente/);
+  });
+
   test("ordena dias do melhor pro pior open rate", () => {
     const rows = [
       { weekday: 0, label: "Seg", count: 2, delivered: 100, opens: 20, openRate: 20, smallSample: false },
@@ -2468,6 +2490,35 @@ describe("deriveLinksSectionTitle (#2421)", () => {
   test("renderAggregatedLinksSection sem edicaoLabel usa fallback 'do período'", () => {
     const html = renderAggregatedLinksSection([]);
     assert.match(html, /Links mais clicados do período/);
+  });
+
+  // #3081: título antigo ("da edição X") implicava dados de 1 edição só, mas a
+  // agregação por trás soma TODA a janela buscada (ex: 150 campanhas/múltiplos
+  // ciclos) — com campaignCount, o título reflete a janela real.
+  test("#3081: com campaignCount, título reflete a JANELA agregada (não implica 1 edição)", () => {
+    const html = renderAggregatedLinksSection([], "2605-06", 150);
+    assert.match(html, /Links mais clicados \(janela de 150 campanhas\)/);
+    assert.match(html, /mais recente: edição 2605-06/);
+    assert.doesNotMatch(html, /Links mais clicados da edição 2605-06/);
+  });
+
+  test("#3081: com campaignCount mas sem edicaoLabel → só a janela, sem sufixo de edição", () => {
+    const html = renderAggregatedLinksSection([], null, 42);
+    assert.match(html, /Links mais clicados \(janela de 42 campanhas\)/);
+    assert.doesNotMatch(html, /mais recente/);
+  });
+
+  test("#3081: sem campaignCount (omitido) preserva o título antigo (retrocompat)", () => {
+    const html = renderAggregatedLinksSection([], "2605-06");
+    assert.match(html, /Links mais clicados da edição 2605-06/);
+  });
+
+  // #3081 (achado no self-review): campaignCount=1 deve usar singular
+  // ("campanha"), não "1 campanhas" (gramaticalmente errado).
+  test("#3081: campaignCount=1 usa singular 'campanha', não 'campanhas'", () => {
+    const html = renderAggregatedLinksSection([], null, 1);
+    assert.match(html, /Links mais clicados \(janela de 1 campanha\)/);
+    assert.doesNotMatch(html, /1 campanhas/);
   });
 });
 
