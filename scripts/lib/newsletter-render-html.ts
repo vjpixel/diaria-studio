@@ -115,7 +115,7 @@ export function stripKickerEmoji(s: string): string {
 export function stripCalloutMarker(s: string): string {
   // [︎️]? — consome VS15 (texto) além do VS16 (emoji); VS15 órfão
   // viraria char invisível líder no <p> (review #2066).
-  return s.replace(/^\s*(?:📣|📚|🎉)[︎️]?\s*/u, "").trim();
+  return s.replace(/^\s*(?:📣|📚|📖|🎉)[︎️]?\s*/u, "").trim();
 }
 
 /**
@@ -592,7 +592,7 @@ export function renderEIA(eia: EIA): string {
   ${renderKicker("É IA?")}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
-      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
+      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA</p>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;">
         ${eiaChoice("A", eia.imageA)}
         ${eiaChoice("B", eia.imageB, "16px")}
@@ -1208,8 +1208,11 @@ function tokenizeInline(
 }
 
 // #2004: link inline sem font-weight:bold — só underline teal (decisão 2026-06-09).
+// #recomendacao-leitura: EXCEÇÃO opt-in — se o rótulo vier com `**...**` (ex:
+// `[**título**](url)`), o negrito é aplicado dentro do link. Links sem `**` no
+// rótulo continuam sem negrito (comportamento #2004 preservado).
 function inlineLinkHtml(label: string, url: string): string {
-  return `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`;
+  return `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${applyInlineBold(esc(label))}</a>`;
 }
 
 export function processInlineLinks(s: string): string {

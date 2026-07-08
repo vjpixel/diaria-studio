@@ -928,7 +928,7 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     // #DS callout/É IA? title h4: heading do painel subiu de 22px (h5) pra 26px (h4).
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html, "deve retornar HTML pra eia configurada");
-    const headingMatch = html!.match(/<p style="([^"]+)">Clique na imagem que foi gerada por IA\.<\/p>/);
+    const headingMatch = html!.match(/<p style="([^"]+)">Clique na imagem que foi gerada por IA<\/p>/);
     assert.ok(headingMatch, "heading do É IA? deve existir no render standalone");
     assert.match(headingMatch![1], /font-size:26px/, "heading do É IA? é 26px (DS h4)");
     assert.doesNotMatch(headingMatch![1], /font-size:22px/, "não deve mais ser 22px (h5)");

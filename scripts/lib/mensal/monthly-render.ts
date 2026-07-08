@@ -727,7 +727,7 @@ export function renderEia(
   <tr><td style="padding:24px 28px;">
 
     <!-- Título -->
-    <p style="margin:0;font-family:${FONT_SERIF};font-size:26px;line-height:1.15;color:${INK};">Clique na imagem que foi gerada por IA.</p>
+    <p style="margin:0;font-family:${FONT_SERIF};font-size:26px;line-height:1.15;color:${INK};">Clique na imagem que foi gerada por IA</p>
 
     <!-- Imagens A / B empilhadas (A acima de B), como na diária (#2541) -->
     <!-- #2709: margin-top:22px compensa a remoção do margin do título acima (item 2) —
