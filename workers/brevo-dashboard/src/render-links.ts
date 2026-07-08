@@ -403,10 +403,9 @@ export function renderAggregatedLinksSection(rows: AggregatedLinkRow[], edicaoLa
   <table class="links-table">
     <thead>
       <tr>
-        <th class="link-url-th" title="${escHtml(AGGREGATED_LINKS_COLUMNS[0].tooltip)}">${AGGREGATED_LINKS_COLUMNS[0].label}</th>
-        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[1].tooltip)}">${AGGREGATED_LINKS_COLUMNS[1].label}</th>
-        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[2].tooltip)}">${AGGREGATED_LINKS_COLUMNS[2].label}</th>
-        <th title="${escHtml(AGGREGATED_LINKS_COLUMNS[3].tooltip)}">${AGGREGATED_LINKS_COLUMNS[3].label}</th>
+        ${AGGREGATED_LINKS_COLUMNS.map(
+          (c, i) => `<th${i === 0 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
+        ).join("\n")}
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
