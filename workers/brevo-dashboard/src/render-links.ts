@@ -490,6 +490,33 @@ ${items}
 }
 
 /**
+ * #3092: notas explicativas longas (6-10 linhas, jargão interno tipo
+ * "#2864"/"#2908") apareciam ANTES do dado, obrigando o editor a rolar
+ * passado um parágrafo de metodologia só pra chegar na tabela (Cohorts/
+ * Coortes/Totais por mês). Padroniza o formato "1 frase de takeaway visível +
+ * metodologia num `<details>` recolhível" — mesmo componente reusado de
+ * `renderColumnGlossary` (`.links-ctr`/`.links-summary`), sem duplicar CSS
+ * novo. `takeawayHtml`/`detailsHtml` já vêm prontos (escHtml aplicado pelo
+ * caller quando interpolam dado dinâmico) — mesmo contrato de todo o resto
+ * do módulo (nenhuma função aqui escapa texto sozinha).
+ *
+ * @param id - sufixo do id do `<details>` (único por tabela/aba)
+ * @param takeawayHtml - 1 frase sempre visível (o que o editor precisa saber de cara)
+ * @param detailsHtml - metodologia completa, recolhida (sem números de issue —
+ *   convenção estabelecida por este PR, mesmo espírito do fix das notas de
+ *   Cupons que removeu "#2750" do texto visível, ver test/brevo-dashboard-3092-consistency.test.ts)
+ */
+export function renderMethodologyNote(id: string, takeawayHtml: string, detailsHtml: string): string {
+  return `<p class="section-note">${takeawayHtml}</p>
+<details class="links-ctr" id="howto-${escHtml(id)}">
+  <summary class="links-summary">Como ler esta tabela</summary>
+  <div class="links-table-wrap">
+  <p class="section-note" style="margin:0;">${detailsHtml}</p>
+  </div>
+</details>`;
+}
+
+/**
  * #3081 (formatação/UX): link pra abrir o relatório da campanha direto na
  * Brevo, a partir do ID exibido na coluna "ID" da tabela Envios. Antes o ID
  * era texto puro — sem valor acionável e context-free pra screen readers

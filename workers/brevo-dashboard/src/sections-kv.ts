@@ -7,7 +7,7 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // cohorts.ts é dependency-free/Workers-safe (mesmo padrão de
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
-import { DS, pct, fmtTimeBRT, cellClass, renderColumnGlossary } from "./render-links.ts";
+import { DS, pct, fmtTimeBRT, cellClass, renderColumnGlossary, renderMethodologyNote } from "./render-links.ts";
 import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP, renderMixedAudienceNote } from "./sections-core.ts";
 import { isBounceBreach } from "./thresholds.ts";
 // #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
@@ -541,11 +541,16 @@ export function renderMonthlyTotalsSection(
     </tr>`;
   }).join("\n");
 
+  // #3092: takeaway curto sempre visível + metodologia (eventos vs pessoas
+  // únicas, comparação com Coortes) num <details> "Como ler esta tabela".
+  const totaisTakeaway = `1 linha por mês — agrega todos os envios realizados naquele mês (eventos por envio, não pessoas únicas).`;
+  const totaisMethodology = `Um contato que recebeu 3 campanhas conta 3×. Opens usa <code>uniqueViews</code> (MPP-inclusivo, igual à UI da Brevo) — não comparar diretamente com as Coortes de engajamento (que contam <strong>pessoas únicas</strong> com aberturas reais/trackable, EXCLUI MPP). Veja a lista detalhada na seção Envios abaixo.`;
+
   return `
 <section class="phase2-section" id="monthly-totals">
   <h2 class="section-title">Totais por mês</h2>
   ${renderMixedAudienceNote()}
-  <p class="section-note">1 linha por mês — agrega todos os envios realizados naquele mês. Valores são <strong>eventos por envio</strong> (um contato que recebeu 3 campanhas conta 3×). Opens usa <code>uniqueViews</code> (MPP-inclusivo, igual à UI da Brevo) — não comparar diretamente com as Coortes de engajamento (que contam <strong>pessoas únicas</strong> com aberturas reais/trackable, EXCLUI MPP). Veja a lista detalhada na seção Envios abaixo.</p>
+  ${renderMethodologyNote("monthly-totals", totaisTakeaway, totaisMethodology)}
   <div class="table-wrap">
   <table>
     <thead>
@@ -632,10 +637,15 @@ export function renderEngagementCohortsSection(
       <td>100%</td>
     </tr>`;
 
+  // #3092: takeaway curto sempre visível + metodologia (partição exclusiva,
+  // exclusão de MPP, escopo) num <details> "Como ler esta tabela".
+  const coortesTakeaway = `<span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu), divididas em coortes mutuamente exclusivas.${staleNote}`;
+  const coortesMethodology = `Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" = aberturas reais (trackable) per-contato — <strong>EXCLUI MPP</strong> (a Brevo não atribui MPP a contatos individuais; <code>appleMppOpens</code> é só agregado de campanha). Por isso os números aqui diferem de "Totais por mês" (que usa <code>uniqueViews</code>, MPP-inclusivo) — não comparar 1:1. Escopo: toda a base Clarice (todas as edições).`;
+
   return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <p class="section-note"><span title="Contatos únicos dedupados que receberam ao menos um envio (todas as campanhas).">${u.toLocaleString("pt-BR")} pessoas únicas alcançadas</span> (recebeu ≥1 e-mail ou saiu). Cada contato conta em <strong>exatamente uma</strong> coorte — quem deu bounce ou descadastrou entra só em "Saídas", independente de ter aberto. "Abriu" = aberturas reais (trackable) per-contato — <strong>EXCLUI MPP</strong> (a Brevo não atribui MPP a contatos individuais; <code>appleMppOpens</code> é só agregado de campanha). Por isso os números aqui diferem de "Totais por mês" (que usa <code>uniqueViews</code>, MPP-inclusivo) — não comparar 1:1. Escopo: toda a base Clarice (todas as edições).${staleNote}</p>
+  ${renderMethodologyNote("engagement-cohorts", coortesTakeaway, coortesMethodology)}
   <div class="table-wrap">
   <table>
     <thead>
@@ -1077,10 +1087,17 @@ ${COHORTS_COLUMNS.map((c) => `        <th title="${escHtml(c.tooltip)}">${c.labe
     ? `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> refletem o ciclo de envio corrente (last_sent_at ≥ início do ciclo, derivado do send-plan); "Falta enviar" = Elegíveis − Recebeu neste ciclo (mínimo 0 — recebeu pode passar de elegíveis quando há descadastro/bounce pós-envio).`
     : `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> exibem "—" — nenhum ciclo de envio com send-plan legível.`;
 
+  // #3092: takeaway curto sempre visível + metodologia completa (taxas,
+  // marcação de desvio, linha Total) num <details> "Como ler esta tabela" —
+  // o parágrafo original tinha 6-10 linhas e citava issues internas (#2864,
+  // #2809, #3091, #2908), jargão que não ajuda o editor a ler o dado.
+  const cohortsTakeaway = `Comparativo de envio e engajamento por cohort, ordenado pela fila real de 1º envio (mais morno → mais frio).`;
+  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada.`;
+
   return `
 <section class="phase2-section" id="cohorts-tab">
   <h2 class="section-title">Cohorts</h2>
-  <p class="section-note">Comparativo de envio/engajamento por cohort (#2864) — ordenado pela fila real de 1º envio (mais morno → mais frio). Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro de <code>priority_points</code>, #2809). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard, #3091). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo (#2908).</p>
+  ${renderMethodologyNote("cohorts", cohortsTakeaway, cohortsMethodology)}
   ${renderColumnGlossary("cohorts", COHORTS_COLUMNS)}
   <div class="table-wrap">
   <table>
