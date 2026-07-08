@@ -12,6 +12,10 @@ import {
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
+// #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
+// partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
+// cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
+import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 
 export interface LeaderTop1Entry {
   nickname: string;
@@ -666,19 +670,19 @@ function renderLeaderboardHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
-  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  /* #1936: design system canônico — importados de ds-tokens.generated.ts
+     (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)
+     removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
+  body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
   p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-  td { padding: 10px 8px; border-bottom: 1px solid #ebe5d0; }
-  tr.leader td { font-weight: 600; color: #00A0A0; }
-  a { color: #171411; text-decoration: underline; }
-  .kicker { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
+  td { padding: 10px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; }
+  tr.leader td { font-weight: 600; color: ${DS_COLORS.brand}; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
 </style>
@@ -782,17 +786,17 @@ export function renderArchiveListHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
-  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  /* #1936: design system canônico — importados de ds-tokens.generated.ts
+     (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)
+     removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
+  body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
   p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   ul { list-style: none; padding: 0; margin-top: 20px; }
-  li { padding: 12px 8px; border-bottom: 1px solid #ebe5d0; font-size: 1.02rem; }
-  a { color: #171411; text-decoration: underline; }
-  .kicker { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
 </style>
 </head>
 <body>
@@ -838,22 +842,22 @@ export function renderArchiveVoteHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
-  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
+  /* #1936: design system canônico — importados de ds-tokens.generated.ts
+     (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)
+     removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
+  body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
   p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
   .email-row { margin: 20px 0; }
-  .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #ebe5d0; border-radius: 4px; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
   .choice img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  /* #3110: fundo ink (#171411), não teal — botão cheio em teal reprovava
-     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk (#FBFAF6) dá ~15:1. */
-  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: #171411; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-  a { color: #171411; text-decoration: underline; }
+  /* #3110: fundo ink, não teal — botão cheio em teal reprovava
+     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
+  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
   }

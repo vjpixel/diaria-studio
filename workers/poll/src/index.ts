@@ -34,6 +34,10 @@ import {
   brandKvPrefix,
   leaderboardHref,
 } from "./lib";
+// #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
+// partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
+// cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
+import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 export { VoteDedup } from "./vote-dedup";
 export { StatsCounter } from "./stats-counter";
 
@@ -380,35 +384,38 @@ export function votePageHtml(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | ${BRAND_INFO[brand].name}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
-  .msg { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
-  a { color: #171411; text-decoration: underline; }
+  /* #1936: design system canônico — papel + tinta + serif Georgia + sans Geist +
+     acento teal, importados de ds-tokens.generated.ts (#3111 — antes hardcoded
+     inline aqui). #3111 também removeu o @import do webfont Geist (Google
+     Fonts): Cursos/Livros (as outras 2 páginas do mesmo DS) já não carregavam
+     o arquivo da fonte — cai pra system sans nas 3 igual, sem 3ª origem
+     externa/latência extra no worker de maior tráfego. */
+  body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  .msg { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
-  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #FBFAF6; }
-  /* #1894: accent verde da marca (--brand-bright #00A0A0) — sinal da imagem clicada. */
-  .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
+  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: ${DS_COLORS.paper}; }
+  /* #1894: accent verde da marca (--brand-bright) — sinal da imagem clicada. */
+  .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
-  /* #3110: fundo ink (#171411) em vez de teal (#00A0A0) — teal+onInk dava
+  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
+  /* #3110: fundo ink em vez de teal — teal+onInk dava
      ~3:1 de contraste (abaixo de AA 4.5:1); ink+onInk dá ~15:1. Teal é SÓ
      texto no design system (design-tokens.ts) — botões/badges cheios usam ink. */
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #171411; color: #FBFAF6; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
-  .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
+  .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
   .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
   .nick-explain { font-size: 0.95rem; color: rgba(23,20,17,0.65); margin: 0 0 12px 0; line-height: 1.5; }
-  .nick-explain code { background: #FBFAF6; padding: 1px 4px; border-radius: 3px; }
+  .nick-explain code { background: ${DS_COLORS.paper}; padding: 1px 4px; border-radius: 3px; }
   .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.62); margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
-  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #EBE5D0; border-radius: 4px; font-size: 0.95rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-  /* #3110: fundo ink (#171411), não teal — botão cheio em teal reprovava
-     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk (#FBFAF6) dá ~15:1. */
-  .nick-save { padding: 8px 16px; background: #171411; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #3110: fundo ink, não teal — botão cheio em teal reprovava
+     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
+  .nick-save { padding: 8px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: ${DS_FONTS.sans}; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,

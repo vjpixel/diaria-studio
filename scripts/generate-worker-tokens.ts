@@ -45,6 +45,7 @@ const repoRoot = resolve(__dirname, "..");
 const DEFAULT_OUT_DIRS = [
   "workers/brevo-dashboard/src",
   "workers/diaria-dashboard/src",
+  "workers/poll/src", // #3111: poll importava valores hardcoded inline, agora usa o mesmo codegen
 ];
 
 // Suporte a --out-dir para o wrangler.toml de cada worker
@@ -96,8 +97,16 @@ export const DS_COLORS = {
   paperEmail: ${JSON.stringify(colors.paperEmail)},
 } as const;
 
-/** Tokens de fonte do DS (espelho de FONTS em design-tokens.ts). */
+/**
+ * Tokens de fonte do DS (espelho de FONTS em design-tokens.ts).
+ *
+ * mono não é gerado — nenhum worker o usa hoje (mesma política de exclusão
+ * intencional acima: adicione ao template quando um worker precisar).
+ * serif (Georgia) incluído a partir do worker poll (#3111), que usa a fonte
+ * de manchete/título nos templates HTML do jogo "É IA?".
+ */
 export const DS_FONTS = {
+  serif: ${JSON.stringify(fonts.serif)},
   sans: ${JSON.stringify(fonts.sans)},
 } as const;
 `;

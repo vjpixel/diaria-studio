@@ -56,3 +56,11 @@ ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
 # #1077 superseded por #1345: cron de reset removido. Leaderboard agora é
 # indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
 # não é mais necessário — meses são naturalmente isolados.
+
+# Build step (#3111, mesmo padrão do brevo-dashboard #2107): gera
+# ds-tokens.generated.ts a partir de scripts/lib/shared/design-tokens.ts antes
+# de compilar o Worker. Antes disto, index.ts/leaderboard-routes.ts duplicavam
+# os valores de cor/fonte do DS inline (comentários "#1936 DS canônico") sem
+# trava contra divergência futura — ver test/poll-ds-tokens.test.ts.
+[build]
+command = "npx tsx ../../scripts/generate-worker-tokens.ts --out-dir workers/poll/src"
