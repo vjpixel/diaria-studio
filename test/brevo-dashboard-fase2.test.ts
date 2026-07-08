@@ -1216,9 +1216,11 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     const html = renderDashboardHtml([baseCampaign]);
     // uniqueViews=20, appleMppOpens=5 (default) → opensNoMpp=15 → 31.3% sem MPP.
     // trackableViews=15/delivered=48 → 31.3% trackable (coincide com sem-MPP nesta fixture).
+    // #3084: o membro "· Z% trackable" agora vai num <span class="trackable-clause">
+    // aninhado (escondido via CSS em mobile) — o regex precisa acomodar essa tag extra.
     assert.match(
       html,
-      /41\.7% <span class="rate-inline">\(31\.3% sem MPP · 31\.3% trackable\)<\/span>/,
+      /41\.7% <span class="rate-inline">\(31\.3% sem MPP<span class="trackable-clause"> · 31\.3% trackable<\/span>\)<\/span>/,
       "célula Opens deve combinar taxa sem-MPP + taxa trackable no parêntese (#3040)",
     );
     // count trackable (15) na linha <small>, junto do count sem-MPP (15).

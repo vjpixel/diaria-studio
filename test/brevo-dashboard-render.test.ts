@@ -72,8 +72,10 @@ test("renderDashboardHtml prefers globalStats (with MPP) over campaignStats[0]",
   // Rate com MPP no topo (bold/teal via .metric)
   assert.ok(html.includes("54.2%"), "deveria mostrar open rate com MPP = 54.2% (26/48)");
 
-  // Rate sem MPP + trackable em parens, normal-color (.rate-inline)
-  assert.ok(/54\.2% <span class="rate-inline">\(41\.7% sem MPP · 29\.2% trackable\)<\/span>/.test(html),
+  // Rate sem MPP + trackable em parens, normal-color (.rate-inline). #3084: o
+  // membro "· Z% trackable" agora vai num <span class="trackable-clause">
+  // aninhado (escondido via CSS em mobile) — regex acomoda essa tag extra.
+  assert.ok(/54\.2% <span class="rate-inline">\(41\.7% sem MPP<span class="trackable-clause"> · 29\.2% trackable<\/span>\)<\/span>/.test(html),
     "parêntese de Opens deve combinar '41.7% sem MPP · 29.2% trackable' com class rate-inline (#3040)");
 
   // Count na linha de baixo: total (sem MPP · trackable)
