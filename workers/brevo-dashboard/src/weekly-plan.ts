@@ -508,7 +508,7 @@ ${scheduledSection}`;
       <tr><td>3º envio</td><td>${plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
     </tbody>
     <tfoot>
-      <tr style="font-weight:700;border-top:2px solid var(--rule)"><td>Total (3 envios)</td><td>${plan.volumes
+      <tr class="total-row"><td>Total (3 envios)</td><td>${plan.volumes
         .reduce((a, b) => a + b, 0)
         .toLocaleString("pt-BR")}</td></tr>
     </tfoot>
@@ -568,7 +568,7 @@ ${scheduledSection}`;
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
   <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
-  <p class="section-note" style="font-size:12px;opacity:0.75">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${includedDetails.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
+  <p class="section-note">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${includedDetails.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>Métrica</th><th>Valor</th><th>Alvo 🟢</th><th>Alvo 🟡</th></tr></thead>
