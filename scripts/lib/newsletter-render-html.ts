@@ -10,7 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
-import { buildDiariaStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -87,6 +87,9 @@ const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 // #2635: construído via buildDiariaStyleBlock (newsletter-styles.ts) — mesmo CSS
 // base compartilhado com o renderer mensal (monthly-render.ts). Output byte-idêntico.
 export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
+// #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
+// uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
+const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
@@ -1016,18 +1019,32 @@ ${container}
   const preheader = esc(
     content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
   );
+  // #3104: paridade de dark mode com o mensal (#2645) — só neste caminho
+  // (fullDocument), não no fragmento colado no Beehiiv. `content="light dark"`
+  // (não só "light") nos DOIS metas — igual ao mensal — porque Apple Mail
+  // trata um `color-scheme`/`supported-color-schemes` de valor único como "este
+  // e-mail só suporta claro" e some com a regra de dark-canvas abaixo (não a
+  // aplica de qualquer jeito); "light dark" é o que faz o Apple Mail de fato
+  // honrar o `@media (prefers-color-scheme: dark)` autoral que segue no
+  // <style> — sem isso a paridade com o mensal seria só de papel (self-review:
+  // achado real, confirmado contra a documentação de dark mode em e-mail).
+  // Risco prático de deixar o auto-dark-mode ligado é baixo hoje porque toda
+  // cor do e-mail já é setada inline (nunca texto sem cor sobre fundo sem cor).
   return `<!doctype html>
 <html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
+${DARK_CANVAS_STYLE_BLOCK}
 </head>
 <body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
+<table role="presentation" class="ds-canvas" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>
 </body>
