@@ -226,9 +226,9 @@ export function renderLinksSection(
   <table class="links-table">
     <thead>
       <tr>
-        <th class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
-        <th title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
-        <th title="Participação deste link no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
+        <th scope="col" class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
+        <th scope="col" title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
+        <th scope="col" title="Participação deste link no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -446,7 +446,7 @@ export function renderAggregatedLinksSection(
     <thead>
       <tr>
         ${AGGREGATED_LINKS_COLUMNS.map(
-          (c, i) => `<th${i === 0 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
+          (c, i) => `<th scope="col"${i === 0 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
         ).join("\n")}
       </tr>
     </thead>

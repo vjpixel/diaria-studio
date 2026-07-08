@@ -315,8 +315,10 @@ test("render — mostra coluna de Alvo + colore o valor (verde/vermelho) por mé
     }),
   ];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
-  assert.match(html, /Alvo 🟢/); // coluna de alvo verde presente
-  assert.match(html, /Alvo 🟡/); // coluna de alvo amarelo presente
+  // #3092: emoji semafórico ganhou role="img" + aria-label (a11y) — o texto
+  // "Alvo" e o emoji não ficam mais adjacentes sem marcação entre eles.
+  assert.match(html, /Alvo <span role="img" aria-label="verde">🟢<\/span>/); // coluna de alvo verde presente
+  assert.match(html, /Alvo <span role="img" aria-label="amarelo">🟡<\/span>/); // coluna de alvo amarelo presente
   assert.doesNotMatch(html, /<th>Status<\/th>/); // coluna Status removida
   assert.match(html, /#0E6B39/); // valor verde (abertura 27%) — #3087: consolidado com STATUS_COLOR
   assert.match(html, /#C00000/); // valor vermelho (unsub 3,1% ≥ breaker 3%) — #3087: agora = DS.alert

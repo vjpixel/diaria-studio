@@ -171,7 +171,7 @@ test("#3086: tabela 'aguardando maturar' (sem envio maduro ainda) fica dentro de
   assert.match(html, /aguardando maturar/, "sanity check — deve cair no branch de espera de maturação");
   assert.match(
     html,
-    /<div class="table-wrap">\s*<table><thead><tr><th>Campanha<\/th><th>Enviado<\/th><\/tr><\/thead><tbody>/,
+    /<div class="table-wrap">\s*<table><thead><tr><th scope="col">Campanha<\/th><th scope="col">Enviado<\/th><\/tr><\/thead><tbody>/,
     "tabela de campanhas aguardando maturar deve estar dentro de .table-wrap (#3086)",
   );
 });
@@ -194,7 +194,7 @@ test("#3086: tabela 'Recomendação — próximos 3 envios' fica dentro de .tabl
   const recSection = html.split("Recomendação — próximos 3 envios")[1] ?? "";
   assert.match(
     recSection.slice(0, 200),
-    /<div class="table-wrap">\s*<table>\s*<thead><tr><th>Envio<\/th>/,
+    /<div class="table-wrap">\s*<table>\s*<thead><tr><th scope="col">Envio<\/th>/,
     "tabela de recomendação deve estar dentro de .table-wrap (#3086)",
   );
 });
