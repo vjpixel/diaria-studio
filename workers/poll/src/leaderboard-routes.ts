@@ -684,13 +684,16 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — texto secundário é
+     SEMPRE ink sólido, hierarquia vem de tamanho/peso (DS canônico, ver nota
+     em design-tokens.ts: "não há cinzas na paleta"). */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: ${DS_COLORS.ink}; text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
   td { padding: 10px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; }
   tr.leader td { font-weight: 600; color: ${DS_COLORS.brand}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
 </style>
@@ -702,10 +705,10 @@ ${subCopy}
 <p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<tbody>${rows || `<tr><td colspan=3 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
-<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
@@ -800,11 +803,12 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — ver renderLeaderboardHtml acima. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   ul { list-style: none; padding: 0; margin-top: 20px; }
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
 </style>
 </head>
 <body>
@@ -856,7 +860,8 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
-  p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — ver renderLeaderboardHtml acima. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   .email-row { margin: 20px 0; }
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
