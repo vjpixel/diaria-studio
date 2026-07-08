@@ -87,6 +87,9 @@ const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 // #2635: construído via buildDiariaStyleBlock (newsletter-styles.ts) — mesmo CSS
 // base compartilhado com o renderer mensal (monthly-render.ts). Output byte-idêntico.
 export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
+// #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
+// uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
+const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
@@ -1033,7 +1036,7 @@ ${container}
 <meta name="color-scheme" content="light" />
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
-${buildDarkCanvasStyleBlock(TEXT_COLOR)}
+${DARK_CANVAS_STYLE_BLOCK}
 </head>
 <body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
