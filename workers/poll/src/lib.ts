@@ -5,6 +5,9 @@
  * fetch). Extraído de `index.ts` pra permitir testes Node sem mock do
  * Worker runtime (#1083).
  */
+// #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
+// index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
+import { DS_COLORS } from "./ds-tokens.generated";
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -311,6 +314,58 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
 }
 
+// ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────
+//
+// leaderboard/arquivo (renderLeaderboardHtml, renderArchiveListHtml) e a
+// página de voto do arquivo (renderArchiveVoteHtml) não tinham identidade
+// visual nenhuma além do `<title>` — só texto cru sobre o kicker "É IA?".
+// Duplicado aqui (não importado de scripts/lib/shared/curadoria-page.ts, que
+// tem o rodapé equivalente de Cursos/Livros) pelo mesmo motivo já documentado
+// em design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
+// Cloudflare separado.
+
+/**
+ * CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca.
+ * Margin da régua: 22px, igual à `.rule` de Cursos/Livros
+ * (`renderCuradoriaHeaderStyles` em scripts/lib/shared/curadoria-page.ts) —
+ * evita reintroduzir aqui o mesmo tipo de micro-drift de espaçamento que o
+ * #3113 existe pra eliminar.
+ */
+export function renderBrandShellStyles(): string {
+  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 22px; }
+  footer.brand-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
+  footer.brand-footer a { font-weight: 600; }`;
+}
+
+/**
+ * Rodapé mínimo de marca — link pro site principal do brand (diar.ia.br /
+ * clarice.ai). Não é a nav cruzada de 4 links de Cursos/Livros (#3113 Bloco A)
+ * — "É IA?" linkando pra si mesmo na própria página não faz sentido; aqui só
+ * precisa dar identidade (rodapé não-vazio), não navegação cruzada completa.
+ */
+export function renderBrandFooter(brand: Brand): string {
+  const info = BRAND_INFO[brand];
+  const label = info.shortName ?? info.name;
+  return `<footer class="brand-footer"><a href="${htmlEscape(info.siteUrl)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
+}
+
+// ── Filtro de edição futura no arquivo (#3113 item 9) ───────────────────────
+
+/**
+ * Pure: "AAMMDD" do dia corrente em BRT (UTC-3) — mesmo offset fixo usado em
+ * toda formatação de data deste worker (ver `currentMonthSlugBrt` acima).
+ * Comparação lexicográfica contra edições AAMMDD funciona porque ambas são
+ * strings zero-padded do mesmo tamanho (mesma propriedade já usada pelo sort
+ * de `extractEditionsForYear` em leaderboard-routes.ts).
+ */
+export function currentEditionAammddBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(brt.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
 
 /**
@@ -396,9 +451,9 @@ export function validateNickname(cleanName: string): string | null {
 
 const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
-/** Favicon SVG inline (data-URI) — "D" em tinta (#FBFAF6) sobre teal
- * (#00A0A0), mesma marca usada em cursos/livros. Mantido estável entre
- * redeploys — trocar o favicon faz o browser tratar como página diferente. */
+/** Favicon SVG inline (data-URI) — "D" em tinta (paper) sobre teal (brand),
+ * mesma marca usada em cursos/livros. Mantido estável entre redeploys —
+ * trocar o favicon faz o browser tratar como página diferente. */
 export const FAVICON_DATA_URI =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='32' y='46' font-family='Georgia, Times, serif' font-size='38' font-weight='700' fill='%23FBFAF6' text-anchor='middle'%3ED%3C/text%3E%3C/svg%3E";
 

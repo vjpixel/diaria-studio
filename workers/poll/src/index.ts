@@ -436,7 +436,9 @@ export function votePageHtml(
   /* #1894: accent verde da marca (--brand-bright) — sinal da imagem clicada. */
   .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
+  /* #3113 item 6: cinza via opacity (rgba) abolido do DS — texto secundário
+     é ink com hierarquia por tamanho/peso, não opacity (design-tokens.ts). */
+  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
   /* #3110: fundo ink em vez de teal — teal+onInk dava
      ~3:1 de contraste (abaixo de AA 4.5:1); ink+onInk dá ~15:1. Teal é SÓ
      texto no design system (design-tokens.ts) — botões/badges cheios usam ink. */
@@ -445,9 +447,9 @@ export function votePageHtml(
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
   .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
-  .nick-explain { font-size: 0.95rem; color: rgba(23,20,17,0.65); margin: 0 0 12px 0; line-height: 1.5; }
+  .nick-explain { font-size: 0.95rem; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; line-height: 1.5; }
   .nick-explain code { background: ${DS_COLORS.paper}; padding: 1px 4px; border-radius: 3px; }
-  .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.62); margin: 10px 0 0 0; }
+  .nick-note { font-size: 0.85rem; color: ${DS_COLORS.ink}; margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   /* #3110: fundo ink, não teal — botão cheio em teal reprovava
