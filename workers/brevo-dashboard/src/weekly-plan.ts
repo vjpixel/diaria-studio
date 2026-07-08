@@ -29,6 +29,12 @@ import { fmtTimeBRT } from "./render-links.ts";
 // import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
 // acima (uso só dentro de corpo de função, em request-time).
 import { renderScheduledSection } from "./sections-kv.ts";
+// #3078: thresholds extraídos pra módulo compartilhado (sections-core.ts e
+// sections-kv.ts também consomem) — reexportados aqui pra não quebrar
+// consumidores existentes que importam de weekly-plan.ts/index.ts.
+import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./thresholds.ts";
+export { DEFAULT_HEALTH_THRESHOLDS };
+export type { HealthThresholds };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
@@ -105,33 +111,6 @@ export const DEFAULT_WEEK_STEP = 0.10;
 
 /** Corte no semáforo vermelho — "poda −30" (guardrail já em uso no ciclo cold). */
 export const RED_CUT_FRACTION = 0.3;
-
-export interface HealthThresholds {
-  /** Abertura: >= green é 🟢; >= yellow (e < green) é 🟡; abaixo de yellow é 🔴. Maior é melhor. */
-  openRate: { green: number; yellow: number };
-  /** Hard bounce / bounce total / spam / unsub: < green é 🟢; < yellow é 🟡; >= yellow é 🔴. Menor é melhor. */
-  hardBounceRate: { green: number; yellow: number };
-  bounceRate: { green: number; yellow: number };
-  spamRate: { green: number; yellow: number };
-  unsubRate: { green: number; yellow: number };
-}
-
-/**
- * Thresholds ancorados nos CIRCUIT BREAKERS do doc "Parceria Editorial
- * Clarice.ai × Diar.ia" (métricas de reavaliação definidas pelo editor).
- * 🔴 = o breaker do doc (nível de PAUSA — o doc tem UM nível só); 🟡 = zona de
- * alerta que adicionamos ("olhar com cuidado / segurar o crescimento" chegando
- * perto do breaker). Hard bounce e bounce total SEPARADOS: o doc tem dois
- * breakers (hard ≥2%, total hard+soft ≥5%) — juntar perderia o caso
- * hard-alto/total-baixo.
- */
-export const DEFAULT_HEALTH_THRESHOLDS: HealthThresholds = {
-  openRate: { green: 17, yellow: 15 }, // 🔴 <15% (breaker do doc)
-  hardBounceRate: { green: 1.5, yellow: 2 }, // 🔴 ≥2% (breaker)
-  bounceRate: { green: 4, yellow: 5 }, // 🔴 ≥5% total hard+soft (breaker)
-  spamRate: { green: 0.05, yellow: 0.1 }, // 🔴 ≥0,1% (breaker)
-  unsubRate: { green: 2, yellow: 3 }, // 🔴 ≥3% (breaker)
-};
 
 /**
  * 1. Filtra campanhas ENVIADAS há mais de `minAgeMs` (default 48h) — só estas

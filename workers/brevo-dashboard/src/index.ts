@@ -42,6 +42,9 @@ export * from "./sections-kv.ts";
 export * from "./brevo-api.ts";
 export * from "./sections-core.ts";
 export * from "./weekly-plan.ts";
+// #3078: DEFAULT_HEALTH_THRESHOLDS/HealthThresholds já chegam via weekly-plan.ts
+// (reexportados lá) — export nomeado aqui evita ambiguidade de `export *` duplicado.
+export { isBounceBreach } from "./thresholds.ts";
 
 import {
   fetchRecentCampaigns,

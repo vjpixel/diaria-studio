@@ -349,26 +349,28 @@ test("renderDashboardHtml: alerta visual quando métrica cruza circuit breaker t
     "Opens deve ter class 'metric alert' quando rate < 15%");
 
   // Bounces, Unsub, Spam ganham só class alert
+  // #3078: bounce alerta quando hard ≥2% OU total ≥5% (não mais um combinado de 3%).
+  // Aqui hard=3% e total=5% cruzam os dois breakers.
   assert.ok(/<td class="alert">5\.0%<br><small>50<\/small><\/td>/.test(html),
-    "Bounces deve ter class alert quando rate ≥ 3%");
+    "Bounces deve ter class alert quando hard ≥2% ou total ≥5%");
   assert.ok(/<td class="alert">4\.0%<br><small>40<\/small><\/td>/.test(html),
     "Unsub deve ter class alert quando rate ≥ 3%");
   assert.ok(/<td class="alert">0\.2%<br><small>2<\/small><\/td>/.test(html),
     "Spam deve ter class alert quando rate ≥ 0.1%");
 });
 
-test("renderDashboardHtml: alerta no boundary exato dos thresholds (≥3% e ≥0.1%)", () => {
-  // Cenário: cada métrica EXATAMENTE no threshold do circuit breaker.
-  // bounce 3.0%, unsub 3.0%, spam 0.1%, open 15.0%.
-  // Per regra: `≥3%` aciona, `<15%` aciona. Então:
-  // - bounce/unsub/spam EXATO no limite → alert ON
+test("renderDashboardHtml: alerta no boundary exato dos thresholds (bounce hard 2%/total 5%, unsub 3%, spam 0.1%)", () => {
+  // Cenário: cada métrica EXATAMENTE no threshold do circuit breaker (#3078:
+  // bounce usa os 2 breakers reais do doc — hard ≥2%, total ≥5% — não mais um
+  // ≥3% combinado inventado). unsub 3.0%, spam 0.1%, open 15.0%.
+  // - bounce hard/total, unsub, spam EXATO no limite → alert ON
   // - open EXATO em 15% → alert OFF (porque < 15, não ≤)
   const campaigns = [{
     ...baseCampaign,
     statistics: {
       globalStats: {
         sent: 1000, delivered: 1000,
-        hardBounces: 15, softBounces: 15,    // 30/1000 = 3.0% exato
+        hardBounces: 20, softBounces: 30,    // hard 20/1000=2.0% exato; total 50/1000=5.0% exato
         uniqueViews: 150, viewed: 150,       // 150/1000 = 15.0% exato
         trackableViews: 130,
         uniqueClicks: 5, clickers: 5,
@@ -382,8 +384,8 @@ test("renderDashboardHtml: alerta no boundary exato dos thresholds (≥3% e ≥0
   const html = renderDashboardHtml(campaigns);
 
   // Bounce, Unsub, Spam: EXATO no threshold → alerta ON (≥)
-  assert.ok(/<td class="alert">3\.0%<br><small>30<\/small><\/td>/.test(html),
-    "Bounce 3.0% (exato no threshold) deve acionar alerta");
+  assert.ok(/<td class="alert">5\.0%<br><small>50<\/small><\/td>/.test(html),
+    "Bounce hard 2.0%/total 5.0% (exato nos thresholds) deve acionar alerta");
   assert.ok(/<td class="alert">0\.1%<br><small>1<\/small><\/td>/.test(html),
     "Spam 0.1% (exato no threshold) deve acionar alerta");
 
@@ -391,6 +393,77 @@ test("renderDashboardHtml: alerta no boundary exato dos thresholds (≥3% e ≥0
   // Opens tem .metric sempre + .alert condicional. No boundary, só .metric.
   assert.ok(/<td class="metric">/.test(html),
     "Open 15.0% (exato no threshold) NÃO deve acionar alerta (regra é < 15, não ≤)");
+});
+
+test("#3078: bounce hard-alto/total-baixo (hard 2.5%, total 2.8%) alerta na tabela Envios", () => {
+  // Regressão: caso citado na issue #3078 — hard bounce isoladamente já
+  // estoura o breaker (≥2%) mesmo com o total (hard+soft) ainda longe do
+  // breaker de 5%. Threshold combinado antigo (≥3%) NÃO capturava isso.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 1000, delivered: 990,
+        hardBounces: 25, softBounces: 3,     // hard 2.5%, total 2.8%
+        uniqueViews: 200, viewed: 220,
+        trackableViews: 150,
+        uniqueClicks: 20, clickers: 20,
+        unsubscriptions: 2,
+        complaints: 0,
+        appleMppOpens: 15,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+  assert.ok(/<td class="alert">2\.8%<br><small>28<\/small><\/td>/.test(html),
+    "Bounces (hard 2.5%/total 2.8%) deve ter class alert — hard sozinho já estoura o breaker de 2%");
+});
+
+test("#3078: bounce total-alto/hard-baixo (hard 1%, total 5.5%) alerta na tabela Envios", () => {
+  // Caso espelhado: hard baixo, mas total estoura o breaker de 5%.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 1000, delivered: 990,
+        hardBounces: 10, softBounces: 45,    // hard 1.0%, total 5.5%
+        uniqueViews: 200, viewed: 220,
+        trackableViews: 150,
+        uniqueClicks: 20, clickers: 20,
+        unsubscriptions: 2,
+        complaints: 0,
+        appleMppOpens: 15,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+  assert.ok(/<td class="alert">5\.5%<br><small>55<\/small><\/td>/.test(html),
+    "Bounces (hard 1.0%/total 5.5%) deve ter class alert — total sozinho já estoura o breaker de 5%");
+});
+
+test("#3078: bounce ambos baixos (hard 1%, total 1.5%) NÃO alerta na tabela Envios", () => {
+  // Sem falso positivo: nem hard nem total cruzam seus breakers.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 1000, delivered: 990,
+        hardBounces: 10, softBounces: 5,     // hard 1.0%, total 1.5%
+        uniqueViews: 200, viewed: 220,
+        trackableViews: 150,
+        uniqueClicks: 20, clickers: 20,
+        unsubscriptions: 2,
+        complaints: 0,
+        appleMppOpens: 15,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+  assert.ok(!/<td class="alert">1\.5%<br><small>15<\/small><\/td>/.test(html),
+    "Bounces (hard 1.0%/total 1.5%, ambos abaixo do threshold) NÃO deve ter class alert");
 });
 
 test("renderDashboardHtml: SEM alerta quando métricas saudáveis (todas abaixo do threshold)", () => {

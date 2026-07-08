@@ -897,18 +897,60 @@ describe("#2442 renderMonthlyTotalsSection novo formato", () => {
     assert.match(html, /Enviado.*1º.*último/s, "header deve ter coluna Enviado com range");
   });
 
-  test("alerta de bounce (≥3%) renderiza class alert na célula mensal", () => {
-    // Criar campanha com bounceRate alto (≥3%)
+  test("alerta de bounce (hard ≥2% ou total ≥5%) renderiza class alert na célula mensal", () => {
+    // Criar campanha com hard bounce alto (≥2%) — #3078: breaker real do doc, não mais ≥3% combinado.
     const highBounce = makeCampaign(200, "High Bounce", "2026-06-20T09:00:00Z", {
       sent: 100, delivered: 90,
-      hardBounces: 4, softBounces: 0, // bounceRate = 4% ≥ 3 → alert
+      hardBounces: 4, softBounces: 0, // hard = 4% ≥ 2 → alert
       unsubscriptions: 0, complaints: 0,
       uniqueViews: 20, uniqueClicks: 2,
     });
     const rows = aggregateByMonth([highBounce]);
     const html = renderMonthlyTotalsSection(rows);
-    // bounceRate = 4% ≥ 3 → class alert na célula de bounces
-    assert.match(html, /class="alert"/, "célula de bounces deve ter class alert quando bounceRate≥3%");
+    // hardBounceRate = 4% ≥ 2% → class alert na célula de bounces
+    assert.match(html, /class="alert"/, "célula de bounces deve ter class alert quando hard≥2% ou total≥5%");
+  });
+
+  test("#3078: hard-alto/total-baixo (hard 2.5%, total 2.8%) alerta em 'Totais por mês'", () => {
+    // Caso citado na issue #3078: hard bounce sozinho já estoura o breaker
+    // (≥2%) mesmo com o total (hard+soft) ainda longe do breaker de 5%.
+    // O threshold combinado antigo (≥3%) não capturava isso.
+    const hardHigh = makeCampaign(201, "Hard High Total Low", "2026-06-21T09:00:00Z", {
+      sent: 1000, delivered: 990,
+      hardBounces: 25, softBounces: 3, // hard 2.5%, total 2.8%
+      unsubscriptions: 0, complaints: 0,
+      uniqueViews: 100, uniqueClicks: 10,
+    });
+    const rows = aggregateByMonth([hardHigh]);
+    const jun = rows[0];
+    assert.ok(Math.abs(jun.hardBounceRate - 2.5) < 0.01, `hardBounceRate esperado ~2.5% mas foi ${jun.hardBounceRate}`);
+    assert.ok(Math.abs(jun.bounceRate - 2.8) < 0.01, `bounceRate esperado ~2.8% mas foi ${jun.bounceRate}`);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /<td class="alert">2\.8%<br><small>28<\/small><\/td>/, "célula de bounces (hard 2.5%/total 2.8%) deve ter class alert — hard sozinho já estoura o breaker de 2%");
+  });
+
+  test("#3078: total-alto/hard-baixo (hard 1%, total 5.5%) alerta em 'Totais por mês'", () => {
+    const totalHigh = makeCampaign(202, "Total High Hard Low", "2026-06-22T09:00:00Z", {
+      sent: 1000, delivered: 990,
+      hardBounces: 10, softBounces: 45, // hard 1.0%, total 5.5%
+      unsubscriptions: 0, complaints: 0,
+      uniqueViews: 100, uniqueClicks: 10,
+    });
+    const rows = aggregateByMonth([totalHigh]);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /<td class="alert">5\.5%<br><small>55<\/small><\/td>/, "célula de bounces (hard 1.0%/total 5.5%) deve ter class alert — total sozinho já estoura o breaker de 5%");
+  });
+
+  test("#3078: ambos baixos (hard 1%, total 1.5%) NÃO alerta em 'Totais por mês'", () => {
+    const bothLow = makeCampaign(203, "Both Low", "2026-06-23T09:00:00Z", {
+      sent: 1000, delivered: 990,
+      hardBounces: 10, softBounces: 5, // hard 1.0%, total 1.5%
+      unsubscriptions: 0, complaints: 0,
+      uniqueViews: 100, uniqueClicks: 10,
+    });
+    const rows = aggregateByMonth([bothLow]);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.doesNotMatch(html, /<td class="alert">1\.5%<br><small>15<\/small><\/td>/, "célula de bounces (hard 1.0%/total 1.5%, ambos abaixo do threshold) NÃO deve ter class alert");
   });
 
   test("#3040: coluna Trackable standalone foi removida da tabela Envios (incorporada ao Opens)", () => {
