@@ -465,8 +465,22 @@ export function renderDashboardHtml(
   .footer code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   /* #2086: seções de fase 2 */
   .phase2-section { margin: 32px 0 8px 0; }
+  /* #3092: separação visual mais forte entre seções CONSECUTIVAS da mesma aba
+     (ex: aba Engajamento — S1 diário, Agregada/Fria/Quente, Mensal — 5 tabelas
+     seguidas sem nenhuma quebra visual além da margem padrão). Só entre
+     IRMÃS consecutivas (adjacent sibling) — a 1ª seção de cada aba, logo após
+     a tab-bar, não ganha a régua extra (não há "seção anterior" ali pra
+     separar). */
+  .phase2-section + .phase2-section { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--rule); }
   .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
+  /* #3092: rebaixa os h4 internos (Agregada/Fria/Quente dentro de "Resumo
+     A/B/C por Audiência") pra ficarem visualmente subordinados ao h2 da
+     seção — tratamento tipo <th> (uppercase, opacity, letter-spacing), sem
+     introduzir cor nova. Antes era só um style inline de margin, do mesmo
+     tamanho/peso do texto normal — nada sinalizava que eram 3 subdivisões
+     de UMA tabela-mãe, não 3 seções novas. */
+  .subsection-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); opacity: 0.75; margin: 20px 0 6px 0; }
   .volume-note { font-size: 0.95rem; margin-top: 10px; } /* número no font do DS; só a spark-bar é monospace */
   .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; white-space: nowrap; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
@@ -1419,7 +1433,7 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
   const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
   if (cells.every((c) => c.campaignCount === 0)) {
     return `
-  <h4 style="margin:16px 0 4px 0;">${escHtml(title)}</h4>
+  <h4 class="subsection-title">${escHtml(title)}</h4>
   <p class="section-note"><small>Sem dados desta audiência neste ciclo.</small></p>`;
   }
   const orderedRows = [...cells].sort((a, b) => {
@@ -1462,7 +1476,7 @@ function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string 
       : `Vencedor provisório por clique: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
 
   return `
-  <h4 style="margin:16px 0 4px 0;">${escHtml(title)}</h4>
+  <h4 class="subsection-title">${escHtml(title)}</h4>
   <p class="section-note">${conclusionNote}</p>
   <div class="table-wrap">
   <table>
