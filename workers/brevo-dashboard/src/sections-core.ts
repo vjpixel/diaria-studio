@@ -1700,13 +1700,6 @@ export function pickTopWeekdays(rows: WeekdaySummary[], n = 3): WeekdaySummary[]
 }
 
 /**
- * Renderiza a seção de open rate por dia da semana.
- * Melhor dia destacado com ▲ MELHOR DIA (mesmo padrão visual do LÍDER A/B/C).
- * Empate → mesmo tratamento do #2118/#2124 (nenhuma linha recebe tag).
- * Semana completa seg→dom; dias sem campanha são omitidos.
- * Exportado pra teste unitário.
- */
-/**
  * #3081: a agregação de open rate por dia da semana mistura audiência FRIA
  * (cold, nunca recebeu) e QUENTE (já engajada) — o comportamento entre elas
  * diverge o suficiente (abertura ~15% fria vs ~60% quente, ver
@@ -1719,6 +1712,13 @@ export function pickTopWeekdays(rows: WeekdaySummary[], n = 3): WeekdaySummary[]
 export const WEEKDAY_MIXED_AUDIENCE_NOTE =
   "Agrega audiência fria e quente juntas — a abertura diverge bastante entre elas (~15% fria vs ~60% quente); leia como sinal agregado, não segmentado por audiência.";
 
+/**
+ * Renderiza a seção de open rate por dia da semana.
+ * Melhor dia destacado com ▲ MELHOR DIA (mesmo padrão visual do LÍDER A/B/C).
+ * Empate → mesmo tratamento do #2118/#2124 (nenhuma linha recebe tag).
+ * Semana completa seg→dom; dias sem campanha são omitidos.
+ * Exportado pra teste unitário.
+ */
 export function renderWeekdaySection(
   rows: WeekdaySummary[],
   scopeLabel: string,
