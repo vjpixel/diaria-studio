@@ -281,15 +281,32 @@ export function extractPlanCredits(account: BrevoAccountResponse | null | undefi
  * KV quando o Brevo está disponível); `mode="kv-only"` continua nunca
  * buscando ao vivo.
  */
+/** Lê `PLAN_CREDITS_KV_KEY` — hoisted pra `fetchPlanCredits` nunca ler a MESMA
+ * chave duas vezes na mesma chamada (ex: mode="cached" com miss + fetch ao
+ * vivo também falho caía no fallback final, que re-lia o KV — miss garantido
+ * na 2ª leitura, já que nada escreveu nele entre as duas). */
+async function readPlanCreditsKv(kv: KVNamespace): Promise<number | null> {
+  const cached = (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as { credits?: number } | null;
+  return typeof cached?.credits === "number" ? cached.credits : null;
+}
+
 export async function fetchPlanCredits(
   env: Pick<Env, "BREVO_API_KEY" | "STATS_CACHE">,
   mode: CouponUsageMode = "cached",
 ): Promise<number | null> {
   const kv = env.STATS_CACHE;
+  // #3081 (review): lido no máximo 1x por chamada — sem isto, mode="cached"
+  // com KV miss + fetch ao vivo também falho caía no fallback final, que
+  // re-lia a MESMA chave (miss garantido, nada escreveu nela entre as duas
+  // leituras) — 2 KV reads exatamente no caminho degradado (Brevo fora do
+  // ar + cache frio), quando cada operação já custa mais.
+  let cached: number | null = null;
+  let checkedCache = false;
 
   if (mode === "cached" && kv) {
-    const cached = (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as { credits?: number } | null;
-    if (typeof cached?.credits === "number") return cached.credits;
+    cached = await readPlanCreditsKv(kv);
+    checkedCache = true;
+    if (cached !== null) return cached;
   }
 
   if (mode !== "kv-only") {
@@ -314,8 +331,7 @@ export async function fetchPlanCredits(
     }
   }
   if (!kv) return null;
-  const cached = (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as { credits?: number } | null;
-  return typeof cached?.credits === "number" ? cached.credits : null;
+  return checkedCache ? cached : readPlanCreditsKv(kv);
 }
 
 // #2733: chave KV com as campanhas Brevo cruas do último render saudável
@@ -1229,7 +1245,10 @@ export async function runCronRefresh(
     return { ok: false, error: "STATS_CACHE ausente — cron não tem onde gravar dash:lastgood:campaigns" };
   }
   try {
-    // Créditos do plano primeiro (1 chamada barata, janela de rate-limit fresca).
+    // Créditos do plano primeiro. #3081 (review): mode="cached" agora honra o
+    // KV de verdade — só bate no Brevo quando o TTL de 24h expira (créditos
+    // do plano raríssimo mudam fora de troca de plano), não a cada tick de
+    // 10min como antes (bug do "cached" se comportar igual "fresh").
     // fetchPlanCredits já grava seu próprio KV (PLAN_CREDITS_KV_KEY) internamente.
     await fetchPlanCredits(env, "cached").catch(() => null);
 

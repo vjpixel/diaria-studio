@@ -37,6 +37,17 @@ export type { CohortStatsRow };
 
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
+// #3081 (review): `CohortStatsRow` importado é intencionalmente lenient
+// (`received_this_cycle`/`brevo` opcionais) pro READER (worker) tolerar
+// payloads KV gravados por versões antigas deste script, antes desses campos
+// existirem. Este script é o WRITER — `computeCohortStats` abaixo SEMPRE
+// popula os 2 (nenhum caminho da query os omite). A duplicata local antiga
+// (pré-#3081) tinha esses 2 campos como obrigatórios, então um refactor que
+// removesse um deles por engano quebrava o typecheck; unificar com o tipo do
+// reader perderia essa guarda silenciosamente. `Required<...>` local restaura
+// a garantia sem afetar o tipo compartilhado (o reader continua lenient).
+type WrittenCohortStatsRow = Required<CohortStatsRow>;
+
 export interface StoreSummary {
   total: number;
   // #2923 (substitui a fonte do #2909): início do ciclo de envio CORRENTE —
@@ -98,7 +109,7 @@ export interface StoreSummary {
   // internos (mesmo filtro do bloco priority_points, #2809 — engajamento de
   // ofício não deve poluir a leitura de "cohort X abre mais que cohort Y").
   // Chave "null" = sem cohort atribuído.
-  cohort_stats: Record<string, CohortStatsRow>;
+  cohort_stats: Record<string, WrittenCohortStatsRow>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
@@ -316,7 +327,7 @@ export function computeStoreSummary(
 function computeCohortStats(
   db: DatabaseSync,
   cycleStart: string | null,
-): Record<string, CohortStatsRow> {
+): Record<string, WrittenCohortStatsRow> {
   const sql = `
     SELECT
       cohort AS k,
@@ -333,7 +344,7 @@ function computeCohortStats(
     WHERE ${NOT_INTERNAL_SQL}
     GROUP BY cohort
   `;
-  const out: Record<string, CohortStatsRow> = {};
+  const out: Record<string, WrittenCohortStatsRow> = {};
   const rows = db.prepare(sql).all(cycleStart, ...INTERNAL_PARAMS) as Array<{
     k: unknown;
     contacts: number;
