@@ -75,18 +75,36 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
 }
 
 /**
- * Bloco <style> STANDALONE de dark-canvas (#3104) — paridade com a regra
- * `@media (prefers-color-scheme: dark)` que buildMensalStyleBlock já emite
- * (#2645), mas isolado num <style> à parte em vez de embutido no bloco
- * principal. Motivo: a diária tem 2 caminhos de saída — o fragmento colado no
- * Beehiiv (`fullDocument: false`, usa só buildDiariaStyleBlock) e o documento
- * completo Worker-hosted (`fullDocument: true`, preview/test-email). A issue
- * #3104 pede a paridade só no caminho fullDocument: no fragmento não vale o
- * esforço (o Beehiiv às vezes remove o `<style>` do htmlSnippet, #260629 —
- * qualquer media query ali já é best-effort de qualquer jeito) e mexer no
- * bloco compartilhado arriscaria um side-effect ali por nada. Por isso esta
- * função fica separada de buildDiariaStyleBlock (que o fragmento também usa)
- * — só o caller do fullDocument invoca esta.
+ * Regra `@media (prefers-color-scheme: dark)` de dark-canvas (#2645/#3104) —
+ * extraída como fonte única porque o mesmo texto (mesma indentação, mesmos
+ * seletores) aparecia duplicado à mão em buildMensalStyleBlock e no novo
+ * buildDarkCanvasStyleBlock. Não inclui a tag `<style>` envolvente nem o
+ * comentário — cada caller decide se quer um comentário próprio antes da regra.
+ *
+ * Nota de indentação (mesma convenção de emailBaseRules): a primeira linha NÃO
+ * carrega espaço líder — o caller adiciona via `  ${darkCanvasMediaRule(...)}`.
+ *
+ * @param darkCanvasBg — cor do canvas em dark mode (INK do DS, #171411).
+ */
+export function darkCanvasMediaRule(darkCanvasBg: string): string {
+  return `@media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:${darkCanvasBg} !important; }
+  }`;
+}
+
+/**
+ * Bloco <style> STANDALONE de dark-canvas (#3104) — paridade com a regra que
+ * buildMensalStyleBlock já emite (#2645), mas isolado num <style> à parte em
+ * vez de embutido no bloco principal. Motivo: a diária tem 2 caminhos de
+ * saída — o fragmento colado no Beehiiv (`fullDocument: false`, usa só
+ * buildDiariaStyleBlock) e o documento completo Worker-hosted
+ * (`fullDocument: true`, preview/test-email). A issue #3104 pede a paridade
+ * só no caminho fullDocument: no fragmento não vale o esforço (o Beehiiv às
+ * vezes remove o `<style>` do htmlSnippet, #260629 — qualquer media query
+ * ali já é best-effort de qualquer jeito) e mexer no bloco compartilhado
+ * arriscaria um side-effect ali por nada. Por isso esta função fica separada
+ * de buildDiariaStyleBlock (que o fragmento também usa) — só o caller do
+ * fullDocument invoca esta.
  *
  * ESCOPO: a regra escurece só o CANVAS externo ao container de 600px (classe
  * `.ds-canvas`, aplicada pelo caller no wrapper mais externo do fullDocument)
@@ -99,9 +117,7 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
  */
 export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
   return `<style>
-  @media (prefers-color-scheme: dark) {
-    body, .ds-canvas { background:${darkCanvasBg} !important; }
-  }
+  ${darkCanvasMediaRule(darkCanvasBg)}
 </style>`;
 }
 
@@ -145,8 +161,6 @@ export function buildMensalStyleBlock(_reservedPageBg: string, darkCanvasBg: str
     .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
   }
   /* #2645: dark theme — escurece o canvas externo ao card; conteúdo interno preservado. */
-  @media (prefers-color-scheme: dark) {
-    body, .ds-canvas { background:${darkCanvasBg} !important; }
-  }
+  ${darkCanvasMediaRule(darkCanvasBg)}
 </style>`;
 }
