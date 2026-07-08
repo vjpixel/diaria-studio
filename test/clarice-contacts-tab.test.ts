@@ -327,6 +327,21 @@ test("renderContactsSummarySection: nota deixa claro que 'Score' = priority_poin
   assert.match(html, /legado/, "nota avisa sobre o 'score' legado desacreditado");
 });
 
+test("renderContactsSummarySection: legenda visível abaixo da tabela Score explica a fórmula (#3074)", () => {
+  // Antes só existia no title= (tooltip hover) do header — invisível por
+  // padrão, inacessível em touch/mobile. A legenda precisa estar num
+  // <p class="section-note"> visível (mesmo padrão das demais seções).
+  const html = renderContactsSummarySection(sample);
+  assert.match(
+    html,
+    /<p class="section-note">Score = <code>priority_points<\/code>/,
+    "legenda de Score existe como section-note visível",
+  );
+  assert.match(html, /\+40<\/strong> optin/, "explica o bônus de optin");
+  assert.match(html, /\+20<\/strong> por e-mail aberto/, "explica o bônus de abertura");
+  assert.match(html, /−10<\/strong> por e-mail recebido e não aberto/, "explica o desconto de não-abertura");
+});
+
 test("renderContactsSummarySection: identificador interno priority_points intocado — o render lê s.priority_points (faixas) (#2906)", () => {
   // Prova estrutural: um summary com o campo `priority_points` (chave interna
   // preservada) renderiza as faixas — se a chave tivesse sido renomeada, o
