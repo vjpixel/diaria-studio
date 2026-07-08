@@ -56,6 +56,8 @@ import {
   BrevoRateLimitError,
   LASTGOOD_CAMPAIGNS_KEY,
   fetchPlanCredits,
+  runCronRefresh,
+  type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL } from "./types.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
@@ -212,27 +214,67 @@ export default {
       // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
       let planCredits: number | null = null;
       try {
-        // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a /v3/account
-        // com a janela de rate-limit fresca, antes do fetch pesado de campanhas
-        // (~100 GETs). Fail-soft: cai pro KV/null se falhar, nunca lança.
-        planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
-        // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
-        // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
-        // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
-        // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
-        // já retenta a listagem em 429 internamente (#2268).
-        let scheduledOk = true;
-        const scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
-          scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
-          console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
-          return [];
-        });
-        const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+        type CampaignRow = Awaited<ReturnType<typeof fetchRecentCampaigns>>[number];
+        let campaigns: CampaignRow[];
+        let scheduled: CampaignRow[];
+        let dataGeneratedAt: string;
+
+        // #3079: default (sem ?fresh=1) lê o payload PRÉ-COMPUTADO pelo Cron
+        // Trigger (scheduled() abaixo, roda a cada ~10min) em `dash:lastgood:campaigns`
+        // — zero chamadas Brevo em request-time. `?fresh=1` bypassa e mantém o
+        // fetch ao vivo de sempre (debug/urgência, decisão do editor #3079).
+        const lastGood = (!isFresh && env.STATS_CACHE)
+          ? await env.STATS_CACHE.get(LASTGOOD_CAMPAIGNS_KEY, "json").catch(() => null) as LastGoodCampaignsPayload | null
+          : null;
+
+        if (lastGood && Array.isArray(lastGood.campaigns)) {
+          // Caminho pré-computado (default, #3079): nenhuma chamada à Brevo aqui.
+          campaigns = lastGood.campaigns;
+          scheduled = Array.isArray(lastGood.scheduled) ? lastGood.scheduled : [];
+          dataGeneratedAt = typeof lastGood.generatedAt === "string" ? lastGood.generatedAt : new Date().toISOString();
+          // #2910: créditos também vêm só do KV neste caminho (kv-only) — nunca
+          // fetch ao vivo fora de ?fresh=1/cold-start (o cron já os populou).
+          planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+        } else {
+          // #3079: fetch ao vivo — usado em `?fresh=1` (debug intencional) OU no
+          // cold-start antes do 1º tick do cron (KV ainda vazio pós-deploy). Sem
+          // este fallback o dashboard ficaria quebrado/vazio até o cron rodar.
+          if (!isFresh) {
+            console.warn("[#3079] dash:lastgood:campaigns vazio — fallback pra fetch ao vivo (provável cold-start antes do 1º tick do cron)");
+          }
+          // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a /v3/account
+          // com a janela de rate-limit fresca, antes do fetch pesado de campanhas
+          // (~100 GETs). Fail-soft: cai pro KV/null se falhar, nunca lança.
+          planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+          // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
+          // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
+          // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
+          // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
+          // já retenta a listagem em 429 internamente (#2268).
+          let scheduledOk = true;
+          scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+            scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
+            console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
+            return [];
+          });
+          campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+          dataGeneratedAt = new Date().toISOString();
+          // #3079: só persiste em dash:lastgood:campaigns fora de ?fresh=1 (mesmo
+          // guard de sempre) — seeda o KV no cold-start, pra requests seguintes
+          // já lerem do KV até o cron rodar; ?fresh=1 nunca escreve (preserva o
+          // comportamento pré-#3079).
+          if (scheduledOk && env.STATS_CACHE && !isFresh) {
+            const payload: LastGoodCampaignsPayload = { campaigns, scheduled, generatedAt: dataGeneratedAt };
+            await env.STATS_CACHE
+              .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
+              .catch(() => { /* erro de KV nunca bloqueia o render */ });
+          }
+        }
+
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
         // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
         const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-        // planCredits já foi buscado no topo do try (antes das campanhas).
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits);
+        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
@@ -242,18 +284,6 @@ export default {
         });
         if (!isFresh) {
           await cache.put(request, response.clone());
-          // #2733: cacheia as campanhas Brevo cruas do render saudável. No 429 do
-          // Brevo, o fallback re-renderiza com estas campanhas stale + abas de KV
-          // frescas — em vez de servir o HTML inteiro congelado (que esconderia
-          // dado KV recém-publicado, ex: aba de Cupons pós-deploy). Só em render
-          // NÃO-fresh: ?fresh=1 pode trazer stats parciais (429 interno por campanha)
-          // e não deve poluir o fallback; e mantém o caminho ?fresh=1 sem write extra.
-          // Depois do cache de edge — nunca bloqueia a resposta.
-          if (scheduledOk && env.STATS_CACHE) {
-            await env.STATS_CACHE
-              .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify({ campaigns, scheduled }), { expirationTtl: LASTGOOD_TTL })
-              .catch(() => { /* erro de KV nunca bloqueia o render */ });
-          }
         }
         return response;
       } catch (e) {
@@ -272,5 +302,25 @@ export default {
     }
 
     return new Response("Not found", { status: 404 });
+  },
+
+  /**
+   * #3079: Cron Trigger (a cada 10min — `crons` em wrangler.toml) — pré-computa o fetch
+   * pesado de campanhas Brevo fora do request-time e grava em
+   * `dash:lastgood:campaigns`, que a rota `/` lê por padrão (ver acima).
+   * `ctx.waitUntil` garante que o Worker não seja reciclado antes do fetch (que
+   * pode levar vários segundos com ~100 GETs) terminar. Nunca lança — erros são
+   * logados por `runCronRefresh` e o KV mantém o último valor bom.
+   */
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      runCronRefresh(env).then((result) => {
+        if (result.ok) {
+          console.log(`[#3079 cron] dash:lastgood:campaigns atualizado — ${result.campaignCount} campanhas, ${result.scheduledCount} agendadas`);
+        } else {
+          console.error(`[#3079 cron] refresh falhou — KV mantém o último valor bom: ${result.error}`);
+        }
+      }),
+    );
   },
 };
