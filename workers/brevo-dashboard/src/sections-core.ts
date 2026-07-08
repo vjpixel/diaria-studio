@@ -1713,6 +1713,16 @@ export const WEEKDAY_MIXED_AUDIENCE_NOTE =
   "Agrega audiência fria e quente juntas — a abertura diverge bastante entre elas (~15% fria vs ~60% quente); leia como sinal agregado, não segmentado por audiência.";
 
 /**
+ * #3081 (self-review): fábrica do `<p>` da nota acima — usada em 4 lugares
+ * (`renderWeekdaySection` ×2, `renderTopWeekdaysSection`, `renderMonthlyTotalsSection`)
+ * que antes repetiam a mesma marcação `<p class="section-note"><small>...</small></p>`
+ * copiada à mão. Centraliza o wrapper — mudar o markup agora é 1 edição, não N.
+ */
+export function renderMixedAudienceNote(): string {
+  return `<p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>`;
+}
+
+/**
  * Renderiza a seção de open rate por dia da semana.
  * Melhor dia destacado com ▲ MELHOR DIA (mesmo padrão visual do LÍDER A/B/C).
  * Empate → mesmo tratamento do #2118/#2124 (nenhuma linha recebe tag).
@@ -1730,7 +1740,7 @@ export function renderWeekdaySection(
     return `
 <section class="phase2-section" id="weekday-openrate">
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
-  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
+  ${renderMixedAudienceNote()}
   <p class="section-note">Envios ainda não computados (open rate &lt; ${WEEKDAY_MIN_AGE_HOURS}h, estabilizando): ${excList}.</p>
 </section>`;
   }
@@ -1791,7 +1801,7 @@ export function renderWeekdaySection(
   return `
 <section class="phase2-section" id="weekday-openrate">
   <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
-  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
+  ${renderMixedAudienceNote()}
   <p class="section-note">${statusNote}</p>${excludedNote}
   <div class="table-wrap">
   <table>

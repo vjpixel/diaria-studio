@@ -366,11 +366,11 @@ export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }>
 ];
 
 /**
- * #3081: `campaignCount` (opcional) é o tamanho da JANELA de campanhas que
- * alimentou `rows` (via `aggregateLinksAcrossCampaigns`) — normalmente
- * `campaigns.length` no call site (`renderDashboardHtml`), até
+ * #3081: `campaignCount` (opcional) é o tamanho da JANELA de campanhas
+ * BUSCADAS que alimentou `rows` (via `aggregateLinksAcrossCampaigns`) —
+ * normalmente `campaigns.length` no call site (`renderDashboardHtml`), até
  * `CAMPAIGNS_FETCH_LIMIT`. Quando presente, o título passa a refletir a
- * REALIDADE da agregação ("janela de N campanhas") em vez de implicar
+ * JANELA agregada ("janela de N campanhas") em vez de implicar
  * (incorretamente) que os dados são de UMA edição só — o bug relatado:
  * `deriveLinksSectionTitle` rotulava "Links mais clicados da edição X" com o
  * ciclo mais recente, mas a soma por trás cobre as ~150 campanhas da janela
@@ -378,14 +378,25 @@ export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }>
  * SECUNDÁRIO de recência, não mais a alegação principal do título. Sem
  * `campaignCount` (omitido — retrocompat com callers/testes existentes),
  * preserva o título antigo.
+ *
+ * Nota de precisão (achado no self-review): `campaignCount` é o tamanho da
+ * janela BUSCADA, não uma contagem exata de quantas campanhas de fato
+ * contribuíram um clique pra `rows` — algumas podem não ter `linksStats`
+ * disponível (429/cache pendente da Brevo) e são puladas silenciosamente por
+ * `aggregateLinksAcrossCampaigns`. O título é uma aproximação da janela, não
+ * uma alegação de precisão perfeita.
  */
 export function renderAggregatedLinksSection(
   rows: AggregatedLinkRow[],
   edicaoLabel?: string | null,
   campaignCount?: number | null,
 ): string {
+  // #3081 (review): pluralização — "1 campanha" no singular, evita "janela de
+  // 1 campanhas" (gramaticalmente errado), mesmo padrão de
+  // `renderUnclassifiedCampaignsNote` (sections-core.ts).
+  const campaignWord = campaignCount === 1 ? "campanha" : "campanhas";
   const sectionTitle = campaignCount != null
-    ? `Links mais clicados (janela de ${campaignCount} campanhas)${edicaoLabel ? ` — mais recente: edição ${edicaoLabel}` : ""}`
+    ? `Links mais clicados (janela de ${campaignCount} ${campaignWord})${edicaoLabel ? ` — mais recente: edição ${edicaoLabel}` : ""}`
     : edicaoLabel
     ? `Links mais clicados da edição ${edicaoLabel}`
     : "Links mais clicados do período";

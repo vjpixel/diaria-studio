@@ -8,7 +8,7 @@ import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 // clarice-segment.ts) — importar direto daqui não introduz node:sqlite.
 import { cohortSendRank } from "../../../scripts/lib/cohorts.ts";
 import { DS, pct, fmtTimeBRT, cellClass, renderColumnGlossary } from "./render-links.ts";
-import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP } from "./sections-core.ts";
+import { escHtml, parseClariceCampaignKey, pickStats, monthKeyBRT, ENVIOS_TOOLTIP, renderMixedAudienceNote } from "./sections-core.ts";
 import { isBounceBreach } from "./thresholds.ts";
 // #3011: gate das notas "atualizado às ..." — só aparecem quando o dado
 // pré-computado (KV) diverge do timestamp do cabeçalho da dashboard.
@@ -540,6 +540,7 @@ export function renderMonthlyTotalsSection(
   return `
 <section class="phase2-section" id="monthly-totals">
   <h2 class="section-title">Totais por mês</h2>
+  ${renderMixedAudienceNote()}
   <p class="section-note">1 linha por mês — agrega todos os envios realizados naquele mês. Valores são <strong>eventos por envio</strong> (um contato que recebeu 3 campanhas conta 3×). Opens usa <code>uniqueViews</code> (MPP-inclusivo, igual à UI da Brevo) — não comparar diretamente com as Coortes de engajamento (que contam <strong>pessoas únicas</strong> com aberturas reais/trackable, EXCLUI MPP). Veja a lista detalhada na seção Envios abaixo.</p>
   <div class="table-wrap">
   <table>

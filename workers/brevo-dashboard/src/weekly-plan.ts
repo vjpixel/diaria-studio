@@ -23,7 +23,7 @@
  * top-level do módulo.
  */
 import type { BrevoCampaign } from "./types.ts";
-import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS, WEEKDAY_MIXED_AUDIENCE_NOTE } from "./sections-core.ts";
+import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS, renderMixedAudienceNote } from "./sections-core.ts";
 import { fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
 // #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
 // import circular com sections-kv.ts é seguro pelo mesmo motivo documentado
@@ -266,8 +266,13 @@ export function computeWeekPlan(
 
 const SEMAPHORE_EMOJI: Record<Semaphore, string> = { green: "🟢", yellow: "🟡", red: "🔴" };
 
-function fmtPct(n: number): string {
-  return `${n.toFixed(2)}%`;
+// #3081 (self-review): `decimals` opcional (default 2, preserva o comportamento
+// das outras 4 métricas) — Spam passa a pedir 3 casas explicitamente abaixo,
+// mesma precisão de fmtSpamPct (sections-core.ts/sections-kv.ts) e do Resumo
+// A/B/C por Audiência. Sem isso, esta era a 4ª tabela do dashboard mostrando
+// spam rate com uma precisão diferente das outras três já unificadas.
+function fmtPct(n: number, decimals = 2): string {
+  return `${n.toFixed(decimals)}%`;
 }
 
 /**
@@ -380,7 +385,7 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
     .join("\n");
   return `
   <h3>Melhores dias da semana (abertura) — sugestão mensal</h3>
-  <p class="section-note"><small>${WEEKDAY_MIXED_AUDIENCE_NOTE}</small></p>
+  ${renderMixedAudienceNote()}
   <p class="section-note">Melhores dias: <strong style="color:var(--ink)">${escHtml(topLabels)}</strong>. Sugestão apenas — a recomendação de volume acima não muda sozinha; o editor revisa ~1×/mês e migra a cadência de propósito só se a diferença for material e sustentada (não no ruído semana a semana).</p>
   <div class="table-wrap">
   <table>
@@ -527,7 +532,10 @@ ${scheduledSection}`;
     { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const },
     { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const },
     { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const },
-    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const },
+    // #3081: 3 casas (não 2) — mesma precisão de fmtSpamPct/Envios/"Totais por
+    // mês"/Resumo A/B/C por Audiência (o breaker dispara em ≥0.1%, 2 casas
+    // ainda arredondam 0.049%→"0.05%" perto do limiar).
+    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3 },
     { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const },
   ];
   const metricRows = metricDefs
@@ -535,7 +543,7 @@ ${scheduledSection}`;
       const s = classifyMetric(m.value, m.t, m.dir);
       const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
       const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
-      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value)}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
+      return `<tr><td>${m.label}</td><td style="color:${STATUS_COLOR[s]};font-weight:600">${fmtPct(m.value, "decimals" in m ? m.decimals : undefined)}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
     })
     .join("\n");
 

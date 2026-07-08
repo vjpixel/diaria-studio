@@ -972,6 +972,15 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.match(html, /id="monthly-totals"/, "deve ter âncora monthly-totals");
   });
 
+  // #3081 (achado no self-review — Altitude): "Totais por mês" agrega
+  // audiência fria+quente sem diferenciar, mesmo caso das tabelas de weekday
+  // que já ganharam a nota — estava faltando aqui.
+  test("#3081: inclui nota sobre mistura de audiência fria/quente", () => {
+    const rows = aggregateByMonth(allCampaigns);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /Agrega audiência fria e quente/);
+  });
+
   test("contém 1 linha por mês (2 linhas para allCampaigns)", () => {
     const rows = aggregateByMonth(allCampaigns);
     const html = renderMonthlyTotalsSection(rows);
@@ -2502,6 +2511,14 @@ describe("deriveLinksSectionTitle (#2421)", () => {
   test("#3081: sem campaignCount (omitido) preserva o título antigo (retrocompat)", () => {
     const html = renderAggregatedLinksSection([], "2605-06");
     assert.match(html, /Links mais clicados da edição 2605-06/);
+  });
+
+  // #3081 (achado no self-review): campaignCount=1 deve usar singular
+  // ("campanha"), não "1 campanhas" (gramaticalmente errado).
+  test("#3081: campaignCount=1 usa singular 'campanha', não 'campanhas'", () => {
+    const html = renderAggregatedLinksSection([], null, 1);
+    assert.match(html, /Links mais clicados \(janela de 1 campanha\)/);
+    assert.doesNotMatch(html, /1 campanhas/);
   });
 });
 
