@@ -500,7 +500,19 @@ async function updateStatsCounter(
     // O DO só usa este valor quando seu próprio storage está `undefined` — nunca
     // sobrescreve um estado real já gravado nele (mesmo que zerado).
     const kvBaselineRaw = await env.POLL.get(statsKey);
-    const kvBaseline = kvBaselineRaw ? JSON.parse(kvBaselineRaw) as StatsCounterData : null;
+    // Self-review #3115: JSON.parse envolto em try/catch — um `stats:{edition}`
+    // corrompido no KV não deve derrubar o voto inteiro (throw não-capturado
+    // aqui propagaria por updateStatsCounter, que não tem try/catch no call
+    // site em handleVote). Malformado → trata como "sem baseline" (null),
+    // igual ao caminho normal de DO-nunca-inicializado sem histórico.
+    let kvBaseline: StatsCounterData | null = null;
+    if (kvBaselineRaw) {
+      try {
+        kvBaseline = JSON.parse(kvBaselineRaw) as StatsCounterData;
+      } catch (e) {
+        console.error(JSON.stringify({ event: "stats_kv_baseline_parse_error", edition, error: String(e) }));
+      }
+    }
     const doResp = await doStub.fetch("https://internal/increment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -850,7 +862,18 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
     env.POLL.get(`stats:${edition}`),
   ]);
 
-  const kvStatsResult: StatsCounterData | null = kvStatsRaw ? JSON.parse(kvStatsRaw) : null;
+  // Self-review #3115: JSON.parse envolto em try/catch — antes só rodava no
+  // branch de fallback (DO indisponível); agora roda em TODO /stats quando o
+  // espelho KV existe. Um KV corrompido não deve derrubar o endpoint inteiro —
+  // trata como "sem KV" (null), caindo no comportamento do doStats puro.
+  let kvStatsResult: StatsCounterData | null = null;
+  if (kvStatsRaw) {
+    try {
+      kvStatsResult = JSON.parse(kvStatsRaw) as StatsCounterData;
+    } catch (e) {
+      console.error(JSON.stringify({ event: "stats_kv_read_parse_error", edition, error: String(e) }));
+    }
+  }
 
   // #3115: DO nunca-inicializado responde `{total:0,...}` (ver stats-counter.ts) —
   // indistinguível de uma edição real com zero votos. mergeStatsWithKvFallback
