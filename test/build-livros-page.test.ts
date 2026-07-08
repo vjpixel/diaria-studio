@@ -197,6 +197,40 @@ describe("renderLivrosPage (#1744)", () => {
   });
 });
 
+describe("SEO/compartilhamento — meta tags (#3106)", () => {
+  const html = renderLivrosPage([book()]);
+
+  it("tem meta description não-vazia", () => {
+    const m = html.match(/<meta name="description" content="([^"]+)">/);
+    assert.ok(m, "deve ter <meta name=\"description\">");
+    assert.ok(m![1].length > 20, "description não pode ser curta demais/vazia");
+  });
+
+  it("og:title, og:description e og:url presentes", () => {
+    assert.match(html, /<meta property="og:title" content="Livros sobre IA · Diar\.ia">/);
+    assert.match(html, /<meta property="og:description" content="[^"]+">/);
+    assert.match(html, /<meta property="og:url" content="https:\/\/livros\.diaria\.workers\.dev\/">/);
+    assert.match(html, /<meta property="og:type" content="website">/);
+  });
+
+  it("canonical aponta pro domínio certo (livros.diaria.workers.dev)", () => {
+    assert.match(html, /<link rel="canonical" href="https:\/\/livros\.diaria\.workers\.dev\/">/);
+  });
+
+  it("twitter card presente (summary, sem imagem grande)", () => {
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+  });
+
+  it("favicon presente (SVG data-URI inline — sem asset externo)", () => {
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
+  });
+
+  it("og:image/twitter:image OMITIDOS de propósito (data-URI não é buscável por crawlers de unfurling)", () => {
+    assert.doesNotMatch(html, /property="og:image"/);
+    assert.doesNotMatch(html, /name="twitter:image"/);
+  });
+});
+
 describe("seed real seed/books/livros-ia.json (#1744)", () => {
   const books = loadBooks(SEED);
 

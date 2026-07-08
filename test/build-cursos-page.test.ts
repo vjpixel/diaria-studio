@@ -211,6 +211,49 @@ describe("renderCursosPage (#1745)", () => {
   });
 });
 
+describe("SEO/compartilhamento — meta tags (#3106)", () => {
+  const html = renderCursosPage([course()]);
+
+  it("tem meta description não-vazia", () => {
+    const m = html.match(/<meta name="description" content="([^"]+)">/);
+    assert.ok(m, "deve ter <meta name=\"description\">");
+    assert.ok(m![1].length > 20, "description não pode ser curta demais/vazia");
+  });
+
+  it("og:title, og:description e og:url presentes", () => {
+    assert.match(html, /<meta property="og:title" content="Cursos sobre IA · Diar\.ia">/);
+    assert.match(html, /<meta property="og:description" content="[^"]+">/);
+    assert.match(html, /<meta property="og:url" content="https:\/\/cursos\.diaria\.workers\.dev\/">/);
+    assert.match(html, /<meta property="og:type" content="website">/);
+  });
+
+  it("canonical aponta pro domínio certo (cursos.diaria.workers.dev)", () => {
+    assert.match(html, /<link rel="canonical" href="https:\/\/cursos\.diaria\.workers\.dev\/">/);
+  });
+
+  it("twitter card presente (summary, sem imagem grande)", () => {
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+    assert.match(html, /<meta name="twitter:title" content="[^"]+">/);
+    assert.match(html, /<meta name="twitter:description" content="[^"]+">/);
+  });
+
+  it("favicon presente (SVG data-URI inline — sem asset externo)", () => {
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
+  });
+
+  it("og:image/twitter:image OMITIDOS de propósito (data-URI não é buscável por crawlers de unfurling)", () => {
+    assert.doesNotMatch(html, /property="og:image"/);
+    assert.doesNotMatch(html, /name="twitter:image"/);
+  });
+
+  it("bloco de SEO vem depois do <title> e antes do <style> (head bem-formado)", () => {
+    const titleIdx = html.indexOf("<title>");
+    const descIdx = html.indexOf('<meta name="description"');
+    const styleIdx = html.indexOf("<style>");
+    assert.ok(titleIdx >= 0 && descIdx > titleIdx && styleIdx > descIdx);
+  });
+});
+
 describe("seed cursos — títulos sem sufixo de idioma/código (#1994 followup)", () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const seed = JSON.parse(readFileSync(resolve(ROOT, "seed/courses/cursos-ia.json"), "utf8")) as {

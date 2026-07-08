@@ -22,10 +22,16 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
+import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
+// #3106: URL pública canônica — Worker de assets estáticos em livros.diaria.workers.dev.
+const PAGE_URL = "https://livros.diaria.workers.dev/";
+const PAGE_TITLE = "Livros sobre IA · Diar.ia";
+const PAGE_DESCRIPTION =
+  "Livros sobre inteligência artificial recomendados pela Diar.ia — filtre por idioma, nível e tema, com links diretos para a Amazon.";
 
 // #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
@@ -186,7 +192,8 @@ export function renderLivrosPage(books: Book[]): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Livros sobre IA · Diar.ia</title>
+<title>${PAGE_TITLE}</title>
+${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
 <style>
   :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; --rule: ${RULE}; }
   * { box-sizing: border-box; }

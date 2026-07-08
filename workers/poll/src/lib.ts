@@ -345,3 +345,60 @@ export function validateNickname(cleanName: string): string | null {
   }
   return null;
 }
+
+// ── SEO/compartilhamento meta tags (#3106) ──────────────────────────────────
+//
+// As páginas /leaderboard* (leaderboard mensal/anual + arquivo retroativo)
+// não tinham meta description, Open Graph, Twitter card, canonical ou favicon
+// — só charset+viewport+title. São páginas 100% distribuídas por link
+// compartilhado (newsletter, social); sem essas tags o preview no
+// WhatsApp/LinkedIn/Slack sai cru (só a URL crua).
+//
+// Duplicado (não cross-importado de scripts/lib/shared/seo-meta.ts) de
+// propósito — este worker roda em bundle Cloudflare separado e já espelha
+// valores de design token inline (ver nota em design-tokens.ts sobre "bundle
+// Cloudflare separado") em vez de puxar de scripts/lib/shared.
+//
+// Sem og:image/twitter:image por decisão de escopo (#3106, ver PR): nenhum
+// asset de marca estático versionado existe no repo, e um `data:` URI não é
+// buscável via HTTP pelos crawlers de unfurling (WhatsApp/LinkedIn/Facebook
+// exigem GET numa URL http/https real) — declarar um og:image que nenhum
+// unfurler consegue buscar é pior que omiti-lo. `twitter:card=summary` (sem
+// imagem grande) mantém title+description no preview.
+
+const POLL_BASE_URL = "https://poll.diaria.workers.dev";
+
+/** Favicon SVG inline (data-URI) — "D" em tinta (#FBFAF6) sobre teal
+ * (#00A0A0), mesma marca usada em cursos/livros. Mantido estável entre
+ * redeploys — trocar o favicon faz o browser tratar como página diferente. */
+export const FAVICON_DATA_URI =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='32' y='46' font-family='Georgia, Times, serif' font-size='38' font-weight='700' fill='%23FBFAF6' text-anchor='middle'%3ED%3C/text%3E%3C/svg%3E";
+
+export interface SeoMetaOptions {
+  /** Título — reusado em og:title/twitter:title (igual ao conteúdo de <title>, sem o sufixo "| {marca}"). */
+  title: string;
+  /** Descrição curta — <meta name="description">, og:description, twitter:description. */
+  description: string;
+  /** Path relativo (começando com "/"), combinado com POLL_BASE_URL para canonical/og:url. */
+  path: string;
+}
+
+/** Monta o bloco de tags <head> de SEO/compartilhamento. Pure. */
+export function renderSeoMeta(opts: SeoMetaOptions): string {
+  const url = `${POLL_BASE_URL}${opts.path}`;
+  const t = htmlEscape(opts.title);
+  const d = htmlEscape(opts.description);
+  const u = htmlEscape(url);
+  return `<meta name="description" content="${d}">
+<link rel="canonical" href="${u}">
+<link rel="icon" href="${FAVICON_DATA_URI}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Diar.ia">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="${t}">
+<meta property="og:description" content="${d}">
+<meta property="og:url" content="${u}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${t}">
+<meta name="twitter:description" content="${d}">`;
+}
