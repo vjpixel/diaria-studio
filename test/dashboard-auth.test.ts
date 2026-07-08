@@ -84,34 +84,51 @@ after(() => {
 // ---------------------------------------------------------------------------
 
 describe("isAuthenticated", () => {
-  it("no AUTH_TOKEN → sempre false (fail-closed, #2748)", () => {
+  // #3081: isAuthenticated virou async (comparação timing-safe via
+  // crypto.subtle.digest) — todo teste precisa await agora.
+  it("no AUTH_TOKEN → sempre false (fail-closed, #2748)", async () => {
     const env = makeEnv();
     const req = new Request("http://localhost/");
-    assert.ok(!isAuthenticated(req, env), "deve retornar false quando AUTH_TOKEN não configurado — nunca libera tudo");
+    assert.ok(!(await isAuthenticated(req, env)), "deve retornar false quando AUTH_TOKEN não configurado — nunca libera tudo");
   });
 
-  it("no AUTH_TOKEN, MESMO com um cookie qualquer → false (não há valor que passe)", () => {
+  it("no AUTH_TOKEN, MESMO com um cookie qualquer → false (não há valor que passe)", async () => {
     const env = makeEnv();
     const req = new Request("http://localhost/", { headers: { Cookie: "cf-dash-auth=anything" } });
-    assert.ok(!isAuthenticated(req, env), "sem AUTH_TOKEN configurado, nenhum cookie autentica");
+    assert.ok(!(await isAuthenticated(req, env)), "sem AUTH_TOKEN configurado, nenhum cookie autentica");
   });
 
-  it("AUTH_TOKEN set, no cookie → false", () => {
+  it("AUTH_TOKEN set, no cookie → false", async () => {
     const env = makeEnv({ auth: TOKEN });
     const req = new Request("http://localhost/");
-    assert.ok(!isAuthenticated(req, env), "deve retornar false sem cookie");
+    assert.ok(!(await isAuthenticated(req, env)), "deve retornar false sem cookie");
   });
 
-  it("AUTH_TOKEN set, wrong cookie → false", () => {
+  it("AUTH_TOKEN set, wrong cookie → false", async () => {
     const env = makeEnv({ auth: TOKEN });
     const req = new Request("http://localhost/", { headers: { Cookie: WRONG_COOKIE } });
-    assert.ok(!isAuthenticated(req, env), "deve retornar false com cookie errado");
+    assert.ok(!(await isAuthenticated(req, env)), "deve retornar false com cookie errado");
   });
 
-  it("AUTH_TOKEN set, correct cookie → true", () => {
+  it("AUTH_TOKEN set, correct cookie → true", async () => {
     const env = makeEnv({ auth: TOKEN });
     const req = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
-    assert.ok(isAuthenticated(req, env), "deve retornar true com cookie correto");
+    assert.ok(await isAuthenticated(req, env), "deve retornar true com cookie correto");
+  });
+
+  // #3081: regressão — comparação timing-safe não pode quebrar cookies com
+  // tamanho DIFERENTE do token real (bug plausível numa implementação ingênua
+  // via hash: comparar digests de tamanhos diferentes sem normalizar).
+  it("cookie muito mais curto que o token → false (não lança, não autentica)", async () => {
+    const env = makeEnv({ auth: TOKEN });
+    const req = new Request("http://localhost/", { headers: { Cookie: "cf-dash-auth=x" } });
+    assert.ok(!(await isAuthenticated(req, env)), "cookie curto nunca autentica");
+  });
+
+  it("cookie muito mais longo que o token → false", async () => {
+    const env = makeEnv({ auth: TOKEN });
+    const req = new Request("http://localhost/", { headers: { Cookie: `cf-dash-auth=${TOKEN}-com-sufixo-extra-bem-longo` } });
+    assert.ok(!(await isAuthenticated(req, env)), "cookie longo nunca autentica");
   });
 });
 
@@ -158,6 +175,19 @@ describe("Worker fetch — auth routes", () => {
     assert.equal(res.status, 401);
     const text = await res.text();
     assert.ok(text.includes("inválido"), "deve exibir mensagem de token inválido");
+  });
+
+  // #3081 (achado no /code-review max, PR3162): a comparação de /login POST
+  // também virou timing-safe (hash+XOR, mesmo helper de isAuthenticated) —
+  // antes só o cookie-check tinha sido endurecido. Regressão: token de
+  // tamanho MUITO diferente do real não pode nem lançar nem autenticar
+  // (mesma classe de bug que os testes de cookie curto/longo já cobrem).
+  it("/login POST token de tamanho muito diferente do real: 401, não lança", async () => {
+    const form = new FormData();
+    form.append("token", "x");
+    const req = new Request("http://localhost/login", { method: "POST", body: form });
+    const res = await worker.fetch(req, makeEnv({ auth: TOKEN }));
+    assert.equal(res.status, 401);
   });
 
   it("/login POST token correto: 302 para /, Set-Cookie com valor correto", async () => {
