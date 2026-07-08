@@ -869,6 +869,31 @@ export function parseClariceCampaignKey(campaignName: string): {
   return null;
 }
 
+const CYCLE_MONTH_ABBR_PTBR = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+/**
+ * #3092: um ciclo mensal "AAMM-MM" (conteúdo-envio, ver CLAUDE.md — os 4
+ * primeiros dígitos são ano+mês de CONTEÚDO, os 2 últimos são só o MÊS de
+ * ENVIO) é opaco pro editor à primeira vista ("edição 2607-07" não comunica
+ * nada de imediato). Formata o sufixo legível do mês/ano de ENVIO — a janela
+ * que de fato aparece nas linhas da tabela — ex: "envios de jul/2026". `null`
+ * quando `cycle` não bate o formato esperado (título permanece funcional sem
+ * o sufixo).
+ */
+export function formatCycleEnvioLabel(cycle: string): string | null {
+  const m = /^(\d{2})(\d{2})-(\d{2})$/.exec(cycle);
+  if (!m) return null;
+  const contentYY = Number(m[1]);
+  const contentMM = Number(m[2]);
+  const envioMM = Number(m[3]);
+  if (contentMM < 1 || contentMM > 12 || envioMM < 1 || envioMM > 12) return null;
+  // Envio é o mês seguinte ao conteúdo (regra do ciclo) — se o número do mês
+  // "voltar" (ex: conteúdo=dez, envio=jan), o ano do envio vira o próximo.
+  const envioYearOffset = envioMM < contentMM ? 1 : 0;
+  const envioFullYear = 2000 + contentYY + envioYearOffset;
+  return `envios de ${CYCLE_MONTH_ABBR_PTBR[envioMM - 1]}/${envioFullYear}`;
+}
+
 /**
  * #2254: fonte única da escolha de stats reais de uma campanha — globalStats
  * (primário, bate com a UI da Brevo) quando `sent > 0`, senão campaignStats[0].
@@ -1515,9 +1540,13 @@ export function renderAbcAudienceSection(
     result.cold.cells.every((c) => c.campaignCount === 0) &&
     result.warm.cells.every((c) => c.campaignCount === 0);
   if (allEmpty) return "";
+  // #3092: título opaco ("2607-07" não comunica nada de imediato) — sufixo
+  // legível do mês/ano de ENVIO quando o formato do ciclo permite derivá-lo.
+  const envioLabel = formatCycleEnvioLabel(cycle);
+  const cycleTitle = envioLabel ? `${escHtml(cycle)} · ${envioLabel}` : escHtml(cycle);
   return `
 <section class="phase2-section" id="abc-audience-${escHtml(cycle)}">
-  <h2 class="section-title">Resumo A/B/C por Audiência (${escHtml(cycle)})</h2>
+  <h2 class="section-title">Resumo A/B/C por Audiência (${cycleTitle})</h2>
   <p class="section-note"><small>Agrupado por TIPO de audiência (fria = nunca recebeu; quente = base engajada), não por data de envio — o comportamento entre elas diverge o suficiente (abertura ~15% vs ~60%) pra dispersar o sinal se agrupado por data. Vencedor decidido pelo CLIQUE (click rate), não só pela abertura.</small></p>
   ${renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate)}
   ${renderAbcAudienceTable("Fria (nunca recebeu)", result.cold)}
