@@ -78,8 +78,13 @@ export function computePodium(
   scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
 ): PodiumEntry[] {
   // Reusa rankEntries com shape LeaderboardEntry (precisa pct + streak).
+  // #3113: medalha exige correct >= 1 — sem isso, o tiebreak "mais tentativas
+  // vence" (#1163) podia colocar alguém com 0 acertos no pódio (0/2 rankeia
+  // acima de 0/1), degenerando o "campeão do mês" pra quem nunca acertou nada.
+  // Filtra ANTES do rankEntries (não depois) pra que o próximo candidato
+  // elegível suba pro rank 1/2/3 — não deixa o pódio com "buracos".
   const eligible = scores
-    .filter((s) => s.total > 0)
+    .filter((s) => s.total > 0 && s.correct >= 1)
     .map((s) => {
       const hasNickname = s.nickname && s.nickname.trim().length > 0;
       const display = hasNickname ? s.nickname!.trim() : maskEmail(s.email);
@@ -524,7 +529,10 @@ export async function handleLeaderboardByMonthJson(
         })();
     return {
       rank: e.rank,
-      medal: e.rank <= 3 ? medals[e.rank - 1] : "",
+      // #3113: medalha exige correct >= 1 (mesmo gate de rankEntries/computePodium
+      // — ver leaderboard.ts). Sem isso, rank<=3 por "mais tentativas vence"
+      // (#1163) com 0 acertos ainda ganharia emoji de medalha aqui.
+      medal: e.rank <= 3 && e.correct >= 1 ? medals[e.rank - 1] : "",
       nickname: displayNickname,
       correct: e.correct,
       total: e.total,

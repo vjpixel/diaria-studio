@@ -84,7 +84,14 @@ export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
     if (!prev || prev.correct !== e.correct || prev.total !== e.total) {
       currentRank++;
     }
-    ranked.push({ ...e, rank: currentRank, medal: medalFor(currentRank) });
+    // #3113: medalha exige correct >= 1. Sem isso, o tiebreak "mais tentativas
+    // vence" (#1163) podia dar 🥉 pra quem tem 0 acertos (ex: 0/2 rankeia acima
+    // de 0/1) — pódio degenerado. O RANK numérico não muda (a ordem continua
+    // refletindo o critério editorial de participação); só o GLIFO da medalha
+    // é gateado — quem não acertou nenhuma nunca aparece com 🥇/🥈/🥉, mesmo
+    // ocupando rank 1/2/3.
+    const medal = e.correct >= 1 ? medalFor(currentRank) : `${currentRank}.`;
+    ranked.push({ ...e, rank: currentRank, medal });
   }
   return ranked;
 }
@@ -96,6 +103,9 @@ export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
  * Com dense rank (#1256), empate em rank 1 leva ao próximo rank 2 — então
  * o pódio sempre tem ouro→prata→bronze contíguo (se houver pessoas
  * suficientes). 2 ouros + 1 prata + 1 bronze é cenário válido.
+ *
+ * Pura por rank — NÃO sabe sobre `correct` (o gate de #3113 "medalha exige
+ * correct >= 1" é aplicado pelo caller, `rankEntries`, que tem o dado).
  */
 export function medalFor(rank: number): string {
   if (rank === 1) return "🥇";
