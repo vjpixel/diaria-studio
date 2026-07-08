@@ -239,12 +239,14 @@ export type Brand = "diaria" | "clarice";
  * leaderboardHref (slug mensal→anual só pra clarice), renderLeaderboardHtml
  * (título/copy por período).
  */
-export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderboardPeriod: "month" | "year" }> = {
+export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderboardPeriod: "month" | "year"; shortName?: string }> = {
   diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
   // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
   // Clarice voltado ao leitor precisa carregar.
   // #2018: leaderboardPeriod: "year" — mensal vota 1×/mês, ranking anual até 12 chances.
-  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year" },
+  // #3108: shortName — a sub-copy do leaderboard clarice linka só "Clarice" (não
+  // "Clarice News" inteiro) na frase "newsletter da Clarice".
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year", shortName: "Clarice" },
 };
 
 /**
