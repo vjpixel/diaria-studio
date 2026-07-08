@@ -89,8 +89,12 @@ export function groupByBrtDay(campaigns: BrevoCampaign[]): Map<string, BrevoCamp
  * Deriva um nome "limpo" de edição a partir do nome de campanha — remove o
  * sufixo de célula/variante do teste A/B/C (ex: "Clarice News 2606-07 — A ·
  * dom" → "Clarice News 2606-07"). Sem esse separador, usa o nome truncado.
+ *
+ * Exportada (#3082) pra reuso na tabela "Envios" (sections-core.ts), que
+ * precisa do mesmo nome de edição pra identificar qual campanha é cada linha
+ * quando há teste A/B/C do mesmo dia.
  */
-function deriveEditionName(name: string): string {
+export function deriveEditionName(name: string): string {
   // Reusa parseClariceCampaignKey (parseia diário "Clarice News 2607 d01-A" E
   // mensal "Clarice News 2606-07 — A") pra montar um rótulo de edição SEM o
   // sufixo de célula A/B/C. Split ingênuo por " — " deixava o "-A" do diário
