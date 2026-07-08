@@ -141,6 +141,57 @@ const GENERIC_STOPWORDS_INTRA = new Set([
 ]);
 
 /**
+ * #3099: termos genéricos de manchete (verbos de atribuição jornalística,
+ * substantivos de sourcing, descritores de produto de altíssima frequência)
+ * que NÃO contam como TÓPICO discriminante no cross-vehicle same-company
+ * match (item d de `isIntraEditionDuplicate`). Sem isso, duas notícias
+ * DIFERENTES da mesma empresa no mesmo dia colidiriam só por compartilharem
+ * um verbo de atribuição comum ("revela", "dizem", "anuncia") ou um
+ * substantivo genérico ("modelo", "novo"). Termos de produto ESPECÍFICO
+ * (chip, satélite, processador, etc.) ficam de fora de propósito — são
+ * exatamente o que deve discriminar o evento.
+ */
+const TOPIC_TOKEN_STOPWORDS_INTRA = new Set([
+  // #3099 review: GENERIC_STOPWORDS_INTRA (ia/ai/ml/llm, dias/meses, etc.)
+  // precisa entrar aqui também — sem isso, "llm" (>=3 chars, sobrevive ao
+  // tokenizeForJaccard) ou um dia-da-semana poderiam contar como token de
+  // tópico compartilhado entre 2 histórias DIFERENTES da mesma empresa.
+  ...GENERIC_STOPWORDS_INTRA,
+  "novo", "nova", "novos", "novas",
+  "modelo", "modelos",
+  "empresa", "empresas",
+  "tecnologia", "ferramenta", "plataforma", "produto", "versao",
+  "revela", "revelam", "anuncia", "anunciam", "diz", "dizem", "afirma",
+  "afirmam", "aponta", "apontam", "informa", "informam", "confirma", "confirmam",
+  "portal", "fontes", "fonte",
+]);
+
+/**
+ * #3099: nomes de empresa mencionados no título, SEM excluir via
+ * COMPANY_STOPWORDS_INTRA — aqui a empresa É o sinal (ao contrário do
+ * entity-match geral, onde ela é descartada por não discriminar sozinha
+ * entre histórias da MESMA empresa). Usado no cross-vehicle same-company
+ * match (item d de `isIntraEditionDuplicate`).
+ *
+ * Busca por palavra inteira (case-insensitive, sem acento) no título já sem
+ * sufixo de veículo — não depende de capitalização (diferente de
+ * `extractEntitiesWithStopwords`), porque a empresa pode aparecer em
+ * qualquer posição/caixa dependendo do estilo de manchete do veículo (ex:
+ * "Chinesa DeepSeek está desenvolvendo..." tem "DeepSeek" no meio da frase).
+ */
+export function extractCompanyMentionsIntra(title: string): Set<string> {
+  const cleaned = stripVehicleSuffix(title)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  const found = new Set<string>();
+  for (const company of COMPANY_STOPWORDS_INTRA) {
+    if (new RegExp(`\\b${company}\\b`).test(cleaned)) found.add(company);
+  }
+  return found;
+}
+
+/**
  * Extrai entidades nomeadas para dedup INTRA-edição.
  *
  * Diferenças vs `extractNamedEntities` do dedup.ts (#2397):
@@ -247,7 +298,7 @@ export interface IntraEditionDedupResult {
     url: string;
     title?: string;
     bucket: string;
-    match_type: "jaccard" | "entity" | "domain";
+    match_type: "jaccard" | "entity" | "domain" | "cross_vehicle";
     matched_highlight: string;
     score: number;
   }>;
@@ -479,7 +530,7 @@ export function isIntraEditionDuplicate(
     entityMinShared?: number;
   } = {},
 ): {
-  match_type: "jaccard" | "entity" | "domain";
+  match_type: "jaccard" | "entity" | "domain" | "cross_vehicle";
   matched_highlight: string;
   score: number;
 } | null {
@@ -573,6 +624,44 @@ export function isIntraEditionDuplicate(
         matched_highlight: hTitle,
         score: sharedCount / Math.max(artEntities.size, hEntities.size, 1),
       };
+    }
+
+    // (d) #3099: cross-vehicle cobertura da MESMA empresa/evento quando nem
+    // Jaccard nem domain-match capturam — cenário em que AMBOS os lados são
+    // cobertura de imprensa (nenhum é a página oficial do lançamento), então
+    // (c) não se aplica, e a tradução PT/EN diverge o vocabulário o
+    // suficiente pra Jaccard (a) ficar abaixo do threshold. O entity-match (b)
+    // também falha porque o nome da empresa é justamente excluído ali
+    // (COMPANY_STOPWORDS_INTRA) por não discriminar sozinho.
+    //
+    // Caso real 260708: D2 "DeepSeek prepara chip de IA para reduzir
+    // dependência da NVIDIA, revela portal" (canaltech) + RADAR "Chinesa
+    // DeepSeek está desenvolvendo o próprio chip de IA, dizem fontes" (CNN
+    // Brasil) — Jaccard ≈ 0.14 (abaixo de 0.45), 0 entidades no entity-match
+    // geral (DeepSeek/NVIDIA são stopword de empresa). Sinal: MESMA empresa
+    // citada nos dois títulos (`extractCompanyMentionsIntra`, que inclui
+    // companhia de propósito) + ≥1 token de tópico compartilhado além da
+    // empresa (ex: "chip") via `tokenizeForJaccard`, excluindo verbos de
+    // atribuição/substantivos genéricos (TOPIC_TOKEN_STOPWORDS_INTRA) — mesmo
+    // padrão de segundo-sinal do domain-match (#2587), aplicado aqui sem
+    // exigir `suggested_primary_domain`.
+    const artCompanies = extractCompanyMentionsIntra(artTitle);
+    const hCompanies = extractCompanyMentionsIntra(hTitle);
+    const sharedCompanies = [...artCompanies].filter((c) => hCompanies.has(c));
+    if (sharedCompanies.length >= 1) {
+      const sharedTopicTokens = [...artTokens].filter(
+        (t) =>
+          hTokens.has(t) &&
+          !sharedCompanies.includes(t) &&
+          !TOPIC_TOKEN_STOPWORDS_INTRA.has(t),
+      );
+      if (sharedTopicTokens.length >= 1) {
+        return {
+          match_type: "cross_vehicle",
+          matched_highlight: hTitle,
+          score: sharedTopicTokens.length / Math.max(artTokens.size, hTokens.size, 1),
+        };
+      }
     }
   }
 
