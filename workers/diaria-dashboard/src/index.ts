@@ -107,14 +107,18 @@ function fmtDuration(ms: number | null): string {
   return `${h}h${String(m).padStart(2, "0")}m`;
 }
 
-// #3098: status codificado só por cor falha WCAG 1.4.1 (Use of Color) — o
-// title= dá o rótulo textual pra qualquer leitor de tela/tooltip, e o glyph
-// varia (● cheio / ◐ meio / ○ vazio) como segundo sinal visual independente
-// de cor, pra quem enxerga cor mas com dificuldade de distinguir tons.
+// #3098 (self-review follow-up): status codificado só por cor falha WCAG
+// 1.4.1 (Use of Color). O glyph varia (● cheio / ◐ meio / ○ vazio) como
+// sinal visual independente de cor, e role="img"+aria-label expõe o rótulo
+// pra leitor de tela de forma confiável — title= sozinho (fix original)
+// não é consistentemente anunciado por leitores de tela (funciona só como
+// tooltip de hover, que não existe em touch); mantido como bônus pra mouse.
+// Mesmo padrão já usado pro semáforo 🟢/🟡 do brevo-dashboard (#3092 parte
+// 3/N, mesma sessão): `<span role="img" aria-label="verde">🟢</span>`.
 function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
-  if (status === "verde") return `<span style="color:#2d8a4e" title="verde">●</span>`;
-  if (status === "amarelo") return `<span style="color:#c07800" title="amarelo">◐</span>`;
-  return `<span style="color:#C00000" title="vermelho">○</span>`;
+  if (status === "verde") return `<span style="color:#2d8a4e" title="verde" role="img" aria-label="verde">●</span>`;
+  if (status === "amarelo") return `<span style="color:#c07800" title="amarelo" role="img" aria-label="amarelo">◐</span>`;
+  return `<span style="color:#C00000" title="vermelho" role="img" aria-label="vermelho">○</span>`;
 }
 
 /**
@@ -124,6 +128,19 @@ function statusBadge(status: "verde" | "amarelo" | "vermelho"): string {
  */
 function safeHttpHref(url: string): string {
   return /^https?:\/\//i.test(url) ? escHtml(url) : "";
+}
+
+/**
+ * #3098 (self-review follow-up, angle Reuse): consolida a célula de
+ * cliques absolutos — as 3 abas que exibem esse dado (CTR Top 10, Top
+ * links, Use Melhor) tinham cada uma sua própria variação (`td.metric` vs
+ * `<small>`, com/sem fallback pra null). Convenção única: <small>, com "—"
+ * pra schema drift do KV (mesmo padrão de safeHttpHref acima, cujo
+ * comentário já registra a lição de consolidar cópias quase-idênticas).
+ */
+function clicksCell(n: number | null | undefined): string {
+  const label = n === null || n === undefined ? "—" : String(n);
+  return `<td><small>${label}</small></td>`;
 }
 
 // ─── Render sections ──────────────────────────────────────────────────────────
@@ -218,13 +235,22 @@ export function renderCtrSection(data: DashboardData): string {
     // #3098: em mobile a coluna Categoria isolada (cat-col) some via media
     // query e o mesmo valor reaparece fundido sob o Tema (cat-inline,
     // display:none por padrão / display:block só em @media max-width:700px)
-    // — evita que "Tema" quebre em até 6 linhas por falta de largura.
+    // — evita que "Tema" quebre em até 6 linhas por falta de largura. Sem
+    // <br>: cat-inline já é display:block na media query, e um bloco
+    // sempre quebra linha antes de si mesmo — um <br> irmão solto
+    // renderizaria incondicionalmente (inclusive em telas largas, onde
+    // cat-inline é display:none), forçando uma linha em branco indesejada
+    // em todo desktop/tablet (achado de self-review, angle A). "Categoria: "
+    // como prefixo textual (não só posicional) preserva contexto pra
+    // leitor de tela em mobile — a célula cat-col original tem <th>
+    // associado; o texto fundido sob o Tema não tem esse vínculo de tabela.
+    const categoryEsc = escHtml(r.category);
     return `<tr>
     <td>${escHtml(r.date)}</td>
-    <td class="cat-col"><small>${escHtml(r.category)}</small></td>
-    <td>${temaCell}<br><small class="cat-inline muted">${escHtml(r.category)}</small></td>
+    <td class="cat-col"><small>${categoryEsc}</small></td>
+    <td>${temaCell}<small class="cat-inline muted">Categoria: ${categoryEsc}</small></td>
     <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
-    <td><small>${r.unique_verified_clicks}</small></td>
+    ${clicksCell(r.unique_verified_clicks)}
     <td>${linkCell}</td>
   </tr>`;
   }).join("\n");
@@ -343,15 +369,23 @@ export function renderUseMelhorSection(data: DashboardData): string {
   // Coverage note
   const cov = um.coverage;
   const coveragePct = cov.coverage_pct;
+  // #3098: link real pra aba CTR (antes texto solto "#CTR", não navegável)
+  // — deep-link já suportado desde #2622. Definido uma vez e reusado nas 2
+  // notas que citam a aba CTR (achado de self-review: estava duplicado
+  // verbatim nas duas). opacity:1 explícito contraria a opacity herdada do
+  // `<p class="... muted">` ao redor (0.65): --brand sobre --paper já mede
+  // só ~3.08:1 em opacidade plena (ver comentário de td.metric abaixo) —
+  // dentro de um parágrafo muted ficaria ainda mais apagado, abaixo até do
+  // piso de 3:1 aceito pra elementos gráficos/links (achado de self-review).
+  const ctrTabLink = `<a href="#panel-ctr" style="color:var(--brand);opacity:1">CTR</a>`;
   // #3098: "N sem match" descreve uma condição ESPERADA (join lossy por URL
   // de pesquisa ≠ URL publicada), não um alerta — não usar .alert-text aqui
   // (essa classe fica reservada a condições que pedem ação real, ex: streak
-  // de falhas na Saúde das fontes). "#CTR" também virou link de verdade para
-  // a aba CTR (deep-link já suportado desde #2622), não mais texto solto.
+  // de falhas na Saúde das fontes).
   const coverageNote = cov.total_items > 0
     ? `Cobertura do join CTR: <strong>${cov.matched}/${cov.total_items} itens (${coveragePct}%)</strong>` +
       (cov.unmatched > 0
-        ? ` — ${cov.unmatched} sem match (URL de pesquisa ≠ URL publicada — join lossy esperado, ver aba <a href="#panel-ctr" style="color:var(--brand)">CTR</a>)`
+        ? ` — ${cov.unmatched} sem match (URL de pesquisa ≠ URL publicada — join lossy esperado, ver aba ${ctrTabLink})`
         : "")
     : "Sem dados de CTR disponíveis";
 
@@ -365,11 +399,14 @@ export function renderUseMelhorSection(data: DashboardData): string {
     // #2511 self-review (Angle A): ctr_pct é `number | null` no tipo — guarda contra
     // null (schema drift / JSON hand-crafted) p/ não crashar o render inteiro.
     const ctrCell = r.ctr_pct !== null ? `${r.ctr_pct.toFixed(2)}%` : "—";
+    // #3098 (self-review follow-up): clicksCell() consolida a mesma
+    // célula que CTR Top 10 e Top links (ver comentário na definição de
+    // clicksCell) — comportamento idêntico ao `?? "—"` anterior.
     return `<tr>
       <td>${escHtml(r.edition)}</td>
       <td>${escHtml(r.title || "—")}</td>
       <td class="metric">${ctrCell}</td>
-      <td><small>${r.unique_verified_clicks ?? "—"}</small></td>
+      ${clicksCell(r.unique_verified_clicks)}
       <td>${linkCell}</td>
     </tr>`;
   }).join("\n");
@@ -386,8 +423,14 @@ export function renderUseMelhorSection(data: DashboardData): string {
         : escHtml(it.title || it.url);
       return `<li>${linkCell} ${ctrCell}</li>`;
     }).join("");
+    // #3098 (self-review follow-up): "N sem CTR" é a MESMA condição
+    // esperada (join lossy) da nota de cobertura acima — usava
+    // .alert-text (vermelho de ação), uma inconsistência dentro do mesmo
+    // painel (a nota agregada já foi corrigida pra dizer "esperado", mas
+    // cada linha de edição seguia piscando vermelho pra exatamente essa
+    // mesma condição). .muted alinha com o resto do painel (dado de apoio).
     const matchNote = ed.ctr_unmatched > 0
-      ? ` <small class="alert-text">(${ed.ctr_unmatched} sem CTR)</small>`
+      ? ` <small class="muted">(${ed.ctr_unmatched} sem CTR)</small>`
       : "";
     return `<tr>
       <td>${escHtml(ed.edition)}</td>
@@ -430,7 +473,7 @@ export function renderUseMelhorSection(data: DashboardData): string {
     <tbody>${editionRows}</tbody>
   </table>
   </div>
-  <p class="section-note muted">Dados de <code>data/editions/*/  _internal/01-approved.json</code> + <code>data/link-ctr-table.csv</code>. Join por URL pode ser lossy (~22% gap esperado — ver aba <a href="#panel-ctr" style="color:var(--brand)">CTR</a>).</p>
+  <p class="section-note muted">Dados de <code>data/editions/*/  _internal/01-approved.json</code> + <code>data/link-ctr-table.csv</code>. Join por URL pode ser lossy (~22% gap esperado — ver aba ${ctrTabLink}).</p>
 </section>`;
 }
 
@@ -537,12 +580,22 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
 </section>`;
   }
 
-  // #3098: janela compactada (oldest → newest + contagem) em vez da lista
-  // inline dos 20 códigos de edição, que quebrava em 2 linhas de ruído.
-  // Lista completa preservada no title= para quem quiser conferir.
-  const windowEditions = tcr.window_editions ?? [];
+  // #3098 (self-review follow-up): janela reordenada aqui em vez de
+  // confiar na ordem de produção do KV — mesmo padrão defensivo de
+  // renderOvernightSection acima, que também reordena `ov.runs` antes de
+  // exibir. Tooltip e rótulo agora usam a MESMA ordem ascendente (antes o
+  // tooltip preservava a ordem crua do produtor enquanto o rótulo dizia
+  // "oldest → newest" — divergência confusa entre os dois). String() por
+  // elemento protege escHtml() de um elemento não-string por schema drift
+  // (dado vem de `JSON.parse(raw) as DashboardData` sem validação de
+  // schema); o .join() original (pré-#3098) tolerava isso implicitamente
+  // via stringificação automática, mas escHtml() aplicado direto num
+  // elemento não-string quebraria a página inteira.
+  const windowEditions = (tcr.window_editions ?? [])
+    .map((e) => String(e))
+    .sort((a, b) => (a > b ? 1 : -1)); // ascendente: mais antiga primeiro
   const windowLabel = windowEditions.length > 1
-    ? `<span title="${escHtml(windowEditions.join(", "))}">Janela: ${escHtml(windowEditions[windowEditions.length - 1])} → ${escHtml(windowEditions[0])} (${windowEditions.length} edições)</span>`
+    ? `<span title="${escHtml(windowEditions.join(", "))}">Janela: ${escHtml(windowEditions[0])} → ${escHtml(windowEditions[windowEditions.length - 1])} (${windowEditions.length} edições)</span>`
     : windowEditions.length === 1
       ? `Janela: ${escHtml(windowEditions[0])}`
       : "Janela: —";
@@ -552,15 +605,26 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
-    // #3098: cliques absolutos usam <small> (não mais td.metric) — mesma
-    // convenção da aba CTR (Top 10) e do Use Melhor, onde td.metric fica
-    // reservado ao dado central de cada tabela (aqui, nenhum — ver nota).
+    // #3098: cliques absolutos usam <small> via clicksCell() (não
+    // td.metric) — mesma convenção da aba CTR (Top 10) e do Use Melhor.
+    // Nesta tabela especificamente cliques É a chave de ordenação (o
+    // subtítulo abaixo diz "por cliques absolutos"), então td.metric seria
+    // defensável aqui — mas a consistência visual entre as 3 abas pra esse
+    // dado foi a troca explicitamente pedida na issue #3098, priorizada
+    // sobre a ênfase específica desta tabela (tradeoff reconhecido, não
+    // um descuido).
+    // #3098 (self-review follow-up): mesma fusão mobile Categoria→Âncora
+    // da aba CTR (Top 10) acima — reusa as classes cat-col/cat-inline já
+    // definidas no <style> global (nenhum CSS novo aqui, mesma estrutura
+    // de 6 colunas com Categoria curta ao lado de um texto livre longo —
+    // o mesmo risco de wrap existia aqui e não estava coberto).
+    const categoryEsc = escHtml(r.category);
     return `<tr>
     <td>${i + 1}</td>
     <td>${escHtml(r.edition)}</td>
-    <td><small>${escHtml(r.category)}</small></td>
-    <td>${escHtml(r.anchor)}</td>
-    <td><small>${r.unique_verified_clicks}</small></td>
+    <td class="cat-col"><small>${categoryEsc}</small></td>
+    <td>${escHtml(r.anchor)}<small class="cat-inline muted">Categoria: ${categoryEsc}</small></td>
+    ${clicksCell(r.unique_verified_clicks)}
     <td>${linkCell}</td>
   </tr>`;
   }).join("\n");
@@ -574,7 +638,7 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
       <tr>
         <th title="Posição">#</th>
         <th title="Edição com mais cliques do link na janela de 20 edições">Edição</th>
-        <th title="Categoria do link">Categoria</th>
+        <th class="cat-col" title="Categoria do link">Categoria</th>
         <th title="Âncora do link (título ou label)">Âncora</th>
         <th title="Cliques únicos verificados (soma da janela de 20 edições)">Cliques</th>
         <th>Link</th>
