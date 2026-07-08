@@ -10,7 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
-import { buildDiariaStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -1016,18 +1016,28 @@ ${container}
   const preheader = esc(
     content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
   );
+  // #3104: paridade de dark mode com o mensal (#2645) — só neste caminho
+  // (fullDocument), não no fragmento colado no Beehiiv. `color-scheme:light`
+  // pede aos clientes que suportam a meta que NÃO façam auto-dark-mode-invert
+  // das cores explícitas do template (risco prático baixo hoje porque toda
+  // cor do e-mail já é setada inline); o <style> de dark-canvas ao lado
+  // continua author-controlled via media query independente da meta —
+  // escurece só o canvas externo (`.ds-canvas`), o card/conteúdo internos
+  // seguem inalterados, mesma decisão de escopo do #2645 mensal.
   return `<!doctype html>
 <html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="light" />
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
+${buildDarkCanvasStyleBlock(TEXT_COLOR)}
 </head>
 <body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
+<table role="presentation" class="ds-canvas" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>
 </body>

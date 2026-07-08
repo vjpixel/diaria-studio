@@ -25,6 +25,7 @@ import {
   emailBaseRules,
   buildDiariaStyleBlock,
   buildMensalStyleBlock,
+  buildDarkCanvasStyleBlock,
 } from "../scripts/lib/shared/newsletter-styles.ts";
 import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
 import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
@@ -95,6 +96,28 @@ describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
     assert.ok(DS_STYLE_BLOCK.includes(".pad"), ".pad ausente");
     assert.ok(DS_STYLE_BLOCK.includes(".hero"), ".hero ausente");
     assert.ok(!DS_STYLE_BLOCK.includes(".mob-stack"), ".mob-stack não pertence à diária");
+  });
+
+  // ── buildDarkCanvasStyleBlock: standalone, isolado do bloco principal (#3104) ──
+
+  it("buildDarkCanvasStyleBlock emite só a regra de dark-canvas, num <style> à parte", () => {
+    const dark = buildDarkCanvasStyleBlock("#171411");
+    assert.match(dark, /^<style>/);
+    assert.match(dark, /@media \(prefers-color-scheme: dark\)/);
+    assert.match(dark, /body, \.ds-canvas \{ background:#171411 !important; \}/);
+  });
+
+  it("buildDarkCanvasStyleBlock interpola a cor recebida (não hardcoda o INK)", () => {
+    const dark = buildDarkCanvasStyleBlock("#000000");
+    assert.ok(dark.includes("background:#000000 !important;"), `cor não interpolada:\n${dark}`);
+  });
+
+  it("buildDiariaStyleBlock NÃO ganha a regra de dark-canvas (fica isolada — #3104)", () => {
+    // O fragmento colado no Beehiiv usa só buildDiariaStyleBlock — a regra de
+    // dark-canvas fica reservada ao caller do fullDocument (newsletter-render-html.ts),
+    // que a injeta como <style> SEPARADO. buildDiariaStyleBlock não deve mudar.
+    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND), DIARIA_STYLE_BEFORE);
+    assert.ok(!buildDiariaStyleBlock(PAGE_BG, BRAND).includes("prefers-color-scheme"));
   });
 
   // ── buildMensalStyleBlock: preserva o output atual (só .mob-stack) ──────────

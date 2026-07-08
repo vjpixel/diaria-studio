@@ -75,6 +75,37 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
 }
 
 /**
+ * Bloco <style> STANDALONE de dark-canvas (#3104) — paridade com a regra
+ * `@media (prefers-color-scheme: dark)` que buildMensalStyleBlock já emite
+ * (#2645), mas isolado num <style> à parte em vez de embutido no bloco
+ * principal. Motivo: a diária tem 2 caminhos de saída — o fragmento colado no
+ * Beehiiv (`fullDocument: false`, usa só buildDiariaStyleBlock) e o documento
+ * completo Worker-hosted (`fullDocument: true`, preview/test-email). A issue
+ * #3104 pede a paridade só no caminho fullDocument: no fragmento não vale o
+ * esforço (o Beehiiv às vezes remove o `<style>` do htmlSnippet, #260629 —
+ * qualquer media query ali já é best-effort de qualquer jeito) e mexer no
+ * bloco compartilhado arriscaria um side-effect ali por nada. Por isso esta
+ * função fica separada de buildDiariaStyleBlock (que o fragmento também usa)
+ * — só o caller do fullDocument invoca esta.
+ *
+ * ESCOPO: a regra escurece só o CANVAS externo ao container de 600px (classe
+ * `.ds-canvas`, aplicada pelo caller no wrapper mais externo do fullDocument)
+ * — o conteúdo do container (cores INK/SURFACE/TEAL fixas dos outros render*)
+ * permanece inalterado, mesma decisão de escopo do #2645 mensal.
+ *
+ * @param darkCanvasBg — cor do canvas em dark mode (INK do DS, #171411 — o
+ *   caller passa TEXT_COLOR, que já É esse valor; módulo não importa
+ *   design-tokens por princípio arquitetural, ver nota de topo do arquivo).
+ */
+export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
+  return `<style>
+  @media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:${darkCanvasBg} !important; }
+  }
+</style>`;
+}
+
+/**
  * Bloco <style> completo do renderer MENSAL (monthly-render.ts wrapEmail).
  *
  * Preserva EXATAMENTE o output atual da mensal: apenas a media query .mob-stack

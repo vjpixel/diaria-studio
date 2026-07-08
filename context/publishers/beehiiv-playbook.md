@@ -915,6 +915,19 @@ Quando `use_draft_fallback`, verificar o conteúdo diretamente no draft do Beehi
   node -e "process.stdout.write(new Date().toISOString())"
   ```
 
+### 7.1 Checklist manual mensal — cobertura Outlook + dark mode (#3104)
+
+`review-test-email` só verifica via Gmail (API + fallback visual Chrome) — não cobre Outlook.com nem o dark mode nativo do app Gmail/Apple Mail. Automatizar isso exigiria conta Outlook + Chrome logado nela (custo/complexidade não justifica pra um risco hoje baixo — todas as cores do e-mail são explícitas, nunca texto sem cor sobre fundo sem cor). Em vez de automação, rotina **manual mensal** (1x por mês, não por edição):
+
+1. Escolher qualquer edição do mês corrente já publicada (ou o próximo test email a sair).
+2. Enviar (ou reenviar) o test email para uma conta **Outlook.com** de teste.
+   - Abrir no cliente web do Outlook.com — verificar: fundo do e-mail, kickers (● + label), boxes "Por que isso importa"/É IA?/Sorteio, imagens hero, botões CTA. Outlook ignora `max-width` (daí o wrapper MSO de 600px) e pode não honrar o `<style>` — checar que TODAS as cores continuam legíveis mesmo se a media query de dark mode for ignorada (esperado: sim, pois o fundo dos boxes é sempre explícito).
+3. Abrir o mesmo test email no **app Gmail em modo escuro** (celular, tema do sistema em dark) e tirar 1 print.
+   - Verificar: o canvas externo ao redor do card escurece (dark-canvas rule, #3104); o conteúdo interno (INK sobre PAPER/SURFACE) continua com contraste adequado — não deve haver texto ink sobre fundo escuro sem querer.
+4. Registrar qualquer achado como issue nova (rotular `P2`/`P3` conforme severidade) — não bloqueia a edição corrente, é higiene de processo.
+
+Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não se perder entre sessões.
+
 ### 8. Gravar `05-published.json`
 
 ```json
