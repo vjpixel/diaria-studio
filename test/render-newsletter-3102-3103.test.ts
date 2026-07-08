@@ -12,9 +12,11 @@
  *
  *   #3103 — rodapé do É IA? (crédito, "RESULTADO DA ÚLTIMA EDIÇÃO: X%",
  *   "Veja o ranking → leaderboard") saía todo em 12px, mecânica central de
- *   engajamento recorrente. Fix: resultado + leaderboard sobem pra 14px
- *   (crédito continua 12px); link do leaderboard ganha
- *   display:inline-block;padding:4px 0 pra engordar a área de toque.
+ *   engajamento recorrente. Fix: resultado + leaderboard sobem pra 16px (não
+ *   14px — o type-scale do e-mail só permite {12,16,22,26}px, cf.
+ *   test/email-type-scale-white-shell.test.ts); crédito continua 12px; link
+ *   do leaderboard ganha display:inline-block;padding:4px 0 pra engordar a
+ *   área de toque.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -63,7 +65,7 @@ const baseEia: EIA = {
   edition: "260708",
 };
 
-describe("#3103 — rodapé do É IA?: resultado + leaderboard em 14px, crédito continua 12px", () => {
+describe("#3103 — rodapé do É IA?: resultado + leaderboard em 16px, crédito continua 12px", () => {
   it("credit (crédito da imagem) permanece font-size:12px", () => {
     const html = renderEIA(baseEia);
     const creditMatch = html.match(/<p style="([^"]+)">Foto: Author[^<]*<\/p>/);
@@ -71,15 +73,15 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 14px, crédito
     assert.match(creditMatch![1], /font-size:12px/, "crédito deve continuar 12px");
   });
 
-  it("prevResultLine ('Resultado da última edição') sobe para font-size:14px", () => {
+  it("prevResultLine ('Resultado da última edição') sobe para font-size:16px", () => {
     const html = renderEIA({ ...baseEia, prevResultLine: "Resultado da última edição: 67% das pessoas acertaram." });
     const match = html.match(/<p style="([^"]+)">Resultado da última edição[^<]*<\/p>/);
     assert.ok(match, `prevResultLine <p> não encontrado: ${html}`);
-    assert.match(match![1], /font-size:14px/, "prevResultLine deve subir para 14px");
+    assert.match(match![1], /font-size:16px/, "prevResultLine deve subir para 16px");
     assert.doesNotMatch(match![1], /font-size:12px/, "prevResultLine não deve mais ser 12px");
   });
 
-  it("leaderboard 'Vencedores' (pódio) sobe para font-size:14px", () => {
+  it("leaderboard 'Vencedores' (pódio) sobe para font-size:16px", () => {
     const html = renderEIA({
       ...baseEia,
       leaderboardPeriod: "Julho",
@@ -87,18 +89,28 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 14px, crédito
     });
     const match = html.match(/<p style="([^"]+)">🏆[\s\S]*?Vencedores[\s\S]*?<\/p>/);
     assert.ok(match, `linha de vencedores não encontrada: ${html}`);
-    assert.match(match![1], /font-size:14px/, "linha de vencedores deve ser 14px");
+    assert.match(match![1], /font-size:16px/, "linha de vencedores deve ser 16px");
   });
 
-  it("'Veja o ranking → leaderboard' sobe para font-size:14px", () => {
+  it("'Veja o ranking → leaderboard' sobe para font-size:16px", () => {
     const html = renderEIA(baseEia);
     const match = html.match(/<p style="([^"]+)">Veja o ranking[\s\S]*?<\/p>/);
     assert.ok(match, `linha de ranking não encontrada: ${html}`);
-    assert.match(match![1], /font-size:14px/, "linha 'Veja o ranking' deve ser 14px");
+    assert.match(match![1], /font-size:16px/, "linha 'Veja o ranking' deve ser 16px");
+  });
+
+  it("nenhuma linha do rodapé usa 14px (escala aprovada é {12,16,22,26})", () => {
+    const html = renderEIA({
+      ...baseEia,
+      prevResultLine: "Resultado da última edição: 67% das pessoas acertaram.",
+      leaderboardPeriod: "Julho",
+      leaderboardPodium: [{ nickname: "Fulano", rank: 1 }],
+    });
+    assert.doesNotMatch(html, /font-size:14px/, "14px não está na escala aprovada do type-scale (#3103 follow-up)");
   });
 
   it("link do leaderboard ganha display:inline-block;padding:4px 0 (área de toque maior)", () => {
-    const out = renderLeaderboardLinkRow("font-size:14px;");
+    const out = renderLeaderboardLinkRow("font-size:16px;");
     const linkMatch = out.match(/<a href="[^"]*leaderboard"[^>]*style="([^"]+)"/);
     assert.ok(linkMatch, `link do leaderboard não encontrado: ${out}`);
     assert.match(linkMatch![1], /display:inline-block/, "link deve ter display:inline-block");

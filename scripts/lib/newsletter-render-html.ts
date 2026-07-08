@@ -552,19 +552,23 @@ export function renderDestaque(d: RenderDestaque): string {
 export function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
-  // #3103: 12px → 14px. Resultado da última edição + CTA pro leaderboard são a
-  // mecânica central de engajamento recorrente (loop resultado→ranking), não um
-  // rodapé qualquer — mereciam mais peso visual que o crédito da imagem (que
-  // continua 12px, ver abaixo).
-  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:14px;line-height:1.5;color:${TEXT_COLOR};`;
+  // #3103: 12px → 16px (não 14px — o type-scale do e-mail só permite
+  // {12,16,22,26}px, cf. test/email-type-scale-white-shell.test.ts). Resultado
+  // da última edição + CTA pro leaderboard são a mecânica central de
+  // engajamento recorrente (loop resultado→ranking), não um rodapé qualquer —
+  // mereciam mais peso visual que o crédito da imagem (que continua 12px, ver
+  // abaixo). 16px = mesmo tamanho do corpo/título do painel ("Clique na imagem
+  // que foi gerada por IA."), dando à linha o mesmo peso do texto principal.
+  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
-  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 14px (#3103,
-  // era 12px) bold uppercase teal, no rodapé do painel.
+  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 16px (#3103,
+  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase teal,
+  // no rodapé do painel.
   const prevResultHtml = eia.prevResultLine
-    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:14px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
