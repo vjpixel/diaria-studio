@@ -68,7 +68,7 @@ export const SEED_HTML_PAIRS: SeedHtmlPair[] = [
   },
 ];
 
-function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): string[] {
+export function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): string[] {
   const r = spawnFn("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
     encoding: "utf8",
   });
@@ -84,10 +84,13 @@ function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): st
       const p = parts[1];
       if (p) paths.push(p);
     } else if (status?.startsWith("R")) {
-      // rename — path novo é o relevante (parts[2]); mas também considerar o
-      // antigo pro caso raro de um seed ser renomeado.
-      if (parts[2]) paths.push(parts[2]);
-      if (parts[1]) paths.push(parts[1]);
+      // rename — só o path novo conta (mesmo padrão de check-pr-bugfix.ts,
+      // #2082). Incluir o path antigo aqui causaria falso-negativo: se
+      // htmlPath for renomeado PRA FORA (deixa de existir naquele path), o
+      // path antigo ainda cairia em changedSet e o check reportaria "sem
+      // drift" mesmo com o asset de fato ausente do path esperado.
+      const p = parts[2] ?? parts[1];
+      if (p) paths.push(p);
     }
   }
   return paths;

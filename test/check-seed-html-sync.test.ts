@@ -14,10 +14,20 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findDriftedPairs, SEED_HTML_PAIRS, type SeedHtmlPair } from "../scripts/check-seed-html-sync.ts";
+import {
+  findDriftedPairs,
+  getChangedFiles,
+  SEED_HTML_PAIRS,
+  type SeedHtmlPair,
+  type SpawnFn,
+} from "../scripts/check-seed-html-sync.ts";
 
 const CURSOS_PAIR = SEED_HTML_PAIRS.find((p) => p.name === "cursos") as SeedHtmlPair;
 const LIVROS_PAIR = SEED_HTML_PAIRS.find((p) => p.name === "livros") as SeedHtmlPair;
+
+function mockSpawn(stdout: string): SpawnFn {
+  return () => ({ status: 0, stdout, stderr: "" });
+}
 
 describe("findDriftedPairs (#3105)", () => {
   it("seed de cursos mudou junto com o HTML — sem drift", () => {
@@ -86,5 +96,46 @@ describe("findDriftedPairs (#3105)", () => {
     assert.equal(CURSOS_PAIR.htmlPath, "workers/cursos/public/index.html");
     assert.equal(LIVROS_PAIR.seedPrefix, "seed/books/");
     assert.equal(LIVROS_PAIR.htmlPath, "workers/livros/public/index.html");
+  });
+});
+
+describe("getChangedFiles (#3105) — parsing de `git diff --name-status`", () => {
+  it("A/M/D: reporta o path como mudado", () => {
+    const stdout = "A\tseed/courses/cursos-ia.json\nM\tworkers/cursos/public/index.html\nD\tREADME.md\n";
+    const files = getChangedFiles("base", "head", mockSpawn(stdout));
+    assert.deepEqual(files.sort(), [
+      "README.md",
+      "seed/courses/cursos-ia.json",
+      "workers/cursos/public/index.html",
+    ]);
+  });
+
+  it("rename: usa só o path NOVO, não o antigo (regressão do self-review)", () => {
+    // htmlPath renomeado pra fora — o path antigo NÃO deve aparecer em
+    // changedFiles, senão findDriftedPairs reportaria falso-negativo (achar
+    // que o HTML "mudou" quando na verdade ele deixou de existir ali).
+    const stdout = "R100\tworkers/cursos/public/index.html\tworkers/cursos/public/index-old.html\n";
+    const files = getChangedFiles("base", "head", mockSpawn(stdout));
+    assert.deepEqual(files, ["workers/cursos/public/index-old.html"]);
+    assert.ok(!files.includes("workers/cursos/public/index.html"));
+  });
+
+  it("rename + seed change: ainda detecta drift (htmlPath não está no diff sob o path esperado)", () => {
+    const stdout =
+      "M\tseed/courses/cursos-ia.json\nR100\tworkers/cursos/public/index.html\tworkers/cursos/public/index-old.html\n";
+    const files = getChangedFiles("base", "head", mockSpawn(stdout));
+    const drifted = findDriftedPairs(files);
+    assert.equal(drifted.length, 1);
+    assert.equal(drifted[0]?.name, "cursos");
+  });
+
+  it("git diff falha (status != 0): lança erro", () => {
+    const failingSpawn: SpawnFn = () => ({ status: 1, stdout: "", stderr: "fatal: bad revision" });
+    assert.throws(() => getChangedFiles("base", "head", failingSpawn), /git diff falhou/);
+  });
+
+  it("linhas vazias são ignoradas", () => {
+    const files = getChangedFiles("base", "head", mockSpawn("\n\n"));
+    assert.deepEqual(files, []);
   });
 });
