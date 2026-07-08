@@ -211,10 +211,14 @@ export function renderCtrSection(data: DashboardData): string {
     const temaCell = isAprofundeAnchor(r.anchor)
       ? escHtml(r.highlight_title ?? r.post_title)
       : escHtml(r.anchor);
+    // #3098: em mobile a coluna Categoria isolada (cat-col) some via media
+    // query e o mesmo valor reaparece fundido sob o Tema (cat-inline,
+    // display:none por padrão / display:block só em @media max-width:700px)
+    // — evita que "Tema" quebre em até 6 linhas por falta de largura.
     return `<tr>
     <td>${escHtml(r.date)}</td>
-    <td><small>${escHtml(r.category)}</small></td>
-    <td>${temaCell}</td>
+    <td class="cat-col"><small>${escHtml(r.category)}</small></td>
+    <td>${temaCell}<br><small class="cat-inline muted">${escHtml(r.category)}</small></td>
     <td class="metric">${r.ctr_pct.toFixed(2)}%</td>
     <td><small>${r.unique_verified_clicks}</small></td>
     <td>${linkCell}</td>
@@ -247,7 +251,7 @@ export function renderCtrSection(data: DashboardData): string {
     <thead>
       <tr>
         <th>Data</th>
-        <th>Categoria</th>
+        <th class="cat-col">Categoria</th>
         <th title="Título do destaque (links novos) ou âncora genérica resolvida para o destaque (links pré-mar/2026)">Tema</th>
         <th title="CTR: cliques ÷ opens">CTR</th>
         <th title="Cliques únicos verificados">Cliques</th>
@@ -524,21 +528,30 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
 </section>`;
   }
 
-  const windowLabel = (tcr.window_editions ?? []).length > 0
-    ? `Janela: ${escHtml((tcr.window_editions ?? []).join(", "))}`
-    : "Janela: —";
+  // #3098: janela compactada (oldest → newest + contagem) em vez da lista
+  // inline dos 20 códigos de edição, que quebrava em 2 linhas de ruído.
+  // Lista completa preservada no title= para quem quiser conferir.
+  const windowEditions = tcr.window_editions ?? [];
+  const windowLabel = windowEditions.length > 1
+    ? `<span title="${escHtml(windowEditions.join(", "))}">Janela: ${escHtml(windowEditions[windowEditions.length - 1])} → ${escHtml(windowEditions[0])} (${windowEditions.length} edições)</span>`
+    : windowEditions.length === 1
+      ? `Janela: ${escHtml(windowEditions[0])}`
+      : "Janela: —";
 
   const rows = (tcr.top_items ?? []).map((r, i) => {
     const safeHref = safeHttpHref(r.base_url);
     const linkCell = safeHref
       ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand);font-size:0.8em">↗</a>`
       : `<span style="color:var(--ink);opacity:0.4;font-size:0.8em">—</span>`;
+    // #3098: cliques absolutos usam <small> (não mais td.metric) — mesma
+    // convenção da aba CTR (Top 10) e do Use Melhor, onde td.metric fica
+    // reservado ao dado central de cada tabela (aqui, nenhum — ver nota).
     return `<tr>
     <td>${i + 1}</td>
     <td>${escHtml(r.edition)}</td>
     <td><small>${escHtml(r.category)}</small></td>
     <td>${escHtml(r.anchor)}</td>
-    <td class="metric">${r.unique_verified_clicks}</td>
+    <td><small>${r.unique_verified_clicks}</small></td>
     <td>${linkCell}</td>
   </tr>`;
   }).join("\n");
@@ -749,6 +762,11 @@ export function renderDashboardHtml(data: DashboardData): string {
      volta a --ink (peso 600 mantém a ênfase); teal fica reservado a
      links/estado ativo de aba (elementos gráficos, 3:1 é aceitável). */
   td.metric { font-weight: 600; color: var(--ink); }
+  /* #3098: fusão Categoria→Tema em mobile (aba CTR, Top 10) — a coluna
+     Categoria isolada (cat-col) só existe em telas largas; a versão inline
+     (cat-inline) fica oculta por padrão e aparece só na media query abaixo,
+     junto com o cat-col sumindo, pra Tema não quebrar em várias linhas. */
+  .cat-inline { display: none; }
   ul { padding-left: 20px; }
   li { margin: 6px 0; font-size: 0.9rem; }
   code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
@@ -816,6 +834,10 @@ export function renderDashboardHtml(data: DashboardData): string {
        déficit ~12px) — gap 4px→2px e padding 6px 10px→6px 8px liberam ~34px. */
     .tab-bar { gap: 2px; }
     .tab-label { padding: 6px 8px; font-size: 0.8rem; }
+    /* #3098: esconde a coluna Categoria isolada da aba CTR (Top 10) e mostra
+       a versão fundida sob o Tema (cat-inline) — libera largura pro Tema. */
+    .cat-col { display: none; }
+    .cat-inline { display: block; margin-top: 2px; }
   }
 </style>
 </head>
