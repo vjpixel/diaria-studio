@@ -251,7 +251,10 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
 
   test("sem teste ABC mensal → nenhuma seção mensal", () => {
     const html = renderDashboardHtml(allCampaigns);
-    assert.doesNotMatch(html, /abc-summary-monthly/);
+    // #3129: a regra CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style>, independente dos dados — checar o id do <details> (só
+    // emitido quando há grupos) em vez da substring da classe.
+    assert.doesNotMatch(html, /abc-summary-monthly-collapsible/);
   });
 
   test("campo-misto na mesma data: irmão só com sentDate (sem scheduledAt) cai no MESMO grupo (review #2905)", () => {
@@ -349,9 +352,12 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
 
   test("#3129: sem nenhum teste mensal, o <details> colapsável não renderiza (nunca um shell vazio)", () => {
     const html = renderDashboardHtml(allCampaigns);
+    // Nota: a REGRA CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style> (não é condicional aos dados) — checar a substring da classe
+    // sozinha daria falso-positivo. O sinal correto é o id do próprio <details>
+    // (só emitido quando há grupos) e a ausência de qualquer seção por-data.
     assert.doesNotMatch(html, /abc-summary-monthly-collapsible/, "sem grupos mensais, o <details> wrapper não deve aparecer");
-    assert.doesNotMatch(html, /abc-summary-monthly-group/, "sem grupos mensais, nenhuma classe do wrapper deve aparecer");
-    assert.doesNotMatch(html, /abc-summary-monthly/, "comportamento preexistente preservado: sem seção mensal alguma");
+    assert.doesNotMatch(html, /Resumo A\/B\/C — Mensal \(/, "comportamento preexistente preservado: sem seção mensal alguma");
   });
 });
 
