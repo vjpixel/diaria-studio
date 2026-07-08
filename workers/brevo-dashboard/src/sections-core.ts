@@ -1465,13 +1465,15 @@ export function aggregateAbcByAudience(
   };
 }
 
-/** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. */
-function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
+/** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. Exportado pra teste unitário. */
+export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
   const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
   if (cells.every((c) => c.campaignCount === 0)) {
-    return `
-  <h4 class="subsection-title">${escHtml(title)}</h4>
-  <p class="section-note"><small>Sem dados desta audiência neste ciclo.</small></p>`;
+    // #3127: omite a subseção inteira (sem header nem stub "Sem dados") quando
+    // esta audiência especificamente não teve nenhum envio no ciclo — ruído
+    // visual, já que as outras 1-2 audiências do mesmo ciclo normalmente têm
+    // dado. Mesmo idioma de renderAbcSection (branch sem resetNote).
+    return "";
   }
   const orderedRows = [...cells].sort((a, b) => {
     if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
