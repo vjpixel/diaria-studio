@@ -18,6 +18,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 import { makePollEnv } from "./_helpers/make-poll-env.ts";
+import { formatEditionDateForBrand } from "../workers/poll/src/lib.ts";
 
 async function vote(
   email: string,
@@ -86,5 +87,47 @@ describe("#3113 item 13 — brand diaria (mensal, com dia) continua inalterado",
     const res2 = await vote("diaria@x.com", "260701", "B", env);
     const html2 = await res2.text();
     assert.match(html2, /Você já votou na edição de 1 de julho de 2026/);
+  });
+});
+
+// ── Self-review pós-#3192: edição em formato de CICLO Clarice (YYMM-MM) ──────
+//
+// Produção real do brand `clarice` usa `edition` no formato de ciclo
+// `{conteúdo}-{envio}` (ex: "2605-06" — ver close-poll.ts --brand clarice
+// --cycle e os links de voto gerados por monthly-render.ts), NÃO AAMMDD. Os
+// testes acima só cobrem AAMMDD ("260701" etc.) — sem esta cobertura, a
+// mensagem "já votou" introduzida por #3192 mostraria o slug interno cru
+// ("2605-06") pro leitor em produção, já que `formatEditionDateForBrand` não
+// tinha ramo pra esse formato.
+
+describe("#3113 item 13 (self-review) — formatEditionDateForBrand aceita o ciclo Clarice YYMM-MM", () => {
+  it("ciclo 'YYMM-MM' no brand clarice → 'mês de ano' do mês de CONTEÚDO, sem o slug cru", () => {
+    assert.equal(formatEditionDateForBrand("2605-06", "clarice"), "maio de 2026");
+    assert.equal(formatEditionDateForBrand("2607-08", "clarice"), "julho de 2026");
+  });
+
+  it("ciclo com mês de conteúdo inválido (ex: 13) → retorna o input cru (fail-open)", () => {
+    assert.equal(formatEditionDateForBrand("2613-14", "clarice"), "2613-14");
+  });
+
+  it("brand diaria com input em formato de ciclo → NÃO aplica o ramo de ciclo (diária nunca usa esse formato); delega pra formatEditionDate, que retorna o input cru por não bater /^\\d{6}$/", () => {
+    assert.equal(formatEditionDateForBrand("2605-06", "diaria"), "2605-06");
+  });
+});
+
+describe("#3113 item 13 (self-review) — mensagem 'já votou' via /vote com edição em ciclo Clarice", () => {
+  it("2º voto numa edição de ciclo ('2605-06'): mensagem cita 'maio de 2026', NÃO o slug cru '2605-06'", async () => {
+    const kv = makeTrackedKv({ "clarice:correct:2605-06": "A" });
+    const env = makePollEnv(kv);
+
+    const res1 = await vote("ciclo@x.com", "2605-06", "A", env, "clarice");
+    assert.equal(res1.status, 200);
+    assert.doesNotMatch(await res1.text(), /já votou/i, "1º voto não deve ser tratado como duplicado");
+
+    const res2 = await vote("ciclo@x.com", "2605-06", "B", env, "clarice");
+    assert.equal(res2.status, 200);
+    const html2 = await res2.text();
+    assert.match(html2, /Você já votou na edição de maio de 2026/, "deve citar 'maio de 2026', não o slug de ciclo cru");
+    assert.doesNotMatch(html2, /2605-06/, "o slug de ciclo interno NUNCA deve vazar pro texto exibido ao leitor");
   });
 });
