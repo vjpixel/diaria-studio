@@ -268,6 +268,32 @@ export function brandKvPrefix(brand: Brand): string {
 }
 
 /**
+ * #3112: variante de `formatEditionDate` ciente de `BRAND_INFO[brand].leaderboardPeriod`.
+ *
+ * Mesmo racional do #2006 (vote.ts:227-229/254-255, mensagem "já votou"): pra
+ * um brand com leaderboard ANUAL (`"year"` — hoje só `clarice`), a publicação
+ * é MENSAL — o "dia" do AAMMDD é só artefato do formato do código da edição,
+ * não um dado real (a Clarice News não sai num dia específico do mês). Exibir
+ * "31 de maio de 2026" para um digest mensal é enganoso.
+ *
+ *   - `leaderboardPeriod === "year"` → formata só "Mês de AAAA" (sem dia).
+ *   - `leaderboardPeriod === "month"` (diária) → mantém `formatEditionDate`
+ *     completo ("DD de mês de AAAA") — comportamento inalterado.
+ *
+ * NÃO altera o código AAMMDD interno usado em hrefs/gabarito/dedup — só a
+ * STRING exibida ao leitor. Input malformado → retorna o input cru (mesmo
+ * fallback de `formatEditionDate`).
+ */
+export function formatEditionDateForBrand(edition: string, brand: Brand): string {
+  if (BRAND_INFO[brand].leaderboardPeriod !== "year") return formatEditionDate(edition);
+  if (!/^\d{6}$/.test(edition)) return edition;
+  const yy = parseInt(edition.slice(0, 2), 10);
+  const mm = parseInt(edition.slice(2, 4), 10);
+  if (mm < 1 || mm > 12) return edition;
+  return `${MONTH_NAMES_PT[mm - 1]} de ${2000 + yy}`;
+}
+
+/**
  * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).
  * `slug` opcional → `/leaderboard/{slug}`.
  *

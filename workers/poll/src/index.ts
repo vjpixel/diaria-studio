@@ -346,9 +346,14 @@ export function votePageHtml(
   // !scoreObj?.nickname — então este form aparece em CADA vote até ser
   // preenchido. Texto explícito sobre consequência (aparecer como email
   // mascarado no leaderboard) incentiva preenchimento.
+  // #3109: "mensal" estava hardcoded mesmo pro brand clarice, cujo leaderboard
+  // é ANUAL (BRAND_INFO.clarice.leaderboardPeriod === "year"). Deriva do
+  // mesmo campo já usado em vote.ts (#2061) — um 3º brand anual herda o
+  // texto correto sem tocar aqui.
+  const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
   const formHtml = nicknameForm ? `
 <div class="nick-box">
-  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard mensal</p>
+  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard ${leaderboardPeriodWord}</p>
   <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
@@ -388,7 +393,10 @@ export function votePageHtml(
   .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #FBFAF6; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #3110: fundo ink (#171411) em vez de teal (#00A0A0) — teal+onInk dava
+     ~3:1 de contraste (abaixo de AA 4.5:1); ink+onInk dá ~15:1. Teal é SÓ
+     texto no design system (design-tokens.ts) — botões/badges cheios usam ink. */
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #171411; color: #FBFAF6; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
@@ -398,8 +406,9 @@ export function votePageHtml(
   .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.62); margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #EBE5D0; border-radius: 4px; font-size: 0.95rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-  /* #1894: CTA em accent verde (--brand-bright, "subscribe/accent" do v1-daily). */
-  .nick-save { padding: 8px 16px; background: #00A0A0; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  /* #3110: fundo ink (#171411), não teal — botão cheio em teal reprovava
+     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk (#FBFAF6) dá ~15:1. */
+  .nick-save { padding: 8px 16px; background: #171411; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
