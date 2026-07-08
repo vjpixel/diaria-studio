@@ -6,7 +6,7 @@ export interface Env {
   STRIPE_API_KEY?: string;
   /** Tab de cupons habilitada? Deve ser "true" explicitamente. Default OFF. (#2718) */
   COUPONS_TAB_ENABLED?: string;
-  /** Shared-token for cookie auth. Wrangler secret — if unset, auth is bypassed (dev mode). */
+  /** Shared-token for cookie auth. Wrangler secret — if unset, fail-CLOSED: access is denied (#2748; never bypassed). */
   AUTH_TOKEN?: string;
 }
 
