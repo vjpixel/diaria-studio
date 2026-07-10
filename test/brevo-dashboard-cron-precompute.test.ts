@@ -131,6 +131,29 @@ function mockBrevoFetch() {
 }
 
 // ---------------------------------------------------------------------------
+// Regressão INCIDENTE 260710: CAMPAIGNS_FETCH_LIMIT acima do teto real da
+// Brevo derrubou a dashboard inteira em produção. #3080 subiu o valor de
+// 50 → 150 sem checar contra a API real — `/v3/emailCampaigns` rejeita
+// `limit` > 100 com 400 {"code":"out_of_range"}, e esse erro (não sendo
+// `BrevoRateLimitError`) não cai no fallback gracioso pro KV stale, gerando
+// a página "Dashboard error" crua pro usuário. O bug ficou latente ~3 dias
+// porque o worker estava com deploy desatualizado (#3268) — só foi exposto
+// quando o deploy foi corrigido. Este teste travará qualquer tentativa
+// futura de subir o valor sem antes confirmar o teto real da Brevo.
+// ---------------------------------------------------------------------------
+describe("CAMPAIGNS_FETCH_LIMIT — nunca deve exceder o teto real da Brevo (incidente 260710)", () => {
+  it("CAMPAIGNS_FETCH_LIMIT <= 100 (teto documentado/confirmado de /v3/emailCampaigns)", () => {
+    assert.ok(
+      CAMPAIGNS_FETCH_LIMIT <= 100,
+      `CAMPAIGNS_FETCH_LIMIT=${CAMPAIGNS_FETCH_LIMIT} excede o teto real da Brevo (100) — ` +
+        `qualquer valor acima disso faz /v3/emailCampaigns retornar 400 "out_of_range" e derruba ` +
+        `a dashboard inteira (sem fallback gracioso, ver incidente 260710). Confirme o teto real ` +
+        `contra a API antes de subir este valor de novo.`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (a) runCronRefresh
 // ---------------------------------------------------------------------------
 
@@ -291,7 +314,7 @@ describe("rota / (#3079) — lê o pré-computado por padrão", () => {
       campaigns: [campaignWithStats],
       scheduled: [],
       generatedAt,
-      campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // 150 pedidas, só 1 encontrada ⇒ não truncou
+      campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // 100 pedidas, só 1 encontrada ⇒ não truncou
     });
     const { kv } = makeKvMock({ [LASTGOOD_CAMPAIGNS_KEY]: payload });
     await withFetchSpy(async (_calls) => {

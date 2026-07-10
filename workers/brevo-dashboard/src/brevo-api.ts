@@ -348,8 +348,19 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  * (roda a cada 10min, fora do request-time): o custo de uma janela maior
  * agora é absorvido pelo cron, não pelo usuário que carrega a página.
  *
- * Subimos de 50 → 150 (3x): com cadência de até 3 campanhas/dia (células
- * A/B/C em teste), 150 cobre ~1-1.5 ciclo de cobrança completo (~30 dias),
+ * Subimos de 50 → 100 (INCIDENTE 260710: #3080 originalmente subiu pra 150,
+ * mas a API da Brevo rejeita `limit` acima de 100 em `/v3/emailCampaigns`
+ * — `{"code":"out_of_range","message":"Limit exceeds max value"}`. Esse bug
+ * nunca tinha rodado em produção (o commit do #3080 foi mergeado ~21min
+ * DEPOIS do último deploy real do worker, então só foi exposto quando o
+ * deploy defasado de #3268 foi corrigido nesta mesma madrugada — derrubou a
+ * dashboard inteira, sem fallback pro KV stale porque o erro 400 não é
+ * `BrevoRateLimitError`). 100 é o teto real da Brevo — não dá pra subir mais
+ * sem paginar múltiplas chamadas, o que reintroduziria o custo de latência
+ * que #3079 mitigou.
+ *
+ * Com cadência de até 3 campanhas/dia (células A/B/C em teste), 100 ainda
+ * cobre ~1 ciclo de cobrança completo (~30 dias) na maioria dos meses,
  * reduzindo bastante a chance de "Totais por mês"/"Volume no ciclo" ficarem
  * parciais silenciosamente (#3080). Campanhas imutáveis (>7d) ficam
  * cacheadas no KV SEM TTL (`isImmutableCampaign`) — o custo extra de GETs só
@@ -361,7 +372,7 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  * já havia mitigado. Ver defesa em profundidade complementar (aviso de
  * "janela parcial") em `renderMonthlyTotalsSection`/`renderVolumeSection`.
  */
-export const CAMPAIGNS_FETCH_LIMIT = 150;
+export const CAMPAIGNS_FETCH_LIMIT = 100;
 
 /**
  * #2875 item 1: normaliza UMA linha de `cohort_stats` lida do KV. Payload
@@ -1293,7 +1304,8 @@ export async function runCronRefresh(
       return { ok: false, error: "fetchScheduledCampaigns falhou — KV não atualizado neste tick (mantém último valor bom)" };
     }
 
-    // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (150) — absorvida pelo
+    // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
+    // Brevo — ver docstring da constante, incidente 260710) — absorvida pelo
     // cron (fora do request-time), não pelo usuário.
     const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false);
     const payload: LastGoodCampaignsPayload = {
