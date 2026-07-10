@@ -81,7 +81,8 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
 
   it("DIVULGAÇÃO → box com kicker 'Divulgação'", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
-    assert.ok(/&#9679;&nbsp;Divulga/.test(html), "kicker Divulgação");
+    // #3181: o ponto ● agora vive num <span> separado (era &#9679;&nbsp; solto).
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Divulga/.test(html), "kicker Divulgação");
     assert.ok(html.includes("Amazon lança Alexa+ no Brasil"), "título do box");
   });
 
@@ -91,7 +92,8 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
       undefined, undefined, undefined, undefined, undefined,
       "https://poll.x/img/04-livros-promo.jpg",
     );
-    assert.ok(/&#9679;&nbsp;Livros/.test(html), "kicker Livros");
+    // #3181: o ponto ● agora vive num <span> separado (era &#9679;&nbsp; solto).
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livros/.test(html), "kicker Livros");
     assert.ok(html.includes('<img src="https://poll.x/img/04-livros-promo.jpg"'), "imagem do box de livros");
   });
 

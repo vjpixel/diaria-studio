@@ -363,8 +363,9 @@ describe("renderDestaque", () => {
   it("formato antigo `DESTAQUE 1 | ANTHROPIC` extrai tema", () => {
     const chunk = "DESTAQUE 1 | ANTHROPIC\n\n**Título do destaque**\n\nParágrafo 1.";
     const out = renderDestaque(chunk);
-    // tema vira kicker ● + régua (DS, como a diária)
-    assert.match(out, /&#9679;&nbsp;ANTHROPIC</);
+    // tema vira kicker ● + régua (DS, como a diária). #3181: o ponto ● agora
+    // vive num <span> teal separado do label (era &#9679;&nbsp; solto, ambos teal).
+    assert.match(out, /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;ANTHROPIC</);
     assert.match(out, /Título do destaque/);
     assert.doesNotMatch(out, /\*\*/, "não deve ter ** literal");
   });
@@ -372,7 +373,7 @@ describe("renderDestaque", () => {
   it("formato Drive `\\[DESTAQUE 1\\] ANTHROPIC` extrai tema", () => {
     const chunk = "**\\[DESTAQUE 2\\] BRASIL**\n\n**Título**\n\nBody.";
     const out = renderDestaque(chunk);
-    assert.match(out, /&#9679;&nbsp;BRASIL</);
+    assert.match(out, /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;BRASIL</);
   });
 
   it("renderiza `O fio condutor:` na caixa de fecho (contorno paper + borda bege)", () => {
@@ -386,17 +387,21 @@ describe("renderDestaque", () => {
   it("override de tema funciona (uso em LABORATÓRIO CLARICE)", () => {
     const chunk = "WHATEVER\n\nTitle\n\nBody.";
     const out = renderDestaque(chunk, "OVERRIDE LABEL");
-    assert.match(out, /&#9679;&nbsp;OVERRIDE LABEL</);
+    assert.match(out, /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;OVERRIDE LABEL</);
   });
 });
 
 // ─── renderIntro ───────────────────────────────────────────────────────────
 
 describe("renderIntro", () => {
-  it("renderiza com label 'Resumo do mês' em teal", () => {
+  it("#3181: label 'Resumo do mês' é ink, ponto ● antes do label continua teal (era label inteiro teal, ~3.2:1 abaixo de AA)", () => {
     const out = renderIntro("Sumário do mês foi assim.");
     assert.match(out, /Resumo do mês/i);
-    assert.match(out, /#00A0A0/, "label deve ser teal");
+    const tdMatch = out.match(/<td style="([^"]+)">(?:<span[^>]*>&#9679;<\/span>&nbsp;)?Resumo do mês<\/td>/);
+    assert.ok(tdMatch, `<td> do kicker não encontrado: ${out}`);
+    assert.match(tdMatch![1], /color:#171411/, "label do kicker deve ser ink");
+    assert.doesNotMatch(tdMatch![1], /color:#00A0A0/, "label do kicker não deve mais ser teal");
+    assert.match(out, /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Resumo do mês/, "ponto ● deve continuar teal e preceder o label");
   });
 
   it("renderiza body no tamanho do corpo (16px, sem italic — pedido do editor 2026-06-09)", () => {

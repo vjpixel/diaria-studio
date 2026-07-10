@@ -48,14 +48,14 @@ describe("renderEia creditOverride (#1914)", () => {
     const html = renderEia(chunk, "2605", "https://x/A.jpg", "https://x/B.jpg", "Legenda real.");
     assert.ok(html.includes("Legenda real."), "deve usar a legenda override");
     assert.ok(!html.includes("placeholder a ser ignorado"), "não deve usar o placeholder");
-    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "deve renderizar o card");
+    assert.ok(html.includes('<span style="color:#00A0A0;">&#9679;</span>&nbsp;É IA?'), "deve renderizar o card");
     assert.ok(html.includes("brand=clarice"), "voto vai pro leaderboard da Clarice");
   });
   it("descarta corpo que é só placeholder [...] mesmo sem override (#1915 review)", () => {
     const chunk = "É IA? — DESTAQUE DO MÊS\n[Selecionar manualmente a edição...]";
     const html = renderEia(chunk, "2605", "https://x/A.jpg", "https://x/B.jpg");
     assert.ok(!html.includes("Selecionar manualmente"), "placeholder não pode vazar como crédito");
-    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "card ainda renderiza");
+    assert.ok(html.includes('<span style="color:#00A0A0;">&#9679;</span>&nbsp;É IA?'), "card ainda renderiza");
   });
 });
 
@@ -113,7 +113,7 @@ describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
       "https://x/B.jpg",
       "Legenda do É IA?.",
     );
-    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "card do É IA? deve aparecer");
+    assert.ok(html.includes('<span style="color:#00A0A0;">&#9679;</span>&nbsp;É IA?'), "card do É IA? deve aparecer");
     assert.ok(html.includes("Legenda do É IA?."), "legenda do 01-eia.md deve aparecer");
     assert.ok(
       !html.includes("Selecionar manualmente"),
@@ -133,7 +133,7 @@ describe("renderEia unificação com a diária (#2709)", () => {
     "Crédito.",
   );
 
-  it("título: line-height 1.15 (era 1.2) e margin:0 (era 0 0 16px)", () => {
+  it("título: line-height 1.2 (#3183 — era 1.15) e margin:0 (era 0 0 16px)", () => {
     // #recomendacao-leitura: ponto final removido permanentemente (diária + mensal).
     assert.match(
       html,
@@ -141,7 +141,10 @@ describe("renderEia unificação com a diária (#2709)", () => {
     );
     const titleMatch = html.match(/<p style="([^"]*)"[^>]*>Clique na imagem que foi gerada por IA</);
     assert.ok(titleMatch, "título deve existir");
-    assert.ok(titleMatch![1].includes("line-height:1.15;"), "line-height deve ser 1.15");
+    // #3183: unificado com as outras manchetes 26px serif (renderDestaque,
+    // diária PR#3182) — era 1.15, drift sem motivo funcional.
+    assert.ok(titleMatch![1].includes("line-height:1.2;"), "line-height deve ser 1.2");
+    assert.ok(!titleMatch![1].includes("line-height:1.15;"), "não deve mais usar 1.15");
     assert.ok(titleMatch![1].includes("margin:0;"), "margin deve ser 0 (sem bottom 16px)");
   });
 
@@ -170,7 +173,7 @@ describe("renderEia unificação com a diária (#2709)", () => {
     assert.ok(!html.toLowerCase().includes("acertaram"));
   });
 
-  it('% acertaram: renderiza quando prevResultLine é passado, no estilo da diária', () => {
+  it('% acertaram: renderiza quando prevResultLine é passado, como parágrafo comum (#3181 self-review — diária destylizou em #3220 além do que PR#3179 tinha feito)', () => {
     const withPrev = renderEia(
       "É IA? — DESTAQUE DO MÊS\n[placeholder]",
       "2605",
@@ -181,10 +184,17 @@ describe("renderEia unificação com a diária (#2709)", () => {
     );
     assert.ok(withPrev.includes("Resultado da última edição: 72% das pessoas acertaram."));
     const prevMatch = withPrev.match(/<p style="([^"]*)">Resultado da última edição: 72% das pessoas acertaram\.<\/p>/);
-    assert.ok(prevMatch, "linha de prevResult deve existir com estilo dedicado");
-    assert.ok(prevMatch![1].includes("font-weight:bold;"));
-    assert.ok(prevMatch![1].includes("text-transform:uppercase;"));
-    assert.ok(prevMatch![1].includes(`color:#00A0A0;`), "cor teal");
+    assert.ok(prevMatch, "linha de prevResult deve existir");
+    // #3181: a issue original pedia ponto ● teal + label ink (porte literal do
+    // PR#3179) — mas a diária já tinha ido além via #3220 (destyle a pedido do
+    // editor, "ler como frase comum"): sem bold/uppercase/letter-spacing/ponto,
+    // parágrafo de corpo puro. Aplicado aqui o estado ATUAL da diária (parity
+    // real, evita recriar drift) — ver comentário em monthly-render.ts renderEia.
+    assert.ok(!prevMatch![1].includes("font-weight:bold"), "não deve ser bold");
+    assert.ok(!prevMatch![1].includes("text-transform:uppercase"), "não deve ser uppercase");
+    assert.ok(!prevMatch![1].includes("letter-spacing"), "não deve ter letter-spacing");
+    assert.ok(prevMatch![1].includes("color:#171411;"), "cor ink (era teal)");
+    assert.ok(!withPrev.includes("&#9679;&nbsp;Resultado da última edição"), "sem ponto ● precedendo o texto");
   });
 
   it("draftToEmail repassa eiaPrevResultLine pro renderEia", () => {
