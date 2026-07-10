@@ -15,6 +15,14 @@
  * Fix: mesmo padrão do parse irmão — try/catch, log estruturado, fallback
  * para "sem score" (nickname form reoferecido, igual ao caso em que
  * score:{email} nunca foi gravado).
+ *
+ * Código-review desta PR (`/code-review max --comment`) achou um 2º gap na
+ * MESMA função: `prev.choice` (o parse irmão de `existingFromKv`, já
+ * guardado desde #3118) era acessado sem `?.` — `JSON.parse("null")`
+ * retorna `null` SEM lançar (o catch nunca dispara), e `prev.choice` num
+ * `prev` `null` lança TypeError não-capturado. Mesma família de bug, mesma
+ * função, reproduzido diretamente via `buildAlreadyVotedResponse(..., "null")`.
+ * Fix: `prev?.choice`.
  */
 
 import { describe, it } from "node:test";
@@ -91,6 +99,28 @@ describe("buildAlreadyVotedResponse — guard de JSON.parse(prevScoreRaw) corrom
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /action="\/set-name"/);
+  });
+});
+
+describe("buildAlreadyVotedResponse — guard de prev.choice quando existingFromKv é JSON válido não-objeto (#3278, achado no code-review)", () => {
+  it("existingFromKv = 'null' (JSON válido, não-objeto) não lança — cai no fallback 'escolha: ?' (200, não 500)", async () => {
+    let res: Response;
+    try {
+      res = await buildAlreadyVotedResponse(scoreOnlyEnv(null), "diaria", "260701", "user@x.com", "null");
+    } catch (e) {
+      assert.fail(`não deve lançar quando existingFromKv é JSON 'null': ${String(e)}`);
+      return;
+    }
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /escolha: \?/, "prev null deve cair no mesmo fallback '?' do KV corrompido/ainda-não-propagado");
+  });
+
+  it("existingFromKv = '42' (JSON válido, número) também não lança — mesmo fallback", async () => {
+    const res = await buildAlreadyVotedResponse(scoreOnlyEnv(null), "diaria", "260701", "user@x.com", "42");
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /escolha: \?/);
   });
 });
 

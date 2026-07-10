@@ -60,7 +60,13 @@ export async function buildAlreadyVotedResponse(
   // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
   // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
   // votou em MAIS de uma edição arquivada não sabia qual delas.
-  const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice ?? "?"}).`;
+  // #3278 (code-review desta PR): `prev.choice` sem optional chaining lançava
+  // TypeError não-capturado quando `existingFromKv` é JSON VÁLIDO mas não-objeto
+  // (ex: a string literal "null" — JSON.parse("null") retorna null sem lançar,
+  // então o catch acima nunca dispara). `?.` fecha essa brecha na mesma família
+  // de bug que este PR corrige — reproduzido via buildAlreadyVotedResponse(...,
+  // "null") lançando "Cannot read properties of null (reading 'choice')".
+  const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev?.choice ?? "?"}).`;
   // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
   // determinar se o votante ainda precisa do form de nickname — sem isso, um
   // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
