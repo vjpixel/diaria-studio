@@ -1,5 +1,5 @@
 /**
- * resolve-edition-url.ts (#2454, write-then-validate #3223)
+ * resolve-edition-url.ts (#2454, write-then-validate #3223, guard não-fatal #3277)
  *
  * Resolve a URL pública da edição a partir do slug do draft Beehiiv e grava
  * em `_internal/05-edition-url.txt` para consumo pelo publish-linkedin.ts e
@@ -13,23 +13,34 @@
  *   2. --slug         → URL direta (quando o slug já foi derivado / corrigido)
  *   3. --edition-url  → URL literal (override manual, qualquer valor)
  *
- * Guard anti-placeholder (write-then-validate, #3223):
+ * Guard anti-placeholder (write-then-validate, #3223; não-fatal, #3277):
  *   Com --validate-social, lê 03-social.md, substitui {edition_url} pela URL
  *   resolvida e REESCREVE o arquivo (atômico) — só então roda
- *   findUnresolvedPlaceholders no conteúdo JÁ substituído, abortando com exit 3
- *   se sobrar algum placeholder não-resolvido (que não seja deferred, ex:
- *   {outros_count}, resolvido por publish-linkedin.ts no dispatch).
+ *   findUnresolvedPlaceholders no conteúdo JÁ substituído.
  *
  *   Antes do #3223, o guard rodava sobre o 03-social.md ORIGINAL (nunca
  *   reescrito) — {edition_url} literal sempre presente por design (assim
  *   stitch-newsletter.ts/social-linkedin geram o arquivo), então o guard
  *   sempre falhava com exit 3 em qualquer edição normal.
  *
+ *   #3277: um placeholder {snake_case} remanescente APÓS a substituição de
+ *   {edition_url} é ambíguo — pode ser um bug real (writer/stitch esqueceu de
+ *   resolver um placeholder), mas também pode ser prosa legítima citando um
+ *   exemplo de prompt/campo de API entre chaves (plausível numa newsletter de
+ *   IA — ex: {system_prompt}). Como as duas formas são sintaticamente
+ *   idênticas, o guard não pode distinguir uma da outra de forma confiável —
+ *   travar TODO o dispatch social (LinkedIn+Facebook+Instagram+Threads) da
+ *   edição inteira por um falso positivo tem blast radius desproporcional ao
+ *   risco. Por isso o guard deixou de ser fatal: ainda detecta e AVISA (stderr
+ *   + `data/run-log.jsonl` via `logEvent`, nível warn — visível via
+ *   `/diaria-log {edition} warn`), mas não bloqueia mais o dispatch (exit 0).
+ *   {edition_url} continua sendo substituído normalmente antes do aviso.
+ *
  * Uso:
  *   npx tsx scripts/resolve-edition-url.ts \
  *     --edition-dir data/editions/260623/ \
  *     --title "Título D1 da edição"
- *     [--validate-social]   # falhar se {edition_url} sobreviver no 03-social.md
+ *     [--validate-social]   # avisar (não bloquear) se sobrar placeholder em 03-social.md
  *
  *   npx tsx scripts/resolve-edition-url.ts \
  *     --edition-dir data/editions/260623/ \
@@ -42,16 +53,17 @@
  *     [--validate-social]
  *
  * Exit codes:
- *   0 — URL gravada com sucesso (+ validação passed se --validate-social)
+ *   0 — URL gravada com sucesso. Com --validate-social, sempre 0 mesmo quando
+ *       sobra placeholder não-resolvido em 03-social.md (#3277) — nesse caso
+ *       um warning é impresso e persistido em data/run-log.jsonl, mas o
+ *       dispatch social não é bloqueado.
  *   1 — Erro de input / arquivo ausente
- *   3 — placeholder não-resolvido detectado em 03-social.md APÓS a substituição
- *       de {edition_url} (--validate-social) — ex: um placeholder novo/diferente
- *       que nenhum writer resolveu. {edition_url} em si nunca dispara isso mais,
- *       porque este script já o substitui antes de validar.
+ *   (3 — descontinuado em #3277; o guard anti-placeholder não é mais fatal.
+ *        Mantido documentado aqui para quem procurar histórico de exit codes.)
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   deriveEditionUrl,
@@ -62,6 +74,7 @@ import {
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -174,19 +187,34 @@ function main(argv: string[]): void {
 
     const unresolved = findUnresolvedPlaceholders(substituted);
     if (unresolved.length > 0) {
-      console.error(
-        `ERRO (#2454/#3223 guard anti-placeholder): 03-social.md contém placeholders não-resolvidos ` +
-        `mesmo APÓS a substituição de {edition_url}:\n` +
+      // #3277: não-fatal. Um placeholder {snake_case} remanescente é ambíguo
+      // (bug real vs. prosa citando um exemplo entre chaves) — avisar em vez
+      // de travar o dispatch social da edição inteira num falso positivo.
+      const editionIdMatch = basename(editionDir).match(/^\d{6}/);
+      const editionId = editionIdMatch ? editionIdMatch[0] : null;
+      console.warn(
+        `AVISO (#3277 guard anti-placeholder — não-fatal): 03-social.md contém possíveis placeholders ` +
+        `não-resolvidos mesmo APÓS a substituição de {edition_url}:\n` +
         `  ${unresolved.join(", ")}\n` +
         `\n` +
-        `Todo placeholder {snake_case} (exceto os deferred, ex: {outros_count} — resolvido por\n` +
-        `publish-linkedin.ts no dispatch) DEVE estar resolvido em 03-social.md antes do dispatch do social.\n` +
+        `O dispatch social NÃO foi bloqueado — isso pode ser um bug real (writer/stitch esqueceu de\n` +
+        `resolver um placeholder) OU prosa legítima citando um exemplo de prompt/campo de API entre\n` +
+        `chaves (comum em conteúdo sobre IA). Revisão humana recomendada — ver \`/diaria-log ${editionId ?? "{edition}"} warn\`.\n` +
         `  → {edition_url} já foi substituído por este script (gravado: ${editionUrl}).\n` +
-        `  → o(s) placeholder(s) acima não é {edition_url} — verificar origem (writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`,
+        `  → o(s) placeholder(s) acima não é {edition_url} — se for um bug, verificar origem ` +
+        `(writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`,
       );
-      process.exit(3);
+      logEvent({
+        edition: editionId,
+        stage: 5,
+        agent: "resolve-edition-url",
+        level: "warn",
+        message: `guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada`,
+        details: { unresolved, edition_url: editionUrl, social_md_path: socialMdPath },
+      });
+    } else {
+      console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);
     }
-    console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);
   }
 
   // Sucesso

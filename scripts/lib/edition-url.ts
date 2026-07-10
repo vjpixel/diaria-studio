@@ -14,9 +14,11 @@
  *     Usado por resolve-edition-url.ts (#3223) para reescrever 03-social.md
  *     ANTES de validar, e por publish-linkedin.ts como resolução independente
  *     em memória no dispatch (defesa dupla — não depende deste helper).
- *   - `findUnresolvedPlaceholders` — guard anti-placeholder: garante que
- *     nenhum placeholder {snake_case} não-resolvido chega à fila de publicação
- *     do social, EXCETO os deferred (ver DEFERRED_PLACEHOLDERS).
+ *   - `findUnresolvedPlaceholders` — guard anti-placeholder: detecta
+ *     placeholder {snake_case} não-resolvido que chegaria à fila de publicação
+ *     do social, EXCETO os deferred (ver DEFERRED_PLACEHOLDERS). Não-fatal
+ *     desde #3277 — o caller (resolve-edition-url.ts) apenas avisa, não
+ *     bloqueia o dispatch (ver docstring da função para o porquê).
  *
  * Nota: {outros_count} é placeholder DEFERRED — resolvido pelo
  * publish-linkedin.ts durante o dispatch (não aqui). O guard NÃO
@@ -63,7 +65,7 @@ const DEFERRED_PLACEHOLDERS = new Set<string>(["{outros_count}"]);
 const PLACEHOLDER_RE = /\{[a-zA-Z][a-zA-Z0-9_]*\}/g;
 
 /**
- * Valida que o texto não contém placeholders {snake_case} não-resolvidos.
+ * Detecta placeholders {snake_case} não-resolvidos no texto.
  *
  * {outros_count} (e demais DEFERRED_PLACEHOLDERS) é intencionalmente ignorado
  * — é resolvido pelo dispatch (publish-linkedin.ts) e estará presente em
@@ -71,7 +73,16 @@ const PLACEHOLDER_RE = /\{[a-zA-Z][a-zA-Z0-9_]*\}/g;
  * (regressão #2454).
  *
  * Retorna array com os placeholders não-resolvidos encontrados (vazio = ok).
- * Caller deve abortar o dispatch se o array não estiver vazio.
+ *
+ * Não-fatal por design (#3277): um placeholder {snake_case} genérico é
+ * ambíguo — pode ser um bug real (template esqueceu de substituir) ou prosa
+ * legítima citando um exemplo entre chaves (ex: nome de campo de API/prompt
+ * numa newsletter de IA). Como a função não pode distinguir os dois casos de
+ * forma confiável, ela apenas DETECTA — o caller (resolve-edition-url.ts)
+ * decide o que fazer com o resultado. Desde #3277, o caller trata resultado
+ * não-vazio como warning (log + segue o dispatch), não mais como abort fatal
+ * — travar o dispatch social inteiro por um falso positivo tinha blast
+ * radius desproporcional ao risco (issue #3277).
  *
  * @param text - Conteúdo a validar (03-social.md ou trecho dele)
  * @returns Array de placeholders encontrados, ex: ["{edition_url}"]
