@@ -1,16 +1,22 @@
 /**
- * test/resolve-edition-url.test.ts (#2454)
+ * test/resolve-edition-url.test.ts (#2454, write-then-validate #3223)
  *
  * Testa:
  *   (a) deriveEditionUrl — URL publica derivada do titulo via seoSlug
  *       bate com o formato real do Beehiiv (https://diar.ia.br/p/{slug}).
- *   (b) findUnresolvedPlaceholders — guard anti-placeholder rejeita {edition_url}
- *       mas IGNORA {outros_count} (deferred-to-dispatch, resolvido por publish-linkedin).
+ *   (b) findUnresolvedPlaceholders — guard anti-placeholder rejeita qualquer
+ *       placeholder {snake_case} nao-resolvido mas IGNORA {outros_count}
+ *       (deferred-to-dispatch, resolvido por publish-linkedin).
  *   (c) CLI resolve-edition-url.ts — integracao via spawnSync:
- *       grava 05-edition-url.txt + aborta (exit 3) quando --validate-social
- *       detecta {edition_url} nao-resolvido.
+ *       grava 05-edition-url.txt + (write-then-validate, #3223) reescreve
+ *       03-social.md substituindo {edition_url} pela URL real ANTES de validar,
+ *       entao --validate-social sempre passa (exit 0) quando o unico placeholder
+ *       presente era {edition_url} — e ainda aborta (exit 3) se sobrar outro
+ *       placeholder diferente, nao-deferred, apos a substituicao.
  *       Regressao #2454-finding-1: {outros_count} presente com {edition_url} resolvido -> exit 0.
  *       Regressao #2454-finding-3: --title seguido de outra flag nao crashar.
+ *       Regressao #3223: {edition_url} literal em 03-social.md NAO bloqueia mais o
+ *       guard (bug original: main() nunca escrevia o arquivo, guard sempre exit 3).
  */
 
 import { describe, it } from "node:test";
@@ -113,6 +119,19 @@ describe("#2454 findUnresolvedPlaceholders — guard anti-placeholder", () => {
     const text = "Edicao em https://diar.ia.br/p/modelos-se-replicam-sozinhos";
     assert.deepEqual(findUnresolvedPlaceholders(text), []);
   });
+
+  // #3223: findUnresolvedPlaceholders generalizado de literal {edition_url}
+  // para qualquer placeholder {snake_case} — sem isso, apos o write-then-validate
+  // sempre substituir {edition_url}, o guard ficaria toothless (nunca mais
+  // detectaria nada, mesmo que sobrasse um placeholder diferente nao-resolvido).
+  it("#3223: placeholder generico diferente de {edition_url}/{outros_count} -> detectado", () => {
+    const text = "Post com {algum_placeholder_novo} nao resolvido";
+    const found = findUnresolvedPlaceholders(text);
+    assert.ok(
+      found.includes("{algum_placeholder_novo}"),
+      `deve detectar placeholder generico: ${JSON.stringify(found)}`,
+    );
+  });
 });
 
 // ── (c) Testes de integracao: CLI resolve-edition-url.ts ────────────────────
@@ -207,7 +226,13 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("exit 3: --validate-social com {edition_url} nao-resolvido → aborta (#2454 guard)", () => {
+  // #3223 regressao (bug original da issue): main() nunca reescrevia
+  // 03-social.md — o guard rodava sobre o arquivo ORIGINAL intocado, que
+  // sempre contem {edition_url} literal por design (assim stitch-newsletter.ts/
+  // social-linkedin geram o arquivo). Resultado: exit 3 SEMPRE, em toda edicao
+  // normal. Fix (write-then-validate): reescreve o arquivo substituindo
+  // {edition_url} pela URL real ANTES de validar -> guard passa (exit 0).
+  it("#3223 fix: --validate-social com {edition_url} nao-resolvido → REESCREVE 03-social.md e PASSA (exit 0, nao mais exit 3)", () => {
     const socialMd = [
       "# LinkedIn",
       "",
@@ -217,13 +242,55 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       "",
     ].join("\n");
 
-    const { exitCode, stderr, tmp } = runCli(
+    const { exitCode, stdout, editionDir, tmp } = runCli(
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
     );
-    assert.equal(exitCode, 3, `esperava exit 3 (placeholder detectado), obteve ${exitCode}`);
-    assert.match(stderr, /\{edition_url\}/);
+    assert.equal(exitCode, 0, `esperava exit 0 (fix #3223 — {edition_url} deve ser substituido antes de validar), obteve ${exitCode}`);
+    assert.match(stdout, /reescrito/, "deve logar que 03-social.md foi reescrito");
+
+    // (a) o arquivo 03-social.md em disco deve ter sido reescrito com a URL real,
+    // substituindo o placeholder {edition_url} — nao apenas 05-edition-url.txt.
+    const rewrittenPath = resolve(editionDir, "03-social.md");
+    const rewritten = readFileSync(rewrittenPath, "utf8");
+    assert.ok(
+      rewritten.includes("https://diar.ia.br/p/meu-titulo-teste"),
+      `03-social.md deve conter a URL real apos o write-then-validate: ${rewritten}`,
+    );
+    assert.ok(
+      !rewritten.includes("{edition_url}"),
+      `03-social.md NAO deve mais conter o placeholder {edition_url}: ${rewritten}`,
+    );
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // #3223 requirement (c): a substituicao de {edition_url} nao deve tornar o
+  // guard toothless — um placeholder GENUINAMENTE diferente (nao {edition_url},
+  // nao deferred) que sobra em 03-social.md apos a substituicao ainda deve
+  // abortar com exit 3.
+  it("#3223: placeholder OUTRO (nao {edition_url}, nao deferred) sobrevive a substituicao → exit 3", () => {
+    const socialMd = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "Post d1 em {edition_url} com {algum_placeholder_novo} nao resolvido",
+      "",
+    ].join("\n");
+
+    const { exitCode, stderr, editionDir, tmp } = runCli(
+      ["--slug", "meu-titulo-teste", "--validate-social"],
+      { "03-social.md": socialMd },
+    );
+    assert.equal(exitCode, 3, `placeholder generico nao-deferred deve continuar bloqueando, obteve ${exitCode}`);
+    assert.match(stderr, /\{algum_placeholder_novo\}/);
     assert.match(stderr, /guard anti-placeholder/);
+
+    // {edition_url} ainda deve ter sido substituido (o write acontece antes da
+    // validacao) — so o placeholder desconhecido permanece.
+    const rewrittenPath = resolve(editionDir, "03-social.md");
+    const rewritten = readFileSync(rewrittenPath, "utf8");
+    assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido mesmo com exit 3");
+    assert.ok(rewritten.includes("{algum_placeholder_novo}"), "placeholder desconhecido permanece intocado");
     rmSync(tmp, { recursive: true, force: true });
   });
 

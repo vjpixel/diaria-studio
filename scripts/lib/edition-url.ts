@@ -1,5 +1,5 @@
 /**
- * edition-url.ts (#2454)
+ * edition-url.ts (#2454, write-then-validate #3223)
  *
  * Shared helpers para derivar a URL pública de uma edição Beehiiv
  * a partir do título (via seoSlug) sem precisar de post publicado.
@@ -9,9 +9,14 @@
  * onde {slug} = seoSlug(title) — mesmo algoritmo usado em 4a-bis do
  * beehiiv-playbook.md para setar o campo SEO/URL slug do post draft.
  *
- * Este módulo também expõe `findUnresolvedPlaceholders` para o guard
- * anti-placeholder: garante que {edition_url} não chega à fila de
- * publicação do social com valor não-resolvido.
+ * Este módulo também expõe:
+ *   - `substituteEditionUrl` — substitui {edition_url} pela URL real num texto.
+ *     Usado por resolve-edition-url.ts (#3223) para reescrever 03-social.md
+ *     ANTES de validar, e por publish-linkedin.ts como resolução independente
+ *     em memória no dispatch (defesa dupla — não depende deste helper).
+ *   - `findUnresolvedPlaceholders` — guard anti-placeholder: garante que
+ *     nenhum placeholder {snake_case} não-resolvido chega à fila de publicação
+ *     do social, EXCETO os deferred (ver DEFERRED_PLACEHOLDERS).
  *
  * Nota: {outros_count} é placeholder DEFERRED — resolvido pelo
  * publish-linkedin.ts durante o dispatch (não aqui). O guard NÃO
@@ -39,20 +44,31 @@ export function deriveEditionUrl(title: string): string {
 }
 
 /**
- * Placeholders que NÃO devem sobreviver ao guard anti-placeholder do Stage 5.
- *
- * Somente {edition_url} — resolvido por resolve-edition-url.ts antes do dispatch.
- * {outros_count} é DEFERRED: resolvido por publish-linkedin.ts no dispatch e
- * portanto sempre presente em 03-social.md neste ponto. Não deve ser rejeitado aqui.
+ * Placeholders {snake_case} que são DEFERRED — resolvidos apenas no momento
+ * do dispatch (publish-linkedin.ts), portanto SEMPRE presentes em 03-social.md
+ * neste ponto do pipeline. Nunca rejeitados pelo guard.
  */
-const UNRESOLVED_PLACEHOLDER_RE = /\{edition_url\}/g;
+const DEFERRED_PLACEHOLDERS = new Set<string>(["{outros_count}"]);
 
 /**
- * Valida que o texto não contém {edition_url} não-resolvido.
+ * Padrão genérico de placeholder — qualquer token `{algum_nome}` (letras/
+ * dígitos/underscore). Generalizado a partir do literal `{edition_url}` em
+ * #3223: com resolve-edition-url.ts agora reescrevendo 03-social.md antes de
+ * validar (write-then-validate), {edition_url} está SEMPRE resolvido nesse
+ * ponto — um guard hardcoded a esse único literal ficaria toothless (sempre
+ * passa, não detecta mais nada). Detectar qualquer placeholder remanescente
+ * (exceto os deferred) mantém o guard útil como defesa contra placeholders
+ * futuros que escapem da substituição.
+ */
+const PLACEHOLDER_RE = /\{[a-zA-Z][a-zA-Z0-9_]*\}/g;
+
+/**
+ * Valida que o texto não contém placeholders {snake_case} não-resolvidos.
  *
- * {outros_count} é intencionalmente ignorado — é resolvido pelo dispatch
- * (publish-linkedin.ts) e estará presente em 03-social.md neste ponto.
- * Rejeitar {outros_count} aqui causaria exit 3 em toda edição (regressão #2454).
+ * {outros_count} (e demais DEFERRED_PLACEHOLDERS) é intencionalmente ignorado
+ * — é resolvido pelo dispatch (publish-linkedin.ts) e estará presente em
+ * 03-social.md neste ponto. Rejeitá-lo aqui causaria exit 3 em toda edição
+ * (regressão #2454).
  *
  * Retorna array com os placeholders não-resolvidos encontrados (vazio = ok).
  * Caller deve abortar o dispatch se o array não estiver vazio.
@@ -62,8 +78,27 @@ const UNRESOLVED_PLACEHOLDER_RE = /\{edition_url\}/g;
  */
 export function findUnresolvedPlaceholders(text: string): string[] {
   const found = new Set<string>();
-  for (const match of text.matchAll(UNRESOLVED_PLACEHOLDER_RE)) {
-    found.add(match[0]);
+  for (const match of text.matchAll(PLACEHOLDER_RE)) {
+    if (!DEFERRED_PLACEHOLDERS.has(match[0])) found.add(match[0]);
   }
   return [...found];
+}
+
+/**
+ * Substitui todas as ocorrências literais de `{edition_url}` por `editionUrl`
+ * num texto. Extraído para reuso (#3223) — resolve-edition-url.ts usa isso
+ * para reescrever 03-social.md ANTES de rodar o guard anti-placeholder
+ * (write-then-validate), garantindo que `findUnresolvedPlaceholders` valide
+ * o conteúdo JÁ substituído em vez do original intocado.
+ *
+ * publish-linkedin.ts mantém sua PRÓPRIA chamada `replaceAll("{edition_url}", ...)`
+ * independente no dispatch (defesa dupla, redundante mas inofensiva) — não
+ * foi migrada para usar este helper.
+ *
+ * @param text - Conteúdo original (pode ou não conter {edition_url})
+ * @param editionUrl - URL resolvida a substituir
+ * @returns Texto com {edition_url} substituído (idêntico ao original se ausente)
+ */
+export function substituteEditionUrl(text: string, editionUrl: string): string {
+  return text.replaceAll("{edition_url}", editionUrl);
 }
