@@ -1,8 +1,9 @@
 /**
- * apply-factcheck-autofix.ts (#2598)
+ * apply-factcheck-autofix.ts (#2598, estendido a social em #3224)
  *
  * Pré-aplica correções determinísticas de claims DIVERGENT do fact-checker em
- * `02-reviewed.md` ANTES de montar o gate do Stage 4.
+ * `02-reviewed.md` (newsletter) E `03-social.md` (social) ANTES de montar o
+ * gate do Stage 4.
  *
  * Regras de aplicação:
  *   1. Só claims com `verdict === "DIVERGENT"` E `suggested_fix` presente.
@@ -10,14 +11,26 @@
  *      não divergências factuais determísticas).
  *   3. NOT_FOUND_IN_SOURCE nunca recebe suggested_fix → não é processado.
  *   4. Pular claim cujo `destaque` bate com o destaque do `intentional_error`
- *      declarado no frontmatter de `02-reviewed.md` (não tocar erro intencional).
+ *      declarado em `_internal/intentional-error.json` (não tocar erro intencional).
  *   5. Substituição é SCOPED ao bloco do destaque correto — evita clobberar
- *      o intentional_error de outro destaque com mesmo texto (#2617).
- *   6. Apenas `02-reviewed.md` é modificado. `03-social.md` NÃO é tocado —
- *      qualquer edição em social invalida o sentinel do humanizador (#2617).
+ *      o intentional_error de outro destaque com mesmo texto (#2617). Em
+ *      `03-social.md`, o "bloco do destaque" são os headers `## dN` — pode
+ *      haver até 2 (um em `# LinkedIn`, outro em `# Facebook`) e a correção
+ *      é aplicada em AMBOS quando o texto aparece nos dois (#3224).
+ *   6. `entry.sources` decide ONDE aplicar: `["newsletter"]` → só newsletter,
+ *      `["social"]` → só social, `["newsletter","social"]` → em ambos (cada
+ *      um só se o texto de fato aparecer lá — sucesso parcial é permitido e
+ *      registrado em `files_modified`). Antes do #3224, claims social-only
+ *      eram sempre skipped para preservar o sentinel do humanizador; agora
+ *      o sentinel é regravado com bypass explícito (`check-humanizer-social.ts`
+ *      `writeSentinel`, mecanismo já validado pelo #2529) logo após a escrita
+ *      em `03-social.md`, evitando reinventar a trava.
  *
  * Output:
  *   `_internal/fact-check-autofix.json` — log de cada correção aplicada/pulada.
+ *   Campo `social_modified: true` sinaliza pro orchestrator que precisa
+ *   re-renderizar e republicar o preview social (#3224, análogo ao re-render
+ *   obrigatório da newsletter quando `summary.applied > 0`).
  *
  * Uso:
  *   npx tsx scripts/apply-factcheck-autofix.ts --edition-dir data/editions/AAMMDD/
@@ -39,6 +52,7 @@ import {
   type IntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
 import { parseArgs } from "./lib/cli-args.ts";
+import { writeSentinel } from "./check-humanizer-social.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +88,16 @@ export interface AutofixResult {
     applied: number;
     skipped: number;
   };
+  /** (#3224) true quando ao menos 1 correção foi escrita em `03-social.md`
+   * nesta execução (sempre `false` em `--dry-run`, já que nada é escrito em
+   * disco). Sinaliza pro orchestrator que precisa re-renderizar/republicar o
+   * preview social (§4c.6b) — análogo ao re-render obrigatório da newsletter
+   * quando `summary.applied > 0`. */
+  social_modified: boolean;
+  /** (#3224) Razão de bypass usada ao regravar `.humanizer-social-done.json`
+   * via `check-humanizer-social.ts`'s `writeSentinel` — presente apenas quando
+   * `social_modified === true`. */
+  social_sentinel_bypass_reason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +231,82 @@ export function applyTextSubstitution(
 }
 
 /**
+ * (#3224) Encontra TODOS os ranges (start, end) dos blocos `## dN` em
+ * `03-social.md` para o `destaque` dado. Pode haver até 2 — um sob `# LinkedIn`,
+ * outro sob `# Facebook` (`merge-social-md.ts` concatena os dois canais no
+ * mesmo arquivo) — daí retornar um array em vez de um único range como
+ * `findDestaqueBodyRange` (newsletter tem só 1 ocorrência de cada DESTAQUE N).
+ *
+ * Delimitação: QUALQUER header de 1 ou 2 hashes (`# LinkedIn`, `# Facebook`,
+ * `## d1`, `## d2`, `## d3`, `## post_pixel`) fecha o bloco aberto. Headers de
+ * 3 hashes (`### comment_diaria`, `### comment_pixel`) ficam DENTRO do bloco —
+ * não fecham (mesmo padrão de `parseSocialByDestaque` em lint-social-numbers.ts).
+ * Retorna `[]` se o destaque não aparece no arquivo.
+ */
+export function findSocialDestaqueRanges(
+  content: string,
+  destaque: number,
+): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const lines = content.split("\n");
+  const lineOffsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    lineOffsets.push(offset);
+    offset += line.length + 1; // +1 pelo "\n" removido no split
+  }
+
+  let openIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/^#{1,2}\s+\S/.test(line)) continue; // não é boundary (1-2 hashes; "###..." não casa)
+
+    // Qualquer header-boundary fecha o bloco aberto (se houver)
+    if (openIdx !== -1) {
+      ranges[openIdx].end = lineOffsets[i];
+      openIdx = -1;
+    }
+
+    const dHeader = line.match(/^##\s+d(\d)\b/i);
+    if (dHeader && parseInt(dHeader[1], 10) === destaque) {
+      ranges.push({ start: lineOffsets[i], end: content.length });
+      openIdx = ranges.length - 1;
+    }
+  }
+  return ranges;
+}
+
+/**
+ * (#3224) Aplica substituição de `oldText` → `newText` em TODOS os ranges
+ * `## dN` do destaque em `03-social.md` (até 2: LinkedIn + Facebook) — no
+ * máximo 1 substituição por range (primeira ocorrência), mesma semântica
+ * conservadora de `applyTextSubstitution`. Compensa o offset dos ranges
+ * seguintes à medida que o conteúdo muda (delta de comprimento oldText→newText),
+ * já que os ranges são calculados uma vez sobre o conteúdo original.
+ */
+export function applySocialTextSubstitution(
+  content: string,
+  destaque: number,
+  oldText: string,
+  newText: string,
+): { changed: boolean; content: string; modifiedRanges: number } {
+  const ranges = findSocialDestaqueRanges(content, destaque);
+  let current = content;
+  let delta = 0;
+  let modifiedRanges = 0;
+  for (const range of ranges) {
+    const adjusted = { start: range.start + delta, end: range.end + delta };
+    const result = applyTextSubstitution(current, oldText, newText, adjusted);
+    if (result.changed) {
+      current = result.content;
+      delta += newText.length - oldText.length;
+      modifiedRanges++;
+    }
+  }
+  return { changed: modifiedRanges > 0, content: current, modifiedRanges };
+}
+
+/**
  * Processa a lista de claims e determina ação para cada um.
  * Pure: não lê/escreve arquivos — lógica de decisão testável.
  *
@@ -300,6 +400,7 @@ async function main(): Promise<void> {
 
   const factCheckPath = join(editionDir, "_internal", "fact-check.json");
   const newsletterPath = join(editionDir, "02-reviewed.md");
+  const socialPath = join(editionDir, "03-social.md");
   const internalDir = join(editionDir, "_internal");
   const outPath = join(internalDir, "fact-check-autofix.json");
 
@@ -319,6 +420,8 @@ async function main(): Promise<void> {
   // Ler inputs
   const factCheck = JSON.parse(readFileSync(factCheckPath, "utf8")) as FactCheckResult;
   let newsletter = readFileSync(newsletterPath, "utf8");
+  const socialExists = existsSync(socialPath);
+  let social = socialExists ? readFileSync(socialPath, "utf8") : "";
 
   // Extrair destaque do erro intencional (#3222: _internal/intentional-error.json)
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
@@ -327,56 +430,104 @@ async function main(): Promise<void> {
   // Planejar autofixes
   const entries = planAutofixes(factCheck.claims, intentionalDestaque);
 
-  // Aplicar substituições (scoped ao bloco do destaque correto)
-  const filesModifiedSet = new Set<string>();
+  // Aplicar substituições — newsletter SCOPED ao bloco DESTAQUE N (#2617);
+  // social SCOPED aos blocos ## dN (#3224, pode tocar LinkedIn + Facebook).
+  let newsletterModified = false;
+  let socialModified = false;
+
   for (const entry of entries) {
     if (entry.status !== "applied") continue;
     if (!entry.suggested_fix) continue; // guard (planAutofixes garante, mas TS)
 
-    // Apenas newsletter — social não é tocado (invalidaria o sentinel do humanizador)
-    // Claims com sources: ["social"] only são documentados como skipped no log.
     // Guard: sources pode ser undefined se o fact-checker omitir o campo (#2628 gap 2).
-    const hasNewsletter = (entry.sources ?? []).includes("newsletter");
-    if (!hasNewsletter) {
-      entry.status = "skipped_text_not_found";
-      entry.note = "Claim apenas em social — auto-fix restrito a 02-reviewed.md para preservar sentinel do humanizador (#2617).";
-      continue;
-    }
+    const sources = entry.sources ?? [];
+    const hasNewsletter = sources.includes("newsletter");
+    const hasSocial = sources.includes("social");
+    const filesModified: string[] = [];
+    const failureNotes: string[] = [];
 
-    // Encontrar o bloco do destaque para substituição scoped (#2617)
-    const scope = findDestaqueBodyRange(newsletter, entry.destaque);
-    if (!scope) {
-      console.warn(`[apply-factcheck-autofix] WARN: bloco DESTAQUE ${entry.destaque} não encontrado em 02-reviewed.md — pulando claim "${entry.text}"`);
-      entry.status = "skipped_text_not_found";
-      entry.note = `Bloco DESTAQUE ${entry.destaque} não encontrado no corpo de 02-reviewed.md.`;
-      continue;
-    }
-
-    const { changed, content: newContent } = applyTextSubstitution(
-      newsletter,
-      entry.text,
-      entry.suggested_fix,
-      scope,
-    );
-
-    if (changed) {
-      // Atualizar in-memory SEMPRE (inclusive dry-run) para que substituições
-      // sequenciais reflitam o estado real do documento (#2617).
-      newsletter = newContent;
-      entry.files_modified = ["newsletter"];
-      if (!isDryRun) {
-        filesModifiedSet.add(newsletterPath);
+    if (hasNewsletter) {
+      const scope = findDestaqueBodyRange(newsletter, entry.destaque);
+      if (!scope) {
+        console.warn(`[apply-factcheck-autofix] WARN: bloco DESTAQUE ${entry.destaque} não encontrado em 02-reviewed.md — pulando claim "${entry.text}"`);
+        failureNotes.push(`Bloco DESTAQUE ${entry.destaque} não encontrado no corpo de 02-reviewed.md.`);
+      } else {
+        const { changed, content: newContent } = applyTextSubstitution(
+          newsletter,
+          entry.text,
+          entry.suggested_fix,
+          scope,
+        );
+        if (changed) {
+          // Atualizar in-memory SEMPRE (inclusive dry-run) para que substituições
+          // sequenciais reflitam o estado real do documento (#2617).
+          newsletter = newContent;
+          filesModified.push("newsletter");
+          if (!isDryRun) newsletterModified = true;
+        } else {
+          failureNotes.push(`Texto "${entry.text}" não encontrado no bloco DESTAQUE ${entry.destaque} de 02-reviewed.md.`);
+        }
       }
+    }
+
+    // (#3224) social: aplica em TODOS os blocos ## dN (LinkedIn + Facebook) —
+    // reusa o mecanismo de bypass do sentinel do humanizador já validado pelo
+    // #2529, em vez do skip incondicional de antes.
+    if (hasSocial) {
+      if (!socialExists) {
+        failureNotes.push("03-social.md ausente — correção social pulada.");
+      } else {
+        const { changed, content: newContent } = applySocialTextSubstitution(
+          social,
+          entry.destaque,
+          entry.text,
+          entry.suggested_fix,
+        );
+        if (changed) {
+          social = newContent;
+          filesModified.push("social");
+          if (!isDryRun) socialModified = true;
+        } else {
+          failureNotes.push(`Texto "${entry.text}" não encontrado nos blocos ## d${entry.destaque} de 03-social.md.`);
+        }
+      }
+    }
+
+    if (filesModified.length > 0) {
+      entry.status = "applied";
+      entry.files_modified = filesModified;
+      // Sucesso parcial (ex: corrigiu newsletter mas não achou em social) —
+      // registrar o motivo pra transparência no gate, sem virar skip.
+      if (failureNotes.length > 0) entry.note = failureNotes.join(" ");
     } else {
       entry.status = "skipped_text_not_found";
-      entry.note = `Texto "${entry.text}" não encontrado no bloco DESTAQUE ${entry.destaque} de 02-reviewed.md.`;
+      entry.note = failureNotes.join(" ") || "Texto não encontrado em nenhum arquivo aplicável.";
     }
   }
 
-  // Gravar arquivos modificados (não dry-run)
+  // Gravar arquivos modificados + regravar sentinel do humanizador social (não dry-run)
+  let socialSentinelBypassReason: string | undefined;
   if (!isDryRun) {
-    for (const path of filesModifiedSet) {
-      if (path === newsletterPath) writeFileSync(path, newsletter, "utf8");
+    if (newsletterModified) {
+      writeFileSync(newsletterPath, newsletter, "utf8");
+    }
+    if (socialModified) {
+      writeFileSync(socialPath, social, "utf8");
+      // (#3224) Regrava o sentinel com bypass explícito — reusa o mecanismo já
+      // validado em produção pelo #2529 (`check-humanizer-social.ts`'s
+      // `writeSentinel`) em vez de inventar um novo, evitando falso-alarme de
+      // "social editado sem re-humanizar" no próximo `--check`.
+      const appliedSocialEntries = entries.filter(
+        (e) => e.status === "applied" && (e.files_modified ?? []).includes("social"),
+      );
+      const destaquesTouched = [...new Set(appliedSocialEntries.map((e) => `D${e.destaque}`))].sort();
+      socialSentinelBypassReason =
+        `factcheck-autofix: ${appliedSocialEntries.length} correção(ões) DIVERGENT aplicada(s) em 03-social.md (${destaquesTouched.join(", ")})`;
+      try {
+        writeSentinel(editionDir, socialSentinelBypassReason);
+      } catch (e) {
+        console.warn(`[apply-factcheck-autofix] WARN: falha ao regravar sentinel do humanizador social — ${(e as Error).message}`);
+      }
     }
   }
 
@@ -395,6 +546,8 @@ async function main(): Promise<void> {
       applied,
       skipped,
     },
+    social_modified: socialModified,
+    ...(socialSentinelBypassReason ? { social_sentinel_bypass_reason: socialSentinelBypassReason } : {}),
   };
 
   writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
@@ -413,6 +566,13 @@ async function main(): Promise<void> {
     for (const e of entries.filter((x) => x.status !== "applied")) {
       console.log(`  ⏭  D${e.destaque} [${e.claim_type}] "${e.text}" — ${e.status}${e.note ? ": " + e.note : ""}`);
     }
+  }
+
+  if (result.social_modified) {
+    console.log(
+      `[apply-factcheck-autofix] 03-social.md corrigido — sentinel do humanizador regravado com bypass (#3224). ` +
+      `Re-renderizar e republicar o preview social antes do gate (§4c.6b).`,
+    );
   }
 }
 

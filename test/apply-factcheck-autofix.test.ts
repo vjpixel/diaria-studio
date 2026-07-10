@@ -1,5 +1,5 @@
 /**
- * test/apply-factcheck-autofix.test.ts (#2598)
+ * test/apply-factcheck-autofix.test.ts (#2598, estendido a social em #3224)
  *
  * Testes para scripts/apply-factcheck-autofix.ts.
  *
@@ -12,8 +12,13 @@
  *   6. Texto não encontrado nos arquivos → skipped_text_not_found
  *   7. Dry-run não modifica arquivos mas grava fact-check-autofix.json
  *   8. Multiple DIVERGENT (mesmo texto, destaques diferentes) → scoped ao destaque correto
- *   9. Claim apenas em social → skipped (sentinel do humanizador não é invalidado)
+ *   9. Claim apenas em social (#3224) → aplicado em 03-social.md, sentinel regravado com bypass
  *  10. Dry-run registra files_modified (plano) mesmo sem escrever em disco
+ *  11. (#3224) sources: ["newsletter","social"] com texto presente nos dois → AMBOS corrigidos
+ *  12. (#3224) sources: ["newsletter","social"] com texto só na newsletter → sucesso parcial
+ *  13. (#3224) findSocialDestaqueRanges / applySocialTextSubstitution — helpers puros
+ *  14. (#3224) sentinel pré-existente (pós-humanizador) é regravado com bypass_reason e
+ *      passa a bater com o novo hash de 03-social.md
  */
 
 import { describe, it } from "node:test";
@@ -28,10 +33,13 @@ import {
   isIntentionalErrorClaim,
   applyTextSubstitution,
   findDestaqueBodyRange,
+  findSocialDestaqueRanges,
+  applySocialTextSubstitution,
   planAutofixes,
   type AutofixEntry,
 } from "../scripts/apply-factcheck-autofix.ts";
 import type { FactClaim } from "../scripts/run-fact-checker.ts";
+import { checkSentinel, writeSentinel } from "../scripts/check-humanizer-social.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,8 +307,8 @@ describe("planAutofixes (#2598)", () => {
 // ---------------------------------------------------------------------------
 
 describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#2598)", () => {
-  it("aplica correção DIVERGENT em newsletter e grava autofix.json (social não tocado — sentinel)", () => {
-    const originalSocial = "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n";
+  it("(#3224) sources newsletter+social com texto nos dois → AMBOS corrigidos + sentinel regravado com bypass", () => {
+    const originalSocial = "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n\n# Facebook\n\n## d1\n\nGPT-4o foi superado pelo rival.\n";
     const fixture = createFixture({
       newsletterContent: "DESTAQUE 1\n\nO modelo GPT-4o foi comparado.\n",
       socialContent: originalSocial,
@@ -324,18 +332,68 @@ describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#259
       assert.ok(newsletter.includes("GPT-5.4"), "newsletter deve ter GPT-5.4 após autofix");
       assert.ok(!newsletter.includes("GPT-4o"), "newsletter não deve mais ter GPT-4o");
 
-      // Social NÃO deve ter sido modificado (sentinel do humanizador)
+      // Social (#3224) TAMBÉM deve ter sido corrigido — em AMBOS os canais (LinkedIn + Facebook)
       const social = readFileSync(fixture.socialPath, "utf8");
-      assert.equal(social, originalSocial, "03-social.md não deve ser tocado para preservar sentinel do humanizador");
+      assert.ok(!social.includes("GPT-4o"), "03-social.md não deve mais ter GPT-4o (LinkedIn + Facebook)");
+      const gpt54Count = (social.match(/GPT-5\.4/g) ?? []).length;
+      assert.equal(gpt54Count, 2, "GPT-5.4 deve aparecer 2x — 1 em LinkedIn ## d1, 1 em Facebook ## d1");
+
+      // Sentinel do humanizador deve ter sido regravado com bypass explícito (#2529 reusado)
+      const sentinelPath = join(fixture.dir, "_internal", ".humanizer-social-done.json");
+      assert.ok(existsSync(sentinelPath), "sentinel deve ter sido gravado");
+      const sentinel = JSON.parse(readFileSync(sentinelPath, "utf8"));
+      assert.ok(sentinel.bypass_reason?.includes("factcheck-autofix"), "bypass_reason deve identificar a origem factcheck-autofix");
+      const check = checkSentinel(fixture.dir);
+      assert.equal(check.ok, true, "checkSentinel deve confirmar que o sentinel bate com o social JÁ CORRIGIDO");
 
       // Verificar fact-check-autofix.json
       assert.ok(existsSync(fixture.autofixPath), "fact-check-autofix.json deve existir");
       const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
-      assert.equal(autofix.summary.applied, 1, "1 correção aplicada (newsletter)");
+      assert.equal(autofix.summary.applied, 1, "1 claim aplicado (independente de quantos arquivos tocou)");
       assert.equal(autofix.entries[0].status, "applied");
       assert.equal(autofix.entries[0].text, "GPT-4o");
       assert.equal(autofix.entries[0].suggested_fix, "GPT-5.4");
-      assert.deepEqual(autofix.entries[0].files_modified, ["newsletter"], "files_modified = newsletter");
+      assert.deepEqual(autofix.entries[0].files_modified, ["newsletter", "social"], "files_modified = newsletter + social");
+      assert.equal(autofix.social_modified, true, "social_modified deve sinalizar pro orchestrator re-renderizar o preview");
+      assert.ok(autofix.social_sentinel_bypass_reason, "social_sentinel_bypass_reason deve estar presente");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("(#3224) sources newsletter+social mas texto só existe na newsletter → sucesso parcial (newsletter corrigida, social intocado)", () => {
+    const originalSocial = "# LinkedIn\n\n## d1\n\nO novo modelo superou a concorrência.\n";
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nO modelo GPT-4o foi comparado.\n",
+      socialContent: originalSocial,
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["newsletter", "social"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.ok(newsletter.includes("GPT-5.4"), "newsletter deve ter sido corrigida");
+
+      // Social não continha o texto — permanece intocado, sentinel NÃO regravado
+      const social = readFileSync(fixture.socialPath, "utf8");
+      assert.equal(social, originalSocial, "social sem o texto-alvo não deve ser alterado");
+      const sentinelPath = join(fixture.dir, "_internal", ".humanizer-social-done.json");
+      assert.ok(!existsSync(sentinelPath), "sentinel não deve ser gravado quando social não foi modificado");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.entries[0].status, "applied", "aplicado (sucesso parcial via newsletter) — não é skip");
+      assert.deepEqual(autofix.entries[0].files_modified, ["newsletter"], "só newsletter foi de fato modificada");
+      assert.ok(autofix.entries[0].note?.includes("03-social.md"), "note deve explicar que social não foi encontrado");
+      assert.equal(autofix.social_modified, false, "social_modified deve ser false — nada foi escrito em 03-social.md");
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -566,6 +624,112 @@ describe("findDestaqueBodyRange (#2617)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cenário 13 (#3224): findSocialDestaqueRanges / applySocialTextSubstitution
+// ---------------------------------------------------------------------------
+
+describe("findSocialDestaqueRanges (#3224)", () => {
+  it("retorna [] quando o destaque não aparece no arquivo", () => {
+    const content = "# LinkedIn\n\n## d2\n\nTexto do d2.\n";
+    assert.deepEqual(findSocialDestaqueRanges(content, 1), []);
+  });
+
+  it("encontra 1 range quando o destaque só aparece em 1 canal", () => {
+    const content = "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n\n## d2\n\nOutro texto.\n";
+    const ranges = findSocialDestaqueRanges(content, 1);
+    assert.equal(ranges.length, 1);
+    const block = content.slice(ranges[0].start, ranges[0].end);
+    assert.ok(block.includes("GPT-4o superado"));
+    assert.ok(!block.includes("Outro texto"), "não deve engolir o próximo header ## d2");
+  });
+
+  it("encontra 2 ranges quando o destaque aparece em LinkedIn E Facebook", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no LinkedIn.",
+      "",
+      "## post_pixel",
+      "",
+      "Post pessoal sem GPT-4o aqui.",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no Facebook.",
+    ].join("\n");
+    const ranges = findSocialDestaqueRanges(content, 1);
+    assert.equal(ranges.length, 2, "deve achar o ## d1 do LinkedIn E do Facebook");
+    const block0 = content.slice(ranges[0].start, ranges[0].end);
+    const block1 = content.slice(ranges[1].start, ranges[1].end);
+    assert.ok(block0.includes("GPT-4o no LinkedIn"));
+    assert.ok(!block0.includes("post_pixel") && !block0.includes("Post pessoal"), "range do d1 não deve incluir post_pixel");
+    assert.ok(block1.includes("GPT-4o no Facebook"));
+  });
+
+  it("### comment_diaria / ### comment_pixel (3 hashes) ficam DENTRO do bloco — não fecham", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no main.",
+      "",
+      "### comment_diaria",
+      "",
+      "GPT-4o no comment também.",
+      "",
+      "## d2",
+      "",
+      "Outro destaque.",
+    ].join("\n");
+    const ranges = findSocialDestaqueRanges(content, 1);
+    assert.equal(ranges.length, 1);
+    const block = content.slice(ranges[0].start, ranges[0].end);
+    assert.ok(block.includes("GPT-4o no comment também"), "comment_diaria deve estar dentro do range do d1");
+    assert.ok(!block.includes("Outro destaque"));
+  });
+});
+
+describe("applySocialTextSubstitution (#3224)", () => {
+  it("substitui em AMBOS os canais quando o texto aparece nos dois", () => {
+    const content = "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n\n# Facebook\n\n## d1\n\nGPT-4o venceu o mercado.\n";
+    const result = applySocialTextSubstitution(content, 1, "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    assert.equal(result.modifiedRanges, 2);
+    assert.ok(!result.content.includes("GPT-4o"));
+    assert.equal((result.content.match(/GPT-5\.4/g) ?? []).length, 2);
+  });
+
+  it("substitui em apenas 1 canal quando o outro não menciona o texto", () => {
+    const content = "# LinkedIn\n\n## d1\n\nGPT-4o superado.\n\n# Facebook\n\n## d1\n\nO rival venceu o mercado.\n";
+    const result = applySocialTextSubstitution(content, 1, "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    assert.equal(result.modifiedRanges, 1);
+    assert.ok(result.content.includes("GPT-5.4"));
+    assert.ok(result.content.includes("O rival venceu o mercado"));
+  });
+
+  it("changed=false quando o destaque não existe ou o texto não é encontrado", () => {
+    const content = "# LinkedIn\n\n## d1\n\nSem o claim aqui.\n";
+    const result = applySocialTextSubstitution(content, 1, "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, false);
+    assert.equal(result.content, content);
+  });
+
+  it("não vaza correção pro bloco de outro destaque com o mesmo texto (scoped)", () => {
+    const content = "# LinkedIn\n\n## d1\n\nProtegido: GPT-4o.\n\n## d2\n\nGPT-4o aqui.\n";
+    const result = applySocialTextSubstitution(content, 2, "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    assert.equal(result.modifiedRanges, 1);
+    assert.ok(result.content.includes("Protegido: GPT-4o."), "d1 não deve ser tocado ao corrigir d2");
+    assert.ok(result.content.includes("GPT-5.4 aqui"));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cenário 8: Multi-DIVERGENT — mesmo texto em destaques diferentes
 // ---------------------------------------------------------------------------
 
@@ -640,14 +804,14 @@ describe("apply-factcheck-autofix cenário 8 — multi-DIVERGENT com mesmo texto
 });
 
 // ---------------------------------------------------------------------------
-// Cenário 9: Claim apenas em social → skipped (sentinel do humanizador)
+// Cenário 9 (#3224): Claim apenas em social → aplicado, sentinel regravado com bypass
 // ---------------------------------------------------------------------------
 
-describe("apply-factcheck-autofix cenário 9 — claim social-only (#2617)", () => {
-  it("claim com sources:['social'] é skipped — social não é modificado", () => {
+describe("apply-factcheck-autofix cenário 9 — claim social-only (#3224, antes #2617 skipped)", () => {
+  it("claim com sources:['social'] é aplicado em 03-social.md e o sentinel é regravado com bypass", () => {
     const fixture = createFixture({
       newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",
-      socialContent: "## d1\n\nO GPT-4o foi superado.\n",
+      socialContent: "# LinkedIn\n\n## d1\n\nO GPT-4o foi superado.\n",
       factCheckClaims: [
         {
           verdict: "DIVERGENT",
@@ -659,18 +823,104 @@ describe("apply-factcheck-autofix cenário 9 — claim social-only (#2617)", () 
         } as Partial<FactClaim>,
       ],
     });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      // Newsletter (sem o claim) permanece intocada
+      const newsletter = readFileSync(fixture.newsletterPath, "utf8");
+      assert.ok(!newsletter.includes("GPT-5.4"), "newsletter não tinha o claim — não deve ser tocada");
+
+      // Social DEVE ter sido corrigido (#3224)
+      const social = readFileSync(fixture.socialPath, "utf8");
+      assert.ok(social.includes("GPT-5.4"), "03-social.md deve ter GPT-5.4 após autofix");
+      assert.ok(!social.includes("GPT-4o"), "03-social.md não deve mais ter GPT-4o");
+
+      // Sentinel do humanizador regravado com bypass (mecanismo #2529 reusado)
+      const sentinelPath = join(fixture.dir, "_internal", ".humanizer-social-done.json");
+      const sentinel = JSON.parse(readFileSync(sentinelPath, "utf8"));
+      assert.ok(sentinel.bypass_reason, "sentinel deve ter bypass_reason gravado");
+      assert.equal(checkSentinel(fixture.dir).ok, true, "checkSentinel deve confirmar hash pós-correção");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.applied, 1, "1 correção aplicada (social)");
+      assert.equal(autofix.entries[0].status, "applied");
+      assert.deepEqual(autofix.entries[0].files_modified, ["social"]);
+      assert.equal(autofix.social_modified, true);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("claim social-only sem o texto no arquivo → skipped_text_not_found, sentinel não tocado", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",
+      socialContent: "# LinkedIn\n\n## d1\n\nConteúdo que não menciona o modelo.\n",
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          destaque: 1,
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["social"],
+        } as Partial<FactClaim>,
+      ],
+    });
     const originalSocial = readFileSync(fixture.socialPath, "utf8");
     try {
       const result = runCli(fixture.dir);
       assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
 
-      // Social NÃO deve ter sido modificado
       const social = readFileSync(fixture.socialPath, "utf8");
-      assert.equal(social, originalSocial, "03-social.md não deve ser modificado (sentinel)");
+      assert.equal(social, originalSocial, "social sem o texto-alvo não deve ser alterado");
+
+      const sentinelPath = join(fixture.dir, "_internal", ".humanizer-social-done.json");
+      assert.ok(!existsSync(sentinelPath), "sentinel não deve ser gravado quando nada foi corrigido");
 
       const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
       assert.equal(autofix.summary.applied, 0, "nenhuma correção aplicada");
       assert.equal(autofix.entries[0].status, "skipped_text_not_found");
+      assert.equal(autofix.social_modified, false);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("(#3224) sentinel PRÉ-EXISTENTE (pós-humanizador) é regravado com bypass_reason e passa a bater com o novo hash", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",
+      socialContent: "# LinkedIn\n\n## d1\n\nO GPT-4o foi superado.\n",
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          destaque: 1,
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["social"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      // Simula o humanizador já tendo rodado no Stage 2 e gravado o sentinel
+      // ANTES do autofix (§4c.2b já validou --check exit 0 nesse ponto do pipeline real).
+      writeSentinel(fixture.dir);
+      const preSentinel = JSON.parse(
+        readFileSync(join(fixture.dir, "_internal", ".humanizer-social-done.json"), "utf8"),
+      );
+      assert.equal(preSentinel.bypass_reason, undefined, "sentinel inicial (1ª escrita) não precisa de bypass_reason");
+      assert.equal(checkSentinel(fixture.dir).ok, true, "sentinel inicial deve bater com o social ainda não corrigido");
+
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+
+      const postSentinel = JSON.parse(
+        readFileSync(join(fixture.dir, "_internal", ".humanizer-social-done.json"), "utf8"),
+      );
+      assert.notEqual(postSentinel.social_sha256, preSentinel.social_sha256, "hash deve mudar — social foi corrigido");
+      assert.ok(postSentinel.bypass_reason?.includes("factcheck-autofix"), "regravação deve carregar bypass_reason");
+      assert.equal(checkSentinel(fixture.dir).ok, true, "sentinel regravado deve bater com o social JÁ CORRIGIDO");
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
