@@ -68,7 +68,8 @@ describe("renderEia layout = diária (#1918)", () => {
     "Crédito.",
   );
   it("usa a frase da diária", () => {
-    assert.ok(html.includes("Clique na imagem que foi gerada por IA."));
+    // #recomendacao-leitura: ponto final removido permanentemente (diária + mensal).
+    assert.ok(html.includes("Clique na imagem que foi gerada por IA"));
     assert.ok(!html.includes("Qual das imagens foi gerada por IA?"), "frase antiga removida");
   });
   it("NÃO tem botão de votar — a imagem é o link", () => {
@@ -133,11 +134,12 @@ describe("renderEia unificação com a diária (#2709)", () => {
   );
 
   it("título: line-height 1.15 (era 1.2) e margin:0 (era 0 0 16px)", () => {
+    // #recomendacao-leitura: ponto final removido permanentemente (diária + mensal).
     assert.match(
       html,
-      /Clique na imagem que foi gerada por IA\.<\/p>/,
+      /Clique na imagem que foi gerada por IA<\/p>/,
     );
-    const titleMatch = html.match(/<p style="([^"]*)"[^>]*>Clique na imagem que foi gerada por IA\./);
+    const titleMatch = html.match(/<p style="([^"]*)"[^>]*>Clique na imagem que foi gerada por IA</);
     assert.ok(titleMatch, "título deve existir");
     assert.ok(titleMatch![1].includes("line-height:1.15;"), "line-height deve ser 1.15");
     assert.ok(titleMatch![1].includes("margin:0;"), "margin deve ser 0 (sem bottom 16px)");

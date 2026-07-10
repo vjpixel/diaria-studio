@@ -519,7 +519,8 @@ describe("publish-monthly main(): % acertaram do É IA? anterior (#2948)", () =>
 
     assert.ok(capturedBody, "POST /emailCampaigns deve ter sido chamado mesmo sem stats");
     const parsed = JSON.parse(capturedBody) as { htmlContent: string };
-    assert.match(parsed.htmlContent, /Clique na imagem que foi gerada por IA\./, "card do É IA? ainda renderiza");
+    // #recomendacao-leitura: ponto final removido permanentemente (diária + mensal).
+    assert.match(parsed.htmlContent, /Clique na imagem que foi gerada por IA/, "card do É IA? ainda renderiza");
     assert.doesNotMatch(
       parsed.htmlContent,
       /acertaram/i,

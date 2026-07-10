@@ -77,7 +77,7 @@ describe("#3104 — letter-spacing de labels uppercase unificado (2px)", () => {
 });
 
 describe("#3104 — line-height do título do É IA? igual às outras manchetes 26px (1.2, era 1.15)", () => {
-  it("'Clique na imagem que foi gerada por IA.' usa line-height:1.2", () => {
+  it("'Clique na imagem que foi gerada por IA' usa line-height:1.2", () => {
     const eia: EIA = {
       credit: "Foto: x.",
       imageA: "01-eia-A.jpg",
@@ -85,7 +85,9 @@ describe("#3104 — line-height do título do É IA? igual às outras manchetes 
       edition: "260999",
     };
     const html = renderEIA(eia);
-    const match = html.match(/<p style="([^"]+)">Clique na imagem que foi gerada por IA\.<\/p>/);
+    // #recomendacao-leitura: ponto final removido permanentemente (era ".", ver
+    // scripts/lib/newsletter-render-html.ts renderEIA). O regex não exige mais `\.`.
+    const match = html.match(/<p style="([^"]+)">Clique na imagem que foi gerada por IA<\/p>/);
     assert.ok(match, `título do É IA? não encontrado: ${html}`);
     assert.match(match![1], /line-height:1\.2;/);
     assert.doesNotMatch(match![1], /line-height:1\.15;/);

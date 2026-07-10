@@ -587,11 +587,16 @@ function interDestaqueGaps(
   return gaps;
 }
 
-const BOX_DIVULGACAO_BOLD_RE = /^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m;
+const BOX_DIVULGACAO_BOLD_RE = /^\*\*\s*((?:📚|📖|📣|🎉)[\s\S]+?)\*\*\s*$/m;
 // Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim da
 // região). Linhas em branco entre categorias são preservadas. `\r?` torna o
 // lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
 const BOX_DIVULGACAO_CART_RE = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m;
+// #recomendacao-leitura: box 📖 multi-parágrafo (título + corpo). A 1ª linha
+// abre com 📖 (título, SEM `**`) e o bloco vai até o separador `---` — igual ao
+// carrinho 🛒, mas sem virar botão CTA. renderIntroCallout monta o 1º parágrafo
+// como título serif 26px e os demais como corpo (negrito parcial via markdown).
+const BOX_DIVULGACAO_BOOK_RE = /^📖[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m;
 
 /**
  * Pure (#1972/#2978): localiza o box de divulgação numa lacuna ESPECÍFICA
@@ -609,15 +614,18 @@ function locateBoxInGap(
   const region = text.slice(gap.start, gap.end);
   const boldMatch = BOX_DIVULGACAO_BOLD_RE.exec(region);
   const cartMatch = BOX_DIVULGACAO_CART_RE.exec(region);
-  let match: RegExpExecArray | null = null;
-  let inner = "";
-  if (boldMatch && (!cartMatch || boldMatch.index <= cartMatch.index)) {
-    match = boldMatch;
-    inner = boldMatch[1].trim();
-  } else if (cartMatch) {
-    match = cartMatch;
-    inner = cartMatch[0].trim();
-  }
+  const bookMatch = BOX_DIVULGACAO_BOOK_RE.exec(region);
+  // O que vier PRIMEIRO na lacuna vence; book/cart capturam o bloco inteiro
+  // (multi-parágrafo), bold captura só o grupo interno da linha.
+  const candidates = [
+    boldMatch ? { m: boldMatch, inner: boldMatch[1].trim() } : null,
+    cartMatch ? { m: cartMatch, inner: cartMatch[0].trim() } : null,
+    bookMatch ? { m: bookMatch, inner: bookMatch[0].trim() } : null,
+  ]
+    .filter((c): c is { m: RegExpExecArray; inner: string } => c !== null)
+    .sort((a, b) => a.m.index - b.m.index);
+  const match = candidates[0]?.m ?? null;
+  const inner = candidates[0]?.inner ?? "";
   if (!match) return null;
   const matchStart = gap.start + match.index;
   return { inner, matchStart, matchEnd: matchStart + match[0].length };
