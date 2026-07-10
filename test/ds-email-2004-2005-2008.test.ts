@@ -109,6 +109,47 @@ describe("#3220 — processInlineLinks: **[label](url)** vira <strong><a> (exce�
 });
 
 // ---------------------------------------------------------------------------
+// #3280 — dois bolds INDEPENDENTES colados ao link (um de cada lado) NÃO
+// devem ser tratados como bold-wrap do link (#3220). O heurístico original só
+// checava `endsWith("**")`/`startsWith("**")`, sem verificar se esse `**` já
+// estava auto-pareado no texto adjacente — em `**Atenção:**[link](url)**hoje**`
+// isso consumia o `**` de fechamento de "Atenção:" e o `**` de abertura de
+// "hoje", deixando cada um com um `**` órfão que vazava literal no HTML.
+// ---------------------------------------------------------------------------
+describe("#3280 — processInlineLinks: bolds independentes colados ao link não se fundem com o link", () => {
+  it("input exato da issue: 'Atenção:' e 'hoje' saem como <strong> próprio, sem ** vazando, link plano", () => {
+    const out = processInlineLinks(
+      "**Atenção:**[link](https://example.com)**hoje** foi importante.",
+    );
+    assert.doesNotMatch(out, /\*\*/, `asterisco literal vazou: ${out}`);
+    assert.match(out, /<strong>Atenção:<\/strong>/, `"Atenção:" deveria ser <strong> próprio: ${out}`);
+    assert.match(out, /<strong>hoje<\/strong>/, `"hoje" deveria ser <strong> próprio: ${out}`);
+    assert.doesNotMatch(
+      out,
+      /<strong><a/,
+      `link não deveria sair envolto em <strong> (bolds são independentes, não um wrap): ${out}`,
+    );
+    assert.match(
+      out,
+      /<a href="https:\/\/example\.com"[^>]*>link<\/a>/,
+      `href/label do link ausentes: ${out}`,
+    );
+  });
+
+  it("regressão #3220: '**[label](url)**' genuíno (sem texto bold independente ao redor) continua fundindo em <strong><a>", () => {
+    const out = processInlineLinks(
+      "**[2041: Como a IA...](https://example.com/livro)**, de Kai-Fu Lee",
+    );
+    assert.doesNotMatch(out, /\*\*/, `asterisco literal vazou: ${out}`);
+    assert.match(
+      out,
+      /<strong><a href="https:\/\/example\.com\/livro"[^>]*>2041: Como a IA\.\.\.<\/a><\/strong>/,
+      `link não saiu envolto em <strong> (regressão #3220): ${out}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2005 — token paperEmail documentado em design-tokens.ts
 // ---------------------------------------------------------------------------
 describe("#2005 — design-tokens: token paperEmail (#FFFFFF)", () => {

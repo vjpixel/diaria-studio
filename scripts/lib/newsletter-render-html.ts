@@ -1273,6 +1273,29 @@ function applyInlineBold(html: string): string {
 }
 
 /**
+ * Conta ocorrências NÃO sobrepostas de `**` numa string (avança 2 posições a
+ * cada match — "****" conta como 2, não 3). Usado por `tokenizeInline` pra
+ * checar paridade (par = tudo já pareado; ímpar = sobra um `**` desemparelhado).
+ */
+function countDoubleAsterisk(str: string): number {
+  let count = 0;
+  let idx = str.indexOf("**");
+  while (idx !== -1) {
+    count++;
+    idx = str.indexOf("**", idx + 2);
+  }
+  return count;
+}
+
+/** Posição do próximo `[label](` a partir de `from`, ou `str.length` se não houver mais. */
+function nextLinkStartIndex(str: string, from: number): number {
+  const re = /\[([^\]]+)\]\(/g;
+  re.lastIndex = from;
+  const m = re.exec(str);
+  return m ? m.index : str.length;
+}
+
+/**
  * Tokenizador inline compartilhado: varre `[label](url)` (destino com parênteses
  * balanceados), chamando `onText` nos segmentos de TEXTO e `onLink` em cada link.
  * Base de `processInlineLinks` (texto via esc+wordmark+bold) e de `renderBodyInline`
@@ -1323,9 +1346,26 @@ function tokenizeInline(
     // um sem par, e vazam literal no HTML. Só aplica quando os DOIS lados têm
     // o marcador colado ao link (não mexe em bold legítimo mais afastado) —
     // nesse caso o `<a>` do link sai envolto em `<strong>`.
+    // #3280: `endsWith`/`startsWith` sozinhos não bastam — em
+    // `**Atenção:**[link](url)**hoje** foi importante.` os dois lados também
+    // "encostam" `**` no link, mas são 2 bolds INDEPENDENTES que só ficam
+    // colados ao link, não um bold-wrap do link. Antes de aceitar, confere se
+    // o `**` candidato já está AUTO-PAREADO no texto adjacente (contagem
+    // par/ímpar de `**`, #2532-style heurístico): se o resto de `textBefore`
+    // (sem o `**` final) tem contagem PAR, esse `**` final está de fato
+    // desemparelhado — sobra pro link (abertura legítima). Se ÍMPAR, o `**`
+    // final já fecha um bold anterior dentro do próprio `textBefore` (ex:
+    // "Atenção:") — não é abertura pro link. Mesma lógica espelhada pro lado
+    // de depois do link, bounded pelo próximo link (pra não contaminar com
+    // `**` dentro do label de um link seguinte).
     let textBefore = input.substring(lastIdx, m.index);
-    const hasOpenBold = textBefore.endsWith("**");
-    const hasCloseBold = input.startsWith("**", j + 1);
+    const hasOpenBold =
+      textBefore.endsWith("**") &&
+      countDoubleAsterisk(textBefore.slice(0, -2)) % 2 === 0;
+    const closeBoundary = nextLinkStartIndex(input, j + 3);
+    const hasCloseBold =
+      input.startsWith("**", j + 1) &&
+      countDoubleAsterisk(input.substring(j + 3, closeBoundary)) % 2 === 0;
     const boldLink = hasOpenBold && hasCloseBold;
     if (boldLink) {
       textBefore = textBefore.slice(0, -2);
