@@ -126,28 +126,12 @@ function jsonField(
 }
 
 /**
- * Pure (#2419 rewrite, #3222 migrado pra JSON): extrai o campo de reveal a
- * partir do record `_internal/intentional-error.json` da edição.
- *
- * **Separação de concerns (#2419):**
- *   - `reveal` é o campo CANÔNICO do reveal — prosa FIRST-PERSON, gramatical,
- *     pública. Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
- *     É separado de `description` (catálogo 3ª pessoa, alimenta lint + /diaria-mes-erros).
- *   - `description` NUNCA é fonte do reveal — é catálogo interno.
- *
- * Retorna `null` quando: record ausente, sem `reveal`, ou valor é um
- * placeholder `{PREENCHER}`.
- */
-export function extractNarrativeFromFrontmatter(
-  record: IntentionalErrorJson | null | undefined,
-): string | null {
-  return jsonField(record, "reveal");
-}
-
-/**
- * Pure (#2419, #3222 migrado pra JSON): extrai APENAS o campo `reveal` do
- * record JSON. Usado quando precisamos saber se o campo dedicado foi
- * preenchido.
+ * Pure (#2419, #3222 migrado pra JSON): extrai o campo `reveal` do record
+ * `_internal/intentional-error.json`. `reveal` é o campo CANÔNICO do reveal —
+ * prosa FIRST-PERSON, gramatical, pública. Ex: "Na última edição, escrevi
+ * 1990 onde o correto é 1998." Separado de `description` (catálogo 3ª
+ * pessoa, alimenta lint + /diaria-mes-erros) — `description` NUNCA é fonte
+ * do reveal.
  *
  * Retorna `null` quando: record ausente, sem `reveal`, ou valor é placeholder
  * `{PREENCHER}`.
@@ -156,6 +140,18 @@ export function extractRevealFromFrontmatter(
   record: IntentionalErrorJson | null | undefined,
 ): string | null {
   return jsonField(record, "reveal");
+}
+
+/**
+ * (#3222) Alias de `extractRevealFromFrontmatter` — pré-#3222 esta função
+ * também lia um alias legado `narrative:` do frontmatter (não existe mais no
+ * schema JSON), então hoje é idêntica. Mantida como nome separado só por
+ * back-compat de import; delega inteiramente.
+ */
+export function extractNarrativeFromFrontmatter(
+  record: IntentionalErrorJson | null | undefined,
+): string | null {
+  return extractRevealFromFrontmatter(record);
 }
 
 /**
@@ -183,9 +179,9 @@ export function extractIntentionalErrorFromMd(
   md: string,
   record?: IntentionalErrorJson | null,
 ): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
-  const correctValue = jsonField(record, "correct_value");
+  const correctValue = extractCorrectValueFromFrontmatter(record);
   // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
-  const revealFromFm = jsonField(record, "reveal");
+  const revealFromFm = extractRevealFromFrontmatter(record);
 
   // PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
   // primária do reveal). O hábito editorial é o editor escrever a frase de

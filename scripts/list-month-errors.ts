@@ -67,11 +67,19 @@ function fallbackFromJsonl(edition: string, reason: string): MonthError {
   if (!entry) return { edition, declared: false, reason };
   if (entry.no_error) return { edition, declared: true, no_error: true };
   if (!entry.is_feature) return { edition, declared: false, reason };
+  // Formata location no mesmo estilo do path não-fallback ("DESTAQUE N"), em
+  // vez do dígito cru — a coluna "Localização" mistura os dois no output.
+  const location =
+    entry.destaque === undefined
+      ? undefined
+      : /^\d+$/.test(String(entry.destaque))
+        ? `DESTAQUE ${entry.destaque}`
+        : String(entry.destaque);
   return {
     edition,
     declared: true,
     category: entry.error_type,
-    location: entry.destaque !== undefined ? String(entry.destaque) : undefined,
+    location,
     description: entry.detail,
     correct_value: entry.correct_value,
   };
