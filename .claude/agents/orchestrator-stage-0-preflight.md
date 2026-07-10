@@ -257,7 +257,7 @@ npx tsx scripts/merge-local-pending.ts \
   --past-raw data/past-editions-raw.json
 ```
 O script:
-1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** tenham `_internal/05-published.json` com `status: "published"`.
+1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** estejam publicadas — checado via `_internal/05-published.json` com `status: "published"` **OU** (#3207) já presentes em `--past-raw data/past-editions-raw.json` (fonte Beehiiv REST, cross-check por data). O segundo caso cobre edições publicadas em outra sessão/máquina, cujo `05-published.json` local nunca chega a ser escrito — sem o cross-check isso gerava falso-positivo de `pending_publish` mesmo já publicada de verdade.
 2. Extrai todas as URLs dessas edições e injeta em `data/past-editions.md` com flag `pending_publish: true`.
 3. Se encontrar edições pending há > 2 dias **a partir de today**, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
 

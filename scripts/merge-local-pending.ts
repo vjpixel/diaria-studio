@@ -18,6 +18,13 @@
  * O script NÃO modifica `data/past-editions-raw.json` (fonte canônica do Beehiiv).
  * Apenas faz append de seções `## YYYY-MM-DD` em `data/past-editions.md`
  * pra edições pending, com flag `(pending_publish)` no título pra distinguir.
+ *
+ * #3207: `--past-raw` é lido e usado como cross-check em `isPublished()` —
+ * uma edição só é reportada como `pending_publish` se NÃO aparecer publicada
+ * nem localmente (`_internal/05-published.json`) nem no raw (fonte Beehiiv
+ * REST). Sem esse cross-check, uma edição publicada em outra sessão/máquina
+ * (cujo `05-published.json` local nunca é escrito) gerava falso-positivo de
+ * "pending" mesmo já publicada de verdade — ver incidente 260710.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -26,12 +33,14 @@ import { fileURLToPath } from "node:url";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
+import { aammddFromIso, type Post } from "./refresh-past-editions.ts"; // #3207
 
 // #3024: fileURLToPath (não `.pathname` cru) — `.pathname` produz path
 // malformado no Windows (ex: `C:\C:\Users\...`), quebrando qualquer resolve()
 // subsequente baseado em ROOT (editionsDir, MD_PATH).
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const MD_PATH = resolve(ROOT, "data/past-editions.md");
+const DEFAULT_PAST_RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
 
 interface ApprovedJson {
   highlights?: Array<{ url?: string; article?: { url?: string } }>;
@@ -89,7 +98,7 @@ export function extractUrlsFromApproved(approvedPath: string): string[] {
   return extractUrlsFromBuckets(parsed);
 }
 
-function isPublished(editionDir: string): boolean {
+function isPublishedLocally(editionDir: string): boolean {
   const publishedPath = join(editionDir, "05-published.json");
   if (!existsSync(publishedPath)) return false;
   try {
@@ -98,6 +107,51 @@ function isPublished(editionDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * #3207: carrega `data/past-editions-raw.json` (fonte canônica do Beehiiv,
+ * gerada por `refresh-past-editions.ts`) e retorna o Set de AAMMDD já
+ * publicados. Matching key = `published_at` convertido pra AAMMDD via
+ * `aammddFromIso` (mesma conversão timezone-aware `America/Sao_Paulo` usada
+ * pelo resto do pipeline pra mapear posts Beehiiv → pasta de edição local —
+ * reusar em vez de duplicar evita divergência tipo #1659).
+ *
+ * Fail-soft: arquivo ausente ou JSON inválido → Set vazio (script cai de
+ * volta no comportamento local-only pré-#3207).
+ */
+export function loadPublishedAammddFromRaw(pastRawPath: string): Set<string> {
+  if (!existsSync(pastRawPath)) return new Set();
+  let posts: Post[];
+  try {
+    posts = JSON.parse(readFileSync(pastRawPath, "utf8")) as Post[];
+  } catch {
+    return new Set();
+  }
+  const published = new Set<string>();
+  for (const p of posts) {
+    if (!p?.published_at) continue;
+    const yymmdd = aammddFromIso(p.published_at);
+    if (yymmdd) published.add(yymmdd);
+  }
+  return published;
+}
+
+/**
+ * #3207: uma edição é considerada publicada se OU o `05-published.json`
+ * local disser `status: "published"`, OU ela já aparecer no
+ * `past-editions-raw.json` (source-of-truth Beehiiv via REST). O segundo
+ * caso cobre edições publicadas em outra sessão/máquina — o `05-published.json`
+ * local nunca é escrito/sincronizado nesse cenário, então depender só dele
+ * gera falso-positivo de "pending_publish" (#3207).
+ */
+export function isPublished(
+  editionDir: string,
+  yymmdd: string,
+  publishedInRaw: Set<string>,
+): boolean {
+  if (publishedInRaw.has(yymmdd)) return true;
+  return isPublishedLocally(editionDir);
 }
 
 function isAlreadyInMd(md: string, isoDate: string): boolean {
@@ -115,9 +169,14 @@ function main() {
   // futura, ancorar em today previne perda de pending legítimos.
   // Caller pode override via --anchor-iso. Default = today UTC.
   const anchorIso = args["anchor-iso"] ?? new Date().toISOString().split("T")[0];
+  // #3207: --past-raw cross-check contra a fonte canônica do Beehiiv. Se
+  // omitido, cai no default (mesmo path que refresh-past-editions.ts usa);
+  // se o arquivo não existir, loadPublishedAammddFromRaw retorna Set vazio
+  // e o comportamento é idêntico ao pré-#3207 (só local 05-published.json).
+  const pastRawPath = args["past-raw"] ? resolve(ROOT, args["past-raw"]) : DEFAULT_PAST_RAW_PATH;
 
   if (!current) {
-    console.error("Uso: merge-local-pending.ts --current AAMMDD [--editions-dir data/editions/] [--window-days 5] [--anchor-iso YYYY-MM-DD]");
+    console.error("Uso: merge-local-pending.ts --current AAMMDD [--editions-dir data/editions/] [--window-days 5] [--anchor-iso YYYY-MM-DD] [--past-raw data/past-editions-raw.json]");
     process.exit(1);
   }
 
@@ -139,6 +198,7 @@ function main() {
   }
   const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
   const editionDirs = [...editionDirsByAammdd.keys()];
+  const publishedInRaw = loadPublishedAammddFromRaw(pastRawPath); // #3207
 
   const pendingEditions: Array<{ yymmdd: string; iso: string; urls: string[]; daysAgo: number }> = [];
 
@@ -154,7 +214,7 @@ function main() {
     const approvedPath = join(editionDir, "_internal", "01-approved.json");
 
     if (!existsSync(approvedPath)) continue; // stage 1 não completou
-    if (isPublished(editionDir)) continue; // já publicada no Beehiiv — dedup-runner já cobre
+    if (isPublished(editionDir, yymmdd, publishedInRaw)) continue; // já publicada no Beehiiv (local ou raw #3207) — dedup-runner já cobre
 
     const urls = extractUrlsFromApproved(approvedPath);
     if (urls.length === 0) continue;
