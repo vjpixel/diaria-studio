@@ -2,6 +2,7 @@
 name: analyst-monthly
 description: Stage 1 da pipeline mensal — agrupa os ~90 destaques do mês por tema, garante Brasil como um dos 3 destaques, e gera `prioritized.md` com 3 destaques temáticos propostos + um pool candidato de standalones. Após o analista, `scripts/monthly-click-sections.ts` substitui esse pool pelas seções finais Use Melhor (3) e Radar (7), ranqueadas por cliques (#1901/#1902). Editor revisa no gate antes do `writer-monthly` rodar.
 model: claude-opus-4-8
+effort: low
 tools: Read, Write
 ---
 
