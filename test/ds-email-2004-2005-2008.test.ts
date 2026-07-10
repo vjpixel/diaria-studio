@@ -5,6 +5,9 @@
  *   #2004 — sem font-weight:bold em links inline de corpo (só underline teal)
  *   #2005 — token paperEmail (#FFFFFF) documentado em design-tokens.ts
  *   #2008 — word-joiner anti auto-linkify pra "clarice.ai" em texto puro da diária
+ *   #3220 — `**[label](url)**` (negrito colado ao link) em corpo de
+ *     callout/box: exceção ESCOPADA a #2004 — vira `<strong><a>` em vez de
+ *     vazar `**` literal. Link sem `**` colado continua sem bold (#2004 intacto).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -56,6 +59,52 @@ describe("#2004 — processInlineLinks: underline teal sem bold", () => {
       2,
       `esperado 2 × text-decoration-color teal: ${out}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3220 — **[label](url)** em corpo de callout/box vira <strong><a>, em vez
+// de vazar "**" literal. Exceção ESCOPADA a #2004: só dispara quando os DOIS
+// lados do link têm o marcador `**` colado; link sem marcador continua sem
+// bold (decisão #2004 preservada pro caso comum).
+// ---------------------------------------------------------------------------
+describe("#3220 — processInlineLinks: **[label](url)** vira <strong><a> (exceção escopada a #2004)", () => {
+  it("** colado nos dois lados do link vira <strong><a>...</a></strong>, sem ** literal no HTML", () => {
+    const out = processInlineLinks(
+      "**[2041: Como a IA...](https://example.com/livro)**, de Kai-Fu Lee",
+    );
+    assert.doesNotMatch(out, /\*\*/, `asterisco literal vazou: ${out}`);
+    assert.match(
+      out,
+      /<strong><a href="https:\/\/example\.com\/livro"[^>]*>2041: Como a IA\.\.\.<\/a><\/strong>/,
+      `link não saiu envolto em <strong>: ${out}`,
+    );
+  });
+
+  it("link SEM ** ao redor continua sem <strong> (decisão #2004 preservada — exceção é escopada)", () => {
+    const out = processInlineLinks(
+      "[2041: Como a IA...](https://example.com/livro), de Kai-Fu Lee",
+    );
+    assert.doesNotMatch(out, /<strong>/, `link sem ** não deveria ter <strong>: ${out}`);
+    assert.match(
+      out,
+      /<a href="https:\/\/example\.com\/livro"[^>]*>2041: Como a IA\.\.\.<\/a>/,
+      `href/label do link ausentes: ${out}`,
+    );
+  });
+
+  it("bold legítimo longe do link continua bold normal (detecção de boldLink não interfere)", () => {
+    const out = processInlineLinks(
+      "**Atenção**: veja [este artigo](https://example.com/artigo) com calma.",
+    );
+    assert.match(out, /<strong>Atenção<\/strong>/, `bold legítimo não aplicado: ${out}`);
+    assert.doesNotMatch(
+      out,
+      /<strong><a/,
+      `link não deveria estar em <strong> (** não está colado ao link): ${out}`,
+    );
+    assert.match(out, /<a href="https:\/\/example\.com\/artigo"[^>]*>este artigo<\/a>/);
+    assert.doesNotMatch(out, /\*\*/, `asterisco literal vazou: ${out}`);
   });
 });
 

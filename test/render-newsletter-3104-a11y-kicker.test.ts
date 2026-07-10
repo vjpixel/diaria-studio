@@ -58,7 +58,7 @@ describe("#3104 — a11y: kicker ponto teal + label ink (era label teal, ~3.2:1)
     assert.match(html, /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Por que isso importa/, "ponto ● deve preceder o label");
   });
 
-  it("renderEIA: prevResultLine tem ponto ● teal + texto ink (era 100% teal)", () => {
+  it("renderEIA: prevResultLine é parágrafo comum, sem destaque (#3220 — era ponto ● teal + texto ink)", () => {
     const baseEia: EIA = {
       credit: "Foto: x.",
       imageA: "01-eia-A.jpg",
@@ -67,14 +67,15 @@ describe("#3104 — a11y: kicker ponto teal + label ink (era label teal, ~3.2:1)
       prevResultLine: "Resultado da última edição: 67% acertaram.",
     };
     const html = renderEIA(baseEia);
-    const match = html.match(/<p style="([^"]+)">(?:<span[^>]*>&#9679;<\/span>&nbsp;)?Resultado da última edição[^<]*<\/p>/);
+    const match = html.match(/<p style="([^"]+)">Resultado da última edição[^<]*<\/p>/);
     assert.ok(match, `prevResultLine <p> não encontrado: ${html}`);
     assert.match(match![1], /color:#171411/, "prevResultLine deve ser ink");
-    assert.doesNotMatch(match![1], /color:#00A0A0/, "prevResultLine não deve mais ser teal");
-    assert.match(
+    assert.doesNotMatch(match![1], /font-weight:bold/, "prevResultLine não deve mais ser bold (#3220)");
+    assert.doesNotMatch(match![1], /text-transform:uppercase/, "prevResultLine não deve mais ser uppercase (#3220)");
+    assert.doesNotMatch(
       html,
       /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Resultado da última edição/,
-      "ponto ● deve preceder o texto do resultado",
+      "ponto ● não deve mais preceder o texto do resultado (#3220)",
     );
   });
 
