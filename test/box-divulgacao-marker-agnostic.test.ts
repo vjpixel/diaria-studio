@@ -144,6 +144,24 @@ Um ensaio longo sobre como equipes distribuídas estão se reorganizando.
     });
   });
 
+  it("code-review: box cujo CORPO menciona uma palavra igual a nome de seção (ex: 'RADAR' numa linha isolada) não é rejeitado (a checagem de header é só a 1ª linha do bloco, não o bloco inteiro)", () => {
+    const boxComPalavraDeSecao = `🎥 Cobertura completa do lançamento
+
+RADAR
+
+Detalhe extra sobre o assunto, sem relação com a seção RADAR da newsletter.
+
+[Saiba mais](https://example.com/cobertura)`;
+    withEdition(buildReviewed(boxComPalavraDeSecao), (dir) => {
+      const c = extractContent(dir);
+      assert.ok(
+        c.boxDivulgacao1,
+        "box não deveria ser rejeitado só porque uma linha do meio parece um header de seção",
+      );
+      assert.match(c.boxDivulgacao1!, /Cobertura completa do lançamento/);
+    });
+  });
+
   it("box bold-line com marcador novo (🎁) infere formato pela ESTRUTURA (bold-wrap), não pelo emoji", () => {
     const boxBoldNovo = "**🎁 Sorteio surpresa: participe até sexta. [Saiba mais](https://example.com/sorteio).**";
     withEdition(buildReviewed(boxBoldNovo), (dir) => {

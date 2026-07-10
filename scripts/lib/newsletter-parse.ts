@@ -738,8 +738,14 @@ function locateBoxInGap(
     const block = blocks[i];
     const trimmed = block.text.trim();
     if (!trimmed) continue;
-    if (DESTAQUE_HEADER_IN_BLOCK_RE.test(trimmed)) continue;
-    if (SECTION_HEADER_RE.test(trimmed)) continue;
+    // code-review #3204: os 2 regexes abaixo têm a flag `m` (linha-a-linha) —
+    // testar contra o bloco INTEIRO (multi-parágrafo) casaria se QUALQUER
+    // linha do MEIO do bloco parecer um header, rejeitando um box legítimo
+    // cujo corpo mencione algo como "RADAR" numa linha isolada. O sinal real
+    // é "o bloco INTEIRO é um header solto" — então testamos só a 1ª linha.
+    const firstLine = trimmed.split(/\r?\n/, 1)[0];
+    if (DESTAQUE_HEADER_IN_BLOCK_RE.test(firstLine)) continue;
+    if (SECTION_HEADER_RE.test(firstLine)) continue;
     const leadingWs = block.text.length - block.text.trimStart().length;
     const trailingWs = block.text.length - block.text.trimEnd().length;
     const matchStart = gap.start + block.rawStart + leadingWs;
