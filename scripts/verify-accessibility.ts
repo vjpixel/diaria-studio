@@ -169,7 +169,11 @@ type VerifyResult = {
    * que `research-review-dates.ts` (step 1p1) leia direto do output em vez
    * de re-fetchar a página. `published_date_note` indica a estratégia usada
    * (json-ld:datePublished, og:article:published_time, etc.) ou "no-date-found".
-   * Ausente quando o body não foi capturado (HEAD-only, browser fallback).
+   * #3211: também populado no browser fallback (`verifyWithBrowser`), via
+   * `page.content()` — HTML renderizado, sem custo extra de fetch. Ausente
+   * apenas quando o body nunca foi capturado (paths HEAD-only/blocked que
+   * retornam antes do GET: paywall-domain shortcut, aggregator, vídeo,
+   * status de erro classificado por `classifyHttpStatus`).
    */
   published_date?: string | null;
   published_date_note?: string;
@@ -573,7 +577,24 @@ async function verifyWithBrowser(
     if (bodyText.replace(/\s+/g, " ").trim().length < 500) {
       return { verdict: "uncertain", finalUrl, note: "browser body < 500 chars" };
     }
-    return { verdict: "accessible", finalUrl, note: "browser fallback" };
+    // #3211: extrair published_date também no fallback do browser — o browser
+    // já renderizou a página (custo zero de fetch adicional), mas até aqui só
+    // usávamos `document.body.innerText` (texto visível, sem <script>/<meta>).
+    // `page.content()` serializa o HTML completo renderizado (equivalente ao
+    // rawBody do path primário), permitindo reusar extractDateFromBody com as
+    // mesmas 7 estratégias (JSON-LD, og:article:published_time, etc). Sem
+    // isso, artigos que só passam pelo fallback (ex: anti-bot) nunca tinham
+    // published_date e o "benefício da dúvida" de filter-date-window.ts os
+    // deixava passar mesmo com semanas de idade (#3211).
+    const html = await page.content();
+    const dateResult = extractDateFromBody(html);
+    return {
+      verdict: "accessible",
+      finalUrl,
+      note: "browser fallback",
+      published_date: dateResult.date,
+      published_date_note: dateResult.note,
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return { verdict: "uncertain", finalUrl, note: `browser error: ${msg}` };

@@ -25,6 +25,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { bodyCacheFilename } from "../scripts/lib/url-body-cache.ts";
+import { filterDateWindow } from "../scripts/filter-date-window.ts";
 
 let server: Server;
 let port = 0;
@@ -51,6 +52,23 @@ function startServer(): Promise<void> {
       } else if (url === "/404") {
         res.writeHead(404, { "Content-Type": "text/html" });
         res.end("<html><body>not found</body></html>");
+      } else if (url === "/js-rendered-old-article") {
+        // #3211 regressão: HTML estático < 500 chars (após strip de tags) →
+        // primeiro passe (fetch puro) retorna `uncertain` e cai no browser
+        // fallback. Um <script> inline injeta texto visível suficiente
+        // (>= 500 chars de innerText) só depois de renderizado — obrigando
+        // o fallback a de fato acontecer e virar `accessible`. O <script
+        // type="application/ld+json"> com datePublished simula uma página
+        // JS-heavy real (ex: developers.googleblog.com) onde a data só é
+        // extraível a partir do HTML completo renderizado, não do innerText.
+        const html =
+          `<!DOCTYPE html><html><head><title>Artigo Renderizado</title>` +
+          `<script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","datePublished":"2026-06-17T12:00:00Z"}</script>` +
+          `</head><body><div id="c">carregando</div>` +
+          `<script>document.getElementById('c').innerText='Texto renderizado via JavaScript apos hidratacao do cliente. '.repeat(20);</script>` +
+          `</body></html>`;
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(html);
       } else {
         res.writeHead(404);
         res.end();
@@ -302,6 +320,62 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
         JSON.parse(readFileSync(cachePath, "utf8")).entries,
       )[0] as any).body;
       assert.equal(afterBody, beforeBody, "body preservado através de cache hit");
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("#3211 regressão: browser fallback extrai published_date do HTML renderizado (não só innerText)", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "verify-e2e-browser-date-"));
+    const bodiesDir = join(tmpRoot, "bodies");
+    const cachePath = join(tmpRoot, "verify-cache.json");
+    try {
+      const url = `http://127.0.0.1:${port}/js-rendered-old-article`;
+      const r = await runVerify([url], bodiesDir, cachePath);
+      assert.equal(r.exitCode, 0, `CLI exit ${r.exitCode}: ${r.stderr}`);
+
+      // Confirma que o fallback do browser de fato rolou (não o path primário
+      // — senão o teste não reproduziria o bug, que só existe no fallback).
+      assert.match(
+        r.stderr,
+        /uncertain — retrying with browser fallback/,
+        "esperava que o body <500 chars forçasse o browser fallback",
+      );
+
+      const results = JSON.parse(r.stdout);
+      assert.equal(results.length, 1);
+      assert.equal(results[0].verdict, "accessible");
+      assert.equal(results[0].note, "browser fallback");
+
+      // Antes do #3211 estes 2 campos estavam AUSENTES no resultado do
+      // fallback — a data só existia no <script type="application/ld+json">
+      // do HTML renderizado, invisível para document.body.innerText.
+      assert.equal(
+        results[0].published_date,
+        "2026-06-17",
+        "published_date deveria ser extraído do JSON-LD via page.content()",
+      );
+      assert.equal(results[0].published_date_note, "json-ld:datePublished");
+
+      // Fecha o loop do incidente real (edição 260710): com published_date
+      // populado, filter-date-window.ts agora consegue descartar o artigo
+      // quando ele está fora da janela — em vez do "benefício da dúvida"
+      // silencioso que deixava artigos de semanas atrás passarem.
+      const filterResult = filterDateWindow(
+        {
+          lancamento: [
+            { url: results[0].url, date: null, published_date: results[0].published_date },
+          ],
+          radar: [],
+          use_melhor: [],
+          video: [],
+        },
+        "2026-07-10", // anchor — mesma janela do incidente relatado (edição 260710)
+        3,
+      );
+      assert.equal(filterResult.kept.lancamento.length, 0, "artigo de 17/jun deve ser removido da janela ancorada em 10/jul");
+      assert.equal(filterResult.removed.length, 1);
+      assert.equal(filterResult.removed[0].source_field, "published_date");
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }
