@@ -89,6 +89,11 @@ import {
   type UntranslatedSummaryError,
   type UntranslatedSummaryReport,
 } from "./lib/lint-checks/no-untranslated-summary.ts"; // #3196
+import {
+  checkVideoLinksAreYoutube,
+  type VideoLinkYoutubeError,
+  type VideoLinkYoutubeReport,
+} from "./lib/lint-checks/video-links-are-youtube.ts"; // #3202
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -187,6 +192,11 @@ export {
   type UntranslatedSummaryError,
   type UntranslatedSummaryReport,
 } from "./lib/lint-checks/no-untranslated-summary.ts"; // #3196
+export {
+  checkVideoLinksAreYoutube,
+  type VideoLinkYoutubeError,
+  type VideoLinkYoutubeReport,
+} from "./lib/lint-checks/video-links-are-youtube.ts"; // #3202
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -987,6 +997,41 @@ function main(): void {
     return;
   }
 
+  // Modo --check video-links-are-youtube (#3202) — item da seção VÍDEOS com
+  // URL fora de youtube.com/youtu.be (página que só embeda o vídeo, ex: blog
+  // oficial). GATE-BLOCKING: regra editorial nova (context/editorial-rules.md
+  // — Seção "Vídeos") exige link do YouTube sempre; a resolução automática
+  // (Stage 1, scripts/resolve-video-youtube.ts) já tenta trocar pela URL do
+  // YouTube — este lint é o backstop que garante que nada não-YouTube
+  // sobrevive até o gate (resolução pulada, ou link colado manualmente).
+  if (args.check === "video-links-are-youtube") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check video-links-are-youtube --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkVideoLinksAreYoutube(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ video-links-are-youtube: ${result.errors.length} item(ns) da seção VÍDEOS sem URL do YouTube:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  linha ${e.line}: ${e.url}`);
+      }
+      console.error(
+        `\nFix: substitua pela URL do YouTube (youtube.com/watch?v=... ou youtu.be/...) equivalente em 02-reviewed.md antes de aprovar, ou mova o item pra fora de VÍDEOS.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -1110,6 +1155,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check mid-sentence-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-untranslated-summary --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check video-links-are-youtube --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>",

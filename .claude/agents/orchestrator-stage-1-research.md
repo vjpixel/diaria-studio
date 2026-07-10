@@ -329,6 +329,22 @@ npx tsx scripts/check-promoted-dedup.ts \
 ```
 Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar no gate `⚠️ N lançamento(s) revertidos para RADAR (URL oficial repetia edição anterior — #2315)`. Falha → warn + prosseguir.
 
+**1m-quinquies. Resolver URLs de VÍDEO para YouTube (#3202).** Regra editorial: itens da seção VÍDEOS usam SEMPRE link do YouTube (`context/editorial-rules.md` — Seção "Vídeos"). Para cada artigo em `video` cuja URL NÃO seja `youtube.com/watch` ou `youtu.be` (checar com `isYoutubeUrl` de `scripts/lib/video-youtube-resolve.ts`):
+
+1. **Buscar** o vídeo equivalente no YouTube — disparar `discovery-searcher` com a query `site:youtube.com {título do vídeo} {fonte/canal, se conhecido}`. (Um `discovery-searcher` por item; paralelo se houver mais de um — lembrar do cap de 2 vídeos/edição.)
+2. **Consolidar** os `articles[]` retornados (`{ title, url, source_name }`) num JSON `{ [urlOriginal]: [candidatos...] }` e gravar em `data/editions/{AAMMDD}/_internal/tmp-video-search-results.json`.
+3. **Resolver determinístico** (score de similaridade de título, `subjectSimilarity` — mesmo helper do dedup; threshold `YOUTUBE_MATCH_THRESHOLD`):
+   ```bash
+   npx tsx scripts/resolve-video-youtube.ts \
+     --categorized data/editions/{AAMMDD}/_internal/tmp-categorized.json \
+     --search-results data/editions/{AAMMDD}/_internal/tmp-video-search-results.json
+   ```
+   In-place. Stdout: `{ resolved, flagged, alreadyYoutube }`. Match confiável → URL substituída + `video_url_resolved: { from, to, matched_title, score }` anotado no artigo (mesmo espírito de `primary_source_substituted`, #1699). Sem match confiável → `video_url_unverified: true` no artigo, **NUNCA** um fallback silencioso pra URL não-YouTube (princípio invariável CLAUDE.md — nunca fabricar/manter URL não verificada).
+4. **Guard (gate-critical):** se `flagged > 0`, **surfar no gate da Etapa 1** cada item flagado: `⚠️ vídeo sem URL de YouTube verificável — cole o link ({título})`. O editor cola a URL correta manualmente no MD antes de aprovar, ou remove o item de VÍDEOS.
+5. Se `video` bucket vazio (nenhum item), pular este passo inteiro (info no run-log).
+
+Backstop gate-blocking em Stage 4 (`lint-newsletter-md.ts --check video-links-are-youtube`, ver `orchestrator-stage-4.md` §4c.2) garante que nenhum item não-YouTube sobrevive até a publicação, mesmo que este passo seja pulado ou o editor cole um link errado no Drive.
+
 **Instrumentação type_hint vs categorize (#1718 fase 1) — silenciosa, append-only:** mede a divergência entre o `type_hint` do source-researcher e a decisão de lançamento do categorize, sem mudar nada. Acumula o dado pra decidir (em ~2 semanas) se vale inverter o ônus (type_hint primário). Nunca bloqueia:
 ```bash
 npx tsx scripts/measure-type-hint-divergence.ts --in data/editions/{AAMMDD}/_internal/tmp-categorized.json --edition {AAMMDD}
