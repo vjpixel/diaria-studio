@@ -39,6 +39,8 @@ import { dirname, resolve } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import {
   loadIntentionalErrors,
+  loadIntentionalErrorJson,
+  intentionalErrorJsonPath,
   syncFrontmatterToEntries,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
@@ -193,7 +195,13 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
     // deixa um buraco no JSONL e faz o reveal da próxima edição pular a
     // edição certa (#1854) — extrair da prosa e gravar com source="prose_block".
     const md = readFileSync(mdPath, "utf8");
-    const prose = extractIntentionalErrorFromMd(md);
+    // #3272: passar o `record` já carregado (mesmo se incompleto pro gate de
+    // `checkIntentionalError`) — sem isso, `extractIntentionalErrorFromMd`
+    // nunca alcança o caminho PRIORIDADE 2 (`record.reveal`), e um `reveal`
+    // já preenchido em `_internal/intentional-error.json` fica descartado em
+    // silêncio quando o corpo do MD não tem a prosa "Nessa edição, …" batendo.
+    const record = loadIntentionalErrorJson(intentionalErrorJsonPath(dirname(mdPath)));
+    const prose = extractIntentionalErrorFromMd(md, record);
     if (prose) {
       const existing = loadIntentionalErrors(jsonlPath);
       if (existing.some((e) => e.edition === flags.edition)) {

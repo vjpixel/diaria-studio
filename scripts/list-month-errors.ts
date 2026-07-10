@@ -18,11 +18,25 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+
+// #3270: path default do JSONL resolvido de forma DETERMINÍSTICA a partir do
+// módulo (`import.meta.url`), não de `process.cwd()`. Em uso normal (CLI
+// invocado da raiz do repo) o resultado é idêntico — mas isso: (1) elimina o
+// risco de ler o arquivo errado quando o script é invocado de outro cwd, e
+// (2) permite que `fallbackFromJsonl`/`extractError` aceitem um `jsonlPath`
+// injetado, isolando testes do `data/intentional-errors.jsonl` REAL (que tem
+// dado de produção sync'd via OneDrive) sem depender de mockar `process.cwd()`.
+const DEFAULT_JSONL_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "data/intentional-errors.jsonl",
+);
 
 export interface MonthError {
   edition: string;
@@ -60,8 +74,11 @@ function listEditionsForMonth(monthYYMM: string): string[] {
  *      código fonte da corrupção #3205 que foi removido), mas o JSONL sincronizado
  *      continua sendo a fonte de fallback correta.
  */
-function fallbackFromJsonl(edition: string, reason: string): MonthError {
-  const jsonlPath = resolve(process.cwd(), "data/intentional-errors.jsonl");
+function fallbackFromJsonl(
+  edition: string,
+  reason: string,
+  jsonlPath: string = DEFAULT_JSONL_PATH,
+): MonthError {
   const entries = loadIntentionalErrors(jsonlPath);
   const entry = entries.find((e) => e.edition === edition);
   if (!entry) return { edition, declared: false, reason };
@@ -85,11 +102,17 @@ function fallbackFromJsonl(edition: string, reason: string): MonthError {
   };
 }
 
-export function extractError(editionDir: string, edition: string): MonthError {
+export function extractError(
+  editionDir: string,
+  edition: string,
+  // #3270: injetável pra isolamento de teste — default preserva o comportamento
+  // de produção (lê `data/intentional-errors.jsonl` real da raiz do repo).
+  jsonlPath: string = DEFAULT_JSONL_PATH,
+): MonthError {
   const mdPath = join(editionDir, "02-reviewed.md");
   if (!existsSync(mdPath)) {
     // #2016: fallback to JSONL when MD is absent (e.g., post-archive)
-    return fallbackFromJsonl(edition, "02-reviewed.md ausente");
+    return fallbackFromJsonl(edition, "02-reviewed.md ausente", jsonlPath);
   }
   const result = checkIntentionalError(mdPath);
   // #2016: `intentional_error: none` — editor declared no error this edition.
@@ -100,7 +123,7 @@ export function extractError(editionDir: string, edition: string): MonthError {
     // #3222: sem `_internal/intentional-error.json` legível — tenta o JSONL
     // antes de declarar "sem declaração" (cobre edições pré-migração cuja
     // estrutura só existia no antigo frontmatter YAML, já sincronizado).
-    return fallbackFromJsonl(edition, result.label ?? "intentional_error indisponível");
+    return fallbackFromJsonl(edition, result.label ?? "intentional_error indisponível", jsonlPath);
   }
   const p = result.parsed!;
   return {
