@@ -1,23 +1,31 @@
 /**
- * lint-checks/callout-placement.ts (#1972 — Opção B, defesa)
+ * lint-checks/callout-placement.ts (#1972 — Opção B, defesa; marcador-
+ * agnóstico desde #3204)
  *
- * Detecta um callout (📣/📚/🎉 bold-wrapped — Clarice, livros, sorteio) colado
+ * Detecta um callout (bold-line `**...**` OU parágrafo emoji-led) colado
  * DENTRO de uma seção de DESTAQUE, em vez de isolado entre dois `---`.
  *
  * Por que importa: `parseDestaques` fatia o reviewed.md em `^---$`. Um callout
  * colado antes do `---` de fechamento do D1 cai na seção do D1 e é absorvido
  * pelo corpo/why do destaque (render quebrado + duplicado — visto na 260609).
+ * Marcador-agnóstico desde #3204: `newsletter-parse.ts`'s `locateBoxInGap`
+ * extrai o box por POSIÇÃO (bloco `---`-isolado), não por marcador — mas essa
+ * extração só funciona quando o box É seu próprio bloco. Um box "colado" (sem
+ * `---` isolando) não tem sinal estrutural de posição pro parser pegar; este
+ * lint é o backstop que ainda reconhece a FORMA do bloco (bold-line inteiro
+ * OU emoji-led) pra flagrar antes que ele seja silenciosamente absorvido.
  *
- * O render já é robusto a isso (de-dup determinístico em
- * `stripBoxDivulgacao1`/`stripBoxDivulgacao2`, Opção A), mas este lint sinaliza a fonte do problema
- * pro editor reposicionar o bloco — o callout deve ser sua PRÓPRIA seção,
- * isolada entre o `---` que fecha o D1 e o `---` que abre o D2:
+ * O render já é robusto a isso quando o box ESTÁ isolado (de-dup determinístico
+ * em `stripBoxDivulgacao1`/`stripBoxDivulgacao2`, Opção A), mas este lint
+ * sinaliza a fonte do problema pro editor reposicionar o bloco — o callout deve
+ * ser sua PRÓPRIA seção, isolada entre o `---` que fecha o D1 e o `---` que
+ * abre o D2:
  *
  *   ...corpo do D1...
  *
  *   ---
  *
- *   **📣 Callout...**
+ *   **Callout...**
  *
  *   ---
  *
@@ -25,7 +33,9 @@
  *
  * O introCallout (🎉/📣 ANTES do 1º DESTAQUE, na região de intro) é legítimo e
  * NÃO é sinalizado — só callouts dentro de uma seção que já contém um header
- * `DESTAQUE N | ...`.
+ * `DESTAQUE N | ...`. O TÍTULO do destaque (1ª linha de conteúdo após o
+ * header — tipicamente `**[Título](url)**`, também bold-wrapped) também NÃO é
+ * sinalizado — é reconhecido por POSIÇÃO (1º parágrafo da seção), não por forma.
  */
 
 export interface CalloutPlacementMatch {
@@ -45,25 +55,52 @@ export interface CalloutPlacementResult {
 // splitter que protege, senão vira falso-negativo (passa, mas o render quebra).
 const SEPARATOR_RE = /^---$/;
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+[123]\s*\|/;
-const CALLOUT_OPEN_RE = /^\*\*\s*(?:📚|📣|🎉)/u;
+// #3204: marcador-agnóstico — QUALQUER parágrafo INTEIRAMENTE embrulhado em
+// `**...**` (mesma forma que `formatBoxInner` em newsletter-parse.ts detecta
+// como box bold-line) OU iniciado por um emoji + espaço (range Unicode
+// genérico — não um allowlist de 3 emojis) é candidato a box colado.
+const FULL_BOLD_LINE_RE = /^\*\*[\s\S]+\*\*$/;
+const EMOJI_LEAD_RE =
+  /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+/u;
 
 export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const matches: CalloutPlacementMatch[] = [];
-  let sectionHasDestaque = false;
+  let inDestaqueSection = false;
+  let sawTitle = false; // já vimos o 1º parágrafo de conteúdo (= título) desta seção?
+  let blankRun = 0;
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     // Separador: linha bruta (sem trim) pra bater com /^---$/m do parseDestaques.
     if (SEPARATOR_RE.test(raw)) {
-      sectionHasDestaque = false;
+      inDestaqueSection = false;
+      sawTitle = false;
+      blankRun = 0;
       continue;
     }
     const t = raw.trim();
-    if (DESTAQUE_HEADER_RE.test(t)) {
-      sectionHasDestaque = true;
+    if (t === "") {
+      blankRun++;
       continue;
     }
-    if (sectionHasDestaque && CALLOUT_OPEN_RE.test(t)) {
+    if (DESTAQUE_HEADER_RE.test(t)) {
+      inDestaqueSection = true;
+      sawTitle = false;
+      blankRun = 0;
+      continue;
+    }
+    const isParaStart = blankRun > 0 || i === 0;
+    blankRun = 0;
+    if (!inDestaqueSection) continue;
+    if (!sawTitle) {
+      // 1ª linha de conteúdo não-vazia da seção = título do destaque — nunca
+      // sinalizada, mesmo bold-wrapped (`**[Título](url)**` também bate em
+      // FULL_BOLD_LINE_RE). Reconhecida por POSIÇÃO, não por forma.
+      sawTitle = true;
+      continue;
+    }
+    if (!isParaStart) continue; // só avalia INÍCIO de parágrafo
+    if (FULL_BOLD_LINE_RE.test(t) || EMOJI_LEAD_RE.test(t)) {
       matches.push({ line: i + 1, context: t.slice(0, 80) });
     }
   }
