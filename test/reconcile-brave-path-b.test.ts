@@ -326,3 +326,49 @@ test("reconcile: sanity cap — gap incremental implausivelmente alto é clampad
   assert.equal(stats.queries_this_month, 2000, "total do mês nunca ultrapassa o free tier limit após o cap");
   rmSync(path, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// #3271 (achado na review do próprio PR) — quando o sanity cap ZERA `injected`
+// (cap=0: já não sobra espaço nenhum no free tier este mês), recordBraveCreditEstimate
+// no-opa pelo SEU PRÓPRIO guard `count<=0` — uma causa de no-op DIFERENTE da que o
+// #3271 fix trata (guard de idempotência). Sem tratamento explícito, o gate genérico
+// `if (!wrote)` do #3271 fix bloquearia persistState() TAMBÉM neste caso, congelando o
+// anchor indefinidamente enquanto o cap continuar ativo — regressão nova (o
+// comportamento pré-#3271 sempre avançava o anchor aqui). Este teste confirma que o
+// anchor AINDA avança quando o motivo do no-op é o cap (não idempotência), e que o
+// `reason` emitido distingue os dois casos.
+// ---------------------------------------------------------------------------
+
+test("reconcile: sanity cap zera a injeção (cap=0) → anchor AINDA avança (motivo é cap, não idempotência) (regressão #3271 review)", () => {
+  const path = tmpPath();
+  const statePath = tmpStatePath();
+  const now = new Date("2026-07-20T12:00:00Z");
+
+  // Anchor anterior real_used=1000 (não corrompido — só desatualizado o suficiente pra
+  // gerar um gap genuíno de 1000 contra o header atual, real_used=2000).
+  writeBraveReconcileState({ quota_remaining: 1000, real_used: 1000, timestamp: "2026-07-01T00:00:00Z" }, statePath);
+
+  // 2000 reais já trackeados este mês → cap = max(0, 2000-2000) = 0. gap = 2000-1000 =
+  // 1000 (>0, passa o gate gap<=0), mas injected = min(1000, cap=0) = 0.
+  seed(path, [
+    ...Array.from({ length: 1999 }, (_, i) => ({ timestamp: "2026-07-20T10:00:00Z", query: `q${i}`, status: "ok" })),
+    { timestamp: "2026-07-20T10:05:00Z", query: "q2000", status: "ok", quota_remaining: 0 }, // real_used=2000
+  ]);
+
+  main(["--edition", "260720"], path, now, statePath);
+
+  // Nada foi gravado (cap=0 → count<=0 → recordBraveCreditEstimate no-opa antes do
+  // guard de idempotência).
+  const stats = computeBraveCreditStats("260720", path, now);
+  assert.equal(stats.queries_this_month_estimated, 0, "cap=0 não grava nenhuma estimativa");
+
+  // O PONTO CENTRAL: o anchor AVANÇA (real_used=2000) mesmo sem gravar nada — porque o
+  // motivo é o sanity cap (esgotamento de orçamento), não o guard de idempotência do
+  // #3271. Congelar o anchor aqui acumularia o gap indefinidamente e o dumparia de uma
+  // vez quando o cap reabrir no mês seguinte — regressão que #3122 já havia corrigido
+  // para o caso de virada de mês.
+  const state = readBraveReconcileState(statePath);
+  assert.equal(state?.real_used, 2000, "anchor avança para 2000 mesmo com injected=0 (motivo: sanity cap, não idempotência)");
+
+  rmSync(path, { recursive: true, force: true });
+});

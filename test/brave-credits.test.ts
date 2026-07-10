@@ -154,6 +154,19 @@ describe("recordBraveCreditEstimate (#2608)", () => {
     rmSync(path, { force: true });
   });
 
+  // (#3271 review — achado do próprio code-review) count fracionário entre 0 e 1
+  // passava o gate `count<=0` (0.4 > 0) e só arredondava pra 0 DEPOIS — gerando 0
+  // entradas reais (só um "\n" em branco no arquivo) mas AINDA retornando `true`.
+  // Isso quebraria o contrato "true ⇒ pelo menos 1 entrada foi de fato gravada" que
+  // reconcile-brave-path-b.ts agora depende para decidir se avança seu anchor. O fix
+  // reordena o `Math.round` pra ANTES do gate.
+  it("count fracionário que arredonda pra 0 retorna false, não grava linha em branco (#3271 review)", () => {
+    const path = makeTmpPath();
+    const wrote = recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: 0.4 }, path);
+    assert.equal(wrote, false, "0.4 arredonda pra 0 — deve retornar false, não true");
+    assert.ok(!existsSync(path), "nenhum arquivo deve ser criado (nem uma linha em branco)");
+  });
+
   it("relatório distingue reais de estimadas (queries_this_month_estimated > 0)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-27T12:00:00Z");
