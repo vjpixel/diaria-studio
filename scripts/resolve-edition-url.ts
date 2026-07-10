@@ -1,5 +1,5 @@
 /**
- * resolve-edition-url.ts (#2454)
+ * resolve-edition-url.ts (#2454, write-then-validate #3223)
  *
  * Resolve a URL pública da edição a partir do slug do draft Beehiiv e grava
  * em `_internal/05-edition-url.txt` para consumo pelo publish-linkedin.ts e
@@ -13,11 +13,17 @@
  *   2. --slug         → URL direta (quando o slug já foi derivado / corrigido)
  *   3. --edition-url  → URL literal (override manual, qualquer valor)
  *
- * Guard anti-placeholder:
- *   Com --validate-social, lê 03-social.md e aborta com exit 3 se
- *   {edition_url} estiver presente após a resolução.
- *   {outros_count} é DEFERRED (resolvido por publish-linkedin.ts no dispatch)
- *   e NÃO é rejeitado por este guard.
+ * Guard anti-placeholder (write-then-validate, #3223):
+ *   Com --validate-social, lê 03-social.md, substitui {edition_url} pela URL
+ *   resolvida e REESCREVE o arquivo (atômico) — só então roda
+ *   findUnresolvedPlaceholders no conteúdo JÁ substituído, abortando com exit 3
+ *   se sobrar algum placeholder não-resolvido (que não seja deferred, ex:
+ *   {outros_count}, resolvido por publish-linkedin.ts no dispatch).
+ *
+ *   Antes do #3223, o guard rodava sobre o 03-social.md ORIGINAL (nunca
+ *   reescrito) — {edition_url} literal sempre presente por design (assim
+ *   stitch-newsletter.ts/social-linkedin geram o arquivo), então o guard
+ *   sempre falhava com exit 3 em qualquer edição normal.
  *
  * Uso:
  *   npx tsx scripts/resolve-edition-url.ts \
@@ -38,13 +44,21 @@
  * Exit codes:
  *   0 — URL gravada com sucesso (+ validação passed se --validate-social)
  *   1 — Erro de input / arquivo ausente
- *   3 — {edition_url} não-resolvido detectado em 03-social.md (--validate-social)
+ *   3 — placeholder não-resolvido detectado em 03-social.md APÓS a substituição
+ *       de {edition_url} (--validate-social) — ex: um placeholder novo/diferente
+ *       que nenhum writer resolveu. {edition_url} em si nunca dispara isso mais,
+ *       porque este script já o substitui antes de validar.
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
+import {
+  deriveEditionUrl,
+  findUnresolvedPlaceholders,
+  substituteEditionUrl,
+  BEEHIIV_BASE_URL,
+} from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
@@ -135,7 +149,12 @@ function main(argv: string[]): void {
   writeFileAtomic(outPath, editionUrl, { encoding: "utf8" });
   console.log(`#2454: gravado → ${outPath}`);
 
-  // ── Guard anti-placeholder (--validate-social) ────────────────────────────
+  // ── Write-then-validate (--validate-social, #3223) ────────────────────────
+  // Reescreve 03-social.md substituindo {edition_url} pela URL resolvida ANTES
+  // de rodar o guard anti-placeholder — sem isso, findUnresolvedPlaceholders
+  // rodava sobre o arquivo ORIGINAL (nunca tocado), que sempre contém
+  // {edition_url} literal por design (assim stitch-newsletter.ts/social-linkedin
+  // geram o arquivo), fazendo o guard falhar com exit 3 em toda edição normal.
 
   if (args["validate-social"]) {
     const socialMdPath = resolve(editionDir, "03-social.md");
@@ -147,22 +166,27 @@ function main(argv: string[]): void {
       process.exit(1);
     }
     const socialMd = readFileSync(socialMdPath, "utf8");
-    const unresolved = findUnresolvedPlaceholders(socialMd);
+    const substituted = substituteEditionUrl(socialMd, editionUrl);
+    if (substituted !== socialMd) {
+      writeFileAtomic(socialMdPath, substituted, { encoding: "utf8" });
+      console.log(`#3223: 03-social.md reescrito — {edition_url} substituído por ${editionUrl}`);
+    }
+
+    const unresolved = findUnresolvedPlaceholders(substituted);
     if (unresolved.length > 0) {
       console.error(
-        `ERRO (#2454 guard anti-placeholder): 03-social.md contém placeholders não-resolvidos:\n` +
+        `ERRO (#2454/#3223 guard anti-placeholder): 03-social.md contém placeholders não-resolvidos ` +
+        `mesmo APÓS a substituição de {edition_url}:\n` +
         `  ${unresolved.join(", ")}\n` +
         `\n` +
-        `{edition_url} DEVE ser substituído antes do dispatch do social.\n` +
-        `  → resolvido via --title/--slug/--edition-url neste script (já gravado: ${editionUrl})\n` +
-        `  → confirmar que publish-linkedin.ts foi invocado DEPOIS que 05-edition-url.txt foi gravado.\n` +
-        `\n` +
-        `Nota: {outros_count} é resolvido por publish-linkedin.ts no dispatch (deferred) —\n` +
-        `  não é detectado por este guard.`,
+        `Todo placeholder {snake_case} (exceto os deferred, ex: {outros_count} — resolvido por\n` +
+        `publish-linkedin.ts no dispatch) DEVE estar resolvido em 03-social.md antes do dispatch do social.\n` +
+        `  → {edition_url} já foi substituído por este script (gravado: ${editionUrl}).\n` +
+        `  → o(s) placeholder(s) acima não é {edition_url} — verificar origem (writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`,
       );
       process.exit(3);
     }
-    console.log(`#2454: guard anti-placeholder OK — {edition_url} não presente em 03-social.md.`);
+    console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);
   }
 
   // Sucesso

@@ -193,16 +193,18 @@ if [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
   npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --title "{titulo_d1}"
 fi
 
-# Guard anti-placeholder: aborta (exit 3) se {edition_url}
-# sobreviveu em 03-social.md. Nao dispatchar social se exit != 0.
+# Guard anti-placeholder (write-then-validate, #3223): reescreve 03-social.md
+# substituindo {edition_url} pela URL real e SO ENTAO valida — aborta (exit 3)
+# se sobrar algum placeholder {snake_case} nao-resolvido (que nao seja deferred).
+# Nao dispatchar social se exit != 0.
 # Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
 EDITION_URL="$(cat {EDITION_DIR}/_internal/05-edition-url.txt)"
 npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --edition-url "${EDITION_URL}" --validate-social
 ```
 
 Exit code do guard:
-- `0` → {edition_url} resolvido, prosseguir pro dispatch do social.
-- `3` → **FATAL: {edition_url} nao-resolvido em 03-social.md.** NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com `{edition_url}` literal — o dispatch precisa ser corrigido primeiro.
+- `0` → {edition_url} resolvido e ja substituido em 03-social.md (o script reescreve o arquivo), prosseguir pro dispatch do social.
+- `3` → **FATAL: sobrou placeholder nao-resolvido em 03-social.md apos a substituicao de {edition_url}** (#3223 — tipicamente um placeholder novo/diferente que nenhum writer resolveu, ja que {edition_url} em si e sempre resolvido por este passo). NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com placeholder literal — o dispatch precisa ser corrigido primeiro.
 
 **Passo 5c-3: Dispatch social — APOS a URL estar resolvida.**
 
