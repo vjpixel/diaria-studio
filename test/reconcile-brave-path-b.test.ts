@@ -4,7 +4,11 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { main } from "../scripts/reconcile-brave-path-b.ts";
-import { computeBraveCreditStats, writeBraveReconcileState } from "../scripts/lib/brave-credits.ts";
+import {
+  computeBraveCreditStats,
+  writeBraveReconcileState,
+  readBraveReconcileState,
+} from "../scripts/lib/brave-credits.ts";
 
 // now FIXO injetado via main(argv, path, now, statePath) → determinístico (sem flaky de
 // virada de mês). Os timestamps seedados usam o mesmo mês do now.
@@ -212,6 +216,86 @@ test("reconcile: virada de mês com incremento genuíno pequeno → só o increm
 // do free tier este mês, mesmo com a lógica incremental (defense-in-depth
 // contra estado de reconcile corrompido/stale).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// #3271 — regressão: anchor não pode avançar quando recordBraveCreditEstimate
+// no-opa por causa do SEU PRÓPRIO guard de idempotência (edition+source+mês já
+// reconciliado). O teste "idempotente — re-rodar não duplica" (linha 74) usa um
+// header INALTERADO (gap incremental=0) — nunca exercita o guard de idempotência
+// de recordBraveCreditEstimate em si (o gap<=0 já intercepta antes). Este teste
+// força um gap incremental GENUÍNO (>0) numa 2ª rodada da MESMA edição — cenário
+// real de uma retomada da pipeline resumível — e verifica que o anchor NÃO avança
+// (o gap fica preservado, não perdido) até que uma escrita de fato aconteça.
+// ---------------------------------------------------------------------------
+
+test("reconcile: 2ª execução da MESMA edição com gap novo genuíno → guard de idempotência no-opa e o anchor NÃO avança (regressão #3271)", () => {
+  const path = tmpPath();
+  const statePath = tmpStatePath();
+
+  // --- 1ª rodada: 999 reais, header quota_remaining=49 → real_used=1951.
+  // Bootstrap (sem estado anterior) → gap=952, grava 952 estimadas sob a edição
+  // 260701, persiste anchor real_used=1951.
+  seed(path, [
+    ...Array.from({ length: 998 }, (_, i) => ({ timestamp: `${MONTH}-15T10:00:00Z`, query: `q${i}`, status: "ok" })),
+    { timestamp: `${MONTH}-15T10:05:00Z`, query: "q999", status: "ok", quota_remaining: 49 },
+  ]);
+  main(["--edition", "260701"], path, NOW, statePath);
+
+  const afterFirstRun = computeBraveCreditStats("260701", path, NOW);
+  assert.equal(afterFirstRun.queries_this_edition_estimated, 952, "1ª rodada grava o gap de bootstrap (952)");
+  const stateAfterFirstRun = readBraveReconcileState(statePath);
+  assert.equal(stateAfterFirstRun?.real_used, 1951, "anchor persiste real_used=1951 após 1ª rodada");
+
+  // --- 2ª rodada: MESMA edição (260701, pipeline resumível re-rodando Stage 1).
+  // Header avançou de verdade: 10 novas queries reais + quota_remaining=39 →
+  // real_used=1961. Gap incremental = 1961-1951=10 (genuíno, > 0 — NÃO é o caso
+  // "header inalterado" do teste de idempotência existente).
+  const moreReal: object[] = Array.from({ length: 9 }, (_, i) => ({
+    timestamp: `${MONTH}-15T11:00:00Z`,
+    query: `q-more-${i}`,
+    status: "ok",
+  }));
+  moreReal.push({ timestamp: `${MONTH}-15T11:05:00Z`, query: "q-more-9", status: "ok", quota_remaining: 39 });
+  writeFileSync(path, moreReal.map((e) => JSON.stringify(e)).join("\n") + "\n", { flag: "a", encoding: "utf8" });
+
+  main(["--edition", "260701"], path, NOW, statePath);
+
+  // recordBraveCreditEstimate no-opa: já existe entry estimated para
+  // edition=260701+source=path-b-reconcile este mês (da 1ª rodada) — mesmo o
+  // gap desta rodada (10) sendo genuíno e novo.
+  const afterSecondRun = computeBraveCreditStats("260701", path, NOW);
+  assert.equal(
+    afterSecondRun.queries_this_edition_estimated,
+    952,
+    "2ª rodada NÃO grava as 10 novas — guard de idempotência de recordBraveCreditEstimate no-opa",
+  );
+
+  // O PONTO CENTRAL da regressão: o anchor NÃO deve avançar para 1961 quando a
+  // escrita não aconteceu. Antes do #3271, persistState() rodava incondicionalmente
+  // e o gap de 10 desaparecia pra sempre (nunca gravado, mas o anchor já tinha
+  // "consumido" o intervalo).
+  const stateAfterSecondRun = readBraveReconcileState(statePath);
+  assert.equal(
+    stateAfterSecondRun?.real_used,
+    1951,
+    "anchor permanece em 1951 (NÃO avança para 1961) — gap de 10 preservado, não perdido",
+  );
+
+  // --- 3ª rodada: edição DIFERENTE (260702) no mesmo mês — passa o guard de
+  // idempotência (chave é edition+source+mês). O gap de 10 preservado pela 2ª
+  // rodada agora É recuperado, provando que nada foi perdido permanentemente.
+  main(["--edition", "260702"], path, NOW, statePath);
+
+  const afterThirdRun = computeBraveCreditStats("260702", path, NOW);
+  assert.equal(afterThirdRun.queries_this_edition_estimated, 10, "3ª rodada recupera o gap de 10 preservado");
+  const stateAfterThirdRun = readBraveReconcileState(statePath);
+  assert.equal(stateAfterThirdRun?.real_used, 1961, "anchor agora avança para 1961 — escrita de fato aconteceu");
+
+  const totalStats = computeBraveCreditStats(null, path, NOW);
+  assert.equal(totalStats.queries_this_month_estimated, 962, "total do mês: 952 (edição 1) + 10 (edição 2), sem perda");
+
+  rmSync(path, { recursive: true, force: true });
+});
 
 test("reconcile: sanity cap — gap incremental implausivelmente alto é clampado ao espaço livre do mês (#3122 fix 3)", () => {
   const path = tmpPath();

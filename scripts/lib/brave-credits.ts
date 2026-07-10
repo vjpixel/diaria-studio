@@ -99,6 +99,16 @@ export function recordBraveCredit(
  *
  * `now` injetável (default new Date()) — usado p/ monthPrefix (idempotência) E
  * timestamp das entradas, pra ambos ficarem no MESMO mês (sem split em virada de mês).
+ *
+ * ## Valor de retorno (#3271)
+ *
+ * Retorna `true` quando as `count` entradas foram de fato gravadas no JSONL, `false`
+ * em qualquer outro caso (count não-finito, count<=0, guard de idempotência disparou —
+ * já existe entry pra este edition+source+mês —, ou falha de I/O). Callers que derivam
+ * estado incremental do resultado (ex: `reconcile-brave-path-b.ts` avançando seu anchor)
+ * DEVEM checar este retorno antes de considerar o gap "reconciliado" — um no-op de
+ * idempotência não é uma escrita bem-sucedida, e tratá-lo como tal perde o gap
+ * permanentemente (a causa raiz da issue #3271).
  */
 export function recordBraveCreditEstimate(
   {
@@ -108,7 +118,7 @@ export function recordBraveCreditEstimate(
   }: { edition?: string; source: string; count: number },
   path: string = DEFAULT_PATH,
   now: Date = new Date(),
-): void {
+): boolean {
   if (!Number.isFinite(count)) {
     // #2630 — warn explícito para count não-finito (NaN/±Infinity); não engolir silenciosamente.
     // Causa original: LLM passava expressão não-avaliada ({N}*2+{M}+{J}) que resultava em NaN
@@ -117,9 +127,9 @@ export function recordBraveCreditEstimate(
       `[brave-credits] recordBraveCreditEstimate: count não-finito (${count}) — estimativa ignorada.` +
         ` source=${source}, edition=${edition ?? "n/a"}`,
     );
-    return;
+    return false;
   }
-  if (count <= 0) return;
+  if (count <= 0) return false;
   count = Math.round(count);
   try {
     const fullPath = resolve(process.cwd(), path);
@@ -144,7 +154,7 @@ export function recordBraveCreditEstimate(
             return false;
           }
         });
-      if (existing) return;
+      if (existing) return false;
     }
     const ts = now.toISOString();
     const lines: string[] = [];
@@ -160,8 +170,10 @@ export function recordBraveCreditEstimate(
       lines.push(JSON.stringify(entry));
     }
     appendFileSync(fullPath, lines.join("\n") + "\n", "utf8");
+    return true;
   } catch {
     // Counter não pode quebrar pipeline
+    return false;
   }
 }
 
