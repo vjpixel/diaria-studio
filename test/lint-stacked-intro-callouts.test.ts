@@ -1,23 +1,27 @@
 /**
- * test/lint-stacked-intro-callouts.test.ts (#2729)
+ * test/lint-stacked-intro-callouts.test.ts (#2729, marcador-agnóstico desde #3232)
  *
  * `extractIntroCallout` (scripts/lib/newsletter-parse.ts) foi tornado greedy
  * pelo #2727 para permitir sub-linhas `**bold**` (ex: "**Sorteio**") dentro
- * do box de início de mês (campeões do É IA? + sorteio, #2725). O regex
- * greedy (`/^\*\*\s*((?:🎉|📣)[\s\S]+)\*\*\s*$/m`) assume que a região de
- * intro (antes do 1º `**DESTAQUE`) contém NO MÁXIMO 1 bloco de callout.
+ * do box de início de mês (campeões do É IA? + sorteio, #2725), e desde #3232
+ * deixou de exigir um marcador 🎉/📣 — QUALQUER bloco bold-wrap na região de
+ * intro (antes do 1º `**DESTAQUE`) é candidato. O regex greedy
+ * (`/^\*\*\s*([\s\S]+)\*\*\s*$/m`) assume que essa região contém NO MÁXIMO 1
+ * bloco de callout.
  *
- * Se o editor colar 2 blocos empilhados na região de intro (ex: um 📣
- * patrocinado ACIMA do 🎉 de campeões/sorteio — `inject-champions-callout.ts`
+ * Se o editor colar 2 blocos empilhados na região de intro (ex: um
+ * patrocinado ACIMA do CTA de campeões/sorteio — `inject-champions-callout.ts`
  * já pula a auto-injeção quando um callout preexiste, mas isso não impede
  * colagem manual pelo editor no Drive), o greedy funde os 2 blocos: os `**`
  * internos (fechamento do 1º + abertura do 2º) vazam como texto literal, e o
- * bloco 📣 patrocinado perde o separador "Divulgação" que o renderer usa pra
+ * bloco patrocinado perde o separador "Divulgação" que o renderer usa pra
  * distinguir patrocínio de callout editorial.
  *
  * `lintStackedIntroCallouts` (scripts/lib/lint-checks/callout-placement.ts)
- * é o backstop determinístico: erra quando encontra ≥2 linhas
- * `^\*\*\s*(🎉|📣)` na região de intro.
+ * é o backstop determinístico: erra quando encontra ≥2 parágrafos de abertura
+ * bold-wrap na região de intro — marcador-agnóstico desde #3232 (antes exigia
+ * literalmente `^\*\*\s*(🎉|📣)`, o que deixava passar sem flag um par de
+ * blocos empilhados com marcador novo/nenhum).
  */
 
 import { describe, it } from "node:test";
@@ -186,21 +190,64 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.equal(r.count, 2);
   });
 
-  it("ok: 📚 (marcador de boxDivulgacao1 de livros) não conta pra intro — introCallout só reconhece 🎉/📣", () => {
+  it("#3232 marcador-agnóstico: 📚 (ou QUALQUER outro marcador) TAMBÉM conta como abertura de bloco — extractIntroCallout não reconhece mais só 🎉/📣", () => {
+    // #3232: lintStackedIntroCallouts detecta abertura de bloco por ESTRUTURA
+    // (parágrafo bold-wrap), não por um allowlist de 2 emojis — espelha o fato
+    // de extractIntroCallout também ter deixado de exigir 🎉/📣. Este é
+    // exatamente o caso que o lint precisa pegar agora: 2 blocos bold-wrap
+    // empilhados na intro, com QUALQUER marcador (inclusive um novo, ex: 🎥),
+    // se fundiriam no parse greedy — igual ao caso 📣+🎉 já coberto acima.
     const md = [
       TITULO_SUBTITULO,
       COVERAGE_LINE,
       "",
       "**🎉 Único callout de intro.**",
       "",
-      "**📚 Não é um marcador de intro válido (só 🎉/📣) — não deve ser contado.**",
+      "**📚 Um segundo bloco bold-wrap empilhado — conta como 2ª abertura agora.**",
       "",
       "---",
       "",
       destaque(1),
     ].join("\n");
     const r = lintStackedIntroCallouts(md);
-    assert.equal(r.ok, true, `📚 não é marcador de intro (só 🎉/📣): ${JSON.stringify(r)}`);
+    assert.equal(r.ok, false, `2 blocos bold-wrap empilhados devem ser flagrados, marcador-agnóstico: ${JSON.stringify(r)}`);
+    assert.equal(r.count, 2);
+  });
+
+  it("#3232: marcador NOVO (nunca visto, ex: 🎥) sozinho na intro — 1 bloco só, sem falso-positivo", () => {
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "**🎥 Assista: bastidores da produção com IA. [Veja](https://x.com/v).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.ok, true, `1 bloco com marcador novo não deveria ser flagrado: ${JSON.stringify(r)}`);
     assert.equal(r.count, 1);
+  });
+
+  it("code-review #3232: callout INDENTADO (espaços à frente do `**`) ainda é detectado — linhas são trimmed antes de testar abertura/fechamento", () => {
+    // Bug real introduzido na 1ª versão do #3232: `paraLines.push(t)` guardava
+    // a linha BRUTA (não trimmed); `PARA_STARTS_BOLD_RE`/`PARA_ENDS_BOLD_RE`
+    // exigem `**` exatamente na borda da string, então um callout colado com
+    // indentação (ex: 2 espaços à frente) deixava de bater — o lint retornava
+    // `count: 0` silenciosamente em vez de detectar o bloco.
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "  **🎉 Callout indentado (2 espaços à frente).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.count, 1, `callout indentado deveria ser detectado: ${JSON.stringify(r)}`);
+    assert.equal(r.ok, true);
   });
 });

@@ -128,10 +128,20 @@ export function stripKickerEmoji(s: string): string {
 }
 
 /**
- * Remove SÓ o marcador de callout (📣/📚/🎉 + variation selector + espaço) do
- * início. Diferente de `stripKickerEmoji`, NÃO engole `[` (markdown-link), aspas
- * ou outros não-alfanuméricos — preservando títulos que começam com link/citação
- * (#1942 review #4).
+ * Remove SÓ o marcador de callout (📣/📚/📖/🎉 + variation selector + espaço)
+ * do início. Diferente de `stripKickerEmoji`, NÃO engole `[` (markdown-link),
+ * aspas ou outros não-alfanuméricos — preservando títulos que começam com
+ * link/citação (#1942 review #4).
+ *
+ * #3232: propositalmente NÃO virou um allowlist Unicode genérico como
+ * `EMOJI_LEAD_RE` em lint-checks/callout-placement.ts — isto é cosmético
+ * (remove o emoji decorativo do título quando ele É um destes 4, conhecidos),
+ * não um mecanismo de detecção/silent-drop (esses foram corrigidos por
+ * posição+estrutura em `extractIntroCallout`/`locateBoxInGap` e por link de
+ * afiliado em `isSponsoredCallout` — nenhum dos dois depende mais desta
+ * função pra decidir SE um callout existe). Um marcador novo (ex: 🎥) que não
+ * esteja nesta lista simplesmente fica visível no título — cosmético, não
+ * crítico (revisado no #3232, item 2 do inventário do #3204).
  */
 export function stripCalloutMarker(s: string): string {
   // [︎️]? — consome VS15 (texto) além do VS16 (emoji); VS15 órfão
@@ -140,14 +150,27 @@ export function stripCalloutMarker(s: string): string {
 }
 
 /**
- * Convenção de marcadores de callout (#1942 review #1):
- *   📣 = bloco PATROCINADO (anúncio) → recebe o separador "Divulgação".
- *   🎉 = CTA/sorteio editorial · 📚 = promo interna → SEM disclosure.
- * O disclosure é dirigido por este predicado (não pelo slot intro vs mid), então
- * um anúncio recebe "Divulgação" tanto no topo quanto entre D1 e D2.
+ * Convenção de disclosure de callout (#1942 review #1; marcador-agnóstico
+ * desde #3232): um callout é PATROCINADO — e recebe o separador "Divulgação"
+ * — quando o texto contém um link de AFILIADO (`?via=…` ou `tag=…`), não mais
+ * quando começa com o emoji 📣. Um callout sem link de afiliado (CTA/sorteio
+ * editorial, promo interna própria) fica sem disclosure.
+ *
+ * #3232: antes, o predicado testava literalmente `/^\s*📣/` — um bloco
+ * patrocinado com um marcador novo (ou nenhum) não ganhava o disclosure
+ * "Divulgação" no topo da edição (introCallout), e o título ficava serif/body
+ * errado. O sinal estrutural real de "isto é patrocinado" é o link de
+ * afiliado em si — todo conteúdo patrocinado real da Diar.ia (Clarice,
+ * Beehiiv, Wispr Flow) já usa `?via=`; o único outro padrão observado é
+ * `tag=` (convenção clássica de afiliado Amazon). O disclosure é dirigido por
+ * este predicado (não pelo slot intro vs mid), então um anúncio recebe
+ * "Divulgação" tanto no topo quanto entre D1 e D2 — mas note que
+ * `renderDivulgacaoSeparator` no boxDivulgacao1/2 é SEMPRE emitido
+ * incondicionalmente (decisão 260611, ver comentário acima) — este predicado
+ * hoje só governa o introCallout (topo da edição).
  */
 export function isSponsoredCallout(text: string | null | undefined): boolean {
-  return !!text && /^\s*📣/u.test(text);
+  return !!text && /[?&](?:via|tag)=/i.test(text);
 }
 
 /**

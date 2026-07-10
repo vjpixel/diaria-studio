@@ -160,8 +160,20 @@ describe("#1938 — renderIntroCallout multi-parágrafo segue o DS", () => {
 // ── Review #1942: endereçando os 4 comentários ────────────────────────
 
 describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots", () => {
-  it("isSponsoredCallout: 📣 = patrocinado; 🎉/📚/texto/null = não", () => {
-    assert.equal(isSponsoredCallout("📣 Anúncio"), true);
+  it("isSponsoredCallout (#3232, marcador-agnóstico): detecta por link de afiliado (?via=/tag=), não pelo emoji 📣", () => {
+    // Link de afiliado presente → patrocinado, COM ou SEM o marcador 📣.
+    assert.equal(isSponsoredCallout("📣 Anúncio. [Acesse](https://ex.com/x?via=diaria)"), true);
+    assert.equal(
+      isSponsoredCallout("Anúncio SEM emoji nenhum, mas com link de afiliado. [Acesse](https://ex.com/x?tag=abc123)"),
+      true,
+      "marcador-agnóstico: link de afiliado basta, mesmo sem 📣",
+    );
+    // Emoji 📣 sozinho, SEM link de afiliado, não basta mais.
+    assert.equal(
+      isSponsoredCallout("📣 Anúncio sem link de afiliado nenhum"),
+      false,
+      "emoji sozinho não é mais suficiente — precisa do link de afiliado",
+    );
     assert.equal(isSponsoredCallout("🎉 Sorteio"), false);
     assert.equal(isSponsoredCallout("📚 Promo"), false);
     assert.equal(isSponsoredCallout("Texto comum"), false);
@@ -196,14 +208,15 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     }
   });
 
-  it("anúncio 📣 na região de intro (topo) também recebe 'Divulgação'", () => {
+  it("anúncio com link de afiliado na região de intro (topo) também recebe 'Divulgação' — mesmo sem marcador 📣 (#3232)", () => {
     const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
     try {
       const content = extractContent(dir);
-      // injeta um introCallout patrocinado no topo
-      content.introCallout = "📣 Patrocínio no topo. [Acesse](https://anunciante.com).";
+      // injeta um introCallout patrocinado no topo — sem marcador 📣, detectado
+      // pelo link de afiliado (?via=), marcador-agnóstico (#3232).
+      content.introCallout = "Patrocínio no topo, sem emoji de marcação. [Acesse](https://anunciante.com/?via=diaria).";
       const html = renderHTML(content);
-      assert.ok(html.includes("Divulgação"), "anúncio no topo deve ter disclosure");
+      assert.ok(html.includes("Divulgação"), "anúncio no topo deve ter disclosure (via link de afiliado)");
       assert.ok(
         html.indexOf("Divulgação") < html.indexOf("Patrocínio no topo"),
         "separador antes do anúncio do topo",
@@ -213,13 +226,14 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     }
   });
 
-  it("#260701: patrocinado 📣 multi-parágrafo no intro mantém título serif 26px (não body 16px)", () => {
+  it("#260701: patrocinado (link de afiliado) multi-parágrafo no intro mantém título serif 26px (não body 16px)", () => {
     const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
     try {
       const content = extractContent(dir);
-      // 📣 patrocinado multi-parágrafo no slot do intro: NÃO deve cair no titleStyle="body"
+      // patrocinado multi-parágrafo no slot do intro (via link de afiliado,
+      // #3232): NÃO deve cair no titleStyle="body"
       content.introCallout =
-        "📣 Patrocínio no topo\n\nCorpo do anúncio aqui.\n\n[Acesse](https://anunciante.com)";
+        "📣 Patrocínio no topo\n\nCorpo do anúncio aqui.\n\n[Acesse](https://anunciante.com/?via=diaria)";
       const html = renderHTML(content);
       const idx = html.indexOf("Patrocínio no topo");
       assert.ok(idx > -1, "título do anúncio presente");
@@ -227,6 +241,22 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
       const titleP = html.slice(html.lastIndexOf("<p", idx), idx);
       assert.match(titleP, /font-size:26px/, "patrocinado mantém título 26px serif");
       assert.doesNotMatch(titleP, /font-size:16px/, "patrocinado NÃO regride pra 16px");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#3232: patrocinado (link de afiliado) SEM marcador emoji nenhum também mantém título serif 26px", () => {
+    const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
+    try {
+      const content = extractContent(dir);
+      content.introCallout =
+        "Patrocínio sem emoji\n\nCorpo do anúncio aqui.\n\n[Acesse](https://anunciante.com/?tag=abc123)";
+      const html = renderHTML(content);
+      const idx = html.indexOf("Patrocínio sem emoji");
+      assert.ok(idx > -1, "título do anúncio presente");
+      const titleP = html.slice(html.lastIndexOf("<p", idx), idx);
+      assert.match(titleP, /font-size:26px/, "patrocinado sem emoji ainda mantém título 26px serif (detecção por link)");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -252,10 +282,23 @@ describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parág
 });
 
 describe("#1942 review #3 — strip do marcador 📣 no callout de 1 parágrafo", () => {
-  it("anúncio 📣 de 1 parágrafo remove o emoji (o kicker 'Divulgação' rotula)", () => {
-    const html = renderIntroCallout("📣 Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/x).");
+  it("anúncio 📣 de 1 parágrafo (com link de afiliado, patrocinado) remove o emoji (o kicker 'Divulgação' rotula)", () => {
+    // #3232: a decisão de stripar o marcador no caminho de 1 parágrafo é
+    // gated por `sponsored` (isSponsoredCallout), que agora depende do link
+    // de afiliado — não basta mais o emoji 📣 sozinho (ver review #1 acima).
+    // URL real da Clarice (com ?via=) preserva o comportamento de produção.
+    const html = renderIntroCallout("📣 Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/precos-planos?via=diaria).");
     assert.ok(!html.includes("📣"), "📣 removido do anúncio de 1 parágrafo");
     assert.ok(html.includes("Escreva melhor com a Clarice.ai"), "texto preservado");
+  });
+
+  it("#3232: SEM link de afiliado, o marcador 📣 de 1 parágrafo NÃO é mais removido (cosmético, item 2 do #3232)", () => {
+    // Documenta a mudança de contrato: como `stripCalloutMarker` no caminho
+    // de 1 parágrafo é condicional a `sponsored`, e `sponsored` agora exige
+    // link de afiliado, um 📣 "solto" (sem link de afiliado real) deixa de
+    // ser stripado — cosmético, não silent-drop (nenhum conteúdo se perde).
+    const html = renderIntroCallout("📣 Anúncio sem link de afiliado nenhum.");
+    assert.ok(html.includes("📣"), "sem link de afiliado, marcador fica visível (cosmético)");
   });
 });
 
