@@ -1070,6 +1070,10 @@ export function aggregateAbcSummary(
 
   for (const c of campaigns) {
     const warm = parseClariceCampaignKey(c.name);
+    // #3128 (self-review): NÃO passar c.listName aqui — parseAbcAudienceCampaign
+    // só é chamado quando `warm` já é falsy (mesmo c.name), então o ramo
+    // listName-aware (`if (warm && warm.cell)`, dentro da função) nunca seria
+    // alcançado por este call site; só o regex de nome "cold ..." se aplica.
     const cold = warm ? null : parseAbcAudienceCampaign(c.name);
     const parsed =
       warm ??
@@ -1280,7 +1284,7 @@ export function groupMonthlyAbcTests(
     { cycle: string; dateKey: string; campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }> }
   >();
   for (const c of campaigns) {
-    const parsed = parseAbcAudienceCampaign(c.name);
+    const parsed = parseAbcAudienceCampaign(c.name, c.listName);
     if (!parsed || !/^\d{4}-\d{2}$/.test(parsed.cycle)) continue;
     // Data do envio: scheduledAt (intenção) com fallback sentDate. As 3
     // campanhas de um teste são disparadas JUNTAS no mesmo horário (Clarice
@@ -1366,13 +1370,30 @@ export function classifyClariceAudience(campaignName: string): ClariceAudience |
  * com célula A/B/C explícita participam do Resumo por Audiência — envios
  * únicos (sem A/B/C) são ignorados aqui (mesma convenção do #2360).
  * Exportado pra teste unitário.
+ *
+ * #3128: o NOME DA CAMPANHA nem sempre carrega o sinal de audiência — o
+ * editor às vezes reagenda um re-envio pra uma lista fria reusando o MESMO
+ * padrão de nome da campanha quente original (ex: só troca o sufixo do
+ * subject por "· sab"/"· dom"/"· ter"), sem prefixo "cold". Confirmado via
+ * API real da Brevo pro ciclo 2606-07 (issue #3128): campanhas
+ * "Clarice News 2606-07 — B · dom" e "Clarice News 2606-07 — B · ter" batem
+ * o regex WARM de `parseClariceCampaignKey` (então caíam sempre em
+ * `audience: "warm"`), mas a LISTA de destinatários de cada uma se chama
+ * "cold 2606-07 dom-B" / "2606-07 cold d1" — só o nome da LISTA denuncia que
+ * o envio foi pra audiência fria. O nome da lista é portanto o sinal mais
+ * confiável quando disponível: se `listName` contém "cold", a campanha é
+ * classificada como fria mesmo que o nome da campanha pareça quente. Sem
+ * `listName` (chamador não tem a info, ou testes legados), o comportamento
+ * cai pro naming-only de antes — retrocompatível.
  */
 export function parseAbcAudienceCampaign(
   campaignName: string,
+  listName?: string,
 ): { cycle: string; cell: "A" | "B" | "C"; audience: ClariceAudience } | null {
+  const listIsCold = typeof listName === "string" && /cold/i.test(listName);
   const warm = parseClariceCampaignKey(campaignName);
   if (warm && warm.cell) {
-    return { cycle: warm.cycle, cell: warm.cell, audience: "warm" };
+    return { cycle: warm.cycle, cell: warm.cell, audience: listIsCold ? "cold" : "warm" };
   }
   const cold = campaignName.match(/^cold\s+(\d{4}-\d{2})(?:\s*[—–-]\s*|\s+)([ABC])\b/i);
   if (cold) {
@@ -1497,7 +1518,7 @@ function aggregateCellsV2(
     C: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
   };
   for (const c of campaigns) {
-    const parsed = parseAbcAudienceCampaign(c.name);
+    const parsed = parseAbcAudienceCampaign(c.name, c.listName);
     if (!parsed || parsed.cycle !== cycle) continue;
     if (audienceFilter !== "any" && parsed.audience !== audienceFilter) continue;
     const picked = pickStats(c);
