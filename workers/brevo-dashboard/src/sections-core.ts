@@ -1070,7 +1070,11 @@ export function aggregateAbcSummary(
 
   for (const c of campaigns) {
     const warm = parseClariceCampaignKey(c.name);
-    const cold = warm ? null : parseAbcAudienceCampaign(c.name, c.listName);
+    // #3128 (self-review): NÃO passar c.listName aqui — parseAbcAudienceCampaign
+    // só é chamado quando `warm` já é falsy (mesmo c.name), então o ramo
+    // listName-aware (`if (warm && warm.cell)`, dentro da função) nunca seria
+    // alcançado por este call site; só o regex de nome "cold ..." se aplica.
+    const cold = warm ? null : parseAbcAudienceCampaign(c.name);
     const parsed =
       warm ??
       (cold && cold.audience === "cold"
