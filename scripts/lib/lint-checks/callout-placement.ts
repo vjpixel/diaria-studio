@@ -108,28 +108,42 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
 }
 
 // ---------------------------------------------------------------------------
-// #2729 — ≥2 blocos de callout-marker (🎉/📣) empilhados na região de intro
+// #2729 — ≥2 blocos de callout bold-wrap empilhados na região de intro
+// (marcador-agnóstico desde #3232)
 // ---------------------------------------------------------------------------
 
 /**
  * #2729: `extractIntroCallout` (`scripts/lib/newsletter-parse.ts`, tornado
  * greedy pelo #2727 pra permitir sub-linhas `**bold**` dentro do box de
- * início de mês) assume que a região de intro (tudo antes do 1º
- * `**DESTAQUE`) contém NO MÁXIMO 1 bloco `**(🎉|📣) …**` — o regex greedy
- * casa do PRIMEIRO abertura até o ÚLTIMO `**` de fim de linha na região.
+ * início de mês; marcador-agnóstico desde #3232) assume que a região de
+ * intro (tudo antes do 1º `**DESTAQUE`) contém NO MÁXIMO 1 bloco `**...**` —
+ * o regex greedy casa da PRIMEIRA abertura até o ÚLTIMO `**` de fim de linha
+ * na região.
  *
- * Se o editor colar 2 blocos empilhados (ex: um 📣 patrocinado acima do 🎉 de
+ * Se o editor colar 2 blocos empilhados (ex: um patrocinado acima do CTA de
  * campeões/sorteio — `inject-champions-callout.ts` já tem lógica de
  * precedência que PULA a auto-injeção quando já existe um callout, mas isso
  * não impede colagem manual de 2 blocos pelo editor no Drive), o greedy funde
  * os dois num só bloco: os `**` internos (fechamento do 1º bloco + abertura
  * do 2º) vazam como texto literal no meio do parágrafo renderizado, e o
- * separador "Divulgação" do bloco 📣 patrocinado se perde.
+ * separador "Divulgação" do bloco patrocinado se perde.
  *
- * Este check erra (`ok: false`) quando encontra ≥2 linhas
- * `^\*\*\s*(🎉|📣)` na região de intro (antes do 1º `**DESTAQUE`) —
- * independente dos boxes de divulgação (📚/📣/🎉/🛒 entre destaques, cobertos por
- * `lintCalloutPlacement`/`locateBoxInGap`, semântica diferente).
+ * #3232: antes, a detecção de "abertura de bloco" exigia literalmente
+ * `^\*\*\s*(🎉|📣)` — um par de blocos empilhados usando QUALQUER outro
+ * marcador (ou nenhum) não era contado, e o lint não pegava a fusão greedy
+ * (o mesmo tipo de gap que #3204 fechou pro box-entre-destaques). Detecção
+ * agora é por PARÁGRAFO: cada parágrafo (separado por linha em branco) que
+ * COMEÇA com `**` e NÃO está "dentro" de um bloco bold ainda aberto conta
+ * como abertura de um NOVO bloco. Um bloco fica "aberto" entre o parágrafo
+ * que abre (`**...` sem fechar `**` na mesma linha) e o próximo parágrafo que
+ * fecha (termina em `**`) — isso é o que permite sub-linhas totalmente em
+ * negrito (ex: "**Sorteio**", auto-contida — abre E fecha no mesmo parágrafo)
+ * dentro de um bloco maior sem contar como 2ª abertura.
+ *
+ * Este check erra (`ok: false`) quando encontra ≥2 parágrafos de abertura na
+ * região de intro (antes do 1º `**DESTAQUE`) — independente dos boxes de
+ * divulgação entre destaques, cobertos por `lintCalloutPlacement`/
+ * `locateBoxInGap`, semântica diferente.
  */
 export interface StackedIntroCalloutResult {
   ok: boolean;
@@ -137,21 +151,70 @@ export interface StackedIntroCalloutResult {
   lines: number[];
 }
 
-const INTRO_CALLOUT_OPEN_RE = /^\*\*\s*(?:🎉|📣)/u;
 const DESTAQUE_MARKER_RE = /^\*\*DESTAQUE/;
+const PARA_STARTS_BOLD_RE = /^\*\*\S/;
+const PARA_ENDS_BOLD_RE = /\*\*\s*$/;
 
 export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult {
   const normalized = md.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
   const matchLines: number[] = [];
+  // #3232: estado do parágrafo em progresso + se estamos "dentro" de um
+  // bloco bold ainda não fechado (ver comentário acima).
+  let inOpenBlock = false;
+  let paraLines: string[] = [];
+  let paraStartLine = -1;
+
+  const flushParagraph = () => {
+    if (paraLines.length === 0) return;
+    const startsWithBold = PARA_STARTS_BOLD_RE.test(paraLines[0]);
+    const endsWithBold = PARA_ENDS_BOLD_RE.test(paraLines[paraLines.length - 1]);
+    if (inOpenBlock) {
+      // Dentro de um bloco já aberto: este parágrafo nunca conta como nova
+      // abertura — só observamos se ele FECHA o bloco (ex: "**Sorteio**",
+      // auto-contido, abre e fecha na mesma linha/parágrafo).
+      if (endsWithBold) inOpenBlock = false;
+    } else if (startsWithBold) {
+      matchLines.push(paraStartLine);
+      // Se o próprio parágrafo já fecha (`**...**` completo), não abre um
+      // bloco pendente — senão, ficamos "dentro" até achar o fechamento.
+      if (!endsWithBold) inOpenBlock = true;
+    }
+    paraLines = [];
+  };
+
   for (let i = 0; i < lines.length; i++) {
     // Região de intro = tudo ANTES da 1ª linha `**DESTAQUE` — para assim que
     // encontrar o 1º destaque, espelhando `extractIntroCallout`
     // (`text.split(/^\*\*DESTAQUE/m)[0]`).
-    if (DESTAQUE_MARKER_RE.test(lines[i])) break;
-    if (INTRO_CALLOUT_OPEN_RE.test(lines[i].trim())) {
-      matchLines.push(i + 1);
+    if (DESTAQUE_MARKER_RE.test(lines[i])) {
+      flushParagraph();
+      break;
     }
+    const t = lines[i];
+    if (t.trim() === "") {
+      flushParagraph();
+      continue;
+    }
+    if (t.trim() === "---") {
+      // Separador de seção: fronteira dura — nunca deveria haver um bloco
+      // bold ainda "aberto" através de um `---` (defensivo, sem caso real
+      // conhecido; espelha o reset de `inDestaqueSection` em
+      // `lintCalloutPlacement` acima).
+      flushParagraph();
+      inOpenBlock = false;
+      continue;
+    }
+    if (paraLines.length === 0) paraStartLine = i + 1;
+    // code-review #3232: guarda TRIMMED (não a linha bruta) — senão um
+    // callout indentado (ex: colado com espaços à frente) não bate em
+    // `PARA_STARTS_BOLD_RE`/`PARA_ENDS_BOLD_RE` (`^\*\*`/`\*\*$` exigem o
+    // marcador exatamente na borda da string) e o lint deixa de flagrar
+    // stacking — mesmo bug de classe que a versão antiga evitava trimando
+    // antes de testar `INTRO_CALLOUT_OPEN_RE`.
+    paraLines.push(t.trim());
   }
+  flushParagraph(); // edge case: região de intro sem `---`/`**DESTAQUE` final
+
   return { ok: matchLines.length < 2, count: matchLines.length, lines: matchLines };
 }

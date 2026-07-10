@@ -547,10 +547,21 @@ export function reconcileCoverageCount(line: string, count: number): string {
 }
 
 /**
- * Pure (#1648): extrai um CTA de destaque (ex: convite pro sorteio ao vivo) da
- * região de intro — um parágrafo em negrito iniciado por 🎉 ou 📣, posicionado
- * antes do primeiro `**DESTAQUE`. Retorna o texto interno (markdown de links
- * preservado pra processInlineLinks), ou `null` se ausente.
+ * Pure (#1648, marcador-agnóstico desde #3232): extrai um CTA de destaque (ex:
+ * convite pro sorteio ao vivo) da região de intro — um parágrafo INTEIRAMENTE
+ * embrulhado em negrito (`**...**`), posicionado antes do primeiro
+ * `**DESTAQUE`. Retorna o texto interno (markdown de links preservado pra
+ * processInlineLinks), ou `null` se ausente.
+ *
+ * #3232: mesma técnica de #3204 (`locateBoxInGap`) — detecção por POSIÇÃO
+ * (região de intro, antes do 1º destaque) + ESTRUTURA (bloco bold-wrap), não
+ * por um allowlist de marcadores emoji (🎉/📣). Antes, um callout de intro com
+ * um marcador NOVO (ex: 🎥) não era reconhecido — `extractIntroCallout`
+ * retornava `null`, `content.introCallout` ficava vazio, e o CTA inteiro
+ * SUMIA do e-mail final sem erro nenhum (o mesmo padrão de silent-drop que
+ * #3204 corrigiu pro box-entre-destaques). Ver
+ * `test/intro-callout-marker-agnostic.test.ts` pela reprodução do bug e a
+ * prova do fix.
  *
  * Diferente da coverage line: renderizado como callout com borda, não some no
  * meio do parágrafo cinza (feedback 260601 — sorteio não era encontrado no topo).
@@ -560,8 +571,11 @@ export function extractIntroCallout(text: string): string | null {
   // Greedy (#260701): captura até o ÚLTIMO `**` em fim de linha da região intro,
   // permitindo sub-linhas totalmente em negrito (`**Sorteio**`) dentro do box.
   // Seguro porque a região antes do 1º DESTAQUE contém só a coverage line (sem
-  // `**`) + o único callout 🎉/📣 — o último `**$` é o fechamento do box.
-  const m = introRegion.match(/^\*\*\s*((?:🎉|📣)[\s\S]+)\*\*\s*$/m);
+  // `**`) + o único callout — o último `**$` é o fechamento do box. #3232:
+  // não exige mais que o bloco comece com 🎉/📣 — QUALQUER bloco bold-wrap
+  // nessa região é o candidato (TÍTULO/SUBTÍTULO/coverage line nunca são
+  // bold-wrapped, então não há ambiguidade).
+  const m = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
   return m ? m[1].trim() : null;
 }
 

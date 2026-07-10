@@ -935,6 +935,104 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
   });
 });
 
+describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (substitui o calloutRe antigo)", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-3232-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" } }));
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  const base = (dir: string, internalDir: string, extra: Record<string, unknown> = {}) => ({
+    d1Path: join(internalDir, "02-d1-draft.md"),
+    d2Path: join(internalDir, "02-d2-draft.md"),
+    d3Path: join(internalDir, "02-d3-draft.md"),
+    approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+    editionDir: dir,
+    ...extra,
+  });
+
+  it("marcador NOVO (🎥, nunca esteve em nenhum allowlist) glúado ao fim de D1 suprime injeção do slot1 — mesma técnica do #3204", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // editor colou um callout com marcador inédito no fim do próprio draft do D1
+      // (sem `---` isolando — caso real 260609, mesma forma que o #3204 corrigiu
+      // pro render; aqui é a MESMA forma na camada de stitch/idempotência).
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n**🎥 Já colado, marcador novo. [Assista](https://exemplo.com/v).**",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      // Não deve injetar o snippet default (livros, 📚) por cima do box já presente.
+      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima de um box com marcador novo já colado");
+      const count = (out.match(/🎥/g) || []).length;
+      assert.equal(count, 1, "só 1 marcador 🎥 (não dupla-injeta)");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("marcador NOVO (🎥) PREPENDED ao início de D2 (antes do próprio header) também suprime injeção do slot1", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**🎥 Já colado ANTES do header de D2, marcador novo. [Assista](https://exemplo.com/v).**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima do box com marcador novo prepended a D2");
+      assert.equal((out.match(/🎥/g) || []).length, 1, "só 1 marcador 🎥 (não dupla-injeta)");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("box SEM nenhum marcador emoji (texto puro, bold-wrap com link) glúado ao fim de D2 suprime injeção do slot2", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2\n\n**Recomendação de leitura sem emoji nenhum. [Leia](https://exemplo.com/leitura).**",
+      );
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: "livros-divulgacao.md" },
+      }));
+      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima do box sem marcador já colado no slot2");
+      assert.equal((out.match(/Recomendação de leitura sem emoji nenhum/g) || []).length, 1, "box original preservado, não duplicado");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("🛒 (carrinho, formato preservado explicitamente — sinal de FORMATO, não de categoria de conteúdo) continua suprimindo injeção", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n🛒 Já colado formato carrinho. [Compre](https://exemplo.com/produto).",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima do box 🛒 já colado");
+      assert.equal((out.match(/🛒/g) || []).length, 1, "só 1 marcador 🛒 (não dupla-injeta)");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("SEM nenhum box pré-existente (marcador nenhum), injeção normal continua funcionando", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.ok(extractBoxDivulgacao1(out), "slot1 injetado normalmente quando não há box pré-existente");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 // ─── #2151 — stripHtml: sanitização de HTML cru em campos de texto ────────────
 
 describe("#2151 — stripHtml: sanitiza HTML cru antes do stitch", () => {

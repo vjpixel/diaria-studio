@@ -37,6 +37,7 @@ import {
   ENCERRAMENTO_OPENING_DAILY,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
+import { extractBoxDivulgacao1 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap)
 
 interface ArticleLike {
   url?: string;
@@ -386,23 +387,42 @@ export function stitchNewsletter(input: StitchInput): string {
   // #1972 garante de-dup no render). Config-driven via `boxes_divulgacao` de
   // `platform.config.json` — default legado = livros (📚) no slot 1, nada no
   // slot 2 (#2527: livros substituiu o 📣 Clarice como padrão do slot 1).
-  // Idempotente: pula um slot se a região correspondente já traz QUALQUER
-  // marcador de callout (📣/📚/🎉 bold-line OU 🛒 carrinho — editor já colou à
-  // mão, ou re-run). Kill-switch: sponsor=false suprime AMBOS os slots.
-  // Graceful: snippet ausente/config sem slot → sem box nesse slot.
+  // Idempotente: pula um slot se a região correspondente já traz um box
+  // (editor já colou à mão, ou re-run). Kill-switch: sponsor=false suprime
+  // AMBOS os slots. Graceful: snippet ausente/config sem slot → sem box
+  // nesse slot.
   const wantSponsor = input.sponsor !== false;
-  // Code-review #1938: casa QUALQUER marcador de callout — se um já estiver na
-  // região, um 2º criaria dois boxes no mesmo slot (extractBoxDivulgacao1/2 só
-  // acha o 1º, o outro orfana). #2978: estende o guard pro marcador 🛒 (carrinho)
-  // — antes só cobria bold-line, então um 🛒 manual não suprimia reinjeção.
-  const calloutRe = /\*\*\s*(?:📣|📚|🎉)|(?:^|\n)\s*🛒/u;
   const boxesCfg = input.boxesDivulgacao ?? loadBoxesDivulgacaoConfig();
-  const slot1AlreadyPresent = calloutRe.test(d1) || calloutRe.test(d2);
+  // #3232: `boxAlreadyPresentInGap` substitui o antigo `calloutRe` (allowlist
+  // de marcadores 📣/📚/🎉 bold-line) por detecção marcador-agnóstica — mesma
+  // técnica de #3204 (`locateBoxInGap`, por POSIÇÃO+ESTRUTURA). `a`/`b` são os
+  // drafts brutos dos 2 destaques que cercam o slot (ex: d1/d2 pro slot 1); um
+  // box já injetado aparece GLUADO ao final de `a` (sem `---`, caso real
+  // 260609) OU PREPENDED ao início de `b` (antes do próprio header
+  // `**DESTAQUE N |`). Sondamos essa mesma forma unindo os 2 textos com um
+  // `---` artificial e reusando `extractBoxDivulgacao1` (gapIndex 0 nesse
+  // probe de 2 marcadores) — cobre tanto o caminho "bloco isolado" quanto o
+  // fallback "bloco colado" (bold-wrap + link) do #3204, sem precisar saber
+  // qual emoji abre o bloco.
+  //
+  // O marcador 🛒 (carrinho) segue verificado explicitamente: não é um emoji
+  // de CATEGORIA de conteúdo (como 📣/📚/🎉, que o #3204 já tratou como não-
+  // essenciais pra detecção), e sim um sinal ESTRUTURAL de FORMATO — mesmo
+  // tratamento que `shouldForceCtaPill` (newsletter-render-html.ts) preserva
+  // deliberadamente pós-#3204 ("legado... comportamento pré-#3204
+  // preservado"). Um box carrinho colado (sem `---`) não é bold-wrap, então
+  // `locateGluedBoxInBlock` não o pegaria — por isso o teste dedicado.
+  const CART_MARKER_RE = /(?:^|\n)\s*🛒/u;
+  function boxAlreadyPresentInGap(a: string, b: string): boolean {
+    if (CART_MARKER_RE.test(a) || CART_MARKER_RE.test(b)) return true;
+    return extractBoxDivulgacao1(`${a}\n\n---\n\n${b}`) !== null;
+  }
+  const slot1AlreadyPresent = boxAlreadyPresentInGap(d1, d2);
   const slot1Box = wantSponsor && !slot1AlreadyPresent
     ? loadDivulgacaoSnippet(boxesCfg.slot1)
     : null;
   // Slot 2 só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
-  const slot2AlreadyPresent = d3 !== null && (calloutRe.test(d2) || calloutRe.test(d3));
+  const slot2AlreadyPresent = d3 !== null && boxAlreadyPresentInGap(d2, d3);
   const slot2Box = wantSponsor && d3 !== null && !slot2AlreadyPresent
     ? loadDivulgacaoSnippet(boxesCfg.slot2)
     : null;
