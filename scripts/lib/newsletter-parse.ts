@@ -105,12 +105,13 @@ export interface NewsletterContent {
    * com borda teal — diferente da coverage line (cinza itálico), pra não passar
    * despercebido. */
   introCallout?: string | null;
-  /** Box de divulgação (#2978) posicionado ENTRE o 1º e o 2º destaque —
-   * SLOT fixo por posição (gap D1/D2), independente do formato de conteúdo.
-   * Aceita QUALQUER marcador: bold-wrapped `**📚/📣/🎉 ...**` (formato
-   * bold-line) OU bloco `🛒 ...` (formato multi-parágrafo com CTA) — o
-   * formato é decidido pelo próprio marcador, não pelo slot (ver
-   * `renderBoxDivulgacao` em newsletter-render-html.ts). */
+  /** Box de divulgação (#2978, marcador-agnóstico desde #3204) posicionado
+   * ENTRE o 1º e o 2º destaque — SLOT fixo por posição (gap D1/D2),
+   * independente do formato de conteúdo. Aceita QUALQUER bloco isolado por
+   * `---` na lacuna (bold-line `**...**` OU multi-parágrafo) — nenhum
+   * marcador emoji é exigido; o formato (curto vs CTA/pill) é decidido pela
+   * ESTRUTURA do conteúdo, não pelo marcador (ver `renderBoxDivulgacao` em
+   * newsletter-render-html.ts). */
   boxDivulgacao1?: string | null;
   /** URL pública de uma imagem (ex: screenshot da página de livros) pra
    * tornar o box 1 mais proeminente: imagem + texto + botão CTA. Lida de
@@ -587,23 +588,141 @@ function interDestaqueGaps(
   return gaps;
 }
 
-const BOX_DIVULGACAO_BOLD_RE = /^\*\*\s*((?:📚|📖|📣|🎉)[\s\S]+?)\*\*\s*$/m;
-// Bloco começa numa linha que abre com 🛒 e vai até a linha `---` (ou o fim da
-// região). Linhas em branco entre categorias são preservadas. `\r?` torna o
-// lookahead do separador tolerante a CRLF (arquivos salvos no Windows).
-const BOX_DIVULGACAO_CART_RE = /^🛒[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m;
-// #recomendacao-leitura: box 📖 multi-parágrafo (título + corpo). A 1ª linha
-// abre com 📖 (título, SEM `**`) e o bloco vai até o separador `---` — igual ao
-// carrinho 🛒, mas sem virar botão CTA. renderIntroCallout monta o 1º parágrafo
-// como título serif 26px e os demais como corpo (negrito parcial via markdown).
-const BOX_DIVULGACAO_BOOK_RE = /^📖[^\n]*(?:\n(?!---[ \t]*\r?$)[^\n]*)*/m;
+// #3204: detecção marcador-agnóstica, por POSIÇÃO + ESTRUTURA — substitui o
+// antigo allowlist de marcadores emoji (BOX_DIVULGACAO_BOLD_RE `**📚|📖|📣|🎉…**`
+// + BOX_DIVULGACAO_CART_RE `🛒…` + BOX_DIVULGACAO_BOOK_RE `📖…`). Um marcador
+// NOVO (ex: 🎥, 🎁) não exige mais nenhuma mudança de código: o parser não olha
+// pro emoji, só pra posição do bloco na lacuna.
+//
+// Dentro de uma lacuna entre destaques (`interDestaqueGaps`), o conteúdo tem
+// esta forma fixa:
+//
+//   [bloco 0: header **DESTAQUE N | CAT** + título + corpo + why]
+//   ---                                                            (separador)
+//   [bloco 1: candidato a box de divulgação — QUALQUER conteúdo aqui]
+//   ---                                                            (opcional, antes do próximo **DESTAQUE)
+//
+// O bloco 0 SEMPRE é o próprio destaque (reconhecível pelo header
+// `DESTAQUE N | ...`, o mesmo padrão que `parseDestaques` usa) — nunca é
+// tratado como box. Qualquer bloco ADICIONAL (delimitado por `---`) na mesma
+// lacuna, que não seja também um header de destaque nem um header de seção
+// (defensivo — nunca deveria ocorrer, já que `interDestaqueGaps` já exclui a
+// região pós-último-destaque onde vivem as seções), é o box — o 1º que
+// aparece, caso haja mais de um (ver `findOrphanBoxWarnings` pro aviso).
+const GAP_SEPARATOR_RE = /^---[ \t]*\r?$/m;
+const DESTAQUE_HEADER_IN_BLOCK_RE = /^(?:\*\*)?DESTAQUE\s+[123]\s*\|/m;
+
+interface GapBlock {
+  text: string;
+  rawStart: number;
+  rawEnd: number;
+}
+
+/** Divide uma região (texto de uma lacuna) em blocos delimitados por `---`. */
+function splitByGapSeparator(region: string): GapBlock[] {
+  const seps: { start: number; end: number }[] = [];
+  const re = new RegExp(GAP_SEPARATOR_RE.source, "gm");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(region)) !== null) {
+    seps.push({ start: m.index, end: m.index + m[0].length });
+    if (m[0].length === 0) re.lastIndex++; // guard contra loop infinito
+  }
+  const blocks: GapBlock[] = [];
+  let cursor = 0;
+  for (const sep of seps) {
+    blocks.push({ text: region.slice(cursor, sep.start), rawStart: cursor, rawEnd: sep.start });
+    cursor = sep.end;
+  }
+  blocks.push({ text: region.slice(cursor), rawStart: cursor, rawEnd: region.length });
+  return blocks;
+}
 
 /**
- * Pure (#1972/#2978): localiza o box de divulgação numa lacuna ESPECÍFICA
- * (por `gapIndex`), aceitando qualquer um dos dois formatos (bold-line OU
- * carrinho 🛒) — o que vier primeiro na lacuna vence. Retorna o conteúdo
- * interno + os índices absolutos do match, pra extract/strip compartilharem
- * a mesma lógica.
+ * #3204: infere o FORMATO do box pelo conteúdo, não pelo marcador. Um bloco
+ * inteiramente embrulhado em `**...**` (do 1º ao último char não-whitespace)
+ * é o formato bold-line curto — o `**` estrutural é removido (mesmo contrato
+ * do antigo BOX_DIVULGACAO_BOLD_RE, que capturava só o grupo interno).
+ * Qualquer outro formato (multi-parágrafo, ou 1 parágrafo sem bold-wrap
+ * total) mantém o texto bruto — `renderBoxDivulgacao` decide o resto
+ * (imagem/pill/etc.) pela estrutura do conteúdo.
+ */
+function formatBoxInner(trimmed: string): string {
+  const boldWrap = /^\*\*\s*([\s\S]+?)\*\*$/.exec(trimmed);
+  return boldWrap ? boldWrap[1].trim() : trimmed;
+}
+
+interface ParaSpan {
+  text: string;
+  start: number;
+  end: number;
+}
+
+// Blank-line separator entre parágrafos, tolerante a CRLF (`\r?` em cada
+// quebra) — mesma convenção de GAP_SEPARATOR_RE, generalizada pra runs de
+// 1+ linhas em branco.
+const PARA_BLANK_RE = /\r?\n(?:[ \t]*\r?\n)+/g;
+
+/** Divide `s` em parágrafos (runs de linhas não-vazias), com offsets (relativos a `s`) do conteúdo TRIMMED. */
+function splitParagraphsWithOffsets(s: string): ParaSpan[] {
+  const seps: { start: number; end: number }[] = [];
+  const re = new RegExp(PARA_BLANK_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    seps.push({ start: m.index, end: m.index + m[0].length });
+    if (m[0].length === 0) re.lastIndex++; // guard contra loop infinito
+  }
+  const segs: { start: number; end: number }[] = [];
+  let cursor = 0;
+  for (const sep of seps) {
+    segs.push({ start: cursor, end: sep.start });
+    cursor = sep.end;
+  }
+  segs.push({ start: cursor, end: s.length });
+  const paras: ParaSpan[] = [];
+  for (const seg of segs) {
+    const raw = s.slice(seg.start, seg.end);
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const leadingWs = raw.length - raw.trimStart().length;
+    const trailingWs = raw.length - raw.trimEnd().length;
+    paras.push({ text: trimmed, start: seg.start + leadingWs, end: seg.end - trailingWs });
+  }
+  return paras;
+}
+
+const FULL_BOLD_WRAP_RE = /^\*\*[\s\S]+\*\*$/;
+const SIMPLE_MD_LINK_RE = /\[[^\]]+\]\([^)]+\)/;
+
+/**
+ * #3204/#1972 Opção A: fallback pro caso em que o box está GLUADO ao final do
+ * bloco do próprio destaque, sem `---` isolando-o (caso real 260609 — o
+ * writer/editor colou o callout antes do separador de fechamento). Sem
+ * marcador pra ancorar, o único sinal estrutural disponível é: o ÚLTIMO
+ * parágrafo do bloco, se INTEIRAMENTE embrulhado em `**...**` E contém um
+ * link markdown (evita falso-positivo em ênfase retórica tipo
+ * "**Isso muda tudo.**" no fim de um why-text, que não tem link), e NÃO é o
+ * parágrafo de título (posição 1, logo após o header) — é tratado como box
+ * colado. `stripBoxInGap` segue funcionando mesmo sem `---` pra colapsar (só
+ * concatena `before + after`).
+ */
+function locateGluedBoxInBlock(block: GapBlock): ParaSpan | null {
+  const paras = splitParagraphsWithOffsets(block.text);
+  // paras[0] = header **DESTAQUE N | ...**; paras[1] = título. Precisa de
+  // pelo menos header + título + 1 parágrafo extra pra ter candidato.
+  if (paras.length < 3) return null;
+  const last = paras[paras.length - 1];
+  if (!FULL_BOLD_WRAP_RE.test(last.text)) return null;
+  if (!SIMPLE_MD_LINK_RE.test(last.text)) return null;
+  return last;
+}
+
+/**
+ * Pure (#1972/#2978, marcador-agnóstico desde #3204): localiza o box de
+ * divulgação numa lacuna ESPECÍFICA (por `gapIndex`) pelo bloco `---`-
+ * delimitado que vem depois do próprio destaque — ou, na ausência de um bloco
+ * isolado, pelo fallback de box GLUADO ao final do bloco do destaque
+ * (`locateGluedBoxInBlock`). Retorna o conteúdo interno + os índices
+ * absolutos do match, pra extract/strip compartilharem a mesma lógica.
  */
 function locateBoxInGap(
   text: string,
@@ -612,23 +731,65 @@ function locateBoxInGap(
   const gap = interDestaqueGaps(text).find((g) => g.gapIndex === gapIndex);
   if (!gap) return null;
   const region = text.slice(gap.start, gap.end);
-  const boldMatch = BOX_DIVULGACAO_BOLD_RE.exec(region);
-  const cartMatch = BOX_DIVULGACAO_CART_RE.exec(region);
-  const bookMatch = BOX_DIVULGACAO_BOOK_RE.exec(region);
-  // O que vier PRIMEIRO na lacuna vence; book/cart capturam o bloco inteiro
-  // (multi-parágrafo), bold captura só o grupo interno da linha.
-  const candidates = [
-    boldMatch ? { m: boldMatch, inner: boldMatch[1].trim() } : null,
-    cartMatch ? { m: cartMatch, inner: cartMatch[0].trim() } : null,
-    bookMatch ? { m: bookMatch, inner: bookMatch[0].trim() } : null,
-  ]
-    .filter((c): c is { m: RegExpExecArray; inner: string } => c !== null)
-    .sort((a, b) => a.m.index - b.m.index);
-  const match = candidates[0]?.m ?? null;
-  const inner = candidates[0]?.inner ?? "";
-  if (!match) return null;
-  const matchStart = gap.start + match.index;
-  return { inner, matchStart, matchEnd: matchStart + match[0].length };
+  const blocks = splitByGapSeparator(region);
+  // blocks[0] = o próprio destaque. Candidatos a box são os blocos
+  // SEGUINTES, não-vazios, que não sejam header de destaque nem de seção.
+  for (let i = 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    const trimmed = block.text.trim();
+    if (!trimmed) continue;
+    if (DESTAQUE_HEADER_IN_BLOCK_RE.test(trimmed)) continue;
+    if (SECTION_HEADER_RE.test(trimmed)) continue;
+    const leadingWs = block.text.length - block.text.trimStart().length;
+    const trailingWs = block.text.length - block.text.trimEnd().length;
+    const matchStart = gap.start + block.rawStart + leadingWs;
+    const matchEnd = gap.start + block.rawEnd - trailingWs;
+    return { inner: formatBoxInner(trimmed), matchStart, matchEnd };
+  }
+  // Nenhum bloco isolado — tenta o fallback de box colado ao destaque.
+  const glued = locateGluedBoxInBlock(blocks[0]);
+  if (glued) {
+    return {
+      inner: formatBoxInner(glued.text),
+      matchStart: gap.start + blocks[0].rawStart + glued.start,
+      matchEnd: gap.start + blocks[0].rawStart + glued.end,
+    };
+  }
+  return null;
+}
+
+export interface OrphanBoxWarning {
+  gapIndex: number;
+  reason: string;
+}
+
+/**
+ * #3204: sanity-check de defesa-em-profundidade pós marcador-agnóstico.
+ * `locateBoxInGap` já trata QUALQUER bloco extra (delimitado por `---`) numa
+ * lacuna como o box — nada deveria ficar "não reconhecido" nesse caminho. O
+ * resíduo real: uma lacuna com MAIS de 1 bloco extra é ambígua (2+
+ * candidatos pro mesmo slot) — `locateBoxInGap` usa "o 1º vence" e
+ * silenciosamente descartaria os demais sem este aviso. Usado pelo lint
+ * `orphan-box-in-gap` (gate-blocking no Stage 4, §4c.2).
+ */
+export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
+  const warnings: OrphanBoxWarning[] = [];
+  for (const gap of interDestaqueGaps(text)) {
+    const region = text.slice(gap.start, gap.end);
+    const extra = splitByGapSeparator(region)
+      .slice(1)
+      .filter((b) => b.text.trim().length > 0);
+    if (extra.length > 1) {
+      warnings.push({
+        gapIndex: gap.gapIndex,
+        reason:
+          `${extra.length} blocos extras na lacuna D${gap.gapIndex + 1}/D${gap.gapIndex + 2} — ` +
+          `apenas o 1º vira box de divulgação; os demais seriam descartados silenciosamente. ` +
+          `Isole 1 único bloco de box entre os \`---\`, ou mova o excedente pra outra lacuna.`,
+      });
+    }
+  }
+  return warnings;
 }
 
 /**
@@ -684,9 +845,11 @@ export function stripBoxDivulgacao2(text: string): string {
 }
 
 /**
- * #2136/#2978: discrimina se um box de divulgação é o de livros (📚 ou link
- * para livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE 📣).
- * A imagem livros_promo só deve ser associada ao box de livros.
+ * #2136/#2978/#3204: discrimina se um box de divulgação é o de livros (link
+ * para livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE). A
+ * imagem livros_promo só deve ser associada ao box de livros. Marcador-
+ * agnóstico desde #3204 — o antigo atalho por emoji (`/^\s*📚/`) foi removido;
+ * o link de destino já era (e continua sendo) sinal suficiente e estrutural.
  */
 export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -695,8 +858,7 @@ export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean 
   // página de livros). Se o texto também linka cursos.diaria.workers.dev,
   // tratar como box de seções (false), não promo de livros.
   if (/cursos\.diaria\.workers\.dev/i.test(text)) return false;
-  // Marcador 📚 OU link apontando para livros.diaria.workers.dev
-  return /^\s*📚/u.test(text) || /livros\.diaria\.workers\.dev/i.test(text);
+  return /livros\.diaria\.workers\.dev/i.test(text);
 }
 
 /**
