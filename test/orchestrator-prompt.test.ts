@@ -143,10 +143,12 @@ describe("orchestrator-prompt (#634)", () => {
     // 755→770 quando #2496 adicionou nota explicativa do --pool-out no passo 1q.1
     // e comentário no 1q.3 sobre o motivo da mudança de --categorized.
     // 770→772 quando #2608 adicionou instrução de estimativa Path B em 1f.
+    // 772→790 quando #3202 adicionou step 1m-quinquies (resolver URLs de
+    // VÍDEO para YouTube via discovery-searcher + resolve-video-youtube.ts).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 772,
-        `${file} tem ${lines[file]} linhas (target ≤772)`,
+        lines[file] <= 790,
+        `${file} tem ${lines[file]} linhas (target ≤790)`,
       );
     }
   });
