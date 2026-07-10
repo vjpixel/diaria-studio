@@ -36,6 +36,15 @@
  * `DESTAQUE N | ...`. O TÍTULO do destaque (1ª linha de conteúdo após o
  * header — tipicamente `**[Título](url)**`, também bold-wrapped) também NÃO é
  * sinalizado — é reconhecido por POSIÇÃO (1º parágrafo da seção), não por forma.
+ *
+ * #3282: multi-linha-aware, igual à função irmã `lintStackedIntroCallouts`
+ * abaixo. Antes, só a linha ONDE o parágrafo começava era testada contra
+ * `FULL_BOLD_LINE_RE` (exige o `**` de fechamento na MESMA linha) — um
+ * callout bold hard-wrapped em várias linhas (sem blank line entre elas)
+ * nunca fechava `**` na 1ª linha e passava despercebido, exatamente o tipo de
+ * caso que o incidente 260609 motivou este lint a pegar. Agora o parágrafo
+ * inteiro é acumulado (`paraLines`/`flushParagraph`) e testado como bloco
+ * único antes de decidir se é o título (posição) ou um callout colado (forma).
  */
 
 export interface CalloutPlacementMatch {
@@ -68,42 +77,59 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   const matches: CalloutPlacementMatch[] = [];
   let inDestaqueSection = false;
   let sawTitle = false; // já vimos o 1º parágrafo de conteúdo (= título) desta seção?
-  let blankRun = 0;
+  // #3282: acumula o parágrafo inteiro (multi-linha) antes de avaliar — mesmo
+  // padrão de `lintStackedIntroCallouts` abaixo (`paraLines`/`flushParagraph`).
+  let paraLines: string[] = [];
+  let paraStartLine = -1;
+
+  const flushParagraph = () => {
+    if (paraLines.length === 0) return;
+    if (inDestaqueSection) {
+      if (!sawTitle) {
+        // 1º parágrafo de conteúdo da seção = título do destaque — nunca
+        // sinalizado, mesmo bold-wrapped (`**[Título](url)**` também bate em
+        // FULL_BOLD_LINE_RE). Reconhecido por POSIÇÃO, não por forma.
+        sawTitle = true;
+      } else {
+        // Testa o parágrafo INTEIRO (join por \n — FULL_BOLD_LINE_RE usa
+        // `[\s\S]` no meio, então casa através de quebras de linha) — pega
+        // tanto o callout de 1 linha quanto o hard-wrapped em várias. O
+        // emoji-lead só precisa bater na 1ª linha (é âncora de INÍCIO, não
+        // testa o parágrafo inteiro).
+        const joined = paraLines.join("\n");
+        if (FULL_BOLD_LINE_RE.test(joined) || EMOJI_LEAD_RE.test(paraLines[0])) {
+          matches.push({ line: paraStartLine, context: paraLines[0].slice(0, 80) });
+        }
+      }
+    }
+    paraLines = [];
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     // Separador: linha bruta (sem trim) pra bater com /^---$/m do parseDestaques.
     if (SEPARATOR_RE.test(raw)) {
+      flushParagraph();
       inDestaqueSection = false;
       sawTitle = false;
-      blankRun = 0;
       continue;
     }
     const t = raw.trim();
     if (t === "") {
-      blankRun++;
+      flushParagraph();
       continue;
     }
     if (DESTAQUE_HEADER_RE.test(t)) {
+      flushParagraph();
       inDestaqueSection = true;
       sawTitle = false;
-      blankRun = 0;
       continue;
     }
-    const isParaStart = blankRun > 0 || i === 0;
-    blankRun = 0;
-    if (!inDestaqueSection) continue;
-    if (!sawTitle) {
-      // 1ª linha de conteúdo não-vazia da seção = título do destaque — nunca
-      // sinalizada, mesmo bold-wrapped (`**[Título](url)**` também bate em
-      // FULL_BOLD_LINE_RE). Reconhecida por POSIÇÃO, não por forma.
-      sawTitle = true;
-      continue;
-    }
-    if (!isParaStart) continue; // só avalia INÍCIO de parágrafo
-    if (FULL_BOLD_LINE_RE.test(t) || EMOJI_LEAD_RE.test(t)) {
-      matches.push({ line: i + 1, context: t.slice(0, 80) });
-    }
+    if (paraLines.length === 0) paraStartLine = i + 1;
+    paraLines.push(t);
   }
+  flushParagraph(); // edge case: arquivo termina em meio a parágrafo, sem `---`/blank final
+
   return { ok: matches.length === 0, matches };
 }
 

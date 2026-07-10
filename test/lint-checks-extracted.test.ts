@@ -165,6 +165,53 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(cpDirect(trailingSpaceSep).ok, false);
   });
 
+  it("#3282: callout bold hard-wrapped em 3 linhas (glued, sem blank entre elas) colado dentro do DESTAQUE → flag", () => {
+    // Regressão: antes, lintCalloutPlacement só testava a linha ONDE o
+    // parágrafo COMEÇAVA contra FULL_BOLD_LINE_RE (exige o `**` de fechamento
+    // na MESMA linha) — um callout bold hard-wrapped em várias linhas nunca
+    // fechava `**` na 1ª linha e passava despercebido (`ok: true`, 0 matches).
+    const misplacedMultiline = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "Corpo.",
+      "",
+      "**📣 Box da Clarice, com uma oferta especial",
+      "pra quem assina Diar.ia hoje mesmo, direto no",
+      "site oficial. [Acesse aqui](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    const result = cpDirect(misplacedMultiline);
+    assert.equal(result.ok, false, "callout bold multi-linha colado deveria ser flagrado");
+    assert.equal(result.matches[0].line, 7, "deveria reportar a linha de INÍCIO do parágrafo");
+    assert.match(result.matches[0].context, /Box da Clarice/);
+    // O mesmo callout, mas devidamente isolado entre dois `---`, continua ok
+    // mesmo multi-linha — a forma "parágrafo inteiro bold-wrapped" não muda,
+    // só a posição (própria seção) é que legitima.
+    const okMultiline = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "**📣 Box da Clarice, com uma oferta especial",
+      "pra quem assina Diar.ia hoje mesmo, direto no",
+      "site oficial. [Acesse aqui](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(cpDirect(okMultiline).ok, true);
+  });
+
   it("why-matters-format: módulo auto-contido funciona standalone", () => {
     const bad = "Por que isso importa:\n\nPara desenvolvedores, o impacto é grande.";
     assert.equal(wmDirect(bad).ok, false);
