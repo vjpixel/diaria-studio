@@ -240,17 +240,26 @@ async function main(): Promise<void> {
   // transiente de I/O (que sync-intentional-error.ts já cobria). Idempotente
   // (no-op se o playbook automático já sincronizou) e fail-soft (mesma
   // filosofia de beehiiv-playbook.md §0.1 — nunca bloqueia close-poll).
+  //
+  // Nota: `runSyncIntentionalError` documenta/garante "nunca lança" (captura
+  // suas próprias exceções e retorna exitCode!=0) — o try/catch aqui é
+  // defesa em profundidade contra uma regressão futura nesse contrato, não
+  // um caminho que se espera exercitar hoje. Também nunca escreve em stdout
+  // (só stderr) — mantém o contrato de "1 linha JSON" do close-poll (#2018)
+  // intacto mesmo com o sync rodando no meio da função.
   try {
-    const syncExit = runSyncIntentionalError({
+    const syncResult = runSyncIntentionalError({
       md: resolve(editionDirPath, "02-reviewed.md"),
       edition,
       jsonl: intentionalErrorsJsonlPath,
     });
-    if (syncExit === 0) {
-      console.error(`[close-poll] sync-intentional-error ok para edição ${edition} (#3210).`);
+    if (syncResult.exitCode === 0) {
+      console.error(
+        `[close-poll] sync-intentional-error ok para edição ${edition} (#3210): added=${syncResult.added} updated=${syncResult.updated}.`,
+      );
     } else {
       console.error(
-        `[close-poll] aviso (#3210): sync-intentional-error retornou exit ${syncExit} para edição ${edition} — não bloqueia close-poll.`,
+        `[close-poll] aviso (#3210): sync-intentional-error retornou exit ${syncResult.exitCode} para edição ${edition} — não bloqueia close-poll.`,
       );
     }
   } catch (e) {
