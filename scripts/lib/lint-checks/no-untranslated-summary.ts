@@ -177,5 +177,15 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
     },
   });
 
+  // #3242 code-review (5 finders independentes convergiram no mesmo achado,
+  // 1 com fuzz diferencial 30k docs): Check 1 e Check 2 rodam como 2 passadas
+  // separadas (documento pré-refactor rodava as duas juntas num único loop,
+  // então `errors` saía implicitamente ordenado por linha). Sort estável
+  // restaura a ordem de documento — sem isso, com os 2 tipos de erro no
+  // mesmo doc, todo traduzir_prefix vem antes de todo en_heuristic
+  // independente da posição real, mudando a ordem que o editor vê no gate
+  // (`lint-newsletter-md.ts` imprime `result.errors` na ordem do array).
+  errors.sort((a, b) => a.line - b.line);
+
   return { ok: errors.length === 0, errors };
 }

@@ -36,7 +36,11 @@
  *        - no-trailing-ellipsis/mid-sentence-ellipsis/no-untranslated-summary
  *          não têm esse conceito (nunca detectam AUSÊNCIA de descrição, só
  *          avaliam conteúdo de descrições que existem) — usam o default
- *          amplo (`SAME_LINE_ITEM_RE`, tolera 0-2 asteriscos).
+ *          amplo (`SAME_LINE_ITEM_RE`, tolera 0-2 asteriscos). Esse default
+ *          só governa o lookahead acima — a detecção "esta linha corrente É
+ *          um item inline" (branch abaixo, `raw.match(SAME_LINE_ITEM_RE)`)
+ *          NÃO é parametrizada por essa opção, é sempre `SAME_LINE_ITEM_RE`
+ *          pros 4 consumidores atuais (ver divergência 3).
  *        - secondary-items-have-summary.ts (#2545) PRECISA de uma regex mais
  *          restrita (só bold `**...**` nos dois lados) — regressão #2579:
  *          uma descrição que COMEÇA com um link markdown sem bold (ex:
@@ -46,6 +50,18 @@
  *          "sem descrição". Ver `BOLDED_ITEM_ONLY_RE` em
  *          secondary-items-have-summary.ts.
  *
+ *   3. NÃO-divergência assumida deliberadamente: o formato inline
+ *      `**[Título](URL)** Descrição` de secondary-items-have-summary.ts
+ *      (pré-refactor) usava uma URL SEM tolerância a parênteses balanceados
+ *      (`[^\s)]+`), mais estreita que a versão corrigida em #2918 bug 3
+ *      (`URL_WITH_BALANCED_PARENS_RE_PART`, já usada pelos outros 3 lints).
+ *      Esse refactor unificou pra `SAME_LINE_ITEM_RE` (com o fix) pros 4
+ *      consumidores — inerte pra secondary-items-have-summary.ts hoje (esse
+ *      arquivo não passa `onFound`, só `onMissing`, então o único efeito
+ *      observável de matching "esta linha é um item inline" é um `continue`
+ *      silencioso de qualquer forma) mas é uma mudança real de qual branch
+ *      roda internamente — documentado aqui em vez de deixar implícito.
+ *
  * Formato de emissão: o walker chama `onFound` para cada item cuja
  * descrição foi encontrada (inline ou 2-linhas) e `onMissing` para cada
  * título solo cuja próxima linha não-vazia NÃO é uma descrição válida
@@ -53,7 +69,7 @@
  * `onMissing`).
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
+import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "../section-naming.ts";
 import {
   INLINE_LINK_ONLY_RE,
   URL_WITH_BALANCED_PARENS_RE_PART,
@@ -65,15 +81,19 @@ export const TARGET_SECTION_RE = sectionHeaderRegex(
   { capture: "none", flags: "u" },
 );
 
-// Conjunto AMPLO (#2918 bug 2): qualquer header de seção real — inclusive
-// VÍDEOS / É IA? / ERRO INTENCIONAL / SORTEIO / PARA ENCERRAR — encerra o
+// Conjunto LEGADO (pré-#2918 bug 2): usado só por
+// secondary-items-have-summary.ts (#2545) — ver nota de divergência 1 acima.
+// `ALL_SECTION_NAMES_PATTERN` (section-naming.ts) já é EXATAMENTE esse
+// conjunto (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS/PESQUISAS/OUTRAS NOTÍCIAS) —
+// reusa em vez de re-digitar (#3242 code-review: 2 cópias hand-typed do
+// mesmo conjunto de nomes já causaram drift real uma vez, #2918 bug 2).
+const LEGACY_CLOSING_NAMES = ALL_SECTION_NAMES_PATTERN;
+
+// Conjunto AMPLO (#2918 bug 2): qualquer header de seção real — o legado
+// acima MAIS É IA? / ERRO INTENCIONAL / SORTEIO / PARA ENCERRAR — encerra o
 // scan da seção alvo. Usado por no-trailing-ellipsis / mid-sentence-ellipsis
 // / no-untranslated-summary (default deste módulo).
-const BROAD_CLOSING_NAMES = String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`;
-
-// Conjunto LEGADO (pré-#2918 bug 2): usado só por
-// secondary-items-have-summary.ts (#2545) — ver nota de divergência acima.
-const LEGACY_CLOSING_NAMES = String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`;
+const BROAD_CLOSING_NAMES = `${ALL_SECTION_NAMES_PATTERN}|${String.raw`[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`}`;
 
 export const ANY_SECTION_HEADER_RE = sectionHeaderRegex(BROAD_CLOSING_NAMES, {
   capture: "none",
@@ -122,15 +142,21 @@ export interface SecondaryItemMissing {
 
 export interface SecondaryItemWalkerOptions {
   /**
-   * Usa o conjunto LEGADO (mais estreito) de headers de fechamento de seção
-   * — ver nota de divergência 1 no topo do arquivo. Default false (conjunto
-   * amplo).
+   * Regex usada pra reconhecer QUALQUER header de seção real, que encerra a
+   * seção alvo corrente — ver nota de divergência 1 no topo do arquivo.
+   * Default `ANY_SECTION_HEADER_RE` (conjunto amplo). O único caller que
+   * precisa de outro valor (secondary-items-have-summary.ts, #2545) passa
+   * `LEGACY_ANY_SECTION_HEADER_RE` explicitamente — RegExp injetado em vez
+   * de flag booleana pra manter as 2 opções de override (esta e
+   * `nextLineIsItemRe`) na mesma forma.
    */
-  legacyClosingHeaders?: boolean;
+  closingHeaderRe?: RegExp;
   /**
    * Regex usada pra decidir se a PRÓXIMA linha não-vazia após um título solo
    * é, ela própria, outro item — ver nota de divergência 2 no topo do
-   * arquivo. Default `SAME_LINE_ITEM_RE`.
+   * arquivo. Só afeta esse lookahead (não afeta a detecção "esta linha
+   * corrente é um item inline", sempre `SAME_LINE_ITEM_RE` — ver nota 3).
+   * Default `SAME_LINE_ITEM_RE`.
    */
   nextLineIsItemRe?: RegExp;
   /** Chamado para cada item cuja descrição foi encontrada. */
@@ -144,9 +170,7 @@ export interface SecondaryItemWalkerOptions {
  * chama `onFound`/`onMissing` (via `opts`) para cada item detectado.
  */
 export function forEachSecondaryItem(md: string, opts: SecondaryItemWalkerOptions = {}): void {
-  const closingHeaderRe = opts.legacyClosingHeaders
-    ? LEGACY_ANY_SECTION_HEADER_RE
-    : ANY_SECTION_HEADER_RE;
+  const closingHeaderRe = opts.closingHeaderRe ?? ANY_SECTION_HEADER_RE;
   const nextLineIsItemRe = opts.nextLineIsItemRe ?? SAME_LINE_ITEM_RE;
 
   const lines = md.replace(/\r\n/g, "\n").split("\n");

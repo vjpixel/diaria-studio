@@ -101,6 +101,40 @@ describe("checkNoUntranslatedSummary (#3196)", () => {
     assert.equal(result.errors[0].section, "🚀 LANÇAMENTOS");
   });
 
+  // #3242 code-review: checkNoUntranslatedSummary passou a rodar Check 1
+  // ([TRADUZIR] literal) e Check 2 (heurística EN) como 2 passadas
+  // independentes sobre o documento (antes, um único loop interleaved
+  // garantia ordem de documento implicitamente). Sem re-sort, um doc com os
+  // 2 tipos de erro em posições fora de ordem retornava `errors` agrupado
+  // por tipo de check (todo traduzir_prefix antes de todo en_heuristic),
+  // não por linha — regressão descoberta em code-review (5 finders
+  // independentes convergiram, 1 com fuzz diferencial de 30k docs contra a
+  // implementação pré-#3242, achando esse mesmo mismatch de ordem).
+  it("#3242: erros de reason diferentes saem em ordem de documento (linha), não agrupados por check", () => {
+    const md = [
+      "**📡 RADAR**",
+      "",
+      "**[LangChain NVIDIA framework](https://example.com/radar)** LangChain and NVIDIA launch the new open source framework for enterprise AI teams across the industry",
+      "",
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[OpenAI Academy](https://example.com/tool)** [TRADUZIR] OpenAI Academy and the Walton Family Foundation announced a new partnership (5 min)",
+      "",
+    ].join("\n");
+    const result = checkNoUntranslatedSummary(md);
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.length, 2);
+    // O item RADAR (en_heuristic) aparece ANTES do item USE MELHOR
+    // (traduzir_prefix) no documento — a ordem de `errors` deve refletir
+    // isso, não a ordem em que cada check internamente rodou.
+    assert.ok(
+      result.errors[0].line < result.errors[1].line,
+      `esperava errors em ordem crescente de linha, obteve linhas [${result.errors.map((e) => e.line).join(", ")}]`,
+    );
+    assert.equal(result.errors[0].reason, "en_heuristic");
+    assert.equal(result.errors[1].reason, "traduzir_prefix");
+  });
+
   it("marcador [TRADUZIR] fora de um shape reconhecido ainda é pego (catch-all por linha)", () => {
     const md = [
       "**📡 RADAR**",
