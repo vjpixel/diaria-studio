@@ -27,8 +27,10 @@
  *      — sem É IA?/ERRO INTENCIONAL/SORTEIO/PARA ENCERRAR — anterior ao fix
  *      #2918 bug 2 que ampliou o conjunto nos outros 3 lints. Nunca foi
  *      retroportado pro arquivo original; preservado aqui via
- *      `legacyClosingHeaders` em vez de silenciosamente "corrigido" (esse
- *      refactor é comportamento-idêntico, não um bugfix).
+ *      `closingHeaderRe: LEGACY_ANY_SECTION_HEADER_RE` (injetado
+ *      explicitamente pelo único caller que precisa dele) em vez de
+ *      silenciosamente "corrigido" (esse refactor é comportamento-idêntico,
+ *      não um bugfix).
  *
  *   2. Regex usada pra decidir, no lookahead de um título solo, se a PRÓXIMA
  *      linha não-vazia é ELA PRÓPRIA outro item (portanto o item atual não
