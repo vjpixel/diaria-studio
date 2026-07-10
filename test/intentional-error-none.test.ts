@@ -283,8 +283,48 @@ describe("list-month-errors extractError (#2016, migrado #3222) — direto", () 
     const editionDir = join(tmpDir, "260608");
     mkdirSync(editionDir, { recursive: true });
     writeEdition(editionDir, null);
-    const result = extractError(editionDir, "260608");
+    // #3270: jsonlPath ISOLADO explícito (arquivo que não existe dentro do
+    // tmpDir do teste) — nunca deve tocar o `data/intentional-errors.jsonl`
+    // REAL do repo. Antes do fix, `extractError`/`fallbackFromJsonl` sempre
+    // resolviam via `process.cwd()` e ignoravam qualquer 3º argumento (a
+    // assinatura nem aceitava um), então este teste falhava em qualquer
+    // máquina com `data/` sincronizado (OneDrive) contendo uma entry real
+    // pra edição "260608" — vazamento de dado de produção pro teste.
+    const isolatedJsonlPath = join(tmpDir, "intentional-errors.jsonl");
+    const result = extractError(editionDir, "260608", isolatedJsonlPath);
     assert.equal(result.declared, false);
+  });
+
+  it("#3270: jsonlPath injetado isola o teste de data/intentional-errors.jsonl real — não vaza entry de outro path", () => {
+    const editionDir = join(tmpDir, "260608");
+    mkdirSync(editionDir, { recursive: true });
+    writeEdition(editionDir, null);
+
+    // Simula "dado de produção": um JSONL separado com entry pra mesma edição.
+    const prodLikeJsonlPath = join(tmpDir, "prod-like-intentional-errors.jsonl");
+    writeFileSync(
+      prodLikeJsonlPath,
+      JSON.stringify({
+        edition: "260608",
+        error_type: "factual",
+        is_feature: true,
+        detail: "entry de outro contexto (ex: produção real)",
+      }) + "\n",
+      "utf8",
+    );
+
+    // Sanity check: quando o path injetado APONTA pro JSONL "prod-like", a
+    // entry É encontrada (prova que a injeção realmente funciona, não é
+    // silenciosamente ignorada).
+    const withProdPath = extractError(editionDir, "260608", prodLikeJsonlPath);
+    assert.equal(withProdPath.declared, true, "entry deve ser lida quando jsonlPath aponta pra ela");
+
+    // O teste real: um jsonlPath ISOLADO (vazio) pra mesma edição não deve
+    // enxergar a entry do "prod-like" — isolamento de teste garantido pela
+    // parametrização, não por coincidência de dado ausente.
+    const isolatedJsonlPath = join(tmpDir, "isolated-intentional-errors.jsonl");
+    const isolated = extractError(editionDir, "260608", isolatedJsonlPath);
+    assert.equal(isolated.declared, false, "jsonlPath isolado não deve enxergar entry de outro path");
   });
 
   it("formatMarkdown output contém 'sem erro intencional' para edição no_error", () => {
