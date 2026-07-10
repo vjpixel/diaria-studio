@@ -6,6 +6,20 @@
  * 1º link como botão e descartava o resto; e qualquer box linkando
  * livros.diaria.workers.dev virava o "box de livros" (screenshot + 1 CTA),
  * derrubando o link de Cursos. Pedido do editor 260622.
+ *
+ * #3232: chamadas passam `forceCtaPill=true` explicitamente — espelha a
+ * chamada REAL de produção pra este conteúdo. `renderBoxDivulgacao`
+ * (newsletter-render-html.ts) é quem de fato invoca `renderIntroCallout` pro
+ * box do meio, e decide `forceCtaPill` via `shouldForceCtaPill` (sinal
+ * ESTRUTURAL — 2+ links ou último parágrafo CTA-only — não pelo marcador
+ * 📣). Antes deste PR, chamar `renderIntroCallout` sem `forceCtaPill`
+ * "funcionava" só porque `isSponsoredCallout` (testado internamente via
+ * `sponsored`) casava com o 📣 do fixture — um acoplamento acidental que
+ * mascarava o call-path real. Com `isSponsoredCallout` agora marcador-
+ * agnóstico (detecta por link de afiliado `?via=`/`tag=`, #3232), os fixtures
+ * abaixo (sem link de afiliado) deixaram de ser "sponsored" — e é exatamente
+ * por isso que a chamada precisa refletir o dispatcher real em vez de
+ * depender do acoplamento antigo.
  */
 
 import { describe, it } from "node:test";
@@ -27,7 +41,7 @@ Corpo da promo.
 
 describe("renderIntroCallout — múltiplos CTAs (260622)", () => {
   it("renderiza um botão pill por link quando o último parágrafo é só CTAs", () => {
-    const html = renderIntroCallout(TWO_CTA);
+    const html = renderIntroCallout(TWO_CTA, "serif", true);
     // Ambos os links viram botões clicáveis.
     assert.ok(
       html.includes('href="https://livros.diaria.workers.dev"'),
@@ -48,7 +62,7 @@ describe("renderIntroCallout — múltiplos CTAs (260622)", () => {
   });
 
   it("mantém o comportamento de 1 CTA único (regressão)", () => {
-    const html = renderIntroCallout(ONE_CTA);
+    const html = renderIntroCallout(ONE_CTA, "serif", true);
     const pills = (html.match(/border-radius:999px/g) ?? []).length;
     assert.equal(pills, 1, "1 link → 1 botão");
     assert.ok(html.includes('href="https://example.com/oferta"'));
