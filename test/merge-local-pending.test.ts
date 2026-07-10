@@ -12,9 +12,51 @@ import {
   aammddToIso,
   isWithinPendingWindow,
   extractUrlsFromApproved,
+  loadPublishedAammddFromRaw,
+  isPublished,
 } from "../scripts/merge-local-pending.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * #3207: monta um sandbox isolado (scripts/ + package.json + tsconfig.json +
+ * node_modules) pra invocar o CLI real via subprocess — mesmo padrão do teste
+ * "layout flat + nested" (#3024) acima. Extraído em helper pra reusar entre
+ * os testes de cross-check `--past-raw`.
+ */
+function setupSandbox(): string {
+  const sandboxRoot = mkdtempSync(join(tmpdir(), "mlp-pastraw-"));
+  cpSync(resolve(ROOT, "scripts"), join(sandboxRoot, "scripts"), { recursive: true });
+  cpSync(resolve(ROOT, "package.json"), join(sandboxRoot, "package.json"));
+  cpSync(resolve(ROOT, "tsconfig.json"), join(sandboxRoot, "tsconfig.json"));
+  if (existsSync(resolve(ROOT, "node_modules"))) {
+    try {
+      symlinkSync(
+        resolve(ROOT, "node_modules"),
+        join(sandboxRoot, "node_modules"),
+        isWindows ? "junction" : "dir",
+      );
+    } catch {
+      cpSync(resolve(ROOT, "node_modules"), join(sandboxRoot, "node_modules"), {
+        recursive: true,
+      });
+    }
+  }
+  return sandboxRoot;
+}
+
+function runMergeLocalPending(sandboxRoot: string, extraArgs: string[]): {
+  pending_found: number;
+  injected: number;
+  editions?: Array<{ yymmdd: string; days_ago: number; url_count: number }>;
+} {
+  const out = execFileSync(
+    NPX,
+    ["tsx", "scripts/merge-local-pending.ts", ...extraArgs],
+    { cwd: sandboxRoot, stdio: "pipe", shell: isWindows },
+  ).toString();
+  return JSON.parse(out.trim().split("\n").pop() ?? "{}");
+}
 
 describe("aammddToIso (#863)", () => {
   it("converte AAMMDD pra ISO", () => {
@@ -202,6 +244,188 @@ describe("merge-local-pending.ts CLI — layout flat + nested (#3024)", () => {
         injected: number;
       };
       assert.equal(result.pending_found, 1, "deve detectar a edição nested como pending");
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadPublishedAammddFromRaw — cross-check contra past-editions-raw.json (#3207)", () => {
+  function writeRaw(posts: unknown[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "mlp-raw-"));
+    const p = join(dir, "past-editions-raw.json");
+    writeFileSync(p, JSON.stringify(posts), "utf8");
+    return p;
+  }
+
+  it("mapeia published_at pra AAMMDD via timezone BR (mesma conversão de refresh-past-editions.ts)", () => {
+    const p = writeRaw([
+      { id: "1", title: "A", published_at: "2026-07-06T12:00:00Z" },
+      { id: "2", title: "B", published_at: "2026-07-07T12:00:00Z" },
+    ]);
+    const set = loadPublishedAammddFromRaw(p);
+    assert.ok(set.has("260706"), `esperava 260706 no set — got: ${[...set].join(", ")}`);
+    assert.ok(set.has("260707"), `esperava 260707 no set — got: ${[...set].join(", ")}`);
+    assert.equal(set.size, 2);
+  });
+
+  it("retorna Set vazio quando o arquivo não existe (fail-soft)", () => {
+    const set = loadPublishedAammddFromRaw(
+      join(tmpdir(), "nonexistent-mlp-raw-dir", "past-editions-raw.json"),
+    );
+    assert.equal(set.size, 0);
+  });
+
+  it("retorna Set vazio quando o JSON é inválido (fail-soft)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mlp-raw-bad-"));
+    const p = join(dir, "past-editions-raw.json");
+    writeFileSync(p, "{ not valid json", "utf8");
+    assert.equal(loadPublishedAammddFromRaw(p).size, 0);
+  });
+
+  it("regression (code-review #3244): retorna Set vazio (não lança) quando o JSON é válido mas não é array", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mlp-raw-nonarray-"));
+    for (const [name, content] of [
+      ["obj.json", "{}"],
+      ["null.json", "null"],
+      ["str.json", '"oops"'],
+    ] as const) {
+      const p = join(dir, name);
+      writeFileSync(p, content, "utf8");
+      assert.doesNotThrow(() => loadPublishedAammddFromRaw(p), `não deveria lançar pra ${name}`);
+      assert.equal(loadPublishedAammddFromRaw(p).size, 0, `esperava Set vazio pra ${name}`);
+    }
+  });
+
+  it("ignora posts sem published_at", () => {
+    const p = writeRaw([{ id: "1", title: "sem data" }]);
+    assert.equal(loadPublishedAammddFromRaw(p).size, 0);
+  });
+});
+
+describe("isPublished — local OR raw (#3207)", () => {
+  it("regression #3207: edição publicada em outra sessão (sem 05-published.json local) é detectada via raw", () => {
+    const editionDir = mkdtempSync(join(tmpdir(), "mlp-ed-"));
+    // Sem 05-published.json local — simula publicação em outra sessão/máquina
+    // (o cenário exato do incidente 260710: 260706/260707 publicadas via
+    // sessão paralela, sem 05-published.json local nunca escrito).
+    const publishedInRaw = new Set(["260706"]);
+    assert.equal(isPublished(editionDir, "260706", publishedInRaw), true);
+  });
+
+  it("edição não publicada em lugar nenhum (nem local, nem raw) retorna false", () => {
+    const editionDir = mkdtempSync(join(tmpdir(), "mlp-ed-"));
+    assert.equal(isPublished(editionDir, "260710", new Set<string>()), false);
+  });
+
+  it("preserva a detecção local pré-existente: 05-published.json com status published", () => {
+    const editionDir = mkdtempSync(join(tmpdir(), "mlp-ed-"));
+    writeFileSync(
+      join(editionDir, "05-published.json"),
+      JSON.stringify({ status: "published" }),
+      "utf8",
+    );
+    // raw vazio (não passado / não encontrado) — a detecção precisa vir só do local.
+    assert.equal(isPublished(editionDir, "260710", new Set<string>()), true);
+  });
+
+  it("preserva a detecção local pré-existente: 05-published.json com status != published retorna false", () => {
+    const editionDir = mkdtempSync(join(tmpdir(), "mlp-ed-"));
+    writeFileSync(
+      join(editionDir, "05-published.json"),
+      JSON.stringify({ status: "draft" }),
+      "utf8",
+    );
+    assert.equal(isPublished(editionDir, "260710", new Set<string>()), false);
+  });
+});
+
+// #3207: reproduz o incidente 260710 fim-a-fim via CLI real (não só as unidades
+// puras acima) — garante que main() de fato lê --past-raw e propaga pro isPublished.
+describe("merge-local-pending.ts CLI — --past-raw cross-check (#3207)", () => {
+  it("regression #3207: edição sem 05-published.json local mas presente em past-editions-raw.json NÃO é reportada como pending", () => {
+    const sandboxRoot = setupSandbox();
+    try {
+      // 260706: Stage 1 completo local, SEM 05-published.json — publicada
+      // em outra sessão/máquina (o caso real do incidente).
+      const publishedInternal = join(sandboxRoot, "data/editions/2607/260706/_internal");
+      mkdirSync(publishedInternal, { recursive: true });
+      writeFileSync(
+        join(publishedInternal, "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://x.com/d1-260706" }] }),
+      );
+
+      // 260708: Stage 1 completo local, SEM 05-published.json, e SEM entrada
+      // correspondente no past-raw — deve continuar pending (comportamento
+      // pré-#3207 preservado pra edições de fato não publicadas).
+      const stillPendingInternal = join(sandboxRoot, "data/editions/2607/260708/_internal");
+      mkdirSync(stillPendingInternal, { recursive: true });
+      writeFileSync(
+        join(stillPendingInternal, "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://x.com/d1-260708" }] }),
+      );
+
+      // past-editions-raw.json — fonte Beehiiv REST (gerada por refresh-dedup),
+      // já mostra 260706 publicada.
+      const dataDir = join(sandboxRoot, "data");
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(
+        join(dataDir, "past-editions-raw.json"),
+        JSON.stringify([
+          {
+            id: "post-260706",
+            title: "Testei a Alexa+ por uma semana: o que mudou",
+            web_url: "https://diaria.beehiiv.com/p/testei-a-alexa-por-uma-semana-o-que-mudou",
+            published_at: "2026-07-06T12:00:00Z",
+          },
+        ]),
+      );
+
+      const result = runMergeLocalPending(sandboxRoot, [
+        "--current", "260710",
+        "--editions-dir", "data/editions/",
+        "--window-days", "5",
+        "--anchor-iso", "2026-07-10",
+        "--past-raw", "data/past-editions-raw.json",
+      ]);
+
+      assert.equal(
+        result.pending_found,
+        1,
+        `só 260708 deve sobrar como pending — got: ${JSON.stringify(result)}`,
+      );
+      const yymmdds = (result.editions ?? []).map((e) => e.yymmdd);
+      assert.ok(
+        !yymmdds.includes("260706"),
+        "260706 (publicada via raw, sem 05-published.json local) não deve aparecer como pending",
+      );
+      assert.ok(
+        yymmdds.includes("260708"),
+        "260708 (não publicada em lugar nenhum) deve continuar pending",
+      );
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --past-raw e sem data/past-editions-raw.json no sandbox, cai no comportamento local-only pré-#3207", () => {
+    const sandboxRoot = setupSandbox();
+    try {
+      const editionInternal = join(sandboxRoot, "data/editions/2607/260708/_internal");
+      mkdirSync(editionInternal, { recursive: true });
+      writeFileSync(
+        join(editionInternal, "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://x.com/d1-260708" }] }),
+      );
+      // Nenhum data/past-editions-raw.json no sandbox — loadPublishedAammddFromRaw
+      // cai no DEFAULT_PAST_RAW_PATH, que também não existe → Set vazio, fail-soft.
+      const result = runMergeLocalPending(sandboxRoot, [
+        "--current", "260710",
+        "--editions-dir", "data/editions/",
+        "--window-days", "5",
+        "--anchor-iso", "2026-07-10",
+      ]);
+      assert.equal(result.pending_found, 1, "sem past-raw disponível, comportamento é local-only");
     } finally {
       rmSync(sandboxRoot, { recursive: true, force: true });
     }
