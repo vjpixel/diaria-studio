@@ -477,6 +477,124 @@ describe("lintRelativeTime expansion (social, #877)", () => {
   });
 });
 
+describe("lintRelativeTime — post_pixel exceção (#3208)", () => {
+  it("'hoje' dentro de ## post_pixel NÃO dispara (texto-modelo do template §3d, #3052)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sobre o lançamento do modelo.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, JSON.stringify(r.matches));
+  });
+
+  it("mesmo texto de tempo relativo em main_d1 CONTINUA disparando (não é um desliga-tudo)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Hoje a OpenAI lançou um novo modelo.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+## post_pixel
+
+Comentário pessoal sem referência temporal.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("mesmo texto de tempo relativo em comment_pixel CONTINUA disparando", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+### comment_pixel
+
+Ontem eu vi esse anúncio e fiquei impressionado.
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades — reuni tudo em {edition_url}.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    // "Hoje" do post_pixel não conta; "Ontem" do comment_pixel deve continuar contando.
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "ontem"));
+    assert.ok(!r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("'hoje' em comment_diaria (fora do post_pixel) CONTINUA disparando", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Hoje é o melhor dia para assinar — edição completa em {edition_url}
+
+## post_pixel
+
+Comentário pessoal sem referência temporal.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("linha da seção Facebook mantém tempo relativo detectado normalmente (post_pixel é LinkedIn-only)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades — reuni tudo em {edition_url}.
+
+# Facebook
+
+## d1
+
+Hoje a OpenAI lançou um novo modelo no Facebook também.
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
+});
+
 describe("lintLinkedinSchema (#595)", () => {
   function buildMd(parts: { d1?: string; d2?: string; d3?: string }): string {
     const sections: string[] = ["# LinkedIn", ""];

@@ -242,8 +242,32 @@ function isInQuotedRange(
   return ranges.some((r) => index >= r.start && index <= r.end);
 }
 
+/**
+ * #3208: `## post_pixel` documentadamente abre com "Hoje" (template
+ * `.claude/agents/social-linkedin.md` §3d, #3052) — é publicado ao vivo no
+ * mesmo dia (não agendado como main_d{N}/comment_diaria/comment_pixel, que
+ * vão pra D+1+), então "hoje" é literalmente correto ali. Mascara o conteúdo
+ * do bloco post_pixel (troca cada char não-newline por espaço, preservando
+ * contagem de linhas — offsets de matches em OUTRAS seções continuam
+ * corretos) antes do scan de tempo relativo, em vez de desligar o lint pra
+ * seção inteira ou pro arquivo inteiro.
+ *
+ * Reusa `extractPlatformSection`/`extractPostPixelBlock` — mesmo padrão de
+ * extração de seção por heading (`## post_pixel` até o próximo `## `/fim) já
+ * usado por `lintLinkedinSchema`/`lintLinkedinPageLink`/`lintCredentialBio`.
+ */
+function maskPostPixelSection(normalizedMd: string): string {
+  const linkedinSection = extractPlatformSection(normalizedMd, "linkedin");
+  if (!linkedinSection) return normalizedMd;
+  const ppBlock = extractPostPixelBlock(linkedinSection);
+  if (!ppBlock || ppBlock.text.length === 0) return normalizedMd;
+  const masked = ppBlock.text.replace(/[^\n]/g, " ");
+  return normalizedMd.replace(ppBlock.text, masked);
+}
+
 export function lintRelativeTime(md: string): RelativeTimeResult {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const normalized = md.replace(/\r\n/g, "\n");
+  const lines = maskPostPixelSection(normalized).split("\n");
   const matches: RelativeTimeMatch[] = [];
 
   for (let i = 0; i < lines.length; i++) {
