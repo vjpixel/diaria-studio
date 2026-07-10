@@ -20,6 +20,12 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run typecheck
+      - name: Install brevo-dashboard worker deps
+        working-directory: workers/brevo-dashboard
+        run: npm ci
+      - name: Typecheck brevo-dashboard worker (#3164)
+        working-directory: workers/brevo-dashboard
+        run: npx tsc -p tsconfig.json --noEmit
       - run: npm test
       - run: npm run smoke
       - name: Validate RSS feeds
