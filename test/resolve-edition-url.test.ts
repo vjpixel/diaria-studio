@@ -1,22 +1,28 @@
 /**
- * test/resolve-edition-url.test.ts (#2454, write-then-validate #3223)
+ * test/resolve-edition-url.test.ts (#2454, write-then-validate #3223, guard nao-fatal #3277)
  *
  * Testa:
  *   (a) deriveEditionUrl — URL publica derivada do titulo via seoSlug
  *       bate com o formato real do Beehiiv (https://diar.ia.br/p/{slug}).
- *   (b) findUnresolvedPlaceholders — guard anti-placeholder rejeita qualquer
+ *   (b) findUnresolvedPlaceholders — guard anti-placeholder DETECTA qualquer
  *       placeholder {snake_case} nao-resolvido mas IGNORA {outros_count}
- *       (deferred-to-dispatch, resolvido por publish-linkedin).
+ *       (deferred-to-dispatch, resolvido por publish-linkedin). Deteccao pura
+ *       — nao decide se e fatal (isso e responsabilidade do caller CLI, ver (c)).
  *   (c) CLI resolve-edition-url.ts — integracao via spawnSync:
  *       grava 05-edition-url.txt + (write-then-validate, #3223) reescreve
  *       03-social.md substituindo {edition_url} pela URL real ANTES de validar,
- *       entao --validate-social sempre passa (exit 0) quando o unico placeholder
- *       presente era {edition_url} — e ainda aborta (exit 3) se sobrar outro
- *       placeholder diferente, nao-deferred, apos a substituicao.
+ *       entao --validate-social sempre retorna exit 0 (#3277 — o guard nao e
+ *       mais fatal para NENHUM placeholder, incluindo os genericos/desconhecidos;
+ *       ele apenas avisa via stdout/stderr + data/run-log.jsonl).
  *       Regressao #2454-finding-1: {outros_count} presente com {edition_url} resolvido -> exit 0.
  *       Regressao #2454-finding-3: --title seguido de outra flag nao crashar.
  *       Regressao #3223: {edition_url} literal em 03-social.md NAO bloqueia mais o
  *       guard (bug original: main() nunca escrevia o arquivo, guard sempre exit 3).
+ *       Regressao #3277: placeholder generico/desconhecido (ex: {system_prompt},
+ *       plausivel como exemplo de prompt citado num post sobre IA) NAO bloqueia
+ *       mais o dispatch social inteiro (bug original: exit 3 fatal travava
+ *       LinkedIn+Facebook+Instagram+Threads da edicao inteira por um falso
+ *       positivo — ver issue #3277).
  */
 
 import { describe, it } from "node:test";
@@ -264,11 +270,11 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  // #3223 requirement (c): a substituicao de {edition_url} nao deve tornar o
-  // guard toothless — um placeholder GENUINAMENTE diferente (nao {edition_url},
-  // nao deferred) que sobra em 03-social.md apos a substituicao ainda deve
-  // abortar com exit 3.
-  it("#3223: placeholder OUTRO (nao {edition_url}, nao deferred) sobrevive a substituicao → exit 3", () => {
+  // #3223 requirement (c) revisado por #3277: a substituicao de {edition_url}
+  // nao deve tornar o guard toothless (ele ainda DETECTA um placeholder
+  // GENUINAMENTE diferente, nao deferred) — mas desde #3277 a deteccao nao
+  // bloqueia mais o dispatch (exit 0, apenas warning). Antes: exit 3 fatal.
+  it("#3277: placeholder OUTRO (nao {edition_url}, nao deferred) sobrevive a substituicao → exit 0 (AVISO, nao bloqueia)", () => {
     const socialMd = [
       "# LinkedIn",
       "",
@@ -277,20 +283,59 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       "",
     ].join("\n");
 
-    const { exitCode, stderr, editionDir, tmp } = runCli(
+    const { exitCode, stderr, stdout, editionDir, tmp } = runCli(
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
     );
-    assert.equal(exitCode, 3, `placeholder generico nao-deferred deve continuar bloqueando, obteve ${exitCode}`);
-    assert.match(stderr, /\{algum_placeholder_novo\}/);
-    assert.match(stderr, /guard anti-placeholder/);
+    assert.equal(exitCode, 0, `#3277: placeholder generico nao-deferred NAO deve mais bloquear o dispatch, obteve ${exitCode}`);
+    const combined = stderr + stdout;
+    assert.match(combined, /\{algum_placeholder_novo\}/);
+    assert.match(combined, /AVISO/);
+    assert.match(combined, /guard anti-placeholder/);
+    assert.match(combined, /bloqueado/i);
 
     // {edition_url} ainda deve ter sido substituido (o write acontece antes da
-    // validacao) — so o placeholder desconhecido permanece.
+    // validacao) — so o placeholder desconhecido permanece, mas nao bloqueia.
     const rewrittenPath = resolve(editionDir, "03-social.md");
     const rewritten = readFileSync(rewrittenPath, "utf8");
-    assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido mesmo com exit 3");
+    assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido");
     assert.ok(rewritten.includes("{algum_placeholder_novo}"), "placeholder desconhecido permanece intocado");
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // #3277 regressao direta da issue: um post citando um exemplo de campo de
+  // prompt/API entre chaves (plausivel numa newsletter de IA) NAO deve travar
+  // o dispatch social da edicao inteira. Antes do fix, isso dava exit 3 fatal
+  // e .claude/agents/orchestrator-stage-5.md tratava exit 3 como bloqueio total
+  // do dispatch (LinkedIn+Facebook+Instagram+Threads).
+  it("#3277 regressao da issue: post citando {system_prompt} como exemplo de prompt → exit 0 (nao trava a edicao)", () => {
+    const socialMd = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "Testamos um prompt simples: {system_prompt} define o tom da resposta.",
+      `Edicao completa em {edition_url} — mais {outros_count} destaques.`,
+      "",
+    ].join("\n");
+
+    const { exitCode, stdout, stderr, editionDir, tmp } = runCli(
+      ["--slug", "meu-titulo-teste", "--validate-social"],
+      { "03-social.md": socialMd },
+    );
+    assert.equal(
+      exitCode,
+      0,
+      `#3277: prosa legitima citando {system_prompt} nao deve bloquear o dispatch social, obteve ${exitCode}`,
+    );
+    const combined = stderr + stdout;
+    assert.match(combined, /\{system_prompt\}/, "warning deve mencionar o placeholder ambiguo encontrado");
+
+    // {edition_url} resolvido, {outros_count} permanece (deferred), {system_prompt}
+    // permanece intocado (nao e um placeholder conhecido do pipeline).
+    const rewritten = readFileSync(resolve(editionDir, "03-social.md"), "utf8");
+    assert.ok(!rewritten.includes("{edition_url}"));
+    assert.ok(rewritten.includes("{outros_count}"), "{outros_count} e deferred, nao deve ser tocado aqui");
+    assert.ok(rewritten.includes("{system_prompt}"), "prosa legitima nao deve ser alterada pelo guard");
     rmSync(tmp, { recursive: true, force: true });
   });
 

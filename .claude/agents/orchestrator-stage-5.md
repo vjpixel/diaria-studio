@@ -183,7 +183,7 @@ npx tsx scripts/resolve-edition-url.ts \
 
 **Tab isolation no Chrome**: publish-newsletter e o unico agent Chrome em Etapa 5 — abre tab Beehiiv propria via `tabs_create_mcp`. LinkedIn e Facebook sao scripts shell sem browser.
 
-**Passo 5c-2: Guard anti-placeholder (#2454).**
+**Passo 5c-2: Guard anti-placeholder (#2454, nao-fatal desde #3277).**
 
 **SO APOS o draft Beehiiv retornar** (passo 5c-1 completo), verificar que `05-edition-url.txt` existe. Se o arquivo foi gravado pelo playbook (§6.1 do beehiiv-playbook.md), apenas rodar o guard de validacao — sem re-escrever o arquivo:
 
@@ -193,18 +193,18 @@ if [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
   npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --title "{titulo_d1}"
 fi
 
-# Guard anti-placeholder (write-then-validate, #3223): reescreve 03-social.md
-# substituindo {edition_url} pela URL real e SO ENTAO valida — aborta (exit 3)
-# se sobrar algum placeholder {snake_case} nao-resolvido (que nao seja deferred).
-# Nao dispatchar social se exit != 0.
+# Guard anti-placeholder (write-then-validate, #3223; nao-fatal, #3277): reescreve
+# 03-social.md substituindo {edition_url} pela URL real e SO ENTAO valida — se sobrar
+# algum placeholder {snake_case} nao-resolvido (que nao seja deferred), AVISA
+# (stderr + data/run-log.jsonl nivel warn) mas NAO bloqueia o dispatch.
 # Nota: {outros_count} e DEFERRED (resolvido por publish-linkedin no dispatch) — nao rejeitado aqui.
 EDITION_URL="$(cat {EDITION_DIR}/_internal/05-edition-url.txt)"
 npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --edition-url "${EDITION_URL}" --validate-social
 ```
 
 Exit code do guard:
-- `0` → {edition_url} resolvido e ja substituido em 03-social.md (o script reescreve o arquivo), prosseguir pro dispatch do social.
-- `3` → **FATAL: sobrou placeholder nao-resolvido em 03-social.md apos a substituicao de {edition_url}** (#3223 — tipicamente um placeholder novo/diferente que nenhum writer resolveu, ja que {edition_url} em si e sempre resolvido por este passo). NAO dispatchar o social. Logar erro e parar com instrucao ao editor: o social seria publicado com placeholder literal — o dispatch precisa ser corrigido primeiro.
+- `0` → **sempre** (#3277 — o guard nao bloqueia mais o dispatch). `{edition_url}` resolvido e ja substituido em 03-social.md (o script reescreve o arquivo); prosseguir pro dispatch do social em qualquer caso.
+- Se o guard imprimir `AVISO (#3277 guard anti-placeholder — não-fatal)` no stdout/stderr, um placeholder `{snake_case}` diferente de `{edition_url}`/`{outros_count}` sobreviveu a substituicao — **isso NAO bloqueia o dispatch** (prosseguir normalmente pro passo 5c-3). O caso e ambiguo (pode ser bug real do writer/stitch, pode ser prosa legitima citando um exemplo entre chaves) — mencionar o aviso no resumo pro editor (ex: no relatorio da edicao) para revisao humana posterior; o evento tambem fica persistido em `data/run-log.jsonl` (nivel warn, agent `resolve-edition-url`) e pode ser inspecionado depois via `/diaria-log {edicao} warn`.
 
 **Passo 5c-3: Dispatch social — APOS a URL estar resolvida.**
 
