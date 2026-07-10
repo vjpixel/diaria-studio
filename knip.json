@@ -10,5 +10,13 @@
     "scripts/**/*.ts",
     "workers/**/*.ts"
   ],
-  "ignoreExportsUsedInFile": true
+  "ignoreExportsUsedInFile": true,
+  // #3164: ci.yml passou a rodar `npx tsc -p tsconfig.json --noEmit` dentro de
+  // workers/brevo-dashboard/ — o plugin de GitHub Actions do knip lê esse `run:`,
+  // resolve workers/brevo-dashboard/tsconfig.json e checa a dependência declarada
+  // em `compilerOptions.types` (@cloudflare/workers-types) contra o package.json
+  // RAIZ (knip.json não declara "workspaces" pra reconhecer o package.json próprio
+  // do worker). Falso-positivo: a dep está corretamente listada em
+  // workers/brevo-dashboard/package.json (devDependencies), só não no root.
+  "ignoreDependencies": ["@cloudflare/workers-types"]
 }

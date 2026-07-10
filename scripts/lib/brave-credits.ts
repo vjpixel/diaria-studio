@@ -39,10 +39,15 @@
  *   Beehiiv, run-log ou qualquer API externa — o counter é 100% local.
  */
 
-import { appendFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 export const DEFAULT_PATH = "data/brave-credits.jsonl";
+
+// (#3122) Sidecar de estado do reconcile — sobrevive à virada de mês (ao contrário
+// dos stats de `computeBraveCreditStats`, que são escopados ao mês-calendário
+// corrente). Ver `readBraveReconcileState`/`writeBraveReconcileState` abaixo.
+export const DEFAULT_RECONCILE_STATE_PATH = "data/brave-reconcile-state.json";
 
 export interface BraveCreditEntry {
   timestamp: string; // ISO 8601
@@ -182,9 +187,17 @@ export interface BraveCreditStats {
   // vs. a contagem local (sinal de ciclo de rate-limit desalinhado do Brave,
   // não uso real subnotificado).
   header_discarded?: true;
+  // (#3122) uso absoluto derivado do header (`FREE_TIER_LIMIT - quota_remaining_last_seen`,
+  // clampado ≥0), SEM o desconto de `queries_this_month` e SEM o guard de descarte
+  // de #3002 aplicado ao valor em si (só reflete se o header foi lido — permanece
+  // ausente quando não há `quota_remaining` este mês). Existe para consumidores
+  // (como `reconcile-brave-path-b.ts`) que precisam do valor cumulativo bruto do
+  // ciclo de cobrança do Brave para diffar contra uma leitura anterior — usar
+  // `delta_untracked`/`effective_used` para relato ao editor, não este campo.
+  real_used_raw?: number;
 }
 
-const FREE_TIER_LIMIT = 2000;
+export const FREE_TIER_LIMIT = 2000;
 const WARN_THRESHOLD = 0.8;
 const CRITICAL_THRESHOLD = 0.95;
 
@@ -348,5 +361,64 @@ export function computeBraveCreditStats(
     ...(typeof quota_remaining_last_seen === "number" ? { quota_remaining_last_seen } : {}),
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
     ...(header_discarded ? { header_discarded } : {}),
+    ...(typeof real_used === "number" ? { real_used_raw: real_used } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile state (#3122)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estado persistido do ÚLTIMO run bem-sucedido (não-no-op, header não-descartado)
+ * de `reconcile-brave-path-b.ts`. Ao contrário de `computeBraveCreditStats`, que
+ * escopa tudo ao mês-calendário corrente, este estado sobrevive à virada de mês —
+ * é a âncora que permite ao reconcile calcular o delta INCREMENTAL do header desde
+ * a última rodada, em vez do gap absoluto (`header − tracked_do_mês_corrente`),
+ * que mis-atribui todo o residual de ciclos de cobrança anteriores ao mês novo
+ * (causa raiz do alarme falso em #3122 — o header do Brave é cumulativo pelo
+ * CICLO DE COBRANÇA da conta, não pelo mês-calendário).
+ */
+export interface BraveReconcileState {
+  /** Último `X-RateLimit-Remaining` visto (para diagnóstico). */
+  quota_remaining: number;
+  /** `FREE_TIER_LIMIT - quota_remaining`, clampado ≥0 — a âncora usada no diff. */
+  real_used: number;
+  /** Quando este estado foi gravado (ISO 8601). */
+  timestamp: string;
+}
+
+/** Lê o estado persistido. Retorna null se ausente, corrompido ou com shape inválido. */
+export function readBraveReconcileState(
+  path: string = DEFAULT_RECONCILE_STATE_PATH,
+): BraveReconcileState | null {
+  try {
+    const fullPath = resolve(process.cwd(), path);
+    if (!existsSync(fullPath)) return null;
+    const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
+    if (
+      typeof parsed?.quota_remaining !== "number" ||
+      typeof parsed?.real_used !== "number" ||
+      typeof parsed?.timestamp !== "string"
+    ) {
+      return null;
+    }
+    return parsed as BraveReconcileState;
+  } catch {
+    return null;
+  }
+}
+
+/** Grava o estado do reconcile. Best-effort — não pode quebrar o pipeline. */
+export function writeBraveReconcileState(
+  state: BraveReconcileState,
+  path: string = DEFAULT_RECONCILE_STATE_PATH,
+): void {
+  try {
+    const fullPath = resolve(process.cwd(), path);
+    ensureDir(fullPath);
+    writeFileSync(fullPath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  } catch {
+    // Estado não pode quebrar pipeline
+  }
 }

@@ -432,10 +432,20 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
     return out;
   };
 
-  const rawBrevo = isObj(s.brevo) ? s.brevo : {};
-  const rawElig = isObj(s.eligibility) ? s.eligibility : {};
-  const rawPp = isObj(s.priority_points) ? s.priority_points : {};
-  const rawEng = isObj(s.engagement) ? s.engagement : {};
+  // #3164: anotação explícita `Record<string, unknown>` é NECESSÁRIA aqui — sem ela,
+  // o TS infere o tipo do ternário via union-reduction (sem contextual type) e, como
+  // `{}` (tipo objeto vazio) é estruturalmente supertype de QUALQUER tipo, a redução
+  // por subtipo descarta o branch verdadeiro inteiro (`isObj(s.x) ? s.x : {}` inferia
+  // só `{}`, mesmo com `isObj` corretamente estreitando pra `Record<string, unknown>`
+  // no branch truthy). Quirk conhecido do TS com ternários que têm `{}` como fallback
+  // (não é exclusivo de type predicates — `typeof v === "object" ? v : {}` colapsa
+  // igual); puramente compile-time — o JS emitido roda idêntico com ou sem a
+  // anotação, já que `as`/anotações de tipo não geram código. Sem isto o `tsc`
+  // reportava 16 falsos-positivos TS2339 nos acessos abaixo. Ver #3164.
+  const rawBrevo: Record<string, unknown> = isObj(s.brevo) ? s.brevo : {};
+  const rawElig: Record<string, unknown> = isObj(s.eligibility) ? s.eligibility : {};
+  const rawPp: Record<string, unknown> = isObj(s.priority_points) ? s.priority_points : {};
+  const rawEng: Record<string, unknown> = isObj(s.engagement) ? s.engagement : {};
 
   let cohort_stats: Record<string, CohortStatsRow> | undefined;
   if (isObj(s.cohort_stats)) {
@@ -561,7 +571,17 @@ export function normalizeMvStatus(raw: unknown): MvStatus | null {
   const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const validStatuses = new Set(["verified", "t01", "pending"]);
 
-  const groups: MvGroupStatus[] = s.groups
+  // #3164: `Array.isArray(s.groups)` acima estreita `s.groups` pro tipo CONCRETO
+  // `MvGroupStatus[]` (herdado de `Partial<MvStatus>`), não `unknown[]` — o cast
+  // `raw as Partial<MvStatus> & Record<string, unknown>` empresta os tipos
+  // confiáveis de `MvStatus` pra um payload que, na verdade, é JSON não-validado
+  // do KV. Por isso `.filter((g): g is Record<string, unknown> => ...)` falhava
+  // com TS2677: o predicado afirma que `g` (tipado como `MvGroupStatus`, com
+  // `group`/`cycle`/etc. obrigatórios) É um `Record<string, unknown>` mais
+  // genérico — TS recusa por não ser um estreitamento válido. O cast pra
+  // `unknown[]` aqui restaura o tipo real do dado (KV cru, não confiável),
+  // deixando o predicado seguinte fazer a validação de runtime como já fazia.
+  const groups: MvGroupStatus[] = (s.groups as unknown[])
     .filter((g): g is Record<string, unknown> => !!g && typeof g === "object")
     .map((g) => ({
       group: typeof g.group === "string" ? g.group : "",
@@ -598,8 +618,17 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
 
   const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
-  const editions: EiaEngagementEdition[] = s.editions
-    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && typeof e.edition === "string")
+  // #3164: mesmo quirk de `normalizeMvStatus` acima — `Array.isArray(s.editions)`
+  // estreita pro tipo concreto `EiaEngagementEdition[]` (herdado de
+  // `Partial<EiaEngagementSummary>`), então o predicado `e is Record<string,
+  // unknown>` falhava com TS2677 (Record<string,unknown> não é um estreitamento
+  // válido de um tipo já concreto com campos obrigatórios). Cast pra `unknown[]`
+  // restaura o tipo real (KV cru, não validado) antes da checagem de runtime.
+  const editions: EiaEngagementEdition[] = (s.editions as unknown[])
+    .filter(
+      (e): e is Record<string, unknown> =>
+        !!e && typeof e === "object" && typeof (e as Record<string, unknown>).edition === "string",
+    )
     .map((e) => ({
       edition: e.edition as string,
       total_votes: numOr0(e.total_votes),
