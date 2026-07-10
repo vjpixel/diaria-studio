@@ -346,7 +346,7 @@ Se por algum motivo o exit não for 0 aqui (ex: `writeSentinel` falhou e o scrip
 
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
-- `02-reviewed.md` (newsletter) e/ou `03-social.md` (social), conforme `entry.sources` do claim — `["newsletter"]`, `["social"]` ou `["newsletter","social"]` (#3224). Em social, a correção é scoped aos blocos `## dN` e aplicada em AMBOS os canais (LinkedIn + Facebook) quando o texto aparece nos dois. Sucesso parcial é possível e fica registrado em `files_modified` + `note` da entry (ex: achou na newsletter mas não em social).
+- `02-reviewed.md` (newsletter) e/ou `03-social.md` (social), conforme `entry.sources` do claim — `["newsletter"]`, `["social"]` ou `["newsletter","social"]` (#3224). Em social, a correção é scoped aos blocos `## dN` e aplicada em AMBOS os canais (LinkedIn + Facebook) quando o texto aparece nos dois — e, pra destaque 1, também em `## post_pixel` (post pessoal standalone do Pixel, sempre sobre D1, #3274), já que é seção IRMÃ de `## d1` sujeita à mesma claim. Sucesso parcial é possível e fica registrado em `files_modified` + `note` da entry (ex: achou na newsletter mas não em social).
 - Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
 - Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
 - Nunca o destaque do `intentional_error` declarado em `_internal/intentional-error.json` (#3222) — preserva o erro intencional proposital (vale para newsletter E social).

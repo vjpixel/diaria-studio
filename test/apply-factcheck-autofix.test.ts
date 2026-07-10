@@ -224,6 +224,58 @@ describe("applyTextSubstitution (#2598)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regressão (self-review #3292): newText com sequências '$' não pode ser
+// interpretado como replacement-pattern do replaceAll (GetSubstitution)
+// ---------------------------------------------------------------------------
+
+describe("regressao (#3292 self-review): applyTextSubstitution (scoped) trata newText como literal, não replacement-pattern", () => {
+  it("newText contendo '$&' não reinsere o oldText casado (GetSubstitution do replaceAll)", () => {
+    const content = "## d1\n\nO modelo GPT-4o custou caro.\n\n## d2\n\nOutro destaque.";
+    const scope = { start: 0, end: content.indexOf("## d2") };
+    const result = applyTextSubstitution(content, "GPT-4o", "GPT-5.4, sucessor de $&", scope);
+    assert.equal(result.changed, true);
+    // Literal: '$&' deve permanecer como texto puro, NUNCA expandir pra "GPT-4o"
+    // (que reinseriria a própria claim errada que a correção deveria remover).
+    assert.ok(
+      result.content.includes("GPT-5.4, sucessor de $&"),
+      "newText deve aparecer literal, incluindo o '$&' puro",
+    );
+    assert.ok(
+      !/sucessor de GPT-4o/.test(result.content),
+      "'$&' NUNCA deve expandir para o texto casado (oldText)",
+    );
+  });
+
+  it("newText contendo '$$' não colapsa para um único '$' (GetSubstitution)", () => {
+    const content = "## d1\n\nCusto de GPT-4o foi alto.\n\n## d2\n\nOutro destaque.";
+    const scope = { start: 0, end: content.indexOf("## d2") };
+    const result = applyTextSubstitution(content, "GPT-4o", "R$$ 24,99", scope);
+    assert.equal(result.changed, true);
+    assert.ok(result.content.includes("R$$ 24,99"), "'$$' deve permanecer literal, não colapsar para 'R$'");
+  });
+
+  it("newText contendo \"$'\" ou '$`' não emenda trechos arbitrários do documento", () => {
+    const content = "PREFIXO_UNICO ## d1\n\nGPT-4o é o assunto. SUFIXO_UNICO";
+    const scope = { start: content.indexOf("## d1"), end: content.length };
+    const result = applyTextSubstitution(content, "GPT-4o", "GPT-5.4 ($` e $')", scope);
+    assert.equal(result.changed, true);
+    assert.ok(
+      result.content.includes("GPT-5.4 ($` e $')"),
+      "'$`'/\"$'\" devem permanecer literais",
+    );
+    assert.ok(
+      !result.content.includes("PREFIXO_UNICOPREFIXO_UNICO") && !result.content.includes("SUFIXO_UNICOSUFIXO_UNICO"),
+      "nenhum trecho do documento deve ser duplicado/emendado via '$`' ou \"$'\"",
+    );
+  });
+
+  it("comportamento legado sem scope (indexOf) permanece imune — sempre foi concatenação literal", () => {
+    const result = applyTextSubstitution("O modelo GPT-4o é rápido.", "GPT-4o", "GPT-5.4 ($&)");
+    assert.equal(result.content, "O modelo GPT-5.4 ($&) é rápido.");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // planAutofixes — lógica de decisão pura
 // ---------------------------------------------------------------------------
 

@@ -219,9 +219,19 @@ export function findDestaqueBodyRange(
  * legitimamente aparecer 2x dentro do range (corpo + comment_pixel, ex: mesmo
  * fato reaparecendo com framing distinto). Um `indexOf` de 1 ocorrência só
  * corrigia a 1ª, deixando a 2ª errada mesmo com `entry.status = "applied"`.
- * `.replaceAll` é seguro aqui porque `oldText` é sempre não-vazio quando
- * `scope` é passado pelo caller (`planAutofixes` já filtra `text` vazio antes
- * de marcar `status: "applied"`).
+ *
+ * `newText` é passado a `replaceAll` como um REPLACER FUNCTION (`() => newText`),
+ * nunca como string literal — achado em self-review (#3292, 3 finder agents
+ * convergentes): `String.prototype.replaceAll(oldText, newText)` interpreta
+ * `$&`, `` $` ``, `$'`, `$$` dentro de `newText` como padrões de substituição
+ * (GetSubstitution do spec ECMA-262), MESMO com `oldText` sendo string pura
+ * (não regex) — só o conteúdo do argumento de replacement importa. `newText`
+ * é `suggested_fix`, texto livre gerado por LLM (fact-checker) sem qualquer
+ * escaping — um `$&` nele reinseriria a própria claim errada que a correção
+ * deveria remover; `` $` ``/`$'` emendariam trechos arbitrários do documento.
+ * Um replacer FUNCTION ignora esses padrões (só interpretados quando o
+ * replacement é string), preservando `newText` literal — mesma garantia que
+ * o `slice`-based splicing legado (branch sem `scope` abaixo) sempre teve.
  */
 export function applyTextSubstitution(
   content: string,
@@ -232,7 +242,7 @@ export function applyTextSubstitution(
   if (scope) {
     const region = content.slice(scope.start, scope.end);
     if (!oldText || !region.includes(oldText)) return { changed: false, content };
-    const newRegion = region.replaceAll(oldText, newText);
+    const newRegion = region.replaceAll(oldText, () => newText);
     return { changed: true, content: content.slice(0, scope.start) + newRegion + content.slice(scope.end) };
   }
   const idx = content.indexOf(oldText);
