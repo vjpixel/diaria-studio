@@ -103,7 +103,7 @@ imagem boa/difícil. 1-2 parágrafos curtos.]
 
 ---
 
-**ENCERRAMENTO**
+**PARA ENCERRAR**
 
 [Chamada padrão pra interação: responder ao e-mail, sugerir tema, indicar a
 newsletter pra colega. Tom igual ao diário. Incluir call-to-action para assinar
@@ -111,7 +111,11 @@ a newsletter diária com o link https://diaria.beehiiv.com/?utm_source=clarice
 (o parâmetro utm_source é obrigatório — é o que rastreia quantos assinantes
 da diária vieram pela mensal; usar diaria.beehiiv.com direto pois diar.ia.br
 dropa a query string no redirect — causa raiz do #2613 resolvida em 260626;
-ver #2457 e #2613).]
+ver #2457 e #2613).
+
+Seguido de 2 parágrafos fixos (#3219, fonte única em
+context/snippets/encerramento-social-apoio.md, compartilhada com o diário):
+apoio à curadoria via Apoia.se e convite pra interagir no LinkedIn/Facebook.]
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**
