@@ -33,6 +33,8 @@ import {
   parseBrandParam,
   brandKvPrefix,
   leaderboardHref,
+  brandHiddenInput, // #3118 item 12
+  maskEmail, // #3118 item 11
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -271,7 +273,14 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   if (!edition || !answer || !sig) return json({ error: "missing params" }, 400, env);
   if (!["A", "B"].includes(answer)) return json({ error: "answer must be A or B" }, 400, env);
 
-  const valid = await hmacVerify(env.ADMIN_SECRET, `${edition}:${answer}`, sig);
+  // #3118 (item 8): brand incluído no material assinado — antes era só
+  // `${edition}:${answer}`, tornando o sig replayable pra sempre E válido
+  // CROSS-BRAND (um sig gerado pra brand=diaria também validava com
+  // `?brand=clarice`, gravando o gabarito no namespace da Clarice). Impacto
+  // baixo (rota só chamada pelo editor via close-poll.ts/publish-monthly.ts),
+  // fix de 2 linhas: incluir `brand` na mensagem — aqui, em close-poll.ts e em
+  // publish-monthly.ts (que também assina `/admin/correct`, sempre `brand=clarice`).
+  const valid = await hmacVerify(env.ADMIN_SECRET, `${brand}:${edition}:${answer}`, sig);
   if (!valid) return json({ error: "invalid signature" }, 403, env);
 
   await env.POLL.put(`correct:${edition}`, answer);
@@ -291,7 +300,19 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   for await (const keyName of listAllKeys(env, prefix)) {
     const raw = await env.POLL.get(keyName);
     if (!raw) continue;
-    const vote = JSON.parse(raw);
+    // #3118 (item 4): guard por registro — replica o padrão try/catch+continue+log
+    // que computeSnapshotEntries já usa (#1349 fix A). Sem isso, 1 voto corrompido
+    // no meio do backfill lançava um JSON.parse não-capturado que abortava a rota
+    // INTEIRA com 500 — deixando `correct:{edition}` já gravado (linha acima) mas
+    // scores de votos AINDA NÃO PROCESSADOS no loop permanentemente desatualizados
+    // (o admin não tem como saber que o backfill parou no meio).
+    let vote: { choice?: string; correct?: boolean | null };
+    try {
+      vote = JSON.parse(raw);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "admin_correct_backfill_parse_error", key: keyName, edition, error: String(e) }));
+      continue;
+    }
     const prevCorrect = vote.correct ?? null;
     const newCorrect = vote.choice === answer;
 
@@ -395,11 +416,11 @@ export function votePageHtml(
   const formHtml = nicknameForm ? `
 <div class="nick-box">
   <p class="nick-title">Defina seu nickname pra aparecer no leaderboard ${leaderboardPeriodWord}</p>
-  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
+  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
-    ${brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`}
+    ${brandHiddenInput(brand)}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
     <button type="submit" class="nick-save">Salvar</button>
   </form>
@@ -517,7 +538,11 @@ export function renderResultImagesHtml(resultImages: VoteResultImages | null | u
     const youBadge = isClicked
       ? `<span class="you">Você clicou</span>`
       : "";
-    const imgUrl = `/img/img-${edition}-01-eia-${side}.jpg`;
+    // #3118 (item 9): htmlEscape no edition interpolado — defesa em
+    // profundidade (não explorável hoje: só chega aqui quando `correct:{edition}`
+    // existe no KV, chave só criada pelo admin via /admin/correct — mas era o
+    // único ponto do arquivo que fugia do padrão htmlEscape-em-tudo).
+    const imgUrl = `/img/img-${htmlEscape(edition)}-01-eia-${side}.jpg`;
     return `<div class="result-image${isClicked ? " clicked" : ""}">
   <img src="${imgUrl}" alt="${altText}" loading="lazy">
   <div class="label">${label}${youBadge}</div>

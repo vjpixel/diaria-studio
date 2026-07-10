@@ -12,6 +12,10 @@ import {
   renderBrandShellStyles, // #3113: régua teal + rodapé de marca
   renderBrandFooter, // #3113: régua teal + rodapé de marca
   todayAammddBrt, // #3113 item 9: também usado por handleVote (vote.ts)
+  withBrandQuery, // #3118 item 12: archiveHref
+  brandHiddenInput, // #3118 item 12: renderArchiveVoteHtml
+  maskEmail, // #3118 item 11: consolida as 3 implementações de mascaramento de email
+  closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -71,10 +75,6 @@ export function computeTop1(
 export interface PodiumEntry {
   nickname: string;
   rank: number;
-}
-
-function maskEmail(email: string): string {
-  return email.replace(/@.*/, "@***");
 }
 
 export function computePodium(
@@ -462,7 +462,7 @@ export async function handleLeaderboardByMonth(
   // e cache de 1h fazia leitor ver leaderboard stale por ~1h após votar.
   // 60s é suficiente pra absorver pico de tráfego sem mascarar updates.
   const cacheControl = isPast
-    ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
+    ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // 60s pro mês corrente
 
   return renderLeaderboardHtml(
@@ -524,12 +524,12 @@ export async function handleLeaderboardByMonthJson(
   const medals = ["🥇", "🥈", "🥉"];
   const jsonEntries: LeaderboardJsonEntry[] = ranked.map((e) => {
     const rawNickname = e.nickname ?? null;
-    const displayNickname = rawNickname
-      ? rawNickname
-      : (() => {
-          const at = e.email.indexOf("@");
-          return at > 0 ? `${e.email.slice(0, at)}@***` : `${e.email.slice(0, 4)}***`;
-        })();
+    // #3118 (item 11): maskEmail (lib.ts) consolida esta 3ª implementação —
+    // era a única das 3 com fallback pra email sem "@" (agora canônico).
+    // Ternário (não `??`) preservado deliberadamente — nickname "" (vazio,
+    // não deveria ocorrer via handleSetName mas defensivo p/ dado histórico)
+    // deve cair pro masked email como antes, não ser exibido como string vazia.
+    const displayNickname = rawNickname ? rawNickname : maskEmail(e.email);
     return {
       rank: e.rank,
       // #3113: medalha exige correct >= 1 (mesmo gate de rankEntries/computePodium
@@ -545,7 +545,7 @@ export async function handleLeaderboardByMonthJson(
 
   const isPast = slugCmp < 0;
   const cacheControl = isPast
-    ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
+    ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // 60s pro mês corrente
 
   return new Response(JSON.stringify({ entries: jsonEntries, period_slug: monthSlug }), {
@@ -581,6 +581,16 @@ export function mergeYearEntries(perMonth: SnapshotEntry[][]): SnapshotEntry[] {
         prev.correct += e.correct;
         prev.total += e.total;
         if (e.nickname) prev.nickname = e.nickname;
+        // #3118 (item 1): last_vote_ts deve refletir o voto mais recente entre
+        // TODOS os meses agregados — os slugs de `perMonth` chegam em ordem
+        // cronológica (ver handleLeaderboardByYear), então sem esta comparação
+        // a 1ª ocorrência (mês mais ANTIGO) nunca era sobrescrita por um mês
+        // mais recente, invertendo o critério #1383 ("voto mais recente vence
+        // empate") especificamente na visão ANUAL — o mensal (rankEntries
+        // direto sobre 1 snapshot) já não tinha esse bug.
+        if (e.last_vote_ts && (!prev.last_vote_ts || e.last_vote_ts > prev.last_vote_ts)) {
+          prev.last_vote_ts = e.last_vote_ts;
+        }
       }
     }
   }
@@ -625,7 +635,7 @@ export async function handleLeaderboardByYear(
   }
   const scores = scoreByMonthEntriesToLeaderboard(entries);
   const cacheControl = year < currentYear
-    ? "public, max-age=2592000, immutable" // ano fechado nunca muda
+    ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // corrente: real-time-ish (igual ao mensal)
   return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr));
 }
@@ -650,7 +660,8 @@ function renderLeaderboardHtml(
   const ranked = rankEntries(scores).slice(0, 50);
 
   const rows = ranked.map((s) => {
-    const display = s.nickname || s.email.replace(/@.*/, "@***");
+    // #3118 (item 11): maskEmail (lib.ts) — consolida com as outras 2 implementações.
+    const display = s.nickname || maskEmail(s.email);
     // #2191: usa htmlEscape (de lib.ts) em vez de replace inline que omitia "'".
     const escaped = htmlEscape(display);
     const trClass = s.rank === 1 ? ' class="leader"' : '';
@@ -812,7 +823,7 @@ export function groupEditionsByMonth(editions: string[]): EditionMonthGroup[] {
  * edição (com `edition`), preservando `?brand=` só pra não-default. */
 export function archiveHref(brand: Brand, year: string, edition?: string): string {
   const base = edition ? `/leaderboard/${year}/arquivo/${edition}` : `/leaderboard/${year}/arquivo`;
-  return brand === "diaria" ? base : `${base}?brand=${brand}`;
+  return withBrandQuery(base, brand); // #3118 item 12
 }
 
 /** Pure render (#2867): lista de edições do ano com link pra página de voto
@@ -895,7 +906,7 @@ export function renderArchiveVoteHtml(
   brand: Brand = "diaria",
 ): Response {
   const info = BRAND_INFO[brand];
-  const brandHidden = brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`;
+  const brandHidden = brandHiddenInput(brand); // #3118 item 12
   const imgA = `/img/img-${edition}-01-eia-A.jpg`;
   const imgB = `/img/img-${edition}-01-eia-B.jpg`;
   const dateLabel = htmlEscape(formatEditionDateForBrand(edition, brand));

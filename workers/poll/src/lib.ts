@@ -96,6 +96,57 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
   return set.includes(edition);
 }
 
+// ── Validação de formato/tamanho de email e edition (#3118 item 3) ─────────
+//
+// `email` e `edition` viram componentes de chave KV (`vote:{edition}:{email}`,
+// `score:{email}`, `counted:{edition}:{email}:*`). Sem validação mínima, um
+// email malformado (sem "@"/domínio, ou >254 chars) ou um `edition` lixo
+// produz uma key KV que pode passar de 512 bytes — Workers KV lança exceção
+// nesse caso (500 possivelmente após incrementos parciais já terem rodado).
+// Pra `brand=clarice`, `valid_editions` nunca é populado (#2018 — fail-open
+// permanente), então sem este gate qualquer `edition` chegava direto no
+// schema de chave sem checagem nenhuma.
+//
+// Deliberadamente permissivo — não é validação RFC 5321 completa (não
+// rejeita TLDs inválidos, IPs literais, etc.) — só recusa o que quebraria o
+// KV ou claramente não tem a forma de um email.
+
+/** #3118 item 3: forma mínima `local@domínio.tld`, sem espaços, ≤254 chars
+ * (limite prático de endereço de email, RFC 3696 errata). */
+export function isValidVoteEmailFormat(email: string): boolean {
+  if (email.length === 0 || email.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+/** #3118 item 3: teto de tamanho pro componente `edition` da chave KV — não
+ * valida formato exato (AAMMDD vs ciclo `YYMM-MM`; isso é responsabilidade de
+ * `isValidEdition`/`editionToMonthSlug` downstream), só limita o comprimento
+ * pra nunca contribuir com uma key KV desproporcional. */
+export function isValidVoteEditionFormat(edition: string): boolean {
+  return edition.length > 0 && edition.length <= 32;
+}
+
+// ── Máscara de email pra exibição pública (#3118 item 11) ──────────────────
+
+/**
+ * Mascara email pra exibição pública (`usuario@***`) — nunca revela o
+ * domínio. Consolida 3 implementações quase-idênticas que existiam
+ * espalhadas em leaderboard-routes.ts (×2) e index.ts (×1) — risco real de
+ * divergirem entre si (uma delas já tinha um fallback pra email sem "@" que
+ * as outras duas não tinham).
+ *
+ * Fallback pra string sem "@" (não deveria ocorrer em produção — email
+ * sempre vem de `score:{email}`/voto validado, e desde #3118 item 3 todo
+ * novo voto passa por `isValidVoteEmailFormat` — mas defensivo pra dados
+ * históricos pré-validação): mascara os 4 primeiros chars + "***" em vez de
+ * devolver a string crua sem máscara nenhuma.
+ */
+export function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at > 0) return `${email.slice(0, at)}@***`;
+  return `${email.slice(0, 4)}***`;
+}
+
 // ── Per-publication-month leaderboard (#1345) ───────────────────────────────
 
 /**
@@ -279,9 +330,14 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
  * Lê `?brand=` e normaliza. Só `clarice` é não-default; qualquer outro valor
  * (ausente, typo, "diaria") cai em `diaria` — back-compat: as chaves KV legadas
  * (sem prefixo) pertencem ao diário.
+ *
+ * #3118 (item 12): derivado de `Object.keys(BRAND_INFO)` em vez de comparar
+ * contra o literal `"clarice"` hardcoded — um 3º brand adicionado a
+ * `BRAND_INFO` fica automaticamente aceito aqui sem editar esta função.
  */
 export function parseBrandParam(raw: string | null): Brand {
-  return raw === "clarice" ? "clarice" : "diaria";
+  const validKeys = Object.keys(BRAND_INFO) as string[];
+  return raw !== null && validKeys.includes(raw) ? (raw as Brand) : "diaria";
 }
 
 /**
@@ -336,6 +392,23 @@ export function formatEditionDateForBrand(edition: string, brand: Brand): string
 }
 
 /**
+ * #3118 (item 2): Cache-Control pra período (mês/ano) de leaderboard já
+ * FECHADO (passado). Antes era `"public, max-age=2592000, immutable"` (30d +
+ * immutable — premissa "mês fechado nunca muda"), mas o arquivo retroativo
+ * (`/leaderboard/{YYYY}/arquivo`, #2867) invalidou essa premissa: um voto
+ * numa edição de maio, feito hoje, altera `score-by-month:2026-05` (e o
+ * agregado anual) mesmo com maio já "fechado". O snapshot server-side
+ * invalida corretamente (getOrComputeSnapshot/invalidateSnapshot), mas
+ * browsers/proxies com `immutable` servem o HTML/JSON antigo por até 30 dias
+ * sem sequer revalidar. `max-age=3600` (1h) é barato o bastante pra não
+ * sobrecarregar o Worker em tráfego normal, mas curto o bastante pra refletir
+ * um voto retroativo em menos de um dia (em vez de até 30).
+ */
+export function closedPeriodCacheControl(): string {
+  return "public, max-age=3600";
+}
+
+/**
  * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).
  * `slug` opcional → `/leaderboard/{slug}`.
  *
@@ -350,7 +423,31 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
     ? slug.slice(0, 4)
     : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
+  return withBrandQuery(base, brand);
+}
+
+// ── Brand default hardcoded em 5 pontos → 2 helpers (#3118 item 12) ────────
+//
+// `leaderboardHref` (acima), `archiveHref` (leaderboard-routes.ts) e o hidden
+// input `<input type="hidden" name="brand">` de `votePageHtml` (index.ts) e
+// `renderArchiveVoteHtml` (leaderboard-routes.ts) repetiam a mesma checagem
+// `brand === "diaria" ? "" : ...` — um 3º brand exigiria editar os 5 pontos
+// manualmente. Consolidados em 2 helpers puros (2 shapes distintas: query
+// string vs. atributo HTML) reusados pelos 4 call-sites restantes.
+
+/** #3118 item 12: anexa `?brand={brand}` a `base` só quando `brand` não é o
+ * default ("diaria" — chaves KV legadas sem prefixo). */
+export function withBrandQuery(base: string, brand: Brand): string {
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
+/** #3118 item 12: `<input type="hidden" name="brand">` só quando `brand` não
+ * é o default — mesmo racional de `withBrandQuery`, forma HTML em vez de
+ * query string. `htmlEscape` por consistência com o resto do arquivo (Brand
+ * é um union fechado — nunca precisaria escapar na prática, mas o padrão do
+ * arquivo é escapar tudo que é interpolado em atributo). */
+export function brandHiddenInput(brand: Brand): string {
+  return brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`;
 }
 
 // ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────

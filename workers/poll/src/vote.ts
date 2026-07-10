@@ -7,10 +7,67 @@ import {
   isUnsubstitutedMergeTag,
   classify403Reason,
   todayAammddBrt, // #3113 item 9: fecha a mesma brecha de edição futura no /vote direto
+  isValidVoteEmailFormat, // #3118 item 3
+  isValidVoteEditionFormat, // #3118 item 3
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
+
+/**
+ * #3118 (item 10): monta a resposta "já votou" — extraído dos dois caminhos
+ * de dedup em `handleVote` (DO e fallback KV), que tinham ~20 linhas quase
+ * idênticas. A duplicação já havia divergido uma vez no passado (#2189
+ * corrigiu só um dos dois ramos — o outro ficou com `nicknameForm` hardcoded
+ * `null` por um tempo, deixando o nickname inacessível pra quem retentava o
+ * link). Consolidar num único helper elimina essa classe de regressão.
+ *
+ * #3118 (item 4): `JSON.parse(existingFromKv)` agora tem guard — um registro
+ * `vote:{edition}:{email}` corrompido no KV lançava uma exceção não-capturada
+ * aqui, derrubando o voto do LEITOR ATUAL com 500 só por causa de um registro
+ * antigo malformado. Corrompido → cai no mesmo fallback `{ choice: "?" }` já
+ * usado quando o KV eventual ainda não propagou o voto do 1º request.
+ */
+export async function buildAlreadyVotedResponse(
+  env: Env,
+  brand: Brand,
+  edition: string,
+  email: string,
+  existingFromKv: string | null,
+): Promise<Response> {
+  // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente
+  // chegou tão rapidamente que o KV eventual ainda não propagou o put do 1º
+  // request. O DO rejeita o 2º corretamente (sem double-vote), mas o KV não
+  // tem o choice ainda para exibir. O "?" é mostrado ao leitor e desaparece
+  // em milissegundos quando o KV propaga — não afeta a integridade do voto.
+  let prev: { choice?: string } = { choice: "?" };
+  if (existingFromKv) {
+    try {
+      prev = JSON.parse(existingFromKv);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_already_voted_parse_error", edition, error: String(e) }));
+      // prev permanece { choice: "?" } — mesmo fallback do KV-ainda-não-propagou.
+    }
+  }
+  // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
+  // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
+  // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
+  // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
+  // votou em MAIS de uma edição arquivada não sabia qual delas.
+  const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice ?? "?"}).`;
+  // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
+  // determinar se o votante ainda precisa do form de nickname — sem isso, um
+  // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
+  // inacessível para sempre.
+  let prevNicknameForm: { email: string; sig: string } | null = null;
+  const prevScoreRaw = await env.POLL.get(`score:${email}`);
+  const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+  if (!prevScoreObj?.nickname) {
+    const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+    prevNicknameForm = { email, sig: prevSig };
+  }
+  return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+}
 
 export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
@@ -33,6 +90,20 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // leaderboard público). Helper testável `isUnsubstitutedMergeTag` em ./lib.
   if (isUnsubstitutedMergeTag(email)) {
     return voteHtmlResponse(votePageHtml("Link inválido — abra o voto pelo botão no email.", false, null, null, null, brand), 400);
+  }
+
+  // #3118 (item 3): email/edition viram componente de chave KV
+  // (`vote:{edition}:{email}`, `score:{email}`, `counted:{edition}:{email}:*`).
+  // Sem uma checagem mínima de forma/tamanho aqui, um email malformado (sem
+  // "@"/domínio, ou >254 chars) ou um edition absurdamente longo produz uma
+  // key KV que pode passar de 512 bytes — o Workers KV lança exceção nesse
+  // caso, possivelmente APÓS incrementos parciais já terem rodado (500 a
+  // meio caminho). Pra brand=clarice, `valid_editions` nunca é populado
+  // (#2018, fail-open permanente) — sem este gate, edition-lixo passava
+  // direto pro schema de chave sem checagem nenhuma. Validação pura e
+  // testável em lib.ts (isValidVoteEmailFormat/isValidVoteEditionFormat).
+  if (!isValidVoteEmailFormat(email) || !isValidVoteEditionFormat(edition)) {
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
   }
 
   if (!["A", "B"].includes(choice)) {
@@ -60,8 +131,24 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // Sustenta o arquivo retroativo (`/leaderboard/{YYYY}/arquivo`, #2867):
   // sem isso, votos em edições fora da janela de 7 dias voltariam 410 mesmo
   // quando a edição foi de fato publicada e tem poll fechado.
-  const correctRaw = await env.POLL.get(`correct:${edition}`);
-  const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
+  //
+  // #3118 (item 13): `voteKey` (usado mais abaixo pro dedup DO/fallback) é
+  // lido AQUI TAMBÉM, em paralelo com os outros 2 gets — os 3 dependem só de
+  // email/edition (params de entrada já validados acima), nenhum depende do
+  // resultado dos outros nem da verificação de sig (pura, crypto — sem KV).
+  // Antes eram 2 gets sequenciais aqui + um 3º get sequencial mais adiante
+  // (após o bloco de sig) — 3 RTTs em série no caminho comum. Paralelizados:
+  // economiza ~2 RTT por voto no caminho feliz (sig válida, edição válida).
+  // Custo aceito: nos caminhos de erro (410 de edição inválida, 403 de sig
+  // inválida), `existingFromKv` acaba sendo lido mesmo sem chegar a ser usado
+  // — 1 GET a mais, desprezível vs. o ganho no caminho comum (maioria dos votos).
+  const voteKey = `vote:${edition}:${email}`;
+  const [correctRaw, validEditionsRaw, existingFromKv] = await Promise.all([
+    env.POLL.get(`correct:${edition}`),
+    env.POLL.get("valid_editions"),
+    env.POLL.get(voteKey),
+  ]);
+  const validSet = parseValidEditions(validEditionsRaw);
   if (!isValidEdition(validSet, edition) && correctRaw === null) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
@@ -108,15 +195,15 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // dois requests concorrentes do mesmo email agora são processados em série
   // dentro do mesmo DO — o 2º vê o estado do 1º e é rejeitado como duplicado.
   //
-  // Compat/migration: o KV `vote:{edition}:{email}` é lido ANTES da chamada ao
-  // DO para verificar votos legados (gravados antes do deploy do DO). Se o KV
-  // tem o voto, passamos o header X-KV-Vote-Exists: "1" para o DO inicializar
-  // seu estado interno como "voted=true" (sincroniza o estado DO com o legado KV).
+  // Compat/migration: o KV `vote:{edition}:{email}` (`voteKey`/`existingFromKv`,
+  // já lidos acima em paralelo com os outros gates — #3118 item 13) é
+  // verificado ANTES da chamada ao DO, pra detectar votos legados (gravados
+  // antes do deploy do DO). Se o KV tem o voto, passamos o header
+  // X-KV-Vote-Exists: "1" para o DO inicializar seu estado interno como
+  // "voted=true" (sincroniza o estado DO com o legado KV).
   //
   // Fallback gracioso: se VOTE_DEDUP não estiver configurado (ex: testes sem
   // binding DO), cai no comportamento anterior (leitura direta do KV).
-  const voteKey = `vote:${edition}:${email}`;
-  const existingFromKv = await env.POLL.get(voteKey);
 
   // P2-13: içar doStub para escopo compartilhado (usado em authorize + /confirm).
   // Evita dois idFromName/get duplicados (um aqui e outro na fase /confirm abaixo).
@@ -231,28 +318,9 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     }
 
     if (!firstVote) {
-      // Duplicado detectado pelo DO — servir página "já votou"
-      // Lê o voto do KV para mostrar a choice anterior (pode ser legacy ou recente).
-      // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente chegou
-      // tão rapidamente que o KV eventual ainda não propagou o put do 1º request.
-      // O DO rejeita o 2º corretamente (sem double-vote), mas o KV não tem o choice
-      // ainda para exibir. O "?" é mostrado ao leitor e desaparece em milissegundos
-      // quando o KV propaga — não afeta a integridade do voto.
-      const prev = existingFromKv ? JSON.parse(existingFromKv) : { choice: "?" };
-      // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
-      // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
-      // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
-      // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
-      // votou em MAIS de uma edição arquivada não sabia qual delas.
-      const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice}).`;
-      let prevNicknameForm: { email: string; sig: string } | null = null;
-      const prevScoreRaw = await env.POLL.get(`score:${email}`);
-      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
-      if (!prevScoreObj?.nickname) {
-        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-        prevNicknameForm = { email, sig: prevSig };
-      }
-      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+      // Duplicado detectado pelo DO — servir página "já votou" (#3118 item 10:
+      // extraído pra buildAlreadyVotedResponse, compartilhado com o fallback KV).
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
     } // fim if (doResp === null || doResp.status >= 500) ... else
@@ -262,28 +330,11 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     // ATENÇÃO: este caminho mantém a race condition original (#2187). Só usado em ambientes
     // sem o binding DO (testes Node sem miniflare). Em produção, VOTE_DEDUP sempre presente.
     if (existingFromKv) {
-      const prev = JSON.parse(existingFromKv);
-      // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
-      // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
-      // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
-      // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
-      // votou em MAIS de uma edição arquivada não sabia qual delas.
-      const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice}).`;
-      // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
-      // determinar se o votante ainda precisa do form de nickname — sem isso, um
-      // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
-      // inacessível para sempre.
-      // Fix #2189 (plausible): leitura KV condicional — só lê score:{email} quando
-      // de fato precisa servir o nickname form. Evita get incondicional pra quem
-      // já tem nickname (resultado não era usado).
-      let prevNicknameForm: { email: string; sig: string } | null = null;
-      const prevScoreRaw = await env.POLL.get(`score:${email}`);
-      const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
-      if (!prevScoreObj?.nickname) {
-        const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-        prevNicknameForm = { email, sig: prevSig };
-      }
-      return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+      // #3118 item 10: mesmo helper do caminho DO acima — antes eram ~20 linhas
+      // quase idênticas que já haviam divergido uma vez no passado (#2189
+      // corrigiu só um dos dois ramos, deixando o outro com nicknameForm
+      // hardcoded null por um tempo).
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
     }
   }
 
