@@ -22,7 +22,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
-import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // P2 fix #2300
+import { intentionalErrorJsonPath } from "./lib/intentional-errors.ts"; // #3222
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -146,37 +146,31 @@ export function checkErroIntencionalRendered(editionDir: string): CheckResult {
 }
 
 /**
- * Pure (#2284): verifica que o frontmatter `intentional_error` existe em
- * `02-reviewed.md` — mesmo que com valores placeholder. `render-erro-intencional.ts`
- * insere o bloco placeholder automaticamente no final do Stage 2; se ausente,
- * o script foi pulado ou houve regressão.
+ * Pure (#2284, #3222 migrado pra JSON): verifica que
+ * `_internal/intentional-error.json` existe — mesmo que com valores
+ * placeholder. `render-erro-intencional.ts` escreve o placeholder
+ * automaticamente no final do Stage 2; se ausente, o script foi pulado ou
+ * houve regressão.
  *
  * Não valida os valores dos campos (essa responsabilidade fica com o lint do
- * Stage 5 `--check intentional-error-flagged` que exige valores reais).
- * Aqui basta confirmar que a chave `intentional_error:` existe no frontmatter,
- * sinalizando que o bloco foi inserido e o editor pode preencher via Drive.
+ * Stage 5 `--check intentional-error-flagged` que exige valores reais). Aqui
+ * basta confirmar que o arquivo existe, sinalizando que o placeholder foi
+ * inserido e o editor pode fornecer os campos antes da publicação.
+ *
+ * (#3222) O nome da função/label é preservado por compat com callers e docs
+ * existentes — o mecanismo migrou de frontmatter YAML pra JSON, mas o
+ * propósito do check (confirmar que o bloco foi inserido) é o mesmo.
  */
 export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResult {
   const reviewed = join(editionDir, "02-reviewed.md");
   if (!existsSync(reviewed)) {
     return { ok: true, label: "reviewed_missing: outro check captura isso" };
   }
-  const md = readFileSync(reviewed, "utf8");
-  // P2 fix #2300: delegate to extractFrontmatter (exported from lint-checks/intentional-error.ts)
-  // instead of re-implementing the fence-pair scan. The previous hand-rolled loop took the first
-  // two `---` fences unconditionally, which would false-negative on `---\n---\n` (empty frontmatter
-  // before the real one). extractFrontmatter skips empty-body pairs and finds the first non-empty.
-  const fmBody = extractFrontmatter(md);
-  if (!fmBody) {
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  if (!existsSync(jsonPath)) {
     return {
       ok: false,
-      label: "intentional_error_frontmatter_missing: 02-reviewed.md sem frontmatter — render-erro-intencional.ts não inseriu o bloco placeholder (#2284)",
-    };
-  }
-  if (!/intentional_error\s*:/i.test(fmBody)) {
-    return {
-      ok: false,
-      label: "intentional_error_frontmatter_missing: frontmatter sem chave intentional_error — render-erro-intencional.ts foi pulado ou houve regressão (#2284)",
+      label: "intentional_error_frontmatter_missing: _internal/intentional-error.json ausente — render-erro-intencional.ts não inseriu o placeholder (#2284/#3222)",
     };
   }
   return { ok: true };

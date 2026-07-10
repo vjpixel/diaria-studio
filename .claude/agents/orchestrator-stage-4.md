@@ -150,7 +150,6 @@ npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md {EDITI
 npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check no-trailing-ellipsis --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check orphan-box-in-gap --md {EDITION_DIR}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
@@ -161,8 +160,6 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 `no-trailing-ellipsis` (#2881): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com seção + linha + trecho final da descrição. Backstop para a sanitização automática que roda no Stage 1 (`enrich-inbox-articles.ts` → `sanitizeTrailingEllipsis`): muitos veículos truncam a própria meta-description com "…"/"..." e isso vaza pro item de RADAR/USE MELHOR/LANÇAMENTOS como se a frase tivesse sido cortada por nós. Diferente do irmão mais antigo `truncated-secondary-item-summary` (#2596, com carve-outs pra idiomas de suspense/fechamento intencional), este check é deliberadamente estrito: qualquer descrição terminando em reticência é flagrada, sem exceção — os dois podem disparar juntos na mesma linha. Ação sugerida ao editor: reescrever a descrição em `02-reviewed.md` antes de aprovar.
 
 `stacked-intro-callouts` (#2729): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com as linhas dos blocos empilhados. Detecta ≥2 blocos `**(🎉|📣)…**` na região de intro (antes do 1º `**DESTAQUE`) — `extractIntroCallout` (#2727) é greedy e funde os 2 blocos num só, vazando `**` internos como texto literal e perdendo o separador "Divulgação" do bloco patrocinado. `inject-champions-callout.ts` (Stage 3) já pula a auto-injeção quando um callout preexiste, mas isso não cobre colagem manual de 2 blocos pelo editor no Drive — daí o lint como backstop. Ação sugerida: mesclar os 2 CTAs num único bloco, ou mover o 2º para uma lacuna entre destaques (box de divulgação).
-
-`orphan-box-in-gap` (#3204): **GATE-BLOCKING** quando exit 1. Backstop pós marcador-agnóstico — `newsletter-parse.ts`'s `locateBoxInGap` (Stage 4 pre-render, via `render-newsletter-html.ts`) já detecta o box de divulgação numa lacuna D1/D2 ou D2/D3 por POSIÇÃO (qualquer bloco `---`-isolado após o próprio destaque), não por um allowlist de marcadores emoji — um marcador novo (📖, 🎥, 🎁, ...) não precisa mais de nenhuma mudança de código. Este lint cobre os 2 jeitos de isso AINDA falhar silenciosamente: (a) um bloco com CARA de box (bold-line inteiro `**...**` OU parágrafo emoji-led) colado DENTRO da seção do destaque anterior, sem `---` isolando-o — não vira box, é absorvido no corpo/why do destaque (caso 260609); (b) uma lacuna com MAIS de 1 bloco `---`-isolado extra — ambíguo, só o 1º vira box, o(s) demais seria(m) descartado(s) em silêncio. Ação sugerida ao editor: isolar o box em sua PRÓPRIA seção, entre o `---` que fecha o destaque anterior e o `---` que abre o próximo — exatamente 1 bloco extra por lacuna. Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash
@@ -291,7 +288,7 @@ Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b
 - Apenas `02-reviewed.md` (newsletter) — `03-social.md` NÃO é tocado para preservar o sentinel do humanizador.
 - Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
 - Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
-- Nunca o destaque do `intentional_error` declarado no frontmatter — preserva o erro intencional proposital.
+- Nunca o destaque do `intentional_error` declarado em `_internal/intentional-error.json` (#3222) — preserva o erro intencional proposital.
 - Substituição scoped ao bloco do destaque correto — evita clobberar erros intencionais de outros destaques com mesmo texto.
 - Claims em `sources: ["social"]` only → logados como `skipped` (precisa correção manual em 03-social.md, seguindo §4d.1 passo 6 para re-humanizar e re-selar sentinel).
 

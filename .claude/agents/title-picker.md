@@ -71,7 +71,7 @@ Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, m
 ## Regras invariáveis
 
 - **Não mudar nada além da poda de títulos.** Especificamente: NÃO alterar:
-  - **Bloco de frontmatter YAML (`---` ... `---` no topo) — preservar BYTE-A-BYTE.** Caso real 260625: agent reescreveu o arquivo com `intentional_error` colapsado numa única linha (`## intentional_error: description: "..." ...`) em vez de YAML multi-linha válido. Isso quebrou o `render-erro-intencional.ts` da edição seguinte ao tentar ler `intentional_error.reveal`. NUNCA reformatar, colapsar ou alterar o bloco YAML entre os `---` iniciais.
+  - **`02-reviewed.md` não tem mais frontmatter YAML (#3222).** Até 260710, `intentional_error` vivia num bloco `---...---` no topo do arquivo e um bug real (260625) fez este agent colapsar o bloco numa única linha (`## intentional_error: description: "..." ...`), quebrando `render-erro-intencional.ts` da edição seguinte. A correção (#3222) moveu esses campos pra `_internal/intentional-error.json` — fora do escopo de edição deste agent (você só recebe/escreve `02-reviewed.md`). Se por algum motivo o MD que você receber tiver um bloco `---...---` no topo (edição legada pré-migração), preserve-o byte-a-byte por precaução, mas isso não deveria mais ocorrer em edições novas.
   - Categoria do destaque (`DESTAQUE N | CATEGORIA`)
   - Corpo dos parágrafos
   - "Por que isso importa:"

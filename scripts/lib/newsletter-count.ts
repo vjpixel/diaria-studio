@@ -117,7 +117,10 @@ const EIA_HEADER_LINE_RE = /^\s*(?:##\s+)?É\s+IA\?\s*$/im;
 /**
  * Strip YAML frontmatter (entre primeiro par de `---` no topo). #1455 bug
  * caught by review: frontmatter intentional_error.location continha
- * \"DESTAQUE 3\" e era contado como destaque, inflando total.
+ * \"DESTAQUE 3\" e era contado como destaque, inflando total. (#3222: intentional_error
+ * migrou pra `_internal/intentional-error.json` — `02-reviewed.md` não deveria mais ter
+ * frontmatter algum, mas o strip é mantido como defesa genérica/barata caso outro campo
+ * volte a usar esse formato no futuro.)
  */
 function stripFrontmatter(md: string): string {
   // Strip APENAS se entre `---` aparecer YAML key:value (heurística: ao

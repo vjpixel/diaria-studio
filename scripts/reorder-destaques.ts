@@ -5,7 +5,9 @@
  * Reordena destaques mid-Stage atomicamente. Propaga reorder pra:
  *   - `_internal/01-approved.json` (highlights[])
  *   - `_internal/01-approved-capped.json` (highlights[])
- *   - `02-reviewed.md` (blocos DESTAQUE 1/2/3 + frontmatter intentional_error.location)
+ *   - `02-reviewed.md` (blocos DESTAQUE 1/2/3)
+ *   - `_internal/intentional-error.json` (campo `location`, #3222 — não mora
+ *     mais no frontmatter de `02-reviewed.md`)
  *   - `_internal/02-d{N}-prompt.md` (rename files)
  *   - `04-d{N}-*.jpg` (rename files — 2x1 e 1x1)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
@@ -43,6 +45,12 @@ import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { parseArgsSimple } from "./lib/cli-args.ts";
+import {
+  loadIntentionalErrorJson,
+  writeIntentionalErrorJson,
+  intentionalErrorJsonPath,
+  type IntentionalErrorJson,
+} from "./lib/intentional-errors.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -131,7 +139,8 @@ export function reorderHighlightsInJson(
  *   3. Renumerar `DESTAQUE N | …` → posição final
  *   4. Re-join
  *
- * Não toca o frontmatter (caller cuida de intentional_error.location).
+ * Não toca `_internal/intentional-error.json` (caller cuida do campo `location`
+ * via `updateIntentionalErrorLocationJson`, #3222).
  */
 export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   // Match cada bloco: header + content until next `---\n\n**DESTAQUE` OR
@@ -177,53 +186,53 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
 }
 
 /**
- * Atualiza frontmatter intentional_error.location quando refere a DESTAQUE N.
- * "DESTAQUE 2, paragrafo 2" + newOrder=[2,1,3] → "DESTAQUE 1, paragrafo 2"
- * (porque o que era D2 agora é D1).
+ * Atualiza `location` do record `_internal/intentional-error.json` quando
+ * refere a DESTAQUE N. "DESTAQUE 2, paragrafo 2" + newOrder=[2,1,3] →
+ * "DESTAQUE 1, paragrafo 2" (porque o que era D2 agora é D1).
  *
- * Review #1606: scope LIMITADO ao frontmatter (entre primeiros pares `---`)
- * pra evitar reescrever menção de DESTAQUE N em body text. Pré-fix, regex
- * com `location:` opcional matcheava body lines também.
+ * (#3222) Migrado de regex sobre frontmatter YAML em `02-reviewed.md` pra
+ * operar direto no campo `location` do JSON estruturado — `_internal/*`
+ * nunca sincroniza com o Drive, então não há mais round-trip de Google Docs
+ * a se preocupar aqui.
+ *
+ * Review #1606 (herdado): só reescreve quando `location` começa literalmente
+ * com "DESTAQUE N" — conservador, evita tocar valores que citam destaque
+ * fora desse padrão.
  */
-export function updateIntentionalErrorLocation(
-  md: string,
+export function updateIntentionalErrorLocationJson(
+  record: IntentionalErrorJson,
   newOrder: number[],
-): string {
-  // Extrair frontmatter — só atua se o MD começa com YAML block.
-  const fmMatch = md.match(/^(---\s*\n)([\s\S]*?)(\n---\s*\n)/);
-  if (!fmMatch) return md;
-  const [, openFence, fmBody, closeFence] = fmMatch;
-  // Substituir DESTAQUE N dentro do frontmatter — exige prefixo `location:`
-  // pra ser conservativo (evitar tocar outros campos).
-  const newFmBody = fmBody.replace(
-    /^(\s+location:\s+["'])DESTAQUE\s+(\d)(\s*,[^"'\n]*)?(["']?\s*)$/m,
-    (full, pre, oldN, rest, post) => {
-      const oldNum = parseInt(oldN, 10);
-      if (![1, 2, 3].includes(oldNum)) return full;
-      const newIdx = newOrder.indexOf(oldNum);
-      if (newIdx < 0) {
-        // #2366: DESTAQUE N referenciado na location não existe no newOrder
-        // (ex: location='DESTAQUE 3' num reorder 3→2 destaques). Sem este
-        // tratamento a location ficaria stale silenciosamente apontando pro
-        // destaque eliminado.
-        //
-        // NÃO limpar pra string vazia: o lint de intentional-error (Stage 5,
-        // scripts/lib/lint-checks/intentional-error.ts) trata location vazia
-        // como campo faltando → "intentional_error_incomplete: campos faltando
-        // — location" → BLOQUEIA publicação. Em vez disso, escrever um sentinel
-        // não-vazio que (a) passa a checagem de completude e (b) sinaliza ao
-        // editor que precisa redeclarar o erro manualmente.
-        console.warn(
-          `[updateIntentionalErrorLocation] location aponta para DESTAQUE ${oldNum} que não existe em newOrder=[${newOrder.join(",")}] — marcando location como REVISAR (destaque removido no reorder)`,
-        );
-        return `${pre}[REVISAR — destaque removido no reorder]${post ?? ""}`;
-      }
-      const newN = newIdx + 1;
-      return `${pre}DESTAQUE ${newN}${rest ?? ""}${post ?? ""}`;
-    },
-  );
-  if (newFmBody === fmBody) return md;
-  return openFence + newFmBody + closeFence + md.slice(fmMatch[0].length);
+): { record: IntentionalErrorJson; changed: boolean } {
+  if (typeof record.location !== "string") return { record, changed: false };
+  const m = record.location.match(/^DESTAQUE\s+(\d)(\s*,.*)?$/);
+  if (!m) return { record, changed: false };
+
+  const oldNum = parseInt(m[1], 10);
+  if (![1, 2, 3].includes(oldNum)) return { record, changed: false };
+  const newIdx = newOrder.indexOf(oldNum);
+  if (newIdx < 0) {
+    // #2366: DESTAQUE N referenciado na location não existe no newOrder
+    // (ex: location='DESTAQUE 3' num reorder 3→2 destaques). Sem este
+    // tratamento a location ficaria stale silenciosamente apontando pro
+    // destaque eliminado.
+    //
+    // NÃO limpar pra string vazia: o lint de intentional-error (Stage 5,
+    // scripts/lib/lint-checks/intentional-error.ts) trata location vazia
+    // como campo faltando → "intentional_error_incomplete: campos faltando
+    // — location" → BLOQUEIA publicação. Em vez disso, escrever um sentinel
+    // não-vazio que (a) passa a checagem de completude e (b) sinaliza ao
+    // editor que precisa redeclarar o erro manualmente.
+    console.warn(
+      `[updateIntentionalErrorLocationJson] location aponta para DESTAQUE ${oldNum} que não existe em newOrder=[${newOrder.join(",")}] — marcando location como REVISAR (destaque removido no reorder)`,
+    );
+    return {
+      record: { ...record, location: "[REVISAR — destaque removido no reorder]" },
+      changed: true,
+    };
+  }
+  const newN = newIdx + 1;
+  const rest = m[2] ?? "";
+  return { record: { ...record, location: `DESTAQUE ${newN}${rest}` }, changed: true };
 }
 
 /**
@@ -411,16 +420,30 @@ function main(): void {
     }
   }
 
-  // 2. 02-reviewed.md (incluindo frontmatter intentional_error)
+  // 2. 02-reviewed.md
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(mdPath)) {
     let md = readFileSync(mdPath, "utf8");
     const before = md;
-    md = updateIntentionalErrorLocation(md, args.newOrder);
     md = reorderDestaquesInMd(md, args.newOrder);
     if (md !== before) {
       if (!args.dryRun) writeFileSync(mdPath, md, "utf8");
       modified.rewritten.push(mdPath);
+    }
+  }
+
+  // 2b. _internal/intentional-error.json (#3222 — location não mora mais no
+  // frontmatter de 02-reviewed.md).
+  const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
+  const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
+  if (intentionalErrorRecord) {
+    const { record: updatedRecord, changed } = updateIntentionalErrorLocationJson(
+      intentionalErrorRecord,
+      args.newOrder,
+    );
+    if (changed) {
+      if (!args.dryRun) writeIntentionalErrorJson(intentionalErrorPath, updatedRecord);
+      modified.rewritten.push(intentionalErrorPath);
     }
   }
 

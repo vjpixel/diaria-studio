@@ -1,14 +1,16 @@
 /**
- * intentional-error-none.test.ts (#2016)
+ * intentional-error-none.test.ts (#2016; migrado pra JSON #3222)
  *
  * Cobertura de regressão para suporte de primeira classe ao scalar
- * `intentional_error: none` no frontmatter do `02-reviewed.md`.
+ * `{ "no_error": true }` em `_internal/intentional-error.json` (antes:
+ * `intentional_error: none` no frontmatter YAML de `02-reviewed.md` — ver
+ * `scripts/render-erro-intencional.ts` pro histórico da migração #3222/#3205).
  *
  * Testa:
- *  1. checkIntentionalError aceita `none` (ok=true, no_error=true)
- *  2. lint intentional-error-flagged passa com `none`
+ *  1. checkIntentionalError aceita `no_error: true` (ok=true, no_error=true)
+ *  2. lint intentional-error-flagged passa com no_error=true
  *  3. sync-intentional-error grava entry com no_error=true
- *  4. list-month-errors agrega edição `none` como "sem erro"
+ *  4. list-month-errors agrega edição no_error como "sem erro"
  *  5. runLints (lint-test-email) Checks 8/9 sempre rodam mesmo com no_error (#2016/#2043)
  */
 
@@ -30,13 +32,25 @@ import {
   checkIntentionalError,
 } from "../scripts/lib/lint-checks/intentional-error.ts";
 import { runLints } from "../scripts/lint-test-email.ts";
-import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
+import type { IntentionalError, IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
+import { intentionalErrorJsonPath } from "../scripts/lib/intentional-errors.ts";
+
+/** #3222: escreve 02-reviewed.md (dummy body) + _internal/intentional-error.json num dir temp. */
+function writeEdition(dir: string, record: IntentionalErrorJson | null): string {
+  const mdPath = join(dir, "02-reviewed.md");
+  writeFileSync(mdPath, "Conteúdo qualquer.\n", "utf8");
+  if (record !== null) {
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(intentionalErrorJsonPath(dir), JSON.stringify(record, null, 2), "utf8");
+  }
+  return mdPath;
+}
 
 // ---------------------------------------------------------------------------
-// 1. checkIntentionalError aceita `intentional_error: none`
+// 1. checkIntentionalError aceita { no_error: true }
 // ---------------------------------------------------------------------------
 
-describe("checkIntentionalError — scalar none (#2016)", () => {
+describe("checkIntentionalError — scalar no_error (#2016, migrado #3222)", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -47,63 +61,46 @@ describe("checkIntentionalError — scalar none (#2016)", () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it("frontmatter com `intentional_error: none` → ok=true, no_error=true", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: none\n---\n\nConteúdo qualquer.\n",
-      "utf8",
-    );
+  it("record com { no_error: true } → ok=true, no_error=true", () => {
+    const mdPath = writeEdition(tmpDir, { no_error: true });
     const result = checkIntentionalError(mdPath);
     assert.equal(result.ok, true, `esperava ok=true, label: ${result.label}`);
     assert.equal(result.no_error, true, "esperava no_error=true");
-    assert.equal(result.parsed, undefined, "sem parsed quando none");
   });
 
-  it("frontmatter com `intentional_error: null` → ok=true, no_error=true (alias)", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: null\n---\n\nConteúdo qualquer.\n",
-      "utf8",
-    );
-    const result = checkIntentionalError(mdPath);
-    assert.equal(result.ok, true);
-    assert.equal(result.no_error, true);
-  });
-
-  it("frontmatter sem intentional_error → ok=false (sem regressão)", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      "---\ntitle: Teste\n---\n\nConteúdo.\n",
-      "utf8",
-    );
+  it("record ausente (_internal/intentional-error.json não existe) → ok=false (sem regressão)", () => {
+    const mdPath = writeEdition(tmpDir, null);
     const result = checkIntentionalError(mdPath);
     assert.equal(result.ok, false);
     assert.equal(result.no_error, undefined);
   });
 
-  it("frontmatter com 4 campos completos → ok=true, no_error undefined (sem regressão)", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      [
-        "---",
-        "intentional_error:",
-        '  description: "Erro teste"',
-        '  location: "DESTAQUE 1"',
-        '  category: "factual"',
-        '  correct_value: "valor correto"',
-        "---",
-        "",
-        "Conteúdo.",
-      ].join("\n"),
-      "utf8",
-    );
+  it("record com os 4 campos obrigatórios (sem reveal) → ok=true, no_error undefined (sem regressão)", () => {
+    // checkIntentionalError exige só 4 campos (description/location/category/correct_value);
+    // `reveal` é opcional aqui (usado por composeRevealText, não bloqueia o lint Stage 5).
+    const mdPath = writeEdition(tmpDir, {
+      description: "Erro teste",
+      location: "DESTAQUE 1",
+      category: "factual",
+      correct_value: "valor correto",
+    });
     const result = checkIntentionalError(mdPath);
     assert.equal(result.ok, true);
-    assert.equal(result.no_error, undefined, "no_error deve ser undefined quando há 4 campos");
+    assert.equal(result.no_error, undefined, "no_error deve ser undefined quando há os 4 campos");
+  });
+
+  it("record com os 5 campos (incl. reveal) → ok=true, parsed.reveal preenchido", () => {
+    const mdPath = writeEdition(tmpDir, {
+      description: "Erro teste",
+      location: "DESTAQUE 1",
+      category: "factual",
+      correct_value: "valor correto",
+      reveal: "Na última edição, X.",
+    });
+    const result = checkIntentionalError(mdPath);
+    assert.equal(result.ok, true);
+    assert.equal(result.no_error, undefined);
+    assert.equal(result.parsed?.reveal, "Na última edição, X.");
   });
 });
 
@@ -132,13 +129,8 @@ describe("lint-newsletter-md.ts --check intentional-error-flagged com none (#201
     );
   }
 
-  it("exit 0 quando frontmatter é `intentional_error: none`", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: none\n---\n\nConteúdo.\n",
-      "utf8",
-    );
+  it("exit 0 quando record é { no_error: true }", () => {
+    const mdPath = writeEdition(tmpDir, { no_error: true });
     const r = runLintCheck(mdPath);
     assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout.trim());
@@ -146,11 +138,10 @@ describe("lint-newsletter-md.ts --check intentional-error-flagged com none (#201
     assert.equal(parsed.no_error, true);
   });
 
-  it("exit 1 quando frontmatter ausente (sem regressão)", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
-    writeFileSync(mdPath, "Conteúdo sem frontmatter.\n", "utf8");
+  it("exit 1 quando _internal/intentional-error.json ausente (sem regressão)", () => {
+    const mdPath = writeEdition(tmpDir, null);
     const r = runLintCheck(mdPath);
-    assert.equal(r.status, 1, "esperava exit 1 quando frontmatter ausente");
+    assert.equal(r.status, 1, "esperava exit 1 quando record ausente");
   });
 });
 
@@ -180,13 +171,8 @@ describe("sync-intentional-error com none (#2016)", () => {
   }
 
   it("grava entry com no_error=true e source=frontmatter_02_reviewed", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
     const jsonlPath = join(tmpDir, "intentional-errors.jsonl");
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: none\n---\n\nConteúdo.\n",
-      "utf8",
-    );
+    const mdPath = writeEdition(tmpDir, { no_error: true });
     const r = runSync(mdPath, "260610", jsonlPath);
     assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
     assert.ok(existsSync(jsonlPath), "jsonl deve ser criado");
@@ -208,7 +194,6 @@ describe("sync-intentional-error com none (#2016)", () => {
     // no_error. Depois adicionou `intentional_error: none` no frontmatter.
     // Re-sync deve sobrescrever, não bloquear (guard de idempotência estava
     // largo demais — só deve ser no-op quando already no_error=true).
-    const mdPath = join(tmpDir, "02-reviewed.md");
     const jsonlPath = join(tmpDir, "intentional-errors.jsonl");
     // Entry pré-existente (sentinela pré-#2016 sem no_error)
     writeFileSync(
@@ -222,11 +207,7 @@ describe("sync-intentional-error com none (#2016)", () => {
       }) + "\n",
       "utf8",
     );
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: none\n---\n\nConteúdo.\n",
-      "utf8",
-    );
+    const mdPath = writeEdition(tmpDir, { no_error: true });
     const r = runSync(mdPath, "260610", jsonlPath);
     assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
     const lines = readFileSync(jsonlPath, "utf8").trim().split("\n").filter(Boolean);
@@ -240,13 +221,8 @@ describe("sync-intentional-error com none (#2016)", () => {
   });
 
   it("idempotente: segunda chamada → added=false, no_error=true no output", () => {
-    const mdPath = join(tmpDir, "02-reviewed.md");
     const jsonlPath = join(tmpDir, "intentional-errors.jsonl");
-    writeFileSync(
-      mdPath,
-      "---\nintentional_error: none\n---\n\nConteúdo.\n",
-      "utf8",
-    );
+    const mdPath = writeEdition(tmpDir, { no_error: true });
     runSync(mdPath, "260610", jsonlPath);
     const r2 = runSync(mdPath, "260610", jsonlPath);
     assert.equal(r2.status, 0);
@@ -259,13 +235,15 @@ describe("sync-intentional-error com none (#2016)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. list-month-errors — extractError retorna no_error=true para `none`
-// (teste direto sem subprocess para evitar problemas de cwd/tsx resolution)
+// 4. list-month-errors — extractError retorna no_error=true para no_error
+// (#3222: importa a função REAL exportada de list-month-errors.ts, em vez de
+// reproduzir a lógica localmente — elimina risco de drift entre teste e
+// implementação)
 // ---------------------------------------------------------------------------
 
-import { checkIntentionalError as checkIE } from "../scripts/lib/lint-checks/intentional-error.ts";
+import { extractError } from "../scripts/list-month-errors.ts";
 
-describe("list-month-errors extractError logic com none (#2016) — direto", () => {
+describe("list-month-errors extractError (#2016, migrado #3222) — direto", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -276,39 +254,11 @@ describe("list-month-errors extractError logic com none (#2016) — direto", () 
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  /** Reproduz a lógica de extractError de list-month-errors.ts */
-  function extractErrorLogic(editionDir: string, edition: string) {
-    const mdPath = join(editionDir, "02-reviewed.md");
-    if (!existsSync(mdPath)) {
-      return { edition, declared: false, reason: "02-reviewed.md ausente" };
-    }
-    const result = checkIE(mdPath);
-    if (result.ok && result.no_error) {
-      return { edition, declared: true, no_error: true };
-    }
-    if (!result.ok) {
-      return { edition, declared: false, reason: result.label };
-    }
-    const p = result.parsed!;
-    return {
-      edition,
-      declared: true,
-      category: p.category,
-      location: p.location,
-      description: p.description,
-      correct_value: p.correct_value,
-    };
-  }
-
-  it("edição none retorna declared=true, no_error=true, sem category", () => {
+  it("edição no_error retorna declared=true, no_error=true, sem category", () => {
     const editionDir = join(tmpDir, "260610");
     mkdirSync(editionDir, { recursive: true });
-    writeFileSync(
-      join(editionDir, "02-reviewed.md"),
-      "---\nintentional_error: none\n---\n\nConteúdo.\n",
-      "utf8",
-    );
-    const result = extractErrorLogic(editionDir, "260610");
+    writeEdition(editionDir, { no_error: true });
+    const result = extractError(editionDir, "260610");
     assert.equal(result.declared, true);
     assert.equal(result.no_error, true);
     assert.equal(result.category, undefined);
@@ -317,35 +267,27 @@ describe("list-month-errors extractError logic com none (#2016) — direto", () 
   it("edição com erro real retorna declared=true, sem no_error (sem regressão)", () => {
     const editionDir = join(tmpDir, "260609");
     mkdirSync(editionDir, { recursive: true });
-    writeFileSync(
-      join(editionDir, "02-reviewed.md"),
-      [
-        "---",
-        "intentional_error:",
-        '  description: "Erro factual teste"',
-        '  location: "DESTAQUE 1"',
-        '  category: "factual"',
-        '  correct_value: "valor correto"',
-        "---",
-        "",
-        "Conteúdo.",
-      ].join("\n"),
-      "utf8",
-    );
-    const result = extractErrorLogic(editionDir, "260609");
+    writeEdition(editionDir, {
+      description: "Erro factual teste",
+      location: "DESTAQUE 1",
+      category: "factual",
+      correct_value: "valor correto",
+    });
+    const result = extractError(editionDir, "260609");
     assert.equal(result.declared, true);
     assert.equal(result.no_error, undefined);
     assert.equal(result.category, "factual");
   });
 
-  it("formatMarkdown output contém 'sem erro intencional' para edição none", () => {
-    // Test formatMarkdown indirectamente via list-month-errors subprocess
-    // usando projectRoot como cwd para tsx funcionar
-    const projectRoot = resolve(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "list-month-errors.ts");
-    // Injetar DATA_DIR via env não é suportado — testamos via extractError acima.
-    // Aqui validamos o formatMarkdown output com subprocess no project root,
-    // mas como não podemos criar editions em data/ real, testamos o texto inline.
+  it("edição sem _internal/intentional-error.json e sem entry no JSONL → declared=false", () => {
+    const editionDir = join(tmpDir, "260608");
+    mkdirSync(editionDir, { recursive: true });
+    writeEdition(editionDir, null);
+    const result = extractError(editionDir, "260608");
+    assert.equal(result.declared, false);
+  });
+
+  it("formatMarkdown output contém 'sem erro intencional' para edição no_error", () => {
     const noError = { edition: "260610", declared: true, no_error: true };
     // Reproduz a lógica de formatMarkdown
     const lines: string[] = [];
@@ -357,8 +299,6 @@ describe("list-month-errors extractError logic com none (#2016) — direto", () 
     assert.ok(md.includes("sem erro intencional"), "deve mencionar 'sem erro intencional'");
     assert.ok(md.includes("não há erro"), "deve mencionar 'não há erro'");
     assert.ok(!md.includes("Categoria"), "NÃO deve listar como categoria de erro");
-    // supress unused import warning
-    assert.ok(scriptPath.includes("list-month-errors"), "path ok");
   });
 });
 

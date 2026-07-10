@@ -10,8 +10,11 @@
  *   npx tsx scripts/list-month-errors.ts --month YYMM
  *   npx tsx scripts/list-month-errors.ts --month YYMM --json (output estruturado)
  *
- * Lista edições no mês (`data/editions/{YYMM}*`), extrai frontmatter
- * `intentional_error` de cada `02-reviewed.md`, agrega.
+ * Lista edições no mês (`data/editions/{YYMM}*`), extrai `intentional_error`
+ * de `_internal/intentional-error.json` de cada edição (#3222 — migrado do
+ * antigo frontmatter YAML de `02-reviewed.md`; fallback pra
+ * `data/intentional-errors.jsonl` em edições publicadas antes da migração),
+ * agrega.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -21,7 +24,7 @@ import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
 import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
-interface MonthError {
+export interface MonthError {
   edition: string;
   declared: boolean;
   /** #2016: true when editor explicitly declared no intentional error */
@@ -44,17 +47,49 @@ function listEditionsForMonth(monthYYMM: string): string[] {
     .sort();
 }
 
-function extractError(editionDir: string, edition: string): MonthError {
+/**
+ * #3222: fallback pra `data/intentional-errors.jsonl` quando não há
+ * `_internal/intentional-error.json` legível pra edição. Cobre 2 casos:
+ *   1. MD ausente (e.g. post-archive) — comportamento pré-#3222 preservado.
+ *   2. Edições PUBLICADAS ANTES da migração #3222 — a estrutura vivia em
+ *      frontmatter YAML de `02-reviewed.md` (não em `_internal/*.json`), mas
+ *      `sync-intentional-error.ts` já tinha sincronizado a entry pro JSONL na
+ *      época. Sem este fallback, `/diaria-mes-erros` reportaria "sem
+ *      declaração" pra todo mês anterior à migração mesmo com o dado intacto
+ *      no JSONL — a estrutura YAML original não é mais lida (é exatamente o
+ *      código fonte da corrupção #3205 que foi removido), mas o JSONL sincronizado
+ *      continua sendo a fonte de fallback correta.
+ */
+function fallbackFromJsonl(edition: string, reason: string): MonthError {
+  const jsonlPath = resolve(process.cwd(), "data/intentional-errors.jsonl");
+  const entries = loadIntentionalErrors(jsonlPath);
+  const entry = entries.find((e) => e.edition === edition);
+  if (!entry) return { edition, declared: false, reason };
+  if (entry.no_error) return { edition, declared: true, no_error: true };
+  if (!entry.is_feature) return { edition, declared: false, reason };
+  // Formata location no mesmo estilo do path não-fallback ("DESTAQUE N"), em
+  // vez do dígito cru — a coluna "Localização" mistura os dois no output.
+  const location =
+    entry.destaque === undefined
+      ? undefined
+      : /^\d+$/.test(String(entry.destaque))
+        ? `DESTAQUE ${entry.destaque}`
+        : String(entry.destaque);
+  return {
+    edition,
+    declared: true,
+    category: entry.error_type,
+    location,
+    description: entry.detail,
+    correct_value: entry.correct_value,
+  };
+}
+
+export function extractError(editionDir: string, edition: string): MonthError {
   const mdPath = join(editionDir, "02-reviewed.md");
   if (!existsSync(mdPath)) {
     // #2016: fallback to JSONL when MD is absent (e.g., post-archive)
-    const jsonlPath = resolve(process.cwd(), "data/intentional-errors.jsonl");
-    const entries = loadIntentionalErrors(jsonlPath);
-    const entry = entries.find((e) => e.edition === edition);
-    if (entry?.no_error) {
-      return { edition, declared: true, no_error: true };
-    }
-    return { edition, declared: false, reason: "02-reviewed.md ausente" };
+    return fallbackFromJsonl(edition, "02-reviewed.md ausente");
   }
   const result = checkIntentionalError(mdPath);
   // #2016: `intentional_error: none` — editor declared no error this edition.
@@ -62,7 +97,10 @@ function extractError(editionDir: string, edition: string): MonthError {
     return { edition, declared: true, no_error: true };
   }
   if (!result.ok) {
-    return { edition, declared: false, reason: result.label };
+    // #3222: sem `_internal/intentional-error.json` legível — tenta o JSONL
+    // antes de declarar "sem declaração" (cobre edições pré-migração cuja
+    // estrutura só existia no antigo frontmatter YAML, já sincronizado).
+    return fallbackFromJsonl(edition, result.label ?? "intentional_error indisponível");
   }
   const p = result.parsed!;
   return {

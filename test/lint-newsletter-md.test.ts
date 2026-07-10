@@ -1103,25 +1103,30 @@ describe("checkEiaAnswer (#744)", () => {
   });
 });
 
-describe("checkIntentionalError (#754)", () => {
+describe("checkIntentionalError (#754, migrado pra JSON #3222)", () => {
   const TMP = "test/_tmp_intentional_error";
 
-  it("ok com frontmatter completo (4 campos)", () => {
-    const dir = join(TMP, "complete");
+  /** #3222: escreve 02-reviewed.md (dummy, só precisa existir) + o JSON sibling. */
+  function writeEdition(dir: string, record: Record<string, unknown> | null): string {
     mkdirSync(dir, { recursive: true });
     const mdPath = join(dir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      `---
-intentional_error:
-  description: "OpenAI no lugar de Anthropic"
-  location: "DESTAQUE 2, parágrafo 2"
-  category: "attribution"
-  correct_value: "Anthropic"
----
+    writeFileSync(mdPath, "Body.");
+    if (record) {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "intentional-error.json"), JSON.stringify(record));
+    }
+    return mdPath;
+  }
 
-Body.`,
-    );
+  it("ok com _internal/intentional-error.json completo (4 campos)", () => {
+    const dir = join(TMP, "complete");
+    const mdPath = writeEdition(dir, {
+      description: "OpenAI no lugar de Anthropic",
+      location: "DESTAQUE 2, parágrafo 2",
+      category: "attribution",
+      correct_value: "Anthropic",
+    });
     const r = checkIntentionalError(mdPath);
     assert.equal(r.ok, true);
     assert.equal(r.parsed?.description, "OpenAI no lugar de Anthropic");
@@ -1130,54 +1135,27 @@ Body.`,
     rmSync(dir, { recursive: true });
   });
 
-  it("falha quando arquivo não existe", () => {
+  it("falha quando arquivo md não existe", () => {
     const r = checkIntentionalError("test/_does_not_exist/02-reviewed.md");
     assert.equal(r.ok, false);
     assert.match(r.label!, /not found/);
   });
 
-  it("falha quando frontmatter ausente", () => {
+  it("falha quando _internal/intentional-error.json ausente", () => {
     const dir = join(TMP, "no_fm");
-    mkdirSync(dir, { recursive: true });
-    const mdPath = join(dir, "02-reviewed.md");
-    writeFileSync(mdPath, "DESTAQUE 1 | TESTE\nBody sem fm.");
+    const mdPath = writeEdition(dir, null);
     const r = checkIntentionalError(mdPath);
     assert.equal(r.ok, false);
-    assert.match(r.label!, /sem frontmatter/);
-    rmSync(dir, { recursive: true });
-  });
-
-  it("falha quando frontmatter sem chave intentional_error", () => {
-    const dir = join(TMP, "fm_no_key");
-    mkdirSync(dir, { recursive: true });
-    const mdPath = join(dir, "02-reviewed.md");
-    writeFileSync(mdPath, `---
-eia_answer:
-  A: real
-  B: ia
----
-
-Body.`);
-    const r = checkIntentionalError(mdPath);
-    assert.equal(r.ok, false);
-    assert.match(r.label!, /sem chave intentional_error/);
+    assert.match(r.label!, /intentional_error_missing/);
     rmSync(dir, { recursive: true });
   });
 
   it("falha quando campos obrigatórios faltam", () => {
     const dir = join(TMP, "incomplete");
-    mkdirSync(dir, { recursive: true });
-    const mdPath = join(dir, "02-reviewed.md");
-    writeFileSync(
-      mdPath,
-      `---
-intentional_error:
-  description: "x"
-  category: "factual"
----
-
-Body.`,
-    );
+    const mdPath = writeEdition(dir, {
+      description: "x",
+      category: "factual",
+    });
     const r = checkIntentionalError(mdPath);
     assert.equal(r.ok, false);
     assert.match(r.label!, /campos faltando/);
@@ -1186,8 +1164,13 @@ Body.`,
     rmSync(dir, { recursive: true });
   });
 
-  // #1378: frontmatter pós-TÍTULO bloco deve ser aceito
-  it("aceita frontmatter posicionado APÓS bloco TÍTULO/SUBTÍTULO — #1378", () => {
+  // #1378 (histórico): frontmatter pós-TÍTULO bloco precisava ser aceito porque
+  // insert-titulo-subtitulo.ts injeta um bloco TÍTULO no topo do MD antes do
+  // frontmatter YAML. #3222: intentional_error não vive mais no MD — o JSON é
+  // um arquivo separado, então a posição de blocos dentro de 02-reviewed.md é
+  // irrelevante pra este check agora. Mantido como regressão de que o TÍTULO
+  // no corpo não interfere na leitura do JSON sibling.
+  it("#1378/#3222: bloco TÍTULO/SUBTÍTULO no corpo não interfere na leitura de _internal/intentional-error.json", () => {
     const dir = join(TMP, "fm_after_titulo");
     mkdirSync(dir, { recursive: true });
     const mdPath = join(dir, "02-reviewed.md");
@@ -1203,15 +1186,18 @@ Título D2 | Título D3
 
 ---
 
----
-intentional_error:
-  description: "Numero 10.000 quando real é 5.000"
-  location: "DESTAQUE 2"
-  category: "numerico"
-  correct_value: "5.000"
----
-
 Body principal.`,
+    );
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(
+      join(internalDir, "intentional-error.json"),
+      JSON.stringify({
+        description: "Numero 10.000 quando real é 5.000",
+        location: "DESTAQUE 2",
+        category: "numerico",
+        correct_value: "5.000",
+      }),
     );
     const r = checkIntentionalError(mdPath);
     assert.equal(r.ok, true, `Expected ok=true, got: ${r.label}`);

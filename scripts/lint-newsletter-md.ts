@@ -38,7 +38,6 @@ import {
 import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
 import { lintCalloutPlacement, lintStackedIntroCallouts } from "./lib/lint-checks/callout-placement.ts";
-import { findOrphanBoxWarnings } from "./lib/newsletter-parse.ts"; // #3204
 import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
 import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
 import { checkCoverageLine } from "./lib/lint-checks/coverage-line-format.ts";
@@ -135,7 +134,6 @@ export {
 export {
   checkIntentionalError,
   checkIntentionalErrorSafety,
-  extractFrontmatter,
   type IntentionalErrorCheckResult,
   type IntentionalErrorSafetyResult,
 } from "./lib/lint-checks/intentional-error.ts";
@@ -191,7 +189,8 @@ export {
 // #1737 item 2: checkSectionItemFormat (#909) → lint-checks/section-item-format.ts. Re-export no topo.
 
 // #1737 item 2: checkEiaAnswer (#744/#927) → lint-checks/eia-answer-check.ts;
-// checkIntentionalError (#754) + extractFrontmatter → lint-checks/intentional-error.ts.
+// checkIntentionalError (#754) → lint-checks/intentional-error.ts (migrado pra
+// ler _internal/intentional-error.json em vez de frontmatter YAML, #3222).
 // Re-export no topo do arquivo pra back-compat.
 
 /**
@@ -361,9 +360,10 @@ function main(): void {
     return;
   }
 
-  // Modo --check intentional-error-flagged (#754) — verifica que 02-reviewed.md
-  // tem intentional_error declarado no frontmatter (concurso mensal de erro
-  // proposital). Roda no Stage 4 (publish-newsletter) antes de criar draft.
+  // Modo --check intentional-error-flagged (#754) — verifica que a edição tem
+  // intentional_error declarado em `_internal/intentional-error.json` (#3222 —
+  // migrado de frontmatter YAML; concurso mensal de erro proposital). Roda no
+  // Stage 4 (publish-newsletter) antes de criar draft.
   if (args.check === "intentional-error-flagged") {
     if (!args.md) {
       console.error(
@@ -377,15 +377,16 @@ function main(): void {
     if (!result.ok) {
       console.error(`\n❌ ${result.label}`);
       console.error(
-        `\nEdite ${args.md} e adicione o frontmatter intentional_error com 4 campos:`,
+        `\nCrie/edite _internal/intentional-error.json (sibling de ${args.md}) com os campos:`,
       );
-      console.error(`---
-intentional_error:
-  description: "o que o assinante deve identificar"
-  location: "DESTAQUE 2, parágrafo 2, primeira frase"
-  category: "factual"   # factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic
-  correct_value: "valor correto"
----`);
+      console.error(`{
+  "description": "o que o assinante deve identificar",
+  "location": "DESTAQUE 2, parágrafo 2, primeira frase",
+  "category": "factual",
+  "correct_value": "valor correto",
+  "reveal": "Na última edição, escrevi X onde o correto é Y."
+}
+// category: factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic`);
       process.exit(1);
     }
     // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de desinformação
@@ -955,47 +956,6 @@ intentional_error:
     return;
   }
 
-  // Modo --check orphan-box-in-gap (#3204) — backstop pós marcador-agnóstico:
-  // (a) callout com forma de box (bold-line inteiro OU emoji-led) colado
-  // DENTRO de uma seção de destaque, sem `---` isolando-o (reusa
-  // lintCalloutPlacement, agora marcador-agnóstico); (b) lacuna com MAIS de
-  // 1 bloco extra `---`-isolado — ambíguo, `locateBoxInGap` descartaria os
-  // excedentes silenciosamente (findOrphanBoxWarnings).
-  if (args.check === "orphan-box-in-gap") {
-    if (!args.md) {
-      console.error("Uso: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>");
-      process.exit(2);
-    }
-    const mdPath = resolve(ROOT, args.md);
-    if (!existsSync(mdPath)) {
-      console.error(`Arquivo não existe: ${mdPath}`);
-      process.exit(2);
-    }
-    const md = readFileSync(mdPath, "utf8");
-    const placement = lintCalloutPlacement(md);
-    const orphanGaps = findOrphanBoxWarnings(md);
-    const ok = placement.ok && orphanGaps.length === 0;
-    console.log(JSON.stringify({ ok, calloutPlacement: placement, orphanGaps }, null, 2));
-    if (!ok) {
-      console.error(
-        `\n❌ possível box de divulgação órfão (marcador não reconhecido NÃO é mais o problema — a extração é por posição; o problema é ESTRUTURA ambígua):`,
-      );
-      for (const m of placement.matches) {
-        console.error(
-          `  linha ${m.line}: "${m.context}" — parece um box colado DENTRO de uma seção de destaque, sem \`---\` isolando-o.`,
-        );
-      }
-      for (const w of orphanGaps) {
-        console.error(`  ${w.reason}`);
-      }
-      console.error(
-        `\n   Fix: isole o box em sua PRÓPRIA seção, entre o \`---\` que fecha o destaque anterior e o \`---\` que abre o próximo — exatamente 1 bloco extra por lacuna.`,
-      );
-      process.exit(1);
-    }
-    return;
-  }
-
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
@@ -1018,8 +978,7 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>",
     );
     process.exit(2);
   }

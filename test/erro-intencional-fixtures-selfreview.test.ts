@@ -1,51 +1,57 @@
 /**
- * test/render-erro-intencional.test.ts (#911)
+ * test/erro-intencional-fixtures-selfreview.test.ts (#911)
  *
- * Cobre helpers puros + integração CLI da seção ERRO INTENCIONAL na
- * newsletter. Concurso mensal "Ache o erro" — newsletter revela gabarito
- * da edição anterior + chama leitor pra acertar erro da atual.
+ * Fixtures de regressão obrigatórias da reescrita #2419 + self-review #2431
+ * + #2438. Cobre composeRevealText/resolvePreviousError/frontmatterToEntry
+ * (JSONL, puro, inalterado pela migração) e o guard de reveal do Stage 4
+ * (checkNarrativeNotGenericPlaceholder), que agora lê o record estruturado de
+ * `_internal/intentional-error.json` em vez de frontmatter YAML em
+ * `02-reviewed.md` (#3222 — ver `scripts/render-erro-intencional.ts` pro
+ * histórico da corrupção #3205 que motivou a migração).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import {
   findPreviousIntentionalError,
   composeRevealText,
-  renderSection,
-  insertOrUpdateSection,
-  currentHasIntentionalErrorFlag,
   boldQuotedStrings,
   extractIntentionalErrorFromMd,
   extractNarrativeFromFrontmatter,
   extractRevealFromFrontmatter,
   extractCorrectValueFromFrontmatter,
-  findPreviousIntentionalErrorFromMd,
-  narrativeHasCorrection,
   narrativeIsCatalogShaped,
   resolvePreviousError,
-  ensureIntentionalErrorFrontmatter,
 } from "../scripts/render-erro-intencional.ts";
-import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
+import type { IntentionalError, IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 import {
   frontmatterToEntry,
   parseIntentionalErrorsJsonl,
 } from "../scripts/lib/intentional-errors.ts";
-
-
 import { narrativeIsGenericPlaceholder } from "../scripts/render-erro-intencional.ts";
 import {
   checkNarrativeNotGenericPlaceholder,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 
-import {
-  extractFrontmatter,
-  checkIntentionalError,
-} from "../scripts/lib/lint-checks/intentional-error.ts";
+/** #3222: escreve `02-reviewed.md` (body/prosa) + `_internal/intentional-error.json`
+ * (record estruturado) num dir temp — substitui o antigo padrão de embutir
+ * frontmatter YAML no próprio 02-reviewed.md. */
+function writeEdition(
+  body: string,
+  record: IntentionalErrorJson | null = null,
+): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "erro-intencional-fixture-"));
+  writeFileSync(join(dir, "02-reviewed.md"), body, "utf8");
+  if (record) {
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "intentional-error.json"), JSON.stringify(record, null, 2), "utf8");
+  }
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => {
   /**
@@ -113,14 +119,6 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
    */
   it("Fixture 2 (bugs #2, #4, #5, #6, #8, #9, #10): description catálogo + corpo genérico → fallback seguro, sem leak", () => {
     const md = [
-      "---",
-      "intentional_error:",
-      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "Perplexity ou Copilot"',
-      "---",
-      "",
       "**ERRO INTENCIONAL**",
       "",
       "Na última edição, foo.",
@@ -128,9 +126,15 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
       "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail.",
       "",
     ].join("\n");
+    const record: IntentionalErrorJson = {
+      description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "Perplexity ou Copilot",
+    };
 
     // extractIntentionalErrorFromMd deve retornar null (bug #5/#9 fix)
-    const extracted = extractIntentionalErrorFromMd(md);
+    const extracted = extractIntentionalErrorFromMd(md, record);
     assert.equal(extracted, null, "description catálogo + corpo genérico → null (bug #5 fix)");
 
     // composeRevealText com entry JSONL que tem detail=description (catálogo):
@@ -153,40 +157,34 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
     // Bug #2: stage-4.ts checkNarrativeNotGenericPlaceholder não detectava catalog-shaped.
     // Caso real 260617: "Nessa edição, DESTAQUE 2 lista o Spotify..." passava sem violação.
     // Fix #2419: checkNarrativeNotGenericPlaceholder detecta catalog-shaped e emite warning.
-    const dir = mkdtempSync(join(tmpdir(), "lint-catalog-2419-"));
+    const { dir, cleanup } = writeEdition(
+      [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, foo.",
+        "",
+        "Nessa edição, DESTAQUE 2 lista o Spotify como assistente de IA.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "X",
+      ].join("\n"),
+      {
+        description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+        location: "DESTAQUE 2",
+        category: "factual",
+        correct_value: "Perplexity ou Copilot",
+      },
+    );
     try {
-      const mdPath = join(dir, "02-reviewed.md");
-      writeFileSync(
-        mdPath,
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "Nessa edição, DESTAQUE 2 lista o Spotify como assistente de IA.",
-          "",
-          "---",
-          "",
-          "**ASSINE**",
-          "X",
-        ].join("\n"),
-        "utf8",
-      );
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       assert.equal(violations.length, 1, "deve emitir 1 violation para corpo catalog-shaped (bug #2 fix)");
       assert.equal(violations[0].severity, "warning");
       // Mensagem deve apontar para o campo `reveal`
       assert.match(violations[0].message, /reveal/, "mensagem deve apontar para campo reveal");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
@@ -219,37 +217,35 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
   });
 
   /**
-   * Fixture 4 (bug #2417): frontmatter empurrado para ~linha 40 (após bloco TÍTULO/SUBTÍTULO)
-   * → campo `reveal` é lido corretamente (scanLines=60, #2417).
+   * Fixture 4 (bug #2417, obsoleto pós-#3222): o bug original era sobre onde o
+   * frontmatter YAML podia aparecer DENTRO do texto do MD (scanLines=60, pra
+   * cobrir o caso de `insert-titulo-subtitulo.ts` empurrar o bloco além da linha
+   * 30). Esse conceito de "posição no MD" não existe mais — `reveal` vem direto
+   * de `_internal/intentional-error.json`, um arquivo JSON separado, então a
+   * extração é independente de qualquer coisa que exista no corpo do MD (por
+   * maior/mais deslocado que seja). Mantido em forma simplificada só pra
+   * confirmar que os extractors ignoram completamente o conteúdo do MD.
    */
-  it("Fixture 4 (#2417): frontmatter em linha ~40 (após TÍTULO/SUBTÍTULO) → reveal lido via scanLines=60", () => {
-    // Simula o caso: insert-titulo-subtitulo.ts empurra o frontmatter além da linha 30.
+  it("Fixture 4 (#2417/#3222): reveal lido do record independente do tamanho/posição do MD", () => {
     const headerLines = Array.from({ length: 30 }, (_, i) => `Linha de conteúdo ${i + 1}.`);
-    const md = [
-      ...headerLines,
-      "---",
-      "intentional_error:",
-      '  description: "DESTAQUE 2 lista X"',
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "Y"',
-      '  reveal: "Na última edição, escrevi X onde o correto é Y."',
-      "---",
-      "",
-      "Corpo.",
-    ].join("\n");
+    const md = [...headerLines, "", "Corpo."].join("\n");
+    const record: IntentionalErrorJson = {
+      description: "DESTAQUE 2 lista X",
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "Y",
+      reveal: "Na última edição, escrevi X onde o correto é Y.",
+    };
 
-    // extractNarrativeFromFrontmatter deve encontrar o campo reveal (scanLines=60)
-    const narrative = extractNarrativeFromFrontmatter(md);
-    assert.equal(
-      narrative,
-      "Na última edição, escrevi X onde o correto é Y.",
-      "extractNarrativeFromFrontmatter deve ler reveal em frontmatter após linha 30 (scanLines=60)",
-    );
+    const narrative = extractNarrativeFromFrontmatter(record);
+    assert.equal(narrative, "Na última edição, escrevi X onde o correto é Y.");
 
-    // extractRevealFromFrontmatter também deve encontrar
-    const reveal = extractRevealFromFrontmatter(md);
+    const reveal = extractRevealFromFrontmatter(record);
     assert.equal(reveal, "Na última edição, escrevi X onde o correto é Y.");
+
+    // extractIntentionalErrorFromMd também deve achar via o record, independente do MD longo
+    const extracted = extractIntentionalErrorFromMd(md, record);
+    assert.equal(extracted?.reveal, "Na última edição, escrevi X onde o correto é Y.");
 
     // composeRevealText com o `reveal` propagado deve retornar verbatim
     const prev: IntentionalError = {
@@ -264,46 +260,42 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
 
   /**
    * Fixture 5 (bug #2 — stage-4 lint catalog-shaped): quando o campo `reveal` do
-   * frontmatter aponta para narrative que seria catalog-shaped (edge case) →
-   * stage-4 lint emite warning apontando para o campo correto.
+   * record é catalog-shaped (edge case: editor copiou description pra dentro
+   * de reveal por engano) → stage-4 lint emite warning apontando para o campo
+   * correto. (#3222: não existe mais campo `narrative` legado separado no JSON —
+   * só `reveal` — então este teste cobre reveal catalog-shaped diretamente.)
    */
-  it("Fixture 5 (bug #2 fix): stage-4 lint detecta narrative catalog-shaped no frontmatter narrative legado → warning com ref ao campo reveal", () => {
-    const dir = mkdtempSync(join(tmpdir(), "lint-fm-catalog-2419-"));
+  it("Fixture 5 (bug #2 fix): stage-4 lint detecta reveal catalog-shaped no record → warning com ref ao campo reveal", () => {
+    const { dir, cleanup } = writeEdition(
+      [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, foo.",
+        "",
+        "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "X",
+      ].join("\n"),
+      {
+        description: "DESTAQUE 3: empresa X aparece como Y",
+        reveal: "DESTAQUE 3: empresa X aparece como Y",
+        location: "DESTAQUE 3",
+        category: "ortografico",
+        correct_value: "Y",
+      },
+    );
     try {
-      const mdPath = join(dir, "02-reviewed.md");
-      writeFileSync(
-        mdPath,
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 3: empresa X aparece como Y"',
-          '  narrative: "DESTAQUE 3: empresa X aparece como Y"',
-          '  location: "DESTAQUE 3"',
-          '  category: "ortografico"',
-          '  correct_value: "Y"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
-          "",
-          "---",
-          "",
-          "**ASSINE**",
-          "X",
-        ].join("\n"),
-        "utf8",
-      );
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       // Deve emitir warning (não verde silencioso)
-      assert.equal(violations.length, 1, "deve detectar narrative catalog-shaped (bug #2 fix)");
+      assert.equal(violations.length, 1, "deve detectar reveal catalog-shaped (bug #2 fix)");
       assert.equal(violations[0].severity, "warning");
       // Mensagem deve apontar para campo `reveal` (#2419)
       assert.match(violations[0].message, /reveal/, "mensagem deve referenciar campo reveal");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
@@ -331,28 +323,24 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
     assert.doesNotMatch(text, /o correto é 1998\..*o correto é/, "não deve duplicar correção");
   });
 
-  it("Fixture 6b: campo `reveal` lido do frontmatter via extractNarrativeFromFrontmatter (prioridade sobre narrative legado)", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      '  description: "Catalog description"',
-      '  narrative: "escrevi algo legado"',
-      '  reveal: "Na última edição, escrevi que X. O correto é Y."',
-      '  correct_value: "Y"',
-      "---",
-      "",
-      "Corpo.",
-    ].join("\n");
-    // extractNarrativeFromFrontmatter deve preferir `reveal` sobre `narrative`
-    const narrative = extractNarrativeFromFrontmatter(md);
+  it("Fixture 6b: campo `reveal` lido do record via extractNarrativeFromFrontmatter/extractRevealFromFrontmatter", () => {
+    // #3222: o record JSON não tem mais um campo `narrative` legado separado —
+    // só `reveal`. Este teste (antes sobre "prioridade reveal > narrative")
+    // agora confirma só que ambos extractors leem `reveal` do record, ignorando
+    // `description` (catálogo).
+    const record: IntentionalErrorJson = {
+      description: "Catalog description",
+      reveal: "Na última edição, escrevi que X. O correto é Y.",
+      correct_value: "Y",
+    };
+    const narrative = extractNarrativeFromFrontmatter(record);
     assert.equal(
       narrative,
       "Na última edição, escrevi que X. O correto é Y.",
-      "deve preferir campo `reveal` sobre `narrative` legado",
+      "deve ler o campo `reveal`, ignorando `description` catálogo",
     );
 
-    // extractRevealFromFrontmatter também deve encontrar
-    const reveal = extractRevealFromFrontmatter(md);
+    const reveal = extractRevealFromFrontmatter(record);
     assert.equal(reveal, "Na última edição, escrevi que X. O correto é Y.");
   });
 });
@@ -438,79 +426,67 @@ describe("#2431 self-review — F2: fallback genérico unificado (prioridade 4)"
 });
 
 describe("#2431 self-review — F3: stage-4 lint inspeciona campo reveal", () => {
-  it("F3: reveal catalog-shaped ('DESTAQUE N...') no frontmatter → 1 warning do stage-4 lint", () => {
-    const dir = mkdtempSync(join(tmpdir(), "stage4-reveal-catalog-"));
+  it("F3: reveal catalog-shaped ('DESTAQUE N...') no record → 1 warning do stage-4 lint", () => {
+    const { dir, cleanup } = writeEdition(
+      [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, foo.",
+        "",
+        "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "X",
+      ].join("\n"),
+      {
+        description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+        location: "DESTAQUE 2",
+        category: "factual",
+        correct_value: "Perplexity ou Copilot",
+        // Editor copiou description para reveal por engano
+        reveal: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      },
+    );
     try {
-      const mdPath = join(dir, "02-reviewed.md");
-      writeFileSync(
-        mdPath,
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          // Editor copiou description para reveal por engano
-          '  reveal: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
-          "",
-          "---",
-          "",
-          "**ASSINE**",
-          "X",
-        ].join("\n"),
-        "utf8",
-      );
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       assert.equal(violations.length, 1, "reveal catalog-shaped deve gerar 1 warning");
       assert.equal(violations[0].severity, "warning", "decisão editorial 260619 — lints ficam warning");
       assert.match(violations[0].message, /reveal/, "mensagem deve mencionar campo reveal");
       assert.match(violations[0].message, /catálogo|DESTAQUE/i, "mensagem deve descrever o problema");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
   it("F3: reveal correto (first-person) → 0 violations do stage-4 lint", () => {
-    const dir = mkdtempSync(join(tmpdir(), "stage4-reveal-ok-"));
+    const { dir, cleanup } = writeEdition(
+      [
+        "**ERRO INTENCIONAL**",
+        "",
+        "Na última edição, foo.",
+        "",
+        "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+        "",
+        "---",
+        "",
+        "**ASSINE**",
+        "X",
+      ].join("\n"),
+      {
+        description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+        location: "DESTAQUE 2",
+        category: "factual",
+        correct_value: "Perplexity ou Copilot",
+        reveal: "Na última edição, listei o Spotify como assistente de IA, mas o Spotify é um serviço de streaming.",
+      },
+    );
     try {
-      const mdPath = join(dir, "02-reviewed.md");
-      writeFileSync(
-        mdPath,
-        [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          '  reveal: "Na última edição, listei o Spotify como assistente de IA, mas o Spotify é um serviço de streaming."',
-          "---",
-          "",
-          "**ERRO INTENCIONAL**",
-          "",
-          "Na última edição, foo.",
-          "",
-          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
-          "",
-          "---",
-          "",
-          "**ASSINE**",
-          "X",
-        ].join("\n"),
-        "utf8",
-      );
       const violations = checkNarrativeNotGenericPlaceholder(dir);
       assert.equal(violations.length, 0, "reveal first-person correto não deve gerar violation");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      cleanup();
     }
   });
 });
@@ -630,248 +606,43 @@ describe("#2431 self-review — F5: round-trip JSONL (frontmatterToEntry → ser
   });
 });
 
-describe("#2438 — guards adicionais (block-scalar, CRLF, caso 3)", () => {
-  // Item 3: block-scalar YAML (`reveal: |`) deve ser tratado como campo AUSENTE.
-  describe("extractRevealFromFrontmatter — guard block-scalar (#2438 Item 3)", () => {
-    it("reveal: | (block-scalar isolado) → null (campo tratado como ausente)", () => {
-      // Bug: o regex de linha única captura "|" como valor literal, publicando "|."
-      // como texto de reveal. Após o guard, "|" isolado é tratado como ausente.
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "DESTAQUE 2 lista o Spotify"',
-        "  reveal: |",
-        "    Na última edição, escrevi algo errado.",
-        "---",
-        "",
-        "Body.",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: | deve retornar null (block-scalar não capturado pelo regex de linha única)");
-    });
+// (#3222) #2438 originalmente cobria guards de parsing de YAML frontmatter:
+// block-scalar (`reveal: |`, `>`, `|-`, `|2-`, etc — sintaxe de string
+// multi-linha do YAML) e CRLF-safety do parser de texto. Essas classes de bug
+// são estruturalmente impossíveis agora: os campos vêm de
+// `_internal/intentional-error.json`, um objeto JSON já parseado por
+// `JSON.parse` — não há bloco YAML pra colapsar, nem block-scalar (não existe
+// em JSON), nem parsing de linha sensível a CRLF (JSON.parse trata \r\n como
+// whitespace comum dentro/entre tokens, igual LF). O teste abaixo substitui
+// o describe block inteiro, confirmando apenas que a leitura via
+// `loadIntentionalErrorJson` (persistência real, não os extractors puros)
+// sobrevive a um arquivo escrito com CRLF — o único resquício de "linha
+// windows" que ainda faz sentido testar nesse caminho.
+describe("#3222 — leitura de _internal/intentional-error.json é robusta a CRLF (substitui guards de YAML #2438, agora impossíveis)", () => {
+  it("JSON com valores contendo \\r\\n embutido ainda é lido corretamente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "erro-intencional-crlf-json-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const record: IntentionalErrorJson = {
+        description: "Teste",
+        correct_value: "2014",
+        reveal: "Na última edição, escrevi 1990 onde o correto é 1998.",
+      };
+      // Simula um arquivo JSON salvo por um editor Windows (CRLF entre linhas
+      // do próprio JSON, não dentro dos valores) — JSON.parse não se importa.
+      const jsonWithCrlf = JSON.stringify(record, null, 2).replace(/\n/g, "\r\n");
+      writeFileSync(join(internalDir, "intentional-error.json"), jsonWithCrlf, "utf8");
 
-    it("reveal: > (folded block-scalar) → null (campo tratado como ausente)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "DESTAQUE 3"',
-        "  reveal: >",
-        "    Na última edição, a empresa era outra.",
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: > deve retornar null (block-scalar folded não capturado)");
-    });
+      const md = "Body.";
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
 
-    it("reveal: |- (block-scalar com strip) → null", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  reveal: |-",
-        "    texto aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: |- deve retornar null");
-    });
-
-    it("reveal com texto real entre aspas → retorna o valor corretamente", () => {
-      // Guard não deve afetar valores legítimos.
-      const md = [
-        "---",
-        "intentional_error:",
-        '  reveal: "Na última edição, escrevi 1990 onde o correto é 1998."',
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), "Na última edição, escrevi 1990 onde o correto é 1998.",
-        "reveal com valor real não deve ser afetado pelo guard");
-    });
-  });
-
-  // Item 3: extractNarrativeFromFrontmatter também deve respeitar o guard de block-scalar
-  // (compartilhado via extractIeFields).
-  describe("extractNarrativeFromFrontmatter — guard block-scalar (#2438 Item 3)", () => {
-    it("narrative: | → null (block-scalar tratado como ausente)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  narrative: |",
-        "    Algum texto aqui.",
-        "---",
-      ].join("\n");
-      assert.equal(extractNarrativeFromFrontmatter(md), null,
-        "narrative: | deve retornar null");
-    });
-  });
-
-  // Finding 1 (#2438 self-review): block-scalar guard em extractCorrectValueFromFrontmatter.
-  // O loop manual anterior bypassa o guard BLOCK_SCALAR_RE — correct_value: |
-  // retornava "|" literal em vez de null.
-  describe("extractCorrectValueFromFrontmatter — guard block-scalar (#2438 finding 1)", () => {
-    it("correct_value: | (block-scalar) → null (não retorna '|' literal)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "Teste"',
-        "  correct_value: |",
-        "    valor real aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), null,
-        "correct_value: | deve retornar null (block-scalar, valor real em linhas seguintes não capturadas)");
-    });
-
-    it("correct_value: > (folded) → null", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "Teste"',
-        "  correct_value: >",
-        "    valor aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), null,
-        "correct_value: > deve retornar null (block-scalar folded)");
-    });
-
-    it("correct_value: |- → null", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  correct_value: |-",
-        "    valor aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), null,
-        "correct_value: |- deve retornar null");
-    });
-
-    it("correct_value com valor real → retorna corretamente (guard não afeta caso normal)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  correct_value: "1998"',
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), "1998",
-        "correct_value com valor normal não deve ser afetado pelo guard");
-    });
-
-    it("correct_value: {PREENCHER} → null (guard placeholder também via extractField)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  correct_value: "{PREENCHER — valor correto}"',
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), null,
-        "correct_value com placeholder {PREENCHER} deve retornar null");
-    });
-  });
-
-  // Finding 2 (#2438 self-review): BLOCK_SCALAR_RE não cobria indicadores
-  // combinados indent+chomping (|2-, >2+, |2-, >2+ são headers YAML válidos).
-  describe("BLOCK_SCALAR_RE — indicadores combinados indent+chomping (#2438 finding 2)", () => {
-    it("|2- (indent+chomping) → null em extractRevealFromFrontmatter", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  reveal: |2-",
-        "    texto aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: |2- deve retornar null (block-scalar com indent+chomping)");
-    });
-
-    it(">2+ (indent+chomping folded) → null em extractRevealFromFrontmatter", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  reveal: >2+",
-        "    texto aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: >2+ deve retornar null (block-scalar folded com indent+chomping)");
-    });
-
-    it("|2 (só indent, sem chomping) → null em extractRevealFromFrontmatter", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  reveal: |2",
-        "    texto aqui",
-        "---",
-      ].join("\n");
-      assert.equal(extractRevealFromFrontmatter(md), null,
-        "reveal: |2 deve retornar null (block-scalar com indicador de indent)");
-    });
-
-    it("|2- → null em extractCorrectValueFromFrontmatter (via extractField)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        "  correct_value: |2-",
-        "    1998",
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), null,
-        "correct_value: |2- deve retornar null");
-    });
-  });
-
-  // Item 7: CRLF-safety em extractCorrectValueFromFrontmatter.
-  describe("extractCorrectValueFromFrontmatter — CRLF-safety (#2438 Item 7)", () => {
-    it("CRLF no frontmatter → correct_value extraído corretamente (sem \\r trailing)", () => {
-      // Bug: split('\\n') em checkout Windows gerava correct_value com \\r trailing
-      // (ex: "2014\\r") → trim() resolve o \\r, mas com CRLF em certos casos o parser
-      // falhava. Usar extractFrontmatter (CRLF-safe) resolve.
-      const md = [
-        "---",
-        "intentional_error:",
-        '  description: "Teste"',
-        '  correct_value: "2014"',
-        "---",
-        "",
-        "Body.",
-      ].join("\r\n"); // Simula checkout Windows com CRLF
-      assert.equal(extractCorrectValueFromFrontmatter(md), "2014",
-        "CRLF no frontmatter deve retornar correct_value sem \\r trailing");
-    });
-
-    it("LF normal → correct_value extraído corretamente (regressão: não quebra case LF)", () => {
-      const md = [
-        "---",
-        "intentional_error:",
-        '  correct_value: "2025"',
-        "---",
-      ].join("\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), "2025");
-    });
-
-    it("CRLF com frontmatter após bloco TÍTULO (até linha 60) → ainda detectado", () => {
-      // #1378: frontmatter pode estar além da linha 30 quando TÍTULO/SUBTÍTULO injetados.
-      const lines = [
-        "**TÍTULO**",
-        "",
-        "Manchete",
-        "",
-        "**SUBTÍTULO**",
-        "",
-        "Sub",
-        "",
-        "---",
-        "intentional_error:",
-        '  correct_value: "42"',
-        "---",
-        "",
-        "Body.",
-      ];
-      const md = lines.join("\r\n");
-      assert.equal(extractCorrectValueFromFrontmatter(md), "42",
-        "CRLF com frontmatter após TÍTULO deve retornar correct_value");
-    });
+      const extracted = extractIntentionalErrorFromMd(md, record);
+      assert.equal(extracted?.correct_value, "2014");
+      assert.equal(extracted?.reveal, "Na última edição, escrevi 1990 onde o correto é 1998.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

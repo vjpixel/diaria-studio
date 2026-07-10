@@ -73,6 +73,9 @@ function createFixture(
     newsletterContent?: string;
     socialContent?: string;
     factCheckClaims?: Partial<FactClaim>[];
+    /** #3222: quando presente, escreve _internal/intentional-error.json (substitui
+     * o antigo frontmatter YAML embutido em newsletterContent). */
+    intentionalErrorRecord?: Record<string, unknown>;
   } = {},
 ): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "factcheck-autofix-"));
@@ -89,6 +92,13 @@ function createFixture(
   writeFileSync(join(dir, "02-reviewed.md"), newsletterContent, "utf8");
   writeFileSync(join(dir, "03-social.md"), socialContent, "utf8");
   writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify({ highlights: [] }), "utf8");
+  if (opts.intentionalErrorRecord) {
+    writeFileSync(
+      join(internalDir, "intentional-error.json"),
+      JSON.stringify(opts.intentionalErrorRecord, null, 2),
+      "utf8",
+    );
+  }
 
   const claims = (opts.factCheckClaims ?? []).map((c) => makeClaim(c as Parameters<typeof makeClaim>[0]));
   const factCheck = {
@@ -120,50 +130,37 @@ function createFixture(
 // extractIntentionalErrorDestaque
 // ---------------------------------------------------------------------------
 
-describe("extractIntentionalErrorDestaque (#2598)", () => {
-  it("retorna null quando não há frontmatter", () => {
-    const md = "DESTAQUE 1\n\nTexto sem frontmatter.\n";
-    assert.equal(extractIntentionalErrorDestaque(md), null);
+describe("extractIntentionalErrorDestaque (#2598, migrado pra JSON #3222)", () => {
+  it("retorna null quando record é null (ausente)", () => {
+    assert.equal(extractIntentionalErrorDestaque(null), null);
   });
 
-  it("retorna null quando frontmatter não tem intentional_error", () => {
-    const md = "---\ntitulo: Edição\n---\n\nTexto.\n";
-    assert.equal(extractIntentionalErrorDestaque(md), null);
+  it("retorna null quando record não tem location", () => {
+    assert.equal(extractIntentionalErrorDestaque({ description: "x", category: "factual" }), null);
   });
 
-  it("retorna null quando intentional_error: none (#2016)", () => {
-    const md = "---\nintentional_error: none\n---\n\nTexto.\n";
-    assert.equal(extractIntentionalErrorDestaque(md), null);
+  it("retorna null quando no_error: true (#2016)", () => {
+    assert.equal(extractIntentionalErrorDestaque({ no_error: true, location: "DESTAQUE 1" }), null);
   });
 
   it("retorna 1 quando location é 'DESTAQUE 1, parágrafo 2'", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      "  description: 'GPT-4o onde deveria ser GPT-5.4'",
-      "  location: 'DESTAQUE 1, parágrafo 2'",
-      "  category: version_inconsistency",
-      "  correct_value: GPT-5.4",
-      "---",
-      "",
-      "Texto.",
-    ].join("\n");
-    assert.equal(extractIntentionalErrorDestaque(md), 1);
+    const record = {
+      description: "GPT-4o onde deveria ser GPT-5.4",
+      location: "DESTAQUE 1, parágrafo 2",
+      category: "version_inconsistency",
+      correct_value: "GPT-5.4",
+    };
+    assert.equal(extractIntentionalErrorDestaque(record), 1);
   });
 
   it("retorna 2 quando location é 'DESTAQUE 2'", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      "  description: 'ano errado'",
-      "  location: 'DESTAQUE 2, parágrafo 1'",
-      "  category: numeric",
-      "  correct_value: 2024",
-      "---",
-      "",
-      "Texto.",
-    ].join("\n");
-    assert.equal(extractIntentionalErrorDestaque(md), 2);
+    const record = {
+      description: "ano errado",
+      location: "DESTAQUE 2, parágrafo 1",
+      category: "numeric",
+      correct_value: "2024",
+    };
+    assert.equal(extractIntentionalErrorDestaque(record), 2);
   });
 });
 
@@ -375,16 +372,8 @@ describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#259
     }
   });
 
-  it("intentional_error no destaque 1 → claim DIVERGENT do D1 é pulado", () => {
-    const newsletterWithFm = [
-      "---",
-      "intentional_error:",
-      "  description: 'GPT-4o onde deveria ser GPT-5.4 (erro intencional)'",
-      "  location: 'DESTAQUE 1, corpo'",
-      "  category: version_inconsistency",
-      "  correct_value: GPT-5.4",
-      "---",
-      "",
+  it("intentional_error no destaque 1 → claim DIVERGENT do D1 é pulado (#3222: via _internal/intentional-error.json)", () => {
+    const newsletterContent = [
       "DESTAQUE 1",
       "",
       "O modelo GPT-4o foi comparado com o novo lançamento.",
@@ -392,7 +381,13 @@ describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#259
     ].join("\n");
 
     const fixture = createFixture({
-      newsletterContent: newsletterWithFm,
+      newsletterContent,
+      intentionalErrorRecord: {
+        description: "GPT-4o onde deveria ser GPT-5.4 (erro intencional)",
+        location: "DESTAQUE 1, corpo",
+        category: "version_inconsistency",
+        correct_value: "GPT-5.4",
+      },
       factCheckClaims: [
         {
           verdict: "DIVERGENT",
@@ -410,12 +405,8 @@ describe("apply-factcheck-autofix CLI — cenário real GPT-4o → GPT-5.4 (#259
 
       // Newsletter NÃO deve ter sido modificada — o erro intencional deve ser preservado
       const newsletter = readFileSync(fixture.newsletterPath, "utf8");
-      // O frontmatter contém "correct_value: GPT-5.4" e "DESTAQUE 1" no location.
-      // Extrair o corpo real (após o fechamento "---"):
-      const fmCloseIdx = newsletter.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)![0].length;
-      const body = newsletter.slice(fmCloseIdx);
-      assert.ok(body.includes("GPT-4o"), "GPT-4o deve permanecer no corpo (é o erro intencional)");
-      assert.ok(!body.includes("GPT-5.4"), "GPT-5.4 não deve aparecer no corpo — substituição não aplicada");
+      assert.ok(newsletter.includes("GPT-4o"), "GPT-4o deve permanecer no corpo (é o erro intencional)");
+      assert.ok(!newsletter.includes("GPT-5.4"), "GPT-5.4 não deve aparecer no corpo — substituição não aplicada");
 
       const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
       assert.equal(autofix.summary.applied, 0, "nenhuma correção aplicada quando é erro intencional");
@@ -579,16 +570,8 @@ describe("findDestaqueBodyRange (#2617)", () => {
 // ---------------------------------------------------------------------------
 
 describe("apply-factcheck-autofix cenário 8 — multi-DIVERGENT com mesmo texto (#2617)", () => {
-  it("substitui claim D2 sem clobberar GPT-4o protegido no D1 (intentional_error)", () => {
-    const newsletterWithFm = [
-      "---",
-      "intentional_error:",
-      "  description: 'GPT-4o onde deveria ser GPT-5.4'",
-      "  location: 'DESTAQUE 1, corpo'",
-      "  category: version_inconsistency",
-      "  correct_value: GPT-5.4",
-      "---",
-      "",
+  it("substitui claim D2 sem clobberar GPT-4o protegido no D1 (intentional_error, #3222 via JSON)", () => {
+    const newsletterContent = [
       "DESTAQUE 1",
       "",
       "O modelo GPT-4o foi comparado com o novo lançamento. (erro intencional)",
@@ -600,7 +583,13 @@ describe("apply-factcheck-autofix cenário 8 — multi-DIVERGENT com mesmo texto
     ].join("\n");
 
     const fixture = createFixture({
-      newsletterContent: newsletterWithFm,
+      newsletterContent,
+      intentionalErrorRecord: {
+        description: "GPT-4o onde deveria ser GPT-5.4",
+        location: "DESTAQUE 1, corpo",
+        category: "version_inconsistency",
+        correct_value: "GPT-5.4",
+      },
       factCheckClaims: [
         // D1: claim DIVERGENT — mas pertence ao intentional_error, deve ser pulado
         {

@@ -32,8 +32,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { FactClaim, FactCheckResult } from "./run-fact-checker.ts";
-import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts";
-import { destaqueFromLocation } from "./lib/intentional-errors.ts";
+import {
+  destaqueFromLocation,
+  loadIntentionalErrorJson,
+  intentionalErrorJsonPath,
+  type IntentionalErrorJson,
+} from "./lib/intentional-errors.ts";
 import { parseArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
@@ -77,30 +81,21 @@ export interface AutofixResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Extrai o destaque do `intentional_error` do frontmatter de `02-reviewed.md`.
- * Retorna null se não houver frontmatter ou intentional_error declarado.
- *
- * A extração de `location:` é SCOPED ao bloco `intentional_error` para evitar
- * match de outras chaves `location:` no frontmatter (#2617).
+ * Extrai o destaque do `intentional_error` a partir do record estruturado da
+ * edição (#3222: `_internal/intentional-error.json`, antes frontmatter YAML
+ * em `02-reviewed.md`). Retorna null se o record estiver ausente, declarar
+ * `no_error: true`, ou sem `location`.
  */
-export function extractIntentionalErrorDestaque(md: string): number | string | null {
-  const fm = extractFrontmatter(md);
-  if (!fm) return null;
-  if (!/intentional_error\s*:/i.test(fm)) return null;
+export function extractIntentionalErrorDestaque(
+  record: IntentionalErrorJson | null | undefined,
+): number | string | null {
+  if (!record) return null;
+  if (record.no_error === true) return null;
+  if (!record.location || typeof record.location !== "string") return null;
 
-  // Aceitar `intentional_error: none` (#2016)
-  if (/intentional_error\s*:\s*(none|null)\s*(\n|$)/i.test(fm)) return null;
+  const location = record.location.trim();
+  if (!location || /^\{PREENCHER/i.test(location)) return null;
 
-  // Extrair location SCOPED ao bloco mapping de intentional_error (#2617)
-  // O regex captura o bloco indentado após "intentional_error:" e extrai "location:" de lá.
-  const ieBlockMatch = fm.match(/intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:.*\n?)+)/);
-  if (!ieBlockMatch) return null;
-
-  const ieBlock = ieBlockMatch[1];
-  const locationMatch = ieBlock.match(/[ \t]+location\s*:\s*(.+)/);
-  if (!locationMatch) return null;
-
-  const location = locationMatch[1].trim().replace(/^['"]|['"]$/g, "");
   const destaque = destaqueFromLocation(location);
   return destaque !== "" ? destaque : null;
 }
@@ -325,8 +320,9 @@ async function main(): Promise<void> {
   const factCheck = JSON.parse(readFileSync(factCheckPath, "utf8")) as FactCheckResult;
   let newsletter = readFileSync(newsletterPath, "utf8");
 
-  // Extrair destaque do erro intencional do frontmatter
-  const intentionalDestaque = extractIntentionalErrorDestaque(newsletter);
+  // Extrair destaque do erro intencional (#3222: _internal/intentional-error.json)
+  const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
+  const intentionalDestaque = extractIntentionalErrorDestaque(intentionalErrorRecord);
 
   // Planejar autofixes
   const entries = planAutofixes(factCheck.claims, intentionalDestaque);

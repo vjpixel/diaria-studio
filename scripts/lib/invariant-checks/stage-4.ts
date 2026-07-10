@@ -36,6 +36,7 @@ import {
   narrativeIsCatalogShaped,
   SECTION_HEADER,
 } from "../../render-erro-intencional.ts";
+import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "../intentional-errors.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -486,29 +487,32 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
  *
  * Casos detectados:
  *   1. Narrativa "Nessa edição, …" no corpo é placeholder genérico (incidente #2377).
- *   2. (#2419 bug #2 fix) Narrativa no corpo ou frontmatter é catalog-shaped
- *      ("DESTAQUE N lista o Spotify…") — passa verde hoje, publica label interno.
+ *   2. (#2419 bug #2 fix) Narrativa no corpo ou no record (`_internal/intentional-error.json`,
+ *      #3222) é catalog-shaped ("DESTAQUE N lista o Spotify…") — passa verde hoje, publica
+ *      label interno.
  *   3. (#2419) Sem campo `reveal` dedicado E sem fonte válida de narrative →
  *      reveal da próxima edição seria o fallback genérico seguro.
  *
  * severity: "warning" (lints permanecem warning — re-block para error é follow-up).
  *
- * Remediação: preencher `intentional_error.reveal` no frontmatter com prosa first-person.
- * Campo `narrative` (legado) também aceito para back-compat.
+ * Remediação: preencher `reveal` em `_internal/intentional-error.json` com prosa first-person.
  */
 function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(path)) return [];
   const md = readFileSync(path, "utf8");
+  // (#3222) campos estruturados migraram de frontmatter YAML pra
+  // `_internal/intentional-error.json` — não sincroniza mais com o Drive.
+  const record = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
 
   const REMEDIATION =
-    `Preencha o campo \`intentional_error.reveal\` no frontmatter do MD com prosa ` +
+    `Preencha o campo \`reveal\` em _internal/intentional-error.json com prosa ` +
     `first-person completa para o reveal público da próxima edição. ` +
     `Ex: "Na última edição, escrevi 1990 onde o correto é 1998."`;
 
   // 1. Verificação via extractIntentionalErrorFromMd (casos: narrative real mas genérico
   //    ou catalog-shaped que ainda escapou do filtro na extração do corpo).
-  const extracted = extractIntentionalErrorFromMd(md);
+  const extracted = extractIntentionalErrorFromMd(md, record);
   if (extracted?.narrative) {
     if (narrativeIsGenericPlaceholder(extracted.narrative)) {
       return [
@@ -611,7 +615,7 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   // sem campo reveal), causando double-parse residual. Usar condicional explícita:
   // só parse o frontmatter quando extracted é null (o campo reveal pode ter valor
   // catalog/genérico que precisamos checar mesmo sem narrative válida).
-  const reveal = extracted !== null ? extracted.reveal : extractRevealFromFrontmatter(md);
+  const reveal = extracted !== null ? extracted.reveal : extractRevealFromFrontmatter(record);
   if (reveal) {
     if (narrativeIsCatalogShaped(reveal)) {
       return [

@@ -20,12 +20,13 @@ import { join, resolve } from "node:path";
 import {
   reorderHighlightsInJson,
   reorderDestaquesInMd,
-  updateIntentionalErrorLocation,
+  updateIntentionalErrorLocationJson,
   reorderSocialMd,
   renameDestaqueImages,
   renameDestaquePrompts,
 } from "../scripts/reorder-destaques.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
+import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
 describe("reorderHighlightsInJson (#1585)", () => {
   it("swap 1↔2: highlights[0]=original[1], highlights[1]=original[0]", () => {
@@ -194,64 +195,53 @@ placeholder
   });
 });
 
-describe("updateIntentionalErrorLocation (#1585)", () => {
+describe("updateIntentionalErrorLocationJson (#1585, migrado pra JSON #3222)", () => {
   it("DESTAQUE 2 + swap 2↔1 → DESTAQUE 1", () => {
-    const md = `---
-intentional_error:
-  location: "DESTAQUE 2, parágrafo 2, primeira frase"
-  category: factual
----
-
-Body...`;
-    const result = updateIntentionalErrorLocation(md, [2, 1, 3]);
-    assert.match(result, /location:\s*"DESTAQUE 1, parágrafo 2, primeira frase"/);
+    const record: IntentionalErrorJson = {
+      location: "DESTAQUE 2, parágrafo 2, primeira frase",
+      category: "factual",
+    };
+    const { record: result, changed } = updateIntentionalErrorLocationJson(record, [2, 1, 3]);
+    assert.equal(changed, true);
+    assert.equal(result.location, "DESTAQUE 1, parágrafo 2, primeira frase");
   });
 
   it("DESTAQUE 3 + rotation 3→1,1→2,2→3 → DESTAQUE 1", () => {
-    const md = `---
-intentional_error:
-  location: "DESTAQUE 3"
----
-
-x`;
+    const record: IntentionalErrorJson = { location: "DESTAQUE 3" };
     // newOrder=[3,1,2] significa: posição 1 fica com original 3, posição 2 com original 1, posição 3 com original 2
     // Então o que era DESTAQUE 3 agora é DESTAQUE 1
-    const result = updateIntentionalErrorLocation(md, [3, 1, 2]);
-    assert.match(result, /location:\s*"DESTAQUE 1"/);
+    const { record: result, changed } = updateIntentionalErrorLocationJson(record, [3, 1, 2]);
+    assert.equal(changed, true);
+    assert.equal(result.location, "DESTAQUE 1");
   });
 
   it("location sem DESTAQUE N (ex: OUTRAS NOTÍCIAS) → no-op", () => {
-    const md = `---
-intentional_error:
-  location: "OUTRAS NOTÍCIAS, item 3"
----
-
-x`;
-    assert.equal(updateIntentionalErrorLocation(md, [2, 1, 3]), md);
+    const record: IntentionalErrorJson = { location: "OUTRAS NOTÍCIAS, item 3" };
+    const { record: result, changed } = updateIntentionalErrorLocationJson(record, [2, 1, 3]);
+    assert.equal(changed, false);
+    assert.equal(result.location, "OUTRAS NOTÍCIAS, item 3");
   });
 
   it("#2366: location 'DESTAQUE 3' + newOrder=[2,1] (3→2 rebase) → marca REVISAR (não fica stale)", () => {
     // Caso de reorder numa edição rebaixada de 3 para 2 destaques:
-    // o frontmatter ainda guarda location='DESTAQUE 3', mas DESTAQUE 3
+    // o record ainda guarda location='DESTAQUE 3', mas DESTAQUE 3
     // não existe mais em newOrder=[2,1]. Antes do fix #2366, retornava
-    // full (location stale silenciosa). Após o fix, marca um sentinel REVISAR.
-    const md = `---
-intentional_error:
-  location: "DESTAQUE 3, parágrafo 1"
-  category: factual
----
-
-Body...`;
-    const result = updateIntentionalErrorLocation(md, [2, 1]);
+    // o record intacto (location stale silenciosa). Após o fix, marca um sentinel REVISAR.
+    const record: IntentionalErrorJson = {
+      location: "DESTAQUE 3, parágrafo 1",
+      category: "factual",
+    };
+    const { record: result, changed } = updateIntentionalErrorLocationJson(record, [2, 1]);
+    assert.equal(changed, true);
     // Stale 'DESTAQUE 3' removido + sentinel REVISAR escrito
     assert.ok(
-      !result.includes("DESTAQUE 3"),
-      `location 'DESTAQUE 3' stale deveria ter sido removida. Resultado: ${result}`,
+      !result.location!.includes("DESTAQUE 3"),
+      `location 'DESTAQUE 3' stale deveria ter sido removida. Resultado: ${result.location}`,
     );
     assert.match(
-      result,
-      /location:\s*"\[REVISAR/,
-      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result}`,
+      result.location ?? "",
+      /^\[REVISAR/,
+      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result.location}`,
     );
   });
 
@@ -260,21 +250,22 @@ Body...`;
     // location pra string vazia, checkIntentionalError reportaria
     // "intentional_error_incomplete: campos faltando — location" → ok:false
     // → BLOQUEIA publicação no Stage 5. O sentinel não-vazio passa o lint.
-    const md = `---
-intentional_error:
-  description: "Erro de data"
-  location: "DESTAQUE 3, parágrafo 1"
-  category: "factual_synthetic"
-  correct_value: "2026"
----
-
-Body...`;
-    const result = updateIntentionalErrorLocation(md, [2, 1]);
+    const record: IntentionalErrorJson = {
+      description: "Erro de data",
+      location: "DESTAQUE 3, parágrafo 1",
+      category: "factual_synthetic",
+      correct_value: "2026",
+      reveal: "Na última edição, escrevi X onde o correto é 2026.",
+    };
+    const { record: result } = updateIntentionalErrorLocationJson(record, [2, 1]);
     const dir = mkdtempSync(join(tmpdir(), "reorder-lint-"));
     try {
-      const p = join(dir, "02-reviewed.md");
-      writeFileSync(p, result);
-      const lint = checkIntentionalError(p);
+      const mdPath = join(dir, "02-reviewed.md");
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(mdPath, "Body...");
+      writeFileSync(join(internalDir, "intentional-error.json"), JSON.stringify(result, null, 2));
+      const lint = checkIntentionalError(mdPath);
       assert.equal(
         lint.ok,
         true,
@@ -291,20 +282,17 @@ Body...`;
 
   it("#2366: location 'DESTAQUE 2' + newOrder=[1] (reduz a 1 destaque hipotético) → marca REVISAR", () => {
     // Mesmo padrão: destaque referenciado não existe em newOrder
-    const md = `---
-intentional_error:
-  location: "DESTAQUE 2"
----
-x`;
-    const result = updateIntentionalErrorLocation(md, [1]);
+    const record: IntentionalErrorJson = { location: "DESTAQUE 2" };
+    const { record: result, changed } = updateIntentionalErrorLocationJson(record, [1]);
+    assert.equal(changed, true);
     assert.ok(
-      !result.includes("DESTAQUE 2"),
-      `location 'DESTAQUE 2' stale deveria ter sido removida. Resultado: ${result}`,
+      !result.location!.includes("DESTAQUE 2"),
+      `location 'DESTAQUE 2' stale deveria ter sido removida. Resultado: ${result.location}`,
     );
     assert.match(
-      result,
+      result.location ?? "",
       /\[REVISAR/,
-      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result}`,
+      `location deveria ter sido marcada com sentinel REVISAR. Resultado: ${result.location}`,
     );
   });
 });

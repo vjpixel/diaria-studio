@@ -1,10 +1,14 @@
 #!/usr/bin/env npx tsx
 /**
- * sync-intentional-error.ts (#754)
+ * sync-intentional-error.ts (#754; #3222 — checkIntentionalError agora lê
+ * `_internal/intentional-error.json` em vez de frontmatter YAML de
+ * `02-reviewed.md`, transparente pra este script)
  *
- * Lê o frontmatter `intentional_error` de `02-reviewed.md` e sincroniza
- * com `data/intentional-errors.jsonl` (idempotente — só adiciona se a
- * edição ainda não tem entry com source="frontmatter_02_reviewed").
+ * Lê `intentional_error` da edição (via `checkIntentionalError`, que lê
+ * `_internal/intentional-error.json` — nunca sincroniza com o Drive, #959)
+ * e sincroniza com `data/intentional-errors.jsonl` (idempotente — só
+ * adiciona se a edição ainda não tem entry com source="frontmatter_02_reviewed",
+ * nome de source preservado por compat histórico).
  *
  * Roda em sequência depois do lint `intentional-error-flagged` no
  * publish-newsletter (Stage 4 passo 0). Garante que `lint-test-email`
@@ -173,8 +177,8 @@ function main(): number {
       };
       appendJsonl(jsonlPath, entry);
       process.stderr.write(
-        `[sync-intentional-error] #1860: frontmatter ausente — entry extraída da PROSA "Nessa edição, …" pra ${flags.edition}. ` +
-          `Declare intentional_error no frontmatter pra silenciar este fallback.\n`,
+        `[sync-intentional-error] #1860: _internal/intentional-error.json ausente/incompleto — entry extraída da PROSA "Nessa edição, …" pra ${flags.edition}. ` +
+          `Grave o record em _internal/intentional-error.json (#3222) pra silenciar este fallback.\n`,
       );
       process.stdout.write(
         JSON.stringify({ added: true, updated: false, edition: flags.edition, source: "prose_block" }, null, 2) + "\n",
@@ -182,7 +186,7 @@ function main(): number {
       return 0;
     }
     process.stderr.write(
-      `Frontmatter intentional_error ausente E sem prosa "Nessa edição, …" em ${flags.md}: ${lintResult.label}\n`,
+      `_internal/intentional-error.json ausente/incompleto E sem prosa "Nessa edição, …" em ${flags.md}: ${lintResult.label}\n`,
     );
     return 1;
   }

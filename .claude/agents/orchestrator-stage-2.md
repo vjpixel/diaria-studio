@@ -336,14 +336,16 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
     --edition {AAMMDD} \
     --md data/editions/{AAMMDD}/02-reviewed.md
   ```
-  Substitui o placeholder do writer pelo reveal do erro anterior (`Na última edição, …`) + preserva ou insere placeholder pra `Nessa edição, …` (autor preenche manualmente). **Falha = abortar Stage 2** (não silenciar). Justificativa: sem o script, edição vai com `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}` literal no MD; quando colado manualmente no Beehiiv (#1083), aparece como texto bruto no email — contamina UX e mata o concurso "Ache o erro".
+  Substitui o placeholder do writer pelo reveal do erro anterior (`Na última edição, …`) + preserva ou insere placeholder pra `Nessa edição, …` (autor preenche manualmente). Também garante que `_internal/intentional-error.json` existe (escreve placeholder `{PREENCHER}` se ausente — #3222, campos estruturados description/location/category/correct_value/reveal, sibling de `02-reviewed.md`, **nunca** sincroniza com o Drive). **Falha = abortar Stage 2** (não silenciar). Justificativa: sem o script, edição vai com `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}` literal no MD; quando colado manualmente no Beehiiv (#1083), aparece como texto bruto no email — contamina UX e mata o concurso "Ache o erro".
+
+  **Coletar os campos do editor (#3222).** Diferente de antes (editor editava o frontmatter YAML direto no Google Doc via Drive), o JSON não passa pelo Drive — pergunte ao editor no gate (ou antes dele, se a sessão já tiver essa info) a descrição do erro proposital desta edição (o que está errado / onde / categoria / valor correto / frase de reveal em 1ª pessoa pra próxima edição) e grave direto em `data/editions/{AAMMDD}/_internal/intentional-error.json`, substituindo os placeholders `{PREENCHER}`. Isso é o único lugar onde o editor "edita" esse dado agora — nunca via Drive.
 
 - **Validator final Stage 2 (#1072, #1073):** antes do gate humano, rodar invariant check que detecta passos pulados silenciosamente:
   ```bash
   npx tsx scripts/check-stage2-invariants.ts \
     --edition-dir data/editions/{AAMMDD}/
   ```
-  Cobre 4 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) frontmatter `intentional_error:` existe em 02-reviewed.md — placeholder OK, valores preenchidos pelo editor no gate do Stage 4 via Drive (#2284). Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/frontmatter são todos invariantes do Stage 2.
+  Cobre 4 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) `_internal/intentional-error.json` existe (#2284, migrado #3222) — placeholder OK, valores preenchidos pelo editor via chat (não mais via Drive). Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/intentional-error.json são todos invariantes do Stage 2.
 
 ### 2c. Processar social
 
@@ -485,16 +487,14 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
     ```
     Exit 1 = title-picker mexeu na estrutura (removeu `---`, moveu ERRO INTENCIONAL, etc — caso 260517). **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu estrutura — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro.
 
-  - **Validar frontmatter YAML (#2553).** Após title-picker (e após restauração de snapshot, se houver), validar que o frontmatter `intentional_error` está bem-formado como YAML multi-linha com as 5 chaves obrigatórias:
+  - **Validar schema de intentional-error.json (#2553, repurposed #3222).** Após title-picker (e após restauração de snapshot, se houver), validar que `_internal/intentional-error.json` está bem-formado com as 5 chaves esperadas:
     ```bash
     npx tsx scripts/validate-frontmatter-yaml.ts \
       --md data/editions/{AAMMDD}/02-reviewed.md
     ```
-    Detecta 2 formas de corrupção:
-    - Bloco `intentional_error` colapsado em 1 linha (caso real 260625: title-picker reescreveu o arquivo com `## intentional_error: description: "..." ...` em vez de mapping YAML indentado).
-    - Chaves ausentes (`description`, `location`, `category`, `correct_value`, `reveal`).
+    (deriva `_internal/intentional-error.json` como sibling de `--md`.) title-picker só toca `02-reviewed.md` — nunca `_internal/*` — então a classe de corrupção original deste check (Google Docs colapsando o bloco YAML no round-trip do Drive, caso real 260625) não pode mais acontecer (#3222): o JSON nunca sincroniza com o Drive. Este script agora serve como guard de schema (JSON malformado por edição manual, campos faltando/placeholder `{PREENCHER}`).
 
-    Exit 1 = **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu o frontmatter YAML — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro. (Note: `validate-section-structure.ts` compara contagem de seções, não valida YAML — essa check é complementar, não redundante.)
+    Exit 1 = campos faltando ou placeholder não preenchido em `_internal/intentional-error.json` — peça ao editor os campos faltantes (via chat) e grave diretamente no arquivo. (Note: `validate-section-structure.ts` compara contagem de seções do MD, não valida o JSON — essa check é complementar, não redundante.)
 
   - **Validar 1 título por destaque (#178).** Após o title-picker:
     ```bash

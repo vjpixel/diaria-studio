@@ -457,7 +457,7 @@ Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (nã
    (assunto `Re:` + remetente humano — exclui automáticos `no-reply`/`beehiiv`/`mailer-daemon` e os próprios endereços do editor.)
 4. Para **cada** resposta filtrada (`replies[]`):
    1. Resolver a edição referenciada pelo `subject` (ex: "Re: Diar.ia — 29/06" → `260629`; quando o assunto não tiver data clara, usar a edição mais recente publicada antes da `date` da reply).
-   2. Ler o frontmatter `intentional_error` dessa edição (`data/editions/{edição}/02-reviewed.md` — `category`, `location`, `description`, `correct_value`).
+   2. Ler `_internal/intentional-error.json` dessa edição (`data/editions/{edição}/_internal/intentional-error.json` — campos `category`, `location`, `description`, `correct_value`; #3222 — não mora mais no frontmatter de `02-reviewed.md`, que sincronizava com o Drive e corrompia o bloco YAML no round-trip do Google Docs, #3205).
    3. Rodar o matcher determinístico (#2724) pra decidir se a reply **acertou** o erro intencional:
       ```bash
       npx tsx -e "

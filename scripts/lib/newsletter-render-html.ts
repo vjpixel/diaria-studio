@@ -454,59 +454,31 @@ export function findMarkdownLinks(
 }
 
 /**
- * #3204: decide se o box de divulgação usa o formato "carrinho" (CTA pill
- * centralizado, via `renderIntroCallout(forceCtaPill=true)`) por ESTRUTURA do
- * conteúdo — não por um allowlist de marcador emoji. Sinais:
- *   - legado: box começa com o marcador carrinho 🛒 — comportamento
- *     pré-#3204 preservado (compat com hábito editorial/edições antigas);
- *     `forceCtaPill=true` é seguro mesmo se nenhum parágrafo qualificar como
- *     CTA-only (renderIntroCallout degrada graciosamente pra no-op nesse caso).
- *   - estrutural: 2+ links no total no box (#3028 — prateleira com múltiplos
- *     títulos), OU QUALQUER parágrafo é SÓ um link (opcionalmente prefixado
- *     por `→`/`Acesse`) — mesmo critério que `renderIntroCallout` já usa
- *     internamente pra decidir o pill de um CTA-only paragraph (#2797),
- *     generalizado pro dispatcher e sem exigir que seja o ÚLTIMO parágrafo
- *     (um box pode ter um parágrafo de disclosure DEPOIS do CTA, #2996).
- * Sem o sinal estrutural, um box novo sem marcador emoji reconhecido nunca
- * ganharia o tratamento carrinho/pill.
- */
-function shouldForceCtaPill(box: string): boolean {
-  if (/^\s*🛒/u.test(box)) return true;
-  if (findMarkdownLinks(box).length >= 2) return true;
-  const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  if (paras.length <= 1) return false;
-  return paras.some((p) => {
-    const stripped = p.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
-    const links = findMarkdownLinks(stripped);
-    if (links.length === 0) return false;
-    let rem = stripped;
-    for (let k = links.length - 1; k >= 0; k--) {
-      rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
-    }
-    return rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
-  });
-}
-
-/**
- * #2978/#3204: dispatcher único pros 2 boxes de divulgação (slot 1 = gap
- * D1/D2, slot 2 = gap D2/D3). O FORMATO é decidido pela ESTRUTURA do próprio
- * box (`shouldForceCtaPill`), não pelo slot nem por um marcador emoji
- * reconhecido: conteúdo "carrinho" (CTA-only no fim, ou 2+ links) → prateleira
- * multi-parágrafo com CTA pill (reusa `renderIntroCallout` com
- * `forceCtaPill=true`; um eventual marcador legado 🛒/📚 é removido do HTML);
- * qualquer outro conteúdo → bold-line/mid-callout (reusa `renderMidCallout`,
- * que aceita imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos
- * os slots chamam este dispatcher.
+ * #2978: dispatcher único pros 2 boxes de divulgação (slot 1 = gap D1/D2,
+ * slot 2 = gap D2/D3). O FORMATO é decidido pelo marcador do próprio box, não
+ * pelo slot: `🛒` → prateleira multi-parágrafo com CTA pill (reusa
+ * `renderIntroCallout` com `forceCtaPill=true`, marcador estrutural removido
+ * do HTML); `📚`/`📣`/`🎉` → bold-line (reusa `renderMidCallout`, que aceita
+ * imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos os slots
+ * chamam este dispatcher.
  */
 export function renderBoxDivulgacao(box: string, imageUrl: string | null = null): string {
-  if (shouldForceCtaPill(box)) {
-    // Remove um eventual marcador estrutural legado (🛒/📚) da 1ª linha antes
-    // de renderizar — não deve vazar cru no HTML. `\r?\n?` cobre o marcador
-    // sozinho na própria linha, pra não deixar um `\n` órfão que vira um
-    // <p></p> vazio no topo do box. Marcadores novos (sem allowlist) não são
-    // stripados aqui — ficam como texto decorativo no título, igual ao
-    // comportamento já existente pra 🎉/📚 no path sem CTA pill.
-    return renderIntroCallout(box.replace(/^\s*(?:🛒|📚)[ \t]*\r?\n?/u, ""), "serif", true);
+  if (/^\s*🛒/u.test(box)) {
+    // `\r?\n?` cobre o 🛒 sozinho na própria linha (sem texto após), pra não
+    // deixar um `\n` órfão que vira um <p></p> vazio no topo do box.
+    return renderIntroCallout(box.replace(/^🛒[ \t]*\r?\n?/u, ""), "serif", true);
+  }
+  // #3028: box de livros (📚) com MÚLTIPLOS links (ex: 2+ títulos em oferta) →
+  // renderiza texto + um botão CTA por link (via forceCtaPill), SEM a screenshot
+  // da página. O caminho com imagem (`renderMidCallout`) extrai só o 1º link
+  // como botão e descarta os demais — perdendo o 2º livro. Escopado a 📚 com
+  // ≥2 links: o box de livros default (1 link "Confira a página") continua
+  // usando a imagem normalmente.
+  if (/^\s*📚/u.test(box) && findMarkdownLinks(box).length >= 2) {
+    // Strip do marcador 📚 (igual ao 🛒 acima): sem isso, um box de 1 parágrafo
+    // com 2 links inline cai no path single-para de renderIntroCallout, que NÃO
+    // remove o marcador de box não-📣 — o "📚" vazaria cru no meio do texto.
+    return renderIntroCallout(box.replace(/^\s*📚[ \t]*\r?\n?/u, ""), "serif", true);
   }
   return renderMidCallout(box, imageUrl);
 }

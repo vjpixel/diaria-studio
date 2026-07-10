@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 
@@ -46,7 +46,6 @@ import {
 } from "../scripts/lib/lint-checks/eia-answer-check.ts";
 import {
   checkIntentionalError as ieDirect,
-  extractFrontmatter as efDirect,
 } from "../scripts/lib/lint-checks/intentional-error.ts";
 import {
   checkSectionItemFormat as sifDirect,
@@ -69,7 +68,6 @@ import {
   checkTitleLengths as tlenReexport,
   checkEiaAnswer as eiaAnsReexport,
   checkIntentionalError as ieReexport,
-  extractFrontmatter as efReexport,
   checkSectionItemFormat as sifReexport,
   lintNewsletter as lnReexport,
   extractUrlsBySection as eubReexport,
@@ -90,7 +88,6 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(tlenReexport, tlenDirect);
     assert.strictEqual(eiaAnsReexport, eiaAnsDirect);
     assert.strictEqual(ieReexport, ieDirect);
-    assert.strictEqual(efReexport, efDirect);
     assert.strictEqual(sifReexport, sifDirect);
     assert.strictEqual(lnReexport, lnDirect);
     assert.strictEqual(eubReexport, eubDirect);
@@ -273,36 +270,32 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(tc.ok, true);
   });
 
-  it("intentional-error: extractFrontmatter + checkIntentionalError standalone", () => {
-    // extractFrontmatter: canonical line-1
-    assert.equal(efDirect("---\nfoo: bar\n---\n\nbody"), "foo: bar");
-    assert.equal(efDirect("# sem frontmatter"), null);
+  it("intentional-error: checkIntentionalError standalone", () => {
     // checkIntentionalError exige arquivo no disco → não-existente falha
     const r = ieDirect("/tmp/__nonexistent-edition__/02-reviewed.md");
     assert.equal(r.ok, false);
     assert.match(r.label ?? "", /not found/);
   });
 
-  it("P1 fix #2300: checkIntentionalError rejeita valores {PREENCHER} no frontmatter", () => {
-    // Regressão: ensureIntentionalErrorFrontmatter insere placeholders {PREENCHER — ...}
+  it("P1 fix #2300: checkIntentionalError rejeita valores {PREENCHER} em _internal/intentional-error.json (#3222)", () => {
+    // Regressão: ensureIntentionalErrorJson insere placeholders {PREENCHER — ...}
     // que são não-vazios e passavam no guard `value.length > 0`. Se o editor esquecesse
     // de preenchê-los, sync-intentional-error.ts gravaria placeholders no JSONL.
-    // Verificar via arquivo temporário no disco (checkIntentionalError lê do disco).
+    // Verificar via arquivo temporário no disco (checkIntentionalError lê o JSON sibling).
     const tmp = mkdtempSync(pathJoin(tmpdir(), "lint-preencher-"));
     try {
       const mdPath = pathJoin(tmp, "02-reviewed.md");
+      const internalDir = pathJoin(tmp, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(mdPath, "Corpo.", "utf8");
       writeFileSync(
-        mdPath,
-        [
-          "---",
-          "intentional_error:",
-          '  description: "{PREENCHER — o que o assinante deve identificar}"',
-          '  location: "{PREENCHER — ex: DESTAQUE 2}"',
-          '  category: "{PREENCHER — factual|ortografico}"',
-          '  correct_value: "{PREENCHER — valor correto}"',
-          "---",
-          "Corpo.",
-        ].join("\n"),
+        pathJoin(internalDir, "intentional-error.json"),
+        JSON.stringify({
+          description: "{PREENCHER — o que o assinante deve identificar}",
+          location: "{PREENCHER — ex: DESTAQUE 2}",
+          category: "{PREENCHER — factual|ortografico}",
+          correct_value: "{PREENCHER — valor correto}",
+        }),
         "utf8",
       );
       const result = ieDirect(mdPath);

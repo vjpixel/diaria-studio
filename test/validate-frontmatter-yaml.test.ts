@@ -1,181 +1,100 @@
 /**
- * test/validate-frontmatter-yaml.test.ts (#2553)
+ * test/validate-frontmatter-yaml.test.ts (#2553; migrado pra JSON #3222)
  *
- * Testa o guard pós-title-picker que valida o frontmatter YAML de
- * `02-reviewed.md`. Cobre o bug real da edição 260625: title-picker colapsou
- * `intentional_error` de YAML multi-linha para uma única linha corrompida.
+ * Testa o guard `validateIntentionalErrorJson` — valida o schema de
+ * `_internal/intentional-error.json`.
+ *
+ * Histórico (#3205/#3222): até 260710 este script detectava colapso de YAML
+ * multi-linha no frontmatter de `02-reviewed.md` (bug real da edição 260625:
+ * title-picker colapsou `intentional_error` de YAML multi-linha para uma
+ * única linha corrompida `## intentional_error: description: "..." ...`).
+ * A causa raiz era o round-trip via Google Docs — `02-reviewed.md` sincroniza
+ * com o Drive e o exportador do Docs não preserva indentação/quebras de linha
+ * em blocos `---...---`. A correção (#3222) move os campos estruturados pra
+ * `_internal/intentional-error.json`, que nunca sincroniza com o Drive — não
+ * existe mais bloco YAML pra colapsar, então a classe de bug "colapso de YAML
+ * multi-linha via round-trip" é estruturalmente impossível agora. Os testes
+ * de fixture de colapso foram removidos; o script foi repurposed para validar
+ * o schema JSON (campos presentes/preenchidos), não mais parsing YAML.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import {
-  validateFrontmatterYaml,
+  validateIntentionalErrorJson,
   REQUIRED_IE_FIELDS,
 } from "../scripts/validate-frontmatter-yaml.ts";
+import { intentionalErrorJsonPath } from "../scripts/lib/intentional-errors.ts";
+import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/** Frontmatter válido (5 chaves, multi-linha) */
-const VALID_MD = `---
-intentional_error:
-  description: "Nubank está avaliado em US$ 12 bilhões"
-  location: "DESTAQUE 2, parágrafo 1"
-  category: "numeric"
-  correct_value: "US$ 10 bilhões"
-  reveal: "Na última edição, escrevi US$ 12 bi onde o correto é US$ 10 bi."
----
+/** Record válido (5 chaves preenchidas) */
+const VALID_RECORD: IntentionalErrorJson = {
+  description: "Nubank está avaliado em US$ 12 bilhões",
+  location: "DESTAQUE 2, parágrafo 1",
+  category: "numeric",
+  correct_value: "US$ 10 bilhões",
+  reveal: "Na última edição, escrevi US$ 12 bi onde o correto é US$ 10 bi.",
+};
 
-TÍTULO
+/** Record com placeholders {PREENCHER} (inserido automaticamente pelo render-erro-intencional) */
+const PLACEHOLDER_RECORD: IntentionalErrorJson = {
+  description: "{PREENCHER — o que o assinante deve identificar}",
+  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}",
+  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}",
+  correct_value: "{PREENCHER — valor correto}",
+  reveal: "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição}",
+};
 
-GPT-5 chega com Codex Superapp
-
-SUBTÍTULO
-
-Nubank vira unicórnio
-
----
-
-DESTAQUE 1 | 🚀 LANÇAMENTO
-
-Título do destaque 1
-
-Corpo do destaque.
-`;
-
-/** Frontmatter corrompido — exatamente como relatado na edição 260625 */
-const COLLAPSED_MD = `## intentional_error: description: "Nubank está avaliado em US$ 12 bilhões" location: "DESTAQUE 2, parágrafo 1" category: "numeric" correct_value: "US$ 10 bilhões" reveal: "Na última edição, escrevi X onde o correto é Y."
-
-TÍTULO
-
-GPT-5 chega com Codex Superapp
-`;
-
-/** Frontmatter colapsado sem prefixo ## (variante possível) */
-const COLLAPSED_NO_PREFIX_MD = `---
-intentional_error: description: "Nubank" location: "DESTAQUE 2" category: "numeric" correct_value: "US$ 10 bi" reveal: "Na última edição, escrevi X."
----
-corpo
-`;
-
-/** Frontmatter com intentional_error mas sem chave `reveal` (4 de 5 campos) */
-const MISSING_REVEAL_MD = `---
-intentional_error:
-  description: "Descrição do erro"
-  location: "DESTAQUE 1, parágrafo 2"
-  category: "ortografico"
-  correct_value: "Nubank"
----
-corpo
-`;
-
-/** Frontmatter com placeholders {PREENCHER} (inserido automaticamente pelo render-erro-intencional) */
-const PLACEHOLDER_MD = `---
-intentional_error:
-  description: "{PREENCHER — o que o assinante deve identificar}"
-  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"
-  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"
-  correct_value: "{PREENCHER — valor correto}"
-  reveal: "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição}"
----
-corpo
-`;
-
-/** Sem frontmatter algum */
-const NO_FRONTMATTER_MD = `TÍTULO
-
-GPT-5 chega
-
-DESTAQUE 1 | 🚀 LANÇAMENTO
-
-Corpo.
-`;
-
-/** Frontmatter sem chave intentional_error */
-const NO_IE_KEY_MD = `---
-outro_campo: valor
----
-corpo
-`;
-
-/** intentional_error: none (#2016) */
-const IE_NONE_MD = `---
-intentional_error: none
----
-corpo
-`;
-
-/** CRLF — frequente no Windows/OneDrive */
-const VALID_CRLF_MD = VALID_MD.replace(/\n/g, "\r\n");
+/** Record com 4 de 5 campos (reveal faltando) */
+const MISSING_REVEAL_RECORD: IntentionalErrorJson = {
+  description: "Descrição do erro",
+  location: "DESTAQUE 1, parágrafo 2",
+  category: "ortografico",
+  correct_value: "Nubank",
+};
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("validateFrontmatterYaml — frontmatter válido (#2553)", () => {
-  it("OK com frontmatter completo (5 chaves, multi-linha)", () => {
-    const r = validateFrontmatterYaml(VALID_MD);
+describe("validateIntentionalErrorJson — record válido (#2553/#3222)", () => {
+  it("OK com record completo (5 chaves preenchidas)", () => {
+    const r = validateIntentionalErrorJson(VALID_RECORD);
     assert.equal(r.ok, true, `esperado ok=true, message: ${r.message}`);
     assert.equal(r.checked, true);
-    assert.equal(r.collapsed, false);
     assert.deepEqual(r.missing_fields, []);
   });
 
-  it("OK com placeholders {PREENCHER} — estrutura correta mesmo sem valores reais", () => {
-    const r = validateFrontmatterYaml(PLACEHOLDER_MD);
-    assert.equal(r.ok, true, `esperado ok=true, message: ${r.message}`);
-    assert.equal(r.collapsed, false);
+  it("FAIL com placeholders {PREENCHER} — tratados como não-preenchidos (widening vs script antigo)", () => {
+    // Diferença deliberada do script antigo: frontmatter YAML aceitava placeholders
+    // como "estrutura OK, valores incompletos é problema do Stage 5". O novo script
+    // JSON trata placeholder como campo ausente — mais estrito, já que o schema JSON
+    // não tem ambiguidade estrutural pra validar separadamente do conteúdo.
+    const r = validateIntentionalErrorJson(PLACEHOLDER_RECORD);
+    assert.equal(r.ok, false, `esperado ok=false pra record só com placeholders, message: ${r.message}`);
+    assert.equal(r.missing_fields.length, REQUIRED_IE_FIELDS.length);
   });
 
-  it("OK com intentional_error: none (#2016)", () => {
-    const r = validateFrontmatterYaml(IE_NONE_MD);
+  it("OK com { no_error: true } (#2016)", () => {
+    const r = validateIntentionalErrorJson({ no_error: true });
     assert.equal(r.ok, true, `esperado ok=true, message: ${r.message}`);
     assert.equal(r.checked, true);
-    assert.equal(r.collapsed, false);
-    assert.match(r.message, /none/);
+    assert.match(r.message, /no_error/);
   });
 
-  it("OK com CRLF (Windows/OneDrive) — parser canônico é CRLF-safe", () => {
-    const r = validateFrontmatterYaml(VALID_CRLF_MD);
-    assert.equal(r.ok, true, `esperado ok=true com CRLF, message: ${r.message}`);
-  });
-
-  it("OK (checked=false) quando sem frontmatter — outro check captura", () => {
-    const r = validateFrontmatterYaml(NO_FRONTMATTER_MD);
+  it("OK (checked=false) quando record é null — outro check (check-stage2-invariants) captura ausência", () => {
+    const r = validateIntentionalErrorJson(null);
     assert.equal(r.ok, true);
     assert.equal(r.checked, false);
-    assert.match(r.message, /frontmatter ausente/);
-  });
-
-  it("OK (checked=false) quando frontmatter sem chave intentional_error — check-stage2-invariants captura", () => {
-    const r = validateFrontmatterYaml(NO_IE_KEY_MD);
-    assert.equal(r.ok, true);
-    assert.equal(r.checked, false);
-    assert.match(r.message, /intentional_error ausente/);
-  });
-});
-
-describe("validateFrontmatterYaml — corrupção real (bug 260625, #2553)", () => {
-  it("FAIL com frontmatter colapsado (caso exato da edição 260625 — prefixo ##)", () => {
-    // Este é o caso real: title-picker produziu linha única com `## intentional_error: ...`
-    const r = validateFrontmatterYaml(COLLAPSED_MD);
-    assert.equal(r.ok, false, `esperado ok=false para frontmatter colapsado, message: ${r.message}`);
-    assert.equal(r.collapsed, true, "deve sinalizar que o bloco foi colapsado");
-    assert.match(r.message, /colapsado|corrompido/i);
-  });
-
-  it("FAIL com frontmatter colapsado sem prefixo ## (variante)", () => {
-    const r = validateFrontmatterYaml(COLLAPSED_NO_PREFIX_MD);
-    assert.equal(r.ok, false, `esperado ok=false para colapsado sem ##, message: ${r.message}`);
-    assert.equal(r.collapsed, true);
-  });
-
-  it("FAIL quando chave `reveal` faltando (4 de 5 campos presentes)", () => {
-    const r = validateFrontmatterYaml(MISSING_REVEAL_MD);
-    assert.equal(r.ok, false, `esperado ok=false para reveal faltando, message: ${r.message}`);
-    assert.equal(r.collapsed, false, "não deve ser marcado como colapsado — é campo faltando");
-    assert.ok(r.missing_fields.includes("reveal"), `missing_fields deve incluir 'reveal', got: ${JSON.stringify(r.missing_fields)}`);
+    assert.match(r.message, /ausente/);
   });
 
   it("REQUIRED_IE_FIELDS tem as 5 chaves esperadas", () => {
@@ -186,34 +105,107 @@ describe("validateFrontmatterYaml — corrupção real (bug 260625, #2553)", () 
   });
 });
 
-describe("validateFrontmatterYaml — chaves parcialmente ausentes", () => {
-  it("FAIL quando todas as chaves ausentes (só chave raiz present, bloco vazio)", () => {
-    // Frontmatter com `intentional_error:` mas sem sub-chaves indentadas
-    const md = `---
-intentional_error:
----
-corpo
-`;
-    const r = validateFrontmatterYaml(md);
+describe("validateIntentionalErrorJson — campos faltando/incompletos (#2553/#3222)", () => {
+  it("FAIL quando chave `reveal` faltando (4 de 5 campos presentes)", () => {
+    const r = validateIntentionalErrorJson(MISSING_REVEAL_RECORD);
+    assert.equal(r.ok, false, `esperado ok=false para reveal faltando, message: ${r.message}`);
+    assert.ok(r.missing_fields.includes("reveal"), `missing_fields deve incluir 'reveal', got: ${JSON.stringify(r.missing_fields)}`);
+    assert.equal(r.missing_fields.length, 1);
+  });
+
+  it("FAIL quando record é objeto vazio (todas as 5 chaves ausentes)", () => {
+    const r = validateIntentionalErrorJson({});
     assert.equal(r.ok, false, `esperado ok=false, message: ${r.message}`);
-    // Quando o bloco está vazio (sem sub-chaves), missing_fields lista todas as 5
     assert.equal(r.missing_fields.length, REQUIRED_IE_FIELDS.length, `todas as 5 chaves devem estar faltando, got: ${JSON.stringify(r.missing_fields)}`);
   });
 
   it("FAIL quando 3 chaves presentes e 2 ausentes", () => {
-    const md = `---
-intentional_error:
-  description: "teste"
-  location: "DESTAQUE 1"
-  category: "factual"
----
-corpo
-`;
-    const r = validateFrontmatterYaml(md);
+    const record: IntentionalErrorJson = {
+      description: "teste",
+      location: "DESTAQUE 1",
+      category: "factual",
+    };
+    const r = validateIntentionalErrorJson(record);
     assert.equal(r.ok, false, `esperado ok=false, message: ${r.message}`);
     const missing = r.missing_fields;
     assert.ok(missing.includes("correct_value"), "correct_value deve estar faltando");
     assert.ok(missing.includes("reveal"), "reveal deve estar faltando");
     assert.equal(missing.length, 2);
+  });
+
+  it("FAIL quando campo é string vazia (não conta como preenchido)", () => {
+    const record: IntentionalErrorJson = {
+      description: "",
+      location: "DESTAQUE 1",
+      category: "factual",
+      correct_value: "X",
+      reveal: "Na última edição, X.",
+    };
+    const r = validateIntentionalErrorJson(record);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing_fields, ["description"]);
+  });
+});
+
+describe("validate-frontmatter-yaml.ts CLI — deriva _internal/intentional-error.json do --md (#3222)", () => {
+  function runCli(mdPath: string) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "validate-frontmatter-yaml.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--md", mdPath],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  it("exit 0 quando _internal/intentional-error.json (sibling de --md) é válido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "validate-ie-json-cli-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(mdPath, "Corpo.\n", "utf8");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(intentionalErrorJsonPath(dir), JSON.stringify(VALID_RECORD, null, 2), "utf8");
+      const r = runCli(mdPath);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 1 quando _internal/intentional-error.json tem campos faltando", () => {
+    const dir = mkdtempSync(join(tmpdir(), "validate-ie-json-cli-fail-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(mdPath, "Corpo.\n", "utf8");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(intentionalErrorJsonPath(dir), JSON.stringify(MISSING_REVEAL_RECORD, null, 2), "utf8");
+      const r = runCli(mdPath);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /reveal/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 0 (checked=false) quando _internal/intentional-error.json não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "validate-ie-json-cli-missing-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      writeFileSync(mdPath, "Corpo.\n", "utf8");
+      const r = runCli(mdPath);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.checked, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 2 quando --md aponta pra arquivo inexistente", () => {
+    const r = runCli("/tmp/__nonexistent-edition__/02-reviewed.md");
+    assert.equal(r.status, 2);
   });
 });

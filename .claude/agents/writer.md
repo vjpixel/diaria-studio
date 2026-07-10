@@ -90,16 +90,14 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    ---
    ```
 
-   O `{placeholder}` é substituído pelo `render-erro-intencional.ts` pós-Clarice. O script lê a declaração de primeira pessoa que o **EDITOR** (não o writer) escreveu na edição anterior — em **prioridade**: (1) frontmatter `intentional_error.description` (ou `.narrative`) do `02-reviewed.md` daquela edição (#2398); (2) fallback para a prosa "Nessa edição, …" no corpo, para edições legadas sem frontmatter preenchido — e compõe o reveal.
+   O `{placeholder}` é substituído pelo `render-erro-intencional.ts` pós-Clarice. O script lê a declaração de primeira pessoa que o **EDITOR** (não o writer) forneceu pra edição anterior — em **prioridade**: (1) campo `reveal` (ou `description`, catálogo) de `_internal/intentional-error.json` daquela edição (#3222 — migrado do antigo frontmatter YAML de `02-reviewed.md`, que colapsava no round-trip via Google Docs, #3205); (2) fallback para a prosa "Nessa edição, …" no corpo, para edições legadas sem o JSON preenchido — e compõe o reveal.
 
-   **Responsabilidade do EDITOR (não do writer):** o editor preenche, no frontmatter `intentional_error.description` do `02-reviewed.md` da edição corrente, a descrição do erro real desta edição. Essa declaração será usada pela PRÓXIMA edição como reveal. O formato correto é:
-   > "description: DESTAQUE N [descrição do que está errado e por quê é errado]."
+   **Responsabilidade do EDITOR (não do writer):** o editor fornece (via chat, não editando o Drive — `_internal/*` nunca sincroniza com o Drive) a descrição do erro real desta edição, que o orchestrator grava em `_internal/intentional-error.json` da edição corrente (campos `description`/`location`/`category`/`correct_value`/`reveal`). Essa declaração será usada pela PRÓXIMA edição como reveal. Exemplo de `description`:
+   > `"DESTAQUE 2 lista o Spotify entre os assistentes de IA. O Spotify é um serviço de streaming, não um chatbot de IA."`
 
-   Exemplo: `description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA. O Spotify é um serviço de streaming, não um chatbot de IA."`
+   O corpo do bloco ERRO INTENCIONAL pode ter o convite genérico ao sorteio — o lint NÃO sinaliza se `description` (em `_internal/intentional-error.json`) estiver preenchida com declaração específica (#2398, migrado #3222).
 
-   O corpo do bloco ERRO INTENCIONAL pode ter o convite genérico ao sorteio — o lint NÃO sinaliza se o frontmatter `description` estiver preenchido com declaração específica (#2398).
-
-   O lint do Stage 4 (`narrative-not-generic-placeholder`) só dispara (warning) quando o frontmatter `description` está vazio E a linha "Nessa edição, …" no corpo é o texto genérico do convite.
+   O lint do Stage 4 (`narrative-not-generic-placeholder`) só dispara (warning) quando `description` está vazia E a linha "Nessa edição, …" no corpo é o texto genérico do convite.
 
    Writer: não tentar derivar o gabarito da edição anterior — o script TS faz isso automaticamente. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
 
