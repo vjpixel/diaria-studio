@@ -14,7 +14,7 @@ describe("platform-config schema (#632)", () => {
       publication_id: "pub_abc123",
       drive_sync: true,
       image_generator: "gemini",
-      inbox: { enabled: true, gmailQuery: "label:Diaria.Editor", address: "test@test.com" },
+      inbox: { enabled: true, gmailQuery: "in:sent to:diariaeditor@gmail.com", address: "test@test.com" },
       publishing: {
         newsletter: { platform: "beehiiv", template: "Default" },
         social: {
