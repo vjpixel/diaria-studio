@@ -23,6 +23,15 @@
  *       mais o dispatch social inteiro (bug original: exit 3 fatal travava
  *       LinkedIn+Facebook+Instagram+Threads da edicao inteira por um falso
  *       positivo — ver issue #3277).
+ *   (d) warnUnresolvedPlaceholders — unidade extraida de main() (#3277 code
+ *       review): o warning REALMENTE e persistido em data/run-log.jsonl (nao
+ *       so impresso), com rootDir isolado (tmpdir injetado) para nao gravar
+ *       warns fabricados no log de producao real — regressao do bug achado
+ *       pelo proprio code-review desta PR: a chamada original a logEvent()
+ *       nao passava rootDir e poluia data/run-log.jsonl real a cada test run.
+ *       Tambem cobre a regressao de ordering achada pelo sweep do code-review:
+ *       "OK: ..." nao pode mais ser impresso incondicionalmente antes de um
+ *       exit(1) por 03-social.md ausente (ver secao c, teste dedicado).
  */
 
 import { describe, it } from "node:test";
@@ -39,6 +48,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
+import { warnUnresolvedPlaceholders } from "../scripts/resolve-edition-url.ts";
 
 // Importar funcoes puras diretamente para testes unitarios
 import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
@@ -287,20 +297,54 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
     );
-    assert.equal(exitCode, 0, `#3277: placeholder generico nao-deferred NAO deve mais bloquear o dispatch, obteve ${exitCode}`);
-    const combined = stderr + stdout;
-    assert.match(combined, /\{algum_placeholder_novo\}/);
-    assert.match(combined, /AVISO/);
-    assert.match(combined, /guard anti-placeholder/);
-    assert.match(combined, /bloqueado/i);
+    try {
+      assert.equal(exitCode, 0, `#3277: placeholder generico nao-deferred NAO deve mais bloquear o dispatch, obteve ${exitCode}`);
+      const combined = stderr + stdout;
+      assert.match(combined, /\{algum_placeholder_novo\}/);
+      assert.match(combined, /AVISO/);
+      assert.match(combined, /guard anti-placeholder/);
+      // #3277 sweep finding: /bloqueado/i sozinho passaria mesmo se "NÃO foi
+      // bloqueado" virasse "foi bloqueado" por engano (regex nao pinava a
+      // negacao). Fixado pra exigir a negacao adjacente à palavra.
+      assert.match(combined, /n[ãa]o\s+foi\s+bloqueado/i, "deve afirmar explicitamente que NAO foi bloqueado, nao so conter a palavra 'bloqueado'");
 
-    // {edition_url} ainda deve ter sido substituido (o write acontece antes da
-    // validacao) — so o placeholder desconhecido permanece, mas nao bloqueia.
-    const rewrittenPath = resolve(editionDir, "03-social.md");
-    const rewritten = readFileSync(rewrittenPath, "utf8");
-    assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido");
-    assert.ok(rewritten.includes("{algum_placeholder_novo}"), "placeholder desconhecido permanece intocado");
-    rmSync(tmp, { recursive: true, force: true });
+      // {edition_url} ainda deve ter sido substituido (o write acontece antes da
+      // validacao) — so o placeholder desconhecido permanece, mas nao bloqueia.
+      const rewrittenPath = resolve(editionDir, "03-social.md");
+      const rewritten = readFileSync(rewrittenPath, "utf8");
+      assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido");
+      assert.ok(rewritten.includes("{algum_placeholder_novo}"), "placeholder desconhecido permanece intocado");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // #3277 sweep finding (code review desta PR): numa iteracao anterior deste
+  // fix, mover o "OK: ..." pra logo apos o write fez ele imprimir mesmo
+  // quando --validate-social ia abortar com exit(1) por 03-social.md ausente
+  // — o sentinel de sucesso mentindo sobre o resultado real do processo.
+  // Este teste prova que isso NAO acontece mais: com 03-social.md ausente,
+  // "OK:" nunca deve aparecer no stdout, so o erro + exit 1.
+  it("#3277 sweep: --validate-social com 03-social.md ausente → exit 1 SEM imprimir 'OK:' antes do erro", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "resolve-edition-url-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+    // Nao cria 03-social.md de propósito.
+    try {
+      const result = spawnSync(
+        NPX,
+        ["tsx", "scripts/resolve-edition-url.ts", "--edition-dir", editionDir, "--slug", "x", "--validate-social"],
+        { encoding: "utf8", stdio: "pipe", shell: isWindows },
+      );
+      assert.equal(result.status, 1, "03-social.md ausente deve abortar com exit 1");
+      assert.match(result.stderr ?? "", /03-social\.md não encontrado/);
+      assert.ok(
+        !(result.stdout ?? "").includes("OK:"),
+        `"OK:" NAO deve aparecer no stdout quando o processo termina em exit 1: ${result.stdout}`,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   // #3277 regressao direta da issue: um post citando um exemplo de campo de
@@ -322,21 +366,24 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
     );
-    assert.equal(
-      exitCode,
-      0,
-      `#3277: prosa legitima citando {system_prompt} nao deve bloquear o dispatch social, obteve ${exitCode}`,
-    );
-    const combined = stderr + stdout;
-    assert.match(combined, /\{system_prompt\}/, "warning deve mencionar o placeholder ambiguo encontrado");
+    try {
+      assert.equal(
+        exitCode,
+        0,
+        `#3277: prosa legitima citando {system_prompt} nao deve bloquear o dispatch social, obteve ${exitCode}`,
+      );
+      const combined = stderr + stdout;
+      assert.match(combined, /\{system_prompt\}/, "warning deve mencionar o placeholder ambiguo encontrado");
 
-    // {edition_url} resolvido, {outros_count} permanece (deferred), {system_prompt}
-    // permanece intocado (nao e um placeholder conhecido do pipeline).
-    const rewritten = readFileSync(resolve(editionDir, "03-social.md"), "utf8");
-    assert.ok(!rewritten.includes("{edition_url}"));
-    assert.ok(rewritten.includes("{outros_count}"), "{outros_count} e deferred, nao deve ser tocado aqui");
-    assert.ok(rewritten.includes("{system_prompt}"), "prosa legitima nao deve ser alterada pelo guard");
-    rmSync(tmp, { recursive: true, force: true });
+      // {edition_url} resolvido, {outros_count} permanece (deferred), {system_prompt}
+      // permanece intocado (nao e um placeholder conhecido do pipeline).
+      const rewritten = readFileSync(resolve(editionDir, "03-social.md"), "utf8");
+      assert.ok(!rewritten.includes("{edition_url}"));
+      assert.ok(rewritten.includes("{outros_count}"), "{outros_count} e deferred, nao deve ser tocado aqui");
+      assert.ok(rewritten.includes("{system_prompt}"), "prosa legitima nao deve ser alterada pelo guard");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   // #2454-finding-1: regressao — {outros_count} e deferred, nao bloqueia dispatch.
@@ -383,5 +430,77 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     assert.ok(content.includes("/automacao-e-panico-no-mercado"), `URL deve ter slug sem acentos: ${content}`);
     assert.ok(!content.includes("automa-o"), `slug nao deve ter 'automa-o': ${content}`);
     rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+// ── (d) warnUnresolvedPlaceholders — o warning REALMENTE e persistido ───────
+//
+// #3277 code review (achado num code-review max-effort desta PR): a
+// implementacao inicial chamava logEvent() sem rootDir, entao caia no
+// default process.cwd() — em producao normalmente == raiz do repo
+// (inofensivo), mas nos testes da secao (c) acima, que spawnam o CLI via
+// spawnSync SEM cwd override, isso gravava warns FABRICADOS (edition
+// "260999") direto em data/run-log.jsonl real do worktree. Corrigido:
+// main() agora sempre passa ROOT explicitamente pra logEvent (nunca confia
+// em process.cwd() implicito, mesma filosofia ja usada pra resolver
+// --edition-dir contra ROOT). Este bloco testa a funcao extraida
+// diretamente, com rootDir isolado (tmpdir), pra provar que o side-effect
+// (nao so o texto impresso) esta correto.
+describe("warnUnresolvedPlaceholders (#3277 — o warning REALMENTE e persistido, rootDir isolado)", () => {
+  it("persiste warn em data/run-log.jsonl com os campos corretos", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "resolve-edition-url-warn-"));
+    try {
+      warnUnresolvedPlaceholders(
+        ["{system_prompt}"],
+        "260623",
+        "https://diar.ia.br/p/titulo-d1",
+        "/fake/edition/03-social.md",
+        dir,
+      );
+
+      const logPath = resolve(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "data/run-log.jsonl deveria existir apos o warning");
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      const entry = JSON.parse(lines[lines.length - 1]);
+      assert.equal(entry.level, "warn");
+      assert.equal(entry.edition, "260623");
+      assert.equal(entry.stage, 5);
+      assert.equal(entry.agent, "resolve-edition-url");
+      assert.match(entry.message, /guard anti-placeholder \(#3277\)/);
+      assert.deepEqual(entry.details.unresolved, ["{system_prompt}"]);
+      assert.equal(entry.details.edition_url, "https://diar.ia.br/p/titulo-d1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("editionId null → grava edition:null e a dica impressa nao repete o placeholder {edition} literal", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "resolve-edition-url-warn-noedition-"));
+    const originalWarn = console.warn;
+    let printed = "";
+    console.warn = (msg: string) => { printed = msg; };
+    try {
+      warnUnresolvedPlaceholders(
+        ["{campo_novo}"],
+        null,
+        "https://diar.ia.br/p/titulo-d1",
+        "/fake/edition/03-social.md",
+        dir,
+      );
+
+      const logPath = resolve(dir, "data", "run-log.jsonl");
+      const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+      assert.equal(entry.edition, null);
+      // #3277 finding (angle A do code-review): antes do fix, a dica impressa
+      // citava literalmente "/diaria-log {edition} warn" (placeholder nao
+      // substituido) quando editionId era null — confuso, parece um bug
+      // igual ao que o proprio guard esta reportando. Agora deve orientar
+      // por agent em vez de citar um {edition} nao-resolvido.
+      assert.ok(!printed.includes("{edition} warn"), `dica nao deve conter placeholder literal: ${printed}`);
+      assert.match(printed, /resolve-edition-url/);
+    } finally {
+      console.warn = originalWarn;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

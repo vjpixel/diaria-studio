@@ -68,7 +68,8 @@ export interface Signal {
     | "mcp_unavailable"
     | "test_warning"
     | "runtime_fix"
-    | "clarice_skip";
+    | "clarice_skip"
+    | "placeholder_guard_warning";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -623,6 +624,80 @@ export function signalsFromClariceSkips(
 }
 
 // ===========================================================================
+// Signal 5b (#3277): guard anti-placeholder de resolve-edition-url.ts —
+// aviso NÃO-FATAL persistido em data/run-log.jsonl quando um placeholder
+// {snake_case} sobra em 03-social.md após a substituição de {edition_url}.
+// ===========================================================================
+
+/**
+ * Conta eventos do guard anti-placeholder (#3277, `resolve-edition-url.ts`)
+ * no run-log de uma edição específica.
+ *
+ * Diferente de Signal 5a (clarice_skip, threshold 2 pra "high") — aqui UM
+ * único evento já vira signal. "Não-fatal" (#3277) significa que o dispatch
+ * social JÁ ACONTECEU com o placeholder possivelmente ainda literal no post
+ * publicado (LinkedIn/Facebook/Instagram/Threads); sem este signal, o único
+ * jeito de descobrir seria um humano lembrar de rodar `/diaria-log {edition}
+ * warn` por conta própria — este é o mecanismo que de fato cumpre a promessa
+ * de "revisão humana recomendada" que o guard não-fatal faz (Stage 6 roda
+ * `collect-edition-signals.ts` incondicionalmente, sem precisar de
+ * `--include-test-warnings`, ver `.claude/agents/orchestrator-stage-6.md`).
+ */
+export function signalsFromPlaceholderGuardWarnings(
+  lines: string[],
+  edition: string | null,
+): Signal[] {
+  const occurrences: string[][] = [];
+  const firstAt: string[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+    // Guard: log line sem campo `edition` não deve ser atribuída à edição atual
+    // (mesma lógica de signalsFromClariceSkips / signalsFromTestWarnings).
+    if (edition && !parsed.edition) continue;
+    if (parsed.level !== "warn") continue;
+    if (!(parsed.message ?? "").startsWith("guard anti-placeholder (#3277)")) continue;
+
+    if (typeof parsed.timestamp === "string" && firstAt.length < 5) firstAt.push(parsed.timestamp);
+    const unresolvedRaw = parsed.details?.unresolved;
+    const unresolved = Array.isArray(unresolvedRaw)
+      ? unresolvedRaw.filter((v): v is string => typeof v === "string")
+      : [];
+    occurrences.push(unresolved);
+  }
+
+  if (occurrences.length === 0) return [];
+
+  const allPlaceholders = [...new Set(occurrences.flat())];
+
+  return [
+    {
+      kind: "placeholder_guard_warning",
+      severity: "medium",
+      title: `Guard anti-placeholder (#3277): ${allPlaceholders.join(", ") || "placeholder(s) não-identificado(s)"} pode ter ido ao ar literal no social`,
+      details: {
+        count: occurrences.length,
+        placeholders: allPlaceholders,
+        first_occurrences: firstAt,
+      },
+      suggested_action:
+        "Conferir o post social publicado (LinkedIn/Facebook/Instagram/Threads) desta edição — o(s) " +
+        "placeholder(s) acima pode ter ido ao ar literal, sem substituição. Se for prosa legítima citando " +
+        "um exemplo entre chaves (comum em conteúdo sobre IA), nenhuma ação necessária — fechar a issue. " +
+        "Se for bug real, verificar origem em writer-destaque/social-linkedin/social-facebook/stitch-newsletter.",
+      related_issue: "#3277",
+    },
+  ];
+}
+
+// ===========================================================================
 // Signal 5 (opt-in via --include-test-warnings, #519): generic error/warn
 // events na edição agrupados por agent + mensagem normalizada.
 //
@@ -662,6 +737,10 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   //   /\bclarice skip\b/i (legacy 260616 prose) → /\bclarice skip\b/i
   /clarice_skip/i,
   /\bclarice skip\b/i, // legacy prose match — keep in sync with signalsFromClariceSkips
+  // #3277 — guard anti-placeholder do resolve-edition-url.ts, já capturado
+  // por Signal 5b (signalsFromPlaceholderGuardWarnings). Manter em sync com
+  // o prefixo checado lá (`message.startsWith("guard anti-placeholder (#3277)")`).
+  /^guard anti-placeholder \(#3277\)/i,
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -915,6 +994,11 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       signals.push(...signalsFromMcpUnavailable(lines, edition));
       // Signal 5a (#2320): conta clarice_skip para observabilidade de frequência.
       signals.push(...signalsFromClariceSkips(lines, edition));
+      // Signal 5b (#3277): guard anti-placeholder não-fatal — roda incondicional
+      // (não gated por --include-test-warnings) pra garantir que a "revisão
+      // humana recomendada" do guard não-fatal tenha um caminho automático até
+      // o auto-reporter, já que Stage 6 roda este script sem a flag.
+      signals.push(...signalsFromPlaceholderGuardWarnings(lines, edition));
       if (opts.includeTestWarnings) {
         signals.push(...signalsFromTestWarnings(lines, edition));
       }
