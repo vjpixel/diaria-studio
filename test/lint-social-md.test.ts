@@ -593,6 +593,49 @@ Hoje a OpenAI lançou um novo modelo no Facebook também.
     assert.equal(r.matches.length, 1);
     assert.equal(r.matches[0].word.toLowerCase(), "hoje");
   });
+
+  it("texto DUPLICADO entre comment_pixel e post_pixel: comment_pixel continua disparando, post_pixel continua isento (self-review #3208 — exclusão por posição, não por conteúdo)", () => {
+    // Regressão do primeiro fix (mask por String.replace(texto, ...)): se o
+    // texto do post_pixel coincidir byte-a-byte com um comment_pixel mais
+    // cedo no doc (cenário real que lintPostPixelMatchesD1/#1861 existe pra
+    // detectar — post_pixel/comment_pixel são ambos "voz pessoal do Pixel"
+    // sobre o mesmo destaque), um replace por CONTEÚDO mascara a PRIMEIRA
+    // ocorrência (o comment_pixel, que é D+1+ e deveria continuar flagado)
+    // em vez do post_pixel real — o comment_pixel duplicado escapava do
+    // lint E o post_pixel legítimo continuava sendo (incorretamente)
+    // flagado. A exclusão por range de linha não pode errar o alvo.
+    const duplicated = "Hoje decidi comentar esse lançamento no feed pessoal.";
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+### comment_pixel
+
+${duplicated}
+
+## post_pixel
+
+${duplicated}
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false, "comment_pixel duplicado deve continuar disparando");
+    assert.equal(r.matches.length, 1, JSON.stringify(r.matches));
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+    // A linha reportada deve ser a do comment_pixel (mais cedo no doc), não a do post_pixel.
+    const ppHeaderLine = md.split("\n").findIndex((l) => l.trim() === "## post_pixel") + 1;
+    assert.ok(
+      r.matches[0].line < ppHeaderLine,
+      `esperava match ANTES da linha de ## post_pixel (${ppHeaderLine}), achou linha ${r.matches[0].line}`,
+    );
+  });
 });
 
 describe("lintLinkedinSchema (#595)", () => {
