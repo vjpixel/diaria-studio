@@ -3,6 +3,8 @@
  * Substitui o pattern args[args.indexOf(flag)+1] que retorna args[0] quando flag ausente.
  */
 
+import { fileURLToPath } from "node:url";
+
 export interface ParsedArgs {
   /** Flags booleanas presentes (ex: --force → flags.has("force")) */
   flags: Set<string>;
@@ -94,4 +96,32 @@ export function parseArgsWithTrueDefault(argv: string[]): Record<string, string>
     }
   }
   return out;
+}
+
+/**
+ * Detecta se o módulo atual foi invocado diretamente via CLI (não importado
+ * por outro módulo/teste). Uso: `if (isMainModule(import.meta.url)) { main(); }`.
+ *
+ * #2834: consolida 4 variantes de CLI-guard catalogadas no codebase (~226
+ * scripts):
+ *   (a) comparação manual de string `file://` com replace de backslash — a
+ *       maioria, escrita antes de `fileURLToPath`/`pathToFileURL` serem o
+ *       padrão adotado no repo;
+ *   (b) `process.argv[1] === fileURLToPath(import.meta.url)`;
+ *   (c) `import.meta.url === pathToFileURL(process.argv[1]).href`;
+ *   (d) `/\/scripts\/nome-do-arquivo\.ts$/.test(argv1)` — regex de sufixo,
+ *       mais permissiva que as outras 3 (casa por final de caminho, não por
+ *       igualdade exata).
+ * Todas resolvem pro mesmo objetivo prático e são equivalentes sob as formas
+ * de invocação usadas neste repo (tsx direto, path absoluto ou relativo, de
+ * qualquer cwd) — Node absolutiza `process.argv[1]` do script de entrada de
+ * forma consistente com `import.meta.url` em todos os casos verificados
+ * (incl. Windows). A variante (d) nunca precisou da leniência extra na
+ * prática: sob essas formas de invocação a comparação estrita já é sempre
+ * verdadeira quando o sufixo bateria.
+ */
+export function isMainModule(importMetaUrl: string): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  return fileURLToPath(importMetaUrl) === argv1;
 }

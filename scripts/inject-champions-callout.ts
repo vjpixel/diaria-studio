@@ -42,7 +42,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   editionToMonthSlug,
   previousMonthSlug,
@@ -200,8 +200,7 @@ async function main(): Promise<void> {
   console.log(`[inject-champions-callout] box de campeões (${championsMonthLabel}) + sorteio (${raffleDate}) injetado em ${args.reviewedPath}`);
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-const isDirectRun = /\/scripts\/inject-champions-callout\.ts$/.test(_argv1);
+const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) {
   await main();
 }

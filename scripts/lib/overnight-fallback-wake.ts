@@ -57,7 +57,7 @@
  * @see scripts/lib/check-watchdog-armed.ts (#2768, #2814)
  */
 
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // shouldWakeCheck / computeElapsedMin
@@ -237,16 +237,7 @@ export function needsActiveRecheck(input: RecheckInput): boolean {
 // adicionado no futuro.
 // ---------------------------------------------------------------------------
 
-if (
-  process.argv[1] &&
-  (() => {
-    try {
-      return import.meta.url === pathToFileURL(process.argv[1]).href;
-    } catch {
-      return false;
-    }
-  })()
-) {
+if (isMainModule(import.meta.url)) {
   console.log(
     "[overnight-fallback-wake] módulo de helpers puros (#2896) — sem CLI. " +
       "Importe shouldWakeCheck / computeElapsedMin / classifyResumeSignal.",

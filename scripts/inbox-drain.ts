@@ -30,7 +30,6 @@
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { parseGmailThread, parseGmailThreadsList } from "./lib/schemas/gmail.ts";
 import { logEvent } from "./lib/run-log.ts";
@@ -150,6 +149,7 @@ function extractTextBody(part: GmailMessagePart): string {
 // pra centralizar lógica e arrumar bug de `)` em URLs Wikipedia balanceadas.
 // Re-exports mantidos pra compat retroativa com test/inbox-drain.test.ts.
 import { URL_REGEX_RAW, extractUrls } from "./lib/url-utils.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 export { URL_REGEX_RAW as URL_REGEX, extractUrls };
 
 const EMAIL_SIGNATURE_MARKERS = [
@@ -659,7 +659,7 @@ async function main(): Promise<void> {
 
 export { main };
 
-const isMain = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) main().catch((err) => {
   const result: DrainResult = {

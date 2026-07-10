@@ -32,7 +32,7 @@ import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
 import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readEiaAnswer } from "./lib/eia-answer.ts";
-import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
@@ -787,9 +787,5 @@ function main() {
   );
 }
 
-const _isMain =
-  process.argv[1] != null &&
-  import.meta.url.endsWith(
-    process.argv[1].replaceAll("\\", "/").replace(/^.*\//, "")
-  );
+const _isMain = isMainModule(import.meta.url);
 if (_isMain) main();

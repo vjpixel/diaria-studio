@@ -25,7 +25,7 @@
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
+import { parseArgs as parseArgsStructured, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 export interface LintIssue {
   rule: string;
@@ -370,10 +370,6 @@ function main(): void {
   console.error(`\n✓ HTML ok (${result.warnings.length} warning(s) não-bloqueante[s]).`);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

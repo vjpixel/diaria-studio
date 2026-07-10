@@ -30,7 +30,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface PublicImage {
   file_id: string;
@@ -222,10 +222,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

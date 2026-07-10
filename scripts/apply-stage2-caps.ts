@@ -25,7 +25,7 @@ import {
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
 import { formatCoverageLine } from "./lib/inbox-stats.ts";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface CoverageLike {
   editor_submitted?: number;
@@ -104,10 +104,6 @@ function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

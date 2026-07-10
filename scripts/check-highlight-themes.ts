@@ -61,7 +61,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { runMain } from "./lib/exit-handler.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   tokenizeForJaccard,
   jaccardSimilarity,
@@ -843,10 +843,6 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(main);
 }

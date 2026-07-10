@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, getArg, hasFlag, parseArgsSimple } from "../scripts/lib/cli-args.ts";
+import { parseArgs, getArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
 
 describe("parseArgs — pares key-value", () => {
   it("extrai um par --key value", () => {
@@ -136,5 +136,50 @@ describe("parseArgsSimple — variante flat (#2834: consolida 21 duplicatas byte
 
   it("retorna Record vazio para argv vazio", () => {
     assert.deepEqual(parseArgsSimple([]), {});
+  });
+});
+
+describe("isMainModule — detecção de CLI-guard (#2834: consolida 4 variantes)", () => {
+  let originalArgv1: string | undefined;
+
+  beforeEach(() => {
+    originalArgv1 = process.argv[1];
+  });
+
+  afterEach(() => {
+    process.argv[1] = originalArgv1;
+  });
+
+  // Constrói pares (argv1, import.meta.url) via pathToFileURL/fileURLToPath
+  // nativos em vez de strings hardcoded — evita depender de sintaxe de path
+  // de uma plataforma específica (CI roda em ubuntu-latest, dev local em
+  // Windows; drive letters só existem no segundo).
+  it("retorna true quando import.meta.url resolve pro mesmo path de process.argv[1]", async () => {
+    const { pathToFileURL } = await import("node:url");
+    const path = process.platform === "win32" ? "C:\\repo\\scripts\\foo.ts" : "/repo/scripts/foo.ts";
+    process.argv[1] = path;
+    assert.equal(isMainModule(pathToFileURL(path).href), true);
+  });
+
+  it("retorna false quando os paths divergem (ex: importado por um teste)", async () => {
+    const { pathToFileURL } = await import("node:url");
+    const scriptPath = process.platform === "win32" ? "C:\\repo\\scripts\\foo.ts" : "/repo/scripts/foo.ts";
+    const testRunnerPath =
+      process.platform === "win32"
+        ? "C:\\repo\\node_modules\\.bin\\node-test-runner.js"
+        : "/repo/node_modules/.bin/node-test-runner.js";
+    process.argv[1] = testRunnerPath;
+    assert.equal(isMainModule(pathToFileURL(scriptPath).href), false);
+  });
+
+  it("retorna false quando process.argv[1] está ausente", () => {
+    // @ts-expect-error — simula argv[1] ausente (ex: REPL)
+    process.argv[1] = undefined;
+    assert.equal(isMainModule("file:///repo/scripts/foo.ts"), false);
+  });
+
+  it("retorna true em invocação Unix-style (sem drive letter)", { skip: process.platform === "win32" }, () => {
+    process.argv[1] = "/home/user/repo/scripts/bar.ts";
+    assert.equal(isMainModule("file:///home/user/repo/scripts/bar.ts"), true);
   });
 });

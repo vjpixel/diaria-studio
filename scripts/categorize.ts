@@ -30,9 +30,8 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import {
   AI_RELEVANT_TERMS,
@@ -242,7 +241,7 @@ function main(): void {
   }
 }
 
-if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main();
 }
 

@@ -21,7 +21,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
-import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 export interface MonthError {
@@ -227,10 +227,6 @@ function main(): number {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   process.exit(main());
 }

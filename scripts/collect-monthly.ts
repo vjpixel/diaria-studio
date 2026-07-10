@@ -32,6 +32,7 @@ import {
   parseMonthlyCycleArg,
 } from "./lib/mensal/monthly-paths.ts";
 import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
 // Alias para compat com usos internos (path join na MONTHLY_BASE).
@@ -522,10 +523,6 @@ function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

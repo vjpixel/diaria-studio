@@ -33,6 +33,7 @@ import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { deriveLeadCohort } from "./lib/clarice-segment.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   COHORT_ASSINANTES_ATIVOS,
   COHORT_EX_ASSINANTES,
@@ -813,10 +814,6 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

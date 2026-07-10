@@ -35,7 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { fetchRss } from "./fetch-rss.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CSV = resolve(ROOT, "seed/sources.csv");
@@ -370,11 +370,7 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(2);

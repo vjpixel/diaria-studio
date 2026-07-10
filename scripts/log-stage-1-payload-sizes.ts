@@ -37,7 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface FileSize {
   path: string;          // relative to repo root
@@ -212,10 +212,7 @@ function fmtTokens(t: number): string {
 }
 
 // Allow import without side effects (for tests)
-const isCli =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  /log-stage-1-payload-sizes\.ts$/.test(process.argv[1].replace(/\\/g, "/"));
+const isCli = isMainModule(import.meta.url);
 
 if (isCli) {
   const args = parseCliArgs(process.argv.slice(2)).values;

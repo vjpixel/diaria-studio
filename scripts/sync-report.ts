@@ -45,7 +45,7 @@ import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { attemptThreeWayMerge } from "./drive-sync.ts";
 import { unescapeMarkdown } from "./lib/markdown-unescape.ts";
-import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
+import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #1308 item 3
 import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 import { buildMultipartBody } from "./lib/drive-helpers.ts"; // #1308 item 4
 import { writeFileAtomic } from "./lib/atomic-write.ts"; // #1308 item 9
@@ -213,10 +213,6 @@ async function main() {
   }, null, 2));
 }
 // Roda só quando invocado direto via CLI — não quando importado por tests (#1308 #13)
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => { console.error("Fatal:", e); process.exit(1); });
 }

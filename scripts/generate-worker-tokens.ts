@@ -36,7 +36,8 @@
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -115,9 +116,9 @@ export const DS_FONTS = {
 // Guard de main-module: só escreve arquivos quando executado como script (não no import).
 // Sem este guard, qualquer `import { generateTokensContent }` do módulo sobrescreveria
 // os arquivos gerados em disco — tornando o teste de drift auto-realizável (sempre passa).
-// process.argv[1] pode ser undefined quando executado via `node --input-type=module` ou eval —
-// nesse caso o módulo está definitivamente sendo importado, não executado como script.
-if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// #2834: isMainModule() já trata process.argv[1] ausente (node --input-type=module,
+// eval) como "não é main" — mesma semântica do guard manual anterior.
+if (isMainModule(import.meta.url)) {
   const content = generateTokensContent(COLORS, FONTS);
 
   for (const outDir of outDirs) {

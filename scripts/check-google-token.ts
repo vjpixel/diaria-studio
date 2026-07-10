@@ -16,6 +16,7 @@
  */
 
 import { checkTokenHealth, renderTokenHealthBanner } from "./google-auth.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 async function main(): Promise<number> {
   const health = await checkTokenHealth();
@@ -27,8 +28,7 @@ async function main(): Promise<number> {
   return 1;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/check-google-token\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   // process.exitCode (não process.exit) — deixa o socket keep-alive do fetch
   // fechar antes do exit, evitando o assert libuv no Windows
   // (!(handle->flags & UV_HANDLE_CLOSING)) ao forçar exit durante o close.

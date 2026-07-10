@@ -25,7 +25,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { fmtTimeBrt, fmtDuration, escapeHtml } from "./lib/format.ts";
@@ -635,10 +635,6 @@ async function main(): Promise<void> {
   process.stderr.write(JSON.stringify(summary, null, 2) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(main);
 }

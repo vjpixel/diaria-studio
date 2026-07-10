@@ -34,7 +34,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, basename } from "node:path";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface ImageFreshnessIssue {
   type: "image_stale" | "image_unreachable";
@@ -242,7 +242,6 @@ async function mainCli(): Promise<number> {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/lint-test-email-image-freshness\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   mainCli().then((code) => process.exit(code));
 }

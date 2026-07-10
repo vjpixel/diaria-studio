@@ -61,6 +61,7 @@ import {
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -717,11 +718,7 @@ function main(): void {
 
 // CLI guard — required per repo invariant: scripts that export helpers AND
 // call main() need this guard so tests that import helpers don't trigger main()
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (e) {

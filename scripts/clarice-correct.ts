@@ -69,6 +69,7 @@ import {
   type ClariceChunkSuggestion,
 } from "./lib/clarice-chunk.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // #2835 — núcleo REST + retry/backoff extraído pra scripts/lib/clarice-correct-engine.ts
 // (movimentação pura). Reexportado abaixo pra preservar os call-sites/imports de teste
@@ -490,10 +491,6 @@ export async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   await main();
 }

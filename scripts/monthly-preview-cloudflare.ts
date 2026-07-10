@@ -39,6 +39,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
 import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage } from "./lib/mensal/monthly-image-upload.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { fetchMonthlyEiaPrevResultLine } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
 import {
   parseMonthlyCycleArg,
@@ -165,11 +166,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ yymm, cycle, html_path: htmlPath, dry_run: dryRun }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[monthly-preview-cloudflare] ${(e as Error).message}`);
     process.exit(1);

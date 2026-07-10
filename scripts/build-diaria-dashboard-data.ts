@@ -44,7 +44,7 @@ import {
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import https from "node:https";
-import { parseArgs as parseCliArgs, hasFlag } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   loadHealth,
   computeFailureStreak,
@@ -1216,11 +1216,7 @@ async function main() {
 }
 
 // So roda main() quando invocado diretamente (nao quando importado em testes)
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

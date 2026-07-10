@@ -40,6 +40,7 @@ import {
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -196,11 +197,7 @@ function main(): void {
   console.log(`\n✓ ${result.jsonlPath} re-escrito com ${result.drift.length} fix(es).`);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (e) {

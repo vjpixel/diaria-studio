@@ -18,6 +18,7 @@
 
 import { createHmac } from "node:crypto";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
@@ -60,7 +61,6 @@ function main(): void {
   console.log(url);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main();
 }

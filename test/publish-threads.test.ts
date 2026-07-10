@@ -257,12 +257,8 @@ describe("Credenciais THREADS obrigatórias", () => {
   });
 
   it("script tem CLI guard (não roda em import)", () => {
-    // Padrão CLI guard do repo: if (import.meta.url === `file://${_argv1}` ...)
-    assert.match(
-      SRC,
-      /import\.meta\.url.*_argv1|_argv1.*import\.meta\.url/s,
-      "deve ter CLI guard padrão do repo",
-    );
+    // Padrão CLI guard canônico do repo (#2834): isMainModule(import.meta.url)
+    assert.match(SRC, /isMainModule\(import\.meta\.url\)/, "deve ter CLI guard padrão do repo");
   });
 });
 

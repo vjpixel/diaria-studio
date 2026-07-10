@@ -15,7 +15,7 @@
  */
 
 import { fetchSitemapEntries } from "./lib/fetch-sitemap.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -36,10 +36,7 @@ async function main(): Promise<void> {
   if (result.error) process.exit(2);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const invokedDirectly =
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
+const invokedDirectly = isMainModule(import.meta.url);
 
 if (invokedDirectly) {
   main().catch((e) => {

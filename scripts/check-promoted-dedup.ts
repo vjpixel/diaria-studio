@@ -36,6 +36,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize, extractPastUrls, readPastEditionsMd, DEFAULT_PAST_WINDOW } from "./dedup.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -242,12 +243,7 @@ function parseArgs(argv: string[]): {
   return { categorized, pastEditions, window };
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2));
 
   if (!existsSync(args.categorized)) {

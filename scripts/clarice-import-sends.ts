@@ -37,7 +37,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
 import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
 
@@ -246,8 +246,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(JSON.stringify({ mode: "execute", folder_id: args.folderId, label: args.label, results }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

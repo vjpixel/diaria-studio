@@ -42,7 +42,7 @@ import Papa from "papaparse";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { excludeCommittedToQueuedCampaigns, segmentRampWarm, type StoreRow } from "./lib/clarice-segment.ts";
 import { CLARICE_BASE, ensureDir } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 /**
@@ -250,11 +250,7 @@ async function run(
 // Guard de execução direta Windows-safe (mesmo padrão de clarice-build-segment.ts):
 // process.argv[1] usa backslashes no Windows e import.meta.url usa file:/// —
 // normalizar pra não virar no-op silencioso quando rodado via `npx tsx ...`.
-const _argv1 = (process.argv[1] ?? "").replace(/\\/g, "/");
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err);
     process.exit(1);

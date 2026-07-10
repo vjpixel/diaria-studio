@@ -35,6 +35,7 @@ import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.t
 import { stratify, apportion } from "./clarice-build-edition-sends.ts";
 import { loadSendsSummary } from "./lib/send-plan.ts";
 import { toImportCsv } from "./clarice-import-sends.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 loadProjectEnv();
 
@@ -175,8 +176,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(JSON.stringify({ mode: "execute", lists: results.length, total }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(String(e?.stack || e));
     process.exit(1);

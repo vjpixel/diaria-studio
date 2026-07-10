@@ -27,7 +27,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
-import { parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 export interface StructureToken {
   kind: "header" | "separator";
@@ -201,7 +201,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-if (/\/scripts\/validate-section-structure\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main();
 }

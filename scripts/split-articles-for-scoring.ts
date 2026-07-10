@@ -40,7 +40,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
-import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -333,11 +333,6 @@ export function main(): void {
   process.stdout.write(JSON.stringify(manifest) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

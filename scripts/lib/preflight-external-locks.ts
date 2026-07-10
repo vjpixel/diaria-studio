@@ -39,7 +39,7 @@ import { fileURLToPath } from "node:url";
 import { checkTokenHealth } from "../google-auth.ts";
 import { checkCloudflareToken } from "../check-cloudflare-token.ts";
 import { loadProjectEnv } from "./env-loader.ts";
-import { hasFlag } from "./cli-args.ts";
+import { hasFlag, isMainModule } from "./cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -373,8 +373,7 @@ async function main(): Promise<number> {
 }
 
 // CLI guard — não dispara main() quando importado em testes (#cli-guard)
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/lib\/preflight-external-locks\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main().then((code) => {
     process.exitCode = code;
   });

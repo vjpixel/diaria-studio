@@ -26,7 +26,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface Missing {
   file: string;
@@ -170,7 +170,7 @@ function main(): void {
   process.exit(1);
 }
 
-const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("validate-stage-4-completeness.ts");
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main();
 }

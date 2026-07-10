@@ -25,6 +25,7 @@ import "dotenv/config"; // #1379 — carrega CLOUDFLARE_API_TOKEN do .env pra wr
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { wranglerKvPut } from "./lib/poll-kv.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 interface CliArgs {
   key?: string;
@@ -112,9 +113,7 @@ export function main(argv: string[]): number {
 }
 
 // Run quando invocado direto (não importado).
-// Windows/POSIX-safe: normaliza separadores antes de comparar.
-const argv1 = (process.argv[1] ?? "").replace(/\\/g, "/");
-const isMain = /\/scripts\/poll-kv-put\.ts$/.test(argv1);
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   process.exit(main(process.argv.slice(2)));
 }

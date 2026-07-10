@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 // #650 Tier C: PostEntry/SocialPublished agora vêm de scripts/lib/social-published-store.ts
 // Re-exports mantidos pra compat com callers (#650 backward compat).
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 export type { PostEntry, SocialPublished };
 
 /**
@@ -272,11 +272,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

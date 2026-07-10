@@ -34,7 +34,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir as resolveFindEditionDir } from "./lib/find-current-edition.ts";
 import {
   assertMarker,
@@ -290,10 +290,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

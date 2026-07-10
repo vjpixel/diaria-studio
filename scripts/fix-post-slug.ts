@@ -38,7 +38,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -397,11 +397,7 @@ async function main(): Promise<void> {
 }
 
 // Guard: só rodar main() quando invocado como CLI.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`[fix-post-slug] Fatal: ${(e as Error).message}\n`);
     process.exit(1);

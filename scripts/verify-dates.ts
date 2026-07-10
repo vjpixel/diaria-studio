@@ -29,6 +29,7 @@ import {
 } from "./lib/arxiv-id.ts";
 import type { VerifyDateOptions } from "./lib/verify-options.ts";
 import { extractDateFromBody, normalizeDate } from "./lib/extract-date.ts"; // #1554 P2
+import { isMainModule } from "./lib/cli-args.ts";
 
 const DEFAULT_ARXIV_MARGIN_MONTHS = 1;
 
@@ -346,6 +347,5 @@ async function main() {
 }
 
 // Detecta execução direta (npx tsx verify-dates.ts ...) de forma portável no Windows e Unix
-const _isMain = process.argv[1] != null &&
-  import.meta.url.endsWith(process.argv[1].replaceAll("\\", "/").replace(/^.*\//, ""));
+const _isMain = isMainModule(import.meta.url);
 if (_isMain) main();

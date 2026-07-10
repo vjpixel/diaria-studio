@@ -50,7 +50,7 @@
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "./lib/intentional-errors.ts";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export const REQUIRED_IE_FIELDS = [
   "description",
@@ -161,10 +161,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

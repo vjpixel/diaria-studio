@@ -44,7 +44,7 @@ import {
 import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import {
   loadIntentionalErrorJson,
   writeIntentionalErrorJson,
@@ -482,11 +482,7 @@ function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (e) {

@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -218,6 +219,5 @@ function main(): void {
   process.stdout.write(JSON.stringify(stats, null, 2) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-const isDirectRun = /\/scripts\/translate-summaries\.ts$/.test(_argv1);
+const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) main();

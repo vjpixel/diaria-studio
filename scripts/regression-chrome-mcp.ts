@@ -45,7 +45,7 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PATH = resolve(ROOT, "data/regression-log.jsonl");
@@ -216,7 +216,6 @@ export function mainCli(argv: string[]): number {
   return 2;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/regression-chrome-mcp\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   process.exit(mainCli(process.argv.slice(2)));
 }

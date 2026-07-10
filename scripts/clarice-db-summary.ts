@@ -22,7 +22,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
 import { datePartsInTz, zonedTimeToUtc, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
 // #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
@@ -446,7 +446,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.error(`[clarice-db-summary] KV atualizado: ${CONTACTS_SUMMARY_KV_KEY}.`);
 }
 
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("[clarice-db-summary]", e);
     process.exit(1);

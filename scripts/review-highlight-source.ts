@@ -21,7 +21,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 
@@ -121,10 +121,6 @@ function main(): void {
   // Warn-only: nunca bloqueia (exit 0).
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

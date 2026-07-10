@@ -34,7 +34,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface ResearcherRun {
   source: string;
@@ -137,6 +137,12 @@ function main(): void {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+// #2834: guard anterior comparava só `file://${path}` (sem a variante
+// `file:///` de 3 barras) — nunca batia no Windows (drive letter), então
+// main() nunca rodava quando invocado via CLI (bug real, não só duplicação;
+// mascarado porque o passo falha "silenciosamente em sucesso": exit 0, sem
+// output, sem quebrar o pipeline — exatamente a classe de bug que este
+// script existe pra detectar, #1091).
+if (isMainModule(import.meta.url)) {
   main();
 }

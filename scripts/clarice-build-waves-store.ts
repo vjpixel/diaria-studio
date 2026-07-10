@@ -41,7 +41,7 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { injectSeed, CLARICE_SEED_EMAIL, CLARICE_SEED_NOME } from "./lib/clarice-seed.ts";
 
 interface BuilderRow extends StoreRow {
@@ -219,10 +219,6 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -33,7 +33,7 @@ import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
 import { dateToEdition, type CtrRow, recordToCtrRow } from "./analyze-scorer-impact.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
-import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -617,11 +617,6 @@ export function main(): void {
   process.stdout.write(formatH4Trend(trend) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

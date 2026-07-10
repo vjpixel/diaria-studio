@@ -64,10 +64,10 @@ import {
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -563,7 +563,7 @@ async function main(): Promise<void> {
 // data/overnight/, e potencialmente emitRunLogEvent/renderHaltBanner/Telegram
 // se uma rodada real estivesse em stall) durante `npm test`. Mesmo padrão de
 // guard já usado em scripts/lib/check-watchdog-armed.ts.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch((e: unknown) => {
     process.stderr.write(`[watchdog] Erro fatal: ${String(e)}\n`);
     process.exit(1);

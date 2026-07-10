@@ -484,10 +484,10 @@ describe("main() não roda como efeito colateral de importar o módulo (#2958)",
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const source = readFileSync(resolve(ROOT, "scripts/overnight-watchdog.ts"), "utf8");
 
-  it("main() está atrás de um guard de CLI (import.meta.url === pathToFileURL(process.argv[1]))", () => {
+  it("main() está atrás de um guard de CLI (isMainModule(import.meta.url), #2834)", () => {
     assert.match(
       source,
-      /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{\s*\n\s*main\(\)/,
+      /if \(isMainModule\(import\.meta\.url\)\) \{\s*\n\s*main\(\)/,
       "sem o guard, importar o módulo (como este próprio arquivo de teste faz) dispara main() e roda a lógica real do watchdog contra data/overnight/ de verdade",
     );
   });

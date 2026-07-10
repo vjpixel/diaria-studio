@@ -49,6 +49,7 @@ import {
   cycleToYymm,
 } from "./lib/mensal/monthly-paths.ts";
 import { splitByLabels, normalizeLabel, draftToEmail } from "./lib/mensal/monthly-render.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const LIMITS: Record<string, number> = { D1: 1500, D2: 1200, D3: 1200 };
 
@@ -296,10 +297,6 @@ function main(): void {
 // Só roda main() quando invocado como CLI — permite importar as funções puras
 // (checkSectionIntegrity, checkImageRenderProbe) em testes sem disparar
 // process.exit() no import (#2794).
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

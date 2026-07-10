@@ -18,6 +18,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   parseHighlights,
   formatMeasureResult,
@@ -53,10 +54,6 @@ function main(): number {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   process.exit(main());
 }

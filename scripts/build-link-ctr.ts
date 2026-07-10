@@ -18,6 +18,7 @@ import * as path from 'path';
 import Papa from 'papaparse';
 // #1844: classificador de links extraído pra módulo dedicado (puro, testável).
 import { categorize } from './lib/link-ctr-categorize.ts';
+import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
 
@@ -571,10 +572,6 @@ function main() {
 // CLI guard (#1567 audit): só roda main() quando invocado direto. Sem isto, um
 // test que importe isEditorial/matchClick dispararia main() — que lê o cache
 // Beehiiv e escreve o CSV — no CI (que não tem `data/`).
-const _argv1 = process.argv[1]?.replaceAll('\\', '/') ?? '';
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, '')}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -30,7 +30,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import {
   resolveVideoBucket,
   type VideoArticleLike,
@@ -114,11 +114,6 @@ function main() {
   process.stdout.write(JSON.stringify({ resolved, flagged, alreadyYoutube }) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

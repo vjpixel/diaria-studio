@@ -40,7 +40,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
-import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import {
   loadCtrRowsH4,
   loadHistoryEditions,
@@ -563,11 +563,6 @@ export function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

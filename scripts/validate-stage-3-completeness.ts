@@ -33,7 +33,7 @@ import {
   REQUIRED_IMAGES_BASE,
   REQUIRED_IMAGES_D3,
 } from "./lib/invariant-checks/stage-3.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 // #2366: deriva a lista de imagens de destaque da fonte canônica
 // (REQUIRED_IMAGES_BASE/D3 em stage-3.ts) em vez de re-listar inline — sem isso,
@@ -164,7 +164,7 @@ function main(): void {
   process.exit(1);
 }
 
-const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("validate-stage-3-completeness.ts");
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main();
 }

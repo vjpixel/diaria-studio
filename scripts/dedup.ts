@@ -20,7 +20,7 @@ import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   detectEntityDuplicates,
   extractPastHighlights,
@@ -602,11 +602,7 @@ async function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(main);
 }
 

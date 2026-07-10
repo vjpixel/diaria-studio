@@ -41,7 +41,7 @@ import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { mtimeMs } from "./lib/mtime.ts"; // #2048 item 10: helper compartilhado (catch→null)
 
@@ -448,11 +448,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[upload-html-public] ${(e as Error).message}`);
     process.exit(1);

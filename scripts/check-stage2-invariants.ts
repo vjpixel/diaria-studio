@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
 import { intentionalErrorJsonPath } from "./lib/intentional-errors.ts"; // #3222
 
@@ -345,10 +345,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

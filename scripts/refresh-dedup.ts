@@ -57,6 +57,7 @@ import { extractPublishedAtIso, extractPublishedDate } from "./lib/beehiiv-times
 import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.ts";
 import { writeEditionReport } from "./send-edition-report.ts"; // #1950
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -563,11 +564,7 @@ async function main() {
 }
 
 // Guard contra import em tests — só rodar main() quando invocado como CLI.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);

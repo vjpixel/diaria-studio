@@ -28,7 +28,7 @@ import { writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsShared, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "context", "invariants.md");
@@ -229,11 +229,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ out, count: issues.length }));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);

@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface Article {
   url: string;
@@ -386,11 +386,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

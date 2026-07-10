@@ -25,6 +25,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 loadProjectEnv(); // carrega .env/.env.local antes de ler process.env
 
@@ -181,8 +182,7 @@ async function main(): Promise<number> {
   return 1; // missing ou invalid
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/check-cloudflare-token\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main().then((code) => {
     process.exitCode = code;
   });

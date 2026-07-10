@@ -38,6 +38,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // Injetável nos testes (default = puppeteer real).
 export type CaptureFn = (url: string, outPath: string) => Promise<void>;
@@ -195,11 +196,7 @@ async function main(): Promise<void> {
 }
 
 // Guard: só executa como CLI (não ao ser importado por testes).
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error("capture-livros-promo FATAL:", err instanceof Error ? err.message : String(err));
     process.exit(1);

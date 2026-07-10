@@ -26,6 +26,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 
 interface Post {
   platform: string;
@@ -129,10 +130,6 @@ function main(): void {
   process.exit(result.ok ? 0 : 1);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

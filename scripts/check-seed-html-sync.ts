@@ -34,6 +34,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 /** Alias local — mesmo padrão de scripts/check-pr-bugfix.ts (#2699). */
 export type SpawnFn = PrCheckSpawnFn;
@@ -162,11 +163,7 @@ async function main(): Promise<void> {
 }
 
 // Guard contra import em tests — só rodar main() quando invocado como CLI.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[#3105] erro não-tratado: ${(e as Error).message}`);
     process.exit(2);

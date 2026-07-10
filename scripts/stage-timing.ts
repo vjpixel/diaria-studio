@@ -17,7 +17,7 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsShared, isMainModule } from "./lib/cli-args.ts";
 import { editionDir as buildEditionDir, editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
@@ -350,10 +350,6 @@ function main(): void {
 // tests) rodava main() automaticamente — chamava detectLatestEdition que
 // process.exit(1) se data/editions/ não existe. CI Linux quebrava porque
 // não tem a junction local de OneDrive.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

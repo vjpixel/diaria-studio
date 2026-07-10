@@ -61,7 +61,7 @@ import {
 } from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -87,7 +87,7 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
 
 // ── CLI guard ─────────────────────────────────────────────────────────────────
 // Prevent accidental execution when imported from tests
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2));
 }
 

@@ -32,7 +32,7 @@
 
 import { readdirSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   isValidYymm,
   isValidMonthlyCycle,
@@ -194,10 +194,6 @@ function main(): void {
   if (failed > 0) process.exit(1);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

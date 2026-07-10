@@ -25,7 +25,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ScorePair } from "./merge-scored-chunks.ts";
-import { parseArgsWithTrueDefault as parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -100,11 +100,6 @@ export function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

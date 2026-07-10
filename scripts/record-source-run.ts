@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { computeFailureStreak } from "./lib/source-runs.ts";
-import { parseArgs as parseArgsShared } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsShared, isMainModule } from "./lib/cli-args.ts";
 
 type Outcome = "ok" | "fail" | "timeout";
 
@@ -218,10 +218,6 @@ function main(): void {
   console.log(JSON.stringify(buildRunReport(entry, { source: src, slug, outcome, logPath: sourceLogPath })));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

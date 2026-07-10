@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
-import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -458,11 +458,7 @@ async function main() {
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal error:", e);
     process.exit(1);

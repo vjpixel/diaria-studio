@@ -96,7 +96,7 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 export interface SegmentRow extends StoreRow {
   name: string | null;
@@ -363,10 +363,6 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

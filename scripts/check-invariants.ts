@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -288,11 +288,7 @@ async function main(): Promise<void> {
   process.exit(passed ? 0 : 1);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal:", e);
     process.exit(2);

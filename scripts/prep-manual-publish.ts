@@ -21,7 +21,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
@@ -269,11 +269,7 @@ async function main(): Promise<void> {
   console.log("✓ Tudo pronto pra paste manual. Worker vai receber votos quando leitores clicarem.\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[prep-manual-publish] ${(e as Error).message}`);
     process.exit(2);

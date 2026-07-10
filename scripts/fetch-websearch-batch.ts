@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { braveSearch, freshnessForWindow, type BraveWebResult } from "./lib/brave-search.ts";
 import { isAggregator } from "./lib/aggregator-blocklist.ts";
 import { containsAITerms } from "./lib/ai-relevance.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { isNonEditorialPath } from "./lib/non-editorial-paths.ts"; // #1559 A
 import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
 import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
@@ -425,11 +426,7 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[fetch-websearch-batch] fatal: ${(e as Error).message}`);
     process.exit(1);

@@ -15,6 +15,7 @@ import {
   MAX_CACHED_BODY_SIZE,
 } from "./lib/url-verify-cache.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { extractDateFromBody } from "./lib/extract-date.ts"; // #1554 P2 — populate published_date inline
 
 // #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
@@ -790,7 +791,6 @@ async function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main();
 }

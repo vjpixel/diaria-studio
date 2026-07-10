@@ -29,6 +29,7 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 // analyze-h4.ts. Importado para uso interno + re-exportado para manter
 // compatibilidade com testes e importadores externos.
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 export { isAprofundeAnchor };
 import {
   loadCtrRowsH4,
@@ -451,10 +452,6 @@ function main() {
 // Run main() apenas quando invocado como CLI direto.
 // Sem este guard, qualquer test que importe deste arquivo dispara main() →
 // `process.exit(1)` quando CTR CSV ausente (CI não tem `data/`).
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -42,7 +42,7 @@ import 'dotenv/config';
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface BeehiivPostContent {
   data?: {
@@ -294,11 +294,7 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[fetch-beehiiv-poll-stats] ${(e as Error).message}`);
     process.exit(2);

@@ -34,7 +34,7 @@
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -138,7 +138,6 @@ function main(): void {
   console.log(JSON.stringify({ ok: true, entry }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-if (/\/scripts\/log-runtime-fix\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main();
 }

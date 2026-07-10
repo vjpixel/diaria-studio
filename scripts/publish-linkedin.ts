@@ -49,7 +49,7 @@ import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
-import { parseArgs } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1005,11 +1005,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal error:", e);
     process.exit(1);

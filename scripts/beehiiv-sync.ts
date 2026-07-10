@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { MIN_AGE_DAYS_FOR_CLICKS } from "./lib/shared/ctr-config.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
@@ -473,11 +474,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);

@@ -72,7 +72,7 @@ import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg } from "./lib/cli-args.ts";
+import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS } from "./lib/cohorts.ts";
@@ -244,7 +244,7 @@ async function main(): Promise<void> {
 
 // CLI guard — não executar ao ser importado em testes.
 // Usa pathToFileURL para compatibilidade com Windows (endsWith sem file:/// pode falhar via npx tsx).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("[clarice-mv-status] erro:", e);
     process.exit(1);

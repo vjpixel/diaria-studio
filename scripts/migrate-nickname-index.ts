@@ -48,8 +48,10 @@
 // #2130: extensão `.ts` intencional (convenção tsx do repo) — ver mesma nota
 // em backfill-score-by-month.ts.
 import "dotenv/config";
-import { pathToFileURL } from "node:url";
 import { normalizeNickname } from "../workers/poll/src/lib.ts";
+// #2834: isMainModule as isEntryModule — alias pra evitar colisão com a const
+// local `isMainModule` já usada por este script (mesmo nome, propósito idêntico).
+import { isMainModule as isEntryModule } from "./lib/cli-args.ts";
 
 // ── Lógica pura (testável sem rede/KV real) ─────────────────────────────────
 
@@ -259,9 +261,8 @@ async function main(): Promise<void> {
 
 // #3117: só roda o CLI quando invocado diretamente (`npx tsx migrate-nickname-index.ts`),
 // nunca quando importado por teste (`import { migrateNicknameIndex } from "./migrate-nickname-index.ts"`).
-// `pathToFileURL` (em vez de string concat manual) evita mismatch de barras
-// (`\` vs `/`) e do `file:///C:/...` (3 barras) no Windows.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// #2834: delega pro helper canônico (isEntryModule = isMainModule, ver alias no import acima).
+const isMainModule = isEntryModule(import.meta.url);
 if (isMainModule) {
   main().catch((e) => {
     console.error("[migrate-nickname-index] erro:", e);

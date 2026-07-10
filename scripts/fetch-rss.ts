@@ -24,7 +24,7 @@ import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 // em lib/strip-html.ts como stripHtmlBasic (nome distinto do stripHtml
 // anchor-preserving de auto-forward-newsletters.ts/capture-newsletter-urls.ts).
 import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -322,10 +322,7 @@ async function main() {
   if (result.error) process.exit(2);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const invokedDirectly =
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
+const invokedDirectly = isMainModule(import.meta.url);
 
 if (invokedDirectly) {
   main().catch((e) => {

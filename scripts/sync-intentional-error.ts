@@ -44,7 +44,7 @@ import {
 } from "./lib/intentional-errors.ts";
 // #1860: fallback de prosa quando o frontmatter falta.
 import { extractIntentionalErrorFromMd } from "./render-erro-intencional.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 export interface Flags {
   md: string;
@@ -279,10 +279,6 @@ function main(): number {
   return exitCode;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   process.exit(main());
 }

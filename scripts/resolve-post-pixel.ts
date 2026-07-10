@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { extractPlatformSection, extractPostPixelBlock } from "./lib/social-lint-rules.ts";
 import { resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -149,10 +149,6 @@ function main(): void {
   process.exit(exitCode);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }
