@@ -2138,7 +2138,7 @@ export function renderAbcSection(
   const allZero = allSampled && sampledRows.every((r) => r.totalClicks === 0);
   const maxClickRate = allSampled ? sampledRows.reduce((m, r) => Math.max(m, r.clickRate), 0) : 0;
   const statusNote = allZero
-    ? `Aguardando dados de abertura — primeiras horas pós-envio.`
+    ? `Aguardando dados suficientes — primeiras horas pós-envio.`
     : !allSampled
     ? `Dados insuficientes para comparação — aguardar mais dias de envio.`
     : !leaderClickRate
