@@ -538,13 +538,17 @@ describe("publish-monthly main(): % acertaram do É IA? anterior (#2948)", () =>
 // aplica o mesmo padrão em publish-monthly.ts.
 //
 // mirrorAdminSig() replica localmente o algoritmo de close-poll.ts (linha
-// "adminSig": createHmac("sha256", secret).update(`${edition}:${answer}`))
+// "adminSig": createHmac("sha256", secret).update(`${brand}:${edition}:${answer}`))
 // — close-poll.ts não exporta essa função (nem main()), então não há um
 // helper compartilhado pra importar; os outros testes de HMAC do repo (ex:
 // test/workers-draft.test.ts) seguem o mesmo padrão de duplicar o algoritmo
 // localmente em vez de importar internals não-exportados.
+//
+// #3118 item 8: mensagem assinada agora inclui o brand — registerEiaAnswer()
+// sempre assina com brand="clarice" (gabarito do É IA? mensal), hardcoded
+// aqui pelo mesmo motivo (mensal só tem esse 1 brand).
 function mirrorAdminSig(secret: string, edition: string, answer: string): string {
-  return createHmac("sha256", secret).update(`${edition}:${answer}`).digest("hex");
+  return createHmac("sha256", secret).update(`clarice:${edition}:${answer}`).digest("hex");
 }
 
 const EIA_ANSWER_SIDECAR = {
@@ -618,7 +622,7 @@ describe("publish-monthly main(): registerEiaAnswer() usa ADMIN_SECRET, não POL
     assert.ok(edition, "edition deve estar presente na query");
 
     const expectedSig = mirrorAdminSig("test-admin-secret-3226", edition as string, answer as string);
-    assert.equal(sig, expectedSig, "sig deve ser HMAC-SHA256(ADMIN_SECRET, `${edition}:${answer}`) — mesmo algoritmo de close-poll.ts");
+    assert.equal(sig, expectedSig, "sig deve ser HMAC-SHA256(ADMIN_SECRET, `clarice:${edition}:${answer}`) — mesmo algoritmo de close-poll.ts (#3118 item 8)");
   });
 
   it("POLL_ADMIN_SECRET (alias, sem ADMIN_SECRET) → mesmo fallback documentado em close-poll.ts", async () => {

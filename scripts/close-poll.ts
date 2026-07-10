@@ -49,8 +49,15 @@ import { runSyncIntentionalError } from "./sync-intentional-error.ts"; // #3210
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 
-function adminSig(secret: string, edition: string, answer: string): string {
-  return createHmac("sha256", secret).update(`${edition}:${answer}`).digest("hex");
+// #3118 (item 8): mensagem assinada agora inclui o brand — antes era só
+// `${edition}:${answer}`, o que tornava o sig replayable pra sempre E válido
+// CROSS-BRAND (um sig gerado pra brand=diaria também validava com
+// ?brand=clarice contra o mesmo Worker, gravando o gabarito no namespace
+// errado). Fix espelhado em workers/poll/src/index.ts (handleAdminCorrect)
+// e em scripts/publish-monthly.ts (registerEiaAnswer, que também assina
+// /admin/correct — sempre com brand=clarice).
+function adminSig(secret: string, brand: string, edition: string, answer: string): string {
+  return createHmac("sha256", secret).update(`${brand}:${edition}:${answer}`).digest("hex");
 }
 
 async function main(): Promise<void> {
@@ -120,7 +127,10 @@ async function main(): Promise<void> {
   }
   const brandQ = brand ? `&brand=${brand}` : "";
 
-  const sig = adminSig(secret, edition, answer);
+  // #3118 item 8: brand efetivo é sempre "diaria" quando --brand não é passado
+  // (mesmo default do Worker, ver parseBrandParam em lib.ts) — precisa bater
+  // exatamente com o valor que handleAdminCorrect usa na mensagem assinada.
+  const sig = adminSig(secret, brand ?? "diaria", edition, answer);
   const url = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${sig}${brandQ}`;
 
   const res = await dohFetch(url, { method: "POST" });

@@ -536,8 +536,9 @@ describe("Fix #6 — admin-correct atualiza DO StatsCounter; /stats reflete corr
       assert.equal(res.status, 200, `voto de ${v.email} deve retornar 200`);
     }
 
-    // Admin define gabarito = "A"
-    const sig = await hmacSign("test-admin-secret", "260613:A");
+    // Admin define gabarito = "A" (brand "diaria" — default, sem ?brand= na
+    // adminUrl abaixo — mensagem assinada inclui o brand desde #3118 item 8)
+    const sig = await hmacSign("test-admin-secret", "diaria:260613:A");
     const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
     adminUrl.searchParams.set("edition", "260613");
     adminUrl.searchParams.set("answer", "A");

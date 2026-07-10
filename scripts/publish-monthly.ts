@@ -309,8 +309,12 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
   }
 
   // Calcular HMAC admin (mesmo algoritmo de close-poll.ts)
+  // #3118 item 8: mensagem assinada inclui o brand ("clarice", sempre, aqui)
+  // — mesmo fix espelhado em close-poll.ts e workers/poll/src/index.ts
+  // (handleAdminCorrect). Sem o brand na assinatura, um sig gerado aqui
+  // também validaria contra o brand=diaria do mesmo Worker.
   const { createHmac } = await import("node:crypto");
-  const sig = createHmac("sha256", secret).update(`${edition}:${aiSide}`).digest("hex");
+  const sig = createHmac("sha256", secret).update(`clarice:${edition}:${aiSide}`).digest("hex");
   // #1905: brand=clarice — gabarito do É IA? mensal atualiza o leaderboard da
   // Clarice News (namespace isolado do diário).
   const url = `${workerUrl}/admin/correct?edition=${edition}&answer=${aiSide}&sig=${sig}&brand=clarice`;

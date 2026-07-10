@@ -34,10 +34,12 @@ function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
   return makePollEnv(kv, { pollSecret: POLL_SECRET, adminSecret: ADMIN_SECRET });
 }
 
-/** Monta URL de admin/correct com sig válido. */
+/** Monta URL de admin/correct com sig válido. Brand "diaria" (default do
+ * dispatcher quando ?brand= não é passado) — mensagem assinada inclui o
+ * brand desde #3118 item 8. */
 async function adminCorrectUrl(edition: string, answer: string): Promise<URL> {
   const { hmacSign: sign } = await import("../workers/poll/src/index.ts");
-  const sig = await sign(ADMIN_SECRET, `${edition}:${answer}`);
+  const sig = await sign(ADMIN_SECRET, `diaria:${edition}:${answer}`);
   const u = new URL("https://poll.diaria.workers.dev/admin/correct");
   u.searchParams.set("edition", edition);
   u.searchParams.set("answer", answer);
