@@ -321,7 +321,8 @@ export default {
             console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
             return [];
           });
-          // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (150) — mesmo valor
+          // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
+          // Brevo — ver docstring da constante, incidente 260710) — mesmo valor
           // usado pelo cron, pra manter o mesmo comportamento de "janela cheia"
           // entre o caminho pré-computado e este fallback ao vivo (cold-start/?fresh=1).
           campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
