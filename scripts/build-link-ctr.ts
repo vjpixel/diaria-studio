@@ -19,6 +19,7 @@ import Papa from 'papaparse';
 // #1844: classificador de links extraído pra módulo dedicado (puro, testável).
 import { categorize } from './lib/link-ctr-categorize.ts';
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
+import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
@@ -452,7 +453,7 @@ function main() {
   let processed = 0;
   let skipped = 0;
 
-  const MIN_AGE_DAYS = 7;
+  const MIN_AGE_DAYS = MIN_AGE_DAYS_FOR_CLICKS; // #3146: alias local — evita renomear os usos abaixo
   const cutoff = Date.now() - MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
   let tooRecent = 0;
   let alreadyProcessed = 0;

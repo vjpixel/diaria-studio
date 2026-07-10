@@ -46,6 +46,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { MIN_AGE_DAYS_FOR_CLICKS } from "./lib/shared/ctr-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
@@ -93,9 +94,9 @@ export interface SyncResult {
   posts_needing_clicks: PostNeedingClicks[];
 }
 
-/** Posts mais novos que isso ainda têm CTR não-estabilizado — mesmo filtro
- *  do build-link-ctr.ts (linha ~1180). */
-const MIN_AGE_DAYS_FOR_CLICKS = 7;
+// MIN_AGE_DAYS_FOR_CLICKS (#3146: extraída pra scripts/lib/shared/ctr-config.ts —
+// mesmo cutoff usado por build-link-ctr.ts e pelo Worker diaria-dashboard,
+// ver comentário no arquivo compartilhado).
 
 /** Cap defensivo no manifest pra incremental runs. Mantido como sanity check
  *  caso o agent enricher fique indisponível e cair fallback no top-level —

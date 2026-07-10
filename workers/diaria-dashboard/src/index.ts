@@ -30,6 +30,38 @@ function isAprofundeAnchor(anchor: string): boolean {
   return /^aprofunde\b/i.test((anchor || "").trim());
 }
 
+// MIN_AGE_DAYS_FOR_CLICKS: espelha scripts/lib/shared/ctr-config.ts (#3146) —
+// mesmo motivo de isAprofundeAnchor acima (Worker não importa scripts/lib/ no
+// bundle). Drift entre as duas cópias é coberto por teste em
+// test/diaria-dashboard-use-melhor-age.test.ts.
+const MIN_AGE_DAYS_FOR_CLICKS = 7;
+
+/**
+ * #3146: idade (em dias) de uma edição AAMMDD relativa a `now`. Espelha a
+ * mesma lógica de parse calendário-aware de scripts/archive-editions.ts
+ * (parseEditionDate/ageDays) — duplicada aqui pelo mesmo motivo acima (Worker
+ * sem acesso a scripts/lib/ no bundle). Retorna null para AAMMDD malformado
+ * ou calendário-inválido (ex: dia 31 num mês de 30) — o caller trata null
+ * como "idade desconhecida" e cai no `—` cru em vez de arriscar uma
+ * mensagem de estabilização enganosa.
+ */
+function editionAgeDays(edition: string, now: Date): number | null {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(edition);
+  if (!m) return null;
+  const year = 2000 + Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const editionDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    editionDate.getUTCFullYear() !== year ||
+    editionDate.getUTCMonth() !== month - 1 ||
+    editionDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return Math.floor((now.getTime() - editionDate.getTime()) / (1000 * 60 * 60 * 24));
+}
+
 const DS = DS_COLORS;
 
 export interface Env {
@@ -357,7 +389,7 @@ export function renderOvernightSection(data: DashboardData): string {
 </section>`;
 }
 
-export function renderUseMelhorSection(data: DashboardData): string {
+export function renderUseMelhorSection(data: DashboardData, now: Date = new Date()): string {
   const um = data.use_melhor;
   if (!um) {
     return `<section class="dash-section" id="use-melhor">
@@ -425,10 +457,18 @@ export function renderUseMelhorSection(data: DashboardData): string {
 
   // Per-edition rows (most recent first, up to 20)
   const editionRows = (um.editions ?? []).slice(0, 20).map((ed) => {
+    // #3146: idade da edição calculada 1x por edição (mesma para todos os
+    // itens dela) — distingue "ainda não estabilizou" (transitório, < 7d)
+    // de "join por URL não bateu" (o gap de ~22% já documentado no rodapé).
+    const ageDays = editionAgeDays(ed.edition, now);
     const itemList = (ed.items ?? []).map((it) => {
+      // Narrowing inline (não via variável booleana separada) — TS só
+      // estreita `ageDays` pra `number` dentro do próprio ramo do ternário.
       const ctrCell = it.ctr_pct !== null
         ? `<span class="metric">${it.ctr_pct.toFixed(1)}%</span>`
-        : `<span class="muted">—</span>`;
+        : ageDays !== null && ageDays < MIN_AGE_DAYS_FOR_CLICKS
+          ? `<span class="muted" title="CTR leva ${MIN_AGE_DAYS_FOR_CLICKS} dias pra estabilizar após a publicação">aguardando estabilização (${ageDays}d)</span>`
+          : `<span class="muted">—</span>`;
       const safeHref = safeHttpHref(it.url);
       const linkCell = safeHref
         ? `<a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--brand)">${escHtml(it.title || it.url)}</a>`
