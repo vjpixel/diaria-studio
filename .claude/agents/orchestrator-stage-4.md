@@ -302,7 +302,7 @@ npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ \
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`), mas pular a apresentação no gate (que é pulado inteiramente). O arquivo fica disponível para auditoria pós-edição.
 
-**4c.6b — Auto-fix de DIVERGENT determinístico (#2598):**
+**4c.6b — Auto-fix de DIVERGENT determinístico (#2598, estendido a social em #3224):**
 
 Após o subagente gravar `_internal/fact-check.json`, aplicar correções automáticas de claims `DIVERGENT` com `suggested_fix` presente — antes de montar o gate:
 
@@ -329,26 +329,43 @@ Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b
 
 **Republicar o preview (#3214):** chamar `Artifact` de novo com `file_path: "{EDITION_DIR}/_internal/newsletter-final.html"` e `url: "{newsletter_url}"` (a URL já persistida em `04-newsletter-url.json` por §4b step 2b) — **isso atualiza o MESMO artifact, na MESMA URL** (diferente do Worker Cloudflare antigo, que gerava uma URL nova a cada conteúdo por ser content-hash-keyed). Como a URL não muda, não é necessário re-persistir nem reavisar o editor de staleness — a variável `{newsletter_url}` capturada em §4b step 2b já continua válida e aponta pro conteúdo corrigido automaticamente assim que a republicação completar.
 
+**⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
+
+```bash
+# Re-render social HTML com o 03-social.md já corrigido
+npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
+```
+
+Republicar via `Artifact` — mesmo padrão resume-aware de §4b step 3: `file_path: "{EDITION_DIR}/_internal/social-preview.html"` + `url: "{social_url}"` (já persistida em `05-social-preview.json`), **atualiza a mesma URL**.
+
+Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
+```bash
+npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
+```
+Se por algum motivo o exit não for 0 aqui (ex: `writeSentinel` falhou e o script apenas logou warn — ver stderr de `apply-factcheck-autofix.ts`), tratar como o exit 2 padrão de §4c.2b (re-humanizar e re-selar antes do gate).
+
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
-- Apenas `02-reviewed.md` (newsletter) — `03-social.md` NÃO é tocado para preservar o sentinel do humanizador.
+- `02-reviewed.md` (newsletter) e/ou `03-social.md` (social), conforme `entry.sources` do claim — `["newsletter"]`, `["social"]` ou `["newsletter","social"]` (#3224). Em social, a correção é scoped aos blocos `## dN` e aplicada em AMBOS os canais (LinkedIn + Facebook) quando o texto aparece nos dois. Sucesso parcial é possível e fica registrado em `files_modified` + `note` da entry (ex: achou na newsletter mas não em social).
 - Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
 - Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
-- Nunca o destaque do `intentional_error` declarado em `_internal/intentional-error.json` (#3222) — preserva o erro intencional proposital.
+- Nunca o destaque do `intentional_error` declarado em `_internal/intentional-error.json` (#3222) — preserva o erro intencional proposital (vale para newsletter E social).
 - Substituição scoped ao bloco do destaque correto — evita clobberar erros intencionais de outros destaques com mesmo texto.
-- Claims em `sources: ["social"]` only → logados como `skipped` (precisa correção manual em 03-social.md, seguindo §4d.1 passo 6 para re-humanizar e re-selar sentinel).
+- Correção em `03-social.md` regrava automaticamente o sentinel do humanizador com `bypassReason` (evita falso-alarme de "social editado sem re-humanizar" no próximo `check-humanizer-social.ts --check`).
 
 **No gate:** apresentar como "já corrigido (diff X→Y) — confirme ou reverta". Se `fact-check-autofix.json` mostra `summary.applied > 0`, incluir bloco no gate (antes do `{fact_check_block}`):
 
 ```
-━━━ FACT-CHECK AUTO-CORRIGIDO (#2598) ━━━━━━━━━━
+━━━ FACT-CHECK AUTO-CORRIGIDO (#2598/#3224) ━━━━━
   ✅ {N} correção(ões) aplicada(s) automaticamente:
     D{N} [{tipo}] "{texto_original}" → "{suggested_fix}" ({arquivo(s)})
   Para reverter: editar o arquivo e usar a opção "ajustar" no gate.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`); o gate é pulado.
+`{arquivo(s)}` = `entry.files_modified.join(", ")` — agora pode ser `newsletter`, `social`, ou `newsletter, social` (antes só `newsletter`, já que social era sempre skipped). Isso já deixa explícito no gate quando uma correção social foi aplicada, sem bloco separado — se `social_modified === true`, acrescentar uma linha informativa: `📱 Social também corrigido — preview social republicado.`
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`, re-renderiza/republica newsletter e social se aplicável); o gate é pulado.
 
 ### 4d. Gate humano (#1694)
 
