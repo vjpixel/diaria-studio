@@ -229,4 +229,25 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.equal(r.ok, true, `1 bloco com marcador novo não deveria ser flagrado: ${JSON.stringify(r)}`);
     assert.equal(r.count, 1);
   });
+
+  it("code-review #3232: callout INDENTADO (espaços à frente do `**`) ainda é detectado — linhas são trimmed antes de testar abertura/fechamento", () => {
+    // Bug real introduzido na 1ª versão do #3232: `paraLines.push(t)` guardava
+    // a linha BRUTA (não trimmed); `PARA_STARTS_BOLD_RE`/`PARA_ENDS_BOLD_RE`
+    // exigem `**` exatamente na borda da string, então um callout colado com
+    // indentação (ex: 2 espaços à frente) deixava de bater — o lint retornava
+    // `count: 0` silenciosamente em vez de detectar o bloco.
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "  **🎉 Callout indentado (2 espaços à frente).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.count, 1, `callout indentado deveria ser detectado: ${JSON.stringify(r)}`);
+    assert.equal(r.ok, true);
+  });
 });

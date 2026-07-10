@@ -206,7 +206,13 @@ export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult 
       continue;
     }
     if (paraLines.length === 0) paraStartLine = i + 1;
-    paraLines.push(t);
+    // code-review #3232: guarda TRIMMED (não a linha bruta) — senão um
+    // callout indentado (ex: colado com espaços à frente) não bate em
+    // `PARA_STARTS_BOLD_RE`/`PARA_ENDS_BOLD_RE` (`^\*\*`/`\*\*$` exigem o
+    // marcador exatamente na borda da string) e o lint deixa de flagrar
+    // stacking — mesmo bug de classe que a versão antiga evitava trimando
+    // antes de testar `INTRO_CALLOUT_OPEN_RE`.
+    paraLines.push(t.trim());
   }
   flushParagraph(); // edge case: região de intro sem `---`/`**DESTAQUE` final
 
