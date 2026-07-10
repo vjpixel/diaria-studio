@@ -1291,11 +1291,14 @@ function countDoubleAsterisk(str: string): number {
  * O `**` candidato (adjacente a um link) é um marcador genuinamente
  * desemparelhado dentro de `adjacentText` — abertura/fechamento legítimo pro
  * bold-wrap do link — ou já está auto-pareado ali (não deve fundir com o
- * link)? Contagem PAR de `**` em `adjacentText` = auto-pareado (o candidato
- * NÃO participa dessa contagem — já foi removido pelo caller); ÍMPAR = de
- * fato desemparelhado. Compartilhado entre os dois lados (`hasOpenBold` e
- * `hasCloseBold`) — mesma fórmula, evita os dois lados divergirem (#3280
- * code-review).
+ * link)? Contagem ÍMPAR de `**` em `adjacentText` = há um marcador anterior
+ * sem par, e o candidato (NÃO participa dessa contagem — já foi removido
+ * pelo caller) pareia com ele — logo o candidato já está auto-pareado, não
+ * deve fundir com o link. Contagem PAR (0, 2, 4...) = todos os marcadores
+ * anteriores já se pareiam entre si, sobrando nada pro candidato pairear —
+ * ele está de fato desemparelhado, livre pra fundir com o link. Compartilhado
+ * entre os dois lados (`hasOpenBold` e `hasCloseBold`) — mesma fórmula, evita
+ * os dois lados divergirem (#3280 code-review).
  */
 function isUnpairedBoldMarker(adjacentText: string): boolean {
   return countDoubleAsterisk(adjacentText) % 2 === 0;
