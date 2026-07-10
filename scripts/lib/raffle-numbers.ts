@@ -210,6 +210,71 @@ export function matchesIntentionalError(
   return hasCorrectMatch && hasDescMatch;
 }
 
+/**
+ * (#3210) Decide se §0-replies deve tentar o fallback remoto (Beehiiv
+ * `get_post_content`) antes de tratar uma edição como "sem erro intencional
+ * declarado". Pura — sem I/O, só a decisão a partir do que o caller já
+ * carregou localmente.
+ *
+ * Contrato: só usar o fallback remoto quando NEM o JSON local
+ * (`_internal/intentional-error.json` da edição referenciada) NEM a entry no
+ * jsonl (`data/intentional-errors.jsonl`) existirem. Se qualquer um dos dois
+ * existir, ele já é a fonte determinística — não vale a pena gastar uma
+ * chamada de API. Isso evita o bug original (#3210): edição 260709 publicada
+ * manualmente nunca teve o sync rodado, então tanto o local quanto o jsonl
+ * ficaram vazios, e §0-replies degradava silenciosamente pra "não acertou".
+ */
+export function decideRemoteFallback(
+  localRecord: unknown | null | undefined,
+  jsonlEntry: unknown | null | undefined,
+): { useRemoteFallback: boolean; reason: "local_json_present" | "jsonl_entry_present" | "both_missing" } {
+  if (localRecord != null) return { useRemoteFallback: false, reason: "local_json_present" };
+  if (jsonlEntry != null) return { useRemoteFallback: false, reason: "jsonl_entry_present" };
+  return { useRemoteFallback: true, reason: "both_missing" };
+}
+
+/**
+ * (#3210) Regex pra extrair a linha de reveal "Na última edição, …" do
+ * conteúdo publicado de uma edição (via `mcp__claude_ai_Beehiiv__get_post_content`,
+ * formato markdown-ish — campo `free_web_content`, ver `scripts/lib/schemas/beehiiv.ts`).
+ * Mesmo padrão usado por `render-erro-intencional.ts` (`existingRevealRe`) pra
+ * ler o reveal já renderizado num `02-reviewed.md` local — aqui aplicado ao
+ * texto fetchado do Beehiiv em vez do arquivo local.
+ */
+const PUBLISHED_REVEAL_RE = /Na\s+[úu]ltima\s+edi[çc][ãa]o,?\s+([^\n]+?)\.\s*(?:\n|$)/i;
+
+/**
+ * (#3210) Extrai o reveal do erro intencional da edição ANTERIOR a partir do
+ * conteúdo publicado (Beehiiv `get_post_content`) de uma edição JÁ ENVIADA.
+ *
+ * Por que a edição SEGUINTE, não a própria: a regra editorial (#1079, ver
+ * `context/templates/newsletter.md` "Regra HTML/Beehiiv") é que o erro da
+ * edição corrente NUNCA aparece no HTML enviado aos leitores — só o reveal do
+ * erro da edição ANTERIOR aparece, dentro da seção ERRO INTENCIONAL/SORTEIO.
+ * Ou seja: pra recuperar o erro declarado da edição E quando os dados locais
+ * de E (jsonl + `_internal/intentional-error.json`) sumiram, o único registro
+ * público duradouro é o reveal publicado dentro de E+1 — não dentro da própria
+ * E. Se E+1 ainda não foi publicada (cenário comum: mesma sessão que está
+ * escrevendo E+1 e só agora percebeu que os dados de E sumiram), esta função
+ * retorna `null` e o caller cai de volta no comportamento seguro pré-fix
+ * (tratar como "sem erro declarado" / "não acertou").
+ *
+ * Retorna no shape `IntentionalErrorForMatch` — pronto pra alimentar
+ * `matchesIntentionalError` diretamente (`description` = reveal extraído;
+ * sem `correct_value` separado porque o reveal já embute a correção em prosa,
+ * ver `composeRevealText`).
+ */
+export function extractPreviousEditionRevealFromPublishedContent(
+  content: string,
+): IntentionalErrorForMatch | null {
+  if (!content) return null;
+  const m = content.match(PUBLISHED_REVEAL_RE);
+  if (!m) return null;
+  const reveal = m[1].trim();
+  if (!reveal) return null;
+  return { description: reveal };
+}
+
 /** Pure: próximo número sequencial disponível no ciclo (max + 1, default 1). */
 export function nextRaffleNumber(entries: RaffleEntry[], cycle: string): number {
   const inCycle = entries.filter((e) => e.cycle === cycle);

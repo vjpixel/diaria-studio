@@ -44,6 +44,7 @@ import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
 import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts"; // #2009 — marker mensal
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3031: layout flat+nested
+import { runSyncIntentionalError } from "./sync-intentional-error.ts"; // #3210
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -77,6 +78,13 @@ async function main(): Promise<void> {
   const editionsRootDir = values["editions-dir"]
     ? resolve(process.cwd(), values["editions-dir"])
     : resolve(ROOT, "data", "editions");
+
+  // #3210: path do JSONL de erros intencionais — testável via
+  // --intentional-errors-jsonl (default: o real data/intentional-errors.jsonl
+  // da instalação). Sem override em uso de produção.
+  const intentionalErrorsJsonlPath = values["intentional-errors-jsonl"]
+    ? resolve(process.cwd(), values["intentional-errors-jsonl"])
+    : resolve(ROOT, "data", "intentional-errors.jsonl");
 
   // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
   // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
@@ -200,7 +208,8 @@ async function main(): Promise<void> {
   // ou nested) em vez de montar data/editions/{edition} à força. Sem isso, o
   // marker era gravado num diretório flat órfão que o resume-check e o
   // Stage 5 §5g (que buscam o marker via resolveEditionDir) nunca encontram.
-  const markerDir = resolve(resolveEditionDir(editionsRootDir, edition), "_internal");
+  const editionDirPath = resolveEditionDir(editionsRootDir, edition);
+  const markerDir = resolve(editionDirPath, "_internal");
   mkdirSync(markerDir, { recursive: true });
   const markerPath = resolve(markerDir, ".close-poll-done.json");
   writeFileSync(
@@ -217,6 +226,38 @@ async function main(): Promise<void> {
       2,
     ),
   );
+
+  // #3210: close-poll.ts roda em AMBOS os fluxos de publicação — automático
+  // (Stage 4 pré-render, beehiiv-playbook.md) E manual (prep-manual-publish.ts
+  // imprime "Após publicar: npx tsx scripts/close-poll.ts --edition {edição}"
+  // como próximo passo). O fluxo automático já chama sync-intentional-error.ts
+  // explicitamente (§0.1 do playbook) ANTES de close-poll — mas o fluxo manual
+  // nunca chamava, deixando data/intentional-errors.jsonl sem entry pra
+  // edições publicadas manualmente (#3210: edição 260709, jsonl pulou direto
+  // de 260708 pra 260710). Chamando o sync aqui também garante que TODA
+  // publicação — automática ou manual, presente ou futura — sincroniza,
+  // fechando o gap "o passo inteiro nunca roda" em vez de só cobrir falha
+  // transiente de I/O (que sync-intentional-error.ts já cobria). Idempotente
+  // (no-op se o playbook automático já sincronizou) e fail-soft (mesma
+  // filosofia de beehiiv-playbook.md §0.1 — nunca bloqueia close-poll).
+  try {
+    const syncExit = runSyncIntentionalError({
+      md: resolve(editionDirPath, "02-reviewed.md"),
+      edition,
+      jsonl: intentionalErrorsJsonlPath,
+    });
+    if (syncExit === 0) {
+      console.error(`[close-poll] sync-intentional-error ok para edição ${edition} (#3210).`);
+    } else {
+      console.error(
+        `[close-poll] aviso (#3210): sync-intentional-error retornou exit ${syncExit} para edição ${edition} — não bloqueia close-poll.`,
+      );
+    }
+  } catch (e) {
+    console.error(
+      `[close-poll] aviso (#3210): sync-intentional-error lançou exceção para edição ${edition}: ${(e as Error).message} — não bloqueia close-poll.`,
+    );
+  }
 
   console.error(`[close-poll] Poll da edição ${edition} fechado. Resposta correta: ${answer}. Scores atualizados: ${data.updated_votes ?? 0}`);
   console.error(`[close-poll] Sanity check OK: /stats retornou correct_answer="${stats.correct_answer}". Marker: ${markerPath}`);
