@@ -464,9 +464,13 @@ export function renderUseMelhorSection(data: DashboardData, now: Date = new Date
     const itemList = (ed.items ?? []).map((it) => {
       // Narrowing inline (não via variável booleana separada) — TS só
       // estreita `ageDays` pra `number` dentro do próprio ramo do ternário.
+      // `ageDays >= 0` (achado de self-review): edição com AAMMDD de hoje/futuro
+      // relativo a `now` (plausível dado o convênio D+1 — a pasta da edição
+      // existe desde a pesquisa, um dia antes da data publicar) daria idade
+      // negativa; cai no fallback `—` em vez de renderizar "(-1d)".
       const ctrCell = it.ctr_pct !== null
         ? `<span class="metric">${it.ctr_pct.toFixed(1)}%</span>`
-        : ageDays !== null && ageDays < MIN_AGE_DAYS_FOR_CLICKS
+        : ageDays !== null && ageDays >= 0 && ageDays < MIN_AGE_DAYS_FOR_CLICKS
           ? `<span class="muted" title="CTR leva ${MIN_AGE_DAYS_FOR_CLICKS} dias pra estabilizar após a publicação">aguardando estabilização (${ageDays}d)</span>`
           : `<span class="muted">—</span>`;
       const safeHref = safeHttpHref(it.url);

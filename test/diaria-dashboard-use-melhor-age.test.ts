@@ -128,6 +128,33 @@ describe("renderUseMelhorSection — distingue 'aguardando estabilização' de '
     assert.doesNotMatch(html, /aguardando estabilização/, "no limite exato (7d) já não é mais 'recente demais' — mesmo cutoff de beehiiv-sync.ts (publish_date * 1000 > cutoffMs)");
   });
 
+  test("self-review: edição com AAMMDD de hoje/futuro (idade negativa) cai no '—', não 'aguardando estabilização (-Nd)'", async () => {
+    // #3146 self-review: dado o convênio D+1 (pesquisa roda 1 dia antes da
+    // data da edição), a pasta data/editions/{AAMMDD} pode existir com
+    // AAMMDD igual ou posterior a "hoje" antes da edição ser de fato
+    // publicada — editionAgeDays daria negativo nesse caso.
+    const { renderUseMelhorSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeBase();
+    data.use_melhor = {
+      total_editions_with_use_melhor: 1,
+      first_edition: "260711",
+      editions: [{
+        edition: "260711", // 1 dia DEPOIS de NOW (2026-07-10) — idade negativa
+        items: [{ url: "https://futura.com/post", title: "Edição futura (D+1)", ctr_pct: null, unique_verified_clicks: null }],
+        ctr_matched: 0,
+        ctr_unmatched: 1,
+      }],
+      top_items: [],
+      coverage: { total_items: 1, matched: 0, unmatched: 1, coverage_pct: 0 },
+    };
+
+    const html = renderUseMelhorSection(data, NOW);
+
+    assert.doesNotMatch(html, /aguardando estabilização/, "idade negativa não deve virar mensagem de espera");
+    assert.doesNotMatch(html, /-\d+d/, "não deve renderizar contagem de dias negativa");
+    assert.match(html, /<span class="muted">—<\/span>/, "deve cair no fallback '—' pra idade negativa");
+  });
+
   test("item COM ctr_pct sempre mostra o número, independente da idade da edição", async () => {
     const { renderUseMelhorSection } = await import("../workers/diaria-dashboard/src/index.ts");
     const data = makeBase();
