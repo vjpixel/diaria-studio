@@ -129,8 +129,13 @@ export function recordBraveCreditEstimate(
     );
     return false;
   }
-  if (count <= 0) return false;
+  // (#3271 review) Round ANTES do gate <=0: um count fracionário como 0.4 passa
+  // `count > 0` mas arredonda pra 0 — sem este reorder, a função geraria 0 entradas
+  // reais (só um "\n" em branco) e AINDA retornaria `true`, quebrando o contrato
+  // "true ⇒ pelo menos 1 entrada foi de fato gravada" que reconcile-brave-path-b.ts
+  // agora depende para decidir se avança seu anchor.
   count = Math.round(count);
+  if (count <= 0) return false;
   try {
     const fullPath = resolve(process.cwd(), path);
     ensureDir(fullPath);
