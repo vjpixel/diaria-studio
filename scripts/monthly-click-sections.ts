@@ -45,6 +45,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEditorial } from "./build-link-ctr.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
@@ -643,10 +644,6 @@ function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

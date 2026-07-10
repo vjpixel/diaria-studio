@@ -22,7 +22,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -450,11 +450,7 @@ async function main(): Promise<void> {
   // Exit 0 — pré-condições ok, nenhum claim verificado ainda
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("[run-fact-checker] ERRO:", e);
     process.exit(1);

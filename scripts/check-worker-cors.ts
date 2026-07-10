@@ -24,7 +24,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("check-worker-cors.ts");
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main().catch((e) => {
     process.stderr.write(`[check-worker-cors] fatal: ${(e as Error).message}\n`);

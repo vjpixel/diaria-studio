@@ -43,6 +43,7 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
@@ -213,11 +214,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);

@@ -53,6 +53,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPut } from "./lib/brevo-client.ts";
 import { parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 loadProjectEnv();
 
@@ -260,8 +261,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(String(e?.stack || e));
     process.exit(1);

@@ -38,7 +38,7 @@ import {
   computeDiariaDiscovered,
 } from "./lib/inbox-stats.ts"; // #592, #609, #1864
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
 // inbox-drain.ts e drive-sync.ts.
@@ -477,11 +477,6 @@ export function mergeWithNewJson(
   };
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

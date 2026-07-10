@@ -27,7 +27,7 @@ import {
   classifyFetchCompleteness,
   DEFAULT_COMPLETENESS_THRESHOLD,
 } from "./lib/email-fetch-completeness.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 export { classifyFetchCompleteness, DEFAULT_COMPLETENESS_THRESHOLD };
 
@@ -101,10 +101,6 @@ function main(): void {
 // CLI guard: padrão do repo (scripts/lint-test-email.ts e outros).
 // Garante que main() só roda quando este arquivo é invocado diretamente —
 // importar em testes não dispara main().
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

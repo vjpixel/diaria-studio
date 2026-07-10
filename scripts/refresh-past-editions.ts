@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { editionDir } from "./lib/edition-paths.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -512,11 +512,7 @@ async function main() {
 }
 
 // Guard contra import em tests — só rodar main() quando invocado como CLI.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

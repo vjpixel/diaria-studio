@@ -66,7 +66,7 @@ import {
   DEFAULT_RECONCILE_STATE_PATH,
   FREE_TIER_LIMIT,
 } from "./lib/brave-credits.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 
 export function main(
   argv: string[] = process.argv.slice(2),
@@ -162,10 +162,6 @@ export function main(
   console.log(JSON.stringify({ reconciled: injected, gap, gap_basis: gapBasis, capped, edition }));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

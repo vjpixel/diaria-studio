@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { gFetch } from "./google-auth.ts";
 
 export interface GscRow {
@@ -171,8 +171,7 @@ async function main(nowMs: number): Promise<number> {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/seo-pull\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main(Date.now()).then((code) => {
     process.exitCode = code;
   });

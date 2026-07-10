@@ -72,6 +72,7 @@ import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.t
 import { openClariceDb, DEFAULT_DB_PATH, MV_NEVER_VERIFIED_SQL } from "./lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
 import { resolveCohortArg } from "./lib/clarice-segment.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // .env.local (precedência) + .env — loader canônico do projeto (#923).
 // Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
@@ -662,11 +663,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(JSON.stringify(summary, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

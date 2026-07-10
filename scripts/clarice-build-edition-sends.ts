@@ -83,7 +83,7 @@ import {
   type SendPlanEntry,
   type SendsSummaryEntry,
 } from "./lib/send-plan.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
 import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
@@ -657,7 +657,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 }
 
 // CLI guard (#tests importam helpers sem disparar main)
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("clarice-build-edition-sends.ts")) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(String(e?.stack || e));
     process.exit(1);

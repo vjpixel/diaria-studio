@@ -42,7 +42,7 @@
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./cli-args.ts";
 
 export type ExecMode = "local" | "cloud";
 
@@ -75,6 +75,6 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   console.log(detectExecMode());
 }

@@ -52,6 +52,7 @@ import type { PollEiaSummary, PollEiaEditionEntry, PollEiaLeaderboardEntry } fro
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // #2738: chave KV do clarice-dashboard pro engajamento do "É IA?" (aba Engajamento).
 const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
@@ -476,11 +477,7 @@ export async function pushEiaEngagementToBrevoKv(summary: PollEiaSummary): Promi
 }
 
 // CLI guard (#cli-guard): só executa main() quando invocado diretamente
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[poll-eia] ${(e as Error).message}`);
     process.exit(1);

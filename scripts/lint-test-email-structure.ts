@@ -27,7 +27,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 // #1836: fonte única do prefixo de emoji de seção (mandatório + opcional).
 import { SECTION_EMOJI, SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface StructureIssue {
   // #1721: `section_item_count_mismatch` removido — era declarado mas NUNCA
@@ -276,7 +276,6 @@ async function mainCli(): Promise<number> {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/lint-test-email-structure\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   mainCli().then((code) => process.exit(code));
 }

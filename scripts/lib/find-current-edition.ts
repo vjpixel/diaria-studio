@@ -25,7 +25,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { parseArgsSimple as parseArgs } from "./cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./cli-args.ts";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
 
@@ -254,10 +254,6 @@ function main(): void {
   process.stdout.write(JSON.stringify({ stage: stageNum, candidates }) + "\n");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

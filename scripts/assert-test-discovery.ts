@@ -25,7 +25,8 @@
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 
 /** Piso conservador: ~2/3 dos ~298 atuais. Detecta sumiço em massa dos arquivos
  *  de teste, não flutuações normais (adicionar/remover alguns arquivos). */
@@ -76,7 +77,7 @@ export function discoveryVerdict(count: number, floor = TEST_FILE_FLOOR): Discov
 }
 
 // CLI guard (#cli-guard): só roda como main; importável em testes sem disparar.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const v = discoveryVerdict(countTestFiles(root));
   console.error(v.ok ? `✓ ${v.message}` : `✗ ${v.message}`);

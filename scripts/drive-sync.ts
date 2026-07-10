@@ -34,7 +34,7 @@
 
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { resolve, extname, basename as pathBasename } from "node:path";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
 import { DRIVE_API } from "./lib/drive-constants.ts"; // #1308 item 1
 import {
   gFetchRetry,
@@ -696,11 +696,7 @@ function logSyncWarnings(result: SyncResult): void {
   }, ROOT);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error("drive-sync fatal:", err.message);
     process.exit(1);

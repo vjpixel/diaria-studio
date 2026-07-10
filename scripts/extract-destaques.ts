@@ -27,6 +27,7 @@
 import fs from 'fs';
 import { looksLikeTitleOption } from './lib/title-heuristic.ts';
 import { parseInlineLink, isInlineLinkLine } from './lib/inline-link.ts';
+import { isMainModule } from "./lib/cli-args.ts";
 
 // ── Shared types & parsing (also used by render-newsletter-html.ts) ───
 
@@ -248,8 +249,7 @@ function main() {
 // Only run CLI when executed directly (not when imported, e.g. from tests
 // or render-newsletter-html.ts). Match the script file name precisely
 // instead of substring — `extract-destaques.test.ts` was triggering CLI mode.
-const _argv1 = process.argv[1]?.replace(/\\/g, '/') ?? '';
-const isDirectRun = /\/scripts\/extract-destaques\.ts$/.test(_argv1);
+const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) {
   main();
 }

@@ -48,6 +48,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { isMainModule } from "./lib/cli-args.ts";
 
 export interface ClariceSuggestion {
   from: string;
@@ -223,10 +224,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

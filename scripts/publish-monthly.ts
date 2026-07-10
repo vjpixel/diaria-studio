@@ -40,6 +40,7 @@ dotenvConfig({ override: true });
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   parseMonthlyCycleArg,
   isValidMonthlyCycle,
@@ -751,11 +752,7 @@ export async function main(
 
 // Guard: só roda main() quando invocado como CLI (não em import de test).
 // Pattern: import.meta.url vs file:// do argv[1] (entrypoint Node).
-const _argv1 = process.argv[1] ? process.argv[1].replace(/\\/g, "/") : "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`Fatal: ${err.message}\n`);
     process.exit(1);

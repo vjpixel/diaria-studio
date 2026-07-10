@@ -33,7 +33,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface LinkIssue {
   type: "link_dead" | "link_timeout" | "link_redirect_chain_long";
@@ -326,7 +326,6 @@ async function mainCli(): Promise<number> {
   return blockers.length > 0 ? 1 : 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/lint-test-email-link-tracking\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   mainCli().then((code) => process.exit(code));
 }

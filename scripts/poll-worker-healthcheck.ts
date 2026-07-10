@@ -35,7 +35,7 @@
 
 import "dotenv/config";
 
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { dohFetch } from "./lib/doh-fetch.ts";
 
 const DEFAULT_WORKER_URL = "https://poll.diaria.workers.dev";
@@ -183,11 +183,7 @@ async function main(): Promise<void> {
   process.exit(result.exit_code);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(`[poll-worker-healthcheck] unexpected error: ${err}`);
     process.exit(3);

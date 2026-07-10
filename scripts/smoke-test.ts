@@ -29,6 +29,7 @@ import { lintSocialMd } from "./lint-social-md.ts";
 import { validateLancamentos } from "./validate-lancamentos.ts";
 import { extractDestaqueUrls, extractPromptUrl, computeSwaps } from "./match-prompts-to-destaques.ts";
 import { inferIsPublished } from "./verify-facebook-posts.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { parseApprovedJson } from "./lib/schemas/edition-state.ts"; // #1031
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -487,11 +488,7 @@ async function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`✗ smoke fatal: ${(e as Error).message}`);
     process.exit(1);

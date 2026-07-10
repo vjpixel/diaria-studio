@@ -49,6 +49,7 @@
 
 import "dotenv/config";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 const PER_PAGE = 100;
@@ -254,10 +255,7 @@ export async function fetchAndAggregate(
 // CLI guard
 // ---------------------------------------------------------------------------
 
-if (
-  process.argv[1] &&
-  new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname
-) {
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2);
   const jsonMode = args.includes("--json");
   const sourceIdx = args.indexOf("--source");

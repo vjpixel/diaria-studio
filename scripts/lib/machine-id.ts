@@ -39,7 +39,7 @@
  */
 
 import { hostname } from "node:os";
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./cli-args.ts";
 
 /**
  * Retorna o hostname da máquina local, ou string vazia em caso de erro.
@@ -58,6 +58,6 @@ export function getMachineId(): string {
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   process.stdout.write(getMachineId() + "\n");
 }

@@ -20,11 +20,12 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 // #2530 review: tokens do DS canônico (fonte única, #1936) — não duplicar
 // literais de cor/fonte (há drift-test pra esse padrão; um change no DS propaga).
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "assets", "default-thumbnail-1200x630.png");
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
 }
 
 // CLI guard: só executa main() quando chamado diretamente, nunca ao ser importado em testes.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error("gen-default-thumbnail: erro ao gerar thumbnail:", err);
     process.exit(1);

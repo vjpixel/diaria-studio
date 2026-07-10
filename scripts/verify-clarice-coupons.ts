@@ -30,7 +30,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 /** Literais patrocinados que NÃO podem ser reescritos pela Clarice/humanizer. */
 export const SPONSORED_LITERALS = [
@@ -98,8 +98,7 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/verify-clarice-coupons\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main();
 }
 

@@ -57,7 +57,7 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg } from "./lib/cli-args.ts";
+import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 // #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
 // declarava sua PRÓPRIA cópia hardcoded, triplicando a constante (junto com
 // clarice-mv-status.ts e o próprio lib/dashboard-kv.ts).
@@ -599,11 +599,7 @@ async function main(): Promise<void> {
   logLine(`🏁 Concluído em ${Math.round((Date.now() - startMs) / 1000)}s.`);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

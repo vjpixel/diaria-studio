@@ -27,7 +27,7 @@
 import { readFileSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalize, stripUrlTrailingPunct } from "./lib/url-utils.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra tests
@@ -291,10 +291,6 @@ function main(): void {
   console.log(JSON.stringify({ ok: true, swaps: result.swaps, reason: result.reason }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

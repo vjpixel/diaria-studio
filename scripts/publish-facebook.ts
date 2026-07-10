@@ -36,7 +36,7 @@ import { computeScheduledAt as computeScheduledAtShared } from "./compute-social
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -769,11 +769,7 @@ async function main() {
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal error:", e);
     process.exit(1);

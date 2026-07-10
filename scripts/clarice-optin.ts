@@ -28,7 +28,7 @@ import {
   findContactByEmail,
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
-import { getArg, parseArgs } from "./lib/cli-args.ts";
+import { getArg, parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 function normalizeEmail(e: string): string {
   return e.trim().toLowerCase();
@@ -181,10 +181,6 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   db.close();
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

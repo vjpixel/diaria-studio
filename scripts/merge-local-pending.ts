@@ -31,7 +31,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { aammddFromIso, type Post } from "./refresh-past-editions.ts"; // #3207
 
@@ -285,10 +285,6 @@ function main() {
 }
 
 // Guard: roda main() só quando script é executado direto, não em import (testes).
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

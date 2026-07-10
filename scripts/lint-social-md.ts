@@ -39,7 +39,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs as parseArgsStructured } from "./lib/cli-args.ts"; // #2834
+import { parseArgs as parseArgsStructured, isMainModule } from "./lib/cli-args.ts"; // #2834
 import {
   type LintError,
   extractPlatformSection,
@@ -377,11 +377,7 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }
 

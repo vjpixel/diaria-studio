@@ -27,7 +27,7 @@
  */
 
 import "dotenv/config";
-import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
 export interface VoteRecord {
   choice: "A" | "B";
@@ -167,7 +167,6 @@ async function mainCli(): Promise<number> {
   return 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (/\/scripts\/rebuild-stats\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   mainCli().then((code) => process.exit(code));
 }

@@ -32,9 +32,8 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { extractUrls, canonicalize } from "./lib/url-utils.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import {
   isTrackingUrl,
   decodeTrackerUrl,
@@ -285,7 +284,7 @@ export function main(argv: string[] = process.argv): void {
 // Entry point
 // ---------------------------------------------------------------------------
 
-const isMain = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main();
 }

@@ -35,7 +35,7 @@ import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -850,11 +850,6 @@ function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

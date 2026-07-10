@@ -31,7 +31,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionDir as buildEditionDir, editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
@@ -227,10 +227,6 @@ function main(): void {
   console.log(JSON.stringify(stats));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -38,7 +38,7 @@ import { isHardFailure } from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 /**
  * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
@@ -1000,10 +1000,6 @@ function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(async () => main());
 }

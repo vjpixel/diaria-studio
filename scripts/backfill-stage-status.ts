@@ -32,7 +32,7 @@ import { readSentinel, resolveSentinelEndMs } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -157,11 +157,7 @@ function main(): void {
   if (args.dryRun) console.log("(dry-run — nenhuma escrita)");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (e) {

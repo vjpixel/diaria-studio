@@ -54,7 +54,7 @@ import {
   type IntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export const SECTION_HEADER = "**ERRO INTENCIONAL**";
 
@@ -967,10 +967,6 @@ function main(): void {
   console.log(JSON.stringify(result, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

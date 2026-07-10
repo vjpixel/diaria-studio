@@ -19,7 +19,7 @@ import {
   type DryrunRow,
 } from "./lib/clarice-waves-dryrun.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 export function main(argv: string[] = process.argv.slice(2)): void {
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
@@ -66,6 +66,6 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   console.log(md);
 }
 
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
+if (isMainModule(import.meta.url)) {
   main();
 }

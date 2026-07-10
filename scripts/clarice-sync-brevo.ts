@@ -39,7 +39,7 @@ import {
   recomputeDerived,
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
-import { getArg, hasFlag } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 // import.meta.dirname pode vir undefined em loaders CJS (tsx eval / import
 // deep-relative) — fallback pra cwd (scripts rodam da raiz do repo).
@@ -297,10 +297,6 @@ export async function main(
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

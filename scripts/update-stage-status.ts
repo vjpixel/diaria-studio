@@ -36,7 +36,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
-import { parseArgs as parseArgsLib } from "./lib/cli-args.ts";
+import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { getMachineId } from "./lib/machine-id.ts"; // #3119: tageia o doc com a máquina que iniciou a run
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -644,11 +644,7 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal:", e);
     process.exit(1);

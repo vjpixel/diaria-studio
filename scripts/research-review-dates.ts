@@ -46,7 +46,7 @@ import { verifyDate, type DateVerifyResult } from "./verify-dates.ts";
 import type { VerifyDateOptions } from "./lib/verify-options.ts";
 import { loadCache as loadVerifyCache } from "./lib/url-verify-cache.ts";
 import { filterDateWindow } from "./filter-date-window.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 /** Local copy do ArticleInput de verify-dates.ts (interface não-exportada lá). */
 interface ArticleInput {
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
   );
 }
 
-const isMain = process.argv[1]?.replace(/\\/g, "/").endsWith("research-review-dates.ts");
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main().catch((e) => {
     process.stderr.write(`[research-review-dates] fatal: ${(e as Error).message}\n`);

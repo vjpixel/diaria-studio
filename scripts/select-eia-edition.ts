@@ -39,6 +39,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { logEvent } from "./lib/run-log.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const DEFAULT_BASE = "https://poll.diaria.workers.dev";
 // Mínimo de votos pra um poll ser sinal e não ruído. Alinhado ao threshold de
@@ -326,10 +327,10 @@ async function main() {
 }
 
 // CLI guard (#cli-guard): só roda main() quando invocado direto, não em import.
-const isMain =
-  process.argv[1] &&
-  (process.argv[1].endsWith("select-eia-edition.ts") ||
-    process.argv[1].endsWith("select-eia-edition.js"));
+// #2834: isMainModule() compara contra o próprio import.meta.url do módulo em
+// execução — cobre .ts e .js (se algum dia compilado) automaticamente, sem
+// precisar do dual endsWith(".ts"/".js") manual.
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   main();
 }

@@ -41,7 +41,7 @@ import {
   type Article,
   type Categorized,
 } from "./split-articles-for-scoring.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -261,11 +261,6 @@ export function main(): void {
   if (result.catastrophic) process.exitCode = 2;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _importMeta = import.meta.url;
-if (
-  _importMeta === `file://${_argv1}` ||
-  _importMeta === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

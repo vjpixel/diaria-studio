@@ -31,7 +31,7 @@ import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
 import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
 import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boilerplate.ts"; // #3196
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -607,11 +607,7 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error("enrich-inbox-articles error:", err);
     process.exit(1);

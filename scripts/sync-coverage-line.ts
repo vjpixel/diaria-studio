@@ -46,7 +46,7 @@ import { resolve, join } from "node:path";
 import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
 import { resolveEditorEmail, readInboxLinkCountFromMarker } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
-import { parseArgs } from "./lib/cli-args.ts"; // #2834
+import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 interface RawArticle {
   url?: string;
@@ -478,10 +478,6 @@ function main(): void {
   process.exit(0);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -19,6 +19,7 @@
 
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { isMainModule } from "./lib/cli-args.ts";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -233,11 +234,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1] ? process.argv[1].replace(/\\/g, "/") : "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`Fatal: ${err.message}\n`);
     process.exit(1);

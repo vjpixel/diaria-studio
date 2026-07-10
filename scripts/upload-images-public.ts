@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
-import { parseArgsSimple } from "./lib/cli-args.ts"; // #2834
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -645,11 +645,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("Fatal error:", e);
     process.exit(1);

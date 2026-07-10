@@ -34,7 +34,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize, readPastEditionsMd, extractPastUrlsUnbounded } from "./dedup.ts";
 // #2834: CategorizedJson/Article locais consolidados no reader canônico
 // (ver comentário em lib/types/categorized-json.ts sobre por que não é o
@@ -168,10 +168,6 @@ function main(): void {
   writeFileSync(resolve(args.out), JSON.stringify(kept, null, 2), "utf8");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

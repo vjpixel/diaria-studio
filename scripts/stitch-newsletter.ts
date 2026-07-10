@@ -23,7 +23,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
 import {
@@ -569,6 +569,5 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-const isDirectRun = /\/scripts\/stitch-newsletter\.ts$/.test(_argv1);
+const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) main();

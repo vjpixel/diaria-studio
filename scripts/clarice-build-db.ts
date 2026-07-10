@@ -29,7 +29,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { buildUniverse } from "./merge-clarice-subscribers.ts";
 import { classifyResult } from "./verify-emails-mv.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidCycle } from "./lib/clarice-paths.ts";
 import {
   openClariceDb,
@@ -384,10 +384,6 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

@@ -27,6 +27,7 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { isMainModule } from "./lib/cli-args.ts";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -137,10 +138,6 @@ async function main(): Promise<void> {
 
 // CLI guard (#cli-guard): só roda main() quando invocado direto, não em import
 // (senão testes que importam `fetchPollStats` disparariam o CLI real).
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch(err => { console.error(err); process.exit(1); });
 }

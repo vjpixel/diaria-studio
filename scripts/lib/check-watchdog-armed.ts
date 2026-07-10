@@ -82,8 +82,8 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { detectExecMode, type ExecMode } from "./exec-mode.ts";
+import { isMainModule } from "./cli-args.ts";
 
 /** Nome exato da scheduled task, conforme `setup-watchdog-schedule.ps1`. */
 export const WATCHDOG_TASK_NAME = "Diaria-Overnight-Watchdog";
@@ -533,7 +533,7 @@ export function checkWatchdogArmed(): CheckWatchdogArmedResult {
 // CLI guard: só executa como main module, importável sem efeito colateral.
 // ---------------------------------------------------------------------------
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const result = checkWatchdogArmed();
   if (result.action === "not_armed_warn") {
     console.warn(`[watchdog-check] AVISO: ${result.message}`);

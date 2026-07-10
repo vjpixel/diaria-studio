@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { isMainModule } from "./lib/cli-args.ts";
 
 export function splitParagraphs(text: string): string[] {
   return text.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
@@ -182,10 +183,6 @@ function main() {
   console.error(`clarice-diff: ${changes.length} alteração(ões) → ${outPath}`);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

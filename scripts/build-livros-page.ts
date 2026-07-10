@@ -21,6 +21,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
 import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 import {
@@ -350,7 +351,6 @@ function main(): void {
   console.log(outPath);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_argv1.replace(/^\//, "")}`) {
+if (isMainModule(import.meta.url)) {
   main();
 }

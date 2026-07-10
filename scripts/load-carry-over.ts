@@ -35,7 +35,7 @@ import { resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPreviousEditionDate } from "./lib/edition-utils.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3030: layout flat+nested
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -366,10 +366,7 @@ function main(): void {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-const _isMain =
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
+const _isMain = isMainModule(import.meta.url);
 if (_isMain) {
   try {
     main();

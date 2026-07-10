@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { filterSources, type Source } from "./lib/aggregator-blocklist.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 function main(): void {
   const { values } = parseArgs(process.argv.slice(2));
@@ -71,10 +71,6 @@ function main(): void {
   process.exit(0);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

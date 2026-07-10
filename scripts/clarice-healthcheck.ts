@@ -17,6 +17,7 @@
  */
 
 import "dotenv/config";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 const PROBE_TEXT = "ola";
@@ -78,10 +79,6 @@ async function main(): Promise<void> {
   process.exit(result.ok ? 0 : 2);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   await main();
 }

@@ -22,6 +22,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   findForbiddenPhrases,
   findTextTriggers,
@@ -119,10 +120,6 @@ function main(): number {
   return 1;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   process.exit(main());
 }

@@ -43,7 +43,7 @@ import {
 } from "./dedup.ts";
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
-import { parseArgsSimple } from "./lib/cli-args.ts";
+import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -809,10 +809,6 @@ function main(): void {
   writeFileSync(resolve(args.out), JSON.stringify(kept, null, 2), "utf8");
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

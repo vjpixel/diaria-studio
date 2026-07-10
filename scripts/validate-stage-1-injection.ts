@@ -21,8 +21,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { parseJsonSafe } from "./lib/json-safe.ts";
 import {
@@ -115,7 +114,6 @@ function main(): void {
 }
 
 // Guard: só roda CLI quando invocado diretamente (não ao importar como módulo em testes)
-const isMain = process.argv[1] &&
-  fileURLToPath(import.meta.url).replace(/\\/g, "/") === process.argv[1].replace(/\\/g, "/");
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) main();

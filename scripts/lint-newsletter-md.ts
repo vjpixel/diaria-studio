@@ -27,7 +27,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #926
 import { lintIntroCount as sharedLintIntroCount, type IntroCountResult } from "./lib/newsletter-count.ts"; // #1455
 // #1737 item 2: checks extraídos pra módulos por-check (espelha invariant-checks/).
 import {
@@ -1207,10 +1207,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

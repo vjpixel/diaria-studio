@@ -35,7 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchRss, type Article } from "./fetch-rss.ts";
 import { fetchSitemapEntries } from "./lib/fetch-sitemap.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -255,8 +255,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-const _argv1 = process.argv[1]?.replace(/\\/g, "/") ?? "";
-if (/\/scripts\/fetch-rss-batch\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

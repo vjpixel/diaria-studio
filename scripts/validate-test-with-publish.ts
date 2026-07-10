@@ -25,7 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { runMain } from "./lib/exit-handler.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 // Motivos legítimos pra skip — extender quando descobrir novos casos válidos.
 // Padrão: skip só é válido se há falha upstream concreta E verificável
@@ -175,10 +175,6 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(main);
 }

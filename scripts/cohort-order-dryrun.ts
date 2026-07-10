@@ -35,7 +35,7 @@ import { writeFileSync } from "node:fs";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows, isFirstSend, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { cohortSendRank } from "./lib/cohorts.ts";
-import { getArg } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 const DEFAULT_TOP = 50;
@@ -229,11 +229,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(md);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err);
     process.exit(1);

@@ -30,6 +30,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   autoApproveConsent,
   defaultAutoConsent,
@@ -150,7 +151,6 @@ export function mainCli(argv: string[]): number {
   return 0;
 }
 
-const _argv1 = (process.argv[1] ?? "").replace(/\\/g, "/");
-if (/\/scripts\/build-publish-consent\.ts$/.test(_argv1)) {
+if (isMainModule(import.meta.url)) {
   process.exit(mainCli(process.argv.slice(2)));
 }

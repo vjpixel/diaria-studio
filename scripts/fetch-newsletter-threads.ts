@@ -33,7 +33,6 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import type { GmailMessagePart } from "./lib/schemas/gmail.ts";
 import {
@@ -43,6 +42,7 @@ import {
 // #2834: stripHtmlForBody era byte-idêntico ao stripHtml de lib/strip-html.ts
 // (mesma variante já consolidada em capture-newsletter-urls.ts).
 import { stripHtml as stripHtmlForBody } from "./lib/strip-html.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 export { stripHtmlForBody };
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
@@ -426,10 +426,7 @@ async function main(argv: string[] = process.argv): Promise<void> {
 // Entry point guard (prevents main() from running when imported by tests)
 // ---------------------------------------------------------------------------
 
-const isMain =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  process.argv[1] === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) {
   main().catch((err) => {

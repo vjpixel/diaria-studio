@@ -38,7 +38,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -274,11 +274,7 @@ async function main(): Promise<void> {
   process.exit(2);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`Fatal error: ${(e as Error).message}\n`);
     process.exit(2);

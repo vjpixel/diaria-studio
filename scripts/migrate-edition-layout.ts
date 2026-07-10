@@ -45,6 +45,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const EXECUTE = process.argv.includes("--execute");
 const UNDO = process.argv.includes("--undo");
@@ -289,10 +290,6 @@ function main(): void {
   if (failed > 0) process.exit(1);
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

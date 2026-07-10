@@ -41,7 +41,7 @@ import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-ut
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 import { writeMarker } from "./lib/pipeline-state.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 
 // ---------------------------------------------------------------------------
@@ -533,11 +533,7 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

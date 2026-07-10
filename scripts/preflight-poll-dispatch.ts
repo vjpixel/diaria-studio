@@ -29,7 +29,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env + .env.local (precedência)
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
@@ -305,11 +305,7 @@ async function main(): Promise<void> {
 }
 
 // CLI guard portável (Windows + Unix) — só roda main() em execução direta.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[preflight-poll-dispatch] unexpected error: ${(e as Error).message}`);
     process.exit(1);

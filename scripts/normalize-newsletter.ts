@@ -34,7 +34,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 import { readEiaAnswer } from "./lib/eia-answer.ts"; // #927
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -680,10 +680,6 @@ function main(): void {
 // pra backward-compat (leitura de edições antigas), mas não são mais usados
 // em runtime aqui.
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

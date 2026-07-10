@@ -53,7 +53,7 @@ import { CONFIG } from "./lib/config.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
-import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
+import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -1102,10 +1102,6 @@ async function main(): Promise<void> {
   );
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   runMain(main);
 }

@@ -51,7 +51,7 @@ import {
   intentionalErrorJsonPath,
   type IntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeSentinel } from "./check-humanizer-social.ts";
 
 // ---------------------------------------------------------------------------
@@ -576,11 +576,7 @@ async function main(): Promise<void> {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("[apply-factcheck-autofix] ERRO:", e);
     process.exit(1);

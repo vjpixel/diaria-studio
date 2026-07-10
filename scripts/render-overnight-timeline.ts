@@ -28,8 +28,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { fmtTimeBrt } from "./lib/format.ts";
 import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
 
@@ -337,7 +336,7 @@ export function renderOvernightTimeline(plan: Plan): string {
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const { values } = parseCliArgs(process.argv.slice(2));
   const planPath = values["plan"];
   if (!planPath) {

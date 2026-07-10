@@ -26,6 +26,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isPaywall } from "./lib/paywalls.ts";
 import { isAggregator } from "./lib/aggregators.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const URL_RE = /https?:\/\/[^\s)\]>]+/g;
 
@@ -120,10 +121,6 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }

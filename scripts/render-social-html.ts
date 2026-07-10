@@ -22,6 +22,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
 
 export interface ImageMap {
@@ -395,10 +396,6 @@ function main(): void {
 }
 
 // CLI guard portável (Windows + Unix) — só roda main() em execução direta.
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main();
 }
