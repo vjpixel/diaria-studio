@@ -30,7 +30,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 3. `npm run sync-sources` para gerar `context/sources.md`.
 4. Abrir Claude Code neste diretório: `cd diaria-studio && claude`.
 5. Confirmar que os MCPs estão ativos: `/mcp` deve listar `clarice` (local), `claude.ai Beehiiv` e `claude.ai Gmail` (conectores nativos). Para Fase 2 (imagens), instalar ComfyUI local (ver `docs/comfyui-setup.md`). Para Fase 3 (publicação), instalar e logar a extensão `Claude in Chrome` em Beehiiv/LinkedIn/Facebook (ver `docs/browser-publish-setup.md`).
-6. **Inbox editorial** (`diariaeditor@gmail.com`): seguir `docs/gmail-inbox-setup.md` (forward + label). Isso permite enviar links/temas durante o dia que são considerados na próxima edição automaticamente.
+6. **Inbox editorial** (`diariaeditor@gmail.com`): nenhum setup necessário — o drain busca direto na pasta Enviados da conta pessoal (ver `docs/gmail-inbox-setup.md`). Isso permite enviar links/temas durante o dia que são considerados na próxima edição automaticamente.
 7. Rodar `/diaria-atualiza-audiencia` para importar respostas de survey do Beehiiv em `data/audience-raw.json` (re-rodar semanalmente ou quando quiser recalibrar). O `context/audience-profile.md` é regenerado automaticamente no Stage 0, combinando CTR comportamental (primário) e survey (secundário).
 
 **Para cada nova edição:**

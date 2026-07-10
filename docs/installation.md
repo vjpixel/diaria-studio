@@ -90,13 +90,11 @@ O MCP da Clarice roda localmente. Instalar e configurar:
 
 ### 4.3 Gmail MCP (inbox editorial)
 
-Duas abordagens. **Recomendada: Opção A** (forward + label). Detalhes completos em [`gmail-inbox-setup.md`](./gmail-inbox-setup.md).
+**Sem setup em `diariaeditor@gmail.com`.** O drain busca direto na pasta Enviados da conta pessoal (`vjpixel@gmail.com`, onde o Gmail MCP já está autenticado). Detalhes completos em [`gmail-inbox-setup.md`](./gmail-inbox-setup.md).
 
-**Resumo da Opção A:**
-1. Configurar forwarding em `diariaeditor@gmail.com` → `vjpixel@gmail.com`.
-2. Criar filtro + label `Diaria` em `vjpixel@gmail.com`.
-3. Gmail MCP na claude.ai autenticado com `vjpixel@gmail.com` (conta pessoal).
-4. Confirmar `platform.config.json.inbox.enabled: true` e `gmailQuery: "label:Diaria"`.
+**Resumo:**
+1. Gmail MCP na claude.ai autenticado com `vjpixel@gmail.com` (conta pessoal) — nenhum outro setup necessário.
+2. Confirmar `platform.config.json.inbox.enabled: true` e `gmailQuery: "in:sent to:diariaeditor@gmail.com"` (default).
 
 Validar:
 
