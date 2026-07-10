@@ -19,13 +19,39 @@ import {
   checkStage2Invariants,
 } from "../scripts/check-stage2-invariants.ts";
 
-function mkEdition() {
+/**
+ * #3222: por padrão, escreve um `_internal/intentional-error.json` válido —
+ * a maioria dos testes deste arquivo não está exercitando o mecanismo
+ * intentional_error especificamente (é só um pré-requisito pra
+ * `checkStage2Invariants(...).ok === true`). Passar
+ * `{ withIntentionalError: false }` nos poucos testes que exercitam
+ * especificamente ausência/presença do arquivo.
+ */
+function mkEdition(opts: { withIntentionalError?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "stage2-invariants-"));
   mkdirSync(join(dir, "_internal"), { recursive: true });
+  if (opts.withIntentionalError !== false) {
+    writeIntentionalErrorRecord(dir);
+  }
   return {
     dir,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+/** #3222: escreve `_internal/intentional-error.json` com valores completos (ou custom). */
+function writeIntentionalErrorRecord(
+  dir: string,
+  record: Record<string, unknown> = {
+    description: "teste",
+    location: "DESTAQUE 1",
+    category: "factual",
+    correct_value: "valor correto",
+    reveal: "Na última edição, teste.",
+  },
+): void {
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  writeFileSync(join(dir, "_internal", "intentional-error.json"), JSON.stringify(record, null, 2));
 }
 
 describe("checkHumanizadorRan (#1072)", () => {
@@ -255,17 +281,12 @@ describe("checkErroIntencionalRendered (#1073)", () => {
   });
 });
 
-const REVIEWED_WITH_FRONTMATTER = `---
-intentional_error:
-  description: "teste"
-  location: "DESTAQUE 1"
-  category: "factual"
-  correct_value: "valor correto"
----
-b clarificado, sem placeholder`;
+// #3222: sem frontmatter — o record estruturado agora vive em
+// `_internal/intentional-error.json` (escrito por `mkEdition()` por default).
+const REVIEWED_WITH_FRONTMATTER = `b clarificado, sem placeholder`;
 
 describe("checkStage2Invariants — integração", () => {
-  it("OK quando os 4 invariants passam (#2284: inclui frontmatter)", () => {
+  it("OK quando os 4 invariants passam (#2284/#3222: inclui _internal/intentional-error.json)", () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -556,14 +577,15 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  // #2284: novo check intentional_error_frontmatter
-  it("#2284: FAIL quando frontmatter intentional_error ausente em 02-reviewed.md", () => {
-    const { dir, cleanup } = mkEdition();
+  // #2284/#3222: novo check intentional_error_frontmatter (migrado pra JSON)
+  it("#2284/#3222: FAIL quando _internal/intentional-error.json ausente", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
-      // Sem frontmatter — simula o bug do pre-gate onde render-erro não inseria o bloco
+      // Sem _internal/intentional-error.json — simula o bug do pre-gate onde
+      // render-erro-intencional.ts não inseria o placeholder.
       writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
@@ -578,40 +600,40 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("#2284: FAIL quando frontmatter existe mas sem chave intentional_error", () => {
-    const { dir, cleanup } = mkEdition();
+  it("#3222: OK quando _internal/intentional-error.json existe como objeto vazio (presença-only check)", () => {
+    // Ao contrário do check antigo (que exigia a CHAVE `intentional_error:` presente
+    // no frontmatter), este check só confirma que o arquivo existe — validação de
+    // conteúdo/completude fica pro lint do Stage 5 (`intentional-error-flagged`).
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
-      writeFileSync(
-        join(dir, "02-reviewed.md"),
-        "---\noutro_campo: valor\n---\nb clarificado",
-      );
+      writeFileSync(join(dir, "02-reviewed.md"), "b clarificado");
+      writeIntentionalErrorRecord(dir, {});
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
-      assert.equal(r.ok, false);
-      assert.equal(r.checks.intentional_error_frontmatter.ok, false);
-      assert.match(
-        r.checks.intentional_error_frontmatter.label ?? "",
-        /intentional_error_frontmatter_missing/,
-      );
+      assert.equal(r.checks.intentional_error_frontmatter.ok, true);
     } finally {
       cleanup();
     }
   });
 
-  it("#2284: OK quando frontmatter tem intentional_error (mesmo com placeholders)", () => {
-    const { dir, cleanup } = mkEdition();
+  it("#2284/#3222: OK quando intentional-error.json tem placeholders", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
-      // Frontmatter com placeholders — inserido automaticamente por render-erro-intencional
-      writeFileSync(
-        join(dir, "02-reviewed.md"),
-        `---\nintentional_error:\n  description: "{PREENCHER}"\n  location: "{PREENCHER}"\n  category: "{PREENCHER}"\n  correct_value: "{PREENCHER}"\n---\nb clarificado, sem placeholder`,
-      );
+      writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
+      // Placeholders — inseridos automaticamente por render-erro-intencional.ts
+      writeIntentionalErrorRecord(dir, {
+        description: "{PREENCHER}",
+        location: "{PREENCHER}",
+        category: "{PREENCHER}",
+        correct_value: "{PREENCHER}",
+        reveal: "{PREENCHER}",
+      });
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
       assert.equal(r.checks.intentional_error_frontmatter.ok, true);
@@ -621,11 +643,12 @@ describe("checkStage2Invariants — integração", () => {
   });
 });
 
-describe("checkIntentionalErrorFrontmatter (#2284)", () => {
-  it("OK quando frontmatter tem intentional_error com valores reais", () => {
-    const { dir, cleanup } = mkEdition();
+describe("checkIntentionalErrorFrontmatter (#2284/#3222)", () => {
+  it("OK quando _internal/intentional-error.json tem valores reais", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_WITH_FRONTMATTER);
+      writeIntentionalErrorRecord(dir);
       const r = checkIntentionalErrorFrontmatter(dir);
       assert.equal(r.ok, true);
     } finally {
@@ -634,7 +657,7 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
   });
 
   it("OK quando reviewed.md não existe (outro check captura)", () => {
-    const { dir, cleanup } = mkEdition();
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       const r = checkIntentionalErrorFrontmatter(dir);
       assert.equal(r.ok, true);
@@ -643,10 +666,10 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
     }
   });
 
-  it("FAIL quando sem frontmatter algum", () => {
-    const { dir, cleanup } = mkEdition();
+  it("FAIL quando _internal/intentional-error.json ausente", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
-      writeFileSync(join(dir, "02-reviewed.md"), "corpo sem frontmatter");
+      writeFileSync(join(dir, "02-reviewed.md"), "corpo sem placeholder");
       const r = checkIntentionalErrorFrontmatter(dir);
       assert.equal(r.ok, false);
       assert.match(r.label ?? "", /intentional_error_frontmatter_missing/);
@@ -655,60 +678,19 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
     }
   });
 
-  it("FAIL quando frontmatter sem chave intentional_error", () => {
-    const { dir, cleanup } = mkEdition();
+  it("OK com intentional-error.json placeholder (pre_gate auto-insert)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
-      writeFileSync(join(dir, "02-reviewed.md"), "---\noutro: x\n---\ncorpo");
-      const r = checkIntentionalErrorFrontmatter(dir);
-      assert.equal(r.ok, false);
-      assert.match(r.label ?? "", /intentional_error_frontmatter_missing/);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("OK com intentional_error placeholder (pre_gate auto-insert)", () => {
-    const { dir, cleanup } = mkEdition();
-    try {
-      writeFileSync(
-        join(dir, "02-reviewed.md"),
-        `---\nintentional_error:\n  description: "{PREENCHER}"\n  location: "{PREENCHER}"\n  category: "{PREENCHER}"\n  correct_value: "{PREENCHER}"\n---\ncorpo`,
-      );
+      writeFileSync(join(dir, "02-reviewed.md"), "corpo");
+      writeIntentionalErrorRecord(dir, {
+        description: "{PREENCHER}",
+        location: "{PREENCHER}",
+        category: "{PREENCHER}",
+        correct_value: "{PREENCHER}",
+        reveal: "{PREENCHER}",
+      });
       const r = checkIntentionalErrorFrontmatter(dir);
       assert.equal(r.ok, true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("P2 fix #2300: OK quando documento começa com stub ---/--- vazio seguido do bloco YAML real", () => {
-    // Regressão da divergência detectada em code-review: o loop hand-rolled anterior
-    // tomava os primeiros 2 `---` incondicionalmente, coletando o bloco vazio e
-    // retornando false-negative (ok: false mesmo com intentional_error presente).
-    //
-    // Cenário: `---\n---\n` (stub/empty frontmatter), seguido direto do YAML real.
-    // O loop anterior: fmStart=0, fmEnd=1, body="" → /intentional_error/ não bate → false.
-    // extractFrontmatter(): canonical regex captura o body incluindo o YAML real
-    // (entre o 1º e o último `---`) → /intentional_error/ bate → true.
-    const { dir, cleanup } = mkEdition();
-    try {
-      writeFileSync(
-        join(dir, "02-reviewed.md"),
-        [
-          "---",
-          "---",       // stub empty — hand-rolled loop para aqui (body="") → false-negative
-          "intentional_error:",
-          '  description: "Detalhe do erro"',
-          '  location: "DESTAQUE 1"',
-          '  category: "factual"',
-          '  correct_value: "2014"',
-          "---",
-          "",
-          "Corpo da newsletter.",
-        ].join("\n"),
-      );
-      const r = checkIntentionalErrorFrontmatter(dir);
-      assert.equal(r.ok, true, "extractFrontmatter deve achar intentional_error mesmo com stub ---/--- antes");
     } finally {
       cleanup();
     }
@@ -720,14 +702,9 @@ describe("checkIntentionalErrorFrontmatter (#2284)", () => {
 // ---------------------------------------------------------------------------
 
 describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible", () => {
-  const REVIEWED_WITH_FM = `---
-intentional_error:
-  description: "teste"
-  location: "DESTAQUE 1"
-  category: "factual"
-  correct_value: "valor correto"
----
-corpo`;
+  // #3222: sem frontmatter — o record vive em _internal/intentional-error.json,
+  // escrito por default por mkEdition().
+  const REVIEWED_WITH_FM = `corpo`;
 
   it("cursos.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
     // Bug 260623: URL fixa do rodapé (PARA ENCERRAR) era flagada not_in_cache.

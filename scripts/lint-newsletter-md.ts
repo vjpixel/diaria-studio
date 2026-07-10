@@ -134,7 +134,6 @@ export {
 export {
   checkIntentionalError,
   checkIntentionalErrorSafety,
-  extractFrontmatter,
   type IntentionalErrorCheckResult,
   type IntentionalErrorSafetyResult,
 } from "./lib/lint-checks/intentional-error.ts";
@@ -190,7 +189,8 @@ export {
 // #1737 item 2: checkSectionItemFormat (#909) → lint-checks/section-item-format.ts. Re-export no topo.
 
 // #1737 item 2: checkEiaAnswer (#744/#927) → lint-checks/eia-answer-check.ts;
-// checkIntentionalError (#754) + extractFrontmatter → lint-checks/intentional-error.ts.
+// checkIntentionalError (#754) → lint-checks/intentional-error.ts (migrado pra
+// ler _internal/intentional-error.json em vez de frontmatter YAML, #3222).
 // Re-export no topo do arquivo pra back-compat.
 
 /**
@@ -360,9 +360,10 @@ function main(): void {
     return;
   }
 
-  // Modo --check intentional-error-flagged (#754) — verifica que 02-reviewed.md
-  // tem intentional_error declarado no frontmatter (concurso mensal de erro
-  // proposital). Roda no Stage 4 (publish-newsletter) antes de criar draft.
+  // Modo --check intentional-error-flagged (#754) — verifica que a edição tem
+  // intentional_error declarado em `_internal/intentional-error.json` (#3222 —
+  // migrado de frontmatter YAML; concurso mensal de erro proposital). Roda no
+  // Stage 4 (publish-newsletter) antes de criar draft.
   if (args.check === "intentional-error-flagged") {
     if (!args.md) {
       console.error(
@@ -376,15 +377,16 @@ function main(): void {
     if (!result.ok) {
       console.error(`\n❌ ${result.label}`);
       console.error(
-        `\nEdite ${args.md} e adicione o frontmatter intentional_error com 4 campos:`,
+        `\nCrie/edite _internal/intentional-error.json (sibling de ${args.md}) com os campos:`,
       );
-      console.error(`---
-intentional_error:
-  description: "o que o assinante deve identificar"
-  location: "DESTAQUE 2, parágrafo 2, primeira frase"
-  category: "factual"   # factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic
-  correct_value: "valor correto"
----`);
+      console.error(`{
+  "description": "o que o assinante deve identificar",
+  "location": "DESTAQUE 2, parágrafo 2, primeira frase",
+  "category": "factual",
+  "correct_value": "valor correto",
+  "reveal": "Na última edição, escrevi X onde o correto é Y."
+}
+// category: factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic`);
       process.exit(1);
     }
     // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de desinformação

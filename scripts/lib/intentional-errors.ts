@@ -20,7 +20,8 @@
  * ```
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export type ErrorType =
   | "version_inconsistency"
@@ -48,11 +49,11 @@ export interface IntentionalError {
    * Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
    * Separado de `description` (catálogo 3ª pessoa) e de `narrative` (legado).
    * Quando presente, composeRevealText usa este campo VERBATIM.
-   * Fonte: frontmatter `intentional_error.reveal`. */
+   * Fonte: `_internal/intentional-error.json.reveal` (#3222 — antes frontmatter YAML). */
   reveal?: string;
-  /** Valor correto (#1443) — vem do frontmatter `intentional_error.correct_value`
-   * e é usado pelo render-erro-intencional pra garantir que o reveal da edição
-   * seguinte inclui "o correto é Y". */
+  /** Valor correto (#1443) — vem de `_internal/intentional-error.json.correct_value`
+   * (#3222 — antes frontmatter YAML) e é usado pelo render-erro-intencional pra
+   * garantir que o reveal da edição seguinte inclui "o correto é Y". */
   correct_value?: string;
   source?: string;
   detected_by?: string;
@@ -186,6 +187,54 @@ export interface IntentionalErrorFrontmatter {
    * Quando presente, o reveal usa este campo verbatim.
    * Ex: "Na última edição, escrevi 1990 onde o correto é 1998." */
   reveal?: string;
+  /** (#3222) Editor declarou explicitamente que a edição não tem erro intencional —
+   * mesma semântica do antigo escalar `intentional_error: none` no frontmatter YAML. */
+  no_error?: boolean;
+}
+
+/**
+ * (#3222) Alias — mesmo shape de `IntentionalErrorFrontmatter`, framing pós-migração.
+ * `intentional_error` deixou de viver como frontmatter YAML em `02-reviewed.md`
+ * (round-trip via Google Docs colapsava o bloco — #3205/#3222) e passou a viver em
+ * `_internal/intentional-error.json`, arquivo local-only que nunca sincroniza com o
+ * Drive (convenção `_internal/*`, #959). O nome do tipo é mantido por compat — os
+ * campos são idênticos.
+ */
+export type IntentionalErrorJson = IntentionalErrorFrontmatter;
+
+/**
+ * (#3222) Path canônico do JSON estruturado do erro intencional, dado o diretório
+ * da edição (`data/editions/{AAMMDD}/`).
+ */
+export function intentionalErrorJsonPath(editionDir: string): string {
+  return join(editionDir, "_internal", "intentional-error.json");
+}
+
+/**
+ * (#3222) Carrega + parseia `_internal/intentional-error.json`. Tolerante a arquivo
+ * ausente ou corrompido — retorna `null` (equivalente ao antigo "frontmatter ausente"),
+ * nunca lança.
+ */
+export function loadIntentionalErrorJson(path: string): IntentionalErrorJson | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as IntentionalErrorJson;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * (#3222) Grava `_internal/intentional-error.json` (pretty JSON, determinístico).
+ * Cria `_internal/` se ausente.
+ */
+export function writeIntentionalErrorJson(path: string, record: IntentionalErrorJson): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(record, null, 2) + "\n", "utf8");
 }
 
 export function frontmatterToEntry(

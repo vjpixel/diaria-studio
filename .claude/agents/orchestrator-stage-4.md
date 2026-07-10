@@ -288,7 +288,7 @@ Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b
 - Apenas `02-reviewed.md` (newsletter) — `03-social.md` NÃO é tocado para preservar o sentinel do humanizador.
 - Nunca `claim_type: "superlative"` — ineditismo/tom é revisão editorial, não auto-fix.
 - Nunca `NOT_FOUND_IN_SOURCE` — ausência de suporte não implica valor correto.
-- Nunca o destaque do `intentional_error` declarado no frontmatter — preserva o erro intencional proposital.
+- Nunca o destaque do `intentional_error` declarado em `_internal/intentional-error.json` (#3222) — preserva o erro intencional proposital.
 - Substituição scoped ao bloco do destaque correto — evita clobberar erros intencionais de outros destaques com mesmo texto.
 - Claims em `sources: ["social"]` only → logados como `skipped` (precisa correção manual em 03-social.md, seguindo §4d.1 passo 6 para re-humanizar e re-selar sentinel).
 

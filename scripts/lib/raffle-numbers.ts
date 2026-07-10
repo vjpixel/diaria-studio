@@ -41,7 +41,7 @@ export interface RaffleEntry {
   issued_at: string;
 }
 
-/** Subconjunto do `intentional_error` frontmatter relevante pro matching. */
+/** Subconjunto do record `_internal/intentional-error.json` (#3222) relevante pro matching. */
 export interface IntentionalErrorForMatch {
   category?: string;
   location?: string;
@@ -170,7 +170,8 @@ function significantWords(s: string): string[] {
 
 /**
  * Pure: heurística de match entre o corpo de uma reply de assinante e o
- * `intentional_error` declarado no frontmatter da edição referenciada.
+ * `intentional_error` declarado em `_internal/intentional-error.json` (#3222)
+ * da edição referenciada.
  *
  * Critério (conservador — preferimos falso-negativo a falso-positivo, já que
  * o fallback "sem número" é seguro e o editor revisa o rascunho no gate):

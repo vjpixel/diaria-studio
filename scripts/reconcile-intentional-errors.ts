@@ -1,11 +1,17 @@
 #!/usr/bin/env tsx
 /**
- * reconcile-intentional-errors.ts (#1589)
+ * reconcile-intentional-errors.ts (#1589; #3222 — checkIntentionalError agora lê
+ * `_internal/intentional-error.json` em vez de frontmatter YAML, transparente
+ * pra este script)
  *
- * One-off cleanup: varre edições publicadas em `data/editions/{AAMMDD}/02-reviewed.md`,
- * extrai `intentional_error` do frontmatter, compara com a entry correspondente
+ * One-off cleanup: varre edições publicadas em `data/editions/{AAMMDD}/`,
+ * extrai `intentional_error` (via `checkIntentionalError`, que lê
+ * `_internal/intentional-error.json`), compara com a entry correspondente
  * em `data/intentional-errors.jsonl`, e reporta drift. Com `--fix`, sobrescreve
- * o JSONL com a versão do frontmatter (MD = source of truth, #1589).
+ * o JSONL com a versão do JSON estruturado (JSON = source of truth, #1589).
+ * Edições publicadas ANTES de #3222 (sem `_internal/intentional-error.json`,
+ * dado só no antigo frontmatter) não são reconciliáveis por este script — já
+ * estavam sincronizadas no JSONL na época da publicação.
  *
  * Uso:
  *   # Dry-run — só reporta drift:

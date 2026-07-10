@@ -1345,23 +1345,26 @@ describe("Stage 4 invariants", () => {
     });
 
     // (#2438 Item 2 — caso 3) Sem reveal dedicado E sem narrative válido → warning não-blocking.
-    it("#2438 caso 3: só description no frontmatter + sem reveal + sem narrative → warning não-blocking", () => {
+    // #3222: o record estruturado migrou de frontmatter YAML em 02-reviewed.md pra
+    // _internal/intentional-error.json — fixtures escrevem o JSON separadamente agora.
+    it("#2438 caso 3: só description no record + sem reveal + sem narrative → warning não-blocking", () => {
       // Cenário real: editor preencheu description (catálogo) mas não preencheu
       // reveal nem narrative — o reveal da próxima edição cairia no fallback genérico.
       // Deve emitir warning (não error) E a edição deve passar o gate (verde).
       const fixture2 = makeFixtureEdition();
       try {
         writeFileSync(
+          join(fixture2, "_internal", "intentional-error.json"),
+          JSON.stringify({
+            description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+            location: "DESTAQUE 2",
+            category: "factual",
+            correct_value: "Perplexity ou Copilot",
+          }, null, 2),
+        );
+        writeFileSync(
           join(fixture2, "02-reviewed.md"),
           [
-            "---",
-            "intentional_error:",
-            '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-            '  location: "DESTAQUE 2"',
-            '  category: "factual"',
-            '  correct_value: "Perplexity ou Copilot"',
-            "---",
-            "",
             "**ERRO INTENCIONAL**",
             "",
             "Na última edição, foo.",
@@ -1383,21 +1386,22 @@ describe("Stage 4 invariants", () => {
 
     it("#2438 caso 3: ERRO INTENCIONAL block sem qualquer fonte válida (sem narrative no corpo) → warning", () => {
       // Caso mais puro do caso 3: bloco ERRO INTENCIONAL presente mas sem linha
-      // "Nessa edição," — e sem reveal/narrative no frontmatter.
+      // "Nessa edição," — e sem reveal/narrative no record.
       // O reveal da PRÓXIMA edição seria o fallback genérico seguro.
       const fixture3 = makeFixtureEdition();
       try {
         writeFileSync(
+          join(fixture3, "_internal", "intentional-error.json"),
+          JSON.stringify({
+            description: "DESTAQUE 2 lista o Spotify",
+            location: "DESTAQUE 2",
+            category: "factual",
+            correct_value: "Perplexity",
+          }, null, 2),
+        );
+        writeFileSync(
           join(fixture3, "02-reviewed.md"),
           [
-            "---",
-            "intentional_error:",
-            '  description: "DESTAQUE 2 lista o Spotify"',
-            '  location: "DESTAQUE 2"',
-            '  category: "factual"',
-            '  correct_value: "Perplexity"',
-            "---",
-            "",
             "**ERRO INTENCIONAL**",
             "",
             "Na última edição, foo.",
@@ -1422,15 +1426,16 @@ describe("Stage 4 invariants", () => {
       const fixture4 = makeFixtureEdition();
       try {
         writeFileSync(
+          join(fixture4, "_internal", "intentional-error.json"),
+          JSON.stringify({
+            description: "DESTAQUE 2 lista o Spotify",
+            reveal: "Na última edição, listei o Spotify como assistente de IA, o correto é Perplexity.",
+            location: "DESTAQUE 2",
+          }, null, 2),
+        );
+        writeFileSync(
           join(fixture4, "02-reviewed.md"),
           [
-            "---",
-            "intentional_error:",
-            '  description: "DESTAQUE 2 lista o Spotify"',
-            '  reveal: "Na última edição, listei o Spotify como assistente de IA, o correto é Perplexity."',
-            '  location: "DESTAQUE 2"',
-            "---",
-            "",
             "**ERRO INTENCIONAL**",
             "",
             "Na última edição, foo.",

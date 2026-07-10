@@ -136,36 +136,47 @@ isso — ação manual do editor, uma vez. Conferir no test email da próxima ed
 
 O fluxo foi migrado pra **Custom HTML block único**. Elimina block-by-block filling no editor (causa dos 5 bugs do #39: encoding, template items não removidos, truncamento, imagens inline faltando, É IA? não verificado).
 
-### 0. Lint pre-flight — intentional_error (#754)
+### 0. Lint pre-flight — intentional_error (#754, migrado pra JSON #3222)
 
-Antes de qualquer pré-render, validar que o editor declarou o erro
-intencional do mês no frontmatter de `02-reviewed.md`. Convenção
-editorial: cada edição tem 1 erro proposital pros assinantes (concurso
-mensal). Sem declaração, lints downstream não distinguem erro intencional
-de erro real, e o concurso mensal precisa garimpo manual.
+Antes de qualquer pré-render, validar que o editor forneceu o erro
+intencional do mês em `_internal/intentional-error.json` (sibling de
+`02-reviewed.md`). Convenção editorial: cada edição tem 1 erro proposital
+pros assinantes (concurso mensal). Sem declaração, lints downstream não
+distinguem erro intencional de erro real, e o concurso mensal precisa
+garimpo manual.
+
+**#3222 (260710):** os campos estruturados (description/location/category/
+correct_value/reveal) migraram do frontmatter YAML de `02-reviewed.md` pra
+`_internal/intentional-error.json` — esse arquivo nunca sincroniza com o
+Drive (convenção `_internal/*`, #959), eliminando a corrupção recorrente do
+round-trip via Google Docs (#3205). O editor agora fornece os campos via
+chat, não mais editando o Doc.
 
 ```bash
 npx tsx scripts/lint-newsletter-md.ts --check intentional-error-flagged \
   --md {edition_dir}/02-reviewed.md
 ```
 
+(deriva `_internal/intentional-error.json` como sibling de `--md`.)
+
 Exit codes:
-- `0`: frontmatter declarado e válido — prosseguir.
+- `0`: declarado e válido — prosseguir.
 - `1`: declaração ausente ou incompleta — **abortar** com:
     ```json
-    { "error": "intentional_error_missing", "details": "Editor não declarou intentional_error em 02-reviewed.md. Edite o arquivo (+ Drive sync) e adicione frontmatter conforme exemplo no stderr do lint." }
+    { "error": "intentional_error_missing", "details": "Editor não forneceu intentional_error em _internal/intentional-error.json. Peça os campos ao editor via chat e grave o arquivo conforme exemplo no stderr do lint." }
     ```
-    Editor precisa editar o arquivo (instruções claras no stderr) e re-rodar `/diaria-5-publicacao`.
+    Editor fornece os campos (via chat) e o orchestrator grava `_internal/intentional-error.json`; re-rodar `/diaria-5-publicacao`.
 - `2`: erro de uso (path inválido) — abortar com `{ "error": "lint_cli_failed" }`.
 
 Esse lint roda ANTES de criar o draft no Beehiiv pra garantir que erros
 intencionais ficam registrados — mantém a auditoria do concurso possível.
 
-#### 0.1 Sync frontmatter → intentional-errors.jsonl
+#### 0.1 Sync intentional-error.json → intentional-errors.jsonl
 
-Após o lint passar, sincronizar o frontmatter pra `data/intentional-errors.jsonl`
+Após o lint passar, sincronizar os campos estruturados pra `data/intentional-errors.jsonl`
 (usado pelo `lint-test-email.ts` no `review-test-email`). Idempotente — só
-adiciona entry se a edição ainda não tem source `frontmatter_02_reviewed`.
+adiciona entry se a edição ainda não tem source `frontmatter_02_reviewed`
+(nome de source preservado por compat — a fonte real hoje é `_internal/intentional-error.json`, #3222).
 
 ```bash
 npx tsx scripts/sync-intentional-error.ts \
@@ -175,8 +186,8 @@ npx tsx scripts/sync-intentional-error.ts \
 ```
 
 Stdout: `{ "added": true|false, "edition": "{AAMMDD}" }`. Falha (`exit != 0`)
-não bloqueia — o lint do passo 0 já garantiu o frontmatter; falha aqui é
-issue de I/O. Logar warning e prosseguir.
+não bloqueia — o lint do passo 0 já garantiu `_internal/intentional-error.json`;
+falha aqui é issue de I/O. Logar warning e prosseguir.
 
 ### 1. Pré-render — rodar ANTES de abrir o browser
 

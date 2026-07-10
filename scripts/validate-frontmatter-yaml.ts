@@ -1,45 +1,55 @@
 #!/usr/bin/env tsx
 /**
- * validate-frontmatter-yaml.ts (#2553)
+ * validate-frontmatter-yaml.ts (#2553; #3222 repurposed — JSON em vez de YAML frontmatter)
  *
- * Guard pós-title-picker: valida que o frontmatter YAML de `02-reviewed.md`
- * está bem-formado e tem `intentional_error` com as 5 chaves obrigatórias.
+ * Guard pré-gate: valida que `_internal/intentional-error.json` da edição é
+ * JSON bem-formado e tem as 5 chaves esperadas: description, location,
+ * category, correct_value, reveal.
  *
- * Problema original (edição 260625): o agente `title-picker` reescreveu
- * `02-reviewed.md` com o `intentional_error` colapsado numa única linha com
- * prefixo `## ` em vez do YAML multi-linha válido. A corrupção passou pelo
- * `check-stage2-invariants.ts` (que só checa presença da chave `intentional_error:`)
- * e pelo `validate-section-structure.ts` (que compara contagem de seções, não YAML).
- * O `render-erro-intencional.ts` da próxima edição quebraria ao tentar ler
- * `intentional_error.reveal`.
+ * **Histórico (#3205/#3222):** até 260710 este script detectava colapso de
+ * YAML multi-linha no frontmatter de `02-reviewed.md` (edição 260625: o
+ * agente `title-picker` reescreveu o arquivo com `intentional_error` numa
+ * única linha `## intentional_error: description: "..." ...` em vez de
+ * mapping YAML válido). A causa raiz era o round-trip via Google Docs:
+ * `02-reviewed.md` sincroniza com o Drive (o editor revisa/edita lá) e o
+ * exportador do Docs não preserva indentação/quebras de linha dentro de
+ * blocos `---...---`, reconstruindo o YAML como texto solto — reproduzido
+ * 4x (#3205).
  *
- * Este script:
- *   1. Extrai o frontmatter YAML via `extractFrontmatter` (parser canônico CRLF-safe).
- *   2. Faz parse simples do bloco `intentional_error` como mapping YAML.
- *   3. Verifica que as 5 chaves estão presentes: description, location, category,
- *      correct_value, reveal.
- *   4. Detecta formato colapsado (ausência de indented sub-chaves → single-line).
+ * A correção (#3222) move os campos estruturados pra
+ * `_internal/intentional-error.json`, que nunca sincroniza com o Drive
+ * (convenção `_internal/*`, #959) — elimina a classe de corrupção "colapso de
+ * YAML via Google Docs" na origem, não só a detecta depois. Este script foi
+ * repurposed: continua útil como guard de schema (JSON malformado por edição
+ * manual, campos faltando), mas não há mais "colapso de bloco multi-linha"
+ * pra detectar — não existe mais YAML aqui.
  *
  * Uso:
  *   npx tsx scripts/validate-frontmatter-yaml.ts \
  *     --md data/editions/AAMMDD/02-reviewed.md
  *
+ * (deriva `_internal/intentional-error.json` como sibling de `--md` — mesmo
+ * padrão de `checkIntentionalError` em `lib/lint-checks/intentional-error.ts`,
+ * que mantém a assinatura `--md` estável pros callers existentes.)
+ *
  * Exit codes:
- *   0  OK — frontmatter parseável e intentional_error completo (ou absent/placeholder)
- *   1  FAIL — frontmatter corrompido / intentional_error malformado (chaves faltando)
+ *   0  OK — JSON parseável e intentional_error completo (ou ausente/no_error —
+ *      ausência é responsabilidade de check-stage2-invariants, não deste script)
+ *   1  FAIL — JSON malformado ou campos faltando/placeholder
  *   2  Erro de uso (argumento ausente, arquivo não encontrado)
  *
- * Output JSON em stdout: `{ ok, checked, message, missing_fields, collapsed }`.
+ * Output JSON em stdout: `{ ok, checked, message, missing_fields }`.
  *
- * NOTE: este script não exige que `intentional_error` esteja PREENCHIDO (valores
- * {PREENCHER} são aceitos) — a validação de preenchimento fica no Stage 5
- * (`--check intentional-error-flagged`). Aqui só validamos estrutura YAML.
- * Também aceita `intentional_error: none` (#2016) como OK.
+ * NOTE: este script não exige que `intentional_error` esteja PREENCHIDO se o
+ * arquivo simplesmente não existir ainda (`checked: false`) — a validação de
+ * ausência fica no Stage 2 (`check-stage2-invariants.ts`); a validação de
+ * preenchimento fica no Stage 5 (`--check intentional-error-flagged`). Aqui
+ * só validamos estrutura/schema do JSON quando ele existe.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts";
+import { existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "./lib/intentional-errors.ts";
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
 export const REQUIRED_IE_FIELDS = [
@@ -53,160 +63,70 @@ export const REQUIRED_IE_FIELDS = [
 export type RequiredIEField = (typeof REQUIRED_IE_FIELDS)[number];
 
 export interface FrontmatterYamlResult {
-  /** true = frontmatter OK (ou ausente — sem penalidade aqui) */
+  /** true = record OK (ou ausente — sem penalidade aqui) */
   ok: boolean;
-  /** true = script rodou e inspecionou o frontmatter */
+  /** true = script encontrou e inspecionou o JSON */
   checked: boolean;
   message: string;
-  /** Campos faltando no mapping (apenas quando ok=false e collapsed=false) */
+  /** Campos faltando/placeholder (apenas quando ok=false) */
   missing_fields: RequiredIEField[];
-  /** true = intentional_error encontrado mas colapsado em 1 linha (sem indentação) */
-  collapsed: boolean;
 }
 
 /**
- * Pure: valida o frontmatter YAML de `mdContent`.
+ * Pure: valida o record de `_internal/intentional-error.json` (#3222).
  *
  * Retorna `{ ok: true }` quando:
- *   - Sem frontmatter (check não se aplica — outro guard cobre ausência)
- *   - `intentional_error: none` (#2016)
- *   - `intentional_error` com as 5 chaves (valores placeholder OK)
+ *   - `record` é `null` (arquivo ausente — outro guard cobre isso, `checked: false`)
+ *   - `record.no_error === true` (#2016/#2037 — edição sem erro intencional declarado)
+ *   - `record` tem as 5 chaves preenchidas (nenhuma vazia ou placeholder `{PREENCHER}`)
  *
- * Retorna `{ ok: false }` quando:
- *   - `intentional_error` presente mas colapsado (sem sub-chaves indentadas)
- *   - `intentional_error` presente mas com chaves faltando
- *
- * Também detecta a corrupção real da edição 260625: o agente title-picker
- * colapsou o bloco YAML e o escreveu de volta com prefixo `## ` no corpo
- * do MD (fora dos delimitadores `---`). Nesses casos o frontmatter canônico
- * não existe, mas o conteúdo corrompido está visível no corpo.
+ * Retorna `{ ok: false }` quando `record` existe mas tem chaves faltando,
+ * vazias, ou com valor placeholder não preenchido.
  */
-export function validateFrontmatterYaml(mdContent: string): FrontmatterYamlResult {
-  // Normalizar line endings para LF para simplificar regexes internos.
-  // extractFrontmatter é CRLF-safe nativamente (usa \r?\n), mas os regexes
-  // de parsing do ieBlock usam \n — normalizar evita falsos negativos no Windows.
-  const md = mdContent.replace(/\r\n/g, "\n");
-
-  // Detectar corrupção real 260625: intentional_error colapsado no corpo do MD
-  // com prefixo `## ` ou sem frontmatter (agent escreveu fora do bloco YAML).
-  // Precede a extração de frontmatter porque quando isso acontece o bloco YAML
-  // pode não existir mais como tal.
-  const collapsedInBody =
-    /^##\s+intentional_error\s*:.*description\s*:/im.test(md) ||
-    /^intentional_error\s*:.*description\s*:.*location\s*:/im.test(md);
-
-  if (collapsedInBody) {
-    return {
-      ok: false,
-      checked: true,
-      message:
-        "intentional_error corrompido: encontrado colapsado no corpo do MD (fora do frontmatter YAML). " +
-        "Provável causa: title-picker reescreveu 02-reviewed.md colapsando o bloco YAML multi-linha. " +
-        "Restaurar 02-reviewed.md do snapshot `_internal/02-pre-title-picker.md`.",
-      missing_fields: [],
-      collapsed: true,
-    };
-  }
-
-  const fmBody = extractFrontmatter(md, 60);
-
-  if (!fmBody) {
-    // Sem frontmatter — check-stage2-invariants já cobre isso
+export function validateIntentionalErrorJson(
+  record: ReturnType<typeof loadIntentionalErrorJson>,
+): FrontmatterYamlResult {
+  if (record === null) {
     return {
       ok: true,
       checked: false,
-      message: "frontmatter ausente — check-stage2-invariants detecta isso; sem ação aqui",
+      message:
+        "_internal/intentional-error.json ausente — check-stage2-invariants.ts detecta isso; sem ação aqui",
       missing_fields: [],
-      collapsed: false,
     };
   }
 
-  // Sem chave intentional_error → check-stage2-invariants já cobre
-  if (!/intentional_error\s*:/i.test(fmBody)) {
-    return {
-      ok: true,
-      checked: false,
-      message: "intentional_error ausente no frontmatter — check-stage2-invariants detecta isso",
-      missing_fields: [],
-      collapsed: false,
-    };
-  }
-
-  // Aceitar `intentional_error: none` (#2016)
-  if (/intentional_error\s*:\s*(none|null)\s*(\n|$)/i.test(fmBody)) {
+  if (record.no_error === true) {
     return {
       ok: true,
       checked: true,
-      message: "intentional_error: none — edição sem erro intencional declarado",
+      message: "no_error: true — edição sem erro intencional declarado",
       missing_fields: [],
-      collapsed: false,
     };
   }
 
-  // Detectar formato colapsado DENTRO do frontmatter: linha com `intentional_error:`
-  // seguida de conteúdo na mesma linha.
-  // Corrupção: `intentional_error: description: "..." location: "..." ...`
-  const collapsedOneLiner = /intentional_error\s*:.*description\s*:/i.test(fmBody);
+  const isMissingOrPlaceholder = (field: RequiredIEField): boolean => {
+    const val = record[field];
+    if (typeof val !== "string") return true;
+    const trimmed = val.trim();
+    return trimmed.length === 0 || /^\{PREENCHER/i.test(trimmed);
+  };
 
-  // Extrair bloco mapping: linhas indentadas após `intentional_error:`
-  // O regex captura 1+ linhas com indentação (espaço ou tab) contendo `key: value`.
-  // Nota: fmBody já está normalizado para LF (md.replace acima).
-  const ieBlockMatch = fmBody.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:[ \t]*.+\n?)+)/,
-  );
-
-  if (collapsedOneLiner) {
-    // Collapsed no frontmatter: intentional_error numa única linha
-    return {
-      ok: false,
-      checked: true,
-      message:
-        "intentional_error corrompido no frontmatter: não está no formato mapping YAML (chaves indentadas). " +
-        "Provável causa: title-picker colapsou o bloco multi-linha numa única linha. " +
-        "Restaurar 02-reviewed.md do snapshot `_internal/02-pre-title-picker.md`.",
-      missing_fields: [],
-      collapsed: true,
-    };
-  }
-
-  if (!ieBlockMatch) {
-    // intentional_error existe mas sem sub-chaves indentadas (bloco vazio ou corrompido)
-    return {
-      ok: false,
-      checked: true,
-      message:
-        "intentional_error sem sub-chaves: bloco mapping vazio ou corrompido no frontmatter. " +
-        "Esperado: 5 campos indentados (description, location, category, correct_value, reveal).",
-      missing_fields: [...REQUIRED_IE_FIELDS],
-      collapsed: false,
-    };
-  }
-
-  // Parse campos presentes no mapping
-  const presentFields = new Set<string>();
-  for (const line of ieBlockMatch[1].split("\n")) {
-    const m = line.match(/^[ \t]+([\w-]+)\s*:/);
-    if (m) presentFields.add(m[1]);
-  }
-
-  const missing = REQUIRED_IE_FIELDS.filter((f) => !presentFields.has(f));
-
+  const missing = REQUIRED_IE_FIELDS.filter(isMissingOrPlaceholder);
   if (missing.length > 0) {
     return {
       ok: false,
       checked: true,
-      message: `intentional_error incompleto: campos faltando — ${missing.join(", ")}`,
+      message: `intentional_error incompleto: campos faltando ou não preenchidos — ${missing.join(", ")}`,
       missing_fields: missing,
-      collapsed: false,
     };
   }
 
   return {
     ok: true,
     checked: true,
-    message: "frontmatter intentional_error válido e completo",
+    message: "_internal/intentional-error.json válido e completo",
     missing_fields: [],
-    collapsed: false,
   };
 }
 
@@ -227,17 +147,15 @@ function main(): void {
     console.error(`Arquivo não encontrado: ${mdPath}`);
     process.exit(2);
   }
-  const md = readFileSync(mdPath, "utf8");
-  const result = validateFrontmatterYaml(md);
+  const jsonPath = intentionalErrorJsonPath(dirname(mdPath));
+  const record = loadIntentionalErrorJson(jsonPath);
+  const result = validateIntentionalErrorJson(record);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
     console.error(`\n[validate-frontmatter-yaml] FAIL: ${result.message}`);
-    if (result.collapsed) {
-      console.error(
-        "  → Ação: restaurar 02-reviewed.md do snapshot _internal/02-pre-title-picker.md",
-      );
-    } else if (result.missing_fields.length > 0) {
+    if (result.missing_fields.length > 0) {
       console.error(`  → Campos faltando: ${result.missing_fields.join(", ")}`);
+      console.error(`  → Corrija ${jsonPath}`);
     }
     process.exit(1);
   }

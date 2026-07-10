@@ -8,67 +8,42 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import {
   findPreviousIntentionalError,
-  composeRevealText,
-  renderSection,
-  insertOrUpdateSection,
   currentHasIntentionalErrorFlag,
-  boldQuotedStrings,
   extractIntentionalErrorFromMd,
-  extractNarrativeFromFrontmatter,
-  extractRevealFromFrontmatter,
-  extractCorrectValueFromFrontmatter,
   findPreviousIntentionalErrorFromMd,
-  narrativeHasCorrection,
-  narrativeIsCatalogShaped,
   resolvePreviousError,
-  ensureIntentionalErrorFrontmatter,
+  ensureIntentionalErrorJson,
+  narrativeIsGenericPlaceholder,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 import {
-  frontmatterToEntry,
-  parseIntentionalErrorsJsonl,
+  loadIntentionalErrorJson,
+  intentionalErrorJsonPath,
+  type IntentionalErrorJson,
 } from "../scripts/lib/intentional-errors.ts";
 
-
-import { narrativeIsGenericPlaceholder } from "../scripts/render-erro-intencional.ts";
-import {
-  checkNarrativeNotGenericPlaceholder,
-} from "../scripts/lib/invariant-checks/stage-4.ts";
-
-import {
-  extractFrontmatter,
-  checkIntentionalError,
-} from "../scripts/lib/lint-checks/intentional-error.ts";
-
-describe("currentHasIntentionalErrorFlag (#911)", () => {
-  it("detecta intentional_error no frontmatter", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      "  description: X",
-      "  location: D1",
-      "---",
-      "",
-      "Body",
-    ].join("\n");
-    assert.equal(currentHasIntentionalErrorFlag(md), true);
+describe("currentHasIntentionalErrorFlag (#911, migrado pra JSON #3222)", () => {
+  it("detecta presença do record _internal/intentional-error.json", () => {
+    const record: IntentionalErrorJson = { description: "X", location: "D1" };
+    assert.equal(currentHasIntentionalErrorFlag(record), true);
   });
 
-  it("retorna false quando frontmatter sem intentional_error", () => {
-    const md = ["---", "title: X", "---", "", "Body"].join("\n");
-    assert.equal(currentHasIntentionalErrorFlag(md), false);
+  it("retorna true mesmo com record vazio (presença-only, valores são responsabilidade do lint Stage 5)", () => {
+    assert.equal(currentHasIntentionalErrorFlag({}), true);
   });
 
-  it("retorna false quando sem frontmatter", () => {
-    const md = "Apenas body sem frontmatter.";
-    assert.equal(currentHasIntentionalErrorFlag(md), false);
+  it("retorna false quando record é null (arquivo ausente)", () => {
+    assert.equal(currentHasIntentionalErrorFlag(null), false);
+  });
+
+  it("retorna false quando record é undefined", () => {
+    assert.equal(currentHasIntentionalErrorFlag(undefined), false);
   });
 });
 
@@ -466,29 +441,31 @@ describe("render-erro-intencional CLI (#911)", () => {
     }
   });
 
-  it("#2411 fix: integração — prev MD tem description catálogo + corpo genérico → sem reveal válido (fallback neutro)", () => {
+  it("#2411 fix: integração — prev tem description catálogo (sem reveal) + corpo genérico → sem reveal válido (fallback neutro)", () => {
     // Regressão #2411: antes, description catálogo virava reveal público quebrado.
-    // Após o fix: body genérico é filtrado, sem `narrative` no frontmatter → prev_revealed=false.
+    // Após o fix: body genérico é filtrado, sem `reveal` no record → prev_revealed=false.
     // Reveal na próxima edição: "A edição anterior não trazia erro intencional declarado."
     const dir = mkdtempSync(join(tmpdir(), "render-erro-int-2411-"));
     try {
       const editionsRoot = join(dir, "editions");
-      mkdirSync(join(editionsRoot, "260520"), { recursive: true });
+      mkdirSync(join(editionsRoot, "260520", "_internal"), { recursive: true });
       mkdirSync(join(editionsRoot, "260521"), { recursive: true });
 
-      // Edição anterior 260520: frontmatter description catálogo + corpo genérico
-      // (padrão real observado em 260617/260618 — descrição com "DESTAQUE N")
+      // Edição anterior 260520: record com description catálogo (sem reveal) + corpo genérico
+      // (padrão real observado em 260617/260618 — descrição com "DESTAQUE N", #3222: agora em JSON)
+      writeFileSync(
+        join(editionsRoot, "260520", "_internal", "intentional-error.json"),
+        JSON.stringify({
+          description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+          location: "DESTAQUE 2",
+          category: "factual",
+          correct_value: "Perplexity ou Copilot",
+        }, null, 2),
+        "utf8",
+      );
       writeFileSync(
         join(editionsRoot, "260520", "02-reviewed.md"),
         [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          "---",
-          "",
           "Body.",
           "",
           "**ERRO INTENCIONAL**",
@@ -540,21 +517,23 @@ describe("render-erro-intencional CLI (#911)", () => {
     const dir = mkdtempSync(join(tmpdir(), "render-erro-int-2411-fp-"));
     try {
       const editionsRoot = join(dir, "editions");
-      mkdirSync(join(editionsRoot, "260520"), { recursive: true });
+      mkdirSync(join(editionsRoot, "260520", "_internal"), { recursive: true });
       mkdirSync(join(editionsRoot, "260521"), { recursive: true });
 
-      // Edição anterior 260520: frontmatter description catálogo + corpo first-person
+      // Edição anterior 260520: record com description catálogo (sem reveal) + corpo first-person
+      writeFileSync(
+        join(editionsRoot, "260520", "_internal", "intentional-error.json"),
+        JSON.stringify({
+          description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+          location: "DESTAQUE 2",
+          category: "factual",
+          correct_value: "Perplexity ou Copilot",
+        }, null, 2),
+        "utf8",
+      );
       writeFileSync(
         join(editionsRoot, "260520", "02-reviewed.md"),
         [
-          "---",
-          "intentional_error:",
-          '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-          '  location: "DESTAQUE 2"',
-          '  category: "factual"',
-          '  correct_value: "Perplexity ou Copilot"',
-          "---",
-          "",
           "Body.",
           "",
           "**ERRO INTENCIONAL**",
@@ -685,56 +664,72 @@ describe("#2078: prev.no_error branch — frase natural no reveal", () => {
   });
 });
 
-describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
-  it("nada a fazer quando frontmatter com intentional_error já existe", () => {
-    const md = `---\nintentional_error:\n  description: "x"\n  location: "D1"\n  category: "factual"\n  correct_value: "y"\n---\nCorpo.`;
-    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(inserted, false);
-    assert.equal(out, md); // idempotente
+describe("ensureIntentionalErrorJson (#2284, migrado #3222)", () => {
+  // #3222: os testes CRLF/`$`-pattern-corruption (P1 #2300) que existiam aqui
+  // testavam a lógica de reescrita regex de um bloco YAML multi-linha existente
+  // em `02-reviewed.md` (detecção de line-ending, replacer function evitando
+  // interpretação de `$1` como capture group). `ensureIntentionalErrorJson` não
+  // reescreve texto nenhum — ou o arquivo não existe (escreve um JSON novo via
+  // `JSON.stringify`) ou já existe (no-op). Não há bloco existente pra
+  // corromper reescrevendo, então essa classe de bug não pode mais ocorrer;
+  // os testes foram removidos.
+
+  it("nada a fazer quando _internal/intentional-error.json já existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ensure-ie-json-"));
+    try {
+      const jsonPath = intentionalErrorJsonPath(dir);
+      const existing = { description: "x", location: "D1", category: "factual", correct_value: "y" };
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(jsonPath, JSON.stringify(existing, null, 2), "utf8");
+      const { inserted } = ensureIntentionalErrorJson(jsonPath);
+      assert.equal(inserted, false);
+      // Conteúdo original preservado (não sobrescrito)
+      const after = JSON.parse(readFileSync(jsonPath, "utf8"));
+      assert.deepEqual(after, existing);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("insere placeholder frontmatter quando nenhum frontmatter existe", () => {
-    const md = "Corpo sem frontmatter.\n\n**ERRO INTENCIONAL**\n\nNessa edição, {PREENCHER}.";
-    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(inserted, true);
-    assert.match(out, /^---\n/); // frontmatter no topo
-    assert.match(out, /intentional_error:/);
-    assert.match(out, /description:/);
-    assert.match(out, /location:/);
-    assert.match(out, /category:/);
-    assert.match(out, /correct_value:/);
-    assert.match(out, /PREENCHER/); // placeholder presente
-  });
-
-  it("insere intentional_error dentro de frontmatter existente que não tem a chave", () => {
-    const md = "---\noutro_campo: valor\n---\nCorpo.";
-    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(inserted, true);
-    assert.match(out, /intentional_error:/);
-    // frontmatter deve permanecer como bloco único
-    const fmMatch = out.match(/^---\n([\s\S]*?)\n---/);
-    assert.ok(fmMatch, "frontmatter não encontrado após inserção");
-    assert.match(fmMatch![1], /outro_campo/); // campo original preservado
-    assert.match(fmMatch![1], /intentional_error/); // campo novo adicionado
+  it("insere placeholder com os 5 campos quando arquivo ausente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ensure-ie-json-missing-"));
+    try {
+      const jsonPath = intentionalErrorJsonPath(dir);
+      const { inserted } = ensureIntentionalErrorJson(jsonPath);
+      assert.equal(inserted, true);
+      const record = loadIntentionalErrorJson(jsonPath);
+      assert.ok(record !== null, "arquivo deve ter sido criado e ser JSON válido");
+      for (const field of ["description", "location", "category", "correct_value", "reveal"] as const) {
+        assert.match(record![field] ?? "", /^\{PREENCHER/, `campo ${field} deve ser placeholder`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("idempotente: 2ª chamada não modifica quando placeholder já existe", () => {
-    const md = "Corpo.";
-    const { md: after1, inserted: ins1 } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(ins1, true, "primeira chamada deve inserir frontmatter"); // P3 fix #2300
-    const { md: after2, inserted: ins2 } = ensureIntentionalErrorFrontmatter(after1);
-    assert.equal(ins2, false);
-    assert.equal(after2, after1);
+    const dir = mkdtempSync(join(tmpdir(), "ensure-ie-json-idempotent-"));
+    try {
+      const jsonPath = intentionalErrorJsonPath(dir);
+      const first = ensureIntentionalErrorJson(jsonPath);
+      assert.equal(first.inserted, true, "primeira chamada deve inserir");
+      const contentAfterFirst = readFileSync(jsonPath, "utf8");
+      const second = ensureIntentionalErrorJson(jsonPath);
+      assert.equal(second.inserted, false);
+      assert.equal(readFileSync(jsonPath, "utf8"), contentAfterFirst, "conteúdo não deve mudar na 2ª chamada");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("integração CLI: frontmatter inserido no output do script (#2284)", () => {
-    // Verificar que o script render-erro-intencional.ts grava o frontmatter
-    // no arquivo quando ele está ausente (regressão do bug 260615).
-    const dir = mkdtempSync(join(tmpdir(), "render-erro-fm-"));
+  it("integração CLI: _internal/intentional-error.json criado pelo script quando ausente (#2284/#3222)", () => {
+    // Verifica que render-erro-intencional.ts grava o JSON placeholder quando
+    // ausente (regressão do bug 260615, agora migrado de frontmatter pra JSON).
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-json-"));
     try {
       const mdPath = join(dir, "02-reviewed.md");
-      writeFileSync(mdPath, "Corpo sem frontmatter.\n\n**ERRO INTENCIONAL**\n\nNessa edição, {PREENCHER}.\n");
-      // Sem errors.jsonl — script deve rodar sem crashar e inserir o frontmatter
+      writeFileSync(mdPath, "Corpo sem placeholder.\n\n**ERRO INTENCIONAL**\n\nNessa edição, {PREENCHER}.\n");
+      // Sem errors.jsonl — script deve rodar sem crashar e inserir o JSON
       const projectRoot = join(import.meta.dirname, "..");
       const scriptPath = join(projectRoot, "scripts", "render-erro-intencional.ts");
       const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath,
@@ -745,47 +740,14 @@ describe("ensureIntentionalErrorFrontmatter (#2284)", () => {
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       const out = JSON.parse(r.stdout);
       assert.equal(out.frontmatter_inserted, true);
-      const written = readFileSync(mdPath, "utf8");
-      assert.match(written, /intentional_error:/);
-      assert.match(written, /description:/);
-      assert.match(written, /correct_value:/);
+      assert.ok(typeof out.json_path === "string" && out.json_path.endsWith("intentional-error.json"));
+      const record = loadIntentionalErrorJson(join(dir, "_internal", "intentional-error.json"));
+      assert.ok(record !== null);
+      assert.match(record!.description ?? "", /\{PREENCHER/);
+      assert.match(record!.correct_value ?? "", /\{PREENCHER/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  // P1 fix #2300: CRLF regression tests
-  it("P1 #2300: CRLF — currentHasIntentionalErrorFlag detecta frontmatter com \\r\\n", () => {
-    // Simula 02-reviewed.md salvo com CRLF no Windows
-    const md = "---\r\nintentional_error:\r\n  description: \"x\"\r\n---\r\nCorpo.";
-    assert.equal(currentHasIntentionalErrorFlag(md), true, "deve detectar com CRLF");
-  });
-
-  it("P1 #2300: CRLF — ensureIntentionalErrorFrontmatter não duplica frontmatter com \\r\\n", () => {
-    // Simula MD com frontmatter CRLF existente (sem intentional_error) —
-    // antes do fix, regex ^(---\n) não casava ---\r\n, caindo no branch
-    // "sem frontmatter" e ADICIONANDO um bloco no topo → frontmatter duplicado.
-    const md = "---\r\noutro: valor\r\n---\r\nCorpo.";
-    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(inserted, true);
-    // Deve ter exatamente 1 bloco frontmatter (não duplicado)
-    const fences = (out.match(/^---/gm) ?? []).length;
-    assert.equal(fences, 2, `esperado 2 fences (1 bloco), encontrado ${fences}`);
-    assert.match(out, /intentional_error:/);
-    // Campo original preservado
-    assert.match(out, /outro: valor/);
-  });
-
-  it("P1 #2300: $ — ensureIntentionalErrorFrontmatter não corrompe valores com $ no frontmatter", () => {
-    // Simula frontmatter com campo contendo $ (ex: correct_value: "R$1.5bi")
-    // Antes do fix, String.replace(full, `${open}${newBody}${close}`) interpretava
-    // $1 como capture group (empty string), corrompendo o valor.
-    const md = "---\nsubtitle: \"Investimento R$1.5bi\"\n---\nCorpo.";
-    const { md: out, inserted } = ensureIntentionalErrorFrontmatter(md);
-    assert.equal(inserted, true);
-    // O valor com $ deve estar INTACTO no output
-    assert.match(out, /subtitle: "Investimento R\$1\.5bi"/, "campo com $ não deve ser corrompido");
-    assert.match(out, /intentional_error:/, "intentional_error deve ter sido adicionado");
   });
 });
 

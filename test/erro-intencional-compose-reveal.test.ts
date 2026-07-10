@@ -1,51 +1,28 @@
 /**
- * test/render-erro-intencional.test.ts (#911)
+ * test/erro-intencional-compose-reveal.test.ts (#911)
  *
- * Cobre helpers puros + integração CLI da seção ERRO INTENCIONAL na
- * newsletter. Concurso mensal "Ache o erro" — newsletter revela gabarito
- * da edição anterior + chama leitor pra acertar erro da atual.
+ * Cobre os helpers PUROS da seção ERRO INTENCIONAL: composeRevealText,
+ * renderSection, insertOrUpdateSection, boldQuotedStrings, narrativeHasCorrection,
+ * narrativeIsCatalogShaped, findPreviousIntentionalError, e os extractors que
+ * leem o record `_internal/intentional-error.json` (#3222 — migrado de
+ * frontmatter YAML em `02-reviewed.md`; ver `scripts/render-erro-intencional.ts`
+ * pro histórico da corrupção #3205 que motivou a migração).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import {
   findPreviousIntentionalError,
   composeRevealText,
   renderSection,
   insertOrUpdateSection,
-  currentHasIntentionalErrorFlag,
   boldQuotedStrings,
   extractIntentionalErrorFromMd,
-  extractNarrativeFromFrontmatter,
-  extractRevealFromFrontmatter,
   extractCorrectValueFromFrontmatter,
-  findPreviousIntentionalErrorFromMd,
   narrativeHasCorrection,
   narrativeIsCatalogShaped,
-  resolvePreviousError,
-  ensureIntentionalErrorFrontmatter,
 } from "../scripts/render-erro-intencional.ts";
-import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
-import {
-  frontmatterToEntry,
-  parseIntentionalErrorsJsonl,
-} from "../scripts/lib/intentional-errors.ts";
-
-
-import { narrativeIsGenericPlaceholder } from "../scripts/render-erro-intencional.ts";
-import {
-  checkNarrativeNotGenericPlaceholder,
-} from "../scripts/lib/invariant-checks/stage-4.ts";
-
-import {
-  extractFrontmatter,
-  checkIntentionalError,
-} from "../scripts/lib/lint-checks/intentional-error.ts";
+import type { IntentionalError, IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
 describe("findPreviousIntentionalError (#911)", () => {
   it("retorna o erro mais recente anterior à edição atual", () => {
@@ -386,116 +363,66 @@ describe("composeRevealText (#2411/#2419 — guard contra copy quebrada/catalog-
   });
 });
 
-describe("extractCorrectValueFromFrontmatter (#1443)", () => {
-  it("extrai correct_value do frontmatter (aspas duplas)", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      '  description: "Ano de fundação da OpenAI no DESTAQUE 2"',
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "2014"',
-      "---",
-      "",
-      "Body",
-    ].join("\n");
-    assert.equal(extractCorrectValueFromFrontmatter(md), "2014");
+describe("extractCorrectValueFromFrontmatter (#1443, migrado pra JSON #3222)", () => {
+  // (#3222) O campo agora vem do record `_internal/intentional-error.json` —
+  // não há mais parsing de texto YAML (aspas, posição no MD, scanLines) a testar;
+  // a função é uma leitura direta de `record.correct_value`.
+  it("extrai correct_value do record", () => {
+    const record: IntentionalErrorJson = {
+      description: "Ano de fundação da OpenAI no DESTAQUE 2",
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "2014",
+    };
+    assert.equal(extractCorrectValueFromFrontmatter(record), "2014");
   });
 
-  it("extrai correct_value sem aspas", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      "  description: x",
-      "  location: y",
-      "  category: factual",
-      "  correct_value: 2014",
-      "---",
-    ].join("\n");
-    assert.equal(extractCorrectValueFromFrontmatter(md), "2014");
+  it("retorna null quando record é null (ausente)", () => {
+    assert.equal(extractCorrectValueFromFrontmatter(null), null);
   });
 
-  it("retorna null quando sem frontmatter", () => {
-    assert.equal(extractCorrectValueFromFrontmatter("Sem frontmatter"), null);
+  it("retorna null quando record não tem correct_value", () => {
+    const record: IntentionalErrorJson = { description: "x", location: "y", category: "factual" };
+    assert.equal(extractCorrectValueFromFrontmatter(record), null);
   });
 
-  it("retorna null quando frontmatter sem intentional_error", () => {
-    const md = ["---", "title: X", "---", "body"].join("\n");
-    assert.equal(extractCorrectValueFromFrontmatter(md), null);
+  it("retorna null quando correct_value é placeholder {PREENCHER}", () => {
+    const record: IntentionalErrorJson = { correct_value: "{PREENCHER — valor correto}" };
+    assert.equal(extractCorrectValueFromFrontmatter(record), null);
   });
 
-  it("retorna null quando intentional_error sem correct_value", () => {
-    const md = [
-      "---",
-      "intentional_error:",
-      "  description: x",
-      "  location: y",
-      "  category: factual",
-      "---",
-    ].join("\n");
-    assert.equal(extractCorrectValueFromFrontmatter(md), null);
-  });
-
-  it("#1378: frontmatter após bloco TÍTULO (até linha 60) ainda é detectado", () => {
-    const md = [
-      "**TÍTULO**",
-      "",
-      "Manchete da edição",
-      "",
-      "**SUBTÍTULO**",
-      "",
-      "Subtítulo",
-      "",
-      "---",
-      "intentional_error:",
-      '  description: "x"',
-      '  location: "y"',
-      '  category: "factual"',
-      '  correct_value: "42"',
-      "---",
-      "",
-      "Body",
-    ].join("\n");
-    assert.equal(extractCorrectValueFromFrontmatter(md), "42");
+  it("retorna null quando correct_value é string vazia", () => {
+    const record: IntentionalErrorJson = { correct_value: "" };
+    assert.equal(extractCorrectValueFromFrontmatter(record), null);
   });
 });
 
-describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value", () => {
-  it("#2411 fix — description catálogo + corpo genérico → null (não vaza label interno)", () => {
+describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agora retorna correct_value", () => {
+  it("#2411 fix — description catálogo (record) + corpo genérico → null (não vaza label interno)", () => {
     // Regressão #2411: #2398 fazia description catálogo virar narrative do reveal.
-    // Após o fix: body genérico é filtrado, frontmatter sem `narrative` → null.
-    // (correct_value ainda está no frontmatter, mas não há fonte válida de reveal.)
+    // Após o fix: body genérico é filtrado, record sem `reveal` → null.
+    // (correct_value ainda está no record, mas não há fonte válida de reveal.)
     const md = [
-      "---",
-      "intentional_error:",
-      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "Perplexity ou Copilot"',
-      "---",
-      "",
       "Body com **ERRO INTENCIONAL**",
       "",
       "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
       "",
     ].join("\n");
-    const r = extractIntentionalErrorFromMd(md);
+    const record: IntentionalErrorJson = {
+      description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "Perplexity ou Copilot",
+    };
+    const r = extractIntentionalErrorFromMd(md, record);
     // description é catálogo → NÃO deve ser retornada como narrative
     assert.equal(r, null, "deve retornar null — description é catálogo, body é genérico");
   });
 
-  it("#2411 fix — description catálogo + body first-person específico → usa body", () => {
+  it("#2411 fix — description catálogo (record) + body first-person específico → usa body", () => {
     // Quando o editor escreveu a prosa first-person no corpo, ela é retornada
-    // (mesmo que description seja catálogo no frontmatter).
+    // (mesmo que description seja catálogo no record).
     const md = [
-      "---",
-      "intentional_error:",
-      '  description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA"',
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "Perplexity ou Copilot"',
-      "---",
-      "",
       "**ERRO INTENCIONAL**",
       "",
       "Na última edição, foo.",
@@ -503,58 +430,58 @@ describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value"
       "Nessa edição, listei o Spotify como assistente de IA no DESTAQUE 2, mas o Spotify é um serviço de streaming.",
       "",
     ].join("\n");
-    const r = extractIntentionalErrorFromMd(md);
+    const record: IntentionalErrorJson = {
+      description: "DESTAQUE 2 lista o Spotify entre os assistentes de IA",
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "Perplexity ou Copilot",
+    };
+    const r = extractIntentionalErrorFromMd(md, record);
     // Body first-person é a fonte primária (#2411)
     assert.ok(r !== null, "deve retornar resultado válido");
     assert.equal(r?.narrative, "listei o Spotify como assistente de IA no DESTAQUE 2, mas o Spotify é um serviço de streaming");
     assert.equal(r?.correct_value, "Perplexity ou Copilot");
   });
 
-  it("passa correct_value do frontmatter pra estrutura retornada (body prose + frontmatter sem description específica)", () => {
-    // Caso legado: body tem a narrativa específica, frontmatter só tem correct_value.
-    // Sem `description`/`narrative` no frontmatter → fallback para body prose.
+  it("passa correct_value do record pra estrutura retornada (body prose + record sem description específica)", () => {
+    // Caso legado: body tem a narrativa específica, record só tem correct_value.
+    // Sem `description`/`reveal` no record → fallback para body prose.
     const md = [
-      "---",
-      "intentional_error:",
-      '  location: "DESTAQUE 2"',
-      '  category: "factual"',
-      '  correct_value: "2014"',
-      "---",
-      "",
       "Body com **ERRO INTENCIONAL**",
       "",
       "Nessa edição, contei que Karpathy cofundou a OpenAI em 1914.",
       "",
     ].join("\n");
-    const r = extractIntentionalErrorFromMd(md);
+    const record: IntentionalErrorJson = {
+      location: "DESTAQUE 2",
+      category: "factual",
+      correct_value: "2014",
+    };
+    const r = extractIntentionalErrorFromMd(md, record);
     assert.equal(r?.narrative, "contei que Karpathy cofundou a OpenAI em 1914");
     assert.equal(r?.correct_value, "2014");
   });
 
-  it("#2411 fix — frontmatter narrative field (first-person) é usada como fallback quando body ausente", () => {
-    // Edição com `narrative` (alias first-person) no frontmatter + sem prosa no corpo.
-    const md = [
-      "---",
-      "intentional_error:",
-      '  description: "DESTAQUE 3: empresa aparece como Macrosoft"',
-      '  narrative: "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft"',
-      '  location: "DESTAQUE 3"',
-      '  category: "ortografico"',
-      '  correct_value: "Microsoft"',
-      "---",
-      "",
-      "Body sem linha Nessa edição específica.",
-    ].join("\n");
-    const r = extractIntentionalErrorFromMd(md);
-    // `narrative` do frontmatter é a fonte fallback (#2411)
-    assert.ok(r !== null, "deve retornar resultado com narrative do frontmatter");
+  it("#2411 fix — record.reveal (first-person) é usado como fallback quando body ausente", () => {
+    // Edição com `reveal` no record + sem prosa no corpo.
+    const md = "Body sem linha Nessa edição específica.";
+    const record: IntentionalErrorJson = {
+      description: "DESTAQUE 3: empresa aparece como Macrosoft",
+      reveal: "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft",
+      location: "DESTAQUE 3",
+      category: "ortografico",
+      correct_value: "Microsoft",
+    };
+    const r = extractIntentionalErrorFromMd(md, record);
+    // `reveal` do record é a fonte fallback (#2411/#3222)
+    assert.ok(r !== null, "deve retornar resultado com narrative do record");
     assert.equal(r?.narrative, "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft");
     assert.equal(r?.correct_value, "Microsoft");
     // description NÃO deve aparecer como narrative
     assert.doesNotMatch(r?.narrative ?? "", /^DESTAQUE/);
   });
 
-  it("correct_value undefined quando frontmatter ausente", () => {
+  it("correct_value undefined quando record ausente", () => {
     const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
     const r = extractIntentionalErrorFromMd(md);
     assert.equal(r?.detail, "X");

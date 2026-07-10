@@ -13,6 +13,17 @@
  * Source de verdade do erro anterior: `data/intentional-errors.jsonl`.
  * Cada linha tem `{ edition, error_type, detail, gabarito, ... }`.
  *
+ * **#3222 (260710):** os campos estruturados do erro intencional (description/
+ * location/category/correct_value/reveal) vivem em `_internal/intentional-error.json`
+ * de cada edição — não mais em frontmatter YAML no topo de `02-reviewed.md`.
+ * Motivo: `02-reviewed.md` sincroniza com o Google Drive/Docs (editor revisa lá) e
+ * o round-trip de export do Docs colapsava o bloco YAML numa única linha corrompida
+ * (#3205/#3222, reproduzido 4x). `_internal/*` nunca sincroniza com o Drive
+ * (convenção #959) — o JSON nunca passa pelo round-trip que causava a corrupção.
+ * A prosa "Nessa edição, …"/"Na última edição, …" (texto lido pelos assinantes)
+ * continua em `02-reviewed.md`, escrita pelo editor — só a estrutura
+ * machine-readable saiu de lá.
+ *
  * Uso:
  *   npx tsx scripts/render-erro-intencional.ts \
  *     --edition 260507 \
@@ -24,8 +35,10 @@
  *     "ASSINE" / "Encerrando" (ou no final se nenhum encontrado).
  *   - Idempotente: se a seção já existe no MD, atualiza em vez de
  *     duplicar.
+ *   - Garante que `_internal/intentional-error.json` (sibling de `--md`) existe,
+ *     escrevendo um placeholder `{PREENCHER}` quando ausente.
  *
- * Stdout: JSON `{ inserted, prev_edition, prev_revealed, current_has_intentional }`.
+ * Stdout: JSON `{ action, prev_edition, prev_revealed, current_has_intentional, json_path }`.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -34,9 +47,12 @@ import { fileURLToPath } from "node:url";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import {
   loadIntentionalErrors,
+  loadIntentionalErrorJson,
+  writeIntentionalErrorJson,
+  intentionalErrorJsonPath,
   type IntentionalError,
+  type IntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
-import { extractFrontmatter } from "./lib/lint-checks/intentional-error.ts"; // #2398: parser canônico (CRLF-safe, #2304)
 import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
 import { parseArgsSimple as parseArgs } from "./lib/cli-args.ts";
 
@@ -90,129 +106,73 @@ const LEGACY_DETAIL_RE =
   /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
 
 /**
- * (#2438 DRY) Indica marcadores de YAML block-scalar que — quando
- * aparecem como valor isolado — significam que o valor real está em linhas
- * seguintes (não capturadas pelo regex de linha única). Tratar como ausente.
+ * (#3222) Extrai um campo string do record JSON, tratando placeholder
+ * `{PREENCHER…}` e string vazia como ausente. Substitui o antigo parse de
+ * regex sobre o bloco YAML do frontmatter (extractIeFields/extractField) —
+ * o JSON já vem estruturado, então não há mais block-scalar YAML nem aspas
+ * pra desembrulhar.
  */
-const BLOCK_SCALAR_RE = /^[|>](?:[-+]\d*|\d+[-+]?)?$/;
-
-/**
- * (#2438 DRY) Extrai o frontmatter YAML e o bloco `intentional_error` de um MD.
- *
- * Reutilizável por extractNarrativeFromFrontmatter, extractRevealFromFrontmatter e
- * extractCorrectValueFromFrontmatter — elimina os 3 parses independentes que
- * existiam em extractIntentionalErrorFromMd.
- *
- * Retorna `{ fm, ieBlock, extractField }` ou `null` quando frontmatter/ieBlock ausentes.
- * `extractField(field)` — extrai, limpa e valida 1 campo do bloco, retornando null para
- * valores vazios, placeholders {PREENCHER} e indicadores de block-scalar YAML (|/>).
- *
- * #2417: scanLines=60 para cobrir frontmatter após bloco TÍTULO/SUBTÍTULO injetado
- * por insert-titulo-subtitulo.ts (#1378).
- */
-function extractIeFields(md: string): {
-  ieBlock: RegExpMatchArray;
-  extractField: (field: string) => string | null;
-} | null {
-  const fm = extractFrontmatter(md, 60);
-  if (!fm) return null;
-
-  // (#2438 Item 7 / #2304) Normalizar CRLF → LF antes de parsear o bloco YAML,
-  // para que o ieBlock regex (que usa \n) funcione mesmo em checkouts Windows.
-  // extractFrontmatter retorna o corpo do frontmatter com os line endings originais;
-  // sem normalização, `intentional_error:\r\n` não faz match em `\s*:\s*\n`.
-  const fmNormalized = fm.replace(/\r\n/g, "\n");
-
-  const ieBlock = fmNormalized.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
-  );
-  if (!ieBlock) return null;
-
-  // Helper: extrai e limpa o valor de um campo do bloco intentional_error.
-  // Strip aspas duplas E simples (o parser canônico de intentional-error.ts só
-  // lida com duplas; aqui precisamos de ambas pra back-compat com edições legadas).
-  const extractField = (field: string): string | null => {
-    for (const line of ieBlock[1].split("\n")) {
-      // Aceita valor com ou sem aspas (duplas ou simples).
-      const m = line.match(
-        new RegExp(`^[ \\t]+${field}\\s*:\\s*(['"]?)(.*?)\\1\\s*$`),
-      );
-      if (!m) continue;
-      const val = m[2].trim();
-      if (val.length === 0) continue;
-      // Pular placeholder não preenchido.
-      if (/^\{PREENCHER/i.test(val)) return null;
-      // (#2438 Item 3) Pular indicadores de block-scalar YAML (`|`, `>`, `|-`, `>-`, etc.)
-      // — quando o editor escreve `reveal: |`, o valor capturado pelo regex é "|"
-      // (o conteúdo real está em linhas seguintes não capturadas). Tratar como ausente.
-      if (BLOCK_SCALAR_RE.test(val)) return null;
-      return val;
-    }
-    return null;
-  };
-
-  return { ieBlock, extractField };
+function jsonField(
+  record: IntentionalErrorJson | null | undefined,
+  field: "description" | "location" | "category" | "correct_value" | "reveal",
+): string | null {
+  if (!record) return null;
+  const val = record[field];
+  if (typeof val !== "string") return null;
+  const trimmed = val.trim();
+  if (trimmed.length === 0) return null;
+  if (/^\{PREENCHER/i.test(trimmed)) return null;
+  return trimmed;
 }
 
 /**
- * Pure (#2419 rewrite): extrai campos do bloco `intentional_error` do frontmatter YAML.
+ * Pure (#2419 rewrite, #3222 migrado pra JSON): extrai o campo de reveal a
+ * partir do record `_internal/intentional-error.json` da edição.
  *
  * **Separação de concerns (#2419):**
  *   - `reveal` é o campo CANÔNICO do reveal — prosa FIRST-PERSON, gramatical,
  *     pública. Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
  *     É separado de `description` (catálogo 3ª pessoa, alimenta lint + /diaria-mes-erros).
- *   - `narrative` é o alias legado de primeira pessoa (edições anteriores ao #2419).
  *   - `description` NUNCA é fonte do reveal — é catálogo interno.
  *
- * Prioridade de leitura para reveal: (1) campo `reveal`; (2) campo `narrative` (legado).
- *
- * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
- * `reveal` nem `narrative`, ou valor é um placeholder `{PREENCHER}`.
- *
- * Reutiliza o extractFrontmatter canônico (CRLF-safe, #2304) com scanLines=60
- * (#2417: consistente com extractCorrectValueFromFrontmatter — frontmatter pode
- * estar além da linha 30 após insert-titulo-subtitulo.ts injetar TÍTULO/SUBTÍTULO).
+ * Retorna `null` quando: record ausente, sem `reveal`, ou valor é um
+ * placeholder `{PREENCHER}`.
  */
-export function extractNarrativeFromFrontmatter(md: string): string | null {
-  const parsed = extractIeFields(md);
-  if (!parsed) return null;
-  const { extractField } = parsed;
-
-  // (#2419) Prioridade: campo `reveal` (novo, first-person explícito).
-  // Fallback: campo `narrative` (alias legado).
-  // NUNCA usa `description` — esse campo é catálogo (terceira pessoa).
-  return extractField("reveal") ?? extractField("narrative") ?? null;
+export function extractNarrativeFromFrontmatter(
+  record: IntentionalErrorJson | null | undefined,
+): string | null {
+  return jsonField(record, "reveal");
 }
 
 /**
- * Pure (#2419): extrai APENAS o campo `reveal` do frontmatter YAML, sem fallback
- * para `narrative`. Usado quando precisamos saber se o campo dedicado foi preenchido.
+ * Pure (#2419, #3222 migrado pra JSON): extrai APENAS o campo `reveal` do
+ * record JSON. Usado quando precisamos saber se o campo dedicado foi
+ * preenchido.
  *
- * Retorna `null` quando: frontmatter ausente, sem `intentional_error`, sem
- * `reveal`, valor é placeholder `{PREENCHER}`, ou valor é indicador de block-scalar
- * YAML (`|`/`>` isolados — #2438 Item 3).
+ * Retorna `null` quando: record ausente, sem `reveal`, ou valor é placeholder
+ * `{PREENCHER}`.
  */
-export function extractRevealFromFrontmatter(md: string): string | null {
-  const parsed = extractIeFields(md);
-  if (!parsed) return null;
-  return parsed.extractField("reveal");
+export function extractRevealFromFrontmatter(
+  record: IntentionalErrorJson | null | undefined,
+): string | null {
+  return jsonField(record, "reveal");
 }
 
 /**
- * Pure (#961 / #1079 / #2411 / #2419 rewrite): extrai o erro intencional declarado em
- * `02-reviewed.md` publicado.
+ * Pure (#961 / #1079 / #2411 / #2419 rewrite / #3222 migrado pra JSON): extrai o erro
+ * intencional declarado da edição — prosa de `02-reviewed.md` + campos estruturados
+ * de `_internal/intentional-error.json` (`record`, opcional).
  *
  * **Separação REVEAL × CATÁLOGO (#2419):**
  *   - `description` é CATÁLOGO (3ª pessoa, "DESTAQUE N faz X") — NÃO é fonte do reveal.
  *   - `reveal` (#2419 NEW) é o campo dedicado first-person para o reveal público.
- *   - `narrative` é o alias legado de primeira pessoa (edições pré-#2419).
- *   - A prosa "Nessa edição, …" no corpo é fonte de reveal quando nenhum campo de
- *     frontmatter first-person está disponível.
+ *   - A prosa "Nessa edição, …" no corpo é fonte de reveal quando nenhum campo
+ *     estruturado first-person está disponível.
  *
  * Estratégia de extração:
  *   1. Prosa "Nessa edição, {narrativa}." no corpo (first-person, primário).
  *      Filtros: placeholder {PREENCHER}, texto genérico de convite, texto catalog-shaped.
- *   2. Frontmatter `reveal` (novo #2419) ou `narrative` (legado).
+ *   2. `record.reveal` (`_internal/intentional-error.json`, #3222).
  *      NUNCA usa `description` — catálogo 3ª pessoa.
  *   3. Se nenhuma das duas, retornar null.
  *
@@ -221,10 +181,11 @@ export function extractRevealFromFrontmatter(md: string): string | null {
  */
 export function extractIntentionalErrorFromMd(
   md: string,
+  record?: IntentionalErrorJson | null,
 ): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
-  const correctValue = extractCorrectValueFromFrontmatter(md);
+  const correctValue = jsonField(record, "correct_value");
   // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
-  const revealFromFm = extractRevealFromFrontmatter(md);
+  const revealFromFm = jsonField(record, "reveal");
 
   // PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
   // primária do reveal). O hábito editorial é o editor escrever a frase de
@@ -285,9 +246,9 @@ export function extractIntentionalErrorFromMd(
     }
   }
 
-  // PRIORIDADE 2 — frontmatter `reveal` (novo #2419) ou `narrative` (legado alias).
+  // PRIORIDADE 2 — `record.reveal` (`_internal/intentional-error.json`, #3222).
   // NÃO usa `description` — esse campo é catálogo (terceira pessoa).
-  const fmNarrative = extractNarrativeFromFrontmatter(md);
+  const fmNarrative = extractNarrativeFromFrontmatter(record);
   if (fmNarrative) {
     // Back-compat: tenta extrair detail/gabarito do formato legado quando a
     // narrative usa "escrevi 'X' onde deveria ser 'Y'".
@@ -313,22 +274,14 @@ export function extractIntentionalErrorFromMd(
 }
 
 /**
- * Pure (#1443): extrai `intentional_error.correct_value` do frontmatter YAML.
- * Reusa o mesmo regex leve do lint-newsletter-md.ts — não traz dependência
- * de YAML parser. Retorna `null` se frontmatter ausente, sem `intentional_error`,
- * ou sem `correct_value`.
- *
- * (#2438 Item 7) Reusa extractFrontmatter (CRLF-safe, #2304) em vez de
- * split('\n') manual, que quebrava em checkout Windows com CRLF → correct_value
- * podia virar null ao adicionar \r ao valor capturado.
+ * Pure (#1443, #3222 migrado pra JSON): extrai `correct_value` do record
+ * `_internal/intentional-error.json`. Retorna `null` se `record` ausente, sem
+ * `correct_value`, ou valor é placeholder `{PREENCHER}`.
  */
-export function extractCorrectValueFromFrontmatter(md: string): string | null {
-  // #2417: scanLines=60 para cobrir frontmatter após bloco TÍTULO/SUBTÍTULO (#1378).
-  // (#2438 DRY) Reutiliza extractIeFields.extractField para reusar os guards
-  // BLOCK_SCALAR_RE e {PREENCHER} — o loop manual anterior os bypassa.
-  const parsed = extractIeFields(md);
-  if (!parsed) return null;
-  return parsed.extractField("correct_value");
+export function extractCorrectValueFromFrontmatter(
+  record: IntentionalErrorJson | null | undefined,
+): string | null {
+  return jsonField(record, "correct_value");
 }
 
 /**
@@ -354,7 +307,8 @@ export function findPreviousIntentionalErrorFromMd(
     .filter((d) => d < currentEdition)
     .sort((a, b) => (a < b ? 1 : -1));
   for (const editionId of candidates) {
-    const mdPath = join(editionDirsByAammdd.get(editionId)!, "02-reviewed.md");
+    const editionDir = editionDirsByAammdd.get(editionId)!;
+    const mdPath = join(editionDir, "02-reviewed.md");
     if (!existsSync(mdPath)) continue;
     let md: string;
     try {
@@ -362,7 +316,11 @@ export function findPreviousIntentionalErrorFromMd(
     } catch {
       continue;
     }
-    const extracted = extractIntentionalErrorFromMd(md);
+    // (#3222) O `record` estruturado da edição ANTERIOR vive no `_internal/`
+    // dela, não no `_internal/` da edição atual — precisa ler explicitamente
+    // pelo editionDir resolvido acima (não é o mesmo diretório que `--md`).
+    const record = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
+    const extracted = extractIntentionalErrorFromMd(md, record);
     if (extracted) {
       return {
         edition: editionId,
@@ -370,7 +328,7 @@ export function findPreviousIntentionalErrorFromMd(
         gabarito: extracted.gabarito ?? "",
         narrative: extracted.narrative,
         ...(extracted.correct_value ? { correct_value: extracted.correct_value } : {}),
-        // (#2419) Propaga campo `reveal` quando disponível no MD
+        // (#2419) Propaga campo `reveal` quando disponível
         ...(extracted.reveal ? { reveal: extracted.reveal } : {}),
       };
     }
@@ -504,7 +462,7 @@ const SAFE_FALLBACK_REVEAL =
  * **ARQUITETURA #2419 — campo `reveal` dedicado:**
  *
  * Prioridade:
- *   1. Campo `reveal` do entry/JSONL (propagado do frontmatter `intentional_error.reveal`).
+ *   1. Campo `reveal` do entry/JSONL (propagado de `_internal/intentional-error.json.reveal`, #3222).
  *      Usado verbatim, exceto a formatação boldQuotedStrings (aspas → negrito, convenção
  *      da newsletter). É prosa first-person, gramatical, pública, escrita pelo editor.
  *      Ex: "Na última edição, escrevi 1990 onde o correto é 1998."
@@ -546,7 +504,7 @@ export function composeRevealText(
     // reveal é catalog-shaped ou genérico — warn e cair para fallback
     console.warn(
       "[render-erro-intencional] WARN (#2419): campo `reveal` parece catálogo ou placeholder. " +
-        "Usando fallback seguro. Corrija `intentional_error.reveal` no frontmatter.",
+        "Usando fallback seguro. Corrija `reveal` em `_internal/intentional-error.json`.",
     );
     return boldQuotedStrings(
       SAFE_FALLBACK_REVEAL,
@@ -561,7 +519,7 @@ export function composeRevealText(
       console.warn(
         "[render-erro-intencional] WARN (#2377): narrative do erro intencional parece ser " +
           "um placeholder genérico (\"há um erro proposital\", \"responda este e-mail\", etc.). " +
-          "Usando fallback seguro. Preencha `intentional_error.reveal` no frontmatter.",
+          "Usando fallback seguro. Preencha `reveal` em `_internal/intentional-error.json`.",
       );
       return boldQuotedStrings(
         SAFE_FALLBACK_REVEAL,
@@ -573,7 +531,7 @@ export function composeRevealText(
       console.warn(
         "[render-erro-intencional] WARN (#2411/#2419): narrative parece catálogo de terceira " +
           "pessoa (label interno \"DESTAQUE N\" ou similar). Usando fallback seguro. " +
-          "Preencha `intentional_error.reveal` no frontmatter com texto first-person.",
+          "Preencha `reveal` em `_internal/intentional-error.json` com texto first-person.",
       );
       return boldQuotedStrings(
         SAFE_FALLBACK_REVEAL,
@@ -590,7 +548,7 @@ export function composeRevealText(
       console.warn(
         "[render-erro-intencional] WARN: narrativa do erro intencional sem frase " +
           "de correção (\"o correto é Y\") e sem `intentional_error.correct_value` " +
-          "no frontmatter da edição anterior — reveal sairá sem correção explícita.",
+          "em `_internal/intentional-error.json` da edição anterior — reveal sairá sem correção explícita.",
       );
       narrativeFinal = narrative;
     }
@@ -605,7 +563,7 @@ export function composeRevealText(
       console.warn(
         "[render-erro-intencional] WARN (#2419): detail parece catálogo de terceira pessoa " +
           "(label interno \"DESTAQUE N\" ou similar). Usando fallback seguro. " +
-          "Preencha `intentional_error.reveal` no frontmatter da edição anterior.",
+          "Preencha `reveal` em `_internal/intentional-error.json` da edição anterior.",
       );
       return boldQuotedStrings(
         SAFE_FALLBACK_REVEAL,
@@ -680,7 +638,7 @@ export function renderSection(
 export function insertOrUpdateSection(
   md: string,
   reveal: string | null,
-  opts: { preserveExistingReveal?: boolean } = {},
+  opts: { preserveExistingReveal?: boolean; currentRecord?: IntentionalErrorJson | null } = {},
 ): { md: string; action: "inserted" | "updated" | "no_change" } {
   // #1079: preserva linhas "Na última edição, …" e "Nessa edição, …" do MD da
   // edição corrente se já existirem (autor pode ter editado wording à mão).
@@ -691,7 +649,10 @@ export function insertOrUpdateSection(
   // anterior, e o preserve mantinha o stale silenciosamente, repetindo o
   // mesmo reveal por 3 edições seguidas. Agora reveal computado SEMPRE
   // sobrescreve a menos que `opts.preserveExistingReveal=true`.
-  const currentExtracted = extractIntentionalErrorFromMd(md);
+  // (#3222) `opts.currentRecord` — o record `_internal/intentional-error.json`
+  // da edição CORRENTE, usado como fallback quando a prosa "Nessa edição, …"
+  // ainda não foi escrita no corpo.
+  const currentExtracted = extractIntentionalErrorFromMd(md, opts.currentRecord);
   const currentDeclaration = currentExtracted
     ? `Nessa edição, ${currentExtracted.narrative}.`
     : null;
@@ -774,71 +735,53 @@ export function insertOrUpdateSection(
 }
 
 /**
- * Pure: detecta se a edição corrente tem `intentional_error` declarado no
- * frontmatter. Quando o YAML está bem-formado retorna true.
+ * Pure (#3222 migrado pra JSON): detecta se a edição corrente tem
+ * `intentional_error` declarado — presença do record `_internal/intentional-error.json`
+ * (mesmo com valores placeholder, igual ao comportamento antigo do frontmatter).
  */
-export function currentHasIntentionalErrorFlag(md: string): boolean {
-  // \r?\n handles both LF (Unix) and CRLF (Windows) line endings (P1 fix).
-  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!fm) return false;
-  return /\bintentional_error\s*:/i.test(fm[1]);
+export function currentHasIntentionalErrorFlag(
+  record: IntentionalErrorJson | null | undefined,
+): boolean {
+  return record != null;
 }
 
 /**
- * Pure (#2284): insere bloco de frontmatter placeholder `intentional_error`
- * em `md` quando nenhum frontmatter (ou nenhuma chave `intentional_error`)
- * existe. Retorna `{ md, inserted }`.
+ * Pure (#2284, #3222 migrado pra JSON): garante que `_internal/intentional-error.json`
+ * existe, escrevendo um placeholder quando ausente.
  *
  * Usado pelo render-erro-intencional no final do Stage 2 (pós-Clarice, em
- * modo auto/pre-gate) pra que o editor encontre o bloco no Drive (Stage 4)
- * e preencha os 4 campos antes da publicação. Sem isso, o lint do Stage 5
+ * modo auto/pre-gate) pra que o placeholder exista antes do gate humano —
+ * o editor preenche os campos via chat (não mais editando o Drive — essa
+ * troca é o próprio ponto do #3222: `_internal/*` nunca sincroniza com o
+ * Drive, então o JSON nunca passa pelo round-trip do Google Docs que
+ * corrompia o antigo bloco YAML, #3205). Sem isso, o lint do Stage 5
  * (`intentional-error-flagged`) aborta na hora da publicação, e o editor
- * precisa adicionar o bloco na correria — como ocorreu em 260615.
+ * precisa fornecer o erro na correria — como ocorreu em 260615 (frontmatter).
  *
- * Caso frontmatter já exista com `intentional_error:` → retorna md sem
- * modificação (idempotente). Caso frontmatter exista mas SEM
- * `intentional_error:` → insere a chave dentro do bloco existente.
- * Caso sem frontmatter → cria bloco YAML no topo.
- *
- * Os 4 campos são placeholders `{PREENCHER}` — o editor substitui no Drive.
- * O lint do Stage 5 rejeita valores que ainda contêm `{PREENCHER}` (guard em
- * `checkIntentionalError` em scripts/lib/lint-checks/intentional-error.ts).
+ * Caso o JSON já exista → no-op idempotente (não sobrescreve valores já
+ * preenchidos). Caso ausente → escreve os 5 campos como placeholders
+ * `{PREENCHER}`. O lint do Stage 5 rejeita valores que ainda contêm
+ * `{PREENCHER}` (guard em `checkIntentionalError`,
+ * `scripts/lib/lint-checks/intentional-error.ts`).
  */
-export function ensureIntentionalErrorFrontmatter(
-  md: string,
-): { md: string; inserted: boolean } {
-  // Já tem intentional_error: — nada a fazer.
-  if (currentHasIntentionalErrorFlag(md)) {
-    return { md, inserted: false };
+export function ensureIntentionalErrorJson(
+  jsonPath: string,
+): { inserted: boolean } {
+  if (existsSync(jsonPath)) {
+    return { inserted: false };
   }
-
-  // Detect the file's line ending so inserted block matches existing EOL (#2304).
-  // Prefer CRLF when the file already has CRLF (Windows/OneDrive). Fall back to LF.
-  const eol = md.includes("\r\n") ? "\r\n" : "\n";
-
-  const PLACEHOLDER_BLOCK = [
-    "intentional_error:",
-    '  description: "{PREENCHER — o que o assinante deve identificar (catálogo 3ª pessoa, não vai pro reveal)}"',
-    '  location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}"',
-    '  category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}"',
-    '  correct_value: "{PREENCHER — valor correto}"',
-    '  reveal: "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição, ex: Na última edição, escrevi X onde o correto é Y.}"',
-  ].join(eol);
-
-  // Frontmatter existente sem intentional_error → inserir chave dentro do bloco.
-  // \r?\n handles CRLF on Windows (P1 fix). Replacer function avoids $-pattern
-  // expansion in replacement string (e.g. "R$1.5bi" → "$1" capture group) (P1 fix).
-  const existingFmMatch = md.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
-  if (existingFmMatch) {
-    const [full, open, body, close] = existingFmMatch;
-    const newBody = body.trimEnd() + eol + PLACEHOLDER_BLOCK;
-    const updated = md.replace(full, () => `${open}${newBody}${close}`);
-    return { md: updated, inserted: true };
-  }
-
-  // Sem frontmatter → criar no topo.
-  const updated = `---${eol}${PLACEHOLDER_BLOCK}${eol}---${eol}${md}`;
-  return { md: updated, inserted: true };
+  const placeholder: IntentionalErrorJson = {
+    description:
+      "{PREENCHER — o que o assinante deve identificar (catálogo 3ª pessoa, não vai pro reveal)}",
+    location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}",
+    category:
+      "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}",
+    correct_value: "{PREENCHER — valor correto}",
+    reveal:
+      "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição, ex: Na última edição, escrevi X onde o correto é Y.}",
+  };
+  writeIntentionalErrorJson(jsonPath, placeholder);
+  return { inserted: true };
 }
 
 function formatEditionLabel(edition: string): string {
@@ -854,7 +797,7 @@ type MdPrevError = {
   gabarito: string;
   narrative: string;
   correct_value?: string;
-  /** (#2419) Campo reveal dedicado quando disponível no frontmatter do MD anterior. */
+  /** (#2419) Campo reveal dedicado quando disponível no _internal/intentional-error.json do MD anterior. */
   reveal?: string;
 };
 
@@ -951,7 +894,7 @@ function main(): void {
     ? resolve(ROOT, args["editions-dir"])
     : join(ROOT, "data", "editions");
   // #1471: JSONL é fonte primária — populado por sync-intentional-error.ts
-  // com dados estruturados do frontmatter. MD extraction é fallback pra
+  // com dados estruturados de _internal/intentional-error.json. MD extraction é fallback pra
   // edições antigas sem entry no JSONL.
   // Bug pré-#1471: MD era primário, mas edições com narrativa não-preenchida
   // ({PREENCHER_NARRATIVA_DO_ERRO}) eram puladas silenciosamente, caindo em
@@ -989,31 +932,41 @@ function main(): void {
   }
 
   const md = readFileSync(mdPath, "utf8");
+  // (#3222) `_internal/intentional-error.json` da edição CORRENTE — sibling do
+  // `--md` recebido. Usado como fallback em insertOrUpdateSection quando a
+  // prosa "Nessa edição, …" ainda não foi escrita no corpo.
+  const currentJsonPath = intentionalErrorJsonPath(dirname(mdPath));
+  const currentRecord = loadIntentionalErrorJson(currentJsonPath);
+
   // #1279: --preserve-existing-reveal opt-in; default = fresh reveal sobrescreve
   // existente pra evitar bug de stale text herdado de edições anteriores.
   const preserveExistingReveal = process.argv.includes("--preserve-existing-reveal");
-  const { md: withSection, action } = insertOrUpdateSection(md, reveal, {
+  const { md: updated, action } = insertOrUpdateSection(md, reveal, {
     preserveExistingReveal,
+    currentRecord,
   });
 
-  // #2284: garantir que o frontmatter intentional_error existe (com placeholders
-  // quando ausente) pra que o editor encontre o bloco no Drive (Stage 4) e
-  // preencha antes da publicação. Sem isso, check-stage2-invariants passa
-  // "verde" mas o lint do Stage 5 aborta na hora H.
-  const { md: updated, inserted: frontmatterInserted } = ensureIntentionalErrorFrontmatter(withSection);
-
-  if (action !== "no_change" || frontmatterInserted) {
+  if (action !== "no_change") {
     writeFileSync(mdPath, updated, "utf8");
   }
+
+  // #2284/#3222: garantir que `_internal/intentional-error.json` existe (com
+  // placeholders quando ausente) pra que o gate humano do Stage 4 lembre o
+  // editor de fornecer os campos antes da publicação. Sem isso,
+  // check-stage2-invariants passa "verde" mas o lint do Stage 5 aborta na hora H.
+  const { inserted: jsonInserted } = ensureIntentionalErrorJson(currentJsonPath);
 
   const result = {
     action,
     prev_edition: prev?.edition ?? null,
     prev_revealed: !!reveal,
     prev_source: source,
-    current_has_intentional: currentHasIntentionalErrorFlag(updated),
-    frontmatter_inserted: frontmatterInserted,
+    current_has_intentional: currentHasIntentionalErrorFlag(
+      jsonInserted ? loadIntentionalErrorJson(currentJsonPath) : currentRecord,
+    ),
+    frontmatter_inserted: jsonInserted,
     path: mdPath,
+    json_path: currentJsonPath,
   };
   console.log(JSON.stringify(result, null, 2));
 }
