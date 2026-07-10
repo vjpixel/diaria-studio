@@ -36,6 +36,23 @@ function makePlan(statuses: string[]): Plan {
   };
 }
 
+/**
+ * Helper #3131: constrói um plan com `in_round` explícito por issue.
+ * `makePlan` (acima) nunca grava o campo — cobre o caso legado (fail-open).
+ * Entries sem `in_round` aqui também omitem o campo (simula plan.json legado
+ * misturado com issues novas que já têm o campo).
+ */
+function makePlanWithInRound(entries: Array<{ status: string; in_round?: boolean }>): Plan {
+  return {
+    started_at: "2026-06-13T22:00:00.000Z",
+    issues: entries.map((entry, idx) => ({
+      number: 2000 + idx,
+      status: entry.status,
+      ...(entry.in_round !== undefined ? { in_round: entry.in_round } : {}),
+    })),
+  };
+}
+
 // ─── casos: plan ausente / malformado ─────────────────────────────────────────
 
 describe("renderOvernightBar — plan null", () => {
@@ -265,6 +282,100 @@ describe("renderOvernightBar — #3071: EPIC deferido ('elegivel_especial') cont
     const plan = makePlan(["mergeada", "elegivel_especial", "elegivel"]);
     const result = renderOvernightBar(plan);
     assert.ok(result.includes("(2/3)"), `'elegivel' comum não deve contar como terminal: ${result}`);
+  });
+});
+
+// ─── #3131: in_round exclui do denominador issues que nunca entraram na rodada ──
+// Bug original: renderOvernightBar computava total = issues.length sobre TODO
+// plan.issues, incluindo issues que a Fase 0 passo 4 excluiu ANTES de entrar
+// (bloqueada-externa, not-this-week, ambígua/trade-off-real) e o EPIC deferido
+// elegivel_especial (nunca despachado). Rodada real 260707: plan.json tinha 57
+// issues, só 53 de fato entraram (47 iniciais elegivel/precisa-resposta + 6
+// mid-round); com 2 mergeadas a barra mostrava 6/57 (as outras 4 excluídas
+// eram todas terminais — pulada/elegivel_especial — inflando numerador E
+// denominador em igual medida) quando o sinal útil era 2/53.
+describe("renderOvernightBar — #3131: exclusão do denominador (réplica do incidente 260707)", () => {
+  it("4 issues in_round:false (bloqueada-externa/not-this-week/trade-off-real/EPIC) somem do denominador — 2/53, não 6/57", () => {
+    const entries: Array<{ status: string; in_round?: boolean }> = [
+      // 4 issues excluídas JÁ na Fase 0 passo 4 — nunca entraram na rodada.
+      { status: "pulada", in_round: false }, // bloqueada-externa
+      { status: "pulada", in_round: false }, // not-this-week
+      { status: "pulada", in_round: false }, // ambígua/trade-off-real
+      { status: "elegivel_especial", in_round: false }, // EPIC deferido (#3071)
+      // 53 issues que de fato entraram: 2 mergeadas, 51 ainda em aberto.
+      { status: "mergeada", in_round: true },
+      { status: "mergeada", in_round: true },
+      ...Array.from({ length: 51 }, () => ({ status: "elegivel", in_round: true })),
+    ];
+    assert.equal(entries.length, 57, "fixture deve ter 57 issues no total (réplica do incidente 260707)");
+
+    const plan = makePlanWithInRound(entries);
+    const result = renderOvernightBar(plan);
+
+    assert.ok(result.includes("(2/53)"), `deve mostrar (2/53) — sinal útil do que entrou na rodada: ${result}`);
+    assert.ok(!result.includes("(6/57)"), `NÃO deve mostrar o denominador antigo inflado: ${result}`);
+  });
+
+  it("plan só com issues in_round:false → barra oculta (issues.length filtrado = 0)", () => {
+    const plan = makePlanWithInRound([
+      { status: "pulada", in_round: false },
+      { status: "pulada", in_round: false },
+      { status: "pulada", in_round: false },
+      { status: "elegivel_especial", in_round: false },
+    ]);
+    assert.equal(renderOvernightBar(plan), "", "plan sem NENHUMA issue in_round:true deve ocultar a barra");
+  });
+});
+
+describe("renderOvernightBar — #3131: pulada MID-RODADA (in_round:true) continua contando", () => {
+  it("issue elegivel que vira pulada mid-rodada (sem-resposta/rescan-limit/ambigua) mantém in_round:true e continua contando", () => {
+    // Entraram 3 issues na rodada (in_round:true): 1 mergeada, 1 pulada mid-rodada
+    // (motivo sem-resposta — skip DEPOIS de entrar, não exclusão de Fase 0),
+    // 1 ainda elegivel.
+    const plan = makePlanWithInRound([
+      { status: "mergeada", in_round: true },
+      { status: "pulada", in_round: true }, // pulada mid-rodada (sem-resposta)
+      { status: "elegivel", in_round: true },
+    ]);
+    const result = renderOvernightBar(plan);
+    // 2 terminais (mergeada + pulada mid-rodada) de 3 in_round:true — a pulada
+    // mid-rodada NÃO é excluída, diferente das puladas de Fase 0 acima.
+    assert.ok(result.includes("(2/3)"), `pulada mid-rodada deve contar no numerador E no denominador: ${result}`);
+  });
+
+  it("mistura: excluída de Fase 0 (in_round:false) fica fora, pulada mid-rodada (in_round:true) fica dentro", () => {
+    const plan = makePlanWithInRound([
+      { status: "pulada", in_round: false }, // bloqueada-externa, Fase 0 — fora
+      { status: "pulada", in_round: true },  // sem-resposta, mid-rodada — dentro
+      { status: "mergeada", in_round: true },
+      { status: "elegivel", in_round: true },
+    ]);
+    const result = renderOvernightBar(plan);
+    // Denominador = 3 (só as in_round:true); numerador = 2 (pulada mid-rodada + mergeada)
+    assert.ok(result.includes("(2/3)"), `deve excluir só a issue in_round:false do denominador: ${result}`);
+  });
+});
+
+describe("renderOvernightBar — #3131: legado (sem campo in_round) trata como true (fail-open)", () => {
+  it("plan.json legado sem NENHUM in_round → todas as issues contam no denominador (comportamento pré-#3131 preservado)", () => {
+    // Reusa makePlan (helper legado) — nunca grava in_round, simulando plan.json
+    // gravado antes deste campo existir (fail-open: campo ausente = in_round true).
+    const plan = makePlan(["mergeada", "pulada", "elegivel", "bloqueada-externa"]);
+    const result = renderOvernightBar(plan);
+    // "bloqueada-externa" não é terminal (fora de TERMINAL_STATUSES) — só
+    // mergeada+pulada contam como terminal. O ponto do teste é o DENOMINADOR:
+    // as 4 issues devem contar nele (fail-open), não só as com o campo.
+    assert.ok(result.includes("(2/4)"), `plan legado sem in_round deve contar TODAS as issues no denominador: ${result}`);
+  });
+
+  it("mix: algumas issues com in_round:true explícito, outras sem o campo (undefined) — ambas contam", () => {
+    const plan = makePlanWithInRound([
+      { status: "mergeada" }, // sem campo — fail-open true
+      { status: "elegivel", in_round: true }, // explícito true
+      { status: "elegivel" }, // sem campo — fail-open true
+    ]);
+    const result = renderOvernightBar(plan);
+    assert.ok(result.includes("(1/3)"), `issues sem campo in_round devem contar como true: ${result}`);
   });
 });
 

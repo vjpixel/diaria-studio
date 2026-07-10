@@ -102,6 +102,25 @@ export interface PlanIssue {
   status: IssueStatus;
   /** Origem da issue no plano: initial, mid-round, finding-depth-1, finding-depth-2, etc. */
   source?: string;
+  /**
+   * #3131: indica se a issue de fato ENTROU no escopo de trabalho desta rodada,
+   * gravado na classificação inicial da Fase 0 passo 4 (`.claude/skills/diaria-overnight/SKILL.md`).
+   *
+   * `true` — classificada `elegivel`/`precisa-resposta` no passo 4. Continua `true`
+   * mesmo que a issue termine `pulada` DEPOIS de entrar (decido-depois no briefing,
+   * ou mid-rodada na Fase 1: `sem-resposta`, `rescan-limit`, `ambigua`) — a decisão
+   * de pular foi tomada trabalhando a fila, não antes dela, então é progresso real.
+   *
+   * `false` — excluída ANTES de entrar, já na varredura inicial do passo 4:
+   * `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`,
+   * `ambígua/trade-off-real` (todas viram `pulada` sem nunca ser despachadas) — e
+   * o EPIC `elegivel_especial` (#3071/#3072 — nunca despachado, fecha só quando a
+   * issue-filha mergear).
+   *
+   * Ausente (plan.json legado, anterior a este campo) → tratar como `true`
+   * (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
+   */
+  in_round?: boolean;
   [key: string]: unknown;
 }
 
@@ -391,16 +410,25 @@ export function cycleLabel(plan: Plan | null | undefined): string {
  * Retorna "" quando:
  *   - plan é null/undefined
  *   - plan.issues é ausente ou não-array
- *   - issues.length === 0
+ *   - issues.length === 0 (após filtrar por `in_round !== false`, #3131 — ver abaixo)
  *
  * Fix #2246 pt3: quando done >= total (rodada encerrada), mostra 100% e permanece
  * visível — NÃO retorna "" (requisito do editor: barra fica em 100% ao encerrar).
+ *
+ * #3131: o denominador (`total`) só considera issues que de fato ENTRARAM na
+ * rodada — `issue.in_round !== false` (fail-open: campo ausente conta como
+ * entrada, mesmo padrão dos demais campos opcionais de plan.json legado).
+ * Issues excluídas já na Fase 0 passo 4 (`bloqueada-externa`, `requer-sessao-local`,
+ * `not-this-week`, `fora-do-escopo`, `ambígua/trade-off-real`) e o EPIC deferido
+ * `elegivel_especial` nunca foram trabalho real desta rodada — sem este filtro,
+ * elas inflam o denominador (e, por serem `pulada`/terminal, também o numerador
+ * em igual medida), distorcendo o sinal de progresso mostrado ao editor.
  */
 export function renderOvernightBar(plan: Plan | null | undefined): string {
   // Degrada graciosamente: plan ausente ou malformado
   if (!plan) return "";
   if (!Array.isArray(plan.issues)) return "";
-  const issues = plan.issues;
+  const issues = plan.issues.filter((i) => i?.in_round !== false);
   if (issues.length === 0) return "";
 
   const total = issues.length;
