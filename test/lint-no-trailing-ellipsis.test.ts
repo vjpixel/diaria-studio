@@ -150,6 +150,30 @@ describe("checkNoTrailingEllipsis (#2881)", () => {
     assert.equal(result.errors[0].section, "RADAR");
   });
 
+  // #3196 CASO REAL 260709 — USE MELHOR TikTok: reticência de truncamento fica
+  // ANTES do sufixo "(N min)" (estimativa de tempo auto-injetada pelo stitch),
+  // então a string "termina" em "(5 min)", não em "…" — sem stripTrailingTimeSuffix
+  // o match escapa.
+  it("#3196 CASO REAL 260709: flagra reticência ANTES do sufixo (N min) (USE MELHOR TikTok)", () => {
+    const md = useMelhorInline(
+      "Truque de vídeo no TikTok",
+      "Descobri um truque incrível. Sabe quando o rosto sai todo diferente? Então... (5 min)",
+    );
+    const result = checkNoTrailingEllipsis(md);
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].section, "USE MELHOR");
+  });
+
+  it("#3196: NÃO flagra quando o sufixo (N min) vem após descrição limpa (sem reticência)", () => {
+    const md = useMelhorInline(
+      "Tutorial de prompt engineering",
+      "Aprenda a escrever prompts melhores em poucos minutos (5 min)",
+    );
+    const result = checkNoTrailingEllipsis(md);
+    assert.equal(result.ok, true);
+  });
+
   it("ignora descrição em seção DESTAQUE (fora de escopo)", () => {
     const md = [
       "DESTAQUE 1 | INTELIGÊNCIA ARTIFICIAL",

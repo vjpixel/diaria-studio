@@ -79,6 +79,16 @@ import {
   type NoTrailingEllipsisError,
   type NoTrailingEllipsisReport,
 } from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
+import {
+  checkMidSentenceEllipsis,
+  type MidSentenceEllipsisError,
+  type MidSentenceEllipsisReport,
+} from "./lib/lint-checks/mid-sentence-ellipsis.ts"; // #3196
+import {
+  checkNoUntranslatedSummary,
+  type UntranslatedSummaryError,
+  type UntranslatedSummaryReport,
+} from "./lib/lint-checks/no-untranslated-summary.ts"; // #3196
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -167,6 +177,16 @@ export {
   type NoTrailingEllipsisError,
   type NoTrailingEllipsisReport,
 } from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
+export {
+  checkMidSentenceEllipsis,
+  type MidSentenceEllipsisError,
+  type MidSentenceEllipsisReport,
+} from "./lib/lint-checks/mid-sentence-ellipsis.ts"; // #3196
+export {
+  checkNoUntranslatedSummary,
+  type UntranslatedSummaryError,
+  type UntranslatedSummaryReport,
+} from "./lib/lint-checks/no-untranslated-summary.ts"; // #3196
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -898,6 +918,75 @@ function main(): void {
     return;
   }
 
+  // Modo --check mid-sentence-ellipsis (#3196) — item de seção secundária cuja
+  // descrição contém `…`/`...` no MEIO da frase (backstop pra truncamento de
+  // meta-description de veículo que não termina no fim da string, ex: G1).
+  // WARN-ONLY — mesma justificativa de no-trailing-ellipsis acima (#2715):
+  // heurística ampla, sem allowlist, também pega reticência estilística
+  // legítima no meio da frase; o editor decide.
+  if (args.check === "mid-sentence-ellipsis") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check mid-sentence-ellipsis --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkMidSentenceEllipsis(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n⚠️  mid-sentence-ellipsis: ${result.errors.length} item(ns) de seção secundária com reticência NO MEIO da descrição:`,
+      );
+      for (const e of result.errors) {
+        console.error(
+          `  ${e.section} linha ${e.line}: "${e.titleExcerpt}" → descrição: "${e.descriptionExcerpt}"`,
+        );
+      }
+      console.error(
+        `\nFix: a reticência é herdada do snippet/meta-description da fonte truncada no meio (não é nosso truncamento), OU é um uso estilístico legítimo — decida caso a caso e edite a descrição manualmente se necessário.`,
+      );
+      // WARN-ONLY (#2715): exit 0 mesmo com matches — não bloqueia o gate.
+    }
+    return;
+  }
+
+  // Modo --check no-untranslated-summary (#3196) — item de seção secundária
+  // com marcador literal [TRADUZIR] OU descrição em inglês (heurística) que
+  // sobreviveu até o gate. GATE-BLOCKING (mirrors secondary-items-have-summary,
+  // #2545): um item não-traduzido não é publicável.
+  if (args.check === "no-untranslated-summary") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check no-untranslated-summary --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkNoUntranslatedSummary(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ no-untranslated-summary: ${result.errors.length} item(ns) de seção secundária não traduzido(s):`,
+      );
+      for (const e of result.errors) {
+        const why = e.reason === "traduzir_prefix" ? "marcador [TRADUZIR] literal" : "heurística EN (sem marcador)";
+        console.error(`  ${e.section} linha ${e.line} [${why}]: "${e.titleExcerpt}" → "${e.descriptionExcerpt}"`);
+      }
+      console.error(
+        `\nFix: traduza a descrição pra PT-BR em 02-reviewed.md e remova o prefixo "[TRADUZIR] " se presente, antes de aprovar o gate.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -1019,6 +1108,8 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check title-publisher-suffix --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-trailing-period --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check mid-sentence-ellipsis --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check no-untranslated-summary --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>",

@@ -252,6 +252,45 @@ describe("mergeMetadata — merges without clobbering real titles", () => {
     );
     assert.equal(out.article.summary, "A empresa vai investir R$ 10 milhões no projeto.");
   });
+
+  // #3196 CASO REAL 260709 (USE MELHOR hashtagtreinamentos): og:description
+  // continha boilerplate de navegação ("Leia mais:") concatenado a títulos de
+  // posts relacionados, com uma data colada sem espaço ("IA29 de maio de 2026").
+  it("#3196: sanitiza boilerplate de navegação ('Leia mais:') herdado do og:description antes de gravar o summary", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      {
+        title: "OG title",
+        summary:
+          "Existe uma ótima radiografia de… Leia mais: Transição de carreira em dados no Brasil... " +
+          "Claude Code: Guia Completo para Programar com IA29 de maio de 2026",
+      },
+    );
+    assert.equal(out.article.summary, "Existe uma ótima radiografia de");
+    assert.ok(!out.article.summary!.includes("Leia mais"), "boilerplate de navegação removido");
+    assert.ok(!out.article.summary!.includes("IA29"), "artefato de data colada não sobrevive");
+    assert.equal(out.summaryUpdated, true);
+  });
+
+  it("#3196: fixa acrônimo colado numa data quando não há boilerplate de navegação antes", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      {
+        title: "OG title",
+        summary: "Guia Completo para Programar com IA29 de maio de 2026",
+      },
+    );
+    assert.equal(out.article.summary, "Guia Completo para Programar com IA 29 de maio de 2026");
+  });
+
+  it("#3196: summary que sanitiza pra string vazia (boilerplate puro) NÃO é gravado — deixa summary ausente", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      { title: "OG title", summary: "Leia mais: outro artigo qualquer sem relação" },
+    );
+    assert.equal(out.article.summary, undefined);
+    assert.equal(out.summaryUpdated, false);
+  });
 });
 
 describe("enrichArticles — orchestration with mocked fetcher", () => {

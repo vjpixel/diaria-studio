@@ -30,6 +30,7 @@ import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #2140, #2664, #2672
 import { sanitizeTrailingEllipsis } from "./lib/sanitize-description-ellipsis.ts"; // #2881
+import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boilerplate.ts"; // #3196
 import { parseArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
@@ -210,11 +211,23 @@ export function mergeMetadata(
 
   const currentSummary = (article.summary ?? "").trim();
   if (meta.summary && !currentSummary) {
+    // #3196: strip navigation boilerplate ("Leia mais:" + everything after)
+    // and fix glued acronym+date artifacts BEFORE the #2881 trailing-ellipsis
+    // sanitizer — the boilerplate cut can itself create a new trailing
+    // ellipsis (e.g. "...radiografia de…" after cutting at "Leia mais:"),
+    // which sanitizeTrailingEllipsis then cleans up.
+    const boilerplateStripped = sanitizeDescriptionBoilerplate(meta.summary);
     // #2881: sources often truncate their OWN meta-description with an
     // ellipsis. That's not our truncation — sanitize before it leaks into
     // the final email as if the sentence had been cut mid-way.
-    out.summary = sanitizeTrailingEllipsis(meta.summary);
-    summaryUpdated = true;
+    const sanitized = sanitizeTrailingEllipsis(boilerplateStripped);
+    if (sanitized) {
+      out.summary = sanitized;
+      summaryUpdated = true;
+    }
+    // else: nothing usable left after sanitization (pure boilerplate) —
+    // leave summary unset. `secondary-items-have-summary` (#2545) flags the
+    // missing description explicitly instead of publishing an empty string.
   }
 
   return { article: out, titleUpdated, summaryUpdated };

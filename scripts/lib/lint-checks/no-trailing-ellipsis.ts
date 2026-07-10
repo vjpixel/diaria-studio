@@ -18,7 +18,13 @@
  *   - canonical USE MELHOR inline shape: `**[Título](URL)** Descrição...`.
  *
  * Only the TRAILING ellipsis is in scope — `…`/`...` used mid-sentence
- * (legitimate) is never flagged.
+ * (legitimate) is never flagged — see the sibling `mid-sentence-ellipsis.ts`
+ * (#3196) for that backstop instead.
+ *
+ * #3196: before checking for a trailing ellipsis, a trailing "(N min)"
+ * reading-time suffix (USE MELHOR) is stripped first via
+ * `stripTrailingTimeSuffix` — otherwise a description like "Então... (5 min)"
+ * "ends" in "(5 min)", not "…", and the ellipsis escapes detection.
  *
  * Exit via CLI (`lint-newsletter-md.ts --check no-trailing-ellipsis`):
  *   always 0 (WARN-ONLY, mirrors title-publisher-suffix / title-trailing-
@@ -47,6 +53,28 @@ const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
   String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`,
   { capture: "none", flags: "u" },
 );
+
+/**
+ * Trailing "(N min)"-style reading-time suffix (USE MELHOR, #2372/#2396/#2450)
+ * — auto-injected by `injectAutoTimeEstimate` in `stitch-newsletter.ts`, or
+ * written by the editor as the canonical parenthetical form. When present it
+ * sits AFTER any ellipsis inherited from the source's own truncated
+ * meta-description — "Então... (5 min)" — so a naive end-of-string check on
+ * the raw description "ends" in "(5 min)", not "…", and the ellipsis escapes
+ * detection (#3196, edição 260709, item USE MELHOR TikTok). Strip it before
+ * testing for a trailing ellipsis.
+ *
+ * Kept narrow (parenthetical shape only) since that's the canonical Stage-4
+ * shape — mirrors `USE_MELHOR_TEMPO_RE` (use-melhor-tempo.ts). The dash form
+ * (`— 5 min`) is normalized to parens upstream by `normalizeDashToParens`
+ * (stitch-newsletter.ts) before Stage 4, so it's out of scope here.
+ */
+export const TRAILING_TIME_SUFFIX_RE = /\s*\(\s*~?\s*\d+\s*min\b[^)]*\)\s*$/iu;
+
+/** Strips a trailing "(N min)" reading-time suffix, if present. @pure */
+export function stripTrailingTimeSuffix(text: string): string {
+  return text.replace(TRAILING_TIME_SUFFIX_RE, "");
+}
 
 // Formato canônico USE MELHOR: link + descrição na MESMA linha.
 // Grupo 1 = título, grupo 2 = descrição.
@@ -123,7 +151,7 @@ export function checkNoTrailingEllipsis(md: string): NoTrailingEllipsisReport {
     const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
     if (inlineMatch) {
       const description = inlineMatch[2].trim();
-      if (TRAILING_ELLIPSIS_RE.test(description)) {
+      if (TRAILING_ELLIPSIS_RE.test(stripTrailingTimeSuffix(description))) {
         errors.push({
           section: currentSection,
           line: i + 1,
@@ -144,7 +172,7 @@ export function checkNoTrailingEllipsis(md: string): NoTrailingEllipsisReport {
 
     // Primeira linha não-vazia após um título pendente = descrição.
     if (pendingTitle && t !== "") {
-      if (TRAILING_ELLIPSIS_RE.test(t)) {
+      if (TRAILING_ELLIPSIS_RE.test(stripTrailingTimeSuffix(t))) {
         errors.push({
           section: currentSection,
           line: i + 1,
