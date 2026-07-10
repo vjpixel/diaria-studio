@@ -28,29 +28,12 @@
  * sentence, not at the very end.
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE, URL_WITH_BALANCED_PARENS_RE_PART } from "./section-item-format.ts";
 import { TRAILING_ELLIPSIS_RE } from "../sanitize-description-ellipsis.ts";
 import { stripTrailingTimeSuffix } from "./no-trailing-ellipsis.ts"; // #3196: shared w/ fix #2
-
-// Seções cujos itens têm descrição (mesmo escopo de checkSecondaryItemsHaveSummary /
-// checkNoTrailingEllipsis).
-const TARGET_SECTION_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
-  { capture: "none", flags: "u" },
-);
-
-// Qualquer header de seção real — encerra o scan da seção alvo (mesmo
-// conjunto de headers de no-trailing-ellipsis.ts, #2918 bug 2).
-const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`,
-  { capture: "none", flags: "u" },
-);
-
-// Formato canônico USE MELHOR: link + descrição na MESMA linha.
-const INLINE_LINK_WITH_TEXT_RE = new RegExp(
-  String.raw`^\s*\*{0,2}\s*\[([^\]]+)\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(\S.*)$`,
-);
+// #3242: state machine de boundary-parsing extraída pro walker compartilhado
+// — ver secondary-item-walker.ts para o histórico de duplicação (#2545,
+// #2881, #3196) que motivou a extração.
+import { forEachSecondaryItem, type SecondaryItemFound } from "./secondary-item-walker.ts";
 
 /** Any ellipsis run — 2+ ASCII dots or the unicode ellipsis char. */
 const ANY_ELLIPSIS_RE = /(?:\.{2,}|…)/u;
@@ -89,78 +72,20 @@ function hasMidSentenceEllipsis(description: string): boolean {
  * descrição contém `…`/`...` no MEIO da frase (não só no fim).
  */
 export function checkMidSentenceEllipsis(md: string): MidSentenceEllipsisReport {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
   const errors: MidSentenceEllipsisError[] = [];
 
-  let currentSection: string | null = null;
-  let pendingTitle: string | null = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const t = raw.trim();
-
-    if (TARGET_SECTION_RE.test(t)) {
-      currentSection = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
-      pendingTitle = null;
-      continue;
-    }
-
-    if (ANY_SECTION_HEADER_RE.test(t)) {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    if (t === "---") {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    if (/^(?:\*\*)?DESTAQUE\s+\d+/.test(t)) {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    if (!currentSection) continue;
-
-    // Formato inline (USE MELHOR canônico): link + descrição na mesma linha.
-    const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
-    if (inlineMatch) {
-      const description = inlineMatch[2].trim();
-      if (hasMidSentenceEllipsis(description)) {
+  forEachSecondaryItem(md, {
+    onFound: (item: SecondaryItemFound) => {
+      if (hasMidSentenceEllipsis(item.description)) {
         errors.push({
-          section: currentSection,
-          line: i + 1,
-          titleExcerpt: inlineMatch[1].slice(0, 80),
-          descriptionExcerpt: description.slice(0, 100),
+          section: item.section,
+          line: item.descriptionLine,
+          titleExcerpt: item.title.slice(0, 80),
+          descriptionExcerpt: item.description.slice(0, 100),
         });
       }
-      pendingTitle = null;
-      continue;
-    }
-
-    // Título sozinho na linha — guarda pra checar a próxima linha não-vazia
-    // como descrição.
-    if (INLINE_LINK_ONLY_RE.test(raw)) {
-      pendingTitle = t;
-      continue;
-    }
-
-    // Primeira linha não-vazia após um título pendente = descrição.
-    if (pendingTitle && t !== "") {
-      if (hasMidSentenceEllipsis(t)) {
-        errors.push({
-          section: currentSection,
-          line: i + 1,
-          titleExcerpt: pendingTitle.slice(0, 80),
-          descriptionExcerpt: t.slice(0, 100),
-        });
-      }
-      pendingTitle = null;
-    }
-  }
+    },
+  });
 
   return { ok: errors.length === 0, errors };
 }

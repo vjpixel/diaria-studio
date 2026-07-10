@@ -28,20 +28,25 @@
  *   2 — erro de argumento / arquivo não encontrado
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
+// #3242: state machine de boundary-parsing extraída pro walker compartilhado
+// — ver secondary-item-walker.ts para o histórico de duplicação (#2545,
+// #2881, #3196) que motivou a extração.
+import {
+  forEachSecondaryItem,
+  type SecondaryItemMissing,
+} from "./secondary-item-walker.ts";
 
-// Seções cujos itens exigem descrição obrigatória
-const TARGET_SECTION_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
-  { capture: "none", flags: "u" },
-);
-
-// Qualquer header de seção (inclusive VÍDEOS / É IA?) — para encerrar scan
-const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
-  { capture: "none", flags: "u" },
-);
+// Regex ESPECÍFICA deste lint (#2545): usada só pra decidir, no lookahead de
+// um título solo, se a PRÓXIMA linha não-vazia é ela própria outro item
+// BOLDED (portanto o item atual não tem descrição). Mais restrita que a
+// regex ampla (`SAME_LINE_ITEM_RE`) usada pelos outros 3 lints DE PROPÓSITO
+// — regressão #2579: uma descrição que COMEÇA com um link markdown sem bold
+// (ex: `[Fonte](url) explica que...`) é uma descrição válida do item
+// anterior, não um novo item. Só reconhecemos `**[Título](url)** texto`
+// (bold nos 2 lados) como inequivocamente outro item — ver nota de
+// divergência 2 em secondary-item-walker.ts.
+const BOLDED_ITEM_ONLY_RE =
+  /^\s*\*\*\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*\*\s+\S/;
 
 export interface SecondaryItemSummaryError {
   section: string;
@@ -68,82 +73,25 @@ export interface SecondaryItemSummaryReport {
 export function checkSecondaryItemsHaveSummary(
   md: string,
 ): SecondaryItemSummaryReport {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
   const errors: SecondaryItemSummaryError[] = [];
 
-  let currentSection: string | null = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const t = raw.trim();
-
-    // Detectar seção alvo
-    if (TARGET_SECTION_RE.test(t)) {
-      // Extrair nome da seção (pegar tudo sem bold e emoji)
-      currentSection = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
-      continue;
-    }
-
-    // Qualquer outro header de seção encerra a seção alvo
-    if (ANY_SECTION_HEADER_RE.test(t)) {
-      currentSection = null;
-      continue;
-    }
-
-    // Separador `---` encerra seção
-    if (t === "---") {
-      currentSection = null;
-      continue;
-    }
-
-    // Seção DESTAQUE também encerra
-    if (/^(?:\*\*)?DESTAQUE\s+\d+/.test(t)) {
-      currentSection = null;
-      continue;
-    }
-
-    if (!currentSection) continue;
-
-    // Formato canônico de produção (link + descrição inline): sempre válido
-    // Ex: `**[Título](URL)** Descrição... (5 min)` — tem descrição na mesma linha.
-    // \*{0,2} tolera com ou sem bold; aceita qualquer link+texto como item válido.
-    const INLINE_LINK_WITH_TEXT_RE = /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+\S/;
-    if (INLINE_LINK_WITH_TEXT_RE.test(raw)) {
-      // Item com link + descrição inline: tem descrição, OK
-      continue;
-    }
-
-    // Formato canônico de item USE MELHOR com descrição inline (BOLDED title):
-    // `**[Título](URL)** Descrição...`. Usado apenas para verificar se a PRÓXIMA
-    // linha é outro item de seção (não uma descrição que começa com link).
-    // Distinção importante (#2579): uma descrição que começa com `[Fonte](url) texto`
-    // NÃO tem asteriscos bold ao redor do link e NÃO é outro item — é descrição válida.
-    const INLINE_LINK_BOLDED_ITEM_RE =
-      /^\s*\*\*\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*\*\s+\S/;
-
-    // Linha contendo APENAS um inline link (título do item)
-    if (INLINE_LINK_ONLY_RE.test(raw)) {
-      // Procurar próxima linha não-vazia
-      let j = i + 1;
-      while (j < lines.length && lines[j].trim() === "") j++;
-
-      const noDescription =
-        j >= lines.length || // EOF
-        INLINE_LINK_ONLY_RE.test(lines[j]) || // próxima é outro link (título pelado)
-        INLINE_LINK_BOLDED_ITEM_RE.test(lines[j]) || // próxima é item USE MELHOR bolded+desc inline
-        ANY_SECTION_HEADER_RE.test(lines[j].trim()) || // próxima é header
-        /^(?:\*\*)?DESTAQUE\s+\d+/.test(lines[j].trim()) || // próxima é DESTAQUE
-        lines[j].trim() === "---"; // próxima é separador
-
-      if (noDescription) {
-        errors.push({
-          section: currentSection,
-          titleLine: i + 1,
-          titleExcerpt: t.slice(0, 80),
-        });
-      }
-    }
-  }
+  forEachSecondaryItem(md, {
+    // #2545 preservava um conjunto mais estreito de headers de fechamento de
+    // seção (sem É IA?/ERRO INTENCIONAL/SORTEIO/PARA ENCERRAR, ampliado nos
+    // outros 3 lints só depois, #2918 bug 2) — ver nota de divergência 1 em
+    // secondary-item-walker.ts.
+    legacyClosingHeaders: true,
+    // Ver nota de divergência 2 em secondary-item-walker.ts / comentário de
+    // BOLDED_ITEM_ONLY_RE acima.
+    nextLineIsItemRe: BOLDED_ITEM_ONLY_RE,
+    onMissing: (item: SecondaryItemMissing) => {
+      errors.push({
+        section: item.section,
+        titleLine: item.titleLine,
+        titleExcerpt: item.title.slice(0, 80),
+      });
+    },
+  });
 
   return { ok: errors.length === 0, errors };
 }

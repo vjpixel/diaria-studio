@@ -31,24 +31,20 @@
  *      the underlying English text untranslated.
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE, URL_WITH_BALANCED_PARENS_RE_PART } from "./section-item-format.ts";
+import { INLINE_LINK_ONLY_RE } from "./section-item-format.ts";
 import { looksEnglish } from "../lang-detect.ts";
-
-const TARGET_SECTION_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
-  { capture: "none", flags: "u" },
-);
-
-const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`,
-  { capture: "none", flags: "u" },
-);
-
-// Formato canônico USE MELHOR: link + descrição na MESMA linha.
-const INLINE_LINK_WITH_TEXT_RE = new RegExp(
-  String.raw`^\s*\*{0,2}\s*\[([^\]]+)\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(\S.*)$`,
-);
+// #3242: state machine de boundary-parsing extraída pro walker compartilhado
+// — ver secondary-item-walker.ts para o histórico de duplicação (#2545,
+// #2881, #3196) que motivou a extração. O Check 1 abaixo (marcador literal
+// catch-all) NÃO usa o walker — ver comentário em `checkTraduzirLiteral`.
+import {
+  forEachSecondaryItem,
+  TARGET_SECTION_RE,
+  ANY_SECTION_HEADER_RE,
+  DESTAQUE_HEADER_RE,
+  SAME_LINE_ITEM_RE,
+  type SecondaryItemFound,
+} from "./secondary-item-walker.ts";
 
 const TRADUZIR_LITERAL = "[TRADUZIR]";
 
@@ -68,11 +64,19 @@ export interface UntranslatedSummaryReport {
 }
 
 /**
- * Varre `md` e retorna um erro para cada item de seção secundária cuja
- * descrição (a) carrega o marcador literal `[TRADUZIR]`, ou (b) parece
- * inglês pela heurística de stopwords, mesmo sem o marcador.
+ * Check 1 (incondicional, qualquer linha do documento): marcador literal
+ * `[TRADUZIR]` sobrevivendo até o gate. Checado independente do parsing
+ * estrutural de seção, pra que um formato não reconhecido pelo walker
+ * (`forEachSecondaryItem`) ainda não escape (#3196 catch-all).
+ *
+ * NÃO usa `forEachSecondaryItem` — dispara em QUALQUER linha (mesmo fora de
+ * uma seção-alvo reconhecida ou de um shape estrutural reconhecido), não
+ * "por item", então mantém seu próprio rastreio mínimo de
+ * `currentSection`/`pendingTitle` (só pra rotular o erro com contexto —
+ * mesmas regras de boundary do walker, importadas daqui pra não duplicar as
+ * regexes de header).
  */
-export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryReport {
+function checkTraduzirLiteral(md: string): UntranslatedSummaryError[] {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const errors: UntranslatedSummaryError[] = [];
 
@@ -83,16 +87,12 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
     const raw = lines[i];
     const t = raw.trim();
 
-    // Check 1 (incondicional, qualquer linha): marcador literal [TRADUZIR]
-    // sobrevivendo até o gate. Checado independente do parsing estrutural de
-    // seção abaixo, pra que um formato não reconhecido pelo walker ainda não
-    // escape (#3196).
     if (raw.includes(TRADUZIR_LITERAL)) {
       // Prefer the real title when this line matches the canonical inline
-      // shape (`**[Título](URL)** [TRADUZIR] texto...`) — Check 2 below
-      // extracts it the same way, but Check 1 fires first and would
-      // otherwise fall back to a stale/empty `pendingTitle` for this shape.
-      const literalInlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
+      // shape (`**[Título](URL)** [TRADUZIR] texto...`) — Check 2 extracts
+      // it the same way via o walker, mas Check 1 roda numa passada
+      // separada e cairia num `pendingTitle` stale/vazio pra esse shape.
+      const literalInlineMatch = raw.match(SAME_LINE_ITEM_RE);
       errors.push({
         section: currentSection ?? "unknown",
         line: i + 1,
@@ -120,7 +120,7 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
       continue;
     }
 
-    if (/^(?:\*\*)?DESTAQUE\s+\d+/.test(t)) {
+    if (DESTAQUE_HEADER_RE.test(t)) {
       currentSection = null;
       pendingTitle = null;
       continue;
@@ -131,21 +131,8 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
       continue;
     }
 
-    // Check 2: heurística EN nos formatos estruturados reconhecidos. Pula se
-    // a linha já disparou o Check 1 acima (evita erro duplicado/ruidoso pro
-    // mesmo item).
-    const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
+    const inlineMatch = raw.match(SAME_LINE_ITEM_RE);
     if (inlineMatch) {
-      const desc = inlineMatch[2].trim();
-      if (!desc.includes(TRADUZIR_LITERAL) && looksEnglish(desc, { minWords: 4 })) {
-        errors.push({
-          section: currentSection,
-          line: i + 1,
-          reason: "en_heuristic",
-          titleExcerpt: inlineMatch[1].slice(0, 80),
-          descriptionExcerpt: desc.slice(0, 80),
-        });
-      }
       pendingTitle = null;
       continue;
     }
@@ -156,18 +143,39 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
     }
 
     if (pendingTitle && t !== "") {
-      if (!t.includes(TRADUZIR_LITERAL) && looksEnglish(t, { minWords: 4 })) {
-        errors.push({
-          section: currentSection,
-          line: i + 1,
-          reason: "en_heuristic",
-          titleExcerpt: pendingTitle.slice(0, 80),
-          descriptionExcerpt: t.slice(0, 80),
-        });
-      }
       pendingTitle = null;
     }
   }
+
+  return errors;
+}
+
+/**
+ * Varre `md` e retorna um erro para cada item de seção secundária cuja
+ * descrição (a) carrega o marcador literal `[TRADUZIR]`, ou (b) parece
+ * inglês pela heurística de stopwords, mesmo sem o marcador.
+ */
+export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryReport {
+  const errors: UntranslatedSummaryError[] = checkTraduzirLiteral(md);
+
+  // Check 2: heurística EN nos formatos estruturados reconhecidos (via
+  // walker compartilhado). Pula item cuja descrição já carrega o marcador
+  // literal — Check 1 acima já cobriu, evita erro duplicado/ruidoso pro
+  // mesmo item.
+  forEachSecondaryItem(md, {
+    onFound: (item: SecondaryItemFound) => {
+      if (item.description.includes(TRADUZIR_LITERAL)) return;
+      if (looksEnglish(item.description, { minWords: 4 })) {
+        errors.push({
+          section: item.section,
+          line: item.descriptionLine,
+          reason: "en_heuristic",
+          titleExcerpt: item.title.slice(0, 80),
+          descriptionExcerpt: item.description.slice(0, 80),
+        });
+      }
+    },
+  });
 
   return { ok: errors.length === 0, errors };
 }
