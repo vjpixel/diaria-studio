@@ -31,28 +31,14 @@
  *   period — #2715) — matches are surfaced as ⚠️, never block the gate.
  */
 
-import { sectionHeaderRegex } from "../section-naming.ts";
-import { INLINE_LINK_ONLY_RE, URL_WITH_BALANCED_PARENS_RE_PART } from "./section-item-format.ts";
 // Fonte única da regex de reticência final (#2881 self-review) — evita drift
 // entre o sanitizador do enrich e este backstop de gate.
 import { TRAILING_ELLIPSIS_RE } from "../sanitize-description-ellipsis.ts";
-
-// Seções cujos itens têm descrição (mesmo escopo de checkSecondaryItemsHaveSummary).
-const TARGET_SECTION_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?`,
-  { capture: "none", flags: "u" },
-);
-
-// Qualquer header de seção (inclusive VÍDEOS / É IA? / ERRO INTENCIONAL /
-// SORTEIO / PARA ENCERRAR) — encerra o scan da seção alvo. #2918 bug 2: antes
-// faltavam esses últimos 4 headers reais de toda edição (context/templates/
-// newsletter.md) — se um `---` fosse removido numa edição manual no Drive,
-// `currentSection` ficava "preso" em RADAR e a prosa de encerramento virava
-// falso-positivo com label errado.
-const ANY_SECTION_HEADER_RE = sectionHeaderRegex(
-  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|[ÉE]\s+IA\?|ERRO INTENCIONAL|SORTEIO|PARA ENCERRAR`,
-  { capture: "none", flags: "u" },
-);
+// #3242: state machine de boundary-parsing (target section / encerramento de
+// seção / os 2 formatos suportados) extraída pro walker compartilhado — era
+// duplicada quase byte-a-byte em 4 lints (secondary-items-have-summary.ts,
+// no-trailing-ellipsis.ts, mid-sentence-ellipsis.ts, no-untranslated-summary.ts).
+import { forEachSecondaryItem, type SecondaryItemFound } from "./secondary-item-walker.ts";
 
 /**
  * Trailing "(N min)"-style reading-time suffix (USE MELHOR, #2372/#2396/#2450)
@@ -76,17 +62,6 @@ export function stripTrailingTimeSuffix(text: string): string {
   return text.replace(TRAILING_TIME_SUFFIX_RE, "");
 }
 
-// Formato canônico USE MELHOR: link + descrição na MESMA linha.
-// Grupo 1 = título, grupo 2 = descrição.
-// #2918 bug 3: URL exclui só `)` do grupo — uma URL com parênteses balanceados
-// (ex: Wikipedia `..._(disambiguation)`) não casava e o item passava batido
-// sem checar a descrição. Reusa URL_WITH_BALANCED_PARENS_RE_PART (mesmo
-// pattern de INLINE_LINK_ONLY_RE / section-item-format.ts) pra tolerar 1
-// nível de parênteses balanceados no path.
-const INLINE_LINK_WITH_TEXT_RE = new RegExp(
-  String.raw`^\s*\*{0,2}\s*\[([^\]]+)\]\(${URL_WITH_BALANCED_PARENS_RE_PART}\)\*{0,2}\s+(\S.*)$`,
-);
-
 export interface NoTrailingEllipsisError {
   section: string;
   /** Linha da descrição (ou do item inline) que termina em reticências. */
@@ -107,82 +82,20 @@ export interface NoTrailingEllipsisReport {
  * descrição termina em `…`/`...`.
  */
 export function checkNoTrailingEllipsis(md: string): NoTrailingEllipsisReport {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
   const errors: NoTrailingEllipsisError[] = [];
 
-  let currentSection: string | null = null;
-  let pendingTitle: string | null = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const t = raw.trim();
-
-    // Detectar seção alvo
-    if (TARGET_SECTION_RE.test(t)) {
-      currentSection = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
-      pendingTitle = null;
-      continue;
-    }
-
-    // Qualquer outro header de seção encerra a seção alvo
-    if (ANY_SECTION_HEADER_RE.test(t)) {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    // Separador `---` encerra seção
-    if (t === "---") {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    // Seção DESTAQUE também encerra
-    if (/^(?:\*\*)?DESTAQUE\s+\d+/.test(t)) {
-      currentSection = null;
-      pendingTitle = null;
-      continue;
-    }
-
-    if (!currentSection) continue;
-
-    // Formato inline (USE MELHOR canônico): link + descrição na mesma linha.
-    const inlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
-    if (inlineMatch) {
-      const description = inlineMatch[2].trim();
-      if (TRAILING_ELLIPSIS_RE.test(stripTrailingTimeSuffix(description))) {
+  forEachSecondaryItem(md, {
+    onFound: (item: SecondaryItemFound) => {
+      if (TRAILING_ELLIPSIS_RE.test(stripTrailingTimeSuffix(item.description))) {
         errors.push({
-          section: currentSection,
-          line: i + 1,
-          titleExcerpt: inlineMatch[1].slice(0, 80),
-          descriptionExcerpt: description.slice(-40),
+          section: item.section,
+          line: item.descriptionLine,
+          titleExcerpt: item.title.slice(0, 80),
+          descriptionExcerpt: item.description.slice(-40),
         });
       }
-      pendingTitle = null;
-      continue;
-    }
-
-    // Título sozinho na linha — guarda pra checar a próxima linha não-vazia
-    // como descrição.
-    if (INLINE_LINK_ONLY_RE.test(raw)) {
-      pendingTitle = t;
-      continue;
-    }
-
-    // Primeira linha não-vazia após um título pendente = descrição.
-    if (pendingTitle && t !== "") {
-      if (TRAILING_ELLIPSIS_RE.test(stripTrailingTimeSuffix(t))) {
-        errors.push({
-          section: currentSection,
-          line: i + 1,
-          titleExcerpt: pendingTitle.slice(0, 80),
-          descriptionExcerpt: t.slice(-40),
-        });
-      }
-      pendingTitle = null;
-    }
-  }
+    },
+  });
 
   return { ok: errors.length === 0, errors };
 }
