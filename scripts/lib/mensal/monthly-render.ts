@@ -18,7 +18,7 @@ import { COLORS, FONTS } from "../shared/design-tokens.ts"; // #1936
 export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
-import { applyBrandWordmark } from "../newsletter-render-html.ts"; // wordmark diar.ia.br (mesmo da diária)
+import { applyBrandWordmark, tealDot } from "../newsletter-render-html.ts"; // wordmark diar.ia.br + ponto ● teal (#3181, mesmos da diária)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import {
   DIARIA_FACEBOOK_PAGE_URL,
@@ -38,6 +38,26 @@ const SHELL = "#FFFFFF"; // #1955 página branca (era COLORS.paperAlt #EBE5D0)
 const BEGE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes recuados / É IA? / réguas — contraste, mantido)
 const FONT_SERIF = FONTS.serif; // Georgia — manchetes/títulos (corpo é sans Geist, #2599)
 const FONT_SANS = FONTS.sans; // Geist (labels/kickers)
+
+// #3183: porta pra mensal as 2 constantes que a diária extraiu no PR#3182
+// (Refs #3104) pra eliminar micro-drifts de token sem motivo funcional.
+// LS_LABEL ("2px") — letter-spacing de labels uppercase (kicker, "O fio
+// condutor", legenda de hero, "Acesse nossas curadorias:", "Clarice ×
+// Diar.ia", "Siga a Clarice × Diar.ia") variava 1px/1.5px/2px na mensal —
+// mesmo drift que a diária tinha antes do PR#3182. Canonicalizado no mesmo
+// valor da diária (2px) para paridade visual entre os 2 produtos — nenhum
+// dos usos aqui é ancorado por regex externo (diferente do kicker da diária,
+// que build-link-ctr.ts lê via KICKER_TD_OPEN_SRC).
+const LS_LABEL = "2px";
+// PAD_BOX_OUTLINE ("24px 28px") — padding do box "contorno" (fundo PAPER +
+// borda BEGE 1px), usado só pela caixa "O fio condutor" (boxFor, abaixo).
+// Era 22px 26px, 2px de drift vs o valor canônico da diária (mesmo box
+// "contorno" em renderWhyBoxInner/renderErroIntencionalReveal). NÃO se aplica
+// aos boxes "painel" da mensal (fundo BEGE preenchido — renderClariceBox,
+// renderEncerramento, renderEia), que já usam 24px 28px como literal e não
+// são o mesmo estilo estrutural (sem borda, sem "contorno") — mesma distinção
+// que a diária mantém entre os 2 estilos de box.
+const PAD_BOX_OUTLINE = "24px 28px";
 
 /** Strip backslash escapes do export Drive (`\!` `\&` `\[` `\]`). */
 export function stripBackslashEscapes(s: string): string {
@@ -219,11 +239,17 @@ export function renderInline(text: string): string {
 /**
  * Kicker de seção no padrão DS/diária: ● teal + label + régua hairline bege à
  * direita (espelha renderKicker da diária). letter-spacing 2px, Geist 12px bold.
+ *
+ * #3181: label teal (~3.2:1 de contraste sobre papel/branco) falhava AA
+ * (4.5:1) — mesmo achado do PR#3179 na diária (Refs #3104), nunca portado
+ * pra cá. Fix idêntico: o ponto ● continua teal (tealDot(), importado da
+ * diária — assinatura de cor do DS), só o TEXTO do label vira ink (~14:1).
+ * Antes ponto+label viviam no MESMO <td> cor teal — nem separava os dois.
  */
 export function renderKicker(label: string): string {
   return (
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px 0;"><tr>` +
-    `<td style="white-space:nowrap;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};padding:0 12px 0 0;">&#9679;&nbsp;${escHtml(label)}</td>` +
+    `<td style="white-space:nowrap;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};padding:0 12px 0 0;">${tealDot()}&nbsp;${escHtml(label)}</td>` +
     `<td width="100%" style="border-bottom:1px solid ${BEGE};font-size:0;line-height:0;">&nbsp;</td>` +
     `</tr></table>`
   );
@@ -350,9 +376,14 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // NÃO há "O fio condutor:" — que já carrega a régua como pull-quote italic.
   // #DS: o fecho do destaque (fio condutor explícito OU último parágrafo) vai
   // numa caixa "Por que isso importa" (fundo branco + borda bege), como na diária.
+  // #3181/#3183: label "O fio condutor" era teal (~3.2:1, abaixo de AA) e o
+  // box tinha padding:22px 26px (2px de drift vs o box "contorno" canônico
+  // da diária, 24px 28px — mesmo achado dos PR#3179/PR#3182, Refs #3104,
+  // nunca portado pra mensal). Fix: ponto ● teal (tealDot()) + label ink,
+  // padding/letter-spacing unificados via PAD_BOX_OUTLINE/LS_LABEL.
   const boxFor = (text: string): string =>
-    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
-    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">O fio condutor</p>` +
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">` +
+    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${tealDot()}&nbsp;O fio condutor</p>` +
     `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(capitalizeFirstLetter(text.replace(/\n/g, " ")))}</p></td></tr></table>`;
   let mainHtml = "";
   let conductorHtml = "";
@@ -370,7 +401,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   const caption = imageCaption ?? "Criada com IA";
   const imageHtml = imageUrl
     ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;" />` +
-      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">${escHtml(caption)}</p>`
+      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${escHtml(caption)}</p>`
     : "";
 
   return label + titleHtml + imageHtml + mainHtml + conductorHtml;
@@ -626,7 +657,7 @@ export function renderEncerramento(body: string): string {
   for (const p of head) parts.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p)}</p>`);
   if (pills.length) {
     parts.push(
-      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
+      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
     );
     // #2139: centralizar via table align="center" + margin:0 auto (Outlook word-renderer
     // ignora align= em <table> — margin:auto garante centralização no Outlook 2007–2019).
@@ -716,10 +747,19 @@ export function renderEia(
     return inner;
   };
 
-  // #2709: mesmo padrão da diária (FONT_LABEL/FONT_SANS 12px bold uppercase
-  // teal) — renderiza só quando o caller passar o dado (ver nota acima).
+  // #2709: renderiza só quando o caller passar o dado (ver nota acima).
+  // #3181/#3183 self-review: a issue original pedia portar o tratamento do
+  // PR#3179 aqui (ponto ● teal + label ink, bold+uppercase+letter-spacing) —
+  // mas a diária JÁ tinha ido além disso: o commit 42c4a266/8a275b5e (#3220)
+  // destylizou o prevResultLine da diária a pedido do editor, "pra ler como
+  // frase comum, não como label gritado" (ver newsletter-render-html.ts
+  // renderEIA) — removeu bold/uppercase/letter-spacing/ponto por completo,
+  // virou parágrafo de corpo puro (FONT_BODY 16px line-height:1.5 ink).
+  // Portar o estado intermediário da issue criaria drift NOVO (mensal com
+  // ponto+label-style, diária sem) — o objetivo de #3181/#3183 é eliminar
+  // drift, não recriá-lo. Aplicado aqui o estado ATUAL da diária (parity real).
   const prevResultHtml = prevResultLine
-    ? `\n    <p style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${renderInline(prevResultLine)}</p>`
+    ? `\n    <p style="margin:6px 0 0;font-family:${FONT_SANS};font-size:16px;line-height:1.5;color:${INK};">${renderInline(prevResultLine)}</p>`
     : "";
 
   return renderKicker("É IA?") + `
@@ -727,7 +767,10 @@ export function renderEia(
   <tr><td style="padding:24px 28px;">
 
     <!-- Título -->
-    <p style="margin:0;font-family:${FONT_SERIF};font-size:26px;line-height:1.15;color:${INK};">Clique na imagem que foi gerada por IA</p>
+    <!-- #3183: line-height 1.2 (era 1.15) — mesmo valor das outras manchetes
+         26px serif da mensal (renderDestaque titleHtml) e da diária (PR#3182,
+         Refs #3104: headline/introCallout/boxDivulgacao/É IA? title, todas 1.2). -->
+    <p style="margin:0;font-family:${FONT_SERIF};font-size:26px;line-height:1.2;color:${INK};">Clique na imagem que foi gerada por IA</p>
 
     <!-- Imagens A / B empilhadas (A acima de B), como na diária (#2541) -->
     <!-- #2709: margin-top:22px compensa a remoção do margin do título acima (item 2) —
@@ -855,10 +898,14 @@ export function renderCobrandHeader(): string {
     ? `<img src="${escHtml(COBRAND_LOGO_URL)}" alt="Clarice" style="display:block;height:32px;width:auto;margin:0 0 6px 0;" />`
     // #1955/#2645: font-size restrito à type scale {12,16,22,26}px do DS — 26px
     // (mesmo tamanho do <h2> de título de destaque, renderDestaque) em vez de 28px.
-    : `<div style="font-family:${FONT_SERIF};font-size:26px;font-weight:bold;color:${TEAL};line-height:1.15;">Clarice</div>`;
+    // #3181: cor TEAL preservada (fora de escopo) — 26px bold qualifica como
+    // "large text" do WCAG (exige só 3:1), teal passa nesse limiar.
+    // #3183: line-height 1.2 (era 1.15) — mesma unificação do título do É IA?
+    // acima e das manchetes 26px serif da diária (PR#3182).
+    : `<div style="font-family:${FONT_SERIF};font-size:26px;font-weight:bold;color:${TEAL};line-height:1.2;">Clarice</div>`;
   return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 28px 0;"><tr><td>
     ${wordmark}
-    <div style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${INK};">Clarice &times; Diar.ia</div>
+    <div style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Clarice &times; Diar.ia</div>
     <div style="border-bottom:1px solid ${BEGE};margin:18px 0 0;line-height:0;font-size:0;">&nbsp;</div>
   </td></tr></table>`;
 }
@@ -883,7 +930,7 @@ export function renderSocialFooter(): string {
     renderPillLink(label, url, { fontSize: 12, padding: "10px 18px", background: PAPER }),
   ).join("");
   return `<div style="border-top:1px solid ${BEGE};margin:28px 0 20px 0;line-height:0;font-size:0;">&nbsp;</div>
-  <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Siga a Clarice &times; Diar.ia</p>
+  <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Siga a Clarice &times; Diar.ia</p>
   <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${pills}</td></tr></table>`;
 }
 

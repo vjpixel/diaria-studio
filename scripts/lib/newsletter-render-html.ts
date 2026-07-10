@@ -191,8 +191,16 @@ export function renderDivulgacaoSeparator(): string {
  * ≥18.66px bold). Fix sem mexer na paleta: o PONTO continua teal (identidade
  * visual preservada), o TEXTO do label vira ink (contraste ~14:1) em cada
  * caller — este helper só emite o ponto.
+ *
+ * #3181: exportado (era privado) — o renderer mensal (monthly-render.ts)
+ * importa direto daqui em vez de duplicar a mesma string. Precedente já
+ * estabelecido neste arquivo: monthly-render.ts já importa applyBrandWordmark
+ * daqui pelo mesmo motivo (reuso 1:1, sem necessidade de mover pra shared/ —
+ * a função não tem estado nem dependências, e scripts/lib/shared/ é regido
+ * por test/lib-boundary.test.ts só para os domínios shared/diaria/mensal;
+ * este arquivo vive na raiz legada de scripts/lib/, fora dessa fronteira).
  */
-function tealDot(): string {
+export function tealDot(): string {
   return `<span style="color:${TEAL};">&#9679;</span>`;
 }
 
