@@ -2,6 +2,7 @@
 name: orchestrator
 description: Playbook da pipeline Diar.ia (6 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
 model: claude-opus-4-8
+effort: low
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 

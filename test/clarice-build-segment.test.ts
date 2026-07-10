@@ -11,10 +11,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Papa from "papaparse";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { buildSegmentArtifact, main, type SegmentRow } from "../scripts/clarice-build-segment.ts";
+import {
+  buildSegmentArtifact,
+  main,
+  loadSentOrQueuedEmails,
+  excludeSentOrQueued,
+  appendSentOrQueuedEmails,
+  sentOrQueuedFilePath,
+  type SegmentRow,
+  type SentOrQueuedFile,
+} from "../scripts/clarice-build-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 import { cohortFromTier, INTERNAL_EMAILS } from "../scripts/lib/cohorts.ts";
@@ -237,4 +246,159 @@ test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulári
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.min_score, 50);
   assert.equal(out.selected, 1); // só quem bate o piso 50 (a@x.com)
+});
+
+// ---------------------------------------------------------------------------
+// Guard anti-duplo-envio POR CICLO (#3227) — sent-or-queued.json
+// ---------------------------------------------------------------------------
+//
+// `main()` resolve `clariceSegmentsDir(cycle)` a partir da raiz FIXA do repo
+// (não injetável — mesma limitação documentada na NOTA acima), então os
+// testes de main() continuam SEMPRE --dry-run (nunca tocam o disco real).
+// Aqui abaixo testamos as funções PURAS/injetáveis (`loadSentOrQueuedEmails`,
+// `excludeSentOrQueued`, `appendSentOrQueuedEmails`) diretamente contra um
+// `segmentsDir` de tmpdir — o mesmo padrão de `collectPriorCycleEmails`/
+// `excludeAlreadySentEmails` em test/clarice-build-edition-sends.test.ts.
+
+test("loadSentOrQueuedEmails: arquivo ausente -> Set vazio (1ª invocação do ciclo)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-empty-"));
+  assert.deepEqual(loadSentOrQueuedEmails(dir), new Set());
+});
+
+test("loadSentOrQueuedEmails: JSON corrompido -> Set vazio (tolerante, nunca lança)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-corrupt-"));
+  writeFileSync(sentOrQueuedFilePath(dir), "{ isto não é json válido", "utf8");
+  assert.deepEqual(loadSentOrQueuedEmails(dir), new Set());
+});
+
+test("excludeSentOrQueued: filtra por email normalizado (trim+lowercase), preserva ordem", () => {
+  const rows = [{ email: "A@X.com " }, { email: "b@x.com" }, { email: "c@x.com" }];
+  const out = excludeSentOrQueued(rows, new Set(["a@x.com"]));
+  assert.deepEqual(out.map((r) => r.email), ["b@x.com", "c@x.com"]);
+});
+
+test("excludeSentOrQueued: Set vazio -> devolve rows sem filtrar", () => {
+  const rows = [{ email: "a@x.com" }];
+  assert.equal(excludeSentOrQueued(rows, new Set()), rows);
+});
+
+test("appendSentOrQueuedEmails: 1ª chamada cria o arquivo com emails normalizados + history", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-append-"));
+  appendSentOrQueuedEmails(dir, "2606-07", "ramp-warm", ["B@X.com", "a@x.com"]);
+  const parsed = JSON.parse(readFileSync(sentOrQueuedFilePath(dir), "utf8")) as SentOrQueuedFile;
+  assert.equal(parsed.cycle, "2606-07");
+  assert.deepEqual(parsed.emails, ["a@x.com", "b@x.com"]); // normalizado + ordenado
+  assert.equal(parsed.history.length, 1);
+  assert.equal(parsed.history[0].group, "ramp-warm");
+  assert.equal(parsed.history[0].count, 2);
+  assert.ok(parsed.history[0].at); // timestamp presente
+});
+
+test("appendSentOrQueuedEmails: chamadas subsequentes ACUMULAM (união, nunca substituem) e registram nova entrada de history", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-accum-"));
+  appendSentOrQueuedEmails(dir, "2606-07", "ramp-warm", ["a@x.com"]);
+  appendSentOrQueuedEmails(dir, "2606-07", "engajados", ["b@x.com", "a@x.com"]); // "a" repetido, não duplica
+  const parsed = JSON.parse(readFileSync(sentOrQueuedFilePath(dir), "utf8")) as SentOrQueuedFile;
+  assert.deepEqual(parsed.emails, ["a@x.com", "b@x.com"]);
+  assert.equal(parsed.history.length, 2);
+  assert.deepEqual(
+    parsed.history.map((h) => [h.group, h.count]),
+    [["ramp-warm", 1], ["engajados", 2]],
+  );
+});
+
+test("appendSentOrQueuedEmails: cross-group — email selecionado por 'engajados' é excluído numa build subsequente de 'ramp-warm' (tracking CICLO-WIDE, não por-grupo)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-crossgroup-"));
+  appendSentOrQueuedEmails(dir, "2606-07", "engajados", ["shared@x.com"]);
+
+  const rampWarmCandidates: SegmentRow[] = [
+    row({ email: "shared@x.com", sends_count: 0, mv_bucket: "verified" }),
+    row({ email: "fresh@x.com", sends_count: 0, mv_bucket: "verified" }),
+  ];
+  const sentOrQueued = loadSentOrQueuedEmails(dir);
+  const universe = excludeSentOrQueued(rampWarmCandidates, sentOrQueued);
+  const { manifestEntry, csv } = buildSegmentArtifact(universe, "ramp-warm", 0);
+  assert.equal(manifestEntry.count, 1);
+  assert.deepEqual(emailsOf(csv), ["fresh@x.com"]); // "shared@x.com" já contava como usado por 'engajados'
+});
+
+test("REGRESSÃO (#3227): rodar 'ramp-warm' 3x no mesmo ciclo (incidente 260710, cycle 2606-07) produz ZERO sobreposição entre as 3 seleções", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-incident-"));
+  const cycle = "2606-07";
+
+  // Universo fixo de 7 candidatos elegíveis a 'ramp-warm' (send_eligible=1,
+  // sends_count=0, mv_bucket='verified') — mesma fila determinística
+  // (cohortSendRank) que o incidente real reportou re-selecionar sem o guard.
+  const universeAll: SegmentRow[] = Array.from({ length: 7 }, (_, i) =>
+    row({ email: `contato${i + 1}@x.com`, sends_count: 0, mv_bucket: "verified", tier: 1 }),
+  );
+
+  function runInvocation(budget: number): string[] {
+    const sentOrQueued = loadSentOrQueuedEmails(dir);
+    const universe = excludeSentOrQueued(universeAll, sentOrQueued);
+    const { manifestEntry, selected } = buildSegmentArtifact(universe, "ramp-warm", budget);
+    const emails = selected.map((r) => r.email);
+    appendSentOrQueuedEmails(dir, cycle, "ramp-warm", emails);
+    return emails.slice(0, manifestEntry.count);
+  }
+
+  // 3 envios sucessivos (proporção do incidente real: 3 waves consumindo o
+  // universo inteiro em vez de re-selecionar o topo da fila a cada vez).
+  const wave1 = runInvocation(3);
+  const wave2 = runInvocation(3);
+  const wave3 = runInvocation(3); // só sobram 1 candidato após wave1+wave2 consumirem 6
+
+  assert.equal(wave1.length, 3);
+  assert.equal(wave2.length, 3);
+  assert.equal(wave3.length, 1); // universo esgotado — não re-seleciona ninguém de wave1/wave2
+
+  const allSelected = [...wave1, ...wave2, ...wave3];
+  assert.equal(new Set(allSelected).size, allSelected.length, "zero sobreposição entre as 3 seleções");
+  assert.deepEqual([...new Set(allSelected)].sort(), universeAll.map((r) => r.email).sort()); // cobre o universo inteiro, sem duplicar
+
+  const tracked = JSON.parse(readFileSync(sentOrQueuedFilePath(dir), "utf8")) as SentOrQueuedFile;
+  assert.equal(tracked.emails.length, 7);
+  assert.equal(tracked.history.length, 3);
+});
+
+test("REGRESSÃO (#3227): --dry-run NÃO escreve sent-or-queued.json e não afeta builds reais subsequentes", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-soq-dryrun-"));
+  const cycle = "2606-07";
+  const universeAll: SegmentRow[] = Array.from({ length: 4 }, (_, i) =>
+    row({ email: `dry${i + 1}@x.com`, sends_count: 0, mv_bucket: "verified", tier: 1 }),
+  );
+
+  // Simula uma invocação --dry-run: lê (vazio) + filtra + monta, mas NÃO chama
+  // appendSentOrQueuedEmails (mesma responsabilidade de main() sob --dry-run).
+  const sentOrQueued = loadSentOrQueuedEmails(dir);
+  const universe = excludeSentOrQueued(universeAll, sentOrQueued);
+  const { selected } = buildSegmentArtifact(universe, "ramp-warm", 2);
+  assert.equal(selected.length, 2);
+  assert.equal(existsSync(sentOrQueuedFilePath(dir)), false, "dry-run não deve criar sent-or-queued.json");
+
+  // Um build REAL subsequente no mesmo diretório enxerga o universo completo
+  // (o dry-run anterior não consumiu ninguém).
+  const sentOrQueued2 = loadSentOrQueuedEmails(dir);
+  assert.equal(sentOrQueued2.size, 0);
+  const universe2 = excludeSentOrQueued(universeAll, sentOrQueued2);
+  const { selected: selected2 } = buildSegmentArtifact(universe2, "ramp-warm", 4);
+  assert.equal(selected2.length, 4); // todos os 4 — dry-run anterior não tirou ninguém da fila
+});
+
+test("main: --dry-run também não escreve sent-or-queued.json (integração)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-main-dryrun-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket) VALUES ('warm@x.com','Warm',1,0,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  captureLogs(() => {
+    main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run"]);
+  });
+
+  const segDir = clariceSegmentsDir("2606-07");
+  assert.equal(existsSync(sentOrQueuedFilePath(segDir)), false, "dry-run não deve escrever sent-or-queued.json");
 });

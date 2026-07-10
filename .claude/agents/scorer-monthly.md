@@ -1,7 +1,7 @@
 ---
 name: scorer-monthly
 description: Atribui scores 0-100 a cada destaque de `_internal/raw-destaques.json` usando os mesmos critérios do scorer diário. Roda entre o `collect-monthly.ts` e o `analyst-monthly`, adicionando o campo `score` a cada destaque para permitir ordenação objetiva das Outras Notícias.
-model: claude-opus-4-8
+model: claude-sonnet-5
 tools: Read, Write, Bash
 ---
 
