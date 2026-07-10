@@ -49,6 +49,8 @@
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
  *   {group}-manifest.json    ([{ key, file, desc, count }], mesmo shape de waves-manifest.json)
+ *   sent-or-queued.json      (#3227 — ÚNICO por ciclo, não por grupo; ver guard abaixo. Não
+ *                             escrito em --dry-run.)
  *
  * #2916: `clarice-import-waves.ts` (que só lia `waves/waves-manifest.json` da
  * rampa) foi generalizado com a flag `--group {group}` — quando informada, lê
@@ -58,20 +60,32 @@
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2606-07 --group engajados --label "Retenção Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2606-07 --group engajados --label "Retenção Jun/2026" --execute  # cria + importa
  *
- * Guard anti-duplo-envio POR CICLO (#2883): o mecanismo existente
- * (`collectPriorCycleEmails`/`excludeAlreadySentEmails` em
+ * Guard anti-duplo-envio POR CICLO (#2883, generalizado em #3227): o
+ * mecanismo original (`collectPriorCycleEmails`/`excludeAlreadySentEmails` em
  * `clarice-build-edition-sends.ts`) é acoplado à convenção de arquivo da
  * RAMPA (`d{NN}-{date}.csv` dentro de `{ciclo}/sends/`) e ao cursor posicional
  * do plano de blocos — não se aplica limpo aqui (diretório diferente,
- * convenção de nome diferente, sem plano de blocos). NÃO foi replicado neste
- * script (fora de escopo da #2885, ver PR) — segue como FOLLOW-UP: grupos por
- * objetivo hoje podem se sobrepor entre invocações do mesmo ciclo (ex: rodar
- * `engajados` duas vezes no mesmo ciclo não exclui quem já foi escrito na
- * 1ª). Generalizar o guard (ex: um `sendsDir`/glob configurável) fica pra uma
- * issue própria quando o editor operar múltiplos grupos no mesmo ciclo.
+ * convenção de nome diferente, sem plano de blocos). Este script tem o seu
+ * PRÓPRIO guard, equivalente em espírito mas de mecanismo mais simples:
+ * `sent-or-queued.json`, um arquivo ÚNICO por ciclo (não por grupo — ver
+ * `sentOrQueuedFilePath`) em `{ciclo}/segments/`, que acumula os emails
+ * SELECIONADOS por CADA invocação `--group` bem-sucedida (independente de já
+ * ter sido importado no Brevo). Toda invocação, automaticamente (sem flag —
+ * #3227, decisão do editor: "sem flag manual, mais seguro contra
+ * esquecimento"):
+ *   1. LÊ o arquivo (se existir) e exclui do universo quem já está lá, ANTES
+ *      de `buildSegmentArtifact` (`loadSentOrQueuedEmails` + `excludeSentOrQueued`).
+ *   2. Após escrita bem-sucedida (não-dry-run), ACRESCENTA os emails
+ *      recém-selecionados (`appendSentOrQueuedEmails`).
+ * CICLO-WIDE por design (não por-grupo): rodar `engajados` e depois
+ * `ramp-warm` no mesmo ciclo também deduplica entre os dois — um contato
+ * pode aparecer em ambos os predicados (ex: sai de `ramp-warm` após o 1º
+ * envio) e a mesma pessoa não deveria ser re-selecionada só porque o GRUPO
+ * mudou. `--dry-run` só LÊ (pra refletir no preview), nunca ESCREVE (mesma
+ * convenção do resto do script: dry-run não muta estado).
  */
 
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
@@ -130,6 +144,111 @@ export function buildSegmentArtifact(
   const manifestEntry: SegmentManifestEntry = { key: group, file, desc: def.label, count: selected.length };
 
   return { csv, manifestEntry, selected };
+}
+
+// ---------------------------------------------------------------------------
+// Guard anti-duplo-envio POR CICLO (#3227) — sent-or-queued.json
+// ---------------------------------------------------------------------------
+//
+// Arquivo ÚNICO por ciclo (irmão dos `{group}.csv`/`{group}-manifest.json`,
+// mesmo diretório `clariceSegmentsDir(cycle)`), CICLO-WIDE: qualquer grupo
+// nomeado que já selecionou um email neste ciclo aparece aqui, não importa
+// QUAL grupo — ver docstring do topo do arquivo pro raciocínio completo.
+
+export interface SentOrQueuedHistoryEntry {
+  group: NamedGroupKey;
+  /** Quantidade de emails NOVOS adicionados por esta entrada (não cumulativo). */
+  count: number;
+  /** ISO timestamp da invocação que gravou esta entrada. */
+  at: string;
+}
+
+export interface SentOrQueuedFile {
+  cycle: string;
+  /** Emails normalizados (trim + lowercase), únicos, ordem alfabética (determinístico). */
+  emails: string[];
+  /** Uma entrada por invocação bem-sucedida (não-dry-run) que gravou artefato. */
+  history: SentOrQueuedHistoryEntry[];
+}
+
+/** Caminho do arquivo de tracking cycle-wide (`{ciclo}/segments/sent-or-queued.json`). */
+export function sentOrQueuedFilePath(segmentsDir: string): string {
+  return resolve(segmentsDir, "sent-or-queued.json");
+}
+
+/**
+ * Lê `sent-or-queued.json` de `segmentsDir` e devolve o Set de emails já
+ * rastreados (normalizados trim+lowercase, mesmo padrão de
+ * `collectPriorCycleEmails`/`excludeAlreadySentEmails` em
+ * `clarice-build-edition-sends.ts`). Tolerante: arquivo ausente, JSON
+ * corrompido, ou shape inesperado (`emails` não é array) → Set vazio (nunca
+ * lança) — dado ruim aqui vira "nada rastreado ainda", não derruba o build.
+ * Só LEITURA — seguro chamar mesmo em `--dry-run` (não cria o diretório nem
+ * o arquivo).
+ */
+export function loadSentOrQueuedEmails(segmentsDir: string): Set<string> {
+  const file = sentOrQueuedFilePath(segmentsDir);
+  if (!existsSync(file)) return new Set();
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
+    if (!Array.isArray(parsed.emails)) return new Set();
+    return new Set(parsed.emails.map((e) => String(e).trim().toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Filtra `rows` removendo quem já está em `sentOrQueued` (comparação
+ * normalizada trim+lowercase). Preserva a ordem relativa dos remanescentes.
+ * Pura — mesmo padrão de `excludeAlreadySentEmails`.
+ */
+export function excludeSentOrQueued<T extends { email: string }>(
+  rows: T[],
+  sentOrQueued: ReadonlySet<string>,
+): T[] {
+  if (sentOrQueued.size === 0) return rows;
+  return rows.filter((r) => !sentOrQueued.has(r.email.trim().toLowerCase()));
+}
+
+/**
+ * Acrescenta `newEmails` ao `sent-or-queued.json` de `segmentsDir` (união com
+ * o que já existe — nunca remove), registra uma entrada de `history`, e
+ * escreve de volta. Cria `segmentsDir` se faltar (mesmo padrão de
+ * `ensureDir` usado pelo resto do script). Chamar SOMENTE após escrita
+ * bem-sucedida (não-dry-run) — `main()` é responsável por não chamar esta
+ * função em `--dry-run`.
+ */
+export function appendSentOrQueuedEmails(
+  segmentsDir: string,
+  cycle: string,
+  group: NamedGroupKey,
+  newEmails: string[],
+): void {
+  ensureDir(segmentsDir);
+  const file = sentOrQueuedFilePath(segmentsDir);
+  let existingEmails: string[] = [];
+  let history: SentOrQueuedHistoryEntry[] = [];
+  if (existsSync(file)) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SentOrQueuedFile>;
+      if (Array.isArray(parsed.emails)) existingEmails = parsed.emails.map((e) => String(e));
+      if (Array.isArray(parsed.history)) history = parsed.history;
+    } catch {
+      // JSON corrompido — recomeça do zero em vez de travar o build (mesma
+      // postura tolerante de loadSentOrQueuedEmails).
+    }
+  }
+  const emailSet = new Set(existingEmails.map((e) => e.trim().toLowerCase()));
+  const normalizedNew = newEmails.map((e) => e.trim().toLowerCase());
+  for (const e of normalizedNew) emailSet.add(e);
+
+  const merged: SentOrQueuedFile = {
+    cycle,
+    emails: [...emailSet].sort(),
+    history: [...history, { group, count: normalizedNew.length, at: new Date().toISOString() }],
+  };
+  writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
 }
 
 export function main(argv: string[] = process.argv.slice(2)): void {
@@ -192,7 +311,21 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
 
-  const { csv, manifestEntry } = buildSegmentArtifact(rows, group, budget, minScore);
+  // #3227: guard anti-duplo-envio POR CICLO — exclui do universo quem já foi
+  // SELECIONADO por qualquer grupo nomeado (não só este `group`) neste mesmo
+  // ciclo, ANTES do predicado/sort/budget de buildSegmentArtifact. Automático
+  // (sem flag), inclusive em --dry-run (só LEITURA aqui — nunca escreve).
+  const segDir = clariceSegmentsDir(cycle);
+  const sentOrQueued = loadSentOrQueuedEmails(segDir);
+  const universe = excludeSentOrQueued(rows, sentOrQueued);
+  const alreadyTracked = rows.length - universe.length;
+  if (alreadyTracked > 0) {
+    console.error(
+      `🔒 dedup por ciclo (#3227): ${alreadyTracked} contato(s) já selecionado(s) por outra invocação de grupo nomeado neste ciclo — excluído(s) do universo.`,
+    );
+  }
+
+  const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore);
 
   const summary = {
     cycle,
@@ -202,18 +335,19 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     budget: budget || undefined,
     min_score: minScore || undefined,
     universe_total: rows.length,
+    already_sent_or_queued: alreadyTracked || undefined,
     selected: manifestEntry.count,
   };
 
   if (manifestEntry.count === 0) {
     console.error(
-      `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store. Nada escrito.`,
+      `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store, ou se todo o universo elegível já foi selecionado por outra invocação deste ciclo (${alreadyTracked} excluído(s) via sent-or-queued.json). Nada escrito.`,
     );
     process.exit(1);
   }
 
   if (!dryRun) {
-    const dir = clariceSegmentsDir(cycle);
+    const dir = segDir;
     ensureDir(dir);
     writeFileSync(resolve(dir, manifestEntry.file), csv, "utf8");
     writeFileSync(
@@ -221,6 +355,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
       JSON.stringify([manifestEntry], null, 2),
       "utf8",
     );
+    appendSentOrQueuedEmails(dir, cycle, group, selected.map((r) => r.email));
     console.error(`✅ ${manifestEntry.count} contato(s) do grupo '${group}' em ${resolve(dir, manifestEntry.file)}`);
   } else {
     console.error(`ℹ️  dry-run — nada escrito. ${manifestEntry.count} contato(s) no grupo '${group}'.`);
