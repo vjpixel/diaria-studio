@@ -76,7 +76,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
      ---
      ```
    - Se não encontrar a linha de crédito em nenhuma fonte, omitir a seção e incluir aviso em `warnings`. Se encontrar a linha mas faltar `eia_answer`, emitir só o crédito e adicionar aviso `eia_gabarito_missing`.
-3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após RADAR (#1569) e antes de SORTEIO/PARA ENCERRAR, incluir bloco:
+3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após RADAR (#1569) e antes de SORTEIO/PARA ENCERRAR, incluir bloco (**nota #3219**: SORTEIO e PARA ENCERRAR em si você NUNCA escreve — são blocos fixos injetados por `scripts/stitch-newsletter.ts` após o merge dos destaques, a partir de `context/snippets/encerramento-social-apoio.md`; a referência aqui é só posicional, pra você saber onde ERRO INTENCIONAL entra na ordem final):
 
    ```
    ---

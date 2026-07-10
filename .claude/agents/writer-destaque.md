@@ -121,7 +121,7 @@ Retorne JSON:
 
 - Pré: cobertura line + extract destaques metadata
 - Paralelo: 3× dispatch writer-destaque
-- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL (placeholder do writer; `render-erro-intencional.ts` substitui pós-Clarice com reveal da edição anterior, composto a partir da declaração de primeira pessoa que o EDITOR preencheu naquela edição — o writer nunca escreve o reveal) + ASSINE
+- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL (placeholder do writer; `render-erro-intencional.ts` substitui pós-Clarice com reveal da edição anterior, composto a partir da declaração de primeira pessoa que o EDITOR preencheu naquela edição — o writer nunca escreve o reveal) + SORTEIO + PARA ENCERRAR (blocos fixos — este último inclui, desde #3219, o parágrafo de apoio via Apoia.se + convite social, carregados de `context/snippets/encerramento-social-apoio.md` por `scripts/stitch-newsletter.ts`; nenhum writer-destaque escreve esse texto)
 
 Trade-off: voice consistency pode sofrer (cada agente vê só seu destaque + peer_titles). Lint pós-stitch valida overlap; se detectar, o coordenador re-dispatcha o destaque com peer_titles atualizado.
 

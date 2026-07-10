@@ -32,6 +32,10 @@ import {
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import { DIARIA_FACEBOOK_PAGE_URL, DIARIA_LINKEDIN_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695/#2790 fonte única
+import {
+  renderEncerramentoSocialApoio,
+  ENCERRAMENTO_OPENING_DAILY,
+} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal
 
 interface ArticleLike {
   url?: string;
@@ -61,14 +65,16 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
 **Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da Diar.ia, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.`,
 
-  para_encerrar: `**🙋🏼‍♀️ PARA ENCERRAR**
+  // #3219: só o cabeçalho + parágrafo de ferramentas + pills "Acesse:" —
+  // fixos, sem parametrização. O parágrafo de apoio (Apoia.se) + convite
+  // social (LinkedIn/Facebook) vêm de `buildParaEncerrar()` abaixo, carregados
+  // do snippet compartilhado com o mensal.
+  para_encerrar_intro: `**🙋🏼‍♀️ PARA ENCERRAR**
 
 Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
 - [Cursos de IA](https://cursos.diaria.workers.dev)
-- [Livros sobre IA](https://livros.diaria.workers.dev)
-
-Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`,
+- [Livros sobre IA](https://livros.diaria.workers.dev)`,
 
   erro_intencional_placeholder: `**ERRO INTENCIONAL**
 
@@ -76,6 +82,25 @@ Agora que chegou ao final da edição, que tal interagir em uma publicação no 
 
 Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal.`,
 };
+
+/**
+ * #3219: monta o bloco PARA ENCERRAR completo — cabeçalho + parágrafo de
+ * ferramentas + pills "Acesse:" (fixos, `FIXED_BLOCKS.para_encerrar_intro`) +
+ * parágrafo de apoio (Apoia.se) + convite social (LinkedIn/Facebook), estes
+ * dois últimos carregados de `context/snippets/encerramento-social-apoio.md`
+ * via `renderEncerramentoSocialApoio` — fonte única compartilhada com o
+ * mensal (mesmo texto aprovado pelo editor, ver comentário do snippet).
+ *
+ * Graceful: se o snippet não existir/ficar vazio, cai no fallback hardcoded
+ * (só o convite social, sem o parágrafo de apoio) — a edição não trava por
+ * causa de um arquivo de conteúdo ausente.
+ */
+export function buildParaEncerrar(): string {
+  const social = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+  const tail = social ??
+    `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
+  return `${FIXED_BLOCKS.para_encerrar_intro}\n\n${tail}`;
+}
 
 /**
  * #2978: carrega um bloco de divulgação de `context/snippets/{file}`,
@@ -455,7 +480,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push("");
   parts.push("---");
   parts.push("");
-  parts.push(FIXED_BLOCKS.para_encerrar);
+  parts.push(buildParaEncerrar());
   parts.push("");
 
   return parts.join("\n");

@@ -108,10 +108,14 @@ Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pes
 - [Melhores cursos grátis de IA](https://cursos.diaria.workers.dev)
 - [Curadoria de livros sobre IA](https://livros.diaria.workers.dev)
 
-Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) ou no [Facebook](https://www.facebook.com/diar.ia.br)? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!
+Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganha recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
+
+Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) ou no [Facebook](https://www.facebook.com/diar.ia.br)?
 ```
 
 **Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar no Drive entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
+
+**Parágrafo de apoio + convite social em PARA ENCERRAR (#3219):** os dois últimos parágrafos do bloco (apoio via Apoia.se + convite pra interagir no LinkedIn/Facebook) são injetados por `scripts/stitch-newsletter.ts` a partir do snippet canônico `context/snippets/encerramento-social-apoio.md` — a mesma fonte usada pelo `writer-monthly` na edição mensal (`PARA ENCERRAR` lá também). Editar o texto/links ali propaga pros dois formatos; não editar diretamente em `stitch-newsletter.ts` nem duplicar o texto em outro lugar.
 
 **Seção ERRO INTENCIONAL (#911 / #1079):** cada edição contém 1 erro proposital. Esta seção fecha o loop entre edições com duas frases narrativas curtas — sem convite ao concurso, sem "Responda este e-mail...". É confissão direta:
 
