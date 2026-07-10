@@ -19,6 +19,11 @@
  *  13. (#3224) findSocialDestaqueRanges / applySocialTextSubstitution — helpers puros
  *  14. (#3224) sentinel pré-existente (pós-humanizador) é regravado com bypass_reason e
  *      passa a bater com o novo hash de 03-social.md
+ *  15. (#3274) `## post_pixel` é aberto como range-alvo quando destaque=1 — claim
+ *      DIVERGENT sobre D1 corrige tanto `## d1` quanto `## post_pixel`
+ *  16. (#3275) applyTextSubstitution (scoped) substitui TODAS as ocorrências dentro
+ *      do range — inclusive quando a mesma claim aparece no corpo E em
+ *      `### comment_pixel`/`### comment_diaria` aninhados
  */
 
 import { describe, it } from "node:test";
@@ -215,6 +220,58 @@ describe("applyTextSubstitution (#2598)", () => {
     assert.equal(result.changed, true);
     // Apenas o primeiro deve ser substituído
     assert.equal(result.content, "GPT-5.4 vs GPT-4o");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão (self-review #3292): newText com sequências '$' não pode ser
+// interpretado como replacement-pattern do replaceAll (GetSubstitution)
+// ---------------------------------------------------------------------------
+
+describe("regressao (#3292 self-review): applyTextSubstitution (scoped) trata newText como literal, não replacement-pattern", () => {
+  it("newText contendo '$&' não reinsere o oldText casado (GetSubstitution do replaceAll)", () => {
+    const content = "## d1\n\nO modelo GPT-4o custou caro.\n\n## d2\n\nOutro destaque.";
+    const scope = { start: 0, end: content.indexOf("## d2") };
+    const result = applyTextSubstitution(content, "GPT-4o", "GPT-5.4, sucessor de $&", scope);
+    assert.equal(result.changed, true);
+    // Literal: '$&' deve permanecer como texto puro, NUNCA expandir pra "GPT-4o"
+    // (que reinseriria a própria claim errada que a correção deveria remover).
+    assert.ok(
+      result.content.includes("GPT-5.4, sucessor de $&"),
+      "newText deve aparecer literal, incluindo o '$&' puro",
+    );
+    assert.ok(
+      !/sucessor de GPT-4o/.test(result.content),
+      "'$&' NUNCA deve expandir para o texto casado (oldText)",
+    );
+  });
+
+  it("newText contendo '$$' não colapsa para um único '$' (GetSubstitution)", () => {
+    const content = "## d1\n\nCusto de GPT-4o foi alto.\n\n## d2\n\nOutro destaque.";
+    const scope = { start: 0, end: content.indexOf("## d2") };
+    const result = applyTextSubstitution(content, "GPT-4o", "R$$ 24,99", scope);
+    assert.equal(result.changed, true);
+    assert.ok(result.content.includes("R$$ 24,99"), "'$$' deve permanecer literal, não colapsar para 'R$'");
+  });
+
+  it("newText contendo \"$'\" ou '$`' não emenda trechos arbitrários do documento", () => {
+    const content = "PREFIXO_UNICO ## d1\n\nGPT-4o é o assunto. SUFIXO_UNICO";
+    const scope = { start: content.indexOf("## d1"), end: content.length };
+    const result = applyTextSubstitution(content, "GPT-4o", "GPT-5.4 ($` e $')", scope);
+    assert.equal(result.changed, true);
+    assert.ok(
+      result.content.includes("GPT-5.4 ($` e $')"),
+      "'$`'/\"$'\" devem permanecer literais",
+    );
+    assert.ok(
+      !result.content.includes("PREFIXO_UNICOPREFIXO_UNICO") && !result.content.includes("SUFIXO_UNICOSUFIXO_UNICO"),
+      "nenhum trecho do documento deve ser duplicado/emendado via '$`' ou \"$'\"",
+    );
+  });
+
+  it("comportamento legado sem scope (indexOf) permanece imune — sempre foi concatenação literal", () => {
+    const result = applyTextSubstitution("O modelo GPT-4o é rápido.", "GPT-4o", "GPT-5.4 ($&)");
+    assert.equal(result.content, "O modelo GPT-5.4 ($&) é rápido.");
   });
 });
 
@@ -642,7 +699,7 @@ describe("findSocialDestaqueRanges (#3224)", () => {
     assert.ok(!block.includes("Outro texto"), "não deve engolir o próximo header ## d2");
   });
 
-  it("encontra 2 ranges quando o destaque aparece em LinkedIn E Facebook", () => {
+  it("encontra 3 ranges quando o destaque=1 aparece em LinkedIn E Facebook (## d1 LinkedIn + ## post_pixel + ## d1 Facebook, #3274)", () => {
     const content = [
       "# LinkedIn",
       "",
@@ -661,12 +718,17 @@ describe("findSocialDestaqueRanges (#3224)", () => {
       "GPT-4o no Facebook.",
     ].join("\n");
     const ranges = findSocialDestaqueRanges(content, 1);
-    assert.equal(ranges.length, 2, "deve achar o ## d1 do LinkedIn E do Facebook");
+    // #3274: post_pixel é seção IRMÃ de ## d1 (fecha o range de d1, como antes),
+    // mas também é aberta como range-alvo próprio quando destaque=1 — daí 3
+    // ranges, não 2 (## d1 LinkedIn, ## post_pixel, ## d1 Facebook).
+    assert.equal(ranges.length, 3, "deve achar o ## d1 do LinkedIn, o ## post_pixel E o ## d1 do Facebook");
     const block0 = content.slice(ranges[0].start, ranges[0].end);
     const block1 = content.slice(ranges[1].start, ranges[1].end);
+    const block2 = content.slice(ranges[2].start, ranges[2].end);
     assert.ok(block0.includes("GPT-4o no LinkedIn"));
-    assert.ok(!block0.includes("post_pixel") && !block0.includes("Post pessoal"), "range do d1 não deve incluir post_pixel");
-    assert.ok(block1.includes("GPT-4o no Facebook"));
+    assert.ok(!block0.includes("post_pixel") && !block0.includes("Post pessoal"), "range do d1 continua não incluindo post_pixel (scoping preservado)");
+    assert.ok(block1.includes("## post_pixel") && block1.includes("Post pessoal sem GPT-4o aqui"), "post_pixel agora é range-alvo próprio");
+    assert.ok(block2.includes("GPT-4o no Facebook"));
   });
 
   it("### comment_diaria / ### comment_pixel (3 hashes) ficam DENTRO do bloco — não fecham", () => {
@@ -726,6 +788,146 @@ describe("applySocialTextSubstitution (#3224)", () => {
     assert.equal(result.modifiedRanges, 1);
     assert.ok(result.content.includes("Protegido: GPT-4o."), "d1 não deve ser tocado ao corrigir d2");
     assert.ok(result.content.includes("GPT-5.4 aqui"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão #3274: `## post_pixel` nunca era alvo de correção
+// ---------------------------------------------------------------------------
+
+describe("regressao #3274: findSocialDestaqueRanges abre ## post_pixel para destaque=1", () => {
+  it("abre um range próprio para ## post_pixel quando destaque=1", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no main.",
+      "",
+      "## post_pixel",
+      "",
+      "<!-- destaque: d1 -->",
+      "",
+      "GPT-4o no post pessoal também.",
+    ].join("\n");
+    const ranges = findSocialDestaqueRanges(content, 1);
+    // Antes do fix: 1 range (só ## d1) — post_pixel fechava o range de d1 mas
+    // nunca era aberto como alvo. Depois: 2 ranges (## d1 + ## post_pixel).
+    assert.equal(ranges.length, 2, "## post_pixel deve virar um 2º range-alvo para destaque=1");
+    const block0 = content.slice(ranges[0].start, ranges[0].end);
+    const block1 = content.slice(ranges[1].start, ranges[1].end);
+    assert.ok(block0.includes("GPT-4o no main"));
+    assert.ok(!block0.includes("post_pixel"), "range de ## d1 continua não incluindo post_pixel");
+    assert.ok(block1.includes("## post_pixel"));
+    assert.ok(block1.includes("GPT-4o no post pessoal também"));
+  });
+
+  it("NÃO abre ## post_pixel como alvo para destaque=2 ou 3 (post_pixel é sempre D1)", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d2",
+      "",
+      "Texto do d2.",
+      "",
+      "## post_pixel",
+      "",
+      "<!-- destaque: d1 -->",
+      "",
+      "Texto do post pessoal (sempre sobre D1).",
+    ].join("\n");
+    const ranges = findSocialDestaqueRanges(content, 2);
+    assert.equal(ranges.length, 1, "post_pixel não é alvo de correção pra destaques diferentes de 1");
+    const block = content.slice(ranges[0].start, ranges[0].end);
+    assert.ok(!block.includes("post_pixel"));
+  });
+
+  it("applySocialTextSubstitution corrige a claim tanto em ## d1 quanto em ## post_pixel", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "GPT-4o superou o mercado.",
+      "",
+      "## post_pixel",
+      "",
+      "<!-- destaque: d1 -->",
+      "",
+      "O que me chamou atenção foi o GPT-4o superando expectativas.",
+    ].join("\n");
+    const result = applySocialTextSubstitution(content, 1, "GPT-4o", "GPT-5.4");
+    assert.equal(result.changed, true);
+    assert.equal(result.modifiedRanges, 2, "deve corrigir tanto ## d1 quanto ## post_pixel");
+    assert.ok(!result.content.includes("GPT-4o"), "nenhuma ocorrência de GPT-4o deve sobrar");
+    assert.equal((result.content.match(/GPT-5\.4/g) ?? []).length, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão #3275: applyTextSubstitution (scoped) só corrigia a 1ª ocorrência
+// ---------------------------------------------------------------------------
+
+describe("regressao #3275: applyTextSubstitution (scoped) substitui TODAS as ocorrências", () => {
+  it("corrige a claim tanto no corpo principal quanto em ### comment_pixel aninhado", () => {
+    const content = [
+      "## d1",
+      "",
+      "GPT-4o superou o mercado no corpo principal.",
+      "",
+      "### comment_pixel",
+      "",
+      "Reforçando: o GPT-4o também aparece aqui, com outro framing.",
+      "",
+      "## d2",
+      "",
+      "Outro destaque, sem relação.",
+    ].join("\n");
+    const scope = { start: 0, end: content.indexOf("## d2") };
+    const result = applyTextSubstitution(content, "GPT-4o", "GPT-5.4", scope);
+    assert.equal(result.changed, true);
+    assert.ok(!result.content.slice(0, result.content.indexOf("## d2")).includes("GPT-4o"),
+      "nenhuma ocorrência de GPT-4o deve sobrar dentro do range de d1 (corpo + comment_pixel)");
+    assert.equal((result.content.match(/GPT-5\.4/g) ?? []).length, 2, "as 2 ocorrências devem ter sido corrigidas");
+    assert.ok(result.content.includes("Outro destaque, sem relação."), "range de d2 não deve ser tocado");
+  });
+
+  it("preserva o comportamento legado (só 1ª ocorrência) quando scope é omitido", () => {
+    // Cobertura de não-regressão do comportamento já testado em
+    // "applyTextSubstitution (#2598)" > "substitui apenas a primeira ocorrência" —
+    // reafirma aqui explicitamente que o fix do #3275 é scoped-only.
+    const result = applyTextSubstitution("GPT-4o vs GPT-4o", "GPT-4o", "GPT-5.4");
+    assert.equal(result.content, "GPT-5.4 vs GPT-4o");
+  });
+
+  it("applySocialTextSubstitution corrige múltiplas ocorrências dentro de UM range E ajusta corretamente o offset do range seguinte (LinkedIn + Facebook)", () => {
+    const content = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no corpo.",
+      "",
+      "### comment_pixel",
+      "",
+      "GPT-4o de novo, framing diferente.",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "GPT-4o no Facebook, sem duplicata aqui.",
+    ].join("\n");
+    const result = applySocialTextSubstitution(content, 1, "GPT-4o", "modelo mais recente");
+    assert.equal(result.changed, true);
+    assert.equal(result.modifiedRanges, 2, "LinkedIn (2 ocorrências) + Facebook (1 ocorrência) — 2 ranges tocados");
+    assert.ok(!result.content.includes("GPT-4o"), "nenhuma ocorrência deve sobrar em nenhum canal");
+    assert.equal(
+      (result.content.match(/modelo mais recente/g) ?? []).length,
+      3,
+      "2 no range do LinkedIn (corpo + comment_pixel) + 1 no Facebook",
+    );
+    assert.ok(result.content.includes("# Facebook"), "boundary do Facebook deve permanecer intacto (offset ajustado corretamente)");
   });
 });
 

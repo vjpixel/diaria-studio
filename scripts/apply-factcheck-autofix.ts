@@ -208,8 +208,30 @@ export function findDestaqueBodyRange(
  * LIMITADA ao range [scope.start, scope.end).
  * Retorna { changed: boolean; content: string }.
  *
- * Quando scope é omitido, opera no conteúdo inteiro (comportamento legado —
- * manter para uso em testes unitários de applyTextSubstitution).
+ * Quando scope é omitido, opera no conteúdo inteiro e substitui SÓ a primeira
+ * ocorrência (comportamento legado — mantido para uso em testes unitários de
+ * applyTextSubstitution, ver "substitui apenas a primeira ocorrência
+ * (conservador)").
+ *
+ * Quando scope é dado, substitui TODAS as ocorrências dentro do range (#3275).
+ * Um range já pode incluir subseções aninhadas de 3 hashes (`### comment_pixel`,
+ * `### comment_diaria`) que não abrem range próprio — a mesma claim pode
+ * legitimamente aparecer 2x dentro do range (corpo + comment_pixel, ex: mesmo
+ * fato reaparecendo com framing distinto). Um `indexOf` de 1 ocorrência só
+ * corrigia a 1ª, deixando a 2ª errada mesmo com `entry.status = "applied"`.
+ *
+ * `newText` é passado a `replaceAll` como um REPLACER FUNCTION (`() => newText`),
+ * nunca como string literal — achado em self-review (#3292, 3 finder agents
+ * convergentes): `String.prototype.replaceAll(oldText, newText)` interpreta
+ * `$&`, `` $` ``, `$'`, `$$` dentro de `newText` como padrões de substituição
+ * (GetSubstitution do spec ECMA-262), MESMO com `oldText` sendo string pura
+ * (não regex) — só o conteúdo do argumento de replacement importa. `newText`
+ * é `suggested_fix`, texto livre gerado por LLM (fact-checker) sem qualquer
+ * escaping — um `$&` nele reinseriria a própria claim errada que a correção
+ * deveria remover; `` $` ``/`$'` emendariam trechos arbitrários do documento.
+ * Um replacer FUNCTION ignora esses padrões (só interpretados quando o
+ * replacement é string), preservando `newText` literal — mesma garantia que
+ * o `slice`-based splicing legado (branch sem `scope` abaixo) sempre teve.
  */
 export function applyTextSubstitution(
   content: string,
@@ -219,9 +241,8 @@ export function applyTextSubstitution(
 ): { changed: boolean; content: string } {
   if (scope) {
     const region = content.slice(scope.start, scope.end);
-    const idx = region.indexOf(oldText);
-    if (idx === -1) return { changed: false, content };
-    const newRegion = region.slice(0, idx) + newText + region.slice(idx + oldText.length);
+    if (!oldText || !region.includes(oldText)) return { changed: false, content };
+    const newRegion = region.replaceAll(oldText, () => newText);
     return { changed: true, content: content.slice(0, scope.start) + newRegion + content.slice(scope.end) };
   }
   const idx = content.indexOf(oldText);
@@ -242,6 +263,13 @@ export function applyTextSubstitution(
  * 3 hashes (`### comment_diaria`, `### comment_pixel`) ficam DENTRO do bloco —
  * não fecham (mesmo padrão de `parseSocialByDestaque` em lint-social-numbers.ts).
  * Retorna `[]` se o destaque não aparece no arquivo.
+ *
+ * `## post_pixel` (#3274) é seção IRMÃ de `## d1`/`## d2`/`## d3` — fecha um
+ * range aberto, como qualquer header de 1-2 hashes, mas também é aberta como
+ * range-alvo quando `destaque === 1`: é o post pessoal standalone do Pixel,
+ * **sempre e só sobre D1** (`### 3d` de `social-linkedin.md` — "Só pra D1",
+ * `<!-- destaque: d1 -->` no template). Sem isso, uma claim DIVERGENT sobre
+ * D1 era corrigida em `## d1` mas persistia intocada em `## post_pixel`.
  */
 export function findSocialDestaqueRanges(
   content: string,
@@ -268,7 +296,11 @@ export function findSocialDestaqueRanges(
     }
 
     const dHeader = line.match(/^##\s+d(\d)\b/i);
-    if (dHeader && parseInt(dHeader[1], 10) === destaque) {
+    const isPostPixel = /^##\s+post_pixel\b/i.test(line);
+    const opensTarget =
+      (dHeader !== null && parseInt(dHeader[1], 10) === destaque) ||
+      (isPostPixel && destaque === 1);
+    if (opensTarget) {
       ranges.push({ start: lineOffsets[i], end: content.length });
       openIdx = ranges.length - 1;
     }
@@ -278,11 +310,16 @@ export function findSocialDestaqueRanges(
 
 /**
  * (#3224) Aplica substituição de `oldText` → `newText` em TODOS os ranges
- * `## dN` do destaque em `03-social.md` (até 2: LinkedIn + Facebook) — no
- * máximo 1 substituição por range (primeira ocorrência), mesma semântica
- * conservadora de `applyTextSubstitution`. Compensa o offset dos ranges
- * seguintes à medida que o conteúdo muda (delta de comprimento oldText→newText),
- * já que os ranges são calculados uma vez sobre o conteúdo original.
+ * `## dN` (+ `## post_pixel` quando `destaque === 1`, #3274) do destaque em
+ * `03-social.md` (até 2 ranges: LinkedIn + Facebook) — dentro de CADA range,
+ * TODAS as ocorrências são substituídas (#3275, via `applyTextSubstitution`
+ * scoped). Compensa o offset dos ranges seguintes à medida que o conteúdo
+ * muda, já que os ranges são calculados uma vez sobre o conteúdo original.
+ * O delta é medido pela variação REAL de comprimento após cada range
+ * (`result.content.length - current.length` antes da chamada), não por
+ * `newText.length - oldText.length` fixo — um range pode conter 2+
+ * ocorrências (corpo + `### comment_pixel` aninhado), e o delta fixo
+ * subestimaria o deslocamento dos ranges seguintes nesse caso.
  */
 export function applySocialTextSubstitution(
   content: string,
@@ -296,10 +333,11 @@ export function applySocialTextSubstitution(
   let modifiedRanges = 0;
   for (const range of ranges) {
     const adjusted = { start: range.start + delta, end: range.end + delta };
+    const lengthBefore = current.length;
     const result = applyTextSubstitution(current, oldText, newText, adjusted);
     if (result.changed) {
+      delta += result.content.length - lengthBefore;
       current = result.content;
-      delta += newText.length - oldText.length;
       modifiedRanges++;
     }
   }
