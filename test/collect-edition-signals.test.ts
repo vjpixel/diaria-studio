@@ -408,6 +408,36 @@ describe("signalsFromPlaceholderGuardWarnings (#3277)", () => {
     assert.equal(signalsFromPlaceholderGuardWarnings(lines, "260710").length, 1);
   });
 
+  // #3277 code-review (PR #3310): severidade escala com o número de
+  // placeholders DISTINTOS na edição (não com contagem de eventos, que é
+  // quase sempre 1 na prática — resolve-edition-url.ts valida 03-social.md
+  // inteiro numa passada só). Múltiplos placeholders distintos é sinal mais
+  // forte de bug sistêmico do que uma menção ambígua isolada.
+  it("1 placeholder distinto → medium; 2+ placeholders distintos → high (severidade escala com blast radius)", () => {
+    const oneLine = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{system_prompt}"] } }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(oneLine, "260710")[0].severity, "medium");
+
+    const twoDistinctInSameEvent = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{system_prompt}", "{campo_novo}"] } }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(twoDistinctInSameEvent, "260710")[0].severity, "high");
+
+    const twoDistinctAcrossEvents = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{b}"] } }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(twoDistinctAcrossEvents, "260710")[0].severity, "high");
+
+    // Mesmo placeholder repetido em 2 eventos → ainda 1 placeholder distinto → medium.
+    const samePlaceholderTwice = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(samePlaceholderTwice, "260710")[0].severity, "medium");
+  });
+
   it("sem eventos → retorna vazio", () => {
     assert.deepEqual(signalsFromPlaceholderGuardWarnings([], "260710"), []);
   });

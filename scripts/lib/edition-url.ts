@@ -31,6 +31,18 @@ import { seoSlug } from "./slug.ts";
 export const BEEHIIV_BASE_URL = "https://diar.ia.br";
 
 /**
+ * Prefixo da mensagem `logEvent` do guard anti-placeholder não-fatal (#3277).
+ * Constante compartilhada entre `resolve-edition-url.ts` (que a emite, via
+ * `warnUnresolvedPlaceholders`) e `collect-edition-signals.ts` (que a
+ * consome, em `signalsFromPlaceholderGuardWarnings` + `TEST_WARNING_SKIP_PATTERNS`)
+ * — extraída pra evitar 3 cópias literais divergindo silenciosamente (achado
+ * do code-review desta PR): editar o texto do warning sem atualizar os
+ * matchers quebraria o Signal 5b sem nenhum teste pegando a divergência
+ * (ou o duplicaria como test_warning genérico).
+ */
+export const PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX = "guard anti-placeholder (#3277)";
+
+/**
  * Deriva a URL pública de uma edição a partir do título do post draft.
  *
  * Algoritmo: seoSlug(title) — mesmo usado em beehiiv-playbook.md §4a-bis
