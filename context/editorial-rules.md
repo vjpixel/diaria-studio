@@ -122,6 +122,8 @@ Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/i
 
 Seção opcional após Outras Notícias. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho).
 
+**Itens da seção VÍDEO usam link do YouTube. Nunca linkar página que apenas embeda o vídeo (#3202).** Toda URL da seção deve ser `youtube.com/watch?v=...` ou `youtu.be/...` — nunca a página de blog/site oficial que hospeda o player (ex: página de anúncio da própria empresa com o vídeo embedado). Se o editor indicar um vídeo fora do YouTube, o pipeline busca automaticamente o vídeo equivalente no YouTube (Stage 1, `scripts/resolve-video-youtube.ts`, scoped a `site:youtube.com`) e substitui a URL antes do gate. Sem correspondência confiável, o item NUNCA cai de volta pra URL não-YouTube — fica flagado no gate ("vídeo sem URL de YouTube verificável — cole o link") para o editor colar o link manualmente. Validação: `npx tsx scripts/lint-newsletter-md.ts --check video-links-are-youtube --md <md>` (exit ≠0, GATE-BLOCKING, se houver URL não-YouTube na seção). Caso real (260709): "Introducing GPT-Live" só existia acessível na página oficial da OpenAI (bloqueava o bot, 403) — sem resolução automática, a URL oficial acabou reusada, duplicando o link de outro destaque.
+
 ### Fontes elegíveis
 
 - **Canais oficiais de labs** (OpenAI, Anthropic, Google DeepMind, Meta AI, NVIDIA, Mistral): incluir se o conteúdo for relevante para a edição.
