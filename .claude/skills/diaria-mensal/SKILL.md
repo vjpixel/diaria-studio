@@ -291,17 +291,46 @@ npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CY
 ```
 Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Gate Etapa 3 abaixo.
 
-### 3c. Preview Cloudflare (#1914)
+### 3c. Preview via Claude Artifacts (#1914, migrado de Cloudflare em #3214)
 
-Com as imagens prontas, publicar o preview público no worker `draft` (como a
-diária) — o editor revisa o render real no celular antes do Brevo. Usa o design
-da mensal (`draftToEmail`), sobe as imagens do É IA? pro KV e mescla a legenda
-do `01-eia.md`:
+Com as imagens prontas, renderizar o HTML da edição no design real (`draftToEmail`,
+mesmo template do Brevo) e publicar como preview pro editor revisar no celular
+antes do Brevo. Sobe as imagens do É IA?/destaques/livros pro KV do poll (produção
+real, inalterado — ver nota abaixo) e mescla a legenda do `01-eia.md`:
 ```bash
 npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
 ```
-Imprime a URL `https://draft.diaria.workers.dev/m{YYMM}-{MM}`. Falha = warning,
-não bloqueia. Requer `ADMIN_SECRET` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`.
+Grava o HTML em `data/monthly/$CYCLE/_internal/cloudflare-preview.html` (nome do
+arquivo mantido por compat — não sobe mais pra Cloudflare, só as imagens continuam
+lá). Falha = warning, não bloqueia. Requer `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`
+(só pras imagens — produção real, fora do escopo de #3214).
+
+**Publicar o preview via `Artifact` (#3214) — chamado direto pelo top-level, não
+pelo script acima.** Resume-aware: se `_internal/preview-artifact-url.json` já
+tem `preview_url` (Etapa 3c ou 4b rodou antes, mesma ou outra sessão), reusar via
+`url` do tool — atualiza o MESMO artifact em vez de mintar um novo (republicar no
+mesmo `file_path` dentro da mesma conversa já mantém a URL; entre conversas é
+preciso passar `url` explícito):
+```bash
+node -e "
+  const fs = require('fs');
+  const p = 'data/monthly/$CYCLE/_internal/preview-artifact-url.json';
+  if (fs.existsSync(p)) {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (j.preview_url) console.log(j.preview_url);
+  }
+"
+```
+`Artifact` com `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview.html"`
++ `url` (se a leitura acima imprimiu algo) + `description` (ex: "Preview mensal —
+ciclo $CYCLE") + `favicon` fixo entre re-publicações do mesmo ciclo (ex: 🗓️).
+Persistir a URL retornada:
+```bash
+npx tsx -e "
+  import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
+  persistFieldToJsonFile('data/monthly/$CYCLE/_internal/preview-artifact-url.json', 'preview_url', '{url_retornada}');
+"
+```
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
@@ -321,7 +350,7 @@ Apresentar:
 📸 D1: data/monthly/$CYCLE/04-d1-2x1.jpg
 🤔 É IA? A: data/monthly/$CYCLE/01-eia-A.jpg
 🤔 É IA? B: data/monthly/$CYCLE/01-eia-B.jpg
-🌐 Preview: https://draft.diaria.workers.dev/m{YYMM}-{MM}
+🌐 Preview (Claude Artifact): {preview_url}
 
 [se selection == "criterion"]
 ✓ É IA? do recap: edição {EAI_EDITION} — {pct_correct}% acertaram (critério: mais dividida do mês).
@@ -360,13 +389,15 @@ Warning se falhar, nunca bloqueia.
 
 ### 4b. Pré-render completo (reusa Etapa 3c)
 
-Re-roda o preview Cloudflare — idempotente, garante que o HTML reflita o `draft.md` mais recente (pull do 4a) e as imagens definitivas da Etapa 3:
+Re-roda o preview — idempotente, garante que o HTML reflita o `draft.md` mais recente (pull do 4a) e as imagens definitivas da Etapa 3:
 
 ```bash
 npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
 ```
 
-Esse é o MESMO `draftToEmail` que gera o email real — o preview mostra o É IA? com a legenda de `01-eia.md` já mesclada (não o placeholder `[...]` que aparece no `draft.md` cru) e as imagens D1/D2/D3 2:1 embutidas via `<img>`, não só referenciadas por path. Se falhar (`ADMIN_SECRET`/Cloudflare indisponível): warning, seguir sem preview — mas sinalizar isso claramente no resumo do gate (4e) já que o "artefato principal" fica ausente.
+Esse é o MESMO `draftToEmail` que gera o email real — o preview mostra o É IA? com a legenda de `01-eia.md` já mesclada (não o placeholder `[...]` que aparece no `draft.md` cru) e as imagens D1/D2/D3 2:1 embutidas via `<img>`, não só referenciadas por path. Se falhar (Cloudflare indisponível pras imagens): warning, seguir sem preview — mas sinalizar isso claramente no resumo do gate (4e) já que o "artefato principal" fica ausente.
+
+**Republicar o preview via `Artifact` (#3214)** — mesmo fluxo resume-aware da Etapa 3c: ler `_internal/preview-artifact-url.json`, chamar `Artifact` com `url` (se já houver uma) sobre `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview.html"`, persistir a URL retornada. Como o artifact é republicado no MESMO `file_path`/`url`, a URL não muda entre a Etapa 3c e esta re-publicação — `{preview_url}` do gate (4e) continua válida sem re-captura manual.
 
 ### 4c. Lint do draft (sumarizado)
 
@@ -400,7 +431,7 @@ Apresentar ao editor:
 ```
 📋 Revisão consolidada — Diar.ia Mensal {YYMM}
 
-🌐 Preview completo (artefato principal): https://draft.diaria.workers.dev/m{YYMM}-{MM}
+🌐 Preview completo (Claude Artifact): {preview_url}
 
 Lint (scripts/lint-monthly-draft.ts):
   Guardrail de render: {N} seções reconhecidas, {N}/3 <img> na sonda — OK

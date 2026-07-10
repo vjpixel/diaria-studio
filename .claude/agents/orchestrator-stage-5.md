@@ -298,9 +298,28 @@ npx tsx scripts/render-social-html.ts \
   --md {EDITION_DIR}/03-social.md \
   --out {EDITION_DIR}/_internal/social-preview.html \
   --images {EDITION_DIR}/06-public-images.json
+```
 
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
-  --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
+Publicar via `Artifact` (#3214 — mesmo mecanismo do Stage 4 §4b step 3, chamado aqui de novo pra refletir qualquer resolucao de URL que so existe pos-dispatch, ex: `{edition_url}`). Resume-aware: ler URL ja persistida em `05-social-preview.json` e passar via `url` do tool pra atualizar o MESMO artifact em vez de mintar um novo:
+
+```bash
+node -e "
+  const fs = require('fs');
+  const p = '{EDITION_DIR}/_internal/05-social-preview.json';
+  if (fs.existsSync(p)) {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (j.social_preview_url) console.log(j.social_preview_url);
+  }
+"
+```
+
+`Artifact` com `file_path: "{EDITION_DIR}/_internal/social-preview.html"` + `url` (se a leitura acima imprimiu algo) + `description`/`favicon` iguais aos usados no Stage 4. Persistir a URL retornada:
+
+```bash
+npx tsx -e "
+  import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
+  persistFieldToJsonFile('{EDITION_DIR}/_internal/05-social-preview.json', 'social_preview_url', '{social_url}');
+"
 ```
 
 Falha nao bloqueia — logar warn e prosseguir.

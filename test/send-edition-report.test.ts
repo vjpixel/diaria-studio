@@ -201,11 +201,12 @@ describe("links do relatório (#1824)", () => {
     assert.ok(!html.includes("draft.diaria.workers.dev/260525\""), "sem o fallback hashless (404)");
   });
 
-  it("rótulos Cloudflare/Beehiiv claros nos links, com prefixo de emoji", () => {
+  it("rótulos Claude Artifact/Beehiiv claros nos links, com prefixo de emoji (#3214)", () => {
     const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
     // #1824 §3: rótulos com emoji + "Editar no Beehiiv" (é a URL /posts/{uuid}/edit, não só "rascunho").
-    assert.ok(html.includes("📄 Preview newsletter (Cloudflare)"));
-    assert.ok(html.includes("📱 Preview social (Cloudflare)"));
+    // #3214: rótulo migrou de "(Cloudflare)" pra "(Claude Artifact)" — a URL não é mais hospedada no Worker draft.
+    assert.ok(html.includes("📄 Preview newsletter (Claude Artifact)"));
+    assert.ok(html.includes("📱 Preview social (Claude Artifact)"));
     assert.ok(html.includes("✏️ Editar no Beehiiv"));
     assert.ok(!html.includes("Rascunho (Beehiiv)"), "rótulo antigo substituído por 'Editar no Beehiiv'");
   });

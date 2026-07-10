@@ -1,31 +1,34 @@
 /**
- * monthly-preview-cloudflare.ts (#1914)
+ * monthly-preview-cloudflare.ts (#1914, migrado de Cloudflare draft worker
+ * para Claude Artifacts em #3214)
  *
- * Dá à edição MENSAL um preview público no Cloudflare, como a diária já tem
- * (worker `draft` → `draft.diaria.workers.dev/{key}`). O editor (e a Clarice)
- * revisa o render real no celular antes de publicar no Brevo.
+ * Renderiza a edição MENSAL no design real de email (mesmo `draftToEmail`
+ * usado pelo Brevo) e grava o HTML localmente em `_internal/cloudflare-preview.html`
+ * pro editor (e a Clarice) revisar antes de publicar. O nome do arquivo/script
+ * ficou por compat — a parte que hospedava o HTML no worker Cloudflare `draft`
+ * (`draft.diaria.workers.dev/m{key}`) foi removida em #3214: quem publica o
+ * preview agora é o top-level Claude Code, via `Artifact` direto sobre esse
+ * arquivo (só o tool top-level pode chamar `Artifact` — este script não tenta).
+ * Ver `.claude/skills/diaria-mensal/SKILL.md` §3c/§4b para o fluxo completo.
  *
- * Diferença vs a diária:
- * - Design é o da MENSAL — `draftToEmail` (monthly-render), documento HTML
- *   completo (não um fragmento). Por isso o upload usa `wrap: false`.
- * - Imagens do É IA? sobem pro KV do poll (mesma key `img-{edition}-...` do
- *   publish-monthly, via lib compartilhada) e entram no HTML como URL pública.
- * - Key da URL é `m{YYMM}` (ex: `m2605`) pra não colidir com as diárias
- *   (AAMMDD, 6 dígitos).
+ * O que ESTE script ainda faz sozinho (produção real, fora do escopo do #3214):
+ * - Upload das imagens (É IA? A/B, destaques D1-D3, livros) pro Cloudflare
+ *   Worker KV do poll (`poll.diaria.workers.dev`, mesma key `img-{edition}-...`
+ *   usada por `publish-monthly.ts`) — essas imagens VÃO pro email real, não são
+ *   preview-only, então continuam em Cloudflare (fora do escopo de #3214).
  *
  * O que NÃO faz: não toca no Brevo, não pré-registra gabarito, não embute a
  * imagem D1 (essa entra manualmente no Brevo, igual ao fluxo atual). É só o
- * preview visual.
+ * preview visual + upload de imagens de produção.
  *
  * Uso:
- *   npx tsx scripts/monthly-preview-cloudflare.ts --yymm 2605
- *   npx tsx scripts/monthly-preview-cloudflare.ts --yymm 2605 --dry-run
+ *   npx tsx scripts/monthly-preview-cloudflare.ts --cycle 2605-06
+ *   npx tsx scripts/monthly-preview-cloudflare.ts --cycle 2605-06 --dry-run
  *
  * Env:
- *   ADMIN_SECRET / POLL_ADMIN_SECRET — HMAC do PUT no worker draft
  *   CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN — upload das imagens pro KV
  *
- * Output stdout (JSON): { yymm, url, bytes, ttl_seconds }
+ * Output stdout (JSON): { yymm, cycle, html_path }
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -37,46 +40,13 @@ import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
 import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage } from "./lib/mensal/monthly-image-upload.ts";
 import { fetchMonthlyEiaPrevResultLine } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
-import { uploadHtml } from "./upload-html-public.ts";
 import {
   parseMonthlyCycleArg,
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
-  monthlyWorkerKey,
-  monthlyWorkerKeyLegacy,
-  isValidMonthlyCycle,
-  isValidYymm,
 } from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/**
- * Pure (#1914, #1962, #2046): key da URL do preview mensal.
- *
- * Formato novo: `m{YYMM}-{MM}` (ex: `m2605-06`) — identifica unicamente o
- * ciclo de conteúdo + envio, não colide com diárias (AAMMDD sem prefixo m).
- * Retrocompat de leitura: o Worker implementa fallback novo→legado (#2046):
- *   GET /m2605-06 → tenta key nova; se null, tenta key legada m2605.
- * Sentido único — legado→novo NÃO é tentado (links antigos continuam
- * funcionando; o Worker não incentiva uso da URL velha).
- *
- * Hífens são válidos em keys KV do Cloudflare (qualquer string ≤512 bytes).
- *
- * @param cycle ciclo `{YYMM}-{MM}` (ex: `2605-06`) OU legado `YYMM` (ex: `2605`,
- *              compat — retorna o formato legado `m{YYMM}` com aviso implícito
- *              de que a key nova exige o ciclo completo).
- */
-export function monthlyPreviewKey(cycle: string): string {
-  // Delegamos para os helpers centralizados em monthly-paths.ts (#1962)
-  // para manter a lógica em um único lugar.
-  if (isValidMonthlyCycle(cycle)) return monthlyWorkerKey(cycle);
-  if (isValidYymm(cycle)) {
-    // Compat: yymm legado → key legada m{YYMM} (não deriva — evita silently
-    // emitir key nova pra código que ainda não migrou o path de disco).
-    return monthlyWorkerKeyLegacy(cycle);
-  }
-  throw new Error(`ciclo inválido para previewKey: "${cycle}"`);
-}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -110,12 +80,6 @@ async function main(): Promise<void> {
   const draftPath = resolve(monthlyDir, "draft.md");
   if (!existsSync(draftPath)) {
     console.error(`draft.md não encontrado: ${draftPath}. Rode a Etapa 2 do /diaria-mensal primeiro.`);
-    process.exit(1);
-  }
-
-  const secret = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? "";
-  if (!secret && !dryRun) {
-    console.error("[monthly-preview-cloudflare] ADMIN_SECRET ausente no env — abortando");
     process.exit(1);
   }
 
@@ -190,23 +154,15 @@ async function main(): Promise<void> {
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
   const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl, eiaPrevResultLine);
 
-  // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
+  // Persiste o HTML local — desde #3214, este é o artefato final do script.
+  // Quem publica pro editor é o top-level Claude Code via `Artifact` direto
+  // sobre este arquivo (ver SKILL.md §3c/§4b) — este script só grava em disco.
   const internalDir = resolve(monthlyDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
   const htmlPath = resolve(internalDir, "cloudflare-preview.html");
   writeFileSync(htmlPath, html);
 
-  // Key nova: m{YYMM}-{MM} (ex: m2605-06). Retrocompat de leitura implementada
-  // no Worker (#2046): GET /m2605-06 → tenta key nova; fallback m{YYMM} se null.
-  const result = await uploadHtml({
-    edition: monthlyPreviewKey(cycle),
-    htmlPath,
-    secret,
-    dryRun,
-    wrap: false, // HTML mensal já é documento completo
-  });
-
-  console.log(JSON.stringify({ yymm, cycle, ...result }, null, 2));
+  console.log(JSON.stringify({ yymm, cycle, html_path: htmlPath, dry_run: dryRun }, null, 2));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
