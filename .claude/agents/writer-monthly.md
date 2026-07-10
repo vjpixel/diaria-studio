@@ -17,7 +17,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 ## Formato dos labels de seção (#2794 — CRÍTICO)
 
-Todo label de seção — `ASSUNTO`, `PREVIEW`, `APRESENTAÇÃO`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `ENCERRAMENTO` — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
+Todo label de seção — `ASSUNTO`, `PREVIEW`, `APRESENTAÇÃO`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `PARA ENCERRAR` (nome canônico desde #3219 — `ENCERRAMENTO` era o nome antigo do template, mas o writer-monthly sempre gerou `PARA ENCERRAR` na prática; `scripts/lib/mensal/monthly-render.ts` aceita os dois pra back-compat com edições antigas) — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
 
 Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRASIL` (sem `**`) em vez de `**DESTAQUE 1 | BRASIL**`. Sem o negrito, o render não reconheceu NENHUM label — o draft inteiro colapsou num único parágrafo de fallback: zero imagens, zero "O fio condutor" destacado, zero seções Use Melhor/Radar/É IA?/Encerramento renderizadas como tal. Verificar visualmente antes de gravar `out_path`: toda linha de label deve começar E terminar com `**`.
 
@@ -27,6 +27,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 - `context/templates/newsletter-monthly.md` — formato exato.
 - `context/audience-profile.md` — perfil de tom e CTR por tema.
 - `data/past-editions.md` — voz e linguagem recorrentes (pra manter consistência).
+- `context/snippets/encerramento-social-apoio.md` — texto fixo (parágrafo de apoio Apoia.se + convite social) da seção `PARA ENCERRAR` (passo 8, #3219). Fonte única compartilhada com o diário — ler antes de escrever essa seção, nunca reescrever de memória.
 
 ## Processo
 
@@ -84,7 +85,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
 7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
-8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**ENCERRAMENTO**` — #2794). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Encerramento (não depois do Radar).
+8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**PARA ENCERRAR**` — #2794, renomeado de `ENCERRAMENTO` em #3219). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Para Encerrar (não depois do Radar).
 
    **Seleção (#2869/#2904 — fonte autoritativa; NUNCA `eia-used.json`/`poll_id` — esse campo nunca existe lá, instrução legada que causou o bug do ciclo 2606-07):** ler `eia_selection_path` (se fornecido pelo orchestrator). É o `EiaSelectionResult` de `scripts/select-eia-edition.ts`, já resolvido ANTES desta invocação: `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason }`.
    - **`eia_selection_path` ausente, OU `selection == "fallback_last"` sem `edition` utilizável:** emitir o placeholder — `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`.
@@ -92,6 +93,8 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **`selection == "criterion"`:** escrever 1-2 parágrafos citando a edição (`edition`, convertido pra data por extenso — ex: `260616` → "16 de junho"), o `pct_correct`% de acerto, e uma breve análise do que tornou aquela imagem difícil/interessante. Se `data/editions/{edition}/_internal/01-eia-meta.json` existir, usar os campos `wikimedia.title`/`wikimedia.credit` pra fundamentar a análise — nunca inventar detalhes da imagem que não estejam nesses campos.
 
    Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda a este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457)
+
+   **Parágrafo de apoio + convite social (#3219, sempre presente, nunca parafrasear).** Logo após o parágrafo do encerramento padrão acima, na MESMA seção `PARA ENCERRAR` (2 parágrafos adicionais, sem label novo): ler `context/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Quem quiser"). Resultado esperado (2 parágrafos, nessa ordem): (1) apoio à curadoria via Apoia.se; (2) convite pra interagir no LinkedIn/Facebook. Não reescrever de memória — sempre ler o arquivo, é a mesma fonte usada pelo diário (`scripts/stitch-newsletter.ts`) e um ajuste de texto/link ali deve propagar pros dois formatos sem duplicar a manutenção.
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
@@ -101,6 +104,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
+   - `PARA ENCERRAR` inclui, ao final, os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + convite social) com a abertura mensal substituída (#3219)
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 
@@ -123,6 +127,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
     "three_subjects": true,
     "preview_under_100": true,
     "apresentacao_present": true,
+    "para_encerrar_apoio_social_present": true,
     "three_destaques": true,
     "use_melhor_ok": true,
     "radar_count_ok": true,

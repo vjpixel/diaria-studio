@@ -84,6 +84,13 @@ export const DIARIA_THREADS_SLUG = "threads.net/@diar.ia.br";
 /** URL completa (com protocolo + `www.`) derivada do slug acima. */
 export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
 
+/**
+ * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
+ * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
+ * `context/snippets/encerramento-social-apoio.md`.
+ */
+export const DIARIA_APOIASE_URL = "https://apoia.se/diaria";
+
 interface ArticleLike {
   url?: string;
   title?: string;
@@ -218,6 +225,11 @@ export const FOOTER_DOMAINS = [
   // afiliado, praticamente nunca usados como link de lançamento.
   "link.amazon",
   "amzn.to",
+  // #3219: CTA de apoio financeiro (Apoia.se) no bloco PARA ENCERRAR — link
+  // fixo do rodapé (context/snippets/encerramento-social-apoio.md), nunca um
+  // artigo pesquisado. Sem isso, urls_accessible flagaria not_in_cache (mesmo
+  // bug de #2498 pro cursos/livros.diaria.workers.dev).
+  "apoia.se",
   // #2695 self-review: `as const` — agora que o array é exportado e
   // compartilhado por referência entre 3 importers (era privado a este
   // arquivo antes), congela o tipo em readonly pra um `.push`/`.splice`
