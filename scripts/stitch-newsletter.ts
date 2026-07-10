@@ -36,6 +36,7 @@ import {
   renderEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal
+import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 
 interface ArticleLike {
   url?: string;
@@ -109,13 +110,16 @@ export function buildParaEncerrar(): string {
  * Strip do comentário HTML de header; retorna o bloco trimado, ou `null` se o
  * arquivo não existir / não tiver nenhum dos dois formatos (graceful — a
  * edição sai sem o box em vez de quebrar).
+ *
+ * Leitura crua (resolve root + readFileSync + strip comentário HTML + trim)
+ * delegada a `readSnippetFile` (#3219 — extraído pra parar de duplicar essa
+ * lógica em paralelo com `loadEncerramentoSocialApoioTemplate`); esta função
+ * mantém só o pós-processamento específico de formato (marker bold-line vs
+ * carrinho) por cima da leitura compartilhada.
  */
 function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
   if (!file) return null;
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const p = join(root, "context", "snippets", file);
-  if (!existsSync(p)) return null;
-  const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
+  const raw = readSnippetFile(file);
   if (!raw) return null;
   // Formato carrinho (🛒): texto cru, sem bold-wrap — igual ao que
   // BOX_DIVULGACAO_CART_RE (newsletter-parse.ts) espera no reviewed.md.

@@ -13,9 +13,7 @@
  * módulo). `shared/` (não `diaria/` nem `mensal/`) porque o conteúdo é
  * consumido pelos dois formatos — ver test/lib-boundary.test.ts (#2747).
  */
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readSnippetFile } from "./snippet-loader.ts";
 
 /**
  * Cláusula de abertura do parágrafo de apoio pro DIÁRIO — vazia, porque o
@@ -37,14 +35,12 @@ export const ENCERRAMENTO_OPENING_MONTHLY =
  * o comentário HTML de header), com o marcador `{{OPENING}}` intacto.
  * Retorna `null` se o arquivo não existir ou ficar vazio após o strip do
  * comentário — graceful, igual ao `loadDivulgacaoSnippet` do stitch (caller
- * decide o fallback).
+ * decide o fallback). Leitura crua delegada a `readSnippetFile` (#3219 —
+ * extraído pra parar de duplicar essa lógica em paralelo com
+ * `loadDivulgacaoSnippet`).
  */
 export function loadEncerramentoSocialApoioTemplate(): string | null {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  const p = join(root, "context", "snippets", "encerramento-social-apoio.md");
-  if (!existsSync(p)) return null;
-  const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
-  return raw || null;
+  return readSnippetFile("encerramento-social-apoio.md");
 }
 
 /**
