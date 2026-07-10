@@ -112,18 +112,45 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
 // KV ou claramente não tem a forma de um email.
 
 /** #3118 item 3: forma mínima `local@domínio.tld`, sem espaços, ≤254 chars
- * (limite prático de endereço de email, RFC 3696 errata). */
+ * (limite prático de endereço de email, RFC 3696 errata).
+ *
+ * #3279 (charset hardening): também rejeita `:` explicitamente em cada
+ * segmento — antes `[^\s@]+` permitia qualquer caractere fora de espaço/`@`,
+ * então um email como `attacker@evil:x.com` passava. `email`/`edition` viram
+ * componentes de uma chave KV (`vote:{edition}:{email}`) sem sanitização
+ * adicional; um `:` cru nesses campos pode alterar a estrutura da chave.
+ * Defesa em profundidade — a cadeia de exploit confirmada (#3279) usa o `:`
+ * em `edition`, não em `email`, mas o mesmo caractere é igualmente perigoso
+ * aqui por composição do template de chave. */
 export function isValidVoteEmailFormat(email: string): boolean {
   if (email.length === 0 || email.length > 254) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(email);
 }
 
-/** #3118 item 3: teto de tamanho pro componente `edition` da chave KV — não
- * valida formato exato (AAMMDD vs ciclo `YYMM-MM`; isso é responsabilidade de
- * `isValidEdition`/`editionToMonthSlug` downstream), só limita o comprimento
- * pra nunca contribuir com uma key KV desproporcional. */
+/**
+ * #3118 (item 3) / #3279 (charset hardening): valida a FORMA do componente
+ * `edition` da chave KV — não só o comprimento. Aceita só os 2 formatos
+ * legítimos usados pelo pipeline: AAMMDD legado (`^\d{6}$`, diária) ou ciclo
+ * Clarice `YYMM-MM` (`^\d{4}-\d{2}$`, #2115). Ambos os ramos já são
+ * mutuamente exclusivos e bounded em comprimento pelo próprio regex — não
+ * precisa de checagem de `.length` separada.
+ *
+ * Não faz validação SEMÂNTICA de range (mês 00/13, dia inválido etc.) — isso
+ * continua responsabilidade de `isValidEdition`/`editionToMonthSlug`
+ * downstream. Aqui só garante charset+forma antes de qualquer uso em
+ * template de chave KV.
+ *
+ * Antes desta versão, a checagem era só de COMPRIMENTO (`length > 0 && <=
+ * 32`), permitindo qualquer caractere — inclusive `:` — passar. Um `edition`
+ * como `"2607-08:evil"` (13 chars, sob o teto de 32) produzia uma chave KV
+ * `vote:2607-08:evil:attacker@x.com` que ainda batia no prefixo escaneado
+ * por `handleAdminCorrect` (`vote:{edition}:`) — poluindo correções
+ * administrativas de score sem autenticação nenhuma (modo merge-tag não
+ * exige HMAC). Achado de segurança #3279, cadeia de exploit verificada
+ * linha por linha contra `vote.ts`/`index.ts`.
+ */
 export function isValidVoteEditionFormat(edition: string): boolean {
-  return edition.length > 0 && edition.length <= 32;
+  return /^\d{6}$/.test(edition) || /^\d{4}-\d{2}$/.test(edition);
 }
 
 // ── Máscara de email pra exibição pública (#3118 item 11) ──────────────────
