@@ -9,6 +9,7 @@ import {
   signalsFromRunLog,
   signalsFromMcpUnavailable,
   signalsFromTestWarnings,
+  signalsFromPlaceholderGuardWarnings,
   normalizeMessageKey,
   collectSignals,
   writeDraft,
@@ -367,6 +368,114 @@ describe("signalsFromRunLog", () => {
     const lines = ["{garbage", "", "{\"edition\":\"260424\",\"level\":\"error\",\"message\":\"chrome_disconnected\"}"];
     const signals = signalsFromRunLog(lines, "260424", 1);
     assert.equal(signals[0].details.count, 1);
+  });
+});
+
+// #3277 (code review desta PR): o guard anti-placeholder de
+// resolve-edition-url.ts virou não-fatal (warn em vez de exit 3). Este signal
+// garante que esse warn tenha um caminho automático até o auto-reporter —
+// sem ele, Stage 6 roda collect-edition-signals.ts sem --include-test-warnings
+// (ver .claude/agents/orchestrator-stage-6.md) e o warn nunca vira issue.
+describe("signalsFromPlaceholderGuardWarnings (#3277)", () => {
+  const mkLine = (obj: Record<string, unknown>) => JSON.stringify(obj);
+
+  it("captura 1 evento do guard anti-placeholder (#3277) e vira signal medium", () => {
+    const lines = [
+      mkLine({
+        timestamp: "2026-07-10T20:00:00Z",
+        edition: "260710",
+        stage: 5,
+        agent: "resolve-edition-url",
+        level: "warn",
+        message: "guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada",
+        details: { unresolved: ["{system_prompt}"], edition_url: "https://diar.ia.br/p/x", social_md_path: "/x/03-social.md" },
+      }),
+    ];
+    const signals = signalsFromPlaceholderGuardWarnings(lines, "260710");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "placeholder_guard_warning");
+    assert.equal(signals[0].severity, "medium");
+    assert.deepEqual(signals[0].details.placeholders, ["{system_prompt}"]);
+    assert.equal(signals[0].details.count, 1);
+    assert.match(signals[0].title, /\{system_prompt\}/);
+    assert.equal(signals[0].related_issue, "#3277");
+  });
+
+  it("UM único evento já é suficiente (diferente de clarice_skip, que precisa 2 pra 'high')", () => {
+    const lines = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(lines, "260710").length, 1);
+  });
+
+  it("sem eventos → retorna vazio", () => {
+    assert.deepEqual(signalsFromPlaceholderGuardWarnings([], "260710"), []);
+  });
+
+  it("ignora level info/error — só warn conta", () => {
+    const lines = [
+      mkLine({ edition: "260710", level: "info", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+      mkLine({ edition: "260710", level: "error", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    assert.deepEqual(signalsFromPlaceholderGuardWarnings(lines, "260710"), []);
+  });
+
+  it("filtra edições diferentes", () => {
+    const lines = [
+      mkLine({ edition: "260709", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    assert.deepEqual(signalsFromPlaceholderGuardWarnings(lines, "260710"), []);
+  });
+
+  it("dedup placeholders repetidos entre múltiplos eventos da mesma edição", () => {
+    const lines = [
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}", "{b}"] } }),
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    const signals = signalsFromPlaceholderGuardWarnings(lines, "260710");
+    assert.equal(signals[0].details.count, 2);
+    assert.deepEqual([...(signals[0].details.placeholders as string[])].sort(), ["{a}", "{b}"]);
+  });
+
+  it("não confunde com outras mensagens contendo 'guard' ou 'placeholder' soltos", () => {
+    const lines = [
+      mkLine({ edition: "260710", level: "warn", message: "algum outro guard qualquer sobre placeholder", details: {} }),
+    ];
+    assert.deepEqual(signalsFromPlaceholderGuardWarnings(lines, "260710"), []);
+  });
+
+  it("linhas malformadas são puladas sem crashar", () => {
+    const lines = [
+      "{garbage",
+      "",
+      mkLine({ edition: "260710", level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } }),
+    ];
+    const signals = signalsFromPlaceholderGuardWarnings(lines, "260710");
+    assert.equal(signals[0].details.count, 1);
+  });
+
+  it("linha sem campo edition não é atribuída a uma edição específica (evita falso-positivo cross-edition)", () => {
+    const lineWithoutEdition = mkLine({ level: "warn", message: "guard anti-placeholder (#3277): x", details: { unresolved: ["{a}"] } });
+    assert.deepEqual(signalsFromPlaceholderGuardWarnings([lineWithoutEdition], "260710"), []);
+    // Sem filtro de edição (null), a linha sem campo edition ainda conta.
+    assert.equal(signalsFromPlaceholderGuardWarnings([lineWithoutEdition], null).length, 1);
+  });
+
+  it("não duplica em signalsFromTestWarnings quando --include-test-warnings também roda (TEST_WARNING_SKIP_PATTERNS)", () => {
+    // Mesmo padrão de mcp_disconnect (#759) — o evento já é capturado por
+    // este signal dedicado, então não deve reaparecer como test_warning
+    // genérico se --include-test-warnings estiver ligado.
+    const lines = [
+      mkLine({
+        edition: "260710",
+        agent: "resolve-edition-url",
+        level: "warn",
+        message: "guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada",
+        details: { unresolved: ["{system_prompt}"] },
+      }),
+    ];
+    assert.equal(signalsFromPlaceholderGuardWarnings(lines, "260710").length, 1);
+    assert.equal(signalsFromTestWarnings(lines, "260710").length, 0);
   });
 });
 

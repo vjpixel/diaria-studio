@@ -98,6 +98,56 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args;
 }
 
+/**
+ * #3277 (code review, PR #3289): emite o warning não-fatal do guard
+ * anti-placeholder — stderr + `data/run-log.jsonl` (nível warn, via
+ * `logEvent`). Extraído de `main()` pra ser testável sem precisar spawnar o
+ * CLI inteiro (#633) — mesmo padrão de `scripts/select-eia-edition.ts`
+ * (`signalEiaFallback`).
+ *
+ * `rootDir` é repassado a `logEvent` (default `undefined` → `logEvent` cai
+ * pro seu próprio default `process.cwd()`). `main()` SEMPRE passa `ROOT`
+ * explicitamente (não confia em `process.cwd()`) — o resto do arquivo já
+ * resolve `--edition-dir` contra `ROOT` pelo mesmo motivo (#2454), então
+ * o log deve seguir a mesma âncora, cwd-independente. Tests injetam um
+ * tmpdir aqui pra não gravar warns fabricados em `data/run-log.jsonl` de
+ * produção — sem isso, `logEvent` caía no `process.cwd()` do processo
+ * spawnado (= cwd do test runner, tipicamente a raiz real do repo),
+ * poluindo o log operacional real com edições de teste fictícias
+ * (achado empírico do code-review desta PR — dezenas de entries com
+ * edition "260999" apareceram em data/run-log.jsonl real durante os testes).
+ */
+export function warnUnresolvedPlaceholders(
+  unresolved: string[],
+  editionId: string | null,
+  editionUrl: string,
+  socialMdPath: string,
+  rootDir?: string,
+): void {
+  const logHint = editionId
+    ? `\`/diaria-log ${editionId} warn\``
+    : `\`/diaria-log\` filtrando por agent "resolve-edition-url" (edição não detectada a partir de --edition-dir)`;
+  console.warn(`AVISO (#3277 guard anti-placeholder — não-fatal): 03-social.md contém possíveis placeholders não-resolvidos mesmo APÓS a substituição de {edition_url}:
+  ${unresolved.join(", ")}
+
+O dispatch social NÃO foi bloqueado — isso pode ser um bug real (writer/stitch esqueceu de resolver
+um placeholder) OU prosa legítima citando um exemplo de prompt/campo de API entre chaves (comum em
+conteúdo sobre IA). Revisão humana recomendada — ver ${logHint}.
+  → {edition_url} já foi substituído por este script (gravado: ${editionUrl}).
+  → o(s) placeholder(s) acima não é {edition_url} — se for um bug, verificar origem (writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`);
+  logEvent(
+    {
+      edition: editionId,
+      stage: 5,
+      agent: "resolve-edition-url",
+      level: "warn",
+      message: `guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada`,
+      details: { unresolved, edition_url: editionUrl, social_md_path: socialMdPath },
+    },
+    rootDir,
+  );
+}
+
 // ── CLI guard ─────────────────────────────────────────────────────────────────
 // Prevent accidental execution when imported from tests
 if (isMainModule(import.meta.url)) {
@@ -190,33 +240,28 @@ function main(argv: string[]): void {
       // #3277: não-fatal. Um placeholder {snake_case} remanescente é ambíguo
       // (bug real vs. prosa citando um exemplo entre chaves) — avisar em vez
       // de travar o dispatch social da edição inteira num falso positivo.
-      const editionIdMatch = basename(editionDir).match(/^\d{6}/);
-      const editionId = editionIdMatch ? editionIdMatch[0] : null;
-      console.warn(
-        `AVISO (#3277 guard anti-placeholder — não-fatal): 03-social.md contém possíveis placeholders ` +
-        `não-resolvidos mesmo APÓS a substituição de {edition_url}:\n` +
-        `  ${unresolved.join(", ")}\n` +
-        `\n` +
-        `O dispatch social NÃO foi bloqueado — isso pode ser um bug real (writer/stitch esqueceu de\n` +
-        `resolver um placeholder) OU prosa legítima citando um exemplo de prompt/campo de API entre\n` +
-        `chaves (comum em conteúdo sobre IA). Revisão humana recomendada — ver \`/diaria-log ${editionId ?? "{edition}"} warn\`.\n` +
-        `  → {edition_url} já foi substituído por este script (gravado: ${editionUrl}).\n` +
-        `  → o(s) placeholder(s) acima não é {edition_url} — se for um bug, verificar origem ` +
-        `(writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`,
-      );
-      logEvent({
-        edition: editionId,
-        stage: 5,
-        agent: "resolve-edition-url",
-        level: "warn",
-        message: `guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada`,
-        details: { unresolved, edition_url: editionUrl, social_md_path: socialMdPath },
-      });
-    } else {
-      console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);
+      // Ver docstring de warnUnresolvedPlaceholders() pro porquê do rootDir.
+      //
+      // #3277 code-review finding: a confirmação "OK" da escrita é emitida
+      // AQUI (não incondicionalmente no fim da função) — ela é verdadeira (o
+      // arquivo FOI gravado com sucesso) — e então retornamos logo após o
+      // AVISO, sem cair no "OK" final abaixo. Isso garante duas coisas ao
+      // mesmo tempo: (a) o AVISO é a ÚLTIMA linha do output quando presente
+      // (mais visível pra quem lê só a cauda do stdout), e (b) "OK" nunca é
+      // impresso incondicionalmente antes de um exit(1) mais adiante (bug
+      // encontrado pelo próprio code-review desta PR numa iteração anterior
+      // deste fix: mover o "OK" pra logo após o write fazia ele imprimir
+      // mesmo quando --validate-social ia abortar com exit(1) por
+      // 03-social.md ausente — essa checagem já passou nesse ponto do fluxo,
+      // então aqui "OK" é sempre verdadeiro).
+      console.log(`OK: edition_url="${editionUrl}" gravada em ${outPath}`);
+      const editionId = basename(editionDir).match(/^\d{6}/)?.[0] ?? null;
+      warnUnresolvedPlaceholders(unresolved, editionId, editionUrl, socialMdPath, ROOT);
+      return;
     }
+    console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);
   }
 
-  // Sucesso
+  // Sucesso (sem --validate-social, OU --validate-social sem placeholder pendente)
   console.log(`OK: edition_url="${editionUrl}" gravada em ${outPath}`);
 }
