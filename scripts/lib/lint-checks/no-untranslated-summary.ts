@@ -88,12 +88,17 @@ export function checkNoUntranslatedSummary(md: string): UntranslatedSummaryRepor
     // seção abaixo, pra que um formato não reconhecido pelo walker ainda não
     // escape (#3196).
     if (raw.includes(TRADUZIR_LITERAL)) {
+      // Prefer the real title when this line matches the canonical inline
+      // shape (`**[Título](URL)** [TRADUZIR] texto...`) — Check 2 below
+      // extracts it the same way, but Check 1 fires first and would
+      // otherwise fall back to a stale/empty `pendingTitle` for this shape.
+      const literalInlineMatch = raw.match(INLINE_LINK_WITH_TEXT_RE);
       errors.push({
         section: currentSection ?? "unknown",
         line: i + 1,
         reason: "traduzir_prefix",
-        titleExcerpt: (pendingTitle ?? "").slice(0, 80),
-        descriptionExcerpt: t.slice(0, 80),
+        titleExcerpt: (literalInlineMatch?.[1] ?? pendingTitle ?? "").slice(0, 80),
+        descriptionExcerpt: (literalInlineMatch?.[2] ?? t).trim().slice(0, 80),
       });
     }
 

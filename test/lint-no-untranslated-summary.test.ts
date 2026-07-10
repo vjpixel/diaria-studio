@@ -35,6 +35,10 @@ describe("checkNoUntranslatedSummary (#3196)", () => {
     assert.equal(result.ok, false);
     assert.ok(result.errors.some((e) => e.reason === "traduzir_prefix"));
     assert.equal(result.errors[0].section, "🛠️ USE MELHOR");
+    // Self-review finding: titleExcerpt must come from the real inline title
+    // (not fall back to blank) for the canonical inline shape.
+    assert.equal(result.errors[0].titleExcerpt, "OpenAI Academy");
+    assert.match(result.errors[0].descriptionExcerpt, /^\[TRADUZIR\] OpenAI Academy and the Walton/);
   });
 
   // CASO REAL 2 — USE MELHOR, marcador literal [TRADUZIR]
