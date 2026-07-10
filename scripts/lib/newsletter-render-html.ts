@@ -629,12 +629,13 @@ export function renderEIA(eia: EIA): string {
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
-  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 16px (#3103,
-  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase, no
-  // rodapé do painel. #3104: era teal (~3.2:1, abaixo de AA) — ponto teal +
-  // label ink, mesmo padrão do kicker/whyBox.
+  // #1630: "Resultado da última edição: X% acertaram", no rodapé do painel.
+  // #3220: destylizado a pedido do editor — pra ler como frase comum, não como
+  // label gritado. Antes (herdado do padrão kicker/whyBox de #3103/#3104) era
+  // bold+uppercase+letter-spacing+ponto teal; agora é parágrafo de corpo puro,
+  // desacoplado desse padrão.
   const prevResultHtml = eia.prevResultLine
-    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
@@ -1246,6 +1247,14 @@ function applyInlineBold(html: string): string {
  * Base de `processInlineLinks` (texto via esc+wordmark+bold) e de `renderBodyInline`
  * (texto via escText — preserva itálico/word-joiner do corpo). `s` já passa por
  * `unescapeMd` aqui; os callbacks recebem o segmento cru.
+ *
+ * #3220: `**[label](url)**` (negrito envolvendo um link) vazava como
+ * asterisco literal — `onText` só casa `**...**` DENTRO do mesmo segmento de
+ * texto, e o link quebra o texto em 2 segmentos, cada um com um `**` órfão
+ * sem par. Tratado como sinal explícito do autor ("quero esse link em
+ * negrito") — os `**` órfãos ao redor do link são consumidos e o `<a>`
+ * resultante sai envolto em `<strong>`, em vez de vazar pro HTML final ou de
+ * simplesmente descartar o negrito pedido.
  */
 function tokenizeInline(
   s: string,
@@ -1278,10 +1287,23 @@ function tokenizeInline(
       linkStart.lastIndex = j + 1;
       continue;
     }
-    if (m.index > lastIdx) parts.push(onText(input.substring(lastIdx, m.index)));
-    parts.push(onLink(m[1], url));
-    lastIdx = j + 1;
-    linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
+    // #3220: `**` colado no link (`**[label](url)**`) — sem isso, o `**`
+    // antes do link e o `**` depois ficam em segmentos de texto separados, cada
+    // um sem par, e vazam literal no HTML. Só aplica quando os DOIS lados têm
+    // o marcador colado ao link (não mexe em bold legítimo mais afastado) —
+    // nesse caso o `<a>` do link sai envolto em `<strong>`.
+    let textBefore = input.substring(lastIdx, m.index);
+    const hasOpenBold = textBefore.endsWith("**");
+    const hasCloseBold = input.startsWith("**", j + 1);
+    const boldLink = hasOpenBold && hasCloseBold;
+    if (boldLink) {
+      textBefore = textBefore.slice(0, -2);
+    }
+    if (textBefore.length > 0) parts.push(onText(textBefore));
+    const linkHtml = onLink(m[1], url);
+    parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
+    lastIdx = boldLink ? j + 3 : j + 1;
+    linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
   }
   if (lastIdx < input.length) parts.push(onText(input.substring(lastIdx)));
   return parts.join("");

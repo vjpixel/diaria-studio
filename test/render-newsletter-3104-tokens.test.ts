@@ -60,7 +60,7 @@ describe("#3104 — letter-spacing de labels uppercase unificado (2px)", () => {
     assert.doesNotMatch(html, /letter-spacing:1\.5px;/);
   });
 
-  it("prevResultLine (É IA?) sobe pra letter-spacing:2px (era 1px)", () => {
+  it("prevResultLine (É IA?) é parágrafo comum, sem letter-spacing (#3220 — era letter-spacing:2px)", () => {
     const eia: EIA = {
       credit: "Foto: x.",
       imageA: "01-eia-A.jpg",
@@ -69,10 +69,9 @@ describe("#3104 — letter-spacing de labels uppercase unificado (2px)", () => {
       prevResultLine: "Resultado da última edição: 67% acertaram.",
     };
     const html = renderEIA(eia);
-    const match = html.match(/<p style="([^"]+)">(?:<span[^>]*>&#9679;<\/span>&nbsp;)?Resultado da última edição[^<]*<\/p>/);
+    const match = html.match(/<p style="([^"]+)">Resultado da última edição[^<]*<\/p>/);
     assert.ok(match, `prevResultLine <p> não encontrado: ${html}`);
-    assert.match(match![1], /letter-spacing:2px/);
-    assert.doesNotMatch(match![1], /letter-spacing:1px/);
+    assert.doesNotMatch(match![1], /letter-spacing/);
   });
 });
 
