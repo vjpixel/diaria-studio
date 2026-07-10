@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   extractUrlsBySection,
   buildUrlBucketMap,
@@ -1204,6 +1205,51 @@ Body principal.`,
     assert.equal(r.parsed?.category, "numerico");
     assert.equal(r.parsed?.correct_value, "5.000");
     rmSync(dir, { recursive: true });
+  });
+});
+
+// #3204/#3235: regressão de processo — um squash-merge concorrente (#3234)
+// silenciosamente derrubou o dispatch `--check orphan-box-in-gap` do main()
+// (import + bloco if inteiros) sem que NENHUM teste falhasse, porque toda a
+// cobertura existente (test/box-divulgacao-marker-agnostic.test.ts) testa as
+// funções puras subjacentes (findOrphanBoxWarnings, lintCalloutPlacement)
+// diretamente, nunca o CLI/dispatch de main(). Este teste fecha esse ponto
+// cego: exercita o subprocess real, então detecta se o dispatch some de novo
+// mesmo que a lógica pura continue intacta.
+describe("CLI --check orphan-box-in-gap (#3204) — regressão de dispatch (#3235)", () => {
+  function runCli(mdPath: string) {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-newsletter-md.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--check", "orphan-box-in-gap", "--md", mdPath],
+      { encoding: "utf8" },
+    );
+  }
+
+  it("exit 0 + JSON {ok:true} quando não há box órfão", () => {
+    const dir = join("test/_tmp_intentional_error", "orphan_box_ok");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, "**DESTAQUE 1 | TESTE**\n\nCorpo sem box de divulgação.\n");
+    const r = runCli(mdPath);
+    assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.ok("calloutPlacement" in out && "orphanGaps" in out, "shape deve ter calloutPlacement + orphanGaps");
+    rmSync(dir, { recursive: true });
+  });
+
+  it("exit 2 + uso quando --md ausente", () => {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-newsletter-md.ts");
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--check", "orphan-box-in-gap"],
+      { encoding: "utf8" },
+    );
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /Uso: lint-newsletter-md\.ts --check orphan-box-in-gap/);
   });
 });
 
