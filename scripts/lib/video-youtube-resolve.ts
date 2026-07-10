@@ -58,19 +58,32 @@ export interface VideoArticleLike {
 }
 
 /**
- * Retorna true se a URL é uma URL de vídeo do YouTube (`youtube.com/watch`
- * ou `youtu.be`). Deliberadamente MAIS ESTRITO que `isVideoUrl` de
- * `launch-heuristics.ts` (que também aceita `vimeo.com` — usado só pra
- * categorização inicial em `video`, não pra validação final da seção). A
- * regra editorial #3202 exige especificamente YouTube.
+ * Retorna true se a URL é uma URL de vídeo do YouTube: `youtube.com/watch`,
+ * `youtube.com/live/{id}` (livestream), `youtube.com/shorts/{id}`, o host
+ * mobile `m.youtube.com` equivalente, ou `youtu.be`. Deliberadamente MAIS
+ * ESTRITO que `isVideoUrl` de `launch-heuristics.ts` (que também aceita
+ * `vimeo.com` — usado só pra categorização inicial em `video`, não pra
+ * validação final da seção). A regra editorial #3202 exige especificamente
+ * YouTube.
+ *
+ * #3273: `/live/` e `/shorts/` (e o host `m.youtube.com`) precisam ser
+ * aceitos — o caso motivador da feature (#3202, "Introducing GPT-Live") era
+ * justamente uma livestream, cuja URL canônica do YouTube usa `/live/{id}`.
+ * Sem isso, `pickBestYoutubeCandidate` descartava o match correto ANTES de
+ * pontuar por similaridade de título, flagando o item como
+ * `video_url_unverified` mesmo com um candidato perfeito disponível.
  */
 export function isYoutubeUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, "");
     if (host === "youtu.be") return true;
-    if (host === "youtube.com" && u.pathname.startsWith("/watch")) return true;
-    return false;
+    if (host !== "youtube.com" && host !== "m.youtube.com") return false;
+    return (
+      u.pathname.startsWith("/watch") ||
+      u.pathname.startsWith("/live/") ||
+      u.pathname.startsWith("/shorts/")
+    );
   } catch {
     return false;
   }

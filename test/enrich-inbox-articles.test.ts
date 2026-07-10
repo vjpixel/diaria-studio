@@ -291,6 +291,22 @@ describe("mergeMetadata — merges without clobbering real titles", () => {
     assert.equal(out.article.summary, undefined);
     assert.equal(out.summaryUpdated, false);
   });
+
+  // #3276 REGRESSÃO: og:description com reticência ANTES do lead-in de
+  // navegação ("… Leia mais: ...") — sanitizeDescriptionBoilerplate corta
+  // tudo a partir de "Leia mais:" e sobra só "…". Antes do fix,
+  // sanitizeTrailingEllipsis devolvia esse "…" bare como se fosse um
+  // summary válido, e `if (sanitized)` (truthy pra string não-vazia)
+  // gravava "…" literal como summary do item — violando o invariante do
+  // módulo ("nunca publicar descrição terminando em …").
+  it("#3276: og:description que sobra só '…' após strip de boilerplate NÃO é gravado — deixa summary ausente", () => {
+    const out = mergeMetadata(
+      { url: "https://x", title: "Real title", source: "inbox" },
+      { title: "OG title", summary: "… Leia mais: 10 dicas com IA" },
+    );
+    assert.equal(out.article.summary, undefined);
+    assert.equal(out.summaryUpdated, false);
+  });
 });
 
 describe("enrichArticles — orchestration with mocked fetcher", () => {
