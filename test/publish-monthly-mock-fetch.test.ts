@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, copyFileSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { createHmac } from "node:crypto";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { main } from "../scripts/publish-monthly.ts";
 import { uploadEiaImages, uploadDestaqueImages, LIVROS_PROMO_FILENAME } from "../scripts/lib/mensal/monthly-image-upload.ts";
@@ -525,6 +526,154 @@ describe("publish-monthly main(): % acertaram do É IA? anterior (#2948)", () =>
       parsed.htmlContent,
       /acertaram/i,
       "sem dado real (fetch bloqueado), htmlContent não deve mencionar % acertaram",
+    );
+  });
+});
+
+// ─── #3226: registerEiaAnswer() usava POLL_SECRET (env var errada) pra ────
+// calcular o HMAC admin do /admin/correct — Worker valida contra ADMIN_SECRET
+// (workers/poll/src/index.ts:274/192), então toda tentativa de pré-registrar
+// o gabarito É IA? mensal falhava com "invalid signature". close-poll.ts já
+// tinha o fix certo desde #1176 (ADMIN_SECRET ?? POLL_ADMIN_SECRET); este PR
+// aplica o mesmo padrão em publish-monthly.ts.
+//
+// mirrorAdminSig() replica localmente o algoritmo de close-poll.ts (linha
+// "adminSig": createHmac("sha256", secret).update(`${edition}:${answer}`))
+// — close-poll.ts não exporta essa função (nem main()), então não há um
+// helper compartilhado pra importar; os outros testes de HMAC do repo (ex:
+// test/workers-draft.test.ts) seguem o mesmo padrão de duplicar o algoritmo
+// localmente em vez de importar internals não-exportados.
+function mirrorAdminSig(secret: string, edition: string, answer: string): string {
+  return createHmac("sha256", secret).update(`${edition}:${answer}`).digest("hex");
+}
+
+const EIA_ANSWER_SIDECAR = {
+  edition: "260430",
+  answer: { A: "ia", B: "real" },
+  ai_side: "A",
+};
+
+/** Escreve o sidecar canônico (`lib/eia-answer.ts`) que registerEiaAnswer() lê primeiro. */
+function writeEiaSidecar(dir: string): void {
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  writeFileSync(
+    join(dir, "_internal", "01-eia-answer.json"),
+    JSON.stringify(EIA_ANSWER_SIDECAR, null, 2) + "\n",
+    "utf8",
+  );
+}
+
+/** Mocks mínimos da Brevo pra deixar main() completar (idênticos aos usados acima). */
+function mockBrevoMinimalHappyPath(agent: MockAgent, campaignId: number): void {
+  const brevoMock = agent.get("https://api.brevo.com");
+  brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+    id: 9, name: "T1-W1", totalSubscribers: 50,
+  }, { headers: { "content-type": "application/json" } });
+  brevoMock.intercept({ path: "/v3/emailCampaigns", method: "POST" }).reply(201, {
+    id: campaignId,
+  }, { headers: { "content-type": "application/json" } });
+}
+
+const POLL_WORKER_URL = "https://mock-poll-worker.invalid";
+const SECRET_ENV_KEYS = ["ADMIN_SECRET", "POLL_ADMIN_SECRET", "POLL_SECRET"] as const;
+
+function clearSecretEnv(): void {
+  for (const k of SECRET_ENV_KEYS) delete process.env[k];
+}
+
+describe("publish-monthly main(): registerEiaAnswer() usa ADMIN_SECRET, não POLL_SECRET (#3226)", () => {
+  afterEach(() => {
+    clearSecretEnv();
+    delete process.env.POLL_WORKER_URL;
+  });
+
+  it("ADMIN_SECRET presente → sig do /admin/correct bate com o algoritmo de close-poll.ts", async () => {
+    writeEiaSidecar(tmpDir);
+    clearSecretEnv();
+    process.env.ADMIN_SECRET = "test-admin-secret-3226";
+    process.env.POLL_WORKER_URL = POLL_WORKER_URL;
+
+    mockBrevoMinimalHappyPath(mockAgent, 400);
+
+    let capturedPath: string | null = null;
+    mockAgent.get(POLL_WORKER_URL).intercept({
+      path: (path) => {
+        if (!path.startsWith("/admin/correct")) return false;
+        capturedPath = path;
+        return true;
+      },
+      method: "POST",
+    }).reply(200, { ok: true, updated_votes: 3 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+    await main(tmpDir);
+
+    assert.ok(capturedPath, "registerEiaAnswer() deveria ter chamado POST /admin/correct");
+    const url = new URL(capturedPath as string, POLL_WORKER_URL);
+    const edition = url.searchParams.get("edition");
+    const answer = url.searchParams.get("answer");
+    const sig = url.searchParams.get("sig");
+    assert.equal(answer, "A", "ai_side do sidecar (#927) deve ir como answer");
+    assert.equal(url.searchParams.get("brand"), "clarice");
+    assert.ok(edition, "edition deve estar presente na query");
+
+    const expectedSig = mirrorAdminSig("test-admin-secret-3226", edition as string, answer as string);
+    assert.equal(sig, expectedSig, "sig deve ser HMAC-SHA256(ADMIN_SECRET, `${edition}:${answer}`) — mesmo algoritmo de close-poll.ts");
+  });
+
+  it("POLL_ADMIN_SECRET (alias, sem ADMIN_SECRET) → mesmo fallback documentado em close-poll.ts", async () => {
+    writeEiaSidecar(tmpDir);
+    clearSecretEnv();
+    process.env.POLL_ADMIN_SECRET = "test-alias-secret-3226";
+    process.env.POLL_WORKER_URL = POLL_WORKER_URL;
+
+    mockBrevoMinimalHappyPath(mockAgent, 401);
+
+    let capturedPath: string | null = null;
+    mockAgent.get(POLL_WORKER_URL).intercept({
+      path: (path) => {
+        if (!path.startsWith("/admin/correct")) return false;
+        capturedPath = path;
+        return true;
+      },
+      method: "POST",
+    }).reply(200, { ok: true, updated_votes: 1 }, { headers: { "content-type": "application/json" } });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+    await main(tmpDir);
+
+    assert.ok(capturedPath, "registerEiaAnswer() deveria ter chamado POST /admin/correct via alias POLL_ADMIN_SECRET");
+    const url = new URL(capturedPath as string, POLL_WORKER_URL);
+    const edition = url.searchParams.get("edition");
+    const answer = url.searchParams.get("answer");
+    const expectedSig = mirrorAdminSig("test-alias-secret-3226", edition as string, answer as string);
+    assert.equal(url.searchParams.get("sig"), expectedSig);
+  });
+
+  it("só POLL_SECRET (env var antiga/errada, sem ADMIN_SECRET/POLL_ADMIN_SECRET) → gabarito NÃO é registrado (guarda contra regressão)", async () => {
+    writeEiaSidecar(tmpDir);
+    clearSecretEnv();
+    process.env.POLL_SECRET = "wrong-var-for-admin-correct";
+    process.env.POLL_WORKER_URL = POLL_WORKER_URL;
+
+    mockBrevoMinimalHappyPath(mockAgent, 402);
+
+    let pollWorkerCalled = false;
+    mockAgent.get(POLL_WORKER_URL).intercept({
+      path: (path) => path.startsWith("/admin/correct"),
+      method: "POST",
+    }).reply(() => {
+      pollWorkerCalled = true;
+      return { statusCode: 200, data: JSON.stringify({ ok: true, updated_votes: 0 }) };
+    });
+
+    process.argv = ["node", "publish-monthly.ts", "--yymm", "2604", "--list-id", "9"];
+    await main(tmpDir);
+
+    assert.equal(
+      pollWorkerCalled,
+      false,
+      "sem ADMIN_SECRET/POLL_ADMIN_SECRET, registerEiaAnswer() deve retornar cedo (warn) sem tentar o fetch — a var antiga POLL_SECRET sozinha não deve bastar",
     );
   });
 });

@@ -265,9 +265,13 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
  */
 async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<void> {
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
-  const secret = process.env.POLL_SECRET;
+  // #3226: Worker /admin/correct valida sig contra ADMIN_SECRET (workers/poll
+  // src/index.ts:325), não POLL_SECRET — mesmo fix aplicado em close-poll.ts
+  // (#1176). Aceitar tanto ADMIN_SECRET (canonical) quanto POLL_ADMIN_SECRET
+  // (alias usado em alguns ambientes).
+  const secret = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET;
   if (!secret) {
-    process.stderr.write("warn: POLL_SECRET não definido — gabarito É IA? não pré-registrado\n");
+    process.stderr.write("warn: ADMIN_SECRET não definido — gabarito É IA? não pré-registrado\n");
     return;
   }
 
