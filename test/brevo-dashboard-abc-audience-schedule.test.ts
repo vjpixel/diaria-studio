@@ -20,10 +20,12 @@ import {
   twoProportionZTest,
   aggregateAbcByAudience,
   renderAbcAudienceSection,
+  renderAbcAudienceTable,
   pickTopWeekdays,
   aggregateByWeekday,
   renderTopWeekdaysSection,
   type WeekdaySummary,
+  type AbcAudienceTable,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
@@ -211,6 +213,67 @@ describe("aggregateAbcByAudience", () => {
     assert.match(html, />Click rate</);
     assert.match(html, /▲ ABERTURA/);
     assert.match(html, /▲ CLIQUE/);
+  });
+});
+
+// ─── renderAbcAudienceTable / renderAbcAudienceSection: omite audiência sem envios (#3127) ──
+
+describe("renderAbcAudienceTable / renderAbcAudienceSection — omite audiência vazia (#3127)", () => {
+  const cycle = "2607-08";
+  // Só quente enviou neste ciclo — fria fica com as 3 células zeradas.
+  const warmOnly = [
+    makeCampaign(10, "Clarice News 2607-08 — A: subject A", "2026-07-10T06:00:00Z", {
+      sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80,
+    }),
+    makeCampaign(11, "Clarice News 2607-08 — B: subject B", "2026-07-10T06:01:00Z", {
+      sent: 1000, delivered: 990, uniqueViews: 450, uniqueClicks: 60,
+    }),
+    makeCampaign(12, "Clarice News 2607-08 — C: subject C", "2026-07-10T06:02:00Z", {
+      sent: 1000, delivered: 990, uniqueViews: 400, uniqueClicks: 50,
+    }),
+  ];
+
+  test("renderAbcAudienceTable: as 3 células com campaignCount 0 → string vazia (não o stub 'Sem dados')", () => {
+    const zeroCell = (cell: "A" | "B" | "C") => ({
+      cell,
+      campaignCount: 0,
+      sent: 0,
+      delivered: 0,
+      opens: 0,
+      clicks: 0,
+      unsubscriptions: 0,
+      openRate: 0,
+      ctor: 0,
+      clickRate: 0,
+      unsubRate: 0,
+      bounceRate: 0,
+      spamRate: 0,
+    });
+    const table: AbcAudienceTable = {
+      cells: [zeroCell("A"), zeroCell("B"), zeroCell("C")],
+      leaderOpenRate: null,
+      leaderClickRate: null,
+      significantClick: false,
+      pValue: null,
+    };
+    assert.equal(renderAbcAudienceTable("Fria (nunca recebeu)", table), "");
+  });
+
+  test("renderAbcAudienceSection: fria vazia é omitida por completo — agregada/quente com dado continuam renderizando", () => {
+    const result = aggregateAbcByAudience(warmOnly, cycle);
+    // Pré-condições do cenário: fria zerada, agregada/quente com dado real.
+    assert.ok(result.cold.cells.every((c) => c.campaignCount === 0), "pré-condição: fria zerada");
+    assert.ok(result.aggregate.cells.some((c) => c.campaignCount > 0), "pré-condição: agregada com dado");
+    assert.ok(result.warm.cells.some((c) => c.campaignCount > 0), "pré-condição: quente com dado");
+
+    const html = renderAbcAudienceSection(cycle, result);
+    // O stub antigo (header + "Sem dados desta audiência") nunca deve aparecer.
+    assert.doesNotMatch(html, /Sem dados desta audiência/);
+    assert.doesNotMatch(html, /Fria \(nunca recebeu\)/);
+    // As outras 2 subseções (com dado real) continuam presentes.
+    assert.match(html, /Agregada \(Fria \+ Quente\)/);
+    assert.match(html, /Quente \(já engajada\)/);
+    assert.match(html, />CTOR</);
   });
 });
 

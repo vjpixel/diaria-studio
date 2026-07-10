@@ -9,6 +9,9 @@ import {
   BRAND_INFO,
   leaderboardHref,
   formatEditionDateForBrand,
+  renderBrandShellStyles, // #3113: régua teal + rodapé de marca
+  renderBrandFooter, // #3113: régua teal + rodapé de marca
+  todayAammddBrt, // #3113 item 9: também usado por handleVote (vote.ts)
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -78,8 +81,13 @@ export function computePodium(
   scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
 ): PodiumEntry[] {
   // Reusa rankEntries com shape LeaderboardEntry (precisa pct + streak).
+  // #3113: medalha exige correct >= 1 — sem isso, o tiebreak "mais tentativas
+  // vence" (#1163) podia colocar alguém com 0 acertos no pódio (0/2 rankeia
+  // acima de 0/1), degenerando o "campeão do mês" pra quem nunca acertou nada.
+  // Filtra ANTES do rankEntries (não depois) pra que o próximo candidato
+  // elegível suba pro rank 1/2/3 — não deixa o pódio com "buracos".
   const eligible = scores
-    .filter((s) => s.total > 0)
+    .filter((s) => s.total > 0 && s.correct >= 1)
     .map((s) => {
       const hasNickname = s.nickname && s.nickname.trim().length > 0;
       const display = hasNickname ? s.nickname!.trim() : maskEmail(s.email);
@@ -524,7 +532,10 @@ export async function handleLeaderboardByMonthJson(
         })();
     return {
       rank: e.rank,
-      medal: e.rank <= 3 ? medals[e.rank - 1] : "",
+      // #3113: medalha exige correct >= 1 (mesmo gate de rankEntries/computePodium
+      // — ver leaderboard.ts). Sem isso, rank<=3 por "mais tentativas vence"
+      // (#1163) com 0 acertos ainda ganharia emoji de medalha aqui.
+      medal: e.rank <= 3 && e.correct >= 1 ? medals[e.rank - 1] : "",
       nickname: displayNickname,
       correct: e.correct,
       total: e.total,
@@ -676,28 +687,34 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — texto secundário é
+     SEMPRE ink sólido, hierarquia vem de tamanho/peso (DS canônico, ver nota
+     em design-tokens.ts: "não há cinzas na paleta"). */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid ${DS_COLORS.ink}; font-size: 0.72rem; color: ${DS_COLORS.ink}; text-transform: uppercase; letter-spacing: 0.08em; font-family: ${DS_FONTS.sans}; }
   td { padding: 10px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; }
   tr.leader td { font-weight: 600; color: ${DS_COLORS.brand}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA?</p>
+<hr class="rule">
 <h1>${heading}</h1>
 ${subCopy}
 <p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<tbody>${rows || `<tr><td colspan=3 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
-<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
 
@@ -742,17 +759,53 @@ export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Prom
  * (2 dígitos AA do AAMMDD) e ordena DESC (mais recente primeiro). Chaves com
  * formato diferente de AAMMDD (ex: ciclo mensal Clarice `2605-06`) são
  * ignoradas — só interessam edições diárias aqui.
+ *
+ * #3113 (item 9): também exclui edições com data > hoje (BRT). O gabarito
+ * (`correct:{edition}`) pode ser definido ANTES do e-mail de fato sair (ex:
+ * durante a preparação de imagens/revisão) — sem este filtro, o arquivo
+ * expunha uma edição futura como votável antes da newsletter ser publicada.
+ * `now` opcional (default `new Date()`) — pra determinismo em teste.
  */
-export function extractEditionsForYear(correctKeyNames: string[], year: string): string[] {
+export function extractEditionsForYear(correctKeyNames: string[], year: string, now: Date = new Date()): string[] {
   const yy = year.slice(2);
+  const today = todayAammddBrt(now);
   const set = new Set<string>();
   for (const k of correctKeyNames) {
     const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
     if (!/^\d{6}$/.test(edition)) continue;
     if (edition.slice(0, 2) !== yy) continue;
+    if (edition > today) continue; // #3113 item 9: ainda não chegou a data
     set.add(edition);
   }
   return [...set].sort().reverse();
+}
+
+/**
+ * Pure (#3113 item 10): agrupa edições AAMMDD (já ordenadas DESC) por mês,
+ * preservando a ordem de entrada — uma lista flat de edições diárias passa de
+ * 200 itens/ano sem agrupamento. Assume todas as edições do MESMO ano (o
+ * caller já filtra por ano em `extractEditionsForYear`) — o heading mostra só
+ * o nome do mês (o ano já aparece no `<h1>` da página).
+ */
+export interface EditionMonthGroup {
+  monthLabel: string;
+  editions: string[];
+}
+
+export function groupEditionsByMonth(editions: string[]): EditionMonthGroup[] {
+  const groups: EditionMonthGroup[] = [];
+  let currentMonth: string | null = null;
+  for (const ed of editions) {
+    const mm = ed.slice(2, 4);
+    if (mm !== currentMonth) {
+      const monthName = MONTH_NAMES_PT[parseInt(mm, 10) - 1] ?? mm;
+      const monthLabel = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      groups.push({ monthLabel, editions: [] });
+      currentMonth = mm;
+    }
+    groups[groups.length - 1].editions.push(ed);
+  }
+  return groups;
 }
 
 /** Pure (#2867): href do arquivo — lista do ano (sem `edition`) ou voto de 1
@@ -770,9 +823,17 @@ export function renderArchiveListHtml(
   brand: Brand = "diaria",
 ): Response {
   const info = BRAND_INFO[brand];
-  const rows = editions
-    .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
+  // #3113 (item 10): agrupado por mês (heading + <ul> próprio) em vez de uma
+  // única lista flat — evita >200 itens/ano sem estrutura.
+  const sections = groupEditionsByMonth(editions)
+    .map((g) => {
+      const items = g.editions
+        .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
+        .join("\n");
+      return `<h2 class="month-heading">${htmlEscape(g.monthLabel)}</h2>\n<ul>${items}</ul>`;
+    })
     .join("\n");
+  const rows = sections || "<ul><li>Nenhuma edição disponível ainda.</li></ul>";
   const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
     title: pageTitle,
@@ -792,18 +853,27 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
-  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — ver renderLeaderboardHtml acima. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
   ul { list-style: none; padding: 0; margin-top: 20px; }
   li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
-  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  /* #3113 (item 10): heading de mês — agrupa a lista flat que passaria de
+     200 itens/ano. Reusa a mesma convenção visual do .kicker (sans, uppercase,
+     letter-spacing), em teal (acento reservado a links/kickers no DS). */
+  .month-heading { font-family: ${DS_FONTS.sans}; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 28px 0 0; }
+  .month-heading + ul { margin-top: 8px; }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA? — arquivo</p>
+<hr class="rule">
 <h1>Arquivo de ${htmlEscape(year)}</h1>
 <p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
-<ul>${rows || "<li>Nenhuma edição disponível ainda.</li>"}</ul>
+${rows}
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
@@ -848,7 +918,9 @@ ${seoMeta}
      removido: Cursos/Livros já não carregavam o arquivo, cai pra system sans. */
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
-  p.sub { color: rgba(23,20,17,0.62); font-size: 0.95rem; }
+  /* #3113 item 6: cinzas via opacity sobre ink aboliram — ver renderLeaderboardHtml acima. */
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .email-row { margin: 20px 0; }
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
@@ -858,12 +930,22 @@ ${seoMeta}
      contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  /* #3113: hint "role pra ver B" — invisível no desktop (as 2 imagens já
+     aparecem lado a lado ali, ver .choices acima) e visível só na pilha
+     mobile abaixo, onde a imagem A + botão sozinhos já preenchem a tela e
+     dava pra votar em A sem nunca ver a imagem B. Elemento HTML real (não
+     CSS ::after) — leitor de tela também anuncia. */
+  .scroll-hint { display: none; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
+    .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
   }
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+<p class="kicker">É IA?</p>
+<hr class="rule">
 <h1>Qual imagem foi gerada por IA?</h1>
 <p class="sub">Edição de ${dateLabel} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
 <form action="/vote" method="GET">
@@ -874,10 +956,12 @@ ${seoMeta}
   </div>
   <div class="choices">
     <div class="choice"><img src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>
     <div class="choice"><img src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
@@ -920,7 +1004,12 @@ export async function handleArchiveVotePage(
     });
   }
   const correctRaw = await env.POLL.get(`correct:${edition}`);
-  if (!correctRaw) {
+  // #3113 (item 9): mesma checagem de `extractEditionsForYear` — sem ela, a
+  // página de voto do arquivo continuaria acessível via URL direta (mesmo
+  // AAMMDD, adivinhado ou incrementado a partir de uma edição já pública)
+  // mesmo depois da LISTA parar de mostrar a edição futura. Mesma mensagem
+  // do "sem gabarito" — o assinante não precisa saber o motivo específico.
+  if (!correctRaw || edition > todayAammddBrt(new Date())) {
     return new Response(
       votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
       { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },

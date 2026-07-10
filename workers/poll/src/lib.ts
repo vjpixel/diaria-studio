@@ -5,6 +5,9 @@
  * fetch). Extraído de `index.ts` pra permitir testes Node sem mock do
  * Worker runtime (#1083).
  */
+// #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
+// index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
+import { DS_COLORS } from "./ds-tokens.generated";
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -149,6 +152,29 @@ export function currentMonthSlugBrt(now: Date): string {
 }
 
 /**
+ * Pure (#3113 item 9): "hoje" em AAMMDD (BRT) — mesmo offset fixo de -3h usado
+ * em toda formatação de data deste worker. Usado só pra comparação
+ * lexicográfica contra edições AAMMDD (strings zero-padded de mesmo tamanho
+ * comparam igual a números).
+ *
+ * Movido pra cá (era privado em leaderboard-routes.ts) pra ser reusado
+ * também por `handleVote` em vote.ts — sem isso, o gate de "edição futura"
+ * só existia na LISTAGEM do arquivo (`extractEditionsForYear`) e na página de
+ * voto do arquivo (`handleArchiveVotePage`), mas o endpoint `/vote` que de
+ * fato REGISTRA o voto continuava aceitando uma edição futura via URL direta
+ * (email+edition+choice montados manualmente), já que seu gate original só
+ * checava `correctRaw === null` — e `correct:{edition}` já está setado antes
+ * do e-mail sair (durante prep de imagens/revisão).
+ */
+export function todayAammddBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brt.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(brt.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
  * Pure: -1 se a<b, 0 se igual, 1 se a>b. Slugs "YYYY-MM" zero-padded
  * comparam lexicograficamente bem — string compare basta.
  */
@@ -270,22 +296,38 @@ export function brandKvPrefix(brand: Brand): string {
 /**
  * #3112: variante de `formatEditionDate` ciente de `BRAND_INFO[brand].leaderboardPeriod`.
  *
- * Mesmo racional do #2006 (vote.ts:227-229/254-255, mensagem "já votou"): pra
- * um brand com leaderboard ANUAL (`"year"` — hoje só `clarice`), a publicação
- * é MENSAL — o "dia" do AAMMDD é só artefato do formato do código da edição,
- * não um dado real (a Clarice News não sai num dia específico do mês). Exibir
+ * Mesmo racional do #2006 (vote.ts, mensagem "já votou"): pra um brand com
+ * leaderboard ANUAL (`"year"` — hoje só `clarice`), a publicação é MENSAL —
+ * o "dia" do AAMMDD é só artefato do formato do código da edição, não um
+ * dado real (a Clarice News não sai num dia específico do mês). Exibir
  * "31 de maio de 2026" para um digest mensal é enganoso.
  *
  *   - `leaderboardPeriod === "year"` → formata só "Mês de AAAA" (sem dia).
  *   - `leaderboardPeriod === "month"` (diária) → mantém `formatEditionDate`
  *     completo ("DD de mês de AAAA") — comportamento inalterado.
  *
- * NÃO altera o código AAMMDD interno usado em hrefs/gabarito/dedup — só a
+ * #3113 (item 13, self-review pós-#3192): também aceita o ciclo Clarice
+ * `YYMM-MM` (ex: `2605-06` — ver `editionToMonthSlug`, #2115). A mensagem
+ * "já votou" (vote.ts) passa o `edition` cru da URL de voto pra esta função,
+ * e pro brand `clarice` esse `edition` É o ciclo (não AAMMDD) — ver
+ * `close-poll.ts --brand clarice --edition 2605-06 --cycle 2605-06` e os
+ * links de voto gerados em `monthly-render.ts` (`edition=${edition}` já no
+ * formato de ciclo). Sem este ramo, a mensagem "já votou" mostraria o slug
+ * interno cru ("2605-06") pro leitor em vez de um mês legível.
+ *
+ * NÃO altera o código da edição interno usado em hrefs/gabarito/dedup — só a
  * STRING exibida ao leitor. Input malformado → retorna o input cru (mesmo
  * fallback de `formatEditionDate`).
  */
 export function formatEditionDateForBrand(edition: string, brand: Brand): string {
   if (BRAND_INFO[brand].leaderboardPeriod !== "year") return formatEditionDate(edition);
+  if (/^\d{4}-\d{2}$/.test(edition)) {
+    const monthSlug = editionToMonthSlug(edition); // ciclo → "YYYY-MM" do mês de CONTEÚDO
+    if (!monthSlug) return edition;
+    const [yearStr, mmStr] = monthSlug.split("-");
+    const mmNum = parseInt(mmStr, 10);
+    return `${MONTH_NAMES_PT[mmNum - 1]} de ${yearStr}`;
+  }
   if (!/^\d{6}$/.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
   const mm = parseInt(edition.slice(2, 4), 10);
@@ -309,6 +351,44 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
     : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
+// ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────
+//
+// As páginas leaderboard/arquivo (renderLeaderboardHtml, renderArchiveListHtml)
+// e a página de voto do arquivo (renderArchiveVoteHtml) não tinham identidade
+// visual nenhuma além do `<title>` + o kicker de texto "É IA?" — sem a régua
+// teal (mesmo elemento `<hr class="rule">` de Cursos/Livros) nem rodapé de
+// marca. Estes 2 helpers dão o mínimo de shell editorial consistente com as
+// outras 2 páginas públicas da Diar.ia.
+//
+// Duplicado (não importado de scripts/lib/shared/curadoria-page.ts, que tem o
+// equivalente pra Cursos/Livros) pelo mesmo motivo já documentado em
+// design-tokens.ts/ds-tokens.generated.ts: este worker roda em bundle
+// Cloudflare separado dos scripts Node.
+
+/**
+ * CSS da régua teal (abaixo do kicker, acima do h1) + rodapé mínimo de marca.
+ * margin da régua: 22px, igual à `.rule` de Cursos/Livros (renderCuradoriaHeaderStyles
+ * em scripts/lib/shared/curadoria-page.ts) — evitar reintroduzir aqui o mesmo tipo
+ * de micro-drift de espaçamento que o #3113 existe pra eliminar.
+ */
+export function renderBrandShellStyles(): string {
+  return `  .rule { height: 2px; background: ${DS_COLORS.brand}; border: 0; margin: 0 0 22px; }
+  footer.brand-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid ${DS_COLORS.rule}; font-size: 0.8rem; }
+  footer.brand-footer a { font-weight: 600; }`;
+}
+
+/**
+ * Rodapé mínimo de marca — link pro site principal do brand (diar.ia.br /
+ * clarice.ai). Não é a nav cruzada de 4 links de Cursos/Livros (#3113 Bloco A)
+ * — "É IA?" linkando pra si mesmo na própria página não faz sentido; aqui só
+ * precisa dar identidade (rodapé não-vazio), não navegação cruzada completa.
+ */
+export function renderBrandFooter(brand: Brand): string {
+  const info = BRAND_INFO[brand];
+  const label = info.shortName ?? info.name;
+  return `<footer class="brand-footer"><a href="${htmlEscape(info.siteUrl)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
@@ -396,9 +476,13 @@ export function validateNickname(cleanName: string): string | null {
 
 const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
-/** Favicon SVG inline (data-URI) — "D" em tinta (#FBFAF6) sobre teal
- * (#00A0A0), mesma marca usada em cursos/livros. Mantido estável entre
- * redeploys — trocar o favicon faz o browser tratar como página diferente. */
+/** Favicon SVG inline (data-URI) — "D" em tinta (papel) sobre teal (marca),
+ * mesma marca usada em cursos/livros. Mantido estável entre redeploys —
+ * trocar o favicon faz o browser tratar como página diferente. Cores
+ * hardcoded como `%23RRGGBB` (hex URL-encoded) dentro do próprio SVG — não
+ * escritas como literal `#RRGGBB` aqui no comentário de propósito, pra não
+ * disparar falso-positivo no guard de #3111/#3113 (test/poll-ds-tokens.test.ts),
+ * que escaneia o arquivo fonte inteiro (incluindo comentários) por esse padrão. */
 export const FAVICON_DATA_URI =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='32' y='46' font-family='Georgia, Times, serif' font-size='38' font-weight='700' fill='%23FBFAF6' text-anchor='middle'%3ED%3C/text%3E%3C/svg%3E";
 

@@ -2,12 +2,23 @@
  * newsletter-styles.ts (#2635) — fonte única do CSS de email Diar.ia: o bloco
  * <style> de cada renderer (diário e mensal) é construído por funções deste módulo.
  *
- * Arquitetura de dois níveis:
+ * Arquitetura de três níveis (3º nível adicionado em #3104):
  *   1. BASE (emailBaseRules) — reset body/img/table. Hoje consumido pelo renderer
  *      DIÁRIO (tratado como canônico pela issue). Ver nota de escopo abaixo.
- *   2. OVERRIDES por renderer:
+ *   2. OVERRIDES por renderer — consumidos incondicionalmente pelo `<style>`
+ *      principal de cada um:
  *      - Diária: a.headline:hover + @media .container/.pad/.hero
  *      - Mensal:  @media .mob-stack (imagens A/B do É IA? em telas estreitas, #1918)
+ *   3. STANDALONE, invocado condicionalmente por UM call site específico (não
+ *      por um `<style>` principal inteiro): `darkCanvasMediaRule` (a regra crua
+ *      `@media (prefers-color-scheme: dark)`, fonte única compartilhada entre
+ *      `buildMensalStyleBlock` — que a embute no seu `<style>` principal — e
+ *      `buildDarkCanvasStyleBlock` — um `<style>` À PARTE que só o caminho
+ *      `fullDocument` da diária injeta, #3104). Este nível existe porque a
+ *      diária tem 2 saídas (fragmento pro Beehiiv vs documento completo) e só
+ *      uma delas deve ganhar a regra — dobrá-la em `buildDiariaStyleBlock`
+ *      vazaria pro fragmento também. Ver o docstring de `buildDarkCanvasStyleBlock`
+ *      abaixo para o raciocínio completo.
  *
  * Design-tokens (cores/fontes) já são compartilhados via ./design-tokens.ts — ambos
  * os renderers importam COLORS/FONTS de lá (fonte única de tokens). Este módulo NÃO
@@ -75,6 +86,53 @@ export function buildDiariaStyleBlock(pageBg: string, brandColor: string): strin
 }
 
 /**
+ * Regra `@media (prefers-color-scheme: dark)` de dark-canvas (#2645/#3104) —
+ * extraída como fonte única porque o mesmo texto (mesma indentação, mesmos
+ * seletores) aparecia duplicado à mão em buildMensalStyleBlock e no novo
+ * buildDarkCanvasStyleBlock. Não inclui a tag `<style>` envolvente nem o
+ * comentário — cada caller decide se quer um comentário próprio antes da regra.
+ *
+ * Nota de indentação (mesma convenção de emailBaseRules): a primeira linha NÃO
+ * carrega espaço líder — o caller adiciona via `  ${darkCanvasMediaRule(...)}`.
+ *
+ * @param darkCanvasBg — cor do canvas em dark mode (INK do DS, #171411).
+ */
+export function darkCanvasMediaRule(darkCanvasBg: string): string {
+  return `@media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:${darkCanvasBg} !important; }
+  }`;
+}
+
+/**
+ * Bloco <style> STANDALONE de dark-canvas (#3104) — paridade com a regra que
+ * buildMensalStyleBlock já emite (#2645), mas isolado num <style> à parte em
+ * vez de embutido no bloco principal. Motivo: a diária tem 2 caminhos de
+ * saída — o fragmento colado no Beehiiv (`fullDocument: false`, usa só
+ * buildDiariaStyleBlock) e o documento completo Worker-hosted
+ * (`fullDocument: true`, preview/test-email). A issue #3104 pede a paridade
+ * só no caminho fullDocument: no fragmento não vale o esforço (o Beehiiv às
+ * vezes remove o `<style>` do htmlSnippet, #260629 — qualquer media query
+ * ali já é best-effort de qualquer jeito) e mexer no bloco compartilhado
+ * arriscaria um side-effect ali por nada. Por isso esta função fica separada
+ * de buildDiariaStyleBlock (que o fragmento também usa) — só o caller do
+ * fullDocument invoca esta.
+ *
+ * ESCOPO: a regra escurece só o CANVAS externo ao container de 600px (classe
+ * `.ds-canvas`, aplicada pelo caller no wrapper mais externo do fullDocument)
+ * — o conteúdo do container (cores INK/SURFACE/TEAL fixas dos outros render*)
+ * permanece inalterado, mesma decisão de escopo do #2645 mensal.
+ *
+ * @param darkCanvasBg — cor do canvas em dark mode (INK do DS, #171411 — o
+ *   caller passa TEXT_COLOR, que já É esse valor; módulo não importa
+ *   design-tokens por princípio arquitetural, ver nota de topo do arquivo).
+ */
+export function buildDarkCanvasStyleBlock(darkCanvasBg: string): string {
+  return `<style>
+  ${darkCanvasMediaRule(darkCanvasBg)}
+</style>`;
+}
+
+/**
  * Bloco <style> completo do renderer MENSAL (monthly-render.ts wrapEmail).
  *
  * Preserva EXATAMENTE o output atual da mensal: apenas a media query .mob-stack
@@ -114,8 +172,6 @@ export function buildMensalStyleBlock(_reservedPageBg: string, darkCanvasBg: str
     .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
   }
   /* #2645: dark theme — escurece o canvas externo ao card; conteúdo interno preservado. */
-  @media (prefers-color-scheme: dark) {
-    body, .ds-canvas { background:${darkCanvasBg} !important; }
-  }
+  ${darkCanvasMediaRule(darkCanvasBg)}
 </style>`;
 }

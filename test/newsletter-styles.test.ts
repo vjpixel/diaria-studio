@@ -25,6 +25,8 @@ import {
   emailBaseRules,
   buildDiariaStyleBlock,
   buildMensalStyleBlock,
+  buildDarkCanvasStyleBlock,
+  darkCanvasMediaRule,
 } from "../scripts/lib/shared/newsletter-styles.ts";
 import { DS_STYLE_BLOCK } from "../scripts/lib/newsletter-render-html.ts";
 import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
@@ -97,6 +99,49 @@ describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
     assert.ok(!DS_STYLE_BLOCK.includes(".mob-stack"), ".mob-stack não pertence à diária");
   });
 
+  // ── buildDarkCanvasStyleBlock: standalone, isolado do bloco principal (#3104) ──
+
+  it("buildDarkCanvasStyleBlock emite só a regra de dark-canvas, num <style> à parte", () => {
+    const dark = buildDarkCanvasStyleBlock("#171411");
+    assert.match(dark, /^<style>/);
+    assert.match(dark, /@media \(prefers-color-scheme: dark\)/);
+    assert.match(dark, /body, \.ds-canvas \{ background:#171411 !important; \}/);
+  });
+
+  it("buildDarkCanvasStyleBlock interpola a cor recebida (não hardcoda o INK)", () => {
+    const dark = buildDarkCanvasStyleBlock("#000000");
+    assert.ok(dark.includes("background:#000000 !important;"), `cor não interpolada:\n${dark}`);
+  });
+
+  it("buildDiariaStyleBlock NÃO ganha a regra de dark-canvas (fica isolada — #3104)", () => {
+    // O fragmento colado no Beehiiv usa só buildDiariaStyleBlock — a regra de
+    // dark-canvas fica reservada ao caller do fullDocument (newsletter-render-html.ts),
+    // que a injeta como <style> SEPARADO. buildDiariaStyleBlock não deve mudar.
+    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND), DIARIA_STYLE_BEFORE);
+    assert.ok(!buildDiariaStyleBlock(PAGE_BG, BRAND).includes("prefers-color-scheme"));
+  });
+
+  // ── darkCanvasMediaRule: fonte única da regra, consumida pelos 2 builders ───
+
+  it("darkCanvasMediaRule emite a regra @media crua, sem <style> envolvente", () => {
+    const rule = darkCanvasMediaRule("#171411");
+    assert.equal(
+      rule,
+      `@media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:#171411 !important; }
+  }`,
+    );
+  });
+
+  it("buildDarkCanvasStyleBlock embrulha darkCanvasMediaRule byte-a-byte (sem duplicar o texto da regra)", () => {
+    // Trava a extração (#3104 self-review): buildDarkCanvasStyleBlock não pode
+    // ter sua PRÓPRIA cópia da regra — precisa compor a partir do helper único.
+    assert.equal(
+      buildDarkCanvasStyleBlock("#171411"),
+      `<style>\n  ${darkCanvasMediaRule("#171411")}\n</style>`,
+    );
+  });
+
   // ── buildMensalStyleBlock: preserva o output atual (só .mob-stack) ──────────
 
   it("buildMensalStyleBlock preserva o output atual: só .mob-stack, SEM reset base", () => {
@@ -110,6 +155,22 @@ describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
     assert.ok(!style.includes(EXPECTED_BASE_TABLE), "mensal NÃO deve ganhar table{border-collapse:collapse} (quadra cantos arredondados)");
     assert.ok(!style.includes(".container") && !style.includes(".hero"),
       "overrides exclusivos da diária não pertencem à mensal");
+  });
+
+  it("buildMensalStyleBlock é byte-idêntico ao literal pré-extração do darkCanvasMediaRule (#3104)", () => {
+    // Ground truth independente (não deriva de darkCanvasMediaRule): garante que
+    // extrair o helper compartilhado não mudou 1 caractere do output da mensal.
+    const MENSAL_STYLE_BEFORE = `<style>
+  /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
+  @media only screen and (max-width: 480px) {
+    .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
+  }
+  /* #2645: dark theme — escurece o canvas externo ao card; conteúdo interno preservado. */
+  @media (prefers-color-scheme: dark) {
+    body, .ds-canvas { background:#171411 !important; }
+  }
+</style>`;
+    assert.equal(buildMensalStyleBlock(PAGE_BG), MENSAL_STYLE_BEFORE);
   });
 
   // ── wrapEmail integração: output mensal não regrediu ────────────────────────

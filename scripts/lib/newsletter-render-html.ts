@@ -10,7 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
-import { buildDiariaStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -82,11 +82,32 @@ function bodyP(margin: string, content: string): string {
 const PAD_SECTION = "40px 32px 0"; // padrão entre seções
 const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 
+// #3104: padding do box "contorno" (papel + borda bege) unificado — era
+// `23px 27px` em renderWhyBoxInner ("Por que isso importa", compensando a
+// borda 1px) vs `24px 28px` em renderErroIntencionalReveal (reveal do
+// Sorteio), 1px de drift sem motivo funcional. Canonicalizado em `24px 28px`
+// — já é o valor dos boxes "painel" (É IA?, Sorteio, CTA de callout), então
+// contorno e painel ficam com o mesmo respiro interno; só a régua (contorno)
+// vs o fundo preenchido (painel) distingue os 2 estilos visualmente.
+const PAD_BOX_OUTLINE = "24px 28px";
+
+// #3104: letter-spacing de labels uppercase (kicker de seção, kicker de box,
+// legenda de hero, resultado do É IA?) variava 1px/1.5px/2px sem motivo
+// funcional. Canonicalizado em 2px — o valor do kicker de seção
+// (renderKicker), que é o único ANCORADO: scripts/build-link-ctr.ts usa esse
+// literal via regex (KICKER_TD_OPEN_SRC) pra reconhecer headings de seção no
+// HTML cacheado do Beehiiv — mudar esse valor quebraria a extração de CTR
+// por seção. Os demais labels (menos ancorados) sobem para o mesmo valor.
+const LS_LABEL = "2px";
+
 // #1936 (DS): media query + hover do template de email. Progressive enhancement
 // (Gmail/Apple Mail honram); o design carrega nos estilos inline.
 // #2635: construído via buildDiariaStyleBlock (newsletter-styles.ts) — mesmo CSS
 // base compartilhado com o renderer mensal (monthly-render.ts). Output byte-idêntico.
 export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
+// #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
+// uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
+const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
@@ -139,13 +160,28 @@ export function renderDivulgacaoSeparator(): string {
 }
 
 /**
- * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
- * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
+ * #3104: marcador ● teal reutilizável — a "assinatura de cor" do DS pros
+ * labels uppercase deste padrão (kicker de seção, "Por que isso importa",
+ * resultado do É IA?). Isolado em helper porque teal 12/16px bold mede
+ * ~3.2:1 de contraste sobre papel/branco — abaixo de AA (4.5:1) pra texto
+ * normal (16px bold não qualifica como "large text" do WCAG, que exige
+ * ≥18.66px bold). Fix sem mexer na paleta: o PONTO continua teal (identidade
+ * visual preservada), o TEXTO do label vira ink (contraste ~14:1) em cada
+ * caller — este helper só emite o ponto.
+ */
+function tealDot(): string {
+  return `<span style="color:${TEAL};">&#9679;</span>`;
+}
+
+/**
+ * Kicker de seção do DS: ponto ● teal + label ink uppercase (#3104 — era
+ * label teal, ~3.2:1 de contraste, abaixo de AA) + régua bege preenchendo o
+ * resto da linha. Retorna HTML interno (sem `<tr>`).
  */
 export function renderKicker(label: string): string {
   const clean = esc(stripKickerEmoji(label));
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};white-space:nowrap;padding-right:12px;"><span style="color:${TEAL};">&#9679;</span>&nbsp;${clean}</td>
+    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};white-space:nowrap;padding-right:12px;">${tealDot()}&nbsp;${clean}</td>
     <td style="width:100%;border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td>
   </tr></table>`;
 }
@@ -190,7 +226,7 @@ export function imageGeneratorCredit(): string {
  */
 export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
   return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
-  <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
+  <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
 }
 
 /** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno.
@@ -207,13 +243,14 @@ export function renderBodyParasInner(text: string): string {
     .join("\n  ");
 }
 
-/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker teal). HTML interno. */
+/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker
+ * ponto teal / label ink, #3104 — era label teal, ~3.2:1, abaixo de AA). HTML interno. */
 export function renderWhyBoxInner(text: string): string {
   if (!text || !text.trim()) return "";
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
-      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
+      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;Por que isso importa</p>
       ${bodyP("0", body)}
     </td>
   </tr></table>`;
@@ -565,10 +602,11 @@ export function renderEIA(eia: EIA): string {
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
   // #1630: "Resultado da última edição: X% acertaram" — DS: sans 16px (#3103,
-  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase teal,
-  // no rodapé do painel.
+  // era 12px; escala aprovada {12,16,22,26} não tem 14px) bold uppercase, no
+  // rodapé do painel. #3104: era teal (~3.2:1, abaixo de AA) — ponto teal +
+  // label ink, mesmo padrão do kicker/whyBox.
   const prevResultHtml = eia.prevResultLine
-    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
@@ -592,7 +630,7 @@ export function renderEIA(eia: EIA): string {
   ${renderKicker("É IA?")}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
-      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA</p>
+      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA</p>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;">
         ${eiaChoice("A", eia.imageA)}
         ${eiaChoice("B", eia.imageB, "16px")}
@@ -785,7 +823,7 @@ export function renderErroIntencionalReveal(text: string): string {
   return `<!-- ERRO INTENCIONAL — reveal -->
 <tr><td class="pad" style="padding:14px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       ${bodyP("0", mdInlineToHtml(reveal))}
     </td>
   </tr></table>
@@ -885,7 +923,7 @@ export function renderEncerrar(text: string): string {
           : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
       }).join("");
       // Pills numa única <td> permitem wrap natural — não forçamos nowrap.
-      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
   <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td>${pills}</td></tr></table>`;
     }
     return bodyP("22px 0 0", mdInlineToHtml(b.content.join(" ")));
@@ -1016,18 +1054,32 @@ ${container}
   const preheader = esc(
     content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
   );
+  // #3104: paridade de dark mode com o mensal (#2645) — só neste caminho
+  // (fullDocument), não no fragmento colado no Beehiiv. `content="light dark"`
+  // (não só "light") nos DOIS metas — igual ao mensal — porque Apple Mail
+  // trata um `color-scheme`/`supported-color-schemes` de valor único como "este
+  // e-mail só suporta claro" e some com a regra de dark-canvas abaixo (não a
+  // aplica de qualquer jeito); "light dark" é o que faz o Apple Mail de fato
+  // honrar o `@media (prefers-color-scheme: dark)` autoral que segue no
+  // <style> — sem isso a paridade com o mensal seria só de papel (self-review:
+  // achado real, confirmado contra a documentação de dark mode em e-mail).
+  // Risco prático de deixar o auto-dark-mode ligado é baixo hoje porque toda
+  // cor do e-mail já é setada inline (nunca texto sem cor sobre fundo sem cor).
   return `<!doctype html>
 <html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
+${DARK_CANVAS_STYLE_BLOCK}
 </head>
 <body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
+<table role="presentation" class="ds-canvas" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>
 </body>

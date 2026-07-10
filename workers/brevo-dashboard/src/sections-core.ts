@@ -304,7 +304,7 @@ export function renderDashboardHtml(
   // pela data). Sem reset placeholder (o #2871 é do diário); sem teste mensal
   // → nada. Mais recente primeiro.
   const monthlyAbcGroups = groupMonthlyAbcTests(campaigns);
-  const monthlyAbcSection = monthlyAbcGroups
+  const monthlyAbcSectionsByDate = monthlyAbcGroups
     .map((g) =>
       renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
         title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
@@ -314,6 +314,25 @@ export function renderDashboardHtml(
       }),
     )
     .join("\n");
+  // #3129: a quebra por data é ruído pro editor (decisão já tomada via issue —
+  // a leitura primária pra decidir o teste é o consolidado por audiência em
+  // `abcAudienceSection` logo abaixo, que continua SEMPRE visível, sem
+  // mudança nenhuma aqui). Em vez de remover o detalhe por-data (ainda útil
+  // pra acompanhar um teste em andamento dia-a-dia), colapsa por padrão num
+  // único <details>, reusando .links-ctr/.links-summary/.links-count-badge
+  // (mesmo padrão de render-links.ts) em vez de CSS novo. As âncoras
+  // `#abc-summary-monthly-{cycle}-{dateKey}` de cada seção ficam DENTRO do
+  // <details> (nunca no próprio <details>), então um deep-link pra uma delas
+  // segue auto-expandindo via reveal algorithm nativo do HTML (ancestor
+  // <details> sem `open` é aberto automaticamente pelo browser quando o
+  // :target é um descendente) — sem precisar de JS extra. Sem grupos → ""
+  // (mesma convenção de renderAbcSection: nunca um <details> vazio).
+  const monthlyAbcSection = monthlyAbcSectionsByDate
+    ? `<details class="links-ctr abc-summary-monthly-group" id="abc-summary-monthly-collapsible">
+  <summary class="links-summary">Resumo A/B/C — Mensal por data <span class="links-count-badge">${monthlyAbcGroups.length}</span> teste${monthlyAbcGroups.length === 1 ? "" : "s"}</summary>
+${monthlyAbcSectionsByDate}
+</details>`
+    : "";
   // #2976: Resumo A/B/C por AUDIÊNCIA (Agregada/Fria/Quente) — aditivo, um bloco
   // por ciclo mensal distinto (agrupa TODAS as datas de teste do ciclo, ao
   // contrário de `monthlyAbcSection` acima que separa por data). Vem ANTES do
@@ -527,6 +546,12 @@ export function renderDashboardHtml(
      pra dar borda, diferente do "Resumo por cupom" removido). */
   details.coupon-month { border-bottom: 1px solid var(--rule); }
   details.coupon-month summary.links-summary { padding: 8px; }
+  /* #3129: Resumo A/B/C mensal por data — colapsado por padrão (details.links-ctr
+     reusado). Ganha margin-top próprio porque, ao virar filho do <details> em vez
+     de sibling direto, o 1º <section class="phase2-section"> lá dentro deixa de
+     casar com a regra .phase2-section + .phase2-section (linha acima) — perderia a
+     régua/respiro que separa das seções anteriores (abcSection/abcAudienceSection). */
+  details.abc-summary-monthly-group { margin-top: 32px; }
   /* #2542: tab navigation — CSS-only via radio+label+:checked (sem JS externo) */
   /* Radios visualmente ocultos mas FOCÁVEIS via teclado (não display:none, que os
      removeria da ordem de tabulação — Tab/setas precisam alcançar as abas). */
@@ -937,8 +962,22 @@ export interface CellSummary {
   totalViews: number;
   /** Soma de delivered das campanhas da célula */
   totalDelivered: number;
-  /** Open rate agregado MPP-inclusivo (totalViews / totalDelivered) — base do LÍDER */
+  /** Open rate agregado MPP-inclusivo (totalViews / totalDelivered) */
   openRate: number;
+  /**
+   * #3124: soma de uniqueClicks (cliques únicos) das campanhas da célula —
+   * base do critério decisório real desde #2976 (clique, não abertura).
+   */
+  totalClicks: number;
+  /**
+   * #3124: click rate agregado (totalClicks / totalDelivered) — critério que
+   * de fato decide o teste A/B/C (#2976), não mais só open rate. Antes desta
+   * revisão, `renderAbcSection` coroava `▲ LÍDER` só por open rate MPP-inclusivo
+   * enquanto `renderAbcAudienceSection` (#2976) já decidia por clique —
+   * divergência observada em produção no ciclo 2606-07 (abertura dava A, clique
+   * dava B).
+   */
+  clickRate: number;
   /** Número de campanhas contabilizadas (dias enviados) */
   campaignCount: number;
   /**
@@ -973,7 +1012,7 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
 }
 
 /**
- * Agrega resumo A/B/C das campanhas S1 (d01–d07) de um ciclo Clarice.
+ * Agrega resumo A/B/C das campanhas de um ciclo Clarice.
  * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
  * Exportado pra teste unitário.
  *
@@ -988,6 +1027,18 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
  * Mensal" de um ciclo só-cold renderizava vazia (`renderAbcSection` retorna
  * "" quando `every(r => r.campaignCount === 0)`), o mesmo sintoma que o fix
  * do `groupMonthlyAbcTests` deveria ter resolvido (achado no self-review).
+ *
+ * #3123: a janela de dias (só relevante pro teste DIÁRIO — o mensal é 1
+ * campanha por célula, sem `dayNum`, #2889) é DERIVADA dos dados em vez de
+ * hardcoded d01–d07. O playbook real do editor consolida a célula vencedora
+ * no MEIO da janela (ex: ciclo 2605 — A dropada ~d03 via #2182, C absorvida
+ * pela B em d06/d07 via `clarice-drop-c-to-b.ts`): um dia só entra na
+ * agregação quando ≥2 células distintas têm campanha com stats reais NAQUELE
+ * dia — cobre tanto drop de célula (dias após o drop com só 1 célula
+ * remanescente ficam de fora) quanto consolidação no vencedor (dias "solo"
+ * pós-consolidação, só 1 célula, também ficam de fora — não enviesam o
+ * comparativo). Ciclos onde A/B/C rodam a janela inteira sem drop/consolidação
+ * mantêm o comportamento anterior (nenhum dia excluído).
  */
 export function aggregateAbcSummary(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
@@ -995,12 +1046,27 @@ export function aggregateAbcSummary(
 ): CellSummary[] {
   const cells: Record<
     "A" | "B" | "C",
-    { views: number; delivered: number; count: number; organicViews: number; organicDays: number }
+    {
+      views: number;
+      delivered: number;
+      clicks: number;
+      count: number;
+      organicViews: number;
+      organicDays: number;
+    }
   > = {
-    A: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
-    B: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
-    C: { views: 0, delivered: 0, count: 0, organicViews: 0, organicDays: 0 },
+    A: { views: 0, delivered: 0, clicks: 0, count: 0, organicViews: 0, organicDays: 0 },
+    B: { views: 0, delivered: 0, clicks: 0, count: 0, organicViews: 0, organicDays: 0 },
+    C: { views: 0, delivered: 0, clicks: 0, count: 0, organicViews: 0, organicDays: 0 },
   };
+
+  interface Entry {
+    cell: "A" | "B" | "C";
+    dayNum: number;
+    monthly: boolean;
+    c: BrevoCampaign & { listName?: string; listSize?: number };
+  }
+  const entries: Entry[] = [];
 
   for (const c of campaigns) {
     const warm = parseClariceCampaignKey(c.name);
@@ -1013,12 +1079,60 @@ export function aggregateAbcSummary(
     if (!parsed || parsed.cycle !== cycle) continue;
     // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
     if (parsed.cell === null) continue;
-    // S1 = d01–d07 (só no diário; o mensal é 1 campanha por célula, sem dias — #2889).
+    // S1 é uma janela de NEGÓCIO real (7 dias — ver CLARICE_PLAN_S1 acima,
+    // "Volume do bloco S1 (d01–d07 A/B/C)"), não um artefato só pra evitar
+    // dias solo. Achado do /code-review (angle "wrapper/proxy correctness"):
+    // sem este cap, um dNN>7 com ≥2 células ainda ativas seria absorvido
+    // silenciosamente na seção "Resumo A/B/C — S1", misturando S2/S3 (fases
+    // distintas da rampa, população diferente) com o teste S1. Mantido do
+    // código original — só o corte DENTRO da janela (dias solo por drop/
+    // consolidação) é que agora é derivado, não o teto da janela em si.
     if (!parsed.monthly && parsed.dayNum > 7) continue;
+    entries.push({ cell: parsed.cell, dayNum: parsed.dayNum, monthly: parsed.monthly, c });
+  }
 
-    // #2254: escolha de fonte centralizada. #2252: fallback p/ campaignStats
-    // quando globalStats 429/zerado — sem ele a seção A/B/C INTEIRA sumia.
-    const picked = pickStats(c);
+  // #3123: dentro da janela S1 (d01–d07), o corte de dias SOLO (drop de
+  // célula / consolidação no vencedor) é derivado dos dados. Mapeia dayNum →
+  // Set de células com CAMPANHA naquele dia (só entradas DIÁRIAS; mensal não
+  // tem corte de dia).
+  //
+  // Self-review (achado do angle "language-pitfall" no /code-review do PR):
+  // este mapa é construído a partir de `entries` ANTES do filtro de
+  // `pickStats` — de propósito. Se computássemos a validade do dia só sobre
+  // campanhas com stats REAIS, uma falha transiente de fetch de stats de UMA
+  // célula (ex: 429 da Brevo) faria aquele dia parecer "solo" e derrubaria
+  // também o dado perfeitamente válido da célula IRMÃ no mesmo dia. A
+  // presença de uma CAMPANHA (independente de stats terem chegado) já basta
+  // pra provar que o dia foi um dia de teste multi-célula de verdade.
+  const cellsByDay = new Map<number, Set<"A" | "B" | "C">>();
+  for (const e of entries) {
+    if (e.monthly) continue;
+    if (!cellsByDay.has(e.dayNum)) cellsByDay.set(e.dayNum, new Set());
+    cellsByDay.get(e.dayNum)!.add(e.cell);
+  }
+  // Achado do angle "altitude" no /code-review: gatear em "≥2 letras de
+  // célula distintas apareceram EM QUALQUER LUGAR do ciclo" (checagem antiga)
+  // é mais fraco do que o que o próprio filtro por dia já mede — um ciclo
+  // genuinamente solo (1 célula só, #2360) com UMA campanha isolada mal-
+  // rotulada (typo de nome, resend manual) já dispararia o filtro cycle-wide
+  // mesmo sem nenhum dia real de co-ocorrência. O gate certo é perguntar
+  // exatamente a mesma coisa que o filtro por dia mede: existe ALGUM dia com
+  // ≥2 células reais co-ocorrendo? Se não (ciclo solo, OU handoff sequencial
+  // tipo célula A só d01 trocada pela B a partir de d02 sem nunca coexistir —
+  // diferente do padrão drop/consolidação que este fix mira), zerar tudo via
+  // `validDays` vazio seria pior que não filtrar — cai pro fallback de
+  // incluir todos os dias.
+  const anyDayHasMultipleCells = [...cellsByDay.values()].some((s) => s.size >= 2);
+  const validDays = anyDayHasMultipleCells
+    ? new Set([...cellsByDay.entries()].filter(([, s]) => s.size >= 2).map(([day]) => day))
+    : new Set(cellsByDay.keys());
+
+  for (const e of entries) {
+    if (!e.monthly && !validDays.has(e.dayNum)) continue; // dia solo (drop/consolidação) — fora
+
+    // #2254/#2252: só campanhas com stats reais contam pro total (a janela
+    // acima já não depende mais disso — ver comentário de cellsByDay).
+    const picked = pickStats(e.c);
     if (!picked) continue;
     const { stats: s, isGlobal } = picked;
 
@@ -1027,17 +1141,19 @@ export function aggregateAbcSummary(
     // fontes e bate com a UI da Brevo (#2257). O bug do #2253 era subtrair MPP só
     // do globalStats e não do campaignStats (que não expõe appleMppOpens) → no
     // fallback gerava número "orgânico" que na verdade era MPP-incl → impossível.
-    cells[parsed.cell].views += s.uniqueViews ?? 0;
-    cells[parsed.cell].delivered += s.delivered ?? 0;
-    cells[parsed.cell].count += 1;
+    cells[e.cell].views += s.uniqueViews ?? 0;
+    cells[e.cell].delivered += s.delivered ?? 0;
+    // #3124: soma de cliques únicos — base do click rate (critério decisório real, #2976).
+    cells[e.cell].clicks += s.uniqueClicks ?? 0;
+    cells[e.cell].count += 1;
 
     // #2257: orgânico (sem MPP) só de globalStats (tem appleMppOpens). Contamos
     // organicDays p/ saber se TODOS os dias da célula têm orgânico — só então é
     // comparável entre as células (mesma base); senão organicOpenRate = null.
     if (isGlobal) {
       const gs = s as BrevoGlobalStats;
-      cells[parsed.cell].organicViews += Math.max(0, (gs.uniqueViews ?? 0) - (gs.appleMppOpens ?? 0));
-      cells[parsed.cell].organicDays += 1;
+      cells[e.cell].organicViews += Math.max(0, (gs.uniqueViews ?? 0) - (gs.appleMppOpens ?? 0));
+      cells[e.cell].organicDays += 1;
     }
   }
 
@@ -1050,6 +1166,8 @@ export function aggregateAbcSummary(
       totalViews: d.views,
       totalDelivered: d.delivered,
       openRate: d.delivered > 0 ? (d.views / d.delivered) * 100 : 0,
+      totalClicks: d.clicks,
+      clickRate: d.delivered > 0 ? (d.clicks / d.delivered) * 100 : 0,
       campaignCount: d.count,
       organicOpenRate: organicComplete && d.delivered > 0 ? (d.organicViews / d.delivered) * 100 : null,
     };
@@ -1465,13 +1583,15 @@ export function aggregateAbcByAudience(
   };
 }
 
-/** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. */
-function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
+/** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. Exportado pra teste unitário. */
+export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
   const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
   if (cells.every((c) => c.campaignCount === 0)) {
-    return `
-  <h4 class="subsection-title">${escHtml(title)}</h4>
-  <p class="section-note"><small>Sem dados desta audiência neste ciclo.</small></p>`;
+    // #3127: omite a subseção inteira (sem header nem stub "Sem dados") quando
+    // esta audiência especificamente não teve nenhum envio no ciclo — ruído
+    // visual, já que as outras 1-2 audiências do mesmo ciclo normalmente têm
+    // dado. Mesmo idioma de renderAbcSection (branch sem resetNote).
+    return "";
   }
   const orderedRows = [...cells].sort((a, b) => {
     if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
@@ -1897,8 +2017,16 @@ export function renderWeekdaySection(
 
 
 /**
- * Renderiza a seção de resumo A/B/C da S1.
+ * Renderiza a seção de resumo A/B/C (diário S1 ou mensal por data).
  * Exportado pra teste unitário.
+ *
+ * #3124: alinhado ao critério decisório real desde #2976 (clique, não
+ * abertura) — `renderAbcAudienceSection` já decidia por clique; esta seção
+ * (que não tem equivalente por audiência) coroava `▲ LÍDER` só por open rate,
+ * podendo divergir do vencedor real (observado no ciclo 2606-07: abertura
+ * dava A, clique dava B). Agora mostra as DUAS tags separadas (`▲ ABERTURA`/
+ * `▲ CLIQUE`, mesmo padrão de `renderAbcAudienceTable`) e o texto de conclusão
+ * usa clique como critério decisório.
  */
 export function renderAbcSection(
   abcRows: CellSummary[],
@@ -1906,7 +2034,9 @@ export function renderAbcSection(
   opts: { title?: string; id?: string } = {},
 ): string {
   // #2889: título/id parametrizáveis pra reusar no Resumo A/B/C MENSAL (default = diário S1).
-  const secTitle = opts.title ?? "Resumo A/B/C — S1 (d01–d07)";
+  // #3123: título não promete mais "(d01–d07)" — a janela agora é derivada dos
+  // dados (ver aggregateAbcSummary), não mais um corte fixo de 7 dias.
+  const secTitle = opts.title ?? "Resumo A/B/C — S1";
   const secId = opts.id ?? "abc-summary";
   if (abcRows.every((r) => r.campaignCount === 0)) {
     // Sem resetNote (ciclo sem A/B/C planejado, ex: S2/S3 puro): oculta, como
@@ -1926,29 +2056,39 @@ export function renderAbcSection(
   const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
   const allSampled = sampledRows.length >= 2;
 
-  // Winner: célula com maior open rate entre as que têm dados.
-  // Em empate (taxa idêntica), nenhuma célula recebe tag LÍDER — exibir "EMPATE".
-  const maxRate = sampledRows.reduce((m, r) => Math.max(m, r.openRate), 0);
-  const tiedCount = sampledRows.filter((r) => r.openRate === maxRate).length;
-  const isTied = allSampled && tiedCount > 1;
-  const winnerCell = !isTied && allSampled
-    ? sampledRows.find((r) => r.openRate === maxRate)?.cell ?? null
-    : null;
+  function pickLeader(metric: (r: CellSummary) => number): "A" | "B" | "C" | null {
+    if (!allSampled) return null;
+    const max = sampledRows.reduce((m, r) => Math.max(m, metric(r)), -Infinity);
+    const tied = sampledRows.filter((r) => metric(r) === max);
+    return tied.length === 1 ? tied[0].cell : null;
+  }
 
-  // #2134 follow-up (editor 2026-06-11): ordenar do melhor open rate pro pior;
+  // #3124: dois líderes possíveis — abertura (secundário, ruidoso) e clique
+  // (critério decisório real, #2976). Podem divergir (ciclo 2606-07: abertura
+  // dava A, clique dava B) — por isso duas tags separadas, nunca uma só "LÍDER".
+  const leaderOpenRate = pickLeader((r) => r.openRate);
+  const leaderClickRate = pickLeader((r) => r.clickRate);
+
+  // #3124: ordenar por CLIQUE (era por abertura) — reflete o critério decisório.
   // células sem dados (campaignCount 0) vão pro fim.
   const orderedRows = [...abcRows].sort((a, b) => {
     if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
     if (a.campaignCount === 0) return 1;
     if (b.campaignCount === 0) return -1;
-    return b.openRate - a.openRate;
+    return b.clickRate - a.clickRate;
   });
 
   const cellRows = orderedRows
     .map((r) => {
-      const isWinner = r.cell === winnerCell && r.campaignCount > 0;
-      // #3088: teal falha AA em texto pequeno — tag volta a --ink.
-      const winnerTag = isWinner ? ` <strong style="color:${DS.ink}">▲ LÍDER</strong>` : "";
+      // #3088: teal falha AA em texto pequeno — tags voltam a --ink.
+      const openTag =
+        r.campaignCount > 0 && r.cell === leaderOpenRate
+          ? ` <strong style="color:${DS.ink}">▲ ABERTURA</strong>`
+          : "";
+      const clickTag =
+        r.campaignCount > 0 && r.cell === leaderClickRate
+          ? ` <strong style="color:${DS.ink}">▲ CLIQUE</strong>`
+          : "";
       // #2257: taxa MPP-inclusiva (primária, bate com a Brevo UI) + orgânica em
       // parênteses quando disponível — mesmo padrão da tabela de campanhas (#1153).
       const organicInline =
@@ -1956,32 +2096,35 @@ export function renderAbcSection(
           ? ` <span class="rate-inline">(${r.organicOpenRate.toFixed(1)}% s/ MPP)</span>`
           : "";
       const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
+      const clickRateFmt = r.campaignCount > 0 ? r.clickRate.toFixed(2) + "%" : "—";
       return `<tr>
         <td><strong>Célula ${r.cell}</strong></td>
         <td>${r.campaignCount > 0 ? r.totalDelivered : "—"}</td>
         <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
-        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${organicInline}${winnerTag}</td>
+        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${organicInline}${openTag}</td>
+        <td class="${r.campaignCount > 0 ? "metric" : ""}">${clickRateFmt}${clickTag}</td>
         <td>${r.campaignCount}</td>
       </tr>`;
     })
     .join("\n");
 
-  // Quando todas as células amostradas têm openRate 0 (primeiras horas pós-envio,
-  // antes de qualquer abertura registrada), evitar "Empate...0.0%" — informação enganosa.
-  const allZero = isTied && maxRate === 0;
+  // Quando todas as células amostradas têm views 0 (primeiras horas pós-envio,
+  // antes de qualquer abertura/clique registrado), evitar "Empate...0%" — informação enganosa.
+  const allZero = allSampled && sampledRows.every((r) => r.totalViews === 0);
+  const maxClickRate = allSampled ? sampledRows.reduce((m, r) => Math.max(m, r.clickRate), 0) : 0;
   const statusNote = allZero
     ? `Aguardando dados de abertura — primeiras horas pós-envio.`
-    : isTied
-    ? `Empate entre células com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
-    : allSampled && winnerCell
-    ? `Vencedor provisório: <strong style="color:${DS.ink}">Célula ${winnerCell}</strong> — aguardar checkpoint de análise para decisão final.`
-    : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
+    : !allSampled
+    ? `Dados insuficientes para comparação — aguardar mais dias de envio.`
+    : !leaderClickRate
+    ? `Empate no clique com ${maxClickRate.toFixed(2)}% — aguardar mais dias de envio.`
+    : `Vencedor provisório por CLIQUE: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — aguardar checkpoint de análise para decisão final.`;
 
   return `
 <section class="phase2-section" id="${secId}">
   <h2 class="section-title">${secTitle}</h2>
   <p class="section-note">${statusNote}</p>
-  <p class="section-note"><small>Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo) — base do vencedor. Entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os dias da célula têm esse dado.</small></p>
+  <p class="section-note"><small>Vencedor decidido pelo CLIQUE (click rate = cliques únicos ÷ delivered), não só pela abertura — mesmo critério do Resumo por Audiência (#2976). Open rate <strong>com Apple MPP</strong> (igual à UI da Brevo); entre parênteses, a taxa <strong>sem MPP</strong> (orgânica), exibida só quando todos os dias da célula têm esse dado.</small></p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -1989,7 +2132,8 @@ export function renderAbcSection(
         <th scope="col" title="Célula do teste A/B/C">Célula</th>
         <th scope="col" title="Soma de entregues dos dias enviados">Delivered (total)</th>
         <th scope="col" title="Soma de aberturas únicas (com Apple MPP, como na UI da Brevo) dos dias enviados">Opens (total)</th>
-        <th scope="col" title="Open rate agregado com Apple MPP (opens ÷ delivered) — base do vencedor; entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
+        <th scope="col" title="Open rate agregado com Apple MPP (opens ÷ delivered); entre parênteses, a taxa sem MPP quando disponível">Open rate agr.</th>
+        <th scope="col" title="Cliques únicos ÷ delivered — o &quot;fundo do poço&quot; do engajamento, decide o vencedor real (#2976)">Click rate agr.</th>
         <th scope="col" title="Dias enviados contabilizados">Dias</th>
       </tr>
     </thead>

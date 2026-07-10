@@ -1,11 +1,12 @@
 import type { Env } from "./index";
-import { type Brand, editionToMonthSlug, BRAND_INFO } from "./lib";
+import { type Brand, editionToMonthSlug } from "./lib";
 import {
-  formatEditionDate,
+  formatEditionDateForBrand,
   parseValidEditions,
   isValidEdition,
   isUnsubstitutedMergeTag,
   classify403Reason,
+  todayAammddBrt, // #3113 item 9: fecha a mesma brecha de edição futura no /vote direto
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
@@ -62,6 +63,20 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   const correctRaw = await env.POLL.get(`correct:${edition}`);
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition) && correctRaw === null) {
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
+  }
+
+  // #3113 (item 9): o gate acima só rejeita quando `correctRaw` é null — mas
+  // `correct:{edition}` é setado ANTES do e-mail sair (prep de imagens/revisão,
+  // #2867), então uma edição AAMMDD futura com gabarito já definido passava
+  // aqui direto. `extractEditionsForYear` (listagem do arquivo) e
+  // `handleArchiveVotePage` (página de voto do arquivo) já fecham essa brecha
+  // pra LEITURA — mas o `/vote` que de fato REGISTRA o voto continuava aberto
+  // via URL direta (email+edition+choice montados manualmente, sem passar
+  // pela página do arquivo). Só se aplica ao formato diário AAMMDD — o ciclo
+  // mensal da Clarice (`YYMM-MM`) não tem um "dia" real pra comparar (mesma
+  // exceção documentada acima pra `clarice:valid_editions`).
+  if (/^\d{6}$/.test(edition) && edition > todayAammddBrt(new Date())) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
@@ -224,9 +239,12 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
       // ainda para exibir. O "?" é mostrado ao leitor e desaparece em milissegundos
       // quando o KV propaga — não afeta a integridade do voto.
       const prev = existingFromKv ? JSON.parse(existingFromKv) : { choice: "?" };
-      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
-        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
-        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
+      // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
+      // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
+      // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
+      // votou em MAIS de uma edição arquivada não sabia qual delas.
+      const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice}).`;
       let prevNicknameForm: { email: string; sig: string } | null = null;
       const prevScoreRaw = await env.POLL.get(`score:${email}`);
       const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
@@ -245,15 +263,12 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     // sem o binding DO (testes Node sem miniflare). Em produção, VOTE_DEDUP sempre presente.
     if (existingFromKv) {
       const prev = JSON.parse(existingFromKv);
-      // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
-      // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
-      // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
-      // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
-      // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
-      // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
-      const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
-        ? `Você já votou nesta edição (escolha: ${prev.choice}).`
-        : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+      // #3113 item 13: sempre citar a edição (formatEditionDateForBrand já
+      // resolve "DD de mês de AAAA" vs "mês de AAAA" por brand, #3112) — antes
+      // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
+      // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
+      // votou em MAIS de uma edição arquivada não sabia qual delas.
+      const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice}).`;
       // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
       // determinar se o votante ainda precisa do form de nickname — sem isso, um
       // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname

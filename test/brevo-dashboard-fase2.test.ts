@@ -251,7 +251,10 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
 
   test("sem teste ABC mensal → nenhuma seção mensal", () => {
     const html = renderDashboardHtml(allCampaigns);
-    assert.doesNotMatch(html, /abc-summary-monthly/);
+    // #3129: a regra CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style>, independente dos dados — checar o id do <details> (só
+    // emitido quando há grupos) em vez da substring da classe.
+    assert.doesNotMatch(html, /abc-summary-monthly-collapsible/);
   });
 
   test("campo-misto na mesma data: irmão só com sentDate (sem scheduledAt) cai no MESMO grupo (review #2905)", () => {
@@ -313,6 +316,48 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
       makeCampaign(302, "Clarice News 2605 d02-B (qui)", "2026-06-11T06:00:00.000-03:00"),
     ];
     assert.equal(groupMonthlyAbcTests(daily).length, 0, "teste diário não é mensal — fora do grupo mensal");
+  });
+
+  // #3129: editor achou a quebra por-data ruído (issue #3129) — decisão foi
+  // colapsar por padrão (não deletar, ainda serve pra acompanhar um teste em
+  // andamento dia-a-dia). As 3 asserções abaixo cobrem o contrato do PR.
+  test("#3129: com testes mensais, as seções por-data ficam dentro de um <details> SEM open (colapsado por padrão) — conteúdo preservado", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    const detailsOpenTag = html.match(/<details class="links-ctr abc-summary-monthly-group"[^>]*>/)?.[0];
+    assert.ok(detailsOpenTag, "deve existir um <details> agrupando as seções mensais por data");
+    assert.doesNotMatch(detailsOpenTag!, /\bopen\b/, "sem atributo open — colapsado por padrão");
+    const detailsStart = html.indexOf(detailsOpenTag!);
+    const detailsEnd = html.indexOf("</details>", detailsStart);
+    assert.ok(detailsEnd > detailsStart, "deve fechar com </details>");
+    // Conteúdo por-data NÃO foi deletado — só ficou colapsado (dentro do <details>).
+    const inner = html.slice(detailsStart, detailsEnd);
+    assert.match(inner, /Resumo A\/B\/C — Mensal \(2606-07 · 03\/07\/2026\)/, "seção de 03/07 continua presente");
+    assert.match(inner, /Resumo A\/B\/C — Mensal \(2606-07 · 05\/07\/2026\)/, "seção de 05/07 continua presente");
+    assert.match(inner, /id="abc-summary-monthly-2606-07-2026-07-03"/);
+    assert.match(inner, /id="abc-summary-monthly-2606-07-2026-07-05"/);
+  });
+
+  test("#3129: 'Resumo A/B/C por Audiência' (consolidado) permanece FORA do <details> — sempre visível, sem mudança", () => {
+    const html = renderDashboardHtml([...allCampaigns, ...mensalSexta, ...mensalDomingo]);
+    const audienceIdx = html.indexOf('id="abc-audience-2606-07"');
+    assert.ok(audienceIdx > -1, "seção consolidada por audiência deve existir (pré-condição)");
+    const detailsStart = html.indexOf('<details class="links-ctr abc-summary-monthly-group"');
+    const detailsEnd = html.indexOf("</details>", detailsStart);
+    assert.ok(detailsStart > -1 && detailsEnd > detailsStart, "pré-condição: <details> do detalhe por-data existe");
+    assert.ok(
+      audienceIdx < detailsStart,
+      "seção por audiência deve continuar vindo ANTES do <details> (mesma posição de hoje) — nunca aninhada dentro dele",
+    );
+  });
+
+  test("#3129: sem nenhum teste mensal, o <details> colapsável não renderiza (nunca um shell vazio)", () => {
+    const html = renderDashboardHtml(allCampaigns);
+    // Nota: a REGRA CSS estática `details.abc-summary-monthly-group { ... }` sempre
+    // existe no <style> (não é condicional aos dados) — checar a substring da classe
+    // sozinha daria falso-positivo. O sinal correto é o id do próprio <details>
+    // (só emitido quando há grupos) e a ausência de qualquer seção por-data.
+    assert.doesNotMatch(html, /abc-summary-monthly-collapsible/, "sem grupos mensais, o <details> wrapper não deve aparecer");
+    assert.doesNotMatch(html, /Resumo A\/B\/C — Mensal \(/, "comportamento preexistente preservado: sem seção mensal alguma");
   });
 });
 
@@ -644,6 +689,67 @@ describe("aggregateAbcSummary", () => {
     assert.equal(a.totalViews, 70, "uniqueViews incl: 40 + 30");
     assert.equal(a.organicOpenRate, null, "1 dia em fallback → orgânico não-comparável → null");
   });
+
+  // #3123: janela DERIVADA dos dados (não mais hardcoded d01-d07). Fixture
+  // reproduz o playbook real do editor: A dropada em d03 (#2182-like), C
+  // consolidada na B em d06/d07 (absorção de audiência tipo
+  // clarice-drop-c-to-b.ts) — dias "solo" pós-consolidação (só 1 célula
+  // remanescente) têm views absurdamente altas (99999) só pra provar que, se o
+  // filtro por dia falhar, o teste pega o vazamento imediatamente.
+  describe("#3123: janela derivada — exclui dias solo de drop/consolidação", () => {
+    const day = (dayNum: number, cell: "A" | "B" | "C", views: number, id: number) =>
+      makeCampaign(
+        id,
+        `Clarice News 2605 d${String(dayNum).padStart(2, "0")}-${cell} (dia)`,
+        `2026-06-${String(10 + dayNum).padStart(2, "0")}T09:00:00Z`,
+        { sent: 100, delivered: 100, uniqueViews: views },
+      );
+
+    const dropAndConsolidateCampaigns = [
+      // d01, d02: A/B/C rodando juntas (teste "normal", todas contam)
+      day(1, "A", 10, 201), day(1, "B", 20, 202), day(1, "C", 30, 203),
+      day(2, "A", 10, 204), day(2, "B", 20, 205), day(2, "C", 30, 206),
+      // d03-d05: A dropada (#2182-like) — B e C seguem, ainda ≥2 células → contam
+      day(3, "B", 1000, 207), day(3, "C", 30, 208),
+      day(4, "B", 1000, 209), day(4, "C", 30, 210),
+      day(5, "B", 1000, 211), day(5, "C", 30, 212),
+      // d06-d07: C consolidada na B (audiência absorvida) — só B envia, SOLO.
+      // views absurdas (99999) só pra denunciar imediatamente se entrarem no agregado.
+      day(6, "B", 99999, 213),
+      day(7, "B", 99999, 214),
+    ];
+
+    test("célula A: só conta d01+d02 (dropada depois, dias solo de B não afetam A)", () => {
+      const result = aggregateAbcSummary(dropAndConsolidateCampaigns, "2605");
+      const a = result.find((r) => r.cell === "A")!;
+      assert.equal(a.campaignCount, 2, "A só enviou d01 e d02");
+      assert.equal(a.totalViews, 20, "A: 10+10, sem influência de B/C ou dos dias solo");
+    });
+
+    test("célula C: conta d01-d05 (última janela com ≥2 células), NUNCA os dias solo (d06/d07 já não existem pra C)", () => {
+      const result = aggregateAbcSummary(dropAndConsolidateCampaigns, "2605");
+      const c = result.find((r) => r.cell === "C")!;
+      assert.equal(c.campaignCount, 5, "C enviou d01-d05");
+      assert.equal(c.totalViews, 30 + 30 + 30 + 30 + 30, "C: 5×30 = 150");
+    });
+
+    test("célula B: dias SOLO (d06/d07, só B, sem 2ª célula) ficam FORA do agregado — não enviesam o vencedor", () => {
+      const result = aggregateAbcSummary(dropAndConsolidateCampaigns, "2605");
+      const b = result.find((r) => r.cell === "B")!;
+      // Sem o fix: contaria d01-d07 inteiros = 20+20+1000+1000+1000+99999+99999 = 202038.
+      // Com o fix (#3123): só os dias com ≥2 células reais (d01-d05).
+      assert.equal(b.campaignCount, 5, "B só conta d01-d05 — d06/d07 (solo) ficam de fora");
+      assert.equal(b.totalViews, 20 + 20 + 1000 + 1000 + 1000, "B: 3040, SEM os 99999+99999 dos dias solo");
+    });
+
+    test("renderAbcSection: vencedor por clique não é distorcido pelos dias solo", () => {
+      const rows = aggregateAbcSummary(dropAndConsolidateCampaigns, "2605");
+      const html = renderAbcSection(rows);
+      // Confirma que os totais absurdos dos dias solo (99999) não aparecem no HTML —
+      // se o filtro falhar, B.totalViews viraria 202038 e apareceria na tabela.
+      assert.doesNotMatch(html, /202038|99999/, "views dos dias solo não devem vazar pro agregado renderizado");
+    });
+  });
 });
 
 // ─── calcCumulativeSent ───────────────────────────────────────────────────────
@@ -771,49 +877,71 @@ describe("renderAbcSection", () => {
     assert.match(html, /Célula C/);
   });
 
-  test("ordena células do melhor pro pior open rate", () => {
+  test("ordena células do melhor pro pior CLICK rate (#3124: clique é o critério decisório)", () => {
     const ordered = [
-      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, campaignCount: 2 },
-      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
-      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2 },
+      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, totalClicks: 10, clickRate: 5.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 20, clickRate: 10.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, totalClicks: 16, clickRate: 8.0, campaignCount: 2, organicOpenRate: null },
     ];
     const html = renderAbcSection(ordered);
     const posB = html.indexOf("Célula B");
     const posC = html.indexOf("Célula C");
     const posA = html.indexOf("Célula A");
-    assert.ok(posB < posC && posC < posA, "ordem B(50) > C(40) > A(30)");
+    assert.ok(posB < posC && posC < posA, "ordem por clique: B(10%) > C(8%) > A(5%)");
   });
 
-  test("marca vencedor provisório quando ≥2 células têm dados (e uma lidera)", () => {
+  // #3124: renderAbcSection agora marca DOIS líderes (▲ ABERTURA e ▲ CLIQUE,
+  // nunca mais uma tag genérica "LÍDER") — mesmo padrão de renderAbcAudienceTable.
+  // cycle2605Campaigns diverge de fato entre os dois critérios (clicks fixos
+  // em 3/campanha, mas delivered varia por célula): abertura lidera com B
+  // (23.75%), clique lidera com A (2.02%) — a exata armadilha que #3124 corrige.
+  test("marca vencedores de ABERTURA e CLIQUE separadamente quando ≥2 células têm dados (#3124)", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
     const html = renderAbcSection(rows);
-    // Deve ter exatamente 1 LÍDER (a célula com maior open rate)
-    const liderCount = (html.match(/LÍDER/g) ?? []).length;
-    assert.equal(liderCount, 1, "deve mostrar exatamente 1 tag LÍDER");
+    const aberturaCount = (html.match(/▲ ABERTURA/g) ?? []).length;
+    const cliqueCount = (html.match(/▲ CLIQUE/g) ?? []).length;
+    assert.equal(aberturaCount, 1, "deve mostrar exatamente 1 tag ABERTURA");
+    assert.equal(cliqueCount, 1, "deve mostrar exatamente 1 tag CLIQUE");
+    assert.doesNotMatch(html, /▲ LÍDER/, "não deve mais usar a tag genérica LÍDER (#3124)");
+
+    const cellB = rows.find((r) => r.cell === "B")!;
+    const cellA = rows.find((r) => r.cell === "A")!;
+    assert.ok(cellB.openRate > cellA.openRate, "B lidera por abertura nesta fixture");
+    assert.ok(cellA.clickRate > cellB.clickRate, "A lidera por clique nesta fixture — abertura e clique DIVERGEM");
+    // A tag de ABERTURA deve estar na linha da célula B, e a de CLIQUE na linha da célula A.
+    // #3124 self-review: "Célula A/B" também aparece no statusNote acima da
+    // tabela ("Vencedor provisório por CLIQUE: Célula A") — buscar as linhas
+    // só a partir do <tbody>, senão indexOf pega o texto do parágrafo, não a linha.
+    const tbodyIdx = html.indexOf("<tbody>");
+    const tbody = html.slice(tbodyIdx);
+    const rowB = tbody.slice(tbody.indexOf("Célula B"), tbody.indexOf("Célula B") + 400);
+    const rowA = tbody.slice(tbody.indexOf("Célula A"), tbody.indexOf("Célula A") + 400);
+    assert.match(rowB, /▲ ABERTURA/, "linha da célula B deve ter a tag ABERTURA");
+    assert.match(rowA, /▲ CLIQUE/, "linha da célula A deve ter a tag CLIQUE (não ABERTURA)");
   });
 
-  test("empate: nenhuma célula recebe LÍDER quando duas têm open rate igual", () => {
+  test("empate: nenhuma célula recebe tag CLIQUE quando duas têm click rate igual (#3124)", () => {
     const tiedRows = [
-      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
-      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
-      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2 },
+      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 20, clickRate: 10.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 90, totalDelivered: 200, openRate: 45.0, totalClicks: 20, clickRate: 10.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, totalClicks: 16, clickRate: 8.0, campaignCount: 2, organicOpenRate: null },
     ];
     const html = renderAbcSection(tiedRows);
-    const liderCount = (html.match(/LÍDER/g) ?? []).length;
-    assert.equal(liderCount, 0, "empate: nenhum LÍDER deve ser exibido");
-    assert.match(html, /Empate/, "deve mostrar texto de empate");
+    const cliqueCount = (html.match(/▲ CLIQUE/g) ?? []).length;
+    assert.equal(cliqueCount, 0, "empate em clique: nenhuma tag CLIQUE deve ser exibida");
+    assert.match(html, /Empate no clique/, "deve mostrar texto de empate no clique");
   });
 
-  test("3-way tie: nenhuma célula recebe LÍDER", () => {
+  test("3-way tie em click rate: nenhuma célula recebe tag CLIQUE", () => {
     const tiedRows = [
-      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
-      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
-      { cell: "C" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 16, clickRate: 8.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 16, clickRate: 8.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 16, clickRate: 8.0, campaignCount: 2, organicOpenRate: null },
     ];
     const html = renderAbcSection(tiedRows);
-    const liderCount = (html.match(/LÍDER/g) ?? []).length;
-    assert.equal(liderCount, 0, "3-way tie: nenhum LÍDER deve ser exibido");
-    assert.match(html, /Empate/, "deve mostrar texto de empate");
+    const cliqueCount = (html.match(/▲ CLIQUE/g) ?? []).length;
+    assert.equal(cliqueCount, 0, "3-way tie: nenhuma tag CLIQUE deve ser exibida");
+    assert.match(html, /Empate no clique/, "deve mostrar texto de empate no clique");
   });
 
   test("contém id='abc-summary' para âncora", () => {
@@ -827,29 +955,29 @@ describe("renderAbcSection", () => {
     // Cenário: campanhas enviadas mas sem nenhuma abertura registrada ainda
     // (primeiras horas pós-envio — dados de abertura chegam com delay).
     const zeroRows = [
-      { cell: "A" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
-      { cell: "B" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
-      { cell: "C" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
+      { cell: "A" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
     ];
     const html = renderAbcSection(zeroRows);
     // Não deve exibir "Empate...0.0%" — confuso e inútil antes de qualquer abertura
     assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate...0.0%' quando todos zero");
     // Deve exibir aviso de aguardando dados
     assert.match(html, /[Aa]guardando dados/, "deve mostrar 'aguardando dados' quando openRate todo zero");
-    // Nenhuma célula deve receber LÍDER
-    const liderCount = (html.match(/LÍDER/g) ?? []).length;
-    assert.equal(liderCount, 0, "sem LÍDER quando openRate todo zero");
+    // Nenhuma célula deve receber tag de líder (nem ABERTURA nem CLIQUE)
+    assert.doesNotMatch(html, /▲ ABERTURA/, "sem tag ABERTURA quando tudo zero");
+    assert.doesNotMatch(html, /▲ CLIQUE/, "sem tag CLIQUE quando tudo zero");
   });
 
-  test("empate com openRate > 0 continua mostrando 'Empate' (não confunde com zero) (#2124)", () => {
-    // Empate real (taxa igual mas > 0) — deve manter comportamento original
+  test("empate em clique com taxa > 0 continua mostrando 'Empate' (não confunde com zero) (#2124, #3124)", () => {
+    // Empate real (click rate igual mas > 0) — deve manter comportamento original
     const tiedNonZero = [
-      { cell: "A" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, campaignCount: 2 },
-      { cell: "B" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, campaignCount: 2 },
-      { cell: "C" as const, totalViews: 30, totalDelivered: 100, openRate: 30.0, campaignCount: 2 },
+      { cell: "A" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, totalClicks: 10, clickRate: 10.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, totalClicks: 10, clickRate: 10.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 30, totalDelivered: 100, openRate: 30.0, totalClicks: 6, clickRate: 6.0, campaignCount: 2, organicOpenRate: null },
     ];
     const html = renderAbcSection(tiedNonZero);
-    assert.match(html, /Empate.*50\.0%/, "empate real deve continuar mostrando 'Empate...50.0%'");
+    assert.match(html, /Empate no clique com 10\.00%/, "empate real deve continuar mostrando a taxa empatada");
     assert.doesNotMatch(html, /[Aa]guardando dados/, "não deve mostrar 'aguardando dados' em empate real");
   });
 });
@@ -2583,9 +2711,9 @@ describe("rótulos Campanhas→Envios (#2422)", () => {
 describe("ordem colunas ABC (#2424)", () => {
   test("Delivered (total) aparece antes de Opens (total) no header", () => {
     const rows = [
-      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, campaignCount: 2, organicOpenRate: null },
-      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2, organicOpenRate: null },
-      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, totalClicks: 5, clickRate: 2.5, campaignCount: 2, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, totalClicks: 10, clickRate: 5.0, campaignCount: 2, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, totalClicks: 8, clickRate: 4.0, campaignCount: 2, organicOpenRate: null },
     ];
     const html = renderAbcSection(rows);
     const posDelivered = html.indexOf("Delivered (total)");
@@ -2597,7 +2725,7 @@ describe("ordem colunas ABC (#2424)", () => {
 
   test("células: totalDelivered aparece antes de totalViews na linha de dados", () => {
     const rows = [
-      { cell: "A" as const, totalViews: 55, totalDelivered: 200, openRate: 27.5, campaignCount: 1, organicOpenRate: null },
+      { cell: "A" as const, totalViews: 55, totalDelivered: 200, openRate: 27.5, totalClicks: 4, clickRate: 2.0, campaignCount: 1, organicOpenRate: null },
     ];
     const html = renderAbcSection(rows);
     const pos200 = html.indexOf(">200<"); // totalDelivered
