@@ -131,14 +131,17 @@ describe("renderLivrosPage (#1744)", () => {
   it("cards com data-* pros filtros + títulos linkados ao amzn.to", () => {
     assert.match(html, /data-lang="pt-br"/);
     assert.match(html, /data-lang="en"/);
-    assert.match(html, /data-themes="Engenharia"/);
+    // #3118 item 6: data-themes agora SLUGIFICADO (kebab-case), não o texto cru —
+    // alinhado a build-cursos-page.ts (ver describe dedicado abaixo).
+    assert.match(html, /data-themes="engenharia"/);
     assert.match(html, /href="https:\/\/amzn\.to\/aaa"/);
   });
   it("inclui os 3 filtros + tema derivado dos dados", () => {
     assert.match(html, /id="f-lang"/);
     assert.match(html, /id="f-level"/);
     assert.match(html, /id="f-theme"/);
-    assert.match(html, /<option value="Engenharia">Engenharia<\/option>/);
+    // #3118 item 6: option value SLUGIFICADO; label continua o nome legível.
+    assert.match(html, /<option value="engenharia">Engenharia<\/option>/);
   });
   it("mostra a nota da Amazon (★)", () => {
     assert.match(html, /★ 4,7/);
@@ -194,6 +197,55 @@ describe("renderLivrosPage (#1744)", () => {
     assert.match(html, /\.title-row h2\s*\{\s*font-family:\s*Georgia/, "h2 do card (título) deve ser Georgia serif");
     assert.match(html, /\.filters select\s*\{\s*font-family:\s*'Geist'/, "dropdown (UI) deve ser Geist sans");
     assert.doesNotMatch(html, /body\s*\{\s*font-family:\s*Georgia/, "body não pode ser serif");
+  });
+});
+
+describe("data-themes/option value slugificados — #3118 item 6", () => {
+  // Bug: build-livros-page.ts usava o nome CRU do tema em data-themes/option
+  // value (build-cursos-page.ts já slugificava). Como data-themes é um único
+  // atributo com temas separados por espaço, um tema multi-palavra (ex:
+  // "Machine Learning") é indistinguível de dois temas single-word contíguos
+  // (ex: ["Machine", "Learning"]) — o espaço interno do nome colide com o
+  // espaço separador. Fix: slugify (kebab-case, sem espaço) antes do join,
+  // igual a build-cursos-page.ts.
+  it("tema multi-palavra vira 1 único token slugificado em data-themes (não se confunde com 2 temas)", () => {
+    const html = renderLivrosPage([
+      book({ id: "multi", themes: ["Machine Learning", "Ética"] }),
+    ]);
+    assert.match(html, /data-themes="machine-learning etica"/);
+    // Nunca deve aparecer o nome cru com espaço interno dentro do atributo.
+    assert.doesNotMatch(html, /data-themes="Machine Learning/);
+  });
+
+  it("dois livros com temas AMBÍGUOS antes do fix (2 single-word vs 1 multi-word) não colidem mais", () => {
+    // Livro A: 2 temas single-word "Machine" e "Learning".
+    // Livro B: 1 tema multi-word "Machine Learning".
+    // Pré-fix, ambos gerariam data-themes="Machine Learning" (idêntico) — o
+    // filtro por "Machine Learning" faria match falso-positivo no Livro A.
+    const htmlDoisTemas = renderLivrosPage([book({ id: "dois-temas", themes: ["Machine", "Learning"] })]);
+    const htmlUmTema = renderLivrosPage([book({ id: "um-tema", themes: ["Machine Learning"] })]);
+    const doisTemasAttr = htmlDoisTemas.match(/data-themes="([^"]*)"/)?.[1];
+    const umTemaAttr = htmlUmTema.match(/data-themes="([^"]*)"/)?.[1];
+    assert.equal(doisTemasAttr, "machine learning", "2 temas single-word viram 2 tokens");
+    assert.equal(umTemaAttr, "machine-learning", "1 tema multi-word vira 1 único token slugificado");
+    assert.notEqual(doisTemasAttr, umTemaAttr, "os dois casos NÃO devem mais colidir no mesmo data-themes");
+  });
+
+  it("option value do dropdown de tema é o slug; label continua o texto legível original", () => {
+    const html = renderLivrosPage([book({ themes: ["Ética em IA"] })]);
+    assert.match(html, /<option value="etica-em-ia">Ética em IA<\/option>/);
+  });
+
+  it("THEME_LABELS embutido no script (mesmo padrão de build-cursos-page.ts #1891) resolve o label pro rebuild dinâmico", () => {
+    const html = renderLivrosPage([book({ themes: ["Ética em IA"] })]);
+    assert.match(html, /var THEME_LABELS = \{/);
+    assert.ok(html.includes('"etica-em-ia":"Ética em IA"'), "mapa slug→label deve conter o tema multi-palavra");
+  });
+
+  it("filtro client-side (apply/rebuildThemes) usa THEME_LABELS pro label — não mais o texto cru das <option>", () => {
+    const html = renderLivrosPage([book({ themes: ["Ética em IA"] })]);
+    assert.match(html, /\(THEME_LABELS\[a\] \|\| a\)\.localeCompare\(THEME_LABELS\[b\] \|\| b, 'pt-BR'\)/);
+    assert.match(html, /esc\(THEME_LABELS\[t\] \|\| t\)/);
   });
 });
 

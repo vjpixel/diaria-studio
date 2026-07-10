@@ -122,8 +122,20 @@ export function isSafeUrl(u: string | undefined): boolean {
 
 /** Duração "1h 15m" / "4h 45m" / "30h". Pure. */
 export function fmtDuration(h: number, estimated?: boolean): string {
-  const whole = Math.floor(h);
-  const mins = Math.round((h - whole) * 60);
+  // #3118 (item 5, relacionado): duration_hours ausente/inválida (NaN, undefined
+  // via JSON solto sem checagem de tipo em runtime) renderizava "NaNh" — vazio é
+  // um fallback mais honesto que um número quebrado visível ao leitor. A ausência
+  // já é só warning (não bloqueia o build), então o card renderiza sem a duração.
+  if (!Number.isFinite(h)) return "";
+  let whole = Math.floor(h);
+  let mins = Math.round((h - whole) * 60);
+  // #3118 (item 5): rounding sem carry — h=5.995 dava whole=5, mins=Math.round(0.995*60)=60,
+  // emitindo "5h 60m" (60 minutos não é uma duração válida). Carrega pra hora
+  // seguinte quando o arredondamento de mins bate exatamente 60.
+  if (mins === 60) {
+    whole += 1;
+    mins = 0;
+  }
   const base = mins > 0 ? `${whole}h ${mins}m` : `${whole}h`;
   return estimated ? `~${base}` : base;
 }

@@ -21,6 +21,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
 import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 import {
   renderCuradoriaRootStyles,
@@ -173,8 +174,14 @@ function renderCard(b: Book): string {
     ...b.themes.map((t) => `<span class="badge">${esc(t)}</span>`),
   ].join("");
   const highlight = b.highlight ? `<p class="highlight">${esc(b.highlight)}</p>` : "";
-  // data-* alimentam os filtros client-side (themes single-word → space-join).
-  return `      <article class="card" data-lang="${esc(b.language)}" data-level="${esc(b.level)}" data-themes="${esc(b.themes.join(" "))}">
+  // #3118 (item 6): temas SLUGIFICADOS antes do space-join — antes usava o nome
+  // cru, que quebra silenciosamente com tema multi-palavra (ex: ["Machine
+  // Learning", "Ética"] vira o mesmo data-themes ambíguo de ["Machine",
+  // "Learning Ética"], já que espaço é ao mesmo tempo separador de tema E parte
+  // do nome). Slugify (kebab-case, sem espaço) elimina a ambiguidade — mesmo
+  // padrão já usado em build-cursos-page.ts. O SEED de hoje não tem tema
+  // multi-palavra, mas quebraria sem erro nenhum no dia que tivesse.
+  return `      <article class="card" data-lang="${esc(b.language)}" data-level="${esc(b.level)}" data-themes="${esc(b.themes.map(slugify).join(" "))}">
         <div class="title-row">
           <h2>${titleInner}</h2>
           ${note}
@@ -192,9 +199,20 @@ function renderCard(b: Book): string {
  */
 export function renderLivrosPage(books: Book[]): string {
   const cards = books.map(renderCard).join("\n");
-  const themeOptions = distinctThemes(books)
-    .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`)
+  // #3118 (item 6): option value SLUGIFICADO (casa com data-themes de renderCard,
+  // agora também slugificado) — label continua o nome legível original.
+  const themeOpts = distinctThemes(books).map((t) => ({ value: slugify(t), label: t }));
+  const themeOptions = themeOpts
+    .map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)
     .join("");
+  // Mapa COMPLETO slug→label embutido no script — mesmo padrão de
+  // build-cursos-page.ts (#1891 fix): rebuildThemes() (abaixo) precisa exibir o
+  // label legível pros slugs que sobrevivem ao recorte de idioma/nível, sem
+  // depender das <option> ATUAIS (que encolhem a cada rebuild).
+  const themeLabelJson = JSON.stringify(Object.fromEntries(themeOpts.map((o) => [o.value, o.label]))).replaceAll(
+    "<",
+    "\\u003c",
+  ); // </script>-safe embed
   return `<!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -252,6 +270,10 @@ ${cards}
   ${renderCuradoriaFooter("diar.ia.br — curadoria de livros sobre IA")}
 <script>
   (function () {
+    // #3118 item 6: mapa slug→label completo — data-themes/option value agora
+    // são slugs (kebab-case); THEME_LABELS resolve o label legível pro rebuild
+    // (mesmo padrão de build-cursos-page.ts, #1891).
+    var THEME_LABELS = ${themeLabelJson};
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
     var fLang = document.getElementById('f-lang');
     var fLevel = document.getElementById('f-level');
@@ -268,10 +290,12 @@ ${cards}
           (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
         }
       });
-      var themes = Object.keys(set).sort(function (a, b) { return a.localeCompare(b, 'pt-BR'); });
+      // value→label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
+      // atuais — senão um rebuild anterior que encolheu as options apagaria o label.
+      var themes = Object.keys(set).sort(function (a, b) { return (THEME_LABELS[a] || a).localeCompare(THEME_LABELS[b] || b, 'pt-BR'); });
       var cur = fTheme.value;
       var keep = themes.indexOf(cur) >= 0 ? cur : '';
-      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('');
+      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(THEME_LABELS[t] || t) + '</option>'; }).join('');
       fTheme.value = keep;
     }
     function apply() {

@@ -118,6 +118,22 @@ describe("helpers puros (#1745)", () => {
     assert.equal(fmtDuration(2), "2h");
     assert.equal(fmtDuration(30, true), "~30h");
   });
+
+  it("fmtDuration: carrega minutos quando o arredondamento bate 60 (#3118 item 5)", () => {
+    // Bug: h=5.995 → whole=5, mins=Math.round(0.995*60)=60 → "5h 60m" (60min não
+    // é uma duração válida). Fix: carrega pra hora seguinte.
+    assert.equal(fmtDuration(5.995), "6h", "5.995h deve virar 6h, não '5h 60m'");
+    assert.equal(fmtDuration(1.9999), "2h", "quase 2h arredonda pra 2h, não '1h 60m'");
+    assert.equal(fmtDuration(5.995, true), "~6h", "carry preserva o prefixo ~ de estimado");
+  });
+
+  it("fmtDuration: duration_hours não-finito (NaN) → string vazia, não 'NaNh' (#3118 item 5, relacionado)", () => {
+    assert.equal(fmtDuration(NaN), "");
+    assert.equal(fmtDuration(Infinity), "");
+    // Runtime real: seed com duration_hours ausente entra como undefined (JSON
+    // solto, sem checagem de tipo em runtime) apesar do tipo TS declarar `number`.
+    assert.equal(fmtDuration(undefined as unknown as number), "");
+  });
 });
 
 describe("temas/plataformas (#1745)", () => {
@@ -166,6 +182,11 @@ describe("renderCursosPage (#1745)", () => {
   it("OMITE o filtro de custo quando todos os cursos têm o mesmo custo (≥2 distinct)", () => {
     // Ambos os cursos são cost:free → 1 valor distinto → dropdown inútil, omitido.
     assert.ok(!html.includes('id="f-cost"'), "custo com 1 valor não deve render dropdown");
+  });
+
+  it("card não mostra 'NaNh' quando duration_hours é inválida/ausente (#3118 item 5, relacionado)", () => {
+    const withBadDuration = renderCursosPage([course({ duration_hours: undefined as unknown as number })]);
+    assert.doesNotMatch(withBadDuration, /NaNh/);
   });
 
   it("badge de certificado grátis só no curso que tem", () => {
