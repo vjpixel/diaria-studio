@@ -99,6 +99,41 @@ describe("parseAbcAudienceCampaign", () => {
   test("naming não reconhecido → null", () => {
     assert.equal(parseAbcAudienceCampaign("Newsletter aleatória"), null);
   });
+
+  // #3128: regressão — confirmado via GET /v3/emailCampaigns real (READ-ONLY,
+  // nenhum envio disparado) contra a Brevo pro ciclo 2606-07. Achado: o editor
+  // reenviou pra listas FRIAS reusando o MESMO padrão de nome de campanha
+  // quente ("Clarice News 2606-07 — B · dom", sem prefixo "cold"); só o nome
+  // da LISTA de destinatários ("cold 2606-07 dom-B") denuncia a audiência
+  // fria. Nomes reais coletados (campaign id → nome / lista):
+  //   id 76 (warm, 03/07): "Clarice News 2606-07 — B: Notícias do mês..." → lista "Clarice News 2606-07 B (A/B/C assunto)"
+  //   id 82 (cold, 05/07): "Clarice News 2606-07 — B · dom"               → lista "cold 2606-07 dom-B"
+  //   id 87 (cold, 07/07): "Clarice News 2606-07 — B · ter"               → lista "2606-07 cold d1"
+  // Antes do fix, os 3 batiam o regex WARM de parseClariceCampaignKey e
+  // SEMPRE voltavam audience:"warm" (sintoma do bug: tabela "Fria" vazia,
+  // "Quente" == "Agregada", já que TODOS os envios eram contados como quente).
+  test("#3128: nome de campanha warm-looking + lista 'cold ...' → classificado como fria (root cause confirmado via API real)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — B · dom", "cold 2606-07 dom-B");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "cold" });
+  });
+
+  test("#3128: variante de nome de lista 'AAMM-MM cold dN' (cold no meio/fim) também é reconhecida", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — B · ter", "2606-07 cold d1");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "cold" });
+  });
+
+  test("#3128: mesmo nome de campanha, lista SEM 'cold' → continua quente (não-regressão do envio original 03/07)", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice News 2606-07 — B: Notícias do mês sobre IA: O mês em que o…",
+      "Clarice News 2606-07 B (A/B/C assunto)",
+    );
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "warm" });
+  });
+
+  test("#3128: sem listName (chamador legado) → cai pro comportamento naming-only de antes (retrocompatível)", () => {
+    const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — B · dom");
+    assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "warm" });
+  });
 });
 
 // ─── twoProportionZTest (#2976) ───────────────────────────────────────────────
@@ -213,6 +248,46 @@ describe("aggregateAbcByAudience", () => {
     assert.match(html, />Click rate</);
     assert.match(html, /▲ ABERTURA/);
     assert.match(html, /▲ CLIQUE/);
+  });
+});
+
+// ─── aggregateAbcByAudience: naming ambíguo (mesmo padrão pra fria E quente) — #3128 ──
+
+describe("aggregateAbcByAudience — naming ambíguo, resolvido via listName (#3128)", () => {
+  const cycle = "2606-07";
+
+  // Formato REAL das 10 campanhas do ciclo 2606-07 na Brevo (confirmado via
+  // GET /v3/emailCampaigns + GET /v3/contacts/lists, READ-ONLY, 2026-07-10):
+  // TODAS usam o prefixo "Clarice News 2606-07 — {cell}" — a diferença entre
+  // fria e quente não está no nome da campanha, só no nome da LISTA de
+  // destinatários. Antes do fix, `aggregateCellsV2` só olhava `c.name`, então
+  // as 3 campanhas "· dom" (fria) entravam como "warm" — a tabela "Fria"
+  // ficava com campaignCount 0 e a "Quente" ficava idêntica à "Agregada"
+  // (sintoma relatado na issue #3128).
+  const warmOriginal = [
+    { ...makeCampaign(75, "Clarice News 2606-07 — A: Notícias do mês sobre IA: Brasil, Anthro…", "2026-07-03T09:07:57Z", { sent: 1500, delivered: 1490, uniqueViews: 900, uniqueClicks: 150 }), listName: "Clarice News 2606-07 A (A/B/C assunto)" },
+    { ...makeCampaign(76, "Clarice News 2606-07 — B: Notícias do mês sobre IA: O mês em que o…", "2026-07-03T09:07:41Z", { sent: 1500, delivered: 1490, uniqueViews: 850, uniqueClicks: 100 }), listName: "Clarice News 2606-07 B (A/B/C assunto)" },
+    { ...makeCampaign(77, "Clarice News 2606-07 — C: Notícias do mês sobre IA: Soberania, seg…", "2026-07-03T09:05:19Z", { sent: 1500, delivered: 1490, uniqueViews: 800, uniqueClicks: 90 }), listName: "Clarice News 2606-07 C (A/B/C assunto)" },
+  ];
+  const coldReenvioSabado = [
+    { ...makeCampaign(84, "Clarice News 2606-07 — A · sab", "2026-07-04T09:13:27Z", { sent: 900, delivered: 895, uniqueViews: 200, uniqueClicks: 20 }), listName: "cold 2606-07 sab-A" },
+    { ...makeCampaign(85, "Clarice News 2606-07 — B · sab", "2026-07-04T09:13:11Z", { sent: 900, delivered: 895, uniqueViews: 250, uniqueClicks: 60 }), listName: "cold 2606-07 sab-B" },
+    { ...makeCampaign(86, "Clarice News 2606-07 — C · sab", "2026-07-04T09:13:08Z", { sent: 900, delivered: 895, uniqueViews: 150, uniqueClicks: 15 }), listName: "cold 2606-07 sab-C" },
+  ];
+
+  test("naming idêntico pra fria e quente — Fria e Quente NÃO ficam iguais à Agregada (bug #3128 corrigido)", () => {
+    const result = aggregateAbcByAudience([...warmOriginal, ...coldReenvioSabado], cycle);
+    // Antes do fix: result.cold.cells.every(campaignCount === 0) e
+    // result.warm === result.aggregate (todos os 6 envios contados como warm).
+    assert.ok(result.cold.cells.some((c) => c.campaignCount > 0), "Fria não pode ficar vazia — há 3 envios frios reais");
+    const coldB = result.cold.cells.find((c) => c.cell === "B")!;
+    const warmB = result.warm.cells.find((c) => c.cell === "B")!;
+    assert.equal(coldB.delivered, 895, "célula B fria deve contar só o envio '· sab' (lista cold)");
+    assert.equal(warmB.delivered, 1490, "célula B quente deve contar só o envio original (lista sem 'cold')");
+    // Agregada = soma das duas, nunca igual a nenhuma das duas isoladamente.
+    const aggB = result.aggregate.cells.find((c) => c.cell === "B")!;
+    assert.equal(aggB.delivered, 895 + 1490);
+    assert.notEqual(warmB.delivered, aggB.delivered, "Quente não pode ficar igual à Agregada — sintoma original do bug");
   });
 });
 
