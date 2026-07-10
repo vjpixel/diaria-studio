@@ -139,9 +139,21 @@ describe("sanitizeTrailingEllipsis (#2881)", () => {
   });
 
   describe("edge cases", () => {
-    it("texto formado só por reticências (sem conteúdo) é devolvido intacto", () => {
+    // #3276 REGRESSÃO: antes do fix, este branch retornava o texto ORIGINAL
+    // (ainda terminando em "…") em vez de string vazia — violava o
+    // invariante documentado do próprio módulo ("nunca publicar descrição
+    // terminando em …/..."). Trigger real: "… Leia mais: 10 dicas com IA" →
+    // `sanitizeDescriptionBoilerplate` corta tudo a partir de "Leia mais:",
+    // sobra só "…" — que chegava aqui e saía intacto, virando a descrição
+    // publicada (ver também test/enrich-inbox-articles.test.ts).
+    it("#3276: texto formado só por reticências (sem conteúdo) vira string vazia, não o '…' original", () => {
       const input = "…";
-      assert.equal(sanitizeTrailingEllipsis(input), input);
+      assert.equal(sanitizeTrailingEllipsis(input), "");
+    });
+
+    it("#3276: mesmo com espaço em volta, reticência ascii bare vira string vazia", () => {
+      const input = "  ...  ";
+      assert.equal(sanitizeTrailingEllipsis(input), "");
     });
 
     it("é idempotente — aplicar 2x dá o mesmo resultado que aplicar 1x", () => {
