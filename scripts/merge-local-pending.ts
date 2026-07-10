@@ -124,7 +124,12 @@ export function loadPublishedAammddFromRaw(pastRawPath: string): Set<string> {
   if (!existsSync(pastRawPath)) return new Set();
   let posts: Post[];
   try {
-    posts = JSON.parse(readFileSync(pastRawPath, "utf8")) as Post[];
+    const parsed = JSON.parse(readFileSync(pastRawPath, "utf8"));
+    // #3244 review: JSON.parse não garante array — um `{}`/`null`/objeto
+    // corrompido é JSON válido mas quebraria o `for...of` abaixo com
+    // TypeError não-capturado. Trata como "inválido" (mesmo fail-soft).
+    if (!Array.isArray(parsed)) return new Set();
+    posts = parsed as Post[];
   } catch {
     return new Set();
   }

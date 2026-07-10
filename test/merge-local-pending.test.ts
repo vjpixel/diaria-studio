@@ -283,6 +283,20 @@ describe("loadPublishedAammddFromRaw — cross-check contra past-editions-raw.js
     assert.equal(loadPublishedAammddFromRaw(p).size, 0);
   });
 
+  it("regression (code-review #3244): retorna Set vazio (não lança) quando o JSON é válido mas não é array", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mlp-raw-nonarray-"));
+    for (const [name, content] of [
+      ["obj.json", "{}"],
+      ["null.json", "null"],
+      ["str.json", '"oops"'],
+    ] as const) {
+      const p = join(dir, name);
+      writeFileSync(p, content, "utf8");
+      assert.doesNotThrow(() => loadPublishedAammddFromRaw(p), `não deveria lançar pra ${name}`);
+      assert.equal(loadPublishedAammddFromRaw(p).size, 0, `esperava Set vazio pra ${name}`);
+    }
+  });
+
   it("ignora posts sem published_at", () => {
     const p = writeRaw([{ id: "1", title: "sem data" }]);
     assert.equal(loadPublishedAammddFromRaw(p).size, 0);
