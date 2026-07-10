@@ -989,6 +989,12 @@ describe("renderAbcSection", () => {
     // (ABERTURA pode legitimamente marcar líder — as taxas de abertura divergem
     // nesta fixture, só o clique é que está zerado em todas as células.)
     assert.doesNotMatch(html, /▲ CLIQUE/, "sem tag CLIQUE quando clicks todo zero");
+    // #3281 gap sweep: a fixture tem openRate divergente de propósito (40/35/38),
+    // então a Célula A DEVE continuar marcando líder de ABERTURA — assertion
+    // positiva pra travar contra uma regressão futura que gate a tag ABERTURA
+    // em `!allZero` por engano (copy-paste de clickTag) e a suprima também
+    // neste cenário (opens>0/clicks=0), que é justamente o que este teste cobre.
+    assert.match(html, /▲ ABERTURA/, "líder de ABERTURA deve continuar aparecendo mesmo com clicks todo zero");
   });
 
   test("empate em clique com taxa > 0 continua mostrando 'Empate' (não confunde com zero) (#2124, #3124)", () => {

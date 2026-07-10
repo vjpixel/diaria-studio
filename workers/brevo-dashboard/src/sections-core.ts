@@ -2134,7 +2134,11 @@ export function renderAbcSection(
   // horas em relação à abertura) — checar totalViews aqui fazia esse caso
   // cair no branch !leaderClickRate ("Empate no clique com 0.00%"), sugerindo
   // enganosamente um empate real no critério principal. Checando totalClicks,
-  // esse caso cai no branch certo ("Aguardando dados de abertura").
+  // esse caso cai no branch certo ("Aguardando dados suficientes"). Texto
+  // genérico (não "de abertura") de propósito — code-review do PR #3287
+  // notou que esse branch também cobre o caso opens>0/clicks=0, onde
+  // abertura JÁ existe (às vezes até com líder próprio, ▲ ABERTURA); "de
+  // abertura" ficaria impreciso/contraditório com a própria tabela.
   const allZero = allSampled && sampledRows.every((r) => r.totalClicks === 0);
   const maxClickRate = allSampled ? sampledRows.reduce((m, r) => Math.max(m, r.clickRate), 0) : 0;
   const statusNote = allZero
