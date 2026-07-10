@@ -14,6 +14,14 @@
  * publish-newsletter (Stage 4 passo 0). Garante que `lint-test-email`
  * (Stage 4 review-test-email) reconhece o erro intencional declarado.
  *
+ * **#3210:** também chamado programaticamente por `close-poll.ts`
+ * (`runSyncIntentionalError`, exportada abaixo) — `close-poll.ts` roda tanto
+ * no fluxo automático (Stage 4 pré-render) quanto no fluxo manual
+ * (`prep-manual-publish.ts` → paste no Beehiiv → `close-poll.ts`), então
+ * wireing o sync ali fecha o gap onde a publicação manual nunca chamava
+ * este script — `data/intentional-errors.jsonl` ficava sem entry, e
+ * §0-replies (Stage 0) não conseguia creditar acerto de leitor.
+ *
  * Uso:
  *   npx tsx scripts/sync-intentional-error.ts \
  *     --md data/editions/{AAMMDD}/02-reviewed.md \
@@ -38,7 +46,7 @@ import {
 import { extractIntentionalErrorFromMd } from "./render-erro-intencional.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #2834
 
-interface Flags {
+export interface Flags {
   md: string;
   edition: string;
   jsonl: string;
@@ -78,18 +86,63 @@ function rewriteJsonl(path: string, entries: IntentionalError[]): void {
   renameSync(tmp, path);
 }
 
-function main(): number {
-  const argv = process.argv.slice(2);
-  const flags = parseArgs(argv);
-  if (!flags) {
-    process.stderr.write(
-      "Uso: sync-intentional-error.ts --md <reviewed.md> --edition <AAMMDD> --jsonl <jsonl-path>\n",
-    );
-    return 2;
-  }
+/**
+ * (#3210) Resultado estruturado de `runSyncIntentionalError` — usado tanto
+ * pelo `main()` (que serializa pra stdout, mantendo o contrato histórico do
+ * CLI) quanto por callers programáticos (`close-poll.ts`), que só olham
+ * `exitCode`/`added`/`updated` e nunca tocam stdout diretamente. Manter a
+ * escrita em stdout FORA desta função (só em `main()`) é o que garante que
+ * `close-poll.ts` — que já tem seu próprio contrato de "1 linha JSON no
+ * stdout" (#2018) — não ganhe uma 2ª linha JSON intercalada quando chama
+ * `runSyncIntentionalError` internamente.
+ */
+export interface SyncIntentionalErrorResult {
+  exitCode: number;
+  added: boolean;
+  updated: boolean;
+  edition: string;
+  no_error?: boolean;
+  source?: "prose_block";
+}
 
+/**
+ * (#3210) Núcleo do sync, extraído de `main()` pra ser chamável
+ * programaticamente (`close-poll.ts`) além do uso via CLI. Nunca lança —
+ * qualquer exceção inesperada (ex: I/O) é capturada e vira exit code 1 com
+ * a mensagem em stderr, igual ao contrato de erro já estabelecido pelos
+ * demais branches. Callers programáticos (ex: `close-poll.ts`) tratam
+ * qualquer exit != 0 como fail-soft (warning, não bloqueia). NUNCA escreve
+ * em stdout — isso é responsabilidade exclusiva de `main()` (ver
+ * `SyncIntentionalErrorResult`).
+ */
+export function runSyncIntentionalError(flags: Flags): SyncIntentionalErrorResult {
+  try {
+    return runSyncIntentionalErrorInner(flags);
+  } catch (e) {
+    process.stderr.write(
+      `[sync-intentional-error] erro inesperado pra edição ${flags.edition}: ${(e as Error).message}\n`,
+    );
+    return { exitCode: 1, added: false, updated: false, edition: flags.edition };
+  }
+}
+
+function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult {
   const mdPath = resolve(process.cwd(), flags.md);
   const jsonlPath = resolve(process.cwd(), flags.jsonl);
+
+  // (#3210) Guard: mdPath pode já ter sido arquivado/limpo quando este script
+  // é chamado por `close-poll.ts` bem depois da publicação (ou nunca existiu
+  // pra essa edição). `checkIntentionalError` já retorna `ok:false` nesse
+  // caso, mas o branch de fallback de prosa abaixo faz `readFileSync(mdPath)`
+  // incondicionalmente — sem este guard, mdPath ausente lançaria ENOENT não
+  // capturado (agora capturado por `runSyncIntentionalError`, mas evitar é
+  // melhor que depender só do catch).
+  if (!existsSync(mdPath)) {
+    process.stderr.write(
+      `[sync-intentional-error] ${mdPath} não existe — nada pra sincronizar pra edição ${flags.edition} (provável edição arquivada/limpa pós-publicação, #3210).\n`,
+    );
+    return { exitCode: 1, added: false, updated: false, edition: flags.edition };
+  }
 
   const lintResult = checkIntentionalError(mdPath);
 
@@ -105,10 +158,7 @@ function main(): number {
       process.stderr.write(
         `[sync-intentional-error] edição ${flags.edition} já tem entry no_error=true — no-op\n`,
       );
-      process.stdout.write(
-        JSON.stringify({ added: false, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
-      );
-      return 0;
+      return { exitCode: 0, added: false, updated: false, edition: flags.edition, no_error: true };
     }
     const entry: IntentionalError = {
       edition: flags.edition,
@@ -127,19 +177,14 @@ function main(): number {
       process.stderr.write(
         `[sync-intentional-error] #2016/#2037: edição ${flags.edition} — entry pré-existente sobrescrita com no_error=true\n`,
       );
-      process.stdout.write(
-        JSON.stringify({ added: false, updated: true, edition: flags.edition, no_error: true }, null, 2) + "\n",
-      );
+      return { exitCode: 0, added: false, updated: true, edition: flags.edition, no_error: true };
     } else {
       appendJsonl(jsonlPath, entry);
       process.stderr.write(
         `[sync-intentional-error] #2016: edição ${flags.edition} declarada sem erro intencional (intentional_error: none)\n`,
       );
-      process.stdout.write(
-        JSON.stringify({ added: true, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
-      );
+      return { exitCode: 0, added: true, updated: false, edition: flags.edition, no_error: true };
     }
-    return 0;
   }
 
   if (!lintResult.ok || !lintResult.parsed) {
@@ -155,10 +200,7 @@ function main(): number {
         process.stderr.write(
           `[sync-intentional-error] edição ${flags.edition} já tem entry — no-op (fallback prosa)\n`,
         );
-        process.stdout.write(
-          JSON.stringify({ added: false, updated: false, edition: flags.edition, source: "prose_block" }, null, 2) + "\n",
-        );
-        return 0;
+        return { exitCode: 0, added: false, updated: false, edition: flags.edition, source: "prose_block" };
       }
       const entry: IntentionalError = {
         edition: flags.edition,
@@ -180,15 +222,12 @@ function main(): number {
         `[sync-intentional-error] #1860: _internal/intentional-error.json ausente/incompleto — entry extraída da PROSA "Nessa edição, …" pra ${flags.edition}. ` +
           `Grave o record em _internal/intentional-error.json (#3222) pra silenciar este fallback.\n`,
       );
-      process.stdout.write(
-        JSON.stringify({ added: true, updated: false, edition: flags.edition, source: "prose_block" }, null, 2) + "\n",
-      );
-      return 0;
+      return { exitCode: 0, added: true, updated: false, edition: flags.edition, source: "prose_block" };
     }
     process.stderr.write(
       `_internal/intentional-error.json ausente/incompleto E sem prosa "Nessa edição, …" em ${flags.md}: ${lintResult.label}\n`,
     );
-    return 1;
+    return { exitCode: 1, added: false, updated: false, edition: flags.edition };
   }
 
   const existing = loadIntentionalErrors(jsonlPath);
@@ -217,10 +256,27 @@ function main(): number {
     );
   }
 
-  process.stdout.write(
-    JSON.stringify({ added, updated, edition: flags.edition }, null, 2) + "\n",
-  );
-  return 0;
+  return { exitCode: 0, added, updated, edition: flags.edition };
+}
+
+function main(): number {
+  const argv = process.argv.slice(2);
+  const flags = parseArgs(argv);
+  if (!flags) {
+    process.stderr.write(
+      "Uso: sync-intentional-error.ts --md <reviewed.md> --edition <AAMMDD> --jsonl <jsonl-path>\n",
+    );
+    return 2;
+  }
+  // (#3210) stdout JSON é escrito só aqui — nunca dentro de
+  // runSyncIntentionalError/runSyncIntentionalErrorInner — pra que callers
+  // programáticos (`close-poll.ts`) possam invocar o sync sem herdar uma
+  // linha extra no stdout deles (contrato de "1 linha JSON" do #2018).
+  const { exitCode, ...result } = runSyncIntentionalError(flags);
+  if (exitCode === 0) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  }
+  return exitCode;
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

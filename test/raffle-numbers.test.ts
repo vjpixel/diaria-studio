@@ -15,6 +15,8 @@ import {
   matchesIntentionalError,
   nextRaffleNumber,
   allocateRaffleNumber,
+  decideRemoteFallback,
+  extractPreviousEditionRevealFromPublishedContent,
   type RaffleEntry,
 } from "../scripts/lib/raffle-numbers.ts";
 
@@ -162,6 +164,94 @@ describe("matchesIntentionalError (#2724) — caso real Joshu 260629", () => {
 
   it("retorna false quando o erro não tem correct_value nem description/location", () => {
     assert.equal(matchesIntentionalError("qualquer coisa", {}), false);
+  });
+});
+
+describe("decideRemoteFallback (#3210)", () => {
+  it("não usa fallback remoto quando o JSON local existe", () => {
+    const result = decideRemoteFallback({ description: "erro X" }, null);
+    assert.equal(result.useRemoteFallback, false);
+    assert.equal(result.reason, "local_json_present");
+  });
+
+  it("não usa fallback remoto quando só a entry do jsonl existe", () => {
+    const result = decideRemoteFallback(null, { edition: "260709", error_type: "factual" });
+    assert.equal(result.useRemoteFallback, false);
+    assert.equal(result.reason, "jsonl_entry_present");
+  });
+
+  it("usa fallback remoto quando AMBOS estão ausentes (caso 260709 do #3210)", () => {
+    const result = decideRemoteFallback(null, null);
+    assert.equal(result.useRemoteFallback, true);
+    assert.equal(result.reason, "both_missing");
+  });
+
+  it("undefined é tratado igual a null (ambos ausentes)", () => {
+    const result = decideRemoteFallback(undefined, undefined);
+    assert.equal(result.useRemoteFallback, true);
+  });
+});
+
+describe("extractPreviousEditionRevealFromPublishedContent (#3210)", () => {
+  // Fixture inspirada no caso real 260709→260710: MIT descrito como
+  // universidade britânica quando na verdade é americana.
+  const PUBLISHED_260710 = [
+    "# Diar.ia — 10/07",
+    "",
+    "DESTAQUE 1",
+    "",
+    "Texto qualquer do destaque...",
+    "",
+    "---",
+    "",
+    "**ERRO INTENCIONAL**",
+    "",
+    "Na última edição, chamamos o MIT de universidade britânica, mas o correto é universidade americana.",
+    "",
+    "---",
+    "",
+    "**🎁 SORTEIO**",
+    "",
+    "Você presta atenção ao conteúdo gerado por IA que consome?",
+    "",
+  ].join("\n");
+
+  it("extrai o reveal da edição anterior a partir do conteúdo publicado (fallback #3210)", () => {
+    const result = extractPreviousEditionRevealFromPublishedContent(PUBLISHED_260710);
+    assert.ok(result, "deve extrair um resultado");
+    assert.match(result!.description!, /MIT/);
+    assert.match(result!.description!, /universidade americana/);
+  });
+
+  it("retorna null quando não há seção de reveal no conteúdo publicado", () => {
+    const content = "# Diar.ia — 10/07\n\nDESTAQUE 1\n\nTexto sem nenhum reveal.\n";
+    assert.equal(extractPreviousEditionRevealFromPublishedContent(content), null);
+  });
+
+  it("retorna null pra conteúdo vazio", () => {
+    assert.equal(extractPreviousEditionRevealFromPublishedContent(""), null);
+  });
+
+  it("decisão completa: local+jsonl ausentes → fallback remoto → parse do reveal → match correto do leitor (fluxo #3210 ponta-a-ponta, sem MCP real)", () => {
+    // 1. Decisão: dados locais ausentes (como 260709 no incidente real).
+    const decision = decideRemoteFallback(null, null);
+    assert.equal(decision.useRemoteFallback, true);
+
+    // 2. Fallback: parseia o conteúdo que teria vindo de
+    //    mcp__claude_ai_Beehiiv__get_post_content (mockado aqui como string,
+    //    já que mockar o MCP em si não é prático neste ambiente de teste).
+    const remoteError = extractPreviousEditionRevealFromPublishedContent(PUBLISHED_260710);
+    assert.ok(remoteError, "fallback deve recuperar o erro a partir do conteúdo publicado");
+
+    // 3. Match: a reply do leitor (caso real Joshu) deve bater contra o erro
+    //    recuperado via fallback, exatamente como bateria contra dados locais.
+    const replyBody = "Acho que o erro foi chamar o MIT de universidade britânica — é americana!";
+    assert.equal(matchesIntentionalError(replyBody, remoteError!), true);
+
+    // 4. Contraste: reply sem relação nenhuma não deve bater mesmo com o
+    //    fallback ativo (mesma heurística conservadora de sempre).
+    const unrelatedReply = "Adorei a edição de hoje!";
+    assert.equal(matchesIntentionalError(unrelatedReply, remoteError!), false);
   });
 });
 
