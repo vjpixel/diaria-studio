@@ -96,7 +96,7 @@ npx tsx scripts/render-halt-banner.ts \
    npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
    ```
 
-2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker. **Capturar a `url` do JSON stdout de `upload-html-public.ts`** — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML). Sem o hash, fetch retorna 404 (review #1612 regression).
+2. Pre-render do newsletter HTML — seguir steps 1.1-1.3 do `context/publishers/beehiiv-playbook.md` (extract-destaques, upload-images-public, render-newsletter-html + substitute-image-urls). Output: `_internal/newsletter-final.html`. **Não** rodar o passo 5 Fase 2 do playbook (`upload-html-public.ts`) aqui — aquele upload é o mecanismo de PRODUÇÃO usado pelo `fetch()` in-page do Chrome na Etapa 5 (§5.2 Fase 3 do playbook) pra colar o HTML no Beehiiv, e roda de novo, fresco, quando a Etapa 5 executar o playbook completo. Repeti-lo aqui seria upload redundante só pra descartar.
 
    **Exit codes de `substitute-image-urls.ts` (#2316, #2335):**
 
@@ -109,12 +109,53 @@ npx tsx scripts/render-halt-banner.ts \
 
    > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
 
+2b. **Publicar preview via Claude Artifacts (#3214).** O preview visual pro editor — que ANTES subia pra `draft.diaria.workers.dev` via `upload-html-public.ts` — agora é publicado como Claude Artifact (hospedado pelo lado do Claude, zero custo de cota Cloudflare Workers KV, #3214). **Chamado direto pelo top-level Claude Code — não é um script, `Artifact` só existe como tool do top-level.**
+
+   Republicar no MESMO `file_path` mantém a MESMA URL **dentro da mesma conversa**; entre conversas (ex: resume dias depois numa sessão nova) republicar sem `url` explícito minta uma URL NOVA — por isso o resume-safety abaixo persiste a URL retornada e a reusa via o parâmetro `url` do tool:
+
+   ```bash
+   # Resume-aware: se já existe uma URL persistida (Stage 4 rodou antes, mesma ou outra sessão), reusar via `url` do Artifact tool.
+   node -e "
+     const fs = require('fs');
+     const p = '{EDITION_DIR}/_internal/04-newsletter-url.json';
+     if (fs.existsSync(p)) {
+       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+       if (j.newsletter_url) console.log(j.newsletter_url);
+     }
+   "
+   ```
+   Se o comando acima imprimir uma URL: chamar `Artifact` com `file_path: "{EDITION_DIR}/_internal/newsletter-final.html"` e `url: "{url_impressa}"` (atualiza o MESMO artifact, mesma URL). Se não imprimir nada (1ª vez): chamar `Artifact` sem `url` (minta uma URL nova). Em ambos os casos, usar `description` curta (ex: "Preview newsletter — edição {AAMMDD}") e `favicon` fixo entre re-publicações da mesma edição (ex: 📰) — trocar o favicon lê como artifact diferente pro editor.
+
+   Capturar a URL retornada pelo tool (`{newsletter_url}`) e persistir:
+   ```bash
+   npx tsx -e "
+     import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
+     persistFieldToJsonFile('{EDITION_DIR}/_internal/04-newsletter-url.json', 'newsletter_url', '{newsletter_url}');
+   "
+   ```
+
 3. Pre-render do social preview HTML:
    ```bash
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.
    npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
-   # #1734: --persist-to grava a URL durável (com hash) em 05-social-preview.json.
-   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
+   ```
+   Publicar via `Artifact` — mesmo padrão resume-aware do passo 2b acima, mas lendo/persistindo `{EDITION_DIR}/_internal/05-social-preview.json` campo `social_preview_url` (nome de arquivo/campo inalterado desde #1734 — `send-edition-report.ts` continua lendo daqui sem mudança):
+   ```bash
+   node -e "
+     const fs = require('fs');
+     const p = '{EDITION_DIR}/_internal/05-social-preview.json';
+     if (fs.existsSync(p)) {
+       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+       if (j.social_preview_url) console.log(j.social_preview_url);
+     }
+   "
+   ```
+   `Artifact` com `file_path: "{EDITION_DIR}/_internal/social-preview.html"` + `url` (se houver) + `description` (ex: "Preview social — edição {AAMMDD}") + `favicon` fixo (ex: 📱). Persistir a URL retornada:
+   ```bash
+   npx tsx -e "
+     import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
+     persistFieldToJsonFile('{EDITION_DIR}/_internal/05-social-preview.json', 'social_preview_url', '{social_url}');
+   "
    ```
 
 4. close-poll (set gabarito — idempotente):
@@ -219,7 +260,7 @@ Exit code handling:
 
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).
-- URL pública no Worker KV: `{newsletter_url}` (capturada em §4b step 2).
+- URL do preview (Claude Artifact): `{newsletter_url}` (capturada em §4b step 2b).
 
 **4c.4 — Social preview:**
 - Social preview URL: `{social_url}` (de `_internal/05-social-preview.json`).
@@ -273,7 +314,7 @@ Exit code handling:
 - `0` → capturar stdout e JSON `_internal/fact-check-autofix.json`.
 - `1` → logar warn; continuar sem auto-fix (não bloqueia gate).
 
-**⚠️ Re-render obrigatório quando `applied > 0` (#2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Se `fact-check-autofix.json` mostra `summary.applied > 0`, re-rodar render + substitute + upload para garantir que o HTML publicado contenha o texto corrigido:
+**⚠️ Re-render obrigatório quando `applied > 0` (#2617):** o pré-render de §4b gerou `newsletter-final.html` ANTES do autofix. Se `fact-check-autofix.json` mostra `summary.applied > 0`, re-rodar render + substitute para garantir que o HTML reflita o texto corrigido, e republicar o preview:
 
 ```bash
 # Re-render newsletter HTML com o 02-reviewed.md já corrigido
@@ -282,18 +323,11 @@ npx tsx scripts/substitute-image-urls.ts \
   --html {EDITION_DIR}/_internal/newsletter-draft.html \
   --out {EDITION_DIR}/_internal/newsletter-final.html \
   --images {EDITION_DIR}/06-public-images.json
-# Re-upload HTML (atualiza a URL do Worker com o novo conteúdo)
-# --no-wrap é OBRIGATÓRIO (#2550): sobe o fragmento bruto, igual ao §4b/beehiiv-playbook.md.
-# Sem ele o Worker hospeda o HTML embrulhado no preview-wrapper → paste no Beehiiv quebra.
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
-  --html {EDITION_DIR}/_internal/newsletter-final.html \
-  --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
-  --field newsletter_url
 ```
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
 
-**⚠️ Atualizar `{newsletter_url}` após o re-upload:** o re-upload gera um novo hash de conteúdo (#1494) → nova URL. A URL capturada em §4b step 2 fica STALE. Re-ler `_internal/04-newsletter-url.json` e atualizar a variável `{newsletter_url}` ANTES de montar o gate (§4c.7) — senão o editor abre o preview da URL antiga (texto PRÉ-correção) e aprova conteúdo que não revisou.
+**Republicar o preview (#3214):** chamar `Artifact` de novo com `file_path: "{EDITION_DIR}/_internal/newsletter-final.html"` e `url: "{newsletter_url}"` (a URL já persistida em `04-newsletter-url.json` por §4b step 2b) — **isso atualiza o MESMO artifact, na MESMA URL** (diferente do Worker Cloudflare antigo, que gerava uma URL nova a cada conteúdo por ser content-hash-keyed). Como a URL não muda, não é necessário re-persistir nem reavisar o editor de staleness — a variável `{newsletter_url}` capturada em §4b step 2b já continua válida e aponta pro conteúdo corrigido automaticamente assim que a republicação completar.
 
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
@@ -413,6 +447,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
+   - **Em ambos os casos, republicar o preview via `Artifact`** (§4b step 2b — mesmo `file_path`/`url` já persistidos, atualiza a mesma URL) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
 
 4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
@@ -449,6 +484,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
+   6. Re-renderizar (`render-social-html.ts`, §4b step 3) e republicar o preview social via `Artifact` (mesmo `file_path`/`url` já persistidos em `05-social-preview.json` — atualiza a mesma URL) antes de voltar ao gate.
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 

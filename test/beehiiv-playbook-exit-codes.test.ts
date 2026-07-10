@@ -183,12 +183,29 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       "substitute-image-urls.ts precisa de --html newsletter-draft.html",
     );
 
-    // upload-html-public.ts: --no-wrap é OBRIGATÓRIO (#2550) — sobe o fragmento bruto,
-    // igual ao §4b. Sem ele, o HTML re-uploadado vai embrulhado no preview-wrapper.
+    // #3214: a republicação do preview pós-autofix migrou de upload-html-public.ts
+    // (Cloudflare draft worker) pra Artifact (Claude-hosted) — este bloco não deve
+    // mais chamar o script de upload; deve chamar Artifact reusando o file_path/url
+    // já persistidos, pra manter a MESMA URL (sem staleness a resolver).
+    assert.doesNotMatch(
+      block,
+      /upload-html-public\.ts/,
+      "#3214: republicação pós-autofix não usa mais upload-html-public.ts (migrado pra Artifact)",
+    );
     assert.match(
       block,
-      /upload-html-public\.ts[\s\S]*?--no-wrap/,
-      "upload-html-public.ts no re-render precisa de --no-wrap (fragmento bruto, #2550)",
+      /Artifact/,
+      "#3214: republicação pós-autofix deve chamar o tool Artifact",
+    );
+    assert.match(
+      block,
+      /newsletter-final\.html/,
+      "#3214: Artifact deve republicar sobre newsletter-final.html (mesmo file_path do §4b step 2b)",
+    );
+    assert.match(
+      block,
+      /04-newsletter-url\.json/,
+      "#3214: deve reusar a URL persistida em 04-newsletter-url.json (mesma URL, sem re-captura)",
     );
   });
 
