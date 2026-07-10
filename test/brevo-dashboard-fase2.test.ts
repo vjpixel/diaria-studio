@@ -969,6 +969,28 @@ describe("renderAbcSection", () => {
     assert.doesNotMatch(html, /▲ CLIQUE/, "sem tag CLIQUE quando tudo zero");
   });
 
+  // Regressão #3281: allZero checava totalViews (abertura), mas #3124 migrou
+  // o critério decisório da seção pra CLIQUE. Pouco depois de um envio é comum
+  // ter opens>0 e clicks=0 (clique atrasa horas em relação à abertura) — com
+  // o guard antigo isso caía no branch !leaderClickRate ("Empate no clique com
+  // 0.00%"), implicando enganosamente um empate real no critério principal.
+  test("opens>0 e clicks=0 em todas as células exibe 'aguardando dados' (não 'Empate no clique com 0.00%') (#3281)", () => {
+    const openedNoClicksRows = [
+      { cell: "A" as const, totalViews: 40, totalDelivered: 100, openRate: 40.0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 35, totalDelivered: 100, openRate: 35.0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 38, totalDelivered: 100, openRate: 38.0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+    ];
+    const html = renderAbcSection(openedNoClicksRows);
+    // Não deve exibir "Empate no clique com 0.00%" — enganoso, implica empate real no critério decisório.
+    assert.doesNotMatch(html, /Empate no clique com 0\.00%/, "não deve mostrar 'Empate no clique com 0.00%' quando clicks=0 mas opens>0");
+    // Deve exibir aviso de aguardando dados (mesma mensagem do caso all-zero de verdade).
+    assert.match(html, /[Aa]guardando dados/, "deve mostrar 'aguardando dados' quando totalClicks=0 em todas as células, mesmo com opens>0");
+    // Nenhuma célula deve receber tag de líder no CLIQUE — critério decisório, sem dado ainda.
+    // (ABERTURA pode legitimamente marcar líder — as taxas de abertura divergem
+    // nesta fixture, só o clique é que está zerado em todas as células.)
+    assert.doesNotMatch(html, /▲ CLIQUE/, "sem tag CLIQUE quando clicks todo zero");
+  });
+
   test("empate em clique com taxa > 0 continua mostrando 'Empate' (não confunde com zero) (#2124, #3124)", () => {
     // Empate real (click rate igual mas > 0) — deve manter comportamento original
     const tiedNonZero = [
