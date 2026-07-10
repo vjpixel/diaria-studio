@@ -33,6 +33,7 @@
 // #2881, #3196) que motivou a extração.
 import {
   forEachSecondaryItem,
+  LEGACY_ANY_SECTION_HEADER_RE,
   type SecondaryItemMissing,
 } from "./secondary-item-walker.ts";
 
@@ -80,7 +81,7 @@ export function checkSecondaryItemsHaveSummary(
     // seção (sem É IA?/ERRO INTENCIONAL/SORTEIO/PARA ENCERRAR, ampliado nos
     // outros 3 lints só depois, #2918 bug 2) — ver nota de divergência 1 em
     // secondary-item-walker.ts.
-    legacyClosingHeaders: true,
+    closingHeaderRe: LEGACY_ANY_SECTION_HEADER_RE,
     // Ver nota de divergência 2 em secondary-item-walker.ts / comentário de
     // BOLDED_ITEM_ONLY_RE acima.
     nextLineIsItemRe: BOLDED_ITEM_ONLY_RE,
