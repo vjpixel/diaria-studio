@@ -170,11 +170,12 @@ function loadSocial(editionDir: string): PublishedSocial | null {
 }
 
 /**
- * #1739: URL do social preview hospedado no draft worker, persistida por
- * `upload-html-public.ts --persist-to .../05-social-preview.json --field
- * social_preview_url` no Stage 4 (#1734). A URL completa (com hash de conteúdo)
- * vive nesse arquivo — recompor `${BASE}/${edition}-social` sem hash dá 404
- * (#1494/#1612). Retorna null se não persistida (edição sem preview social).
+ * #1739: URL do social preview, persistida em `.../05-social-preview.json`
+ * campo `social_preview_url` no Stage 4 (#1734). Até #3214 era hospedado no
+ * draft worker Cloudflare via `upload-html-public.ts --persist-to`; desde
+ * #3214 é um Claude Artifact publicado direto pelo top-level (a persistência
+ * do campo/arquivo não mudou — só a origem da URL). Retorna null se não
+ * persistida (edição sem preview social).
  */
 function loadSocialPreviewUrl(editionDir: string): string | null {
   const path = resolveReadPath(editionDir, "05-social-preview.json");
@@ -340,10 +341,11 @@ export function renderHtmlReport(
     )
     .join("\n");
 
-  // Preview link. #1739/#1612: usar SÓ o `draft_preview_url` persistido (com
-  // hash de conteúdo). #1824: montar `${BASE}/${edition}` sem hash dá 404, então
-  // em vez de servir um link quebrado, deixar null → o render mostra
-  // "(preview indisponível)" e você sabe que faltou persistir a URL.
+  // Preview link. #1739/#1612: usar SÓ o `draft_preview_url` persistido.
+  // #1824: sem URL persistida, deixar null → o render mostra
+  // "(preview indisponível)" em vez de um link quebrado.
+  // #3214: a URL passou de Cloudflare draft worker para Claude Artifact —
+  // o campo/contrato de persistência não mudou, só a origem da URL.
   const persistedPreview = (published as { draft_preview_url?: unknown } | null)
     ?.draft_preview_url;
   const previewUrl =
@@ -413,12 +415,12 @@ export function renderHtmlReport(
   <h2>Publicacao</h2>
   <h3 style="font-size:14px;">Newsletter</h3>
   <p>${nlStatus}</p>
-  <p>📄 Preview newsletter (Cloudflare): ${
+  <p>📄 Preview newsletter (Claude Artifact): ${
     previewUrl
       ? `<a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a>`
       : `<span style="color:#999;">(preview indisponível — draft_preview_url não persistido)</span>`
   }</p>
-  <p>📱 Preview social (Cloudflare): ${
+  <p>📱 Preview social (Claude Artifact): ${
     socialPreviewUrl
       ? `<a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a>`
       : `<span style="color:#999;">(social preview não gerado)</span>`
