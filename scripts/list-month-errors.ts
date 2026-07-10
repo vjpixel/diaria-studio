@@ -18,25 +18,25 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 
-// #3270: path default do JSONL resolvido de forma DETERMINÍSTICA a partir do
-// módulo (`import.meta.url`), não de `process.cwd()`. Em uso normal (CLI
+// #3270: raiz do repo resolvida de forma DETERMINÍSTICA a partir do módulo
+// (`import.meta.dirname`), não de `process.cwd()`. Em uso normal (CLI
 // invocado da raiz do repo) o resultado é idêntico — mas isso: (1) elimina o
-// risco de ler o arquivo errado quando o script é invocado de outro cwd, e
-// (2) permite que `fallbackFromJsonl`/`extractError` aceitem um `jsonlPath`
-// injetado, isolando testes do `data/intentional-errors.jsonl` REAL (que tem
-// dado de produção sync'd via OneDrive) sem depender de mockar `process.cwd()`.
-const DEFAULT_JSONL_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "data/intentional-errors.jsonl",
-);
+// risco de ler o arquivo errado quando o script é invocado de outro cwd
+// (aplicado tanto ao JSONL fallback quanto — code-review pós-#3293 — à
+// varredura de `data/editions`, que antes ficava inconsistente: só o path do
+// JSONL era determinístico), e (2) permite que `fallbackFromJsonl`/
+// `extractError` aceitem um `jsonlPath` injetado, isolando testes do
+// `data/intentional-errors.jsonl` REAL (que tem dado de produção sync'd via
+// OneDrive) sem depender de mockar `process.cwd()`.
+const REPO_ROOT = resolve(import.meta.dirname, "..");
+const DEFAULT_JSONL_PATH = resolve(REPO_ROOT, "data/intentional-errors.jsonl");
+const DEFAULT_EDITIONS_ROOT = resolve(REPO_ROOT, "data/editions");
 
 export interface MonthError {
   edition: string;
@@ -55,8 +55,7 @@ export interface MonthError {
 // edições no layout nested pós-#3023. `enumerateEditionDirs` já garante o
 // formato `/^\d{6}$/`, então só falta o filtro por prefixo do mês.
 function listEditionsForMonth(monthYYMM: string): string[] {
-  const editionsDir = resolve(process.cwd(), "data/editions");
-  return [...enumerateEditionDirs(editionsDir).keys()]
+  return [...enumerateEditionDirs(DEFAULT_EDITIONS_ROOT).keys()]
     .filter((name) => name.startsWith(monthYYMM))
     .sort();
 }
@@ -136,7 +135,7 @@ export function extractError(
   };
 }
 
-function formatMarkdown(month: string, errors: MonthError[]): string {
+export function formatMarkdown(month: string, errors: MonthError[]): string {
   // #2016: separate "no_error" editions from regular declared errors
   const noErrorEditions = errors.filter((e) => e.declared && e.no_error);
   const declared = errors.filter((e) => e.declared && !e.no_error);
@@ -151,8 +150,12 @@ function formatMarkdown(month: string, errors: MonthError[]): string {
     lines.push("| Edição | Categoria | Localização | Descrição | Valor correto |");
     lines.push("|---|---|---|---|---|");
     for (const e of declared) {
+      // #3270 follow-up (code-review): `location` pode ser undefined pra
+      // entries source=prose_block sem destaque estruturado — sem o `?? ""`
+      // (já usado por correct_value ao lado), a interpolação de template
+      // literal grava o literal "undefined" na tabela do relatório mensal.
       lines.push(
-        `| ${e.edition} | ${e.category} | ${e.location} | ${e.description} | ${e.correct_value ?? ""} |`,
+        `| ${e.edition} | ${e.category} | ${e.location ?? ""} | ${e.description} | ${e.correct_value ?? ""} |`,
       );
     }
     lines.push("");
@@ -228,14 +231,14 @@ function main(): number {
 
   // #2463/#3025: resolve o path REAL (flat ou nested) de cada edição — nunca
   // `resolve(process.cwd(), "data/editions", edition)`, que assume flat.
-  const editionDirsByAammdd = enumerateEditionDirs(resolve(process.cwd(), "data/editions"));
+  const editionDirsByAammdd = enumerateEditionDirs(DEFAULT_EDITIONS_ROOT);
   const errors = editions.map((edition) =>
     // #3025 self-review: guard contra o dir sumir entre a varredura de
     // listEditionsForMonth() e esta (TOCTOU raro) — fallback pro path flat
     // legado, que extractError trata como "02-reviewed.md ausente" (mesmo
     // comportamento de uma edição sem artefato, não um crash).
     extractError(
-      editionDirsByAammdd.get(edition) ?? resolve(process.cwd(), "data/editions", edition),
+      editionDirsByAammdd.get(edition) ?? resolve(DEFAULT_EDITIONS_ROOT, edition),
       edition,
     ),
   );

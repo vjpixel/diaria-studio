@@ -39,8 +39,7 @@ import { dirname, resolve } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
 import {
   loadIntentionalErrors,
-  loadIntentionalErrorJson,
-  intentionalErrorJsonPath,
+  destaqueFromLocation,
   syncFrontmatterToEntries,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
@@ -195,13 +194,33 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
     // deixa um buraco no JSONL e faz o reveal da próxima edição pular a
     // edição certa (#1854) — extrair da prosa e gravar com source="prose_block".
     const md = readFileSync(mdPath, "utf8");
-    // #3272: passar o `record` já carregado (mesmo se incompleto pro gate de
-    // `checkIntentionalError`) — sem isso, `extractIntentionalErrorFromMd`
-    // nunca alcança o caminho PRIORIDADE 2 (`record.reveal`), e um `reveal`
-    // já preenchido em `_internal/intentional-error.json` fica descartado em
-    // silêncio quando o corpo do MD não tem a prosa "Nessa edição, …" batendo.
-    const record = loadIntentionalErrorJson(intentionalErrorJsonPath(dirname(mdPath)));
-    const prose = extractIntentionalErrorFromMd(md, record);
+    // #3272 (revisado pós-#3293, code-review consolidado): tenta SEM o
+    // `record` primeiro — preserva o comportamento pré-#3272 quando o corpo
+    // do MD já tem prosa "Nessa edição, …" auto-suficiente. Só passa
+    // `lintResult.parsed` (já carregado por `checkIntentionalError` acima —
+    // zero I/O extra, dispensa reler `_internal/intentional-error.json`) na
+    // 2ª tentativa, alcançando a PRIORIDADE 2 (`record.reveal`) apenas quando
+    // o MD NÃO tem prosa própria. Sem esse cuidado, um record incompleto/
+    // desatualizado (ex: `reveal` de uma tentativa anterior, quando o editor
+    // reescreve a prosa do MD mas esquece de atualizar o JSON) contaminaria
+    // uma declaração de prosa completa e sem relação com o `reveal`/
+    // `correct_value` do record errado — `extractIntentionalErrorFromMd`
+    // sempre mescla esses campos do record na PRIORIDADE 1 também, mesmo
+    // quando a prosa já é auto-suficiente.
+    const proseFromMdAlone = extractIntentionalErrorFromMd(md);
+    // #3272 follow-up: só é seguro atribuir `category`/`location` do record à
+    // entry quando o record FOI a fonte real da narrativa (a chamada sem
+    // record já falhou, então a 2ª chamada com `lintResult.parsed` é quem
+    // produziu `prose`) — nesse caso record e narrativa descrevem
+    // necessariamente o MESMO erro (o `reveal` do record virou a narrativa).
+    // Quando a 1ª chamada (sem record) já basta, `category`/`location` do
+    // record NÃO podem ser presumidos do mesmo erro — o mesmo raciocínio que
+    // motiva não passar `record` pra `extractIntentionalErrorFromMd` nesse
+    // caso (evita contaminar uma prosa auto-suficiente com metadado
+    // desatualizado/não-relacionado de um record incompleto).
+    const usedRecordAsSource = proseFromMdAlone === null;
+    const prose =
+      proseFromMdAlone ?? extractIntentionalErrorFromMd(md, lintResult.parsed);
     if (prose) {
       const existing = loadIntentionalErrors(jsonlPath);
       if (existing.some((e) => e.edition === flags.edition)) {
@@ -210,9 +229,19 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
         );
         return { exitCode: 0, added: false, updated: false, edition: flags.edition, source: "prose_block" };
       }
+      // #3272 follow-up: quando o record foi de fato a fonte (ver
+      // `usedRecordAsSource` acima) e já tem `category`/`location`
+      // preenchidos (mesmo com o gate de checkIntentionalError incompleto),
+      // propaga pra entry em vez do genérico "editor_declared" sem destaque —
+      // perder essa info no relatório mensal (/diaria-mes-erros) é evitável.
+      const destaque =
+        usedRecordAsSource && lintResult.parsed?.location
+          ? destaqueFromLocation(lintResult.parsed.location) || undefined
+          : undefined;
       const entry: IntentionalError = {
         edition: flags.edition,
-        error_type: "editor_declared",
+        error_type: (usedRecordAsSource && lintResult.parsed?.category) || "editor_declared",
+        ...(destaque !== undefined ? { destaque } : {}),
         is_feature: true,
         detail: prose.detail ?? prose.narrative,
         // #1860: preserva a narrativa pra composeRevealText aplicar a correção
