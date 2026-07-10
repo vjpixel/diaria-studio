@@ -242,11 +242,83 @@ function isInQuotedRange(
   return ranges.some((r) => index >= r.start && index <= r.end);
 }
 
+/**
+ * #3208: `## post_pixel` documentadamente abre com "Hoje" (template
+ * `.claude/agents/social-linkedin.md` §3d, #3052) — é publicado ao vivo no
+ * mesmo dia (não agendado como main_d{N}/comment_diaria/comment_pixel, que
+ * vão pra D+1+), então "hoje" é literalmente correto ali.
+ *
+ * Localiza o range de LINHAS (0-based, inclusivo nas duas pontas) do CORPO
+ * do bloco `## post_pixel` dentro da seção `# LinkedIn`, pra que o scan de
+ * tempo relativo possa pular só essas linhas — exclusão POR POSIÇÃO, mesmo
+ * padrão já usado por `isInQuotedRange`/`quotedRanges` logo acima (exceção
+ * de aspas, #877).
+ *
+ * Deliberadamente NÃO usa `extractPlatformSection`/`extractPostPixelBlock`
+ * seguido de `String.replace(texto, ...)`: essa primeira versão do fix
+ * mascarava por CONTEÚDO (buscando a substring extraída no doc inteiro),
+ * o que só é seguro se o texto do post_pixel for único no documento —
+ * invariante não garantida (`### comment_pixel` é, por design, também a
+ * "opinião pessoal do Pixel" sobre o mesmo D1, e pode duplicar o texto do
+ * post_pixel por engano de escrita/humanizador — exatamente o cenário que
+ * `lintPostPixelMatchesD1`, #1861, existe pra detectar). Nesse caso
+ * `String.replace` mascarava a PRIMEIRA ocorrência (ex: o comment_pixel
+ * mais cedo no doc) em vez do post_pixel real — o comment_pixel duplicado
+ * escapava do lint (falso-negativo num D+1+) e o post_pixel legítimo
+ * continuava sendo flagado (o próprio bug que este fix existe pra resolver
+ * não se aplicava). Exclusão por range de linha é imune a essa classe de
+ * bug por construção: a mesma exceção nunca despende de o CONTEÚDO ser
+ * único, só da POSIÇÃO do bloco.
+ *
+ * Mesmas regras de boundary de `extractPlatformSection`/`extractPostPixelBlock`
+ * (próximo `## ` mesmo nível, ou `# ` top-level, ou fim do doc) — só que
+ * aplicadas diretamente sobre os índices de `lines`, sem materializar
+ * substrings intermediárias.
+ */
+function findPostPixelLineRange(lines: string[]): { start: number; end: number } | null {
+  const linkedinIdx = lines.findIndex((l) => /^# LinkedIn\s*$/i.test(l));
+  if (linkedinIdx === -1) return null;
+
+  // Fim da seção LinkedIn: próxima linha "# " top-level, ou fim do doc.
+  let sectionEnd = lines.length;
+  for (let i = linkedinIdx + 1; i < lines.length; i++) {
+    if (/^# /.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  let ppHeaderIdx = -1;
+  for (let i = linkedinIdx + 1; i < sectionEnd; i++) {
+    if (/^## post_pixel\b/i.test(lines[i])) {
+      ppHeaderIdx = i;
+      break;
+    }
+  }
+  if (ppHeaderIdx === -1) return null;
+
+  // Corpo do post_pixel: da linha seguinte ao header até a próxima "## "
+  // (mesmo nível) ou o fim da seção LinkedIn.
+  let bodyEnd = sectionEnd - 1;
+  for (let i = ppHeaderIdx + 1; i < sectionEnd; i++) {
+    if (/^## /.test(lines[i])) {
+      bodyEnd = i - 1;
+      break;
+    }
+  }
+  if (bodyEnd < ppHeaderIdx + 1) return null; // bloco sem linhas de corpo
+
+  return { start: ppHeaderIdx + 1, end: bodyEnd };
+}
+
 export function lintRelativeTime(md: string): RelativeTimeResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const postPixelRange = findPostPixelLineRange(lines);
   const matches: RelativeTimeMatch[] = [];
 
   for (let i = 0; i < lines.length; i++) {
+    // #3208 — linhas do CORPO de ## post_pixel são isentas (ver doc acima).
+    if (postPixelRange && i >= postPixelRange.start && i <= postPixelRange.end) continue;
     const line = lines[i];
     const ranges = quotedRanges(line);
     RELATIVE_TIME_RE.lastIndex = 0;

@@ -477,6 +477,167 @@ describe("lintRelativeTime expansion (social, #877)", () => {
   });
 });
 
+describe("lintRelativeTime — post_pixel exceção (#3208)", () => {
+  it("'hoje' dentro de ## post_pixel NÃO dispara (texto-modelo do template §3d, #3052)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sobre o lançamento do modelo.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, JSON.stringify(r.matches));
+  });
+
+  it("mesmo texto de tempo relativo em main_d1 CONTINUA disparando (não é um desliga-tudo)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Hoje a OpenAI lançou um novo modelo.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+## post_pixel
+
+Comentário pessoal sem referência temporal.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("mesmo texto de tempo relativo em comment_pixel CONTINUA disparando", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+### comment_pixel
+
+Ontem eu vi esse anúncio e fiquei impressionado.
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades — reuni tudo em {edition_url}.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    // "Hoje" do post_pixel não conta; "Ontem" do comment_pixel deve continuar contando.
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "ontem"));
+    assert.ok(!r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("'hoje' em comment_diaria (fora do post_pixel) CONTINUA disparando", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Hoje é o melhor dia para assinar — edição completa em {edition_url}
+
+## post_pixel
+
+Comentário pessoal sem referência temporal.
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("linha da seção Facebook mantém tempo relativo detectado normalmente (post_pixel é LinkedIn-only)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+## post_pixel
+
+Hoje saíram mais {outros_count} novidades — reuni tudo em {edition_url}.
+
+# Facebook
+
+## d1
+
+Hoje a OpenAI lançou um novo modelo no Facebook também.
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
+
+  it("texto DUPLICADO entre comment_pixel e post_pixel: comment_pixel continua disparando, post_pixel continua isento (self-review #3208 — exclusão por posição, não por conteúdo)", () => {
+    // Regressão do primeiro fix (mask por String.replace(texto, ...)): se o
+    // texto do post_pixel coincidir byte-a-byte com um comment_pixel mais
+    // cedo no doc (cenário real que lintPostPixelMatchesD1/#1861 existe pra
+    // detectar — post_pixel/comment_pixel são ambos "voz pessoal do Pixel"
+    // sobre o mesmo destaque), um replace por CONTEÚDO mascara a PRIMEIRA
+    // ocorrência (o comment_pixel, que é D+1+ e deveria continuar flagado)
+    // em vez do post_pixel real — o comment_pixel duplicado escapava do
+    // lint E o post_pixel legítimo continuava sendo (incorretamente)
+    // flagado. A exclusão por range de linha não pode errar o alvo.
+    const duplicated = "Hoje decidi comentar esse lançamento no feed pessoal.";
+    const md = `# LinkedIn
+
+## d1
+
+Post principal sem problemas.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+### comment_pixel
+
+${duplicated}
+
+## post_pixel
+
+${duplicated}
+
+#IA #futuro
+`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false, "comment_pixel duplicado deve continuar disparando");
+    assert.equal(r.matches.length, 1, JSON.stringify(r.matches));
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+    // A linha reportada deve ser a do comment_pixel (mais cedo no doc), não a do post_pixel.
+    const ppHeaderLine = md.split("\n").findIndex((l) => l.trim() === "## post_pixel") + 1;
+    assert.ok(
+      r.matches[0].line < ppHeaderLine,
+      `esperava match ANTES da linha de ## post_pixel (${ppHeaderLine}), achou linha ${r.matches[0].line}`,
+    );
+  });
+});
+
 describe("lintLinkedinSchema (#595)", () => {
   function buildMd(parts: { d1?: string; d2?: string; d3?: string }): string {
     const sections: string[] = ["# LinkedIn", ""];
