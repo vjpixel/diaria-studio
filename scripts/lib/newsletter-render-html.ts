@@ -1287,12 +1287,32 @@ function countDoubleAsterisk(str: string): number {
   return count;
 }
 
-/** Posição do próximo `[label](` a partir de `from`, ou `str.length` se não houver mais. */
+/**
+ * O `**` candidato (adjacente a um link) é um marcador genuinamente
+ * desemparelhado dentro de `adjacentText` — abertura/fechamento legítimo pro
+ * bold-wrap do link — ou já está auto-pareado ali (não deve fundir com o
+ * link)? Contagem PAR de `**` em `adjacentText` = auto-pareado (o candidato
+ * NÃO participa dessa contagem — já foi removido pelo caller); ÍMPAR = de
+ * fato desemparelhado. Compartilhado entre os dois lados (`hasOpenBold` e
+ * `hasCloseBold`) — mesma fórmula, evita os dois lados divergirem (#3280
+ * code-review).
+ */
+function isUnpairedBoldMarker(adjacentText: string): boolean {
+  return countDoubleAsterisk(adjacentText) % 2 === 0;
+}
+
+/**
+ * Posição do próximo `[label](url)` VÁLIDO a partir de `from` — reusa
+ * `findMarkdownLinks` (parênteses balanceados + URL não-vazia, o mesmo
+ * parser do loop principal de `tokenizeInline`/`findMarkdownLinks`), não uma
+ * regex crua: um `[x](` malformado (sem fechamento, ou destino vazio) não
+ * deve ser confundido com um boundary real (#3280 code-review — Reuse/
+ * wrapper-correctness). Retorna `str.length` se não houver mais links válidos.
+ */
 function nextLinkStartIndex(str: string, from: number): number {
-  const re = /\[([^\]]+)\]\(/g;
-  re.lastIndex = from;
-  const m = re.exec(str);
-  return m ? m.index : str.length;
+  const rest = str.slice(from);
+  const link = findMarkdownLinks(rest).find((l) => l.url.length > 0);
+  return link ? from + link.start : str.length;
 }
 
 /**
@@ -1355,17 +1375,32 @@ function tokenizeInline(
     // (sem o `**` final) tem contagem PAR, esse `**` final está de fato
     // desemparelhado — sobra pro link (abertura legítima). Se ÍMPAR, o `**`
     // final já fecha um bold anterior dentro do próprio `textBefore` (ex:
-    // "Atenção:") — não é abertura pro link. Mesma lógica espelhada pro lado
-    // de depois do link, bounded pelo próximo link (pra não contaminar com
-    // `**` dentro do label de um link seguinte).
+    // "Atenção:") — não é abertura pro link.
     let textBefore = input.substring(lastIdx, m.index);
     const hasOpenBold =
       textBefore.endsWith("**") &&
-      countDoubleAsterisk(textBefore.slice(0, -2)) % 2 === 0;
-    const closeBoundary = nextLinkStartIndex(input, j + 3);
-    const hasCloseBold =
-      input.startsWith("**", j + 1) &&
-      countDoubleAsterisk(input.substring(j + 3, closeBoundary)) % 2 === 0;
+      isUnpairedBoldMarker(textBefore.slice(0, -2));
+    // Lado de depois do link — mesma ideia espelhada, bounded pelo próximo
+    // link (pra não contaminar a contagem com `**` dentro do label de um link
+    // seguinte). #3280 code-review (achado #A/#B/#E/Altitude, confirmado
+    // empiricamente): quando HÁ um próximo link `**[label2](url2)**` colado
+    // ao fim do texto entre os dois links, o `**` final desse texto NÃO é o
+    // fechamento deste link — é a ABERTURA do wrap do link seguinte
+    // (resolvida pelo `hasOpenBold` dele, na iteração seguinte). Sem isso,
+    // 2+ links bold-wrapped consecutivos no mesmo parágrafo quebravam: nenhum
+    // fundia, `**` vazava literal, e o texto conector entre eles virava
+    // `<strong>` por engano. `closeBoundary` só é computado quando o `**`
+    // candidato existe (lazy — evita o scan de `nextLinkStartIndex` na
+    // maioria dos links, que não têm `**` colado).
+    let hasCloseBold = false;
+    if (input.startsWith("**", j + 1)) {
+      const closeBoundary = nextLinkStartIndex(input, j + 3);
+      let closeAdjacent = input.substring(j + 3, closeBoundary);
+      if (closeBoundary < input.length && closeAdjacent.endsWith("**")) {
+        closeAdjacent = closeAdjacent.slice(0, -2);
+      }
+      hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
+    }
     const boldLink = hasOpenBold && hasCloseBold;
     if (boldLink) {
       textBefore = textBefore.slice(0, -2);
