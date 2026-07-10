@@ -42,6 +42,28 @@ describe("isYoutubeUrl", () => {
     assert.equal(isYoutubeUrl("https://youtu.be/EAN5Cj347PY"), true);
   });
 
+  // #3273 REGRESSÃO: isYoutubeUrl só aceitava youtube.com/watch e youtu.be —
+  // rejeitava m.youtube.com, /live/{id} e /shorts/{id}. Irônico: o caso
+  // motivador da feature #3202 ("Introducing GPT-Live", 260709) era
+  // justamente uma LIVESTREAM, cuja URL canônica do YouTube usa /live/{id}
+  // — pickBestYoutubeCandidate descartava o match perfeito ANTES de pontuar
+  // por similaridade de título, flagando video_url_unverified mesmo com
+  // candidato disponível.
+  it("#3273: aceita youtube.com/live/{id} (livestream — caso motivador #3202)", () => {
+    assert.equal(isYoutubeUrl("https://www.youtube.com/live/EAN5Cj347PY"), true);
+    assert.equal(isYoutubeUrl("https://youtube.com/live/EAN5Cj347PY"), true);
+  });
+
+  it("#3273: aceita youtube.com/shorts/{id}", () => {
+    assert.equal(isYoutubeUrl("https://www.youtube.com/shorts/EAN5Cj347PY"), true);
+  });
+
+  it("#3273: aceita host m.youtube.com (mobile) pra /watch, /live/ e /shorts/", () => {
+    assert.equal(isYoutubeUrl("https://m.youtube.com/watch?v=EAN5Cj347PY"), true);
+    assert.equal(isYoutubeUrl("https://m.youtube.com/live/EAN5Cj347PY"), true);
+    assert.equal(isYoutubeUrl("https://m.youtube.com/shorts/EAN5Cj347PY"), true);
+  });
+
   it("rejeita a página oficial da empresa que embeda o vídeo (caso real 260709)", () => {
     assert.equal(isYoutubeUrl("https://openai.com/index/introducing-gpt-live/"), false);
   });
@@ -98,6 +120,17 @@ describe("pickBestYoutubeCandidate (busca mockada)", () => {
     if (!result.matched) {
       assert.match(result.reason, /threshold/);
       assert.ok(result.bestScore! < YOUTUBE_MATCH_THRESHOLD);
+    }
+  });
+
+  it("#3273: REGRESSÃO — escolhe candidato em formato /live/{id} (livestream, caso motivador #3202)", () => {
+    const candidates: VideoSearchCandidate[] = [
+      { url: "https://www.youtube.com/live/EAN5Cj347PY", title: "Introducing GPT-Live | OpenAI" },
+    ];
+    const result = pickBestYoutubeCandidate("Introducing GPT-Live", candidates);
+    assert.equal(result.matched, true);
+    if (result.matched) {
+      assert.equal(result.url, "https://www.youtube.com/live/EAN5Cj347PY");
     }
   });
 

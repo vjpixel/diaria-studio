@@ -204,14 +204,101 @@ describe("isValidVoteEmailFormat — #3118 item 3", () => {
     assert.equal(isValidVoteEmailFormat(email), false);
   });
   it("aceita email com + (Beehiiv merge tag pattern)", () => assert.equal(isValidVoteEmailFormat("subscriber+tag@example.com"), true));
+  it("rejeita email com ':' no local-part (#3279 charset hardening)", () => assert.equal(isValidVoteEmailFormat("evil:tag@example.com"), false));
+  it("rejeita email com ':' no domínio (#3279 charset hardening)", () => assert.equal(isValidVoteEmailFormat("user@evil:x.com"), false));
 });
 
 describe("isValidVoteEditionFormat — #3118 item 3", () => {
   it("aceita edition AAMMDD normal", () => assert.equal(isValidVoteEditionFormat("260613"), true));
   it("aceita ciclo Clarice YYMM-MM", () => assert.equal(isValidVoteEditionFormat("2605-06"), true));
   it("rejeita edition vazio", () => assert.equal(isValidVoteEditionFormat(""), false));
-  it("rejeita edition >32 chars", () => assert.equal(isValidVoteEditionFormat("a".repeat(33)), false));
-  it("aceita edition EXATAMENTE 32 chars (limite)", () => assert.equal(isValidVoteEditionFormat("a".repeat(32)), true));
+  it("rejeita edition >32 chars (não bate charset de nenhum dos 2 formatos)", () => assert.equal(isValidVoteEditionFormat("a".repeat(33)), false));
+});
+
+// ── #3279: charset hardening — ':' não pode forjar chave KV vote:{edition}:{email} ──
+//
+// Achado de segurança (code-review consolidado 260710, verificado linha a linha):
+// isValidVoteEditionFormat checava só COMPRIMENTO (`length > 0 && <= 32`), não
+// charset. Um edition como "2607-08:evil" (13 chars) passava livremente e produzia
+// a chave KV `vote:2607-08:evil:{email}` — que ainda bate no prefixo escaneado por
+// handleAdminCorrect (`vote:2607-08:`), poluindo correções administrativas de score
+// sem autenticação nenhuma (modo merge-tag não exige HMAC). Fix: charset explícito —
+// só `^\d{6}$` (AAMMDD legado) ou `^\d{4}-\d{2}$` (ciclo Clarice) passam agora.
+describe("isValidVoteEditionFormat — #3279 charset hardening (rejeita ':' e outros chars fora do esperado)", () => {
+  it("rejeita edition com ':' — exploit exato da issue #3279 (edition=2607-08:evil)", () => {
+    assert.equal(isValidVoteEditionFormat("2607-08:evil"), false);
+  });
+  it("rejeita edition AAMMDD com ':' anexado (edition=260613:evil)", () => {
+    assert.equal(isValidVoteEditionFormat("260613:evil"), false);
+  });
+  it("rejeita edition só com ':' ", () => {
+    assert.equal(isValidVoteEditionFormat(":"), false);
+  });
+  it("rejeita edition com letras (não é AAMMDD nem ciclo)", () => {
+    assert.equal(isValidVoteEditionFormat("abcdef"), false);
+  });
+  it("rejeita edition ciclo com dígitos a mais (YYMM-MMM)", () => {
+    assert.equal(isValidVoteEditionFormat("2605-069"), false);
+  });
+  it("rejeita edition AAMMDD com 1 dígito a menos/mais (5 ou 7 chars)", () => {
+    assert.equal(isValidVoteEditionFormat("26061"), false);
+    assert.equal(isValidVoteEditionFormat("2606133"), false);
+  });
+  it("continua aceitando os 2 formatos legítimos após o hardening (não regride #3118)", () => {
+    assert.equal(isValidVoteEditionFormat("260613"), true, "AAMMDD legado");
+    assert.equal(isValidVoteEditionFormat("2605-06"), true, "ciclo Clarice YYMM-MM");
+  });
+});
+
+describe("integração — /vote rejeita edition com ':' ANTES de tocar o KV, para os 2 formatos legítimos (#3279)", () => {
+  it("edition=2607-08:evil (brand=clarice, sem sig — modo merge-tag) → 400, nenhuma chave 'vote:2607-08:*' gravada", async () => {
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "attacker@x.com");
+    url.searchParams.set("edition", "2607-08:evil");
+    url.searchParams.set("choice", "A");
+    url.searchParams.set("brand", "clarice");
+    const res = await workerDefault.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    assert.equal(res.status, 400, "chave forjada com ':' deve ser rejeitada antes de qualquer escrita KV");
+    assert.equal(await kv.get("vote:2607-08:evil:attacker@x.com"), null, "chave forjada nunca deve existir no KV");
+    assert.equal(await kv.get("vote:2607-08:attacker@x.com"), null, "edição real também não deve ter sido tocada");
+  });
+
+  it("edition=260613:evil (formato AAMMDD com ':' anexado) → 400, nada gravado", async () => {
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "attacker@x.com");
+    url.searchParams.set("edition", "260613:evil");
+    url.searchParams.set("choice", "A");
+    const res = await workerDefault.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    assert.equal(res.status, 400);
+    assert.equal(await kv.get("vote:260613:evil:attacker@x.com"), null);
+  });
+
+  it("regressão: edition no formato ciclo Clarice legítimo (YYMM-MM) continua votando normalmente (200)", async () => {
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "leitor@x.com");
+    url.searchParams.set("edition", "2605-06");
+    url.searchParams.set("choice", "A");
+    url.searchParams.set("brand", "clarice");
+    const res = await workerDefault.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    assert.equal(res.status, 200, "voto legítimo em formato ciclo não deve ser bloqueado pelo hardening de charset");
+  });
+
+  it("regressão: edition no formato AAMMDD legado continua votando normalmente (200)", async () => {
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const url = new URL("https://poll.diaria.workers.dev/vote");
+    url.searchParams.set("email", "leitor2@x.com");
+    url.searchParams.set("edition", "260613");
+    url.searchParams.set("choice", "B");
+    const res = await workerDefault.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    assert.equal(res.status, 200, "voto legítimo em formato AAMMDD não deve ser bloqueado pelo hardening de charset");
+  });
 });
 
 describe("integração — /vote rejeita email/edition malformados antes de tocar o KV (#3118 item 3)", () => {

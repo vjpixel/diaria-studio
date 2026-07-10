@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * reconcile-brave-path-b.ts (#2668 follow-up, #3122 fix)
+ * reconcile-brave-path-b.ts (#2668 follow-up, #3122 fix, #3271 fix)
  *
  * Reconcilia a contagem do Path B (WebSearch dos agentes de pesquisa → Brave)
  * de forma DETERMINÍSTICA, a partir do gap real do header X-RateLimit-Remaining,
@@ -45,6 +45,30 @@
  * (source `path-b-reconcile`) para o mês corrente — então `queries_this_month`
  * local passa a bater com o uso real do Brave. Idempotente (2ª rodada sem novo
  * header lido vê delta≈0 contra o estado já atualizado pela 1ª).
+ *
+ * ## Anchor só avança em escrita confirmada (#3271 fix)
+ *
+ * `recordBraveCreditEstimate` tem seu PRÓPRIO guard de idempotência (keyed em
+ * edition+source+mês) — independente do gap incremental calculado aqui. Numa
+ * retomada da pipeline pra MESMA edição no mesmo mês (padrão suportado — Stage 1
+ * pode re-rodar), esse guard no-opa (já existe entry pra essa edition+source este
+ * mês) mesmo quando o gap desta rodada é genuíno e novo. Antes do #3271, o anchor
+ * avançava incondicionalmente após a tentativa de escrita — se ela no-opasse, o
+ * gap computado era perdido permanentemente (nunca gravado, mas o anchor já tinha
+ * "consumido" esse intervalo). O fix: `recordBraveCreditEstimate` agora retorna
+ * `boolean` (escreveu ou não) e o anchor só avança (`persistState()`) quando o
+ * retorno é `true`. Em no-op, o gap fica preservado — a próxima rodada bem-sucedida
+ * (tipicamente sob outra edition, já que o guard é por edition+source+mês) recupera
+ * o incremento acumulado desde a última escrita real.
+ *
+ * IMPORTANTE: este gate só se aplica ao no-op do guard de idempotência (e, em teoria,
+ * a uma falha de I/O). O caso em que o SANITY CAP (acima) zera `injected` pra 0 é
+ * tratado SEPARADAMENTE, ANTES da chamada a `recordBraveCreditEstimate` — nesse caso o
+ * anchor AVANÇA mesmo sem gravar nada (preserva o comportamento pré-#3271 pra esse
+ * cenário específico, que não é uma retomada de edição — é esgotamento genuíno de
+ * orçamento; congelar o anchor aqui acumularia um gap gigante pra dumpar de uma vez
+ * quando o cap reabrir, reintroduzindo o problema de atribuição em lote que o #3122
+ * evitou).
  *
  * ⚠️ BEST-EFFORT, não infalível: deriva do ÚLTIMO header capturado este mês (pela
  * última Path A). Se essa Path A rodou ANTES dos agentes, o header não reflete o
@@ -153,7 +177,59 @@ export function main(
     injected = cap;
   }
 
-  recordBraveCreditEstimate({ edition, source: "path-b-reconcile", count: injected }, path, now);
+  // (#3271 review — cap exhausted) Quando o cap zera `injected` (cap=0: já não sobra
+  // espaço nenhum no free tier deste mês), `recordBraveCreditEstimate` no-opa pelo SEU
+  // PRÓPRIO guard `count<=0` — ANTES de sequer chegar no guard de idempotência. Isso é
+  // uma causa DIFERENTE de no-op da que o #3271 fix (abaixo) trata, e merece um anchor
+  // diferente: aqui não há entrada concorrente pra "esperar" (não é uma retomada da
+  // MESMA edição) — é simplesmente "não sobrou orçamento este mês". Avançar o anchor
+  // aqui é seguro E necessário: preserva o comportamento pré-#3271 para este caso
+  // específico (que sempre avançou) e evita congelar o anchor por um período extenso
+  // enquanto o cap continuar ativo — o que acumularia um gap gigante e o dumparia de
+  // uma vez quando o cap reabrir (o problema de atribuição em lote que o #3122 evitou
+  // originalmente). O 🚨 SANITY CAP acima já é o sinal de alerta visível; aqui só
+  // registramos que nada foi injetado por esse motivo específico.
+  if (injected <= 0) {
+    persistState();
+    console.error(
+      `[reconcile-brave-path-b] gap=${gap} calculado (base=${gapBasis}) mas o sanity cap zerou a injeção ` +
+        `(sem espaço livre no free tier este mês) — nada gravado. Anchor avançado mesmo assim (não é o ` +
+        `caso #3271 de guard de idempotência; ver 🚨 SANITY CAP acima para investigar o esgotamento).`,
+    );
+    console.log(
+      JSON.stringify({ reconciled: 0, gap, gap_basis: gapBasis, capped, edition, reason: "sanity_cap_exhausted" }),
+    );
+    return;
+  }
+
+  // (#3271) Só avançar o anchor quando a escrita de fato aconteceu. Sem este guard,
+  // um no-op do guard de idempotência de recordBraveCreditEstimate (mesmo
+  // edition+source+mês já reconciliado antes — cenário real numa retomada da
+  // pipeline pra mesma edição) ainda assim avançava o anchor pro real_used
+  // corrente, descartando o gap genuíno computado nesta rodada sem nunca
+  // persisti-lo em disco — perda permanente e silenciosa de tracking de uso pago.
+  // Chegando aqui, `injected > 0` é garantido — então um retorno `false` só pode vir
+  // do guard de idempotência (edition+source+mês já reconciliado) ou de uma exceção
+  // de I/O no appendFileSync (rara, best-effort); não pode mais vir do próprio
+  // `count<=0` de recordBraveCreditEstimate (já descartado pelo branch acima).
+  const wrote = recordBraveCreditEstimate(
+    { edition, source: "path-b-reconcile", count: injected },
+    path,
+    now,
+  );
+  if (!wrote) {
+    console.error(
+      `[reconcile-brave-path-b] gap=${gap} calculado (injetaria ${injected}, base=${gapBasis}` +
+        `${capped ? ", CAPPED" : ""}) mas recordBraveCreditEstimate NÃO escreveu (provável guard de ` +
+        `idempotência: já existe entrada estimated para edition=${edition}+source=path-b-reconcile este ` +
+        `mês; alternativa rara: falha de I/O). Anchor NÃO avançado — a próxima rodada recalcula o gap a ` +
+        `partir do estado anterior, preservando o uso não-gravado.`,
+    );
+    console.log(
+      JSON.stringify({ reconciled: 0, gap, gap_basis: gapBasis, capped, edition, reason: "estimate_write_no_op" }),
+    );
+    return;
+  }
   persistState();
   console.error(
     `[reconcile-brave-path-b] +${injected} queries Path B reconciliadas (base=${gapBasis}` +

@@ -17,6 +17,11 @@
  *   (c) otherwise (single truncated sentence, no earlier boundary), strip
  *       just the trailing ellipsis marker as a best effort — never publish a
  *       description ending in `…`/`...`.
+ *   (d) if nothing sensible remains once the ellipsis is stripped (e.g. the
+ *       WHOLE input is just "…", as can happen after an upstream sanitizer
+ *       cuts everything else away — #3276), return an empty string. Falling
+ *       back to the original text here would republish the bare ellipsis
+ *       and violate the module's own invariant.
  *
  * Ellipsis used in the MIDDLE of a sentence (legitimate — e.g. "e por
  * aí… ninguém esperava o que veio a seguir") is left completely untouched;
@@ -107,7 +112,13 @@ export function sanitizeTrailingEllipsis(text: string): string {
   }
 
   const withoutEllipsis = text.slice(0, trailingMatch.index).trimEnd();
-  if (!withoutEllipsis) return text; // nothing sensible left — bail out, keep original
+  // #3276: nothing sensible left after stripping the ellipsis (e.g. the
+  // WHOLE string was just "…") — returning `text` here would publish a bare
+  // "…"/"..." as the description, violating this module's own invariant
+  // ("never publish a description ending in an ellipsis"). Return empty
+  // instead so callers (e.g. `enrich-inbox-articles.ts`'s `if (sanitized)`)
+  // treat it as "nothing usable" and leave the summary unset.
+  if (!withoutEllipsis) return "";
 
   // (b) remaining text is already a complete sentence — just drop the ellipsis.
   if (endsInRealSentencePunctuation(withoutEllipsis)) {

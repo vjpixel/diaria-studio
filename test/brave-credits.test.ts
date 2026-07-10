@@ -110,6 +110,63 @@ describe("recordBraveCreditEstimate (#2608)", () => {
     rmSync(path, { force: true });
   });
 
+  // (#3271) recordBraveCreditEstimate agora retorna boolean — callers (ex:
+  // reconcile-brave-path-b.ts) usam isso pra decidir se podem avançar estado
+  // incremental derivado (o anchor). Um no-op silencioso não pode ser
+  // indistinguível de uma escrita bem-sucedida pro caller.
+  it("retorna true quando escreve com sucesso (#3271)", () => {
+    const path = makeTmpPath();
+    const wrote = recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: 3 }, path);
+    assert.equal(wrote, true, "deve retornar true — escreveu 3 linhas de fato");
+    rmSync(path, { force: true });
+  });
+
+  it("retorna false quando count<=0 (nada escrito) (#3271)", () => {
+    const path = makeTmpPath();
+    const wrote = recordBraveCreditEstimate({ source: "stage1-agents", count: 0 }, path);
+    assert.equal(wrote, false, "count=0 não escreve — deve retornar false");
+  });
+
+  it("retorna false quando count é não-finito (nada escrito) (#3271)", () => {
+    const path = makeTmpPath();
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    let wrote: boolean;
+    try {
+      wrote = recordBraveCreditEstimate({ source: "stage1-agents", edition: "260630", count: NaN }, path);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(wrote, false, "count NaN não escreve — deve retornar false");
+  });
+
+  it("retorna false quando o guard de idempotência no-opa (entry já existe pra edition+source+mês) (#3271)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-06-27T12:00:00Z");
+    const first = recordBraveCreditEstimate({ edition: "260627", source: "path-b-reconcile", count: 5 }, path, now);
+    assert.equal(first, true, "1ª chamada escreve — deve retornar true");
+    // 2ª chamada: MESMA edition+source+mês — guard de idempotência dispara, mesmo
+    // com um count diferente (genuinamente novo do ponto de vista do caller).
+    const second = recordBraveCreditEstimate({ edition: "260627", source: "path-b-reconcile", count: 7 }, path, now);
+    assert.equal(second, false, "2ª chamada no-opa (guard de idempotência) — deve retornar false");
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(lines.length, 5, "só as 5 linhas da 1ª chamada existem — 2ª não escreveu nada");
+    rmSync(path, { force: true });
+  });
+
+  // (#3271 review — achado do próprio code-review) count fracionário entre 0 e 1
+  // passava o gate `count<=0` (0.4 > 0) e só arredondava pra 0 DEPOIS — gerando 0
+  // entradas reais (só um "\n" em branco no arquivo) mas AINDA retornando `true`.
+  // Isso quebraria o contrato "true ⇒ pelo menos 1 entrada foi de fato gravada" que
+  // reconcile-brave-path-b.ts agora depende para decidir se avança seu anchor. O fix
+  // reordena o `Math.round` pra ANTES do gate.
+  it("count fracionário que arredonda pra 0 retorna false, não grava linha em branco (#3271 review)", () => {
+    const path = makeTmpPath();
+    const wrote = recordBraveCreditEstimate({ edition: "260627", source: "stage1-agents", count: 0.4 }, path);
+    assert.equal(wrote, false, "0.4 arredonda pra 0 — deve retornar false, não true");
+    assert.ok(!existsSync(path), "nenhum arquivo deve ser criado (nem uma linha em branco)");
+  });
+
   it("relatório distingue reais de estimadas (queries_this_month_estimated > 0)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-27T12:00:00Z");

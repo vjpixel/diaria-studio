@@ -27,6 +27,12 @@ import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter
  * aqui, derrubando o voto do LEITOR ATUAL com 500 só por causa de um registro
  * antigo malformado. Corrompido → cai no mesmo fallback `{ choice: "?" }` já
  * usado quando o KV eventual ainda não propagou o voto do 1º request.
+ *
+ * #3278: `JSON.parse(prevScoreRaw)` (mesma classe de dado — blob JSON gravado
+ * em `score:{email}`) ficou desguardado no mesmo refactor do #3118 item 4,
+ * reintroduzindo a mesma classe de bug 2 linhas abaixo do parse irmão que
+ * ELE MESMO endureceu. Corrompido → trata como "sem score" (nickname form
+ * reoferecido, mesmo fallback de quando score:{email} nunca foi gravado).
  */
 export async function buildAlreadyVotedResponse(
   env: Env,
@@ -54,14 +60,34 @@ export async function buildAlreadyVotedResponse(
   // o brand "year" (clarice) dizia só "nesta edição", ambíguo quando o
   // voto vem do arquivo retroativo multi-edição (#2867): o leitor que já
   // votou em MAIS de uma edição arquivada não sabia qual delas.
-  const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev.choice ?? "?"}).`;
+  // #3278 (code-review desta PR): `prev.choice` sem optional chaining lançava
+  // TypeError não-capturado quando `existingFromKv` é JSON VÁLIDO mas não-objeto
+  // (ex: a string literal "null" — JSON.parse("null") retorna null sem lançar,
+  // então o catch acima nunca dispara). `?.` fecha essa brecha na mesma família
+  // de bug que este PR corrige — reproduzido via buildAlreadyVotedResponse(...,
+  // "null") lançando "Cannot read properties of null (reading 'choice')".
+  const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev?.choice ?? "?"}).`;
   // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
   // determinar se o votante ainda precisa do form de nickname — sem isso, um
   // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
   // inacessível para sempre.
   let prevNicknameForm: { email: string; sig: string } | null = null;
   const prevScoreRaw = await env.POLL.get(`score:${email}`);
-  const prevScoreObj = prevScoreRaw ? JSON.parse(prevScoreRaw) : null;
+  // #3278: mesma classe de dado que existingFromKv acima (blob JSON gravado em
+  // KV) — precisa do mesmo guard. Sem try/catch, um `score:{email}` corrompido
+  // derrubava com 500 o leitor que só está reabrindo o link de "já votou"
+  // (nem sequer é um voto novo sendo lançado).
+  let prevScoreObj: { nickname?: string | null } | null = null;
+  if (prevScoreRaw) {
+    try {
+      prevScoreObj = JSON.parse(prevScoreRaw);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_already_voted_score_parse_error", edition, error: String(e) }));
+      // prevScoreObj permanece null — trata como "sem score" (mesmo fallback
+      // usado quando score:{email} nunca foi gravado), oferecendo o form de
+      // nickname (comportamento seguro: pior caso é reoferecer o form).
+    }
+  }
   if (!prevScoreObj?.nickname) {
     const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
     prevNicknameForm = { email, sig: prevSig };

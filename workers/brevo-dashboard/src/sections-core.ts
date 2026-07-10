@@ -2129,12 +2129,16 @@ export function renderAbcSection(
     })
     .join("\n");
 
-  // Quando todas as células amostradas têm views 0 (primeiras horas pós-envio,
-  // antes de qualquer abertura/clique registrado), evitar "Empate...0%" — informação enganosa.
-  const allZero = allSampled && sampledRows.every((r) => r.totalViews === 0);
+  // #3281: guard checa CLIQUE (critério decisório desde #3124), não abertura.
+  // Pouco depois de um envio é comum ter opens>0 e clicks=0 (clique atrasa
+  // horas em relação à abertura) — checar totalViews aqui fazia esse caso
+  // cair no branch !leaderClickRate ("Empate no clique com 0.00%"), sugerindo
+  // enganosamente um empate real no critério principal. Checando totalClicks,
+  // esse caso cai no branch certo ("Aguardando dados de abertura").
+  const allZero = allSampled && sampledRows.every((r) => r.totalClicks === 0);
   const maxClickRate = allSampled ? sampledRows.reduce((m, r) => Math.max(m, r.clickRate), 0) : 0;
   const statusNote = allZero
-    ? `Aguardando dados de abertura — primeiras horas pós-envio.`
+    ? `Aguardando dados suficientes — primeiras horas pós-envio.`
     : !allSampled
     ? `Dados insuficientes para comparação — aguardar mais dias de envio.`
     : !leaderClickRate
