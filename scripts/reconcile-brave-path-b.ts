@@ -177,18 +177,31 @@ export function main(
     injected = cap;
   }
 
-  // (#3271 review — cap exhausted) Quando o cap zera `injected` (cap=0: já não sobra
-  // espaço nenhum no free tier deste mês), `recordBraveCreditEstimate` no-opa pelo SEU
-  // PRÓPRIO guard `count<=0` — ANTES de sequer chegar no guard de idempotência. Isso é
-  // uma causa DIFERENTE de no-op da que o #3271 fix (abaixo) trata, e merece um anchor
-  // diferente: aqui não há entrada concorrente pra "esperar" (não é uma retomada da
-  // MESMA edição) — é simplesmente "não sobrou orçamento este mês". Avançar o anchor
+  // (#3271 review — cap exhausted; #3307 clarificação) Quando o cap zera `injected`
+  // (cap=0: já não sobra espaço nenhum no free tier deste mês), `recordBraveCreditEstimate`
+  // no-opa pelo SEU PRÓPRIO guard `count<=0` — ANTES de sequer chegar no guard de
+  // idempotência. Isso é uma causa DIFERENTE de no-op da que o #3271 fix (abaixo) trata
+  // (aquele é sobre o guard de idempotência de escrita, não sobre o sanity cap), e merece
+  // um anchor diferente: aqui não há entrada concorrente pra "esperar" (não é uma retomada
+  // da MESMA edição) — é simplesmente "não sobrou orçamento este mês". Avançar o anchor
   // aqui é seguro E necessário: preserva o comportamento pré-#3271 para este caso
   // específico (que sempre avançou) e evita congelar o anchor por um período extenso
   // enquanto o cap continuar ativo — o que acumularia um gap gigante e o dumparia de
   // uma vez quando o cap reabrir (o problema de atribuição em lote que o #3122 evitou
-  // originalmente). O 🚨 SANITY CAP acima já é o sinal de alerta visível; aqui só
-  // registramos que nada foi injetado por esse motivo específico.
+  // originalmente).
+  //
+  // IMPORTANTE (#3307): `injected=0` NÃO é o único caso em que o sanity cap descarta
+  // `gap - injected`. Isso acontece em QUALQUER rodada com `capped=true`, inclusive corte
+  // PARCIAL (ex.: gap=1500, cap=500 → injected=500, `capped: true`, sucesso normal — os
+  // 1000 restantes são perdidos exatamente do mesmo jeito, só que sem o `reason:
+  // "sanity_cap_exhausted"` abaixo pra sinalizar). O `reason` distinto aqui é só sobre ESTE
+  // branch específico (`injected<=0`, o extremo do corte) tomar um caminho de código
+  // diferente (no-op de `recordBraveCreditEstimate` nem chega a ser chamado) — não é um
+  // trade-off exclusivo dele. Quem for auditar "quanto uso o cap nos fez perder" precisa
+  // filtrar por `capped === true` (cobre os dois casos), não só por
+  // `reason === "sanity_cap_exhausted"` (undercounta os cortes parciais bem-sucedidos). O
+  // 🚨 SANITY CAP acima já é o sinal de alerta visível pra ambos os casos; aqui só
+  // registramos que, neste caso extremo, nada foi injetado.
   if (injected <= 0) {
     persistState();
     console.error(
