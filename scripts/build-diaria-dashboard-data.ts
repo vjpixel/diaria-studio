@@ -841,6 +841,8 @@ export function buildTopClickedRecent(
   const anchorIdx = header.indexOf("anchor");
   const baseUrlIdx = header.indexOf("base_url");
   const categoryIdx = header.indexOf("category");
+  // #3145: coluna nova — CSVs antigos não têm `section` (-1 → sempre "").
+  const sectionIdx = header.indexOf("section");
   const clicksIdx = header.indexOf("unique_verified_clicks");
 
   if (dateIdx < 0 || clicksIdx < 0) return null;
@@ -882,6 +884,8 @@ export function buildTopClickedRecent(
       const anchor = (cols[anchorIdx] ?? "").trim();
       const key = `${baseUrl}||${anchor}`;
 
+      const section = sectionIdx >= 0 ? (cols[sectionIdx] ?? "").trim() : "";
+
       const existing = linkMap.get(key);
       if (existing) {
         existing.unique_verified_clicks += clicks;
@@ -890,6 +894,7 @@ export function buildTopClickedRecent(
         if (clicks > prevMax || (clicks === prevMax && date > existing.edition)) {
           existing.edition = date;
           existing.post_title = (cols[postTitleIdx] ?? "").trim();
+          existing.section = section;
           maxClicksMap.set(key, clicks);
         }
       } else {
@@ -899,6 +904,7 @@ export function buildTopClickedRecent(
           anchor,
           base_url: baseUrl,
           category: (cols[categoryIdx] ?? "Outro").trim() || "Outro",
+          section,
           unique_verified_clicks: clicks,
         });
         maxClicksMap.set(key, clicks);
