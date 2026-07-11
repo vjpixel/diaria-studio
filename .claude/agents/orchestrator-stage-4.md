@@ -344,6 +344,35 @@ npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
 ```
 Se por algum motivo o exit não for 0 aqui (ex: `writeSentinel` falhou e o script apenas logou warn — ver stderr de `apply-factcheck-autofix.ts`), tratar como o exit 2 padrão de §4c.2b (re-humanizar e re-selar antes do gate).
 
+**4c.6c — Re-validar lints estruturais pós-autofix (#3306):**
+
+O autofix acima usa `replaceAll` no escopo do destaque/seção (#3274/#3275) — o `suggested_fix` é texto bruto do fact-checker LLM, sem consciência de markdown/estrutura. Uma correção pode reescrever mais do que o esperado e quebrar um invariante que os lints de §4c.2/§4c.2b passaram intactos ANTES do autofix rodar. Nenhum desses lints roda de novo depois — só o sentinel de hash do humanizador acima (que confere que o social foi re-humanizado, não que a estrutura ficou íntegra). Este passo fecha essa lacuna, re-rodando os lints estruturais que operam sobre texto de destaque.
+
+Rodar SOMENTE os lints relevantes ao arquivo que o autofix de fato tocou:
+
+- Se `_internal/fact-check-autofix.json` mostra `summary.applied > 0` (newsletter pode ter sido corrigida):
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts --check callout-placement --md {EDITION_DIR}/02-reviewed.md
+  ```
+  (mesma `lintCalloutPlacement` de #3282, já usada por `orphan-box-in-gap` em §4c.2 — aqui chamada direto pra checar só a estrutura do callout, sem repetir a checagem de gaps órfãos.)
+
+- Se `_internal/fact-check-autofix.json` mostra `social_modified === true` (03-social.md foi corrigido):
+  ```bash
+  npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check linkedin-page-link --md {EDITION_DIR}/03-social.md
+  ```
+
+Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-social.ts --check` já usa logo acima: se falhar, tratar como o exit 2 padrão de §4c.2b (re-corrigir e re-selar antes do gate, nunca deixar a violação vazar pro resumo do editor):
+- `0` em todos os lints rodados → continuar.
+- `1` em qualquer um → **GATE-BLOCKING.** O autofix quebrou um invariante estrutural que sobrevivia intacto antes da correção. NÃO montar o gate ainda. Ação:
+  1. Ler o output do lint (linha + contexto da violação) e o `entry` correspondente em `_internal/fact-check-autofix.json` (mesmo `destaque`/`suggested_fix`) para identificar qual correção causou a quebra.
+  2. Corrigir cirurgicamente (#495 — `Edit` com `old_string` mínimo, nunca substituir blocos grandes) o arquivo afetado, preservando o valor factual já corrigido mas restaurando a estrutura esperada pelo lint (callout isolado por `---`, ou bloco `post_pixel`/link do LinkedIn realinhado).
+  3. Re-rodar o lint que falhou até sair `0`.
+  4. Se a correção cirúrgica tocou `03-social.md`: re-humanizar + re-selar sentinel (mesmo fluxo do exit 2 de §4c.2b, incluindo os lints de qualidade social) antes de prosseguir.
+  5. Re-renderizar o(s) arquivo(s) tocado(s) (newsletter e/ou social, §4b steps 2/3) e republicar o preview via `Artifact` (mesma URL já persistida) antes de seguir pro gate.
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** mesma execução e mesmo bloqueio — GATE-BLOCKING vale igual mesmo sem apresentação visual do gate; o orchestrator não pode prosseguir pra Etapa 5 com um invariante estrutural quebrado só porque o gate humano foi pulado.
+
 **O que é auto-corrigido:**
 - Apenas claims `DIVERGENT` com `suggested_fix` (valor correto determinístico extraído verbatim da fonte).
 - `02-reviewed.md` (newsletter) e/ou `03-social.md` (social), conforme `entry.sources` do claim — `["newsletter"]`, `["social"]` ou `["newsletter","social"]` (#3224). Em social, a correção é scoped aos blocos `## dN` e aplicada em AMBOS os canais (LinkedIn + Facebook) quando o texto aparece nos dois — e, pra destaque 1, também em `## post_pixel` (post pessoal standalone do Pixel, sempre sobre D1, #3274), já que é seção IRMÃ de `## d1` sujeita à mesma claim. Sucesso parcial é possível e fica registrado em `files_modified` + `note` da entry (ex: achou na newsletter mas não em social).
