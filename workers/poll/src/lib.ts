@@ -35,10 +35,28 @@ export const MONTH_NAMES_PT = [
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ];
 
+// #3297: formatos AAMMDD/ciclo içados pra constantes exportadas — antes cada
+// call site (aqui + editionToMonthSlug/formatEditionDateForBrand/
+// isValidVoteEditionFormat neste mesmo arquivo, mais cópias inline em
+// vote.ts/leaderboard-routes.ts, e uma cópia DIVERGENTE em
+// scripts/rebuild-stats.ts que aceitava só AAMMDD e rejeitava silenciosamente
+// edições de ciclo Clarice válidas) tinha sua PRÓPRIA cópia inline do regex.
+// Deliberadamente NÃO substitui os usos abaixo por uma chamada a
+// `isValidVoteEditionFormat`: as funções de formatação fazem validação
+// SEMÂNTICA adicional (mês 1-12) que `isValidVoteEditionFormat` pula de
+// propósito (só forma/charset) — reusar as constantes evita duplicar o
+// regex sem acoplar as duas responsabilidades.
+
+/** #3297: formato AAMMDD legado (diária) — só forma/charset, sem validação semântica de range. */
+export const AAMMDD_RE = /^\d{6}$/;
+
+/** #3297: formato de ciclo Clarice `YYMM-MM` (#2115) — só forma/charset. */
+export const CYCLE_EDITION_RE = /^\d{4}-\d{2}$/;
+
 /** AAMMDD → "10 de maio de 2026". Memória `feedback_no_aammdd_for_subscribers.md`.
  * Invalid input (não-AAMMDD, MM/DD fora de range) → retorna input cru (safe). */
 export function formatEditionDate(edition: string): string {
-  if (!/^\d{6}$/.test(edition)) return edition;
+  if (!AAMMDD_RE.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
   const mm = parseInt(edition.slice(2, 4), 10);
   const dd = parseInt(edition.slice(4, 6), 10);
@@ -78,6 +96,41 @@ export function parseValidEditions(raw: string | null): string[] | null {
   }
 }
 
+// ── Parse seguro de JSON vindo do KV (#3298) ────────────────────────────────
+
+/**
+ * #3298: parse seguro de um blob JSON lido do KV. `raw` vindo de
+ * `env.POLL.get(...)` é `string | null`; `JSON.parse` lança em blob
+ * corrompido — sem guard, essa exceção propaga não-capturada pelo caller
+ * (na maioria dos casos `handleVote`), derrubando o request inteiro com 500
+ * por causa de UM registro malformado.
+ *
+ * Mesma classe de bug já corrigida individualmente em
+ * `buildAlreadyVotedResponse` (#3118 item 4 / #3278) — o #3298 achou mais 9
+ * ocorrências desguardadas espalhadas por `vote.ts`/`index.ts`. Este helper
+ * único evita duplicar o mesmo try/catch+log 9x e facilita manter a
+ * disciplina em pontos futuros.
+ *
+ * `raw === null` (chave ausente no KV — caso normal, não um erro) retorna
+ * `null` silenciosamente, sem log. Só o `JSON.parse` malformado loga (via
+ * `console.error` estruturado, mesmo padrão dos outros guards deste worker)
+ * e retorna `null` — caller decide o fallback apropriado (objeto default,
+ * skip, ou early-return).
+ *
+ * `event`/`context` só alimentam o log estruturado — nunca afetam o valor
+ * retornado. `context` costuma ser o `edition` (maioria dos call sites) ou o
+ * `email`/`keyName` (sites sem edition disponível, ex: `handleSetName`).
+ */
+export function safeParseKv<T>(raw: string | null, event: string, context: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    console.error(JSON.stringify({ event, context, error: String(e) }));
+    return null;
+  }
+}
+
 /**
  * #2262: detecta merge tag NÃO-substituída no campo email. Quando a plataforma
  * de envio não substitui o token (test send, preview, contato sem atributo), o
@@ -111,8 +164,8 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
 // rejeita TLDs inválidos, IPs literais, etc.) — só recusa o que quebraria o
 // KV ou claramente não tem a forma de um email.
 
-/** #3118 item 3: forma mínima `local@domínio.tld`, sem espaços, ≤254 chars
- * (limite prático de endereço de email, RFC 3696 errata).
+/** #3118 item 3: forma mínima `local@domínio.tld`, sem espaços, ≤254 bytes
+ * UTF-8 (limite prático de endereço de email, RFC 3696 errata).
  *
  * #3279 (charset hardening): também rejeita `:` explicitamente em cada
  * segmento — antes `[^\s@]+` permitia qualquer caractere fora de espaço/`@`,
@@ -121,17 +174,43 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
  * adicional; um `:` cru nesses campos pode alterar a estrutura da chave.
  * Defesa em profundidade — a cadeia de exploit confirmada (#3279) usa o `:`
  * em `edition`, não em `email`, mas o mesmo caractere é igualmente perigoso
- * aqui por composição do template de chave. */
+ * aqui por composição do template de chave.
+ *
+ * #3296 (gap 2 — explorável): o teto de 254 media `email.length` (unidades
+ * UTF-16), não bytes UTF-8. `'あ'.repeat(200) + '@x.com'` tem `.length` 206
+ * (passa o teto antigo) mas 606 bytes UTF-8 — a chave KV
+ * `vote:{edition}:{email}` estoura os 512 bytes do Workers KV, lançando
+ * exceção DEPOIS que o DO de dedup já autorizou o voto e incrementos
+ * guard-key já rodaram (mesmo cenário de incremento parcial que o teto de
+ * 254 existe pra prevenir). Fix: `new TextEncoder().encode(email).length`
+ * mede bytes UTF-8 de fato (disponível no runtime do Workers) — resolve o
+ * gap sem trocar a denylist por allowlist ASCII (que arriscaria rejeitar
+ * emails PT-BR reais com acento no local-part; decisão conservadora — ver
+ * issue #3296, sem como verificar dados reais de assinantes neste contexto).
+ *
+ * #3296 (gap 1 — defesa em profundidade, não explorável hoje): confusáveis
+ * Unicode / caracteres invisíveis não eram bloqueados pela denylist anterior
+ * (ex: `：` fullwidth U+FF1A, zero-width space U+200B passavam). `\p{Cf}`
+ * (format — inclui zero-width space/joiner/non-joiner e BOM) e `\p{Cc}`
+ * (control) cobrem a classe geral de invisíveis; `：` (":" fullwidth) é
+ * listado explicitamente por não cair em nenhuma das duas categorias Unicode
+ * mas ser visualmente/semanticamente um ":" — o mesmo caractere que #3279 já
+ * bloqueia na forma ASCII. Nenhum dos dois afeta acentos PT-BR normais (á, ç,
+ * ã são categoria Ll/Lu — letra, não format/control). */
+const FORBIDDEN_EMAIL_CHARS_RE = /[\p{Cf}\p{Cc}：]/u;
+
 export function isValidVoteEmailFormat(email: string): boolean {
-  if (email.length === 0 || email.length > 254) return false;
+  if (email.length === 0) return false;
+  if (new TextEncoder().encode(email).length > 254) return false; // #3296 gap 2: bytes UTF-8, não UTF-16
+  if (FORBIDDEN_EMAIL_CHARS_RE.test(email)) return false; // #3296 gap 1: confusáveis/invisíveis
   return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(email);
 }
 
 /**
  * #3118 (item 3) / #3279 (charset hardening): valida a FORMA do componente
  * `edition` da chave KV — não só o comprimento. Aceita só os 2 formatos
- * legítimos usados pelo pipeline: AAMMDD legado (`^\d{6}$`, diária) ou ciclo
- * Clarice `YYMM-MM` (`^\d{4}-\d{2}$`, #2115). Ambos os ramos já são
+ * legítimos usados pelo pipeline: AAMMDD legado (`AAMMDD_RE`, diária) ou ciclo
+ * Clarice `YYMM-MM` (`CYCLE_EDITION_RE`, #2115). Ambos os ramos já são
  * mutuamente exclusivos e bounded em comprimento pelo próprio regex — não
  * precisa de checagem de `.length` separada.
  *
@@ -150,7 +229,7 @@ export function isValidVoteEmailFormat(email: string): boolean {
  * linha por linha contra `vote.ts`/`index.ts`.
  */
 export function isValidVoteEditionFormat(edition: string): boolean {
-  return /^\d{6}$/.test(edition) || /^\d{4}-\d{2}$/.test(edition);
+  return AAMMDD_RE.test(edition) || CYCLE_EDITION_RE.test(edition);
 }
 
 // ── Máscara de email pra exibição pública (#3118 item 11) ──────────────────
@@ -188,7 +267,7 @@ export function maskEmail(email: string): string {
  */
 export function editionToMonthSlug(edition: string): string | null {
   // #2115: ciclo Clarice YYMM-MM (ex: "2605-06") → slug do mês do CONTEÚDO
-  if (/^\d{4}-\d{2}$/.test(edition)) {
+  if (CYCLE_EDITION_RE.test(edition)) {
     const yy = edition.slice(0, 2);
     const mm = edition.slice(2, 4);
     const mmNum = parseInt(mm, 10);
@@ -196,7 +275,7 @@ export function editionToMonthSlug(edition: string): string | null {
     return `20${yy}-${mm}`;
   }
   // Formato legado AAMMDD (diária + mensal pre-#2115)
-  if (!/^\d{6}$/.test(edition)) return null;
+  if (!AAMMDD_RE.test(edition)) return null;
   const yy = edition.slice(0, 2);
   const mm = edition.slice(2, 4);
   const mmNum = parseInt(mm, 10);
@@ -443,14 +522,14 @@ export function brandKvPrefix(brand: Brand): string {
  */
 export function formatEditionDateForBrand(edition: string, brand: Brand): string {
   if (BRAND_INFO[brand].leaderboardPeriod !== "year") return formatEditionDate(edition);
-  if (/^\d{4}-\d{2}$/.test(edition)) {
+  if (CYCLE_EDITION_RE.test(edition)) {
     const monthSlug = editionToMonthSlug(edition); // ciclo → "YYYY-MM" do mês de CONTEÚDO
     if (!monthSlug) return edition;
     const [yearStr, mmStr] = monthSlug.split("-");
     const mmNum = parseInt(mmStr, 10);
     return `${MONTH_NAMES_PT[mmNum - 1]} de ${yearStr}`;
   }
-  if (!/^\d{6}$/.test(edition)) return edition;
+  if (!AAMMDD_RE.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
   const mm = parseInt(edition.slice(2, 4), 10);
   if (mm < 1 || mm > 12) return edition;
@@ -485,7 +564,7 @@ export function closedPeriodCacheControl(): string {
 export function leaderboardHref(brand: Brand, slug?: string | null): string {
   // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
   // — um 3º brand anual herdaria a conversão mensal→anual sem alterar esta função.
-  const effSlug = BRAND_INFO[brand].leaderboardPeriod === "year" && slug && /^\d{4}-\d{2}$/.test(slug)
+  const effSlug = BRAND_INFO[brand].leaderboardPeriod === "year" && slug && CYCLE_EDITION_RE.test(slug)
     ? slug.slice(0, 4)
     : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";

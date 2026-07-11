@@ -28,6 +28,13 @@
 
 import "dotenv/config";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+// #3297: isValidVoteEditionFormat é a mesma validação (AAMMDD legado OU ciclo
+// Clarice YYMM-MM) usada pelo Worker `poll` em handleVote/handleStats — este
+// script tinha sua PRÓPRIA cópia divergente do regex (só `/^\d{6}$/`, mais
+// estrita), que rejeitava silenciosamente edições de ciclo válidas em vez de
+// processá-las. `lib.ts` não depende de runtime Cloudflare (mesmo padrão já
+// usado por scripts/backfill-score-by-month.ts e scripts/migrate-nickname-index.ts).
+import { isValidVoteEditionFormat } from "../workers/poll/src/lib.ts";
 
 export interface VoteRecord {
   choice: "A" | "B";
@@ -73,11 +80,25 @@ const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace
 
 function parseArgs(argv: string[]): { edition: string | null; execute: boolean } {
   // #2834: extração via parseArgs canônico; caller (mainCli) valida `edition`
-  // contra /^\d{6}$/ logo em seguida — qualquer divergência de borda (ex:
-  // "--edition" sem valor seguido de "--execute") resulta em `edition`
-  // inválido de qualquer forma, com o mesmo erro de uso do parser anterior.
+  // contra isValidVoteEditionFormat logo em seguida — qualquer divergência de
+  // borda (ex: "--edition" sem valor seguido de "--execute") resulta em
+  // `edition` inválido de qualquer forma, com o mesmo erro de uso do parser
+  // anterior.
   const { values, flags } = parseArgsLib(argv);
   return { edition: values["edition"] ?? null, execute: flags.has("execute") };
+}
+
+/**
+ * Pure (#3297): valida o `--edition` recebido. Antes usava uma cópia inline
+ * `/^\d{6}$/` (só AAMMDD legado) DIVERGENTE de `isValidVoteEditionFormat` (o
+ * Worker `poll` aceita AAMMDD OU ciclo Clarice `YYMM-MM`) — um operador
+ * rodando `rebuild-stats.ts --edition 2605-06` pra reconstruir o counter de
+ * uma edição de ciclo válida era rejeitado silenciosamente com "Uso: ...",
+ * mesmo a edição existindo de fato no KV sob esse identificador. Exportada
+ * pra teste.
+ */
+export function isValidRebuildStatsEdition(edition: string | null): edition is string {
+  return typeof edition === "string" && isValidVoteEditionFormat(edition);
 }
 
 async function mainCli(): Promise<number> {
@@ -88,8 +109,8 @@ async function mainCli(): Promise<number> {
     return 2;
   }
   const { edition, execute } = parseArgs(process.argv.slice(2));
-  if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("Uso: rebuild-stats.ts --edition AAMMDD [--execute]");
+  if (!isValidRebuildStatsEdition(edition)) {
+    console.error("Uso: rebuild-stats.ts --edition AAMMDD|YYMM-MM [--execute]");
     return 2;
   }
 

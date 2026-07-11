@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { type Brand, editionToMonthSlug } from "./lib";
+import { type Brand, editionToMonthSlug, AAMMDD_RE } from "./lib"; // #3297: AAMMDD_RE substitui regex inline
 import {
   formatEditionDateForBrand,
   parseValidEditions,
@@ -10,6 +10,7 @@ import {
   isValidVoteEmailFormat, // #3118 item 3
   isValidVoteEditionFormat, // #3118 item 3
   legacyMonthlyEditionForCycle, // #3261: /stats por ciclo também consulta a chave AAMMDD legada
+  safeParseKv, // #3298: parse seguro de JSON vindo do KV
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -190,7 +191,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // pela página do arquivo). Só se aplica ao formato diário AAMMDD — o ciclo
   // mensal da Clarice (`YYMM-MM`) não tem um "dia" real pra comparar (mesma
   // exceção documentada acima pra `clarice:valid_editions`).
-  if (/^\d{6}$/.test(edition) && edition > todayAammddBrt(new Date())) {
+  if (AAMMDD_RE.test(edition) && edition > todayAammddBrt(new Date())) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
@@ -377,7 +378,17 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // Razão #2190: essa leitura é reutilizada abaixo para updateScore (que faria
   // um get redundante). Ler uma vez aqui evita re-leitura no updateScore.
   const scoreRaw = await env.POLL.get(`score:${email}`);
-  const scoreObj = scoreRaw ? JSON.parse(scoreRaw) : null;
+  // #3298 (mais severo do lote — achado de code-review consolidado overnight
+  // 260711): JSON.parse desguardado aqui derrubava o VOTO NOVO inteiro com 500
+  // ANTES de qualquer escrita KV (guard-keys, voteKey, /confirm) — um
+  // score:{email} corrompido deixava o leitor em retry permanente até
+  // intervenção manual (nenhum caminho de sucesso possível: o crash acontece
+  // sempre, em todo retry, porque score:{email} nunca é reescrito até o voto
+  // completar). Mesma classe de bug já corrigida em buildAlreadyVotedResponse
+  // (#3118 item 4 / #3278); scoreObj só é lido pra checar `nickname` mais
+  // abaixo — corrompido é tratado como "sem nickname" (mesmo fallback de
+  // score:{email} nunca ter sido gravado).
+  const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "vote_score_parse_error", edition);
 
   // #1236: test mode — short-circuit antes de qualquer KV write. Mantém
   // validação completa (gate, sig, dedup) acima pra que o test reflita
@@ -647,7 +658,11 @@ async function updateStatsCounter(
   // ATENÇÃO: mantém a race original (#2223) — usado apenas em testes/dev ou em
   // caso de falha do DO. Em produção, STATS_COUNTER binding deve estar presente.
   const raw = await env.POLL.get(statsKey);
-  const stats = raw ? JSON.parse(raw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  // #3298: stats:{edition} corrompido caía num JSON.parse desguardado — trata
+  // como "sem stats ainda" (mesmo fallback de chave ausente), igual ao guard
+  // já aplicado ao espelho KV em fetchEditionStatsAndCorrect (#3115).
+  const stats = safeParseKv<StatsCounterData>(raw, "stats_kv_fallback_parse_error", edition)
+    ?? { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
   stats.total += 1;
   if (choice === "A") stats.voted_a += 1;
   if (choice === "B") stats.voted_b += 1;
@@ -691,7 +706,11 @@ export async function adjustScoreByMonthCorrectOnly(
   // Sem entry mensal = vote pré-#1345; nada a ajustar no snapshot.
   if (!raw) return;
 
-  const entry = JSON.parse(raw);
+  // #3298: entry corrompida tratada igual a "sem entry mensal" (skip) — antes
+  // um JSON.parse desguardado aqui derrubava handleAdminCorrect no meio do
+  // backfill por causa de 1 registro malformado.
+  const entry = safeParseKv<{ correct?: number }>(raw, "admin_correct_score_by_month_parse_error", edition);
+  if (!entry) return;
 
   if (prevCorrect !== true && newCorrect === true) {
     // false/null → true: incrementa
@@ -733,7 +752,10 @@ export async function adjustScoreCorrectOnly(
   const raw = await env.POLL.get(scoreKey);
   if (!raw) return; // sem score — handleVote não rodou ainda; skip
 
-  const score = JSON.parse(raw);
+  // #3298: score:{email} corrompido tratado igual a "sem score" (skip) — sem
+  // `edition` disponível nesta assinatura, usa `email` como contexto do log.
+  const score = safeParseKv<{ correct?: number }>(raw, "admin_correct_score_parse_error", email);
+  if (!score) return;
 
   // Ajusta apenas o campo `correct`:
   //  - false/null → true: incrementa correct
@@ -772,9 +794,17 @@ async function updateScoreByMonth(
 
   const key = `score-by-month:${monthSlug}:${email}`;
   const raw = await env.POLL.get(key);
-  const entry = raw
-    ? JSON.parse(raw)
-    : { total: 0, correct: 0, last_edition: null, nickname: null };
+  // #3298: entry corrompida cai no mesmo default de "sem entry ainda" — este
+  // path roda em TODO voto (não só backfill do admin), então um registro
+  // malformado aqui derrubaria o voto do leitor atual, não só a manutenção.
+  const entry = safeParseKv<{
+    total: number;
+    correct: number;
+    last_edition: string | null;
+    nickname: string | null;
+    last_vote_ts?: string;
+  }>(raw, "update_score_by_month_parse_error", edition)
+    ?? { total: 0, correct: 0, last_edition: null, nickname: null };
 
   entry.total += 1;
   if (correct === true) entry.correct += 1;
@@ -790,8 +820,11 @@ async function updateScoreByMonth(
     const scoreRaw = preloadedScoreRaw !== undefined
       ? preloadedScoreRaw
       : await env.POLL.get(`score:${email}`);
-    if (scoreRaw) {
-      const scoreObj = JSON.parse(scoreRaw);
+    // #3298: score:{email} corrompido aqui só afeta o nickname copiado (não
+    // bloqueia o resto do voto) — trata como "sem score ainda" (nickname
+    // permanece null, igual ao caminho scoreRaw ausente).
+    const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "update_score_by_month_nickname_parse_error", edition);
+    if (scoreObj) {
       entry.nickname = scoreObj.nickname ?? null;
     }
   }
@@ -895,9 +928,18 @@ async function updateScore(
   const scoreKey = `score:${email}`;
   // #2190: usa o valor pré-lido se disponível; senão faz o get (backfill do admin).
   const raw = preloadedScoreRaw !== undefined ? preloadedScoreRaw : await env.POLL.get(scoreKey);
-  const score = raw
-    ? JSON.parse(raw)
-    : { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
+  // #3298: este path roda em TODO voto (via updateScore(..., scoreRaw) dentro
+  // do guard-key de handleVote) — um score:{email} corrompido derrubava o
+  // voto do leitor atual com 500. Corrompido cai no mesmo default de "sem
+  // score ainda" usado quando a chave nunca foi gravada.
+  const score = safeParseKv<{
+    total: number;
+    correct: number;
+    streak: number;
+    last_edition: string | null;
+    nickname?: string | null;
+  }>(raw, "update_score_parse_error", edition)
+    ?? { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
 
   score.total += 1;
   // correct === null → gabarito ainda não definido: incrementa total mas não
@@ -1024,10 +1066,24 @@ export function sumStatsCounterData(
  * `edition` em formato AAMMDD (diária) ou ciclo com mês de conteúdo inválido
  * → `legacyMonthlyEditionForCycle` retorna null → sem 2ª consulta, comportamento
  * idêntico ao pré-#3261.
+ *
+ * #3294 (item 1 — DoS não-autenticado): `/stats` é público, sem HMAC. Antes
+ * desta versão, `edition` da query string ia direto pro DO id
+ * (`STATS_COUNTER.idFromName`) e pras chaves KV `correct:${edition}`/
+ * `stats:${edition}` SEM validação de forma nem teto de comprimento — os
+ * mesmos validadores que #3118 item 3/#3279 aplicaram em `handleVote`
+ * (`vote.ts:132`) nunca foram estendidos pra este 2º ponto que compõe a
+ * MESMA forma de chave KV. Um `edition` arbitrariamente longo (ex: milhares
+ * de chars) produz uma chave KV que estoura o limite de 512 bytes do Workers
+ * KV, lançando exceção — 500 pra qualquer chamador anônimo, sem autenticação
+ * nenhuma (endpoint público). Fix: mesmo gate `isValidVoteEditionFormat` já
+ * usado em `handleVote`, aplicado ANTES de qualquer uso de `edition` em
+ * DO id ou chave KV.
  */
 export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
+  if (!isValidVoteEditionFormat(edition)) return json({ error: "invalid edition format" }, 400, env);
 
   const legacyEdition = legacyMonthlyEditionForCycle(edition);
 
@@ -1082,7 +1138,9 @@ export async function handleEditions(env: Env, brand: Brand = "diaria"): Promise
   const editions: string[] = [];
   for await (const keyName of listAllKeys(env, prefix)) {
     const edition = keyName.slice(prefix.length);
-    if (/^\d{6}$|^\d{4}-\d{2}$/.test(edition)) editions.push(edition);
+    // #3297: reusa isValidVoteEditionFormat (mesmo regex combinado AAMMDD|ciclo)
+    // em vez de reexpressar o par de regex inline.
+    if (isValidVoteEditionFormat(edition)) editions.push(edition);
   }
   editions.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   return json({ brand, editions }, 200, env);

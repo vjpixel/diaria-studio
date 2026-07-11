@@ -221,6 +221,9 @@ import {
   isUnsubstitutedMergeTag,
   redirectTargetForTrailingSlash,
   classify403Reason,
+  isValidVoteEditionFormat, // #3294 item 2: handleAdminCorrect também precisa validar a forma do edition
+  isValidVoteEmailFormat, // #3294 item 3: handleSetName também precisa validar a forma do email
+  safeParseKv, // #3298: parse seguro de JSON vindo do KV
 } from "./lib";
 export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, isUnsubstitutedMergeTag, redirectTargetForTrailingSlash, classify403Reason } from "./lib";
 
@@ -274,6 +277,16 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   const sig = url.searchParams.get("sig");
 
   if (!edition || !answer || !sig) return json({ error: "missing params" }, 400, env);
+  // #3294 (item 2): handleAdminCorrect nunca validava a FORMA de `edition`
+  // antes de usá-lo no prefix-scan `vote:{edition}:` (listAllKeys abaixo) e na
+  // chave `correct:{edition}`. Severidade menor que o item 1 (`/stats`) — esta
+  // rota exige HMAC válido (`hmacVerify` logo abaixo) — mas o sig cobre só
+  // AUTENTICIDADE do request, não a FORMA do `edition` assinado; um operador
+  // com acesso ao ADMIN_SECRET que cometesse um typo de `edition` malformado
+  // ainda produziria uma chave KV fora do padrão esperado. Mesmo gate
+  // `isValidVoteEditionFormat` de `handleVote`/`handleStats`, aplicado antes
+  // de qualquer uso de `edition` em chave KV.
+  if (!isValidVoteEditionFormat(edition)) return json({ error: "invalid edition format" }, 400, env);
   if (!["A", "B"].includes(answer)) return json({ error: "answer must be A or B" }, 400, env);
 
   // #3118 (item 8): brand incluído no material assinado — antes era só
@@ -368,9 +381,17 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   }
 
   // Actualizar counter agregado KV com correct_count real (espelho para compat)
+  //
+  // #3298 (achado adicional além dos 9 enumerados na issue, mesma classe de
+  // bug): stats:{edition} corrompido lançava aqui um JSON.parse desguardado —
+  // um admin corrigindo o gabarito de uma edição com espelho corrompido
+  // recebia 500 mesmo com o backfill de scores (loop acima) já concluído com
+  // sucesso. Corrompido → pula o espelho KV (não-autoritativo; o DO
+  // StatsCounter, atualizado acima, é a fonte de verdade), loga e segue pro
+  // response 200 normal.
   const statsRaw = await env.POLL.get(`stats:${edition}`);
-  if (statsRaw) {
-    const stats = JSON.parse(statsRaw);
+  const stats = safeParseKv<{ correct_count?: number; [k: string]: unknown }>(statsRaw, "admin_correct_stats_mirror_parse_error", edition);
+  if (stats) {
     stats.correct_count = correctCount;
     await env.POLL.put(`stats:${edition}`, JSON.stringify(stats));
   }
@@ -570,6 +591,20 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
     });
   }
 
+  // #3294 (item 3): `email` vira componente das chaves KV `score:{email}`,
+  // `nickname:{normalizado}` e do prefixo `score-by-month:*:{email}` escaneado
+  // por propagateNicknameByMonth — mas nunca passava por isValidVoteEmailFormat
+  // aqui (só em handleVote). Hoje só "seguro por raciocínio transitivo" (o sig
+  // HMAC vem de `setname:${email}` gerado por handleVote/buildAlreadyVotedResponse,
+  // que só constroem esse sig para um email que JÁ passou pelo gate — mas nada
+  // impede um `email` malformado com sig válido pra ELE MESMO chegar direto via
+  // URL manual). Defesa em profundidade — mesmo gate usado no `/vote`.
+  if (!isValidVoteEmailFormat(email)) {
+    return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
   const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
   if (!valid) {
     return new Response(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), {
@@ -624,7 +659,15 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
     );
   }
 
-  const score = JSON.parse(raw);
+  // #3298: score:{email} corrompido lançava aqui um JSON.parse desguardado —
+  // 500 pro leitor que só está tentando salvar o nickname (voto original já
+  // registrado com sucesso; só o campo nickname ficaria inacessível).
+  const score = safeParseKv<{ nickname?: string | null; [k: string]: unknown }>(raw, "set_name_score_parse_error", email);
+  if (!score) {
+    return new Response(votePageHtml("Algo deu errado — tente votar novamente.", false, null, null, null, brand), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
   const oldNickname: string | null | undefined = score.nickname;
   score.nickname = cleanName;
   await env.POLL.put(scoreKey, JSON.stringify(score));
@@ -679,7 +722,11 @@ async function propagateNicknameByMonth(
     if (!keyName.endsWith(suffix)) continue;
     const raw = await env.POLL.get(keyName);
     if (!raw) continue;
-    const entry = JSON.parse(raw);
+    // #3298: 1 entry mensal corrompida derrubava a propagação INTEIRA de
+    // nickname (loop inteiro abortado por 1 registro malformado) — skip
+    // só a entry afetada e segue pras próximas.
+    const entry = safeParseKv<{ nickname?: string | null; [k: string]: unknown }>(raw, "propagate_nickname_parse_error", keyName);
+    if (!entry) continue;
     if (entry.nickname === nickname) continue; // no-op
     entry.nickname = nickname;
     await env.POLL.put(keyName, JSON.stringify(entry));
