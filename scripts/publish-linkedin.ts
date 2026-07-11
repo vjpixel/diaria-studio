@@ -334,6 +334,15 @@ export interface DispatchContext {
    * recebem `is_test: true`. Usado pelo `delete-test-schedules.ts --require-is-test`
    * pra cleanup seguro só de artefatos de teste, sem deletar produção. */
   isTest?: boolean;
+  /** #3311: override SÓ pra isolamento de teste — repassado ao `logEvent` de
+   * auditoria em `dispatchEntry`. Sem isso, `logEvent` cai no default
+   * `process.cwd()` — inofensivo em produção (roda da raiz do repo), mas
+   * testes que chamam `dispatchEntry` diretamente (in-process, não spawnado)
+   * gravavam entries fabricadas (edition: "260999") direto em
+   * `data/run-log.jsonl` REAL do worktree a cada test run. `main()` sempre
+   * passa `ROOT` explicitamente (nunca confia em `process.cwd()` implícito).
+   */
+  rootDir?: string;
 }
 
 /**
@@ -378,7 +387,7 @@ export async function dispatchEntry(
     level: "info",
     message: `${tag} dispatched via ${route}`,
     details: { route, scheduled_at: scheduledAt, destaque: d, subtype, webhook_target: input.webhookTarget, action: input.action },
-  });
+  }, ctx.rootDir);
 
   try {
     let entry: PostEntry;
@@ -510,6 +519,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirRaw);
+  // #3311: override SÓ pra isolamento de teste — repassado a todo logEvent
+  // deste arquivo. Produção nunca passa essa flag (logRootDir === ROOT em
+  // todo uso real, cwd-independente). Mesmo padrão de --log-root-dir em
+  // resolve-edition-url.ts (#3310) e verify-accessibility.ts (#3311).
+  const logRootDir = values["log-root-dir"] ? resolve(ROOT, values["log-root-dir"]) : ROOT;
   // #1101: default = agendar. `--schedule` continua aceito (no-op se default já é true).
   // Pra forçar post imediato, usar `--fire-now` (opt-in explícito).
   const fireNow = flags.has("fire-now");
@@ -743,7 +757,7 @@ async function main(): Promise<void> {
       level: imgCacheState.missing.length === 0 ? "info" : "warn",
       message: `image_cache_state: ${imgCacheState.destaques_with_url.length}/${destaques.length} destaques com URL`,
       details: { ...imgCacheState, cache_path: imgCachePath },
-    });
+    }, logRootDir);
 
     if (imgCacheState.missing.length > 0) {
       console.error(
@@ -799,6 +813,7 @@ async function main(): Promise<void> {
     useWorkerForScheduled,
     editionDate,
     isTest,
+    rootDir: logRootDir,
   };
 
   // #595 — pre-carregar imageUrl por destaque (mesmo source pra todos os

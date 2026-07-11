@@ -466,9 +466,15 @@ export async function iterateThreads(
 // Run log — wrappers em volta de scripts/lib/run-log.ts (#612).
 // Mantidos como helpers locais pra preservar a API de chamada (logDrainError(err))
 // — caller passa só o error, helper preenche stage/agent.
+//
+// #3311: `rootDir` default ROOT (script location, cwd-independente — mesmo
+// comportamento de antes). main() sempre repassa o `rootDir` que recebeu
+// (default ROOT em produção), permitindo que testes que chamam `main()`
+// diretamente in-process (test/inbox-drain.test.ts) isolem o destino do
+// log de auditoria sem tocar em data/run-log.jsonl REAL do worktree.
 // ---------------------------------------------------------------------------
 
-function logDrainError(err: Error): void {
+function logDrainError(err: Error, rootDir: string = ROOT): void {
   logEvent({
     edition: null,
     stage: 1,
@@ -476,10 +482,10 @@ function logDrainError(err: Error): void {
     level: "error",
     message: err.message,
     details: { stack: err.stack ?? null },
-  }, ROOT);
+  }, rootDir);
 }
 
-function logDrainInfo(message: string, details?: Record<string, unknown>): void {
+function logDrainInfo(message: string, details?: Record<string, unknown>, rootDir: string = ROOT): void {
   logEvent({
     edition: null,
     stage: 1,
@@ -487,10 +493,10 @@ function logDrainInfo(message: string, details?: Record<string, unknown>): void 
     level: "info",
     message,
     details: details ?? null,
-  }, ROOT);
+  }, rootDir);
 }
 
-function logDrainWarn(message: string, details?: Record<string, unknown>): void {
+function logDrainWarn(message: string, details?: Record<string, unknown>, rootDir: string = ROOT): void {
   logEvent({
     edition: null,
     stage: 1,
@@ -498,7 +504,7 @@ function logDrainWarn(message: string, details?: Record<string, unknown>): void 
     level: "warn",
     message,
     details: details ?? null,
-  }, ROOT);
+  }, rootDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +545,12 @@ function appendToInbox(entries: string[]): void {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+// #3311: `rootDir` opcional — repassado a logDrainWarn/logDrainInfo abaixo.
+// Default ROOT (produção, cwd-independente, comportamento inalterado).
+// Testes que chamam main() diretamente in-process (test/inbox-drain.test.ts)
+// passam um tmpdir isolado pra não gravar entries fabricadas em
+// data/run-log.jsonl REAL do worktree.
+async function main(rootDir: string = ROOT): Promise<void> {
   // Ler config
   const configPath = resolve(ROOT, "platform.config.json");
   const config = JSON.parse(readFileSync(configPath, "utf8")) as PlatformConfig;
@@ -591,7 +602,7 @@ async function main(): Promise<void> {
     // submissões perdidas (impacto silencioso), não um genérico "search failed".
     if (isAuthExpiredError(msg)) {
       console.error("\n" + authExpiredWarn() + "\n");
-      logDrainWarn(`auth_expired: ${msg.slice(0, 200)}`);
+      logDrainWarn(`auth_expired: ${msg.slice(0, 200)}`, undefined, rootDir);
     } else {
       console.error(
         `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
@@ -635,6 +646,7 @@ async function main(): Promise<void> {
             previous_consecutive_empty_drains:
               cursor.consecutive_empty_drains ?? 0,
           },
+          rootDir,
         );
         break;
       case "none":

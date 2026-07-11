@@ -449,6 +449,14 @@ async function main() {
   const window = parseInt(args["window"] ?? String(DEFAULT_PAST_WINDOW), 10);
   const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
   const outPath = args["out"];
+  // #3311: override SÓ pra isolamento de teste — repassado ao logEvent de
+  // auditoria abaixo. Sem essa flag, logEvent cai no default process.cwd()
+  // — inofensivo em produção (roda da raiz do repo), mas testes que spawnam
+  // este CLI via subprocess sem isolar cwd (test/dedup-input-shape.test.ts)
+  // gravavam entries fabricadas direto em data/run-log.jsonl REAL do
+  // worktree a cada test run. Mesmo padrão de --log-root-dir em
+  // resolve-edition-url.ts (#3310).
+  const logRootDir = args["log-root-dir"];
 
   if (!articlesPath) {
     console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
@@ -591,7 +599,7 @@ async function main() {
     level: "info",
     message: `dedup: ${removed} artigos removidos por similaridade, ${kept} mantidos`,
     details: { removed, kept },
-  });
+  }, logRootDir);
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {

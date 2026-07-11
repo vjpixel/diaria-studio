@@ -281,6 +281,14 @@ async function main() {
     process.exit(1);
   }
   const base = get("--base") ?? DEFAULT_BASE;
+  // #3311: override SÓ pra isolamento de teste — repassado a signalEiaFallback.
+  // Sem essa flag, logEvent (dentro de signalEiaFallback) cai no default
+  // process.cwd() — inofensivo em produção (roda da raiz do repo). Não há
+  // hoje nenhum teste que spawne este CLI via subprocess até o fallback
+  // path, mas a flag existe por consistência com o mesmo padrão adotado em
+  // resolve-edition-url.ts (#3310), verify-accessibility.ts, dedup.ts e
+  // publish-linkedin.ts (#3311).
+  const logRootDir = get("--log-root-dir");
 
   const days = monthDays(yymm);
   // Busca em paralelo — 28-31 GETs leves no worker.
@@ -315,7 +323,7 @@ async function main() {
 
   // #2869: sem fallback silencioso — stderr + data/run-log.jsonl (no-op se
   // selection === "criterion").
-  signalEiaFallback(result, yymm, get("--cycle"));
+  signalEiaFallback(result, yymm, get("--cycle"), logRootDir);
 
   const outJson = get("--out-json");
   if (outJson) {

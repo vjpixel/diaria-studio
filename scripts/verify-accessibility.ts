@@ -606,6 +606,13 @@ async function main() {
   let verifyCachePath: string | null = null;
   let verifyCacheTtlMs: number = DEFAULT_TTL_MS;
   let browserConcurrency = DEFAULT_BROWSER_CONCURRENCY;
+  // #3311: override SÓ pra isolamento de teste — sem essa flag, o logEvent
+  // de auditoria abaixo cai no default de logEvent (process.cwd()), que em
+  // testes E2E que spawnam este CLI via subprocess (test/verify-accessibility-e2e.test.ts)
+  // resolve pro cwd real do processo spawnado (tipicamente a raiz do repo),
+  // poluindo data/run-log.jsonl de produção a cada test run. Produção nunca
+  // passa essa flag — mesmo padrão de --log-root-dir em resolve-edition-url.ts (#3310).
+  let logRootDir: string | undefined;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
@@ -627,6 +634,9 @@ async function main() {
         browserConcurrency = Math.floor(n);
       }
       i++;
+    } else if (a === "--log-root-dir" && i + 1 < process.argv.length) {
+      logRootDir = process.argv[i + 1];
+      i++;
     } else {
       positional.push(a);
     }
@@ -634,7 +644,7 @@ async function main() {
   const input = positional[0];
   if (!input) {
     console.error(
-      "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N] [--browser-concurrency N]",
+      "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N] [--browser-concurrency N] [--log-root-dir <path>]",
     );
     process.exit(1);
   }
@@ -765,7 +775,7 @@ async function main() {
     level: "info",
     message: `verify: ${paywall} paywall, ${blocked} blocked, ${aggregator} aggregator, ${ok} ok`,
     details: { paywall, blocked, aggregator, ok, total },
-  });
+  }, logRootDir);
 
   // Strip internal `_cacheHit` field before serialization — purely
   // pra accumulating stats em main(), não pertence ao output JSON.

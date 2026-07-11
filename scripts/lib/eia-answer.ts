@@ -192,11 +192,19 @@ export function readEiaAnswerFromFrontmatter(editionDir: string): EiaAnswer | nu
  *
  * Retorna null quando nenhuma source tem dado válido — caller decide o
  * que fazer (pular gabarito, falhar, fallback, etc).
+ *
+ * #3311: `logRootDir` opcional — repassado às duas primeiras chamadas
+ * (as únicas que podem logar warn em JSON corrompido/schema inválido).
+ * Fecha a lacuna de consistência apontada pelo audit da issue #3311 — antes,
+ * este wrapper de conveniência nunca repassava rootDir, então qualquer
+ * caller que só usasse `readEiaAnswer()` (sem chamar os sub-helpers
+ * diretamente) caía sempre no default de logEvent (process.cwd()) em caso
+ * de corrupção.
  */
-export function readEiaAnswer(editionDir: string): EiaAnswer | null {
+export function readEiaAnswer(editionDir: string, logRootDir?: string): EiaAnswer | null {
   return (
-    readEiaAnswerSidecar(editionDir) ??
-    readEiaAnswerFromMeta(editionDir) ??
+    readEiaAnswerSidecar(editionDir, logRootDir) ??
+    readEiaAnswerFromMeta(editionDir, logRootDir) ??
     readEiaAnswerFromFrontmatter(editionDir)
   );
 }

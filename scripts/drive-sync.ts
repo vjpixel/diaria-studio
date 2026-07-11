@@ -640,7 +640,7 @@ async function main(): Promise<void> {
   // pro editor reagir. Endereça #121: silent push failures viravam
   // invisíveis sem essa trilha.
   if (result.warnings.length > 0) {
-    logSyncWarnings(result);
+    logSyncWarnings(result, values["log-root-dir"] ? resolve(ROOT, values["log-root-dir"]) : ROOT);
   }
 
   console.log(JSON.stringify(result, null, 2));
@@ -674,12 +674,19 @@ async function main(): Promise<void> {
   }
 }
 
-function logSyncWarnings(result: SyncResult): void {
+function logSyncWarnings(result: SyncResult, rootDir: string = ROOT): void {
   // #612: delega pra scripts/lib/run-log.ts. logEvent já encapsula resolve do
   // path (config + fallback) e swallow de exceções.
   // #2318: oauth expiry is logged at 'error' (requires immediate re-auth action);
   // other warnings remain at 'warn'. Without this, /diaria-log 260618 error
   // returns nothing for an oauth alert, making it invisible to error-level filters.
+  //
+  // #3311: `rootDir` default ROOT (produção, cwd-independente, comportamento
+  // inalterado) — override só existe pra isolamento de teste (mesmo padrão
+  // de --log-root-dir em resolve-edition-url.ts/verify-accessibility.ts/
+  // dedup.ts/publish-linkedin.ts). Nenhum teste hoje chama main() ou
+  // logSyncWarnings() até este ponto, mas o parâmetro fecha a lacuna de
+  // consistência apontada pelo audit da issue #3311.
   const hasOauthAlert = result.warnings.some((w) => w.file === "(oauth)");
   logEvent({
     edition: result.edition,
@@ -693,7 +700,7 @@ function logSyncWarnings(result: SyncResult): void {
       uploaded_count: result.uploaded.length,
       pulled_count: result.pulled.length,
     },
-  }, ROOT);
+  }, rootDir);
 }
 
 if (isMainModule(import.meta.url)) {

@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -42,6 +42,11 @@ function runDedup(articlesPath: string, dir: string): { code: number; stderr: st
     "--past-editions", join(dir, "past-editions.md"),
     "--window", "3",
     "--out", join(dir, "out/dedup-output.json"),
+    // #3311: isola o logEvent de auditoria (`dedup: N artigos removidos...`)
+    // pro tmpdir do teste — sem isso, main() cai no default de logEvent
+    // (process.cwd()), que aqui é `cwd: ROOT` (raiz real do repo/worktree),
+    // poluindo data/run-log.jsonl de produção a cada test run bem-sucedido.
+    "--log-root-dir", dir,
   ], { cwd: ROOT, encoding: "utf8", shell: true });
   return { code: r.status ?? -1, stderr: r.stderr ?? "" };
 }
@@ -57,8 +62,24 @@ describe("dedup.ts — input shape guard (#1268)", () => {
       const articlesPath = join(dir, "articles.json");
       writeFileSync(articlesPath, JSON.stringify(articles), "utf8");
 
+      const realRepoLogPath = resolve(ROOT, "data", "run-log.jsonl");
+      const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
+
       const r = runDedup(articlesPath, dir);
       assert.equal(r.code, 0, `dedup deveria passar com array raw; stderr: ${r.stderr}`);
+
+      // #3311: prova que o logEvent de auditoria (`dedup: N artigos...`) foi
+      // de fato isolado no tmpdir via --log-root-dir — nunca no repo real.
+      const isolatedLogPath = join(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (--log-root-dir)");
+      assert.match(readFileSync(isolatedLogPath, "utf8"), /"agent":"dedup\.ts"/);
+      if (existsSync(realRepoLogPath)) {
+        assert.equal(
+          readFileSync(realRepoLogPath, "utf8"),
+          realRepoLogSnapshot,
+          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste",
+        );
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
