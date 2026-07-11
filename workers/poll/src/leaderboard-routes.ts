@@ -16,6 +16,7 @@ import {
   brandHiddenInput, // #3118 item 12: renderArchiveVoteHtml
   maskEmail, // #3118 item 11: consolida as 3 implementações de mascaramento de email
   closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
+  AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -783,7 +784,7 @@ export function extractEditionsForYear(correctKeyNames: string[], year: string, 
   const set = new Set<string>();
   for (const k of correctKeyNames) {
     const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
-    if (!/^\d{6}$/.test(edition)) continue;
+    if (!AAMMDD_RE.test(edition)) continue;
     if (edition.slice(0, 2) !== yy) continue;
     if (edition > today) continue; // #3113 item 9: ainda não chegou a data
     set.add(edition);
@@ -1009,7 +1010,7 @@ export async function handleArchiveVotePage(
   env: Env,
   brand: Brand = "diaria",
 ): Promise<Response> {
-  if (!/^\d{4}$/.test(yearStr) || !/^\d{6}$/.test(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
+  if (!/^\d{4}$/.test(yearStr) || !AAMMDD_RE.test(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
     return new Response(votePageHtml("Link inválido.", false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
