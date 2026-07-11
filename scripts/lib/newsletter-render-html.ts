@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
+import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -183,26 +184,13 @@ export function renderDivulgacaoSeparator(): string {
 }
 
 /**
- * #3104: marcador ● teal reutilizável — a "assinatura de cor" do DS pros
- * labels uppercase deste padrão (kicker de seção, "Por que isso importa",
- * resultado do É IA?). Isolado em helper porque teal 12/16px bold mede
- * ~3.2:1 de contraste sobre papel/branco — abaixo de AA (4.5:1) pra texto
- * normal (16px bold não qualifica como "large text" do WCAG, que exige
- * ≥18.66px bold). Fix sem mexer na paleta: o PONTO continua teal (identidade
- * visual preservada), o TEXTO do label vira ink (contraste ~14:1) em cada
- * caller — este helper só emite o ponto.
- *
- * #3181: exportado (era privado) — o renderer mensal (monthly-render.ts)
- * importa direto daqui em vez de duplicar a mesma string. Precedente já
- * estabelecido neste arquivo: monthly-render.ts já importa applyBrandWordmark
- * daqui pelo mesmo motivo (reuso 1:1, sem necessidade de mover pra shared/ —
- * a função não tem estado nem dependências, e scripts/lib/shared/ é regido
- * por test/lib-boundary.test.ts só para os domínios shared/diaria/mensal;
- * este arquivo vive na raiz legada de scripts/lib/, fora dessa fronteira).
+ * #3269: movido pra scripts/lib/shared/email-components.ts — 1º componente
+ * genuinamente compartilhado entre diária e mensal (era um import cruzado
+ * ad-hoc de monthly-render.ts direto pra este arquivo, ver #3181 e a análise
+ * em docs/render-unification-analysis-3269.md). Re-exportado aqui por
+ * back-compat (era `export function tealDot()` local neste arquivo).
  */
-export function tealDot(): string {
-  return `<span style="color:${TEAL};">&#9679;</span>`;
-}
+export { tealDot };
 
 /**
  * Kicker de seção do DS: ponto ● teal + label ink uppercase (#3104 — era
