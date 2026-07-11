@@ -61,7 +61,12 @@
  *                      foi passado). OBRIGATÓRIO informar explicitamente
  *                      quando o mesmo grupo tiver múltiplas listas/campanhas
  *                      no mesmo ciclo (senão a 2ª invocação de --create
- *                      colidiria com a 1ª sob a mesma key).
+ *                      colidiria com a 1ª sob a mesma key). A idempotência é
+ *                      só por --key, NÃO por listId (#3354): se a mesma key
+ *                      resolver pra um listId diferente do que já foi criado
+ *                      (ex: --group ganhou lista nova mas --key foi
+ *                      esquecido), --create ABORTA em vez de pular
+ *                      silenciosamente — ver `checkListIdMismatch`.
  *
  * Uso típico (via --group):
  *   npx tsx scripts/clarice-build-segment.ts --group ramp-warm --cycle 2606-07 --budget 6403
@@ -155,6 +160,42 @@ export function resolveGroupListId(
 /** Nome determinístico da campanha. Ex: "Clarice 2606 grupo:ramp-warm". */
 export function campaignNameFor(cycle: string, key: string): string {
   return `Clarice ${cycleToYymm(cycle)} grupo:${key}`;
+}
+
+/**
+ * #3354 — `--create` é idempotente por `--key`, mas até aqui NUNCA comparava
+ * o `listId` já gravado (`existing.listId`, de uma criação anterior sob a
+ * mesma key) contra o `listId` recém-resolvido nesta invocação (`--group`
+ * pode ter uma lista nova mais recente no registro, ou `--list-id` pode ter
+ * sido passado errado). Sem essa checagem, uma 2ª invocação `--create` sob a
+ * mesma key silenciosamente "pula" (linha da campanha já existe) e a
+ * campanha real no Brevo continua apontando pra lista ANTIGA — sem nenhum
+ * sinal de erro, mesmo a campanha nunca tendo seu `recipients.listIds`
+ * re-tocado por `--schedule` (só faz PUT de `scheduledAt`).
+ *
+ * Caso feliz de idempotência genuína (mesma key, mesma lista, re-run
+ * legítimo — ex: retry após falha de rede) continua sendo no-op silencioso:
+ * só sinaliza quando listId DIVERGE do que já foi criado.
+ */
+export function checkListIdMismatch(
+  existing: CampaignEntry | undefined,
+  resolvedListId: number,
+): { ok: true } | { ok: false; message: string } {
+  if (!existing) return { ok: true };
+  if (existing.listId === resolvedListId) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `\n❌  ERRO: --key '${existing.key}' já tem campanha #${existing.campaignId} criada apontando pra listId=${existing.listId}, ` +
+      `mas esta invocação resolveu listId=${resolvedListId} — MISMATCH.\n` +
+      `   --create é idempotente por --key, NÃO por listId: rodar de novo sob a mesma --key nunca re-aponta a campanha ` +
+      `existente pra uma lista nova (--schedule também não toca recipients/listIds, só scheduledAt) — a campanha real ` +
+      `no Brevo continuaria mandando pra listId=${existing.listId} silenciosamente.\n` +
+      `   Se a intenção era criar uma campanha SEPARADA pra esta lista nova, use uma --key distinta ` +
+      `(ex: --key ${existing.key}-2). Se a lista de fato deveria substituir a anterior nesta key, reconcilie manualmente ` +
+      `(edite recipients.listIds da campanha #${existing.campaignId} direto no Brevo e o listId em ` +
+      `group-campaigns.json) antes de re-rodar.\n`,
+  };
 }
 
 /** Parseia --subject: retorna o valor ou undefined. Mesma forma de clarice-schedule-sends.ts. */
@@ -252,6 +293,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // --- create (rascunho ou reuso via --update-existing; idempotente por --key) ---
   if (doCreate) {
     if (existing) {
+      // #3354: idempotência por --key só é segura se a lista não mudou —
+      // senão a campanha real no Brevo fica presa na lista antiga pra
+      // sempre (--schedule nunca re-toca recipients/listIds). Aborta em vez
+      // de só avisar: blast radius é envio real pra audiência errada (P1).
+      const mismatch = checkListIdMismatch(existing, listId);
+      if (!mismatch.ok) {
+        console.error(mismatch.message);
+        process.exit(1);
+      }
       console.error(`↷ ${key} já criada (#${existing.campaignId}) — pulando`);
     } else {
       const subject = parseSubjectArg(argv);

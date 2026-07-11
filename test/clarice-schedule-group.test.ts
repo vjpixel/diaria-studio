@@ -7,6 +7,7 @@ import {
   resolveGroupListId,
   campaignNameFor,
   parseSubjectArg,
+  checkListIdMismatch,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
 import { appendGroupListsRegistry } from "../scripts/clarice-import-waves.ts";
@@ -154,6 +155,46 @@ describe("parseSubjectArg (#3228 — mesma forma de clarice-schedule-sends.ts)",
 
   it("--subject no fim do array (sem valor) → undefined, não engole flag seguinte", () => {
     assert.equal(parseSubjectArg(["--create", "--subject"]), undefined);
+  });
+});
+
+describe("checkListIdMismatch (#3354 — --create idempotente por key não comparava listId)", () => {
+  const baseEntry: CampaignEntry = {
+    key: "ramp-warm",
+    campaignId: 123,
+    listId: 69,
+    subject: "Assunto A",
+    scheduledAt: "2026-07-15T09:00:00.000Z",
+    status: "draft",
+  };
+
+  it("existing ausente (1ª criação sob a key) → ok, nada a comparar", () => {
+    const result = checkListIdMismatch(undefined, 70);
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("caso feliz: mesma key, mesmo listId (re-run legítimo, ex: retry pós-falha de rede) → ok, no-op silencioso", () => {
+    const result = checkListIdMismatch(baseEntry, 69);
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("regressão #3354: mesma key, listId DIVERGENTE (cenário real 260710 — 2ª --create sob 'ramp-warm' após lista nova #70 sem trocar --key) → sinaliza, não silencia", () => {
+    const result = checkListIdMismatch(baseEntry, 70);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("unreachable"); // narrow pro TS
+    assert.match(result.message, /MISMATCH/);
+    assert.match(result.message, /ramp-warm/);
+    assert.match(result.message, /#123/);
+    assert.match(result.message, /listId=69/);
+    assert.match(result.message, /listId=70/);
+  });
+
+  it("mensagem de mismatch orienta o operador (--key distinta pra lista separada, sem prometer flag inexistente no branch existing)", () => {
+    const result = checkListIdMismatch(baseEntry, 999);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("unreachable");
+    assert.match(result.message, /--key distinta/);
+    assert.match(result.message, /ramp-warm-2/);
   });
 });
 
