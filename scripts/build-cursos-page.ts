@@ -18,13 +18,14 @@
  *   npx tsx scripts/build-cursos-page.ts --check       # só valida
  */
 
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
+import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
 import { FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
 import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 import {
@@ -35,6 +36,14 @@ import {
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-livros-page.ts
+import {
+  isSafeUrl,
+  availableThemes,
+  distinctThemes,
+  loadSeedItems,
+  type ValidationResult,
+} from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-livros-page.ts
+export { esc, isSafeUrl, availableThemes, distinctThemes, type ValidationResult };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
@@ -102,24 +111,9 @@ const DURATION_LABEL: Record<DurationBin, string> = {
   longo: "Longo (>20h)",
 };
 
-/** Escapa HTML em texto interpolado. Pure. */
-export function esc(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 // #1989: slugify movido pra scripts/lib/slug.ts (single source — cursos page +
 // slug SEO de post). Import local (usado abaixo) + re-export back-compat.
 export { slugify };
-
-/** URL aceita só se http(s) — defense-in-depth. Pure. */
-export function isSafeUrl(u: string | undefined): boolean {
-  return !!u && /^https?:\/\//i.test(u);
-}
 
 /** Duração "1h 15m" / "4h 45m" / "30h". Pure. */
 export function fmtDuration(h: number, estimated?: boolean): string {
@@ -139,12 +133,6 @@ export function fmtDuration(h: number, estimated?: boolean): string {
   }
   const base = mins > 0 ? `${whole}h ${mins}m` : `${whole}h`;
   return estimated ? `~${base}` : base;
-}
-
-export interface ValidationResult {
-  ok: boolean;
-  errors: string[];
-  warnings: string[];
 }
 
 /**
@@ -179,26 +167,6 @@ export function validateCourses(courses: Course[]): ValidationResult {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-/**
- * Temas distintos (ordenados) entre os cursos que casam com `lang`/`level`
- * (vazios = sem restrição). Pure. Usado pra montar o dropdown de Tema — só
- * temas com ≥1 curso no recorte atual, pra nenhuma opção zerar a lista.
- */
-export function availableThemes(courses: Course[], lang = "", level = ""): string[] {
-  const set = new Set<string>();
-  for (const c of courses) {
-    if (lang && c.language !== lang) continue;
-    if (level && c.level !== level) continue;
-    for (const t of c.themes ?? []) if (t) set.add(t);
-  }
-  return [...set].sort((a, b) => a.localeCompare(b, "pt-BR"));
-}
-
-/** Todos os temas distintos (sem recorte). Pure. */
-export function distinctThemes(courses: Course[]): string[] {
-  return availableThemes(courses);
-}
-
 /** Plataformas distintas (ordenadas). Pure. */
 export function distinctPlatforms(courses: Course[]): string[] {
   return [...new Set(courses.map((c) => c.platform).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
@@ -206,12 +174,7 @@ export function distinctPlatforms(courses: Course[]): string[] {
 
 /** Lê e valida o seed. Lança em JSON inválido / erros de schema. */
 export function loadCourses(seedPath = SEED_PATH): Course[] {
-  if (!existsSync(seedPath)) throw new Error(`seed não encontrado: ${seedPath}`);
-  const parsed = JSON.parse(readFileSync(seedPath, "utf8")) as { courses?: Course[] };
-  const courses = parsed.courses ?? [];
-  const v = validateCourses(courses);
-  if (!v.ok) throw new Error(`seed inválido:\n  ${v.errors.join("\n  ")}`);
-  return courses;
+  return loadSeedItems<Course>(seedPath, "courses", validateCourses);
 }
 
 function renderCard(c: Course): string {

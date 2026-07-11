@@ -16,13 +16,14 @@
  *   npx tsx scripts/build-livros-page.ts --check       # só valida
  */
 
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
+import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
 import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
 import {
   renderCuradoriaRootStyles,
@@ -32,6 +33,14 @@ import {
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-cursos-page.ts
+import {
+  isSafeUrl,
+  availableThemes,
+  distinctThemes,
+  loadSeedItems,
+  type ValidationResult,
+} from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-cursos-page.ts
+export { esc, isSafeUrl, availableThemes, distinctThemes, type ValidationResult };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
@@ -77,31 +86,10 @@ const LEVEL_LABEL: Record<Level, string> = {
 
 const LANG_LABEL: Record<Language, string> = { "pt-br": "Português", en: "Inglês" };
 
-/** Escapa HTML em texto interpolado. */
-export function esc(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-/** URL aceita só se http(s) — defense-in-depth (amzn.to é https). Pure. */
-export function isSafeUrl(u: string | undefined): boolean {
-  return !!u && /^https?:\/\//i.test(u);
-}
-
 /** Nota Amazon → "4,7" (decimal com vírgula PT). Pure. */
 export function fmtRating(r: number | undefined): string | null {
   if (r == null || !Number.isFinite(r)) return null;
   return r.toFixed(1).replace(".", ",");
-}
-
-export interface ValidationResult {
-  ok: boolean;
-  errors: string[];
-  warnings: string[];
 }
 
 /**
@@ -130,34 +118,9 @@ export function validateBooks(books: Book[]): ValidationResult {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-/**
- * Temas distintos (ordenados) entre os livros que casam com `lang`/`level`
- * (vazios = sem restrição). Pure. Usado pra montar o dropdown de Tema dinâmico
- * — só temas com ≥1 livro no recorte atual, pra nenhuma opção zerar a lista.
- */
-export function availableThemes(books: Book[], lang = "", level = ""): string[] {
-  const set = new Set<string>();
-  for (const b of books) {
-    if (lang && b.language !== lang) continue;
-    if (level && b.level !== level) continue;
-    for (const t of b.themes ?? []) if (t) set.add(t);
-  }
-  return [...set].sort((a, b) => a.localeCompare(b, "pt-BR"));
-}
-
-/** Todos os temas distintos da lista (sem recorte). Pure. */
-export function distinctThemes(books: Book[]): string[] {
-  return availableThemes(books);
-}
-
 /** Lê e valida o seed. Lança em JSON inválido / erros de schema. */
 export function loadBooks(seedPath = SEED_PATH): Book[] {
-  if (!existsSync(seedPath)) throw new Error(`seed não encontrado: ${seedPath}`);
-  const parsed = JSON.parse(readFileSync(seedPath, "utf8")) as { books?: Book[] };
-  const books = parsed.books ?? [];
-  const v = validateBooks(books);
-  if (!v.ok) throw new Error(`seed inválido:\n  ${v.errors.join("\n  ")}`);
-  return books;
+  return loadSeedItems<Book>(seedPath, "books", validateBooks);
 }
 
 function renderCard(b: Book): string {
