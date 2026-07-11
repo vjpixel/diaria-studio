@@ -1,5 +1,11 @@
 # Agendamento automático da edição diária
 
+> **DEPRECATED (260711, #3259):** a task `Diaria-Edicao-Diaria` foi removida do
+> Task Scheduler por decisão do editor. Este doc é mantido como registro
+> histórico do mecanismo — os scripts (`setup-edicao-schedule.ps1`,
+> `run-scheduled-edicao.ps1`) continuam no repo e funcionais para reativação
+> futura, mas a task NÃO está armada em nenhuma máquina no momento.
+
 Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068)
 
 O Task Scheduler do Windows roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às 14:00 (horário local = BRT), produzindo a edição do dia seguinte (D+1). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.

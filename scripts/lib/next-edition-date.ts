@@ -6,7 +6,12 @@
  * Regra editorial (CLAUDE.md): a edição é sempre o dia seguinte à pesquisa.
  * Ex.: pesquisa roda em 2026-04-26 (BRT) → edição é 260427.
  *
- * Usado pelo runner agendado `scripts/overnight/run-scheduled-edicao.ps1`.
+ * Usado por `scripts/clarice-db-summary.ts` (cálculo de próxima edição pro
+ * summary). Também consumido por `scripts/overnight/calc-next-edition-date.ts`
+ * — CLI wrapper originalmente escrito pro runner agendado
+ * `scripts/overnight/run-scheduled-edicao.ps1`, que foi desregistrado do Task
+ * Scheduler em #3259/260711 (script mantido, dormente; ver
+ * docs/scheduled-edicao-setup.md).
  * Extraído como lib para permitir testes determinísticos (#633 / #2068).
  */
 

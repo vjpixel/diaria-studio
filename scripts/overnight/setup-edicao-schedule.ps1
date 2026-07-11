@@ -2,6 +2,12 @@
 .SYNOPSIS
     Registra (ou atualiza/remove) a task "Diaria-Edicao-Diaria" no Task Scheduler.
 
+    *** STATUS (260711, #3259): task desregistrada por decisão do editor. ***
+    Este script foi mantido (não deletado) só como via de reativação futura
+    caso o editor mude de ideia — rodar sem -Unregister recria a task com o
+    schedule original (dom-qui 14:00). Ver docs/scheduled-edicao-setup.md
+    para o histórico completo da decisão.
+
 .DESCRIPTION
     Cria uma tarefa agendada que roda run-scheduled-edicao.ps1 de domingo a
     quinta-feira às 14:00 (horário local da máquina = BRT).

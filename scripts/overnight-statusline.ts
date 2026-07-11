@@ -224,13 +224,17 @@ const TOTAL_STAGES = STAGES.length;
  * Threshold: 24h. Escopo deliberadamente restrito a rows com `status ===
  * "running"` (não "qualquer row não-terminal") — investigação #2760 confirmou
  * um caso legítimo de edição não-encerrada e MUITO mais velha que 24h que NÃO
- * deve ser tratada como abandonada: o run agendado (`docs/scheduled-edicao-setup.md`)
- * roda Stages 0–4 às 14h e **encerra o processo naturalmente** com Stage 4
- * `done` e Stage 5 `pending` — "requer input do editor... não fica travada no
- * gate" (linha 66 do doc). O editor dispara `/diaria-5-publicacao` manualmente
- * "na manhã seguinte", podendo levar bem mais de 24h corridas se atrasar (fins
- * de semana: o schedule não roda sexta/sábado). Um doc assim nunca tem row
- * `running` — só `done`/`pending` — então o guard abaixo não o penaliza.
+ * deve ser tratada como abandonada: uma edição pode legitimamente parar com
+ * Stage 4 `done` e Stage 5 `pending` — "requer input do editor... não fica
+ * travada no gate" — e ficar assim por bem mais de 24h corridas se o editor
+ * demorar a voltar. Esse padrão foi originalmente observado no run agendado
+ * (`docs/scheduled-edicao-setup.md` — DEPRECATED desde #3259/260711, task
+ * removida do Task Scheduler), que rodava Stages 0–4 às 14h e encerrava o
+ * processo naturalmente nesse ponto, mas continua ocorrendo com qualquer uso
+ * MANUAL de `/diaria-edicao` em que o editor rode até o Stage 4 e não volte
+ * imediatamente pro gate do Stage 5 — a lógica do guard não depende do
+ * runner agendado existir. Um doc assim nunca tem row `running` — só
+ * `done`/`pending` — então o guard abaixo não o penaliza.
  *
  * Já o caso relatado na issue (`data/editions/260623/_internal/stage-status.json`,
  * `{ stage: 5, status: "running", start: "...02:23:06.933Z" }` que nunca
@@ -272,8 +276,8 @@ export const EDITION_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
  * deve ser tratado como abandonado, não "em curso" (#2760).
  *
  * Escopo deliberado: rows `pending` (ainda não iniciadas, ex: Stage 5
- * aguardando disparo manual do editor após um run agendado que parou no
- * Stage 4) NUNCA contam como stale aqui, por mais velhas que sejam — só
+ * aguardando disparo manual do editor após uma run que parou no Stage 4)
+ * NUNCA contam como stale aqui, por mais velhas que sejam — só
  * `running` travado é sinal de abandono. Ver docblock de
  * `EDITION_STALE_THRESHOLD_MS` para o caso legítimo que isso evita.
  *
