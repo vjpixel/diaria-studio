@@ -45,6 +45,25 @@
  * caso que o incidente 260609 motivou este lint a pegar. Agora o parágrafo
  * inteiro é acumulado (`paraLines`/`flushParagraph`) e testado como bloco
  * único antes de decidir se é o título (posição) ou um callout colado (forma).
+ *
+ * #3315: `FULL_BOLD_LINE_RE` sozinho só confere que os 2 primeiros e os 2
+ * últimos caracteres do blob são `**` — não que o trecho entre eles é um
+ * único bold-wrap balanceado. Um parágrafo body normal, hard-wrapped (colado
+ * do Google Docs — o mesmo cenário que o #3282 mira), com 2 spans bold
+ * INDEPENDENTES (um logo no início, outro no fim, texto plano no meio) bate
+ * nesse regex depois do join e virava falso-positivo (`ok:false` num
+ * parágrafo sem problema real, travando o gate GATE-BLOCKING do Stage 4).
+ * `isSingleBoldWrap` (abaixo) fecha esse gap: além do regex, exige EXATAMENTE
+ * 2 ocorrências de `**` no parágrafo inteiro. A convenção de pareamento do
+ * renderer (`tokenizeInline`/`isUnpairedBoldMarker` em
+ * `newsletter-render-html.ts`) é alternada, não aninhada — todo par adicional
+ * de `**` no meio necessariamente fecha o span aberto pelo primeiro `**` e
+ * reabre outro depois, criando um gap de texto plano. Logo só existe UMA
+ * forma de o parágrafo inteiro renderizar como um único span bold contínuo,
+ * do 1º ao último caractere: exatamente 2 ocorrências (abertura + fechamento,
+ * nada mais). Isso preserva a detecção do #3282 (o callout multi-linha real
+ * daquele fix tem exatamente 2 ocorrências — abre na 1ª linha, fecha na
+ * última) sem reintroduzir o falso-negativo original.
  */
 
 export interface CalloutPlacementMatch {
@@ -72,6 +91,34 @@ const FULL_BOLD_LINE_RE = /^\*\*[\s\S]+\*\*$/;
 const EMOJI_LEAD_RE =
   /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+/u;
 
+/**
+ * #3315: conta ocorrências NÃO sobrepostas de `**` numa string (avança 2
+ * posições a cada match — "****" conta como 2, não 3). Mesma convenção de
+ * `countDoubleAsterisk` em `newsletter-render-html.ts` (não exportada de lá —
+ * duplicada aqui, escopo pequeno o bastante pra não justificar mover pra
+ * shared/).
+ */
+function countDoubleAsterisk(str: string): number {
+  let count = 0;
+  let idx = str.indexOf("**");
+  while (idx !== -1) {
+    count++;
+    idx = str.indexOf("**", idx + 2);
+  }
+  return count;
+}
+
+/**
+ * #3315: o parágrafo inteiro (já joined multi-linha) é um único bold-wrap —
+ * abre com `**`, fecha com `**`, SEM nenhum outro `**` no meio? Ver o
+ * comentário do header do arquivo pro raciocínio de paridade/pareamento
+ * alternado que justifica "exatamente 2 ocorrências" em vez de só checar
+ * início/fim.
+ */
+function isSingleBoldWrap(joined: string): boolean {
+  return FULL_BOLD_LINE_RE.test(joined) && countDoubleAsterisk(joined) === 2;
+}
+
 export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const matches: CalloutPlacementMatch[] = [];
@@ -95,9 +142,12 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
         // `[\s\S]` no meio, então casa através de quebras de linha) — pega
         // tanto o callout de 1 linha quanto o hard-wrapped em várias. O
         // emoji-lead só precisa bater na 1ª linha (é âncora de INÍCIO, não
-        // testa o parágrafo inteiro).
+        // testa o parágrafo inteiro). #3315: `isSingleBoldWrap` exige
+        // EXATAMENTE 2 ocorrências de `**` no blob — não basta bater
+        // início/fim, senão 2 bolds independentes bookending um parágrafo
+        // normal (texto plano no meio) falso-positivam como callout.
         const joined = paraLines.join("\n");
-        if (FULL_BOLD_LINE_RE.test(joined) || EMOJI_LEAD_RE.test(paraLines[0])) {
+        if (isSingleBoldWrap(joined) || EMOJI_LEAD_RE.test(paraLines[0])) {
           matches.push({ line: paraStartLine, context: paraLines[0].slice(0, 80) });
         }
       }
