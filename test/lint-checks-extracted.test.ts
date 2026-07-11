@@ -212,6 +212,70 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(cpDirect(okMultiline).ok, true);
   });
 
+  it("#3315: parágrafo body normal com 2 bolds independentes bookending (texto plano no meio) NÃO é flagrado", () => {
+    // Regressão: o rewrite do #3282 junta o parágrafo multi-linha inteiro e
+    // testa FULL_BOLD_LINE_RE (`/^\*\*[\s\S]+\*\*$/`) contra o blob junto —
+    // mas esse regex só confere que os 2 primeiros e os 2 últimos caracteres
+    // são `**`, não que o trecho entre eles é um único bold balanceado. Um
+    // parágrafo body normal, hard-wrapped (colado do Google Docs), com 2
+    // spans bold INDEPENDENTES — um logo no início, outro no fim, texto plano
+    // no meio — batia nesse regex após o join e falso-positivava como
+    // callout mal posicionado.
+    const normalBodyTwoBolds = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "**Importante:** isso muda tudo",
+      "considerando o contexto atual",
+      "**central**",
+      "",
+      "Por que isso importa:",
+      "",
+      "Why.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    const result = cpDirect(normalBodyTwoBolds);
+    assert.equal(
+      result.ok,
+      true,
+      "parágrafo normal com 2 bolds independentes bookending não deveria ser flagrado",
+    );
+    assert.deepEqual(result.matches, []);
+  });
+
+  it("#3315: callout multi-linha real do #3282 (1 único bold-wrap, exatamente 2 ocorrências de **) continua flagrado quando colado", () => {
+    // Não-regressão: o fix do #3315 (exigir EXATAMENTE 2 ocorrências de `**`
+    // no parágrafo inteiro) não pode reintroduzir o falso-negativo que o
+    // #3282 corrigiu — o callout multi-linha real (1 abertura, 1 fechamento,
+    // nada mais no meio) continua batendo.
+    const misplacedMultiline = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "Corpo.",
+      "",
+      "**📣 Box da Clarice, com uma oferta especial",
+      "pra quem assina Diar.ia hoje mesmo, direto no",
+      "site oficial. [Acesse aqui](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    const result = cpDirect(misplacedMultiline);
+    assert.equal(
+      result.ok,
+      false,
+      "callout multi-linha real (exatamente 2 ocorrências de **) deveria continuar flagrado",
+    );
+    assert.match(result.matches[0].context, /Box da Clarice/);
+  });
+
   it("why-matters-format: módulo auto-contido funciona standalone", () => {
     const bad = "Por que isso importa:\n\nPara desenvolvedores, o impacto é grande.";
     assert.equal(wmDirect(bad).ok, false);
