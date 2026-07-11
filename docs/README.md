@@ -18,7 +18,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`clarice-dashboard-access-setup.md`](./clarice-dashboard-access-setup.md) | Cookie-token auth do clarice-dashboard |
 | [`google-oauth-production.md`](./google-oauth-production.md) | Publicar app OAuth Google em "Produção" (fix causa-raiz da expiração de 7 dias) |
 | [`branch-protection.md`](./branch-protection.md) | Exigir CI verde antes de merge em `master` |
-| [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | Agendamento automático (Task Scheduler) da edição diária (#2068) |
+| [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | **DEPRECATED (260711, #3259)** — Agendamento automático (Task Scheduler) da edição diária (#2068); task removida, doc mantido como histórico |
 | [`overnight-watchdog-setup.md`](./overnight-watchdog-setup.md) | Watchdog de stall do `/diaria-overnight` via Task Scheduler (#2688) |
 
 ## Operação (runbooks, manutenção contínua)

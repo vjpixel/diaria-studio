@@ -2,6 +2,11 @@
 .SYNOPSIS
     Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
 
+    *** STATUS (260711, #3259): dormente — a task "Diaria-Edicao-Diaria" que
+    invocava este runner foi desregistrada do Task Scheduler por decisão do
+    editor. Arquivo mantido (não deletado) como via de reativação futura; ver
+    scripts/overnight/setup-edicao-schedule.ps1 e docs/scheduled-edicao-setup.md.
+
 .DESCRIPTION
     Invocado pelo Task Scheduler (Windows) de dom-qui às 14:00 BRT.
     Calcula AAMMDD = amanhã em America/Sao_Paulo, invoca claude -p com
