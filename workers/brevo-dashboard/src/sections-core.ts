@@ -468,7 +468,22 @@ ${monthlyAbcSectionsByDate}
      negrito + mono/tabular-nums (ver regra acima) já diferencia visualmente
      do texto comum sem depender de cor. Teal fica reservado a elementos
      GRÁFICOS (links, barra de progresso, estado ativo de abas — 3:1 é
-     aceitável pra esses por SC 1.4.11, não pra texto). */
+     aceitável pra esses por SC 1.4.11, não pra texto).
+
+     #3323 (investigado, NÃO revertido): editor reportou "números da Visão
+     Geral ficaram pretos" e pediu reverter pra cor anterior. Achado: a cor
+     "anterior" É o teal acima — removido de propósito por #3087-3091 (PR
+     #3139, contraste documentado na tabela do PR body: teal mede 3.08-3.21:1
+     nos 3 fundos do DS, sempre abaixo de AA). Não é regressão de CSS nem
+     efeito colateral de dark-mode (este dashboard não tem tema escuro — só
+     um :root com os tokens claros do DS, fixos, ver DS.paper/DS.ink no topo
+     desta função). Reverter reintroduziria uma falha de acessibilidade já fechada
+     via 5 issues — e contrariaria a paleta canônica do DS ("texto é SEMPRE
+     ink — hierarquia vem de tamanho/peso, não de cor", ver
+     scripts/lib/shared/design-tokens.ts). Decisão: manter --ink; se o editor
+     quiser recuperar alguma distinção visual, o caminho é uma variante de
+     teal MAIS ESCURA que passe AA (ex: ~#007A7A mede ~5.16:1 sobre branco),
+     não o teal original — mudança de paleta fora do escopo deste fix. */
   td.metric { font-weight: 600; color: var(--ink); }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
@@ -1644,9 +1659,21 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
     .join("\n");
 
   const sampled = cells.filter((c) => c.campaignCount > 0);
+  // #3303: mesma classe de bug já corrigida em renderAbcSection (#3281) — sem
+  // este guard, opens>0/clicks=0 (comum nas primeiras horas pós-envio, clique
+  // atrasa em relação à abertura) caía no branch !leaderClickRate ("Empate no
+  // clique"), sugerindo enganosamente um empate REAL no critério decisório
+  // (clique, #2976) em vez de "ainda não há dado". Texto diferente do
+  // renderAbcSection de propósito ("Aguardando dados de CLIQUE", não o genérico
+  // "Aguardando dados suficientes") — esta tabela não tem uma métrica de
+  // abertura secundária também aguardando; o resto dos campos (open rate, CTOR)
+  // já está populado quando isso dispara.
+  const allZero = sampled.length >= 2 && sampled.every((c) => c.clicks === 0);
   const conclusionNote =
     sampled.length < 2
       ? "Dados insuficientes para comparação."
+      : allZero
+      ? "Aguardando dados de clique — primeiras horas pós-envio."
       : !leaderClickRate
       ? "Empate no clique — aguardar mais dados."
       : significantClick

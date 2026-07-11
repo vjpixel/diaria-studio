@@ -6,6 +6,7 @@
  * Endpoints:
  *   GET  /vote?email=X&edition=AAMMDD&choice=A|B&sig=HMAC  → grava voto
  *   GET  /stats?edition=AAMMDD                             → { total, correct_pct, voted_a, voted_b }
+ *   GET  /editions?brand=diaria|clarice                    → { editions: string[] } — #3257, edições/ciclos com stats
  *   GET  /leaderboard                                      → HTML público com ranking
  *   POST /admin/correct?edition=AAMMDD&answer=A|B&sig=S   → define resposta correta
  *
@@ -13,6 +14,7 @@
  *   vote:{edition}:{email}   = { choice, ts, correct }
  *   score:{email}            = { total, correct, streak, last_edition }
  *   correct:{edition}        = "A" | "B"
+ *   stats:{edition}          = { total, voted_a, voted_b, correct_count } (espelho, fonte de /editions)
  *
  * Secrets (via wrangler secret put):
  *   POLL_SECRET   → HMAC key para assinar/verificar URLs de votação
@@ -248,6 +250,7 @@ export * from "./leaderboard-routes";
 import {
   handleVote,
   handleStats,
+  handleEditions,
   adjustScoreCorrectOnly,
   adjustScoreByMonthCorrectOnly,
 } from "./vote";
@@ -775,6 +778,11 @@ export default {
 
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
+    // #3257: lista as edições/ciclos com stats registrados neste brand — usado
+    // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra
+    // enumerar quais edições consultar via /stats sem depender de
+    // data/editions/ local (inacessível a um Worker). Ver handleEditions.
+    if (path === "/editions" && request.method === "GET") return handleEditions(bEnv, brand);
     if (path === "/leaderboard" && request.method === "GET") {
       // #2006/#2018: período canônico do leaderboard vem de BRAND_INFO.leaderboardPeriod.
       // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
@@ -833,7 +841,7 @@ export default {
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset

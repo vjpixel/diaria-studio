@@ -11,7 +11,7 @@ import {
   isValidVoteEditionFormat, // #3118 item 3
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
-import { upsertOwnEntryInSnapshot } from "./leaderboard-routes";
+import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 
 /**
@@ -985,6 +985,43 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
     correct_count: stats.correct_count,
     correct_pct: total > 0 ? Math.round((stats.correct_count / total) * 100) : null,
   }, 200, env);
+}
+
+// ── /editions (#3257) ────────────────────────────────────────────────────────
+
+/**
+ * #3257: lista as edições/ciclos que este worker tem stats registrados —
+ * derivado das chaves KV `stats:{edition}` (mesmo espelho lido/escrito por
+ * `handleStats`/`updateStatsCounter`, um por edição com ≥1 voto).
+ *
+ * Existe pra resolver o obstáculo descrito na issue #3257: o botão "Atualizar"
+ * da aba Engajamento do clarice-dashboard (`build-poll-eia-data.ts`) hoje
+ * decide QUAIS edições consultar via `enumerateEditionDirs`, que lê
+ * `data/editions/`/`data/monthly/` — diretórios locais (junction OneDrive),
+ * inacessíveis a um Worker Cloudflare. Este worker (`poll`) é a fonte de
+ * verdade real de "quais edições têm voto registrado" — expor a enumeração
+ * aqui evita duplicar `data/editions/` no runtime do Worker (opção 1b da
+ * issue, a recomendada — menos duplicação de lógica).
+ *
+ * `env`/`brand` seguem o mesmo padrão de handleStats: `env` já vem embrulhado
+ * no namespace do brand (branded via `brandedEnv` em index.ts) — `listAllKeys`
+ * lista só as chaves DESSE brand, sem precisar filtrar aqui.
+ *
+ * Filtra por formato válido (AAMMDD diário OU YYMM-MM mensal — mesmo regex de
+ * `renderEiaEngagementSection` no clarice-dashboard) — defesa contra uma key
+ * `stats:` corrompida/parcial (edition vazio ou lixo) vazando pro consumer.
+ * Ordenado desc (mais recente primeiro), mesma convenção de `discoverEditions`/
+ * `buildPollEiaSummaryFromApi` no script que este endpoint substitui.
+ */
+export async function handleEditions(env: Env, brand: Brand = "diaria"): Promise<Response> {
+  const prefix = "stats:";
+  const editions: string[] = [];
+  for await (const keyName of listAllKeys(env, prefix)) {
+    const edition = keyName.slice(prefix.length);
+    if (/^\d{6}$|^\d{4}-\d{2}$/.test(edition)) editions.push(edition);
+  }
+  editions.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  return json({ brand, editions }, 200, env);
 }
 
 // ── /leaderboard/top1 (#1160) ────────────────────────────────────────────────

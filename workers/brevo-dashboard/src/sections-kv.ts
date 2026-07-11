@@ -1231,6 +1231,17 @@ export function editionSortKey(edition: string): number {
  * edições. Dado gravado por `scripts/build-poll-eia-data.ts --push`.
  * Exportado pra teste unitário.
  */
+/**
+ * #3257: botão "Atualizar" — dispara `POST /api/eia/refresh` (ver
+ * eia-refresh.ts + a rota em index.ts), que busca os votos direto do worker
+ * `poll` e regrava o KV `eia:engagement`, sem precisar do editor abrir um
+ * terminal. Form HTML puro (sem JS) — mesmo padrão do form de /login; o
+ * handler redireciona de volta pra cá com `?fresh=1` após completar.
+ */
+const EIA_REFRESH_BUTTON = `<form method="POST" action="/api/eia/refresh" style="margin:0 0 12px 0;">
+  <button type="submit" style="padding:4px 12px;border:1px solid var(--rule);border-radius:4px;background:var(--paper-alt);color:var(--ink);cursor:pointer;font-size:0.85rem;">🔄 Atualizar votos</button>
+</form>`;
+
 export function renderEiaEngagementSection(
   eiaEngagement: EiaEngagementSummary | null,
   headerNow: Date = new Date(),
@@ -1239,7 +1250,8 @@ export function renderEiaEngagementSection(
     return `
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
-  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> para popular.</p>
+  <p class="section-note">Dados ainda não gerados. Clique em "Atualizar votos" abaixo, ou rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> no terminal.</p>
+  ${EIA_REFRESH_BUTTON}
 </section>`;
   }
 
@@ -1286,6 +1298,7 @@ export function renderEiaEngagementSection(
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
   <p class="section-note">Votos no poll "É IA?" por edição (${shown.length}), mais recente primeiro.${capNote}${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
+  ${EIA_REFRESH_BUTTON}
   <div class="table-wrap">
   <table>
     <thead>
